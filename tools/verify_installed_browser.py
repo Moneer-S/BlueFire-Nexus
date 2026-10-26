@@ -38,7 +38,12 @@ def write_new(path: Path, value: object) -> None:
         stream.write("\n")
 
 
-_FIXTURE_PURPOSES = ("bluefire_experiment_assistance", "bluefire_ai_graph_draft")
+_FIXTURE_PURPOSES = (
+    "bluefire_experiment_assistance",
+    "bluefire_ai_graph_draft",
+    "bluefire_experiment_assistance",
+    "bluefire_detection_source_creation",
+)
 _FIXTURE_MODEL = "bluefire-local-graph-fixture-v1"
 _RECEIVER_PROFILE = "sandbox-endpoint-deep-lab.v1"
 _RECEIVER_SCENARIO = "scenario.receiver-defense.redaction-validation.v1"
@@ -379,9 +384,9 @@ def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
     )
 
 
-def _fixture_outputs() -> dict[str, dict[str, object]]:
-    return {
-        "bluefire_experiment_assistance": {
+def _fixture_outputs() -> tuple[dict[str, object], ...]:
+    return (
+        {
             "message": "Create a separate registered proposal for native review.",
             "steps": [
                 {
@@ -391,7 +396,7 @@ def _fixture_outputs() -> dict[str, dict[str, object]]:
                 }
             ],
         },
-        "bluefire_ai_graph_draft": {
+        {
             "schema_version": "bluefire.ai-graph-draft.v1",
             "title": "Create and transform a bounded fixture",
             "purpose": "Prepare a typed fixture and normalize it for later inspection.",
@@ -418,7 +423,172 @@ def _fixture_outputs() -> dict[str, dict[str, object]]:
             "rationale": "Both nodes are registered and their typed artifacts connect.",
             "assumptions": ["The operator will review this unsaved draft."],
         },
-    }
+        {
+            "message": "Create a reviewed initial rule from this exact observed run.",
+            "steps": [
+                {
+                    "capability_id": "detection.create_and_evaluate",
+                    "detector_ref": "none",
+                    "reason": "Use only the selected run's observed evidence and retain its development-case limits.",
+                }
+            ],
+        },
+        {
+            "title": "Generated fixture collection rule",
+            "source": "SELECT fixture_id FROM logs WHERE artifact_type = 'collector_observation'",
+            "reason": "Exercise the reviewed source workflow against the supplied normalized observation schema.",
+            "evidence_refs": [],
+            "limitations": [
+                "Generated fixture observations only; normalized metadata, not target telemetry.",
+                "Development-case evaluation only; this does not establish held-out detection quality.",
+            ],
+        },
+    )
+
+
+def _fixture_output_for_request(index: int, request: object) -> dict[str, object]:
+    outputs = _fixture_outputs()
+    if not 0 <= index < len(outputs) or not isinstance(request, dict):
+        raise ValueError("fixture request index is unavailable")
+    output = dict(outputs[index])
+    if index == 3:
+        try:
+            context = json.loads(request["input"])
+            observations = context["observations"]
+            evidence_id = observations[0]["evidence_id"]
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("detection fixture requires a supplied observed evidence reference") from exc
+        if not isinstance(evidence_id, str) or not re.fullmatch(r"evidence-[0-9a-f]{20}", evidence_id):
+            raise ValueError("detection fixture evidence reference is invalid")
+        output["evidence_refs"] = [evidence_id]
+    return output
+
+
+def _assistant_fixture_journey_passed(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    execute = value.get("generated_fixture_execute")
+    preflight = value.get("execute_preflight")
+    graph = value.get("graph_simulation")
+    detection = value.get("detection_application")
+    cleanup = value.get("cleanup")
+    counts = value.get("request_counts")
+    observed_ids = execute.get("observed_evidence_ids") if isinstance(execute, dict) else None
+    observed_records = execute.get("observed_records") if isinstance(execute, dict) else None
+    provider_requests = value.get("provider_requests")
+    deadline_controls = value.get("deadline_controls")
+    checks = value.get("checks")
+    return (
+        value.get("schema_version") == "bluefire.installed-assistant-fixture.v2"
+        and value.get("status") == "passed"
+        and value.get("evidence_scope")
+        == "Generated fixture observations are normalized metadata, not target telemetry or held-out detection evidence."
+        and value.get("blocked_requests") == []
+        and isinstance(deadline_controls, dict)
+        and type(deadline_controls.get("outer_budget_remaining_at_browser_launch_ms")) is int
+        and 0 < deadline_controls["outer_budget_remaining_at_browser_launch_ms"] <= 240_000
+        and deadline_controls.get("work_deadline_enforced") is True
+        and deadline_controls.get("cleanup_reserve_ms") == 55_000
+        and deadline_controls.get("outer_margin_ms") == 2_000
+        and isinstance(value.get("errors"), list)
+        and not value["errors"]
+        and isinstance(checks, list)
+        and "approved_two_step_execute_run_completed_with_observed_generated_fixture_metadata" in checks
+        and "reviewed_fixture_detection_saved_and_evaluated_against_its_development_run" in checks
+        and "saved_detection_candidate_and_development_evaluation_reopened_by_exact_ids" in checks
+        and isinstance(graph, dict)
+        and graph.get("native_execution") is False
+        and isinstance(execute, dict)
+        and execute.get("status") == "completed"
+        and execute.get("native_execution") is True
+        and execute.get("mode") == "execute"
+        and execute.get("autonomy") == "off"
+        and execute.get("runner_profile_id") == "sandbox-execute.v1"
+        and isinstance(execute.get("run_id"), str)
+        and re.fullmatch(r"run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}", execute["run_id"]) is not None
+        and isinstance(execute.get("job_id"), str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", execute["job_id"]) is not None
+        and type(execute.get("step_count")) is int
+        and execute["step_count"] == 2
+        and type(execute.get("observed_metadata_record_count")) is int
+        and 1 <= execute["observed_metadata_record_count"] <= 2
+        and isinstance(observed_ids, list)
+        and len(observed_ids) == execute["observed_metadata_record_count"]
+        and all(isinstance(item, str) and re.fullmatch(r"evidence-[0-9a-f]{20}", item) for item in observed_ids)
+        and len(set(observed_ids)) == len(observed_ids)
+        and isinstance(observed_records, list)
+        and len(observed_records) == len(observed_ids)
+        and all(isinstance(item, dict) and isinstance(item.get("evidence_id"), str) for item in observed_records)
+        and {item["evidence_id"] for item in observed_records} == set(observed_ids)
+        and all(
+            isinstance(item, dict)
+            and item.get("run_id") == execute.get("run_id")
+            and item.get("producer") == "collector.filesystem.sandbox.v1"
+            and item.get("step_id") in {"create_fixture", "transform_fixture"}
+            and item.get("behavior_id") == {
+                "create_fixture": "sandbox.fixture.create.v1",
+                "transform_fixture": "sandbox.fixture.transform.v1",
+            }.get(item.get("step_id"))
+            and item.get("action_id") == item.get("behavior_id")
+            for item in observed_records
+        )
+        and isinstance(preflight, dict)
+        and preflight.get("mode") == "execute"
+        and preflight.get("autonomy") == "off"
+        and preflight.get("ai_enabled") is False
+        and preflight.get("ai_provider_id") == "deterministic-offline.v1"
+        and preflight.get("actions") == ["sandbox.fixture.create.v1", "sandbox.fixture.transform.v1"]
+        and isinstance(execute.get("cleanup"), dict)
+        and execute["cleanup"].get("attempted") is True
+        and execute["cleanup"].get("success") is True
+        and isinstance(detection, dict)
+        and isinstance(detection.get("candidate_id"), str)
+        and re.fullmatch(r"detection-[0-9a-f]{20}", detection["candidate_id"]) is not None
+        and isinstance(detection.get("evaluation_id"), str)
+        and re.fullmatch(r"detection-evaluation-[0-9a-f]{64}", detection["evaluation_id"]) is not None
+        and detection.get("run_id") == execute.get("run_id")
+        and detection.get("development_case") is True
+        and detection.get("backend_executed") is True
+        and isinstance(detection.get("result_state"), str)
+        and bool(detection["result_state"])
+        and type(detection.get("observed_match_count")) is int
+        and detection["observed_match_count"] >= 0
+        and type(detection.get("benign_match_count")) is int
+        and detection["benign_match_count"] >= 0
+        and isinstance(value.get("detection_reopened"), dict)
+        and value["detection_reopened"].get("candidate_id") == detection.get("candidate_id")
+        and value["detection_reopened"].get("evaluation_id") == detection.get("evaluation_id")
+        and value["detection_reopened"].get("run_id") == execute.get("run_id")
+        and type(value["detection_reopened"].get("revision")) is int
+        and value["detection_reopened"]["revision"] > 0
+        and isinstance(value["detection_reopened"].get("definition_digest"), str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value["detection_reopened"]["definition_digest"]) is not None
+        and value["detection_reopened"].get("development_case") is True
+        and value["detection_reopened"].get("evaluation_use") == "development"
+        and isinstance(provider_requests, dict)
+        and provider_requests.get("count") == 4
+        and provider_requests.get("purposes") == list(_FIXTURE_PURPOSES)
+        and type(provider_requests.get("request_bytes")) is int
+        and 0 < provider_requests["request_bytes"] <= 2_097_152
+        and isinstance(cleanup, dict)
+        and cleanup.get("runner_stopped") is True
+        and cleanup.get("execute_job_terminal") is True
+        and isinstance(counts, dict)
+        and counts == {
+            "assistant_turns": 2,
+            "model_requests": 4,
+            "run_preflight": 1,
+            "run_submission": 1,
+            "execute_approval": 1,
+            "runner_bootstrap": 1,
+            "runner_start": 1,
+            "runner_stop": 1,
+            "detection_source": 1,
+            "detection_context": 1,
+            "detection_validate": 1,
+            "detection_review": 1,
+        }
+    )
 
 
 def _fixture_request_allowed(
@@ -474,7 +644,7 @@ def _fixture_request_allowed(
 
 
 class LocalGraphFixture:
-    """Strict two-request structured-output endpoint; stores no prompt or response text."""
+    """Strict four-request structured-output endpoint; stores no prompt or response text."""
 
     def __init__(self) -> None:
         fixture = self
@@ -528,7 +698,7 @@ class LocalGraphFixture:
                     return
                 length = int(raw_length)
                 with fixture.lock:
-                    if fixture.post_count >= 3 or fixture.post_bytes + length > 2_097_152:
+                    if fixture.post_count >= 5 or fixture.post_bytes + length > 2_097_152:
                         fixture.failed = True
                         self._send(429, {"error": "fixture_budget_exceeded"})
                         return
@@ -587,7 +757,12 @@ class LocalGraphFixture:
                     fixture._fail()
                     self._send(504, {"error": "fixture_deadline"})
                     return
-                output = _fixture_outputs()[purpose]
+                try:
+                    output = _fixture_output_for_request(index, request)
+                except ValueError:
+                    fixture._fail()
+                    self._send(400, {"error": "fixture_output_binding_failed"})
+                    return
                 self._send(
                     200,
                     {
@@ -912,6 +1087,7 @@ def main() -> int:
         if child.returncode == 0:
             report["status"] = "passed"
         if assistant_driver is not None and child.returncode == 0:
+            assistant_outer_deadline_ms = time.time_ns() // 1_000_000 + 238_000
             fixture = LocalGraphFixture()
             fixture.start()
             assistant_capability = generate_browser_bootstrap_capability()
@@ -931,6 +1107,7 @@ def main() -> int:
                     str(output),
                     str(assistant_server.server_address[1]),
                     str(fixture.port),
+                    str(assistant_outer_deadline_ms),
                 ],
                 env=environment,
                 stdin=subprocess.PIPE,
@@ -956,17 +1133,26 @@ def main() -> int:
             report["assistant_fixture"] = {
                 "status": assistant_report.get("status"),
                 "driver_sha256": digest(assistant_driver),
+                "evidence_scope": assistant_report.get("evidence_scope"),
                 "provider": fixture_summary,
                 "checks": assistant_report.get("checks", []),
                 "screenshots": assistant_report.get("screenshots", []),
                 "blocked_requests": assistant_report.get("blocked_requests", []),
+                "graph_simulation": assistant_report.get("graph_simulation"),
+                "generated_fixture_execute": assistant_report.get("generated_fixture_execute"),
+                "detection_proposal": assistant_report.get("detection_proposal"),
+                "detection_application": assistant_report.get("detection_application"),
+                "detection_reopened": assistant_report.get("detection_reopened"),
+                "deadline_controls": assistant_report.get("deadline_controls"),
+                "request_counts": assistant_report.get("request_counts"),
+                "cleanup": assistant_report.get("cleanup"),
             }
             report["assistant_browser_returncode"] = assistant_child.returncode
             if (
                 assistant_child.returncode != 0
-                or assistant_report.get("status") != "passed"
+                or not _assistant_fixture_journey_passed(assistant_report)
                 or fixture.failed
-                or fixture_summary["request_count"] != 2
+                or fixture_summary["request_count"] != 4
                 or fixture_summary["purposes"] != list(_FIXTURE_PURPOSES)
             ):
                 report["status"] = "failed_or_incomplete"
