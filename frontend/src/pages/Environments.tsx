@@ -69,10 +69,11 @@ export function EnvironmentsPage() {
   }, [nextExpiry]);
 
   const fileCurrent = fileSetup ? fileSetup.expires_at_ms > now : Boolean(fileStatus.data?.available && fileStatus.data?.enrollment && fileStatus.data.enrollment.expires_at_ms > now);
+  const fileExpired = Boolean(fileSetup && fileSetup.expires_at_ms <= now || fileStatus.data?.enrollment && fileStatus.data.enrollment.expires_at_ms <= now);
   const fileReadiness = fileStatus.isError ? undefined : !fileStatus.data ? undefined
-    : !fileCurrent ? { label: "Not current", tone: "warning" as const }
+    : !fileCurrent ? { label: fileExpired ? "Expired" : fileSetup || fileStatus.data.enrollment ? "Unavailable" : "No setup", tone: "warning" as const }
       : fileStatus.data.available ? { label: "Available for review", tone: "info" as const }
-        : fileSetup ? { label: "Protected setup only", tone: "warning" as const }
+        : fileSetup ? { label: "Setup saved", tone: "warning" as const }
           : { label: "Unavailable", tone: "warning" as const };
   const currentAuthorizations = authorizations.isError ? undefined : authorizations.data?.authorizations.filter(item => item.status === "active" && item.expires_at_ms > now).length;
   const nativeCurrentlyAvailable = Boolean(adEnvironments.data?.nativeAvailable && adEnvironments.data.environments.some(row => row.available && row.environment.provenance === "runner_reported" && Date.parse(row.environment.expiresAt) > now));
@@ -102,7 +103,7 @@ export function EnvironmentsPage() {
       <QueryState pending={fileStatus.isPending} error={fileStatus.error} label="File-access setup" retry={() => { void fileStatus.refetch(); }} />
       {fileStatus.data ? <div className="environment-rows"><article className="environment-row environment-file-status">
         {fileSetup || fileStatus.data.enrollment || fileStatus.data.platform === "macos" ? <div><strong>{fileStatus.data.platform === "macos" ? "macOS workspace" : fileSetup ? "Protected Windows setup" : "Prepared file-access session"}</strong><small>{fileSetup ? `Setup expires ${formatDate(new Date(fileSetup.expires_at_ms).toISOString())}` : fileStatus.data.enrollment ? `Enrollment expires ${formatDate(new Date(fileStatus.data.enrollment.expires_at_ms).toISOString())}` : "No current enrollment"}</small></div> : null}
-        <p>{fileStatus.isError ? "Last reported setup; current status could not be refreshed." : !fileCurrent ? fileSetup ? "Protected setup is recorded but expired." : "No current task-access setup is available." : fileStatus.data.available ? "Current setup is available for reviewed operations." : fileStatus.data.problem?.message ?? "Protected setup is recorded; task access is unavailable."}</p>
+        <p>{fileStatus.isError ? "Last reported setup; current status could not be refreshed." : !fileCurrent ? fileExpired ? "Saved setup has expired." : fileSetup || fileStatus.data.enrollment ? fileStatus.data.problem?.message ?? "Saved setup is unavailable for file operations." : "No setup is available for this workspace." : fileStatus.data.available ? "Available for reviewed file operations." : fileStatus.data.problem?.message ?? "Setup is saved, but file operations are unavailable."}</p>
       </article><article className="environment-row environment-row-history">
         <p>{fileControls.error ? "History unavailable; see the notice below." : fileControls.isPending ? "Loading saved-control history." : `${fileControls.data?.controls.length} saved ${fileControls.data?.controls.length === 1 ? "control" : "controls"}.`}</p>
         <StateBadge tone={fileControls.error ? "warning" : fileControls.isPending ? "neutral" : "info"}>{fileControls.error ? "Unavailable" : fileControls.isPending ? "Loading" : "History"}</StateBadge>
@@ -134,12 +135,14 @@ export function EnvironmentsPage() {
       <BandHeader id="execution-heading" title="Execution configuration" icon={Server} />
       <div className="environment-rows">
         <article className="environment-row"><div><strong>Runner profiles</strong><small>Rules and limits for reviewed runs</small></div>
-          <p>{catalog.isError || profiles.isError ? catalog.data || profiles.data ? "Last reported inventory; one or more sources could not be refreshed." : "Profile inventory could not be loaded." : catalog.data && profiles.data ? `${catalog.data.runner_profiles.length} catalog profiles · ${profiles.data.resources.filter(item => item.status === "active").length} active saved profiles · ${profiles.data.resources.length} saved profile records.` : "Profile inventory is loading."}</p>
-          <StateBadge tone={catalog.isError || profiles.isError ? "warning" : "info"}>{catalog.isError || profiles.isError ? catalog.data || profiles.data ? "Partial status" : "Unavailable" : catalog.data && profiles.data ? "Inventory" : "Loading"}</StateBadge>
+          <p>{catalog.isError || profiles.isError ? catalog.data || profiles.data ? "Some profile information could not be refreshed." : "Profile information could not be loaded." : catalog.data && profiles.data ? "Review available profiles and saved configurations." : "Profile information is loading."}</p>
+          <StateBadge tone={catalog.isError || profiles.isError ? "warning" : "info"}>{catalog.isError || profiles.isError ? catalog.data || profiles.data ? "Partial status" : "Unavailable" : catalog.data && profiles.data ? "Reported" : "Loading"}</StateBadge>
+          {catalog.data && profiles.data ? <details className="environment-inventory-details"><summary>Inventory details</summary><span>{catalog.data.runner_profiles.length} catalog profiles · {profiles.data.resources.filter(item => item.status === "active").length} active saved profiles · {profiles.data.resources.length} saved profile records.</span></details> : null}
         </article>
         <article className="environment-row"><div><strong>Runner records</strong><small>Saved runners; connectivity is checked when used</small></div>
-          <p>{runners.isError ? runners.data ? "Last reported inventory; current records could not be refreshed." : "Runner-record inventory could not be loaded." : runners.data ? `${runners.data.resources.length} saved ${runners.data.resources.length === 1 ? "record" : "records"}; runner authentication has not been checked here.` : "Runner-record inventory is loading."}</p>
-          <StateBadge tone={runners.isError ? "warning" : "neutral"}>{runners.isError ? runners.data ? "Last reported" : "Unavailable" : runners.data ? "Inventory only" : "Loading"}</StateBadge>
+          <p>{runners.isError ? runners.data ? "Saved runner information could not be refreshed." : "Runner information could not be loaded." : runners.data ? "Saved records; connection is checked when a runner is used." : "Runner information is loading."}</p>
+          <StateBadge tone={runners.isError ? "warning" : "neutral"}>{runners.isError ? runners.data ? "Last reported" : "Unavailable" : runners.data ? "Saved" : "Loading"}</StateBadge>
+          {runners.data ? <details className="environment-inventory-details"><summary>Inventory details</summary><span>{runners.data.resources.length} saved {runners.data.resources.length === 1 ? "runner record" : "runner records"}; authentication has not been checked here.</span></details> : null}
         </article>
       </div>
       {(catalog.isPending || catalog.isError) && <QueryState pending={catalog.isPending} error={catalog.error} label="Execution catalog" retry={() => { void catalog.refetch(); }} />}
@@ -166,9 +169,10 @@ export function EnvironmentsPage() {
           <StateBadge tone={authorizations.isError ? "warning" : currentAuthorizations ? "info" : "neutral"}>{authorizations.isError ? authorizations.data ? "Last reported" : "Unavailable" : currentAuthorizations ? "Authorized" : authorizations.data ? "None current" : "Loading"}</StateBadge>
           <span>{authorizations.isError ? authorizations.data ? "Last reported authorization; current status could not be refreshed." : "Authorization status unavailable." : currentAuthorizations === undefined ? "Authorization status is loading." : `${currentAuthorizations} current authorizations reported.`}</span>
         </dd></div>
-        <div><dt>Saved provider inventory</dt><dd>
+        <div><dt>Saved provider configurations</dt><dd>
           <StateBadge tone={catalog.isError || providers.isError ? "warning" : catalog.data && providers.data ? "info" : "neutral"}>{catalog.isError || providers.isError ? catalog.data || providers.data ? "Partial status" : "Unavailable" : catalog.data && providers.data ? "Inventory" : "Loading"}</StateBadge>
-          <span>{catalog.isError || providers.isError ? catalog.data || providers.data ? "Last reported inventory; one or more sources could not be refreshed." : "Provider inventory could not be loaded." : catalog.data && providers.data ? `${catalog.data.ai.providers?.length ?? "Not reported"} catalog providers · ${providers.data.resources.filter(item => item.status === "active").length} active saved configurations · ${providers.data.resources.length} saved configurations.` : "Provider inventory is loading."}</span>
+          <span>{catalog.isError || providers.isError ? catalog.data || providers.data ? "Some provider information could not be refreshed." : "Provider information could not be loaded." : catalog.data && providers.data ? "Saved configurations and provider health are reported separately." : "Provider information is loading."}</span>
+          {catalog.data && providers.data ? <details className="environment-inventory-details"><summary>Inventory details</summary><span>{catalog.data.ai.providers?.length ?? "Not reported"} catalog providers · {providers.data.resources.filter(item => item.status === "active").length} active saved configurations · {providers.data.resources.length} saved configurations.</span></details> : null}
         </dd></div>
       </dl>
       {(providers.isPending || providers.isError) && <QueryState pending={providers.isPending} error={providers.error} label="Saved provider configurations" retry={() => { void providers.refetch(); }} />}

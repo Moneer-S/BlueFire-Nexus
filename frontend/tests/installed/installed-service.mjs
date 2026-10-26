@@ -662,6 +662,15 @@ try {
   secrets.fill("");
   report.checks.push("working_graph_json_export_preserves_canonical_document_and_layout_without_credentials");
 
+  stage = "graph-dismiss-verified-save-notice";
+  const savedGraphNotice = page.locator(".compatibility-banner");
+  if (await savedGraphNotice.count()) {
+    assert.equal(await savedGraphNotice.getAttribute("role"), "status");
+    assert.ok((await savedGraphNotice.innerText()).includes(`Version ${updated.version} saved.`));
+    await savedGraphNotice.getByRole("button", { name: "Dismiss compatibility message", exact: true }).click();
+    await savedGraphNotice.waitFor({ state: "hidden" });
+  }
+
   stage = "graph-connected-plan-scope";
   assert.equal(await page.getByRole("navigation", { name: "Focused connected path", exact: true }).count(), 0);
   stage = "graph-connected-plan-node-count";
