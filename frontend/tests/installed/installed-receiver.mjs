@@ -1,7 +1,8 @@
 // Installed-wheel retained-redaction original and linked retest through the ordinary UI.
-/* global process, URL, URLSearchParams, document, fetch, sessionStorage, location, structuredClone, AbortSignal, getComputedStyle, CSS */
+/* global process, URL, URLSearchParams, document, fetch, sessionStorage, localStorage, location, structuredClone, AbortSignal, getComputedStyle, CSS, innerWidth, innerHeight, requestAnimationFrame, window */
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -72,6 +73,7 @@ const report = {
   target_scope: ["sandbox.workspace", "network.loopback"],
   runner_profile: PROFILE,
   checks: [],
+  screenshots: [],
   blocked_requests: [],
   errors: [],
 };
@@ -355,6 +357,148 @@ async function appApi(path, requestedTimeout = remainingMs()) {
     if (!response.ok) throw new Error("Owned status read failed");
     return response.json();
   }, { apiPath: path, timeout });
+}
+
+const ACTIVE_WORK_KEY = "bluefire.local.active-defensive-work.v1";
+const HOME_PHASE_LABELS = { baseline: "Baseline", protected: "Redaction required", legitimate: "Legitimate redacted use" };
+const HOME_DECISION_LABELS = { accepted: "Accepted by the receiver", policy_refused: "Prevented by the receiver" };
+
+// Retain only bounded result fields, never the preparation/session-bearing owner document.
+function homeRecordProjection(value, ownerId) {
+  assert.equal(value.job?.job_id, ownerId);
+  assert.equal(value.status, "completed");
+  assert.equal(value.control?.status, "retained");
+  assert.equal(value.control?.desired_policy_id, "receiver.redacted-only.v1");
+  assert.deepEqual(value.phases.map(item => item.phase), ["baseline", "protected", "legitimate"]);
+  const phases = value.phases.map(item => {
+    assert.equal(item.status, "completed");
+    assert.equal(item.result?.receiver_observation.schema_version, "bluefire.owned-receiver-observation.v1");
+    assert.equal(item.result?.receiver_observation.state, "verified");
+    assert.ok(Object.hasOwn(HOME_DECISION_LABELS, item.result?.decision));
+    return { phase: item.phase, decision: item.result.decision };
+  });
+  return { owner_job_id: ownerId, status: value.status, desired_policy_id: value.control.desired_policy_id,
+    control_status: value.control.status, phases };
+}
+
+async function waitRememberedWork(ownerId) {
+  await page.waitForFunction(({ key, id }) => {
+    const value = JSON.parse(localStorage.getItem(key) ?? "null");
+    return value?.family === "handoff" && value?.id === id && Object.keys(value).sort().join(",") === "family,id";
+  }, { key: ACTIVE_WORK_KEY, id: ownerId });
+}
+
+async function assertHomeRecord(projection, recordTitle) {
+  const card = page.getByRole("region", { name: "Active objective", exact: true });
+  await card.waitFor({ state: "visible" });
+  await page.waitForFunction(title => document.querySelector(".active-objective .active-work-heading h3")?.textContent === title
+    && document.querySelector(".active-objective button[aria-label='Refresh active objective']")?.disabled === false,
+  `Controlled data handoff · ${recordTitle}`);
+  assert.equal(await card.locator(".error-state, .loading-state").count(), 0, "Home must show a successfully checked record");
+  assert.equal(await card.getByText("Previously loaded evidence. Its current state could not be checked.", { exact: true }).count(), 0,
+    "Cached evidence must not pass as a successful fresh read");
+  assert.equal(await card.getByRole("status").count(), 0, "The saved-state check must be settled");
+  const title = card.locator(".active-work-heading h3");
+  await title.waitFor({ state: "visible" });
+  assert.equal(await title.textContent(), `Controlled data handoff · ${recordTitle}`);
+  assert.equal(await card.locator(".active-work-purpose").textContent(),
+    "Can a redaction requirement stop unredacted records while allowing legitimate redacted use?");
+  assert.deepEqual(await card.locator(".active-objective-context > div").evaluateAll(elements => elements.map(element => ({
+    label: element.querySelector("dt")?.textContent, value: element.querySelector("dd")?.textContent,
+  }))), [{ label: "Environment", value: "Loopback receiver" }, { label: "Current stage", value: "Legitimate redacted use" }]);
+  assert.equal(await card.locator(".active-objective-change p").textContent(), "Desired policy: Require redacted records · Retained");
+  const rows = await card.locator(".active-objective-evidence > dl > div").evaluateAll(elements => elements.map(element => ({
+    label: element.querySelector("dt")?.textContent, value: element.querySelector("dd")?.textContent,
+  })));
+  assert.deepEqual(rows.slice(0, 3), projection.phases.map(item => ({ label: HOME_PHASE_LABELS[item.phase], value: HOME_DECISION_LABELS[item.decision] })));
+  assert.equal(rows.length, 4);
+  assert.equal(rows[3].label, "Evidence source");
+  assert.ok(rows[3].value.startsWith("Owned loopback receiver decision"));
+  assert.equal(await card.locator(".active-objective-state > span").textContent(), "Recorded state: Completed");
+  assert.equal(await card.getByRole("link", { name: "Continue objective", exact: true }).getAttribute("href"),
+    `#/compare?receiver=1&goal=data-handoff&receiver_job=${projection.owner_job_id}`);
+  return card;
+}
+
+async function captureActiveHome(card, viewport, projection) {
+  stage = `home-active-capture-${viewport.width}x${viewport.height}`;
+  assert.ok(connected, "Never capture connection credentials");
+  await page.setViewportSize(viewport);
+  await page.evaluate(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    document.getElementById("main-content")?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  });
+  await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+  // Retain the real frame before assertions so a geometry failure is reviewable.
+  // A saved frame is evidence, not a passing visual qualification.
+  const documentGeometry = await page.evaluate(() => ({ width: innerWidth, height: innerHeight,
+    document_width: document.documentElement.clientWidth, scroll_width: document.documentElement.scrollWidth }));
+  const name = `receiver-home-active-${viewport.width}x${viewport.height}`;
+  const image = await page.screenshot({ fullPage: false, animations: "disabled", mask: [page.locator('input[type="password"]')] });
+  writeFileSync(join(output, `${name}.png`), image, { flag: "wx", mode: 0o600 });
+  const capture = { name, sha256: createHash("sha256").update(image).digest("hex"), viewport_kind: "responsive_viewport",
+    geometry: documentGeometry, elements: [], owner_job_id: projection.owner_job_id, layout_verified: false };
+  report.screenshots.push(capture);
+  const targets = [
+    ["heading", card.getByRole("heading", { name: "Active objective", exact: true })],
+    ["title", card.locator(".active-work-heading h3")],
+    ["objective", card.locator(".active-work-purpose")],
+    ["environment_and_stage", card.locator(".active-objective-context")],
+    ["policy", card.locator(".active-objective-change p")],
+    ["recorded_state", card.locator(".active-objective-state > span")],
+    ["continue_objective", card.getByRole("link", { name: "Continue objective", exact: true })],
+    ["show_working_draft", card.getByRole("button", { name: "Show working draft", exact: true })],
+    ["refresh", card.getByRole("button", { name: "Refresh active objective", exact: true })],
+    ...projection.phases.map((item, index) => [item.phase, card.locator(".active-objective-evidence > dl > div").nth(index)]),
+    ["evidence_source", card.locator(".active-objective-evidence > dl > div").nth(3)],
+  ];
+  const elements = [];
+  capture.elements = elements;
+  for (const [label, locator] of targets) {
+    assert.equal(await locator.count(), 1);
+    await locator.waitFor({ state: "visible" });
+    const geometry = await locator.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      let left = 0, top = 0, right = innerWidth, bottom = innerHeight;
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
+        const borderLeft = parseFloat(style.borderLeftWidth) || 0, borderRight = parseFloat(style.borderRightWidth) || 0;
+        const borderTop = parseFloat(style.borderTopWidth) || 0, borderBottom = parseFloat(style.borderBottomWidth) || 0;
+        if (/auto|scroll|hidden|clip/.test(style.overflowX)) {
+          const scrollbar = Math.max(0, parent.offsetWidth - parent.clientWidth - borderLeft - borderRight);
+          left = Math.max(left, bounds.left + borderLeft); right = Math.min(right, bounds.right - borderRight - scrollbar);
+        }
+        if (/auto|scroll|hidden|clip/.test(style.overflowY)) {
+          const scrollbar = Math.max(0, parent.offsetHeight - parent.clientHeight - borderTop - borderBottom);
+          top = Math.max(top, bounds.top + borderTop); bottom = Math.min(bottom, bounds.bottom - borderBottom - scrollbar);
+        }
+      }
+      // Rounded corners are outside the element's hit surface. Check its
+      // painted interior, while retaining the complete clipping/text checks.
+      const style = getComputedStyle(element);
+      const radius = Math.max(...[style.borderTopLeftRadius, style.borderTopRightRadius,
+        style.borderBottomLeftRadius, style.borderBottomRightRadius].map(value => parseFloat(value) || 0));
+      const insetX = Math.min(box.width / 2, Math.max(2, radius + 1));
+      const insetY = Math.min(box.height / 2, Math.max(2, radius + 1));
+      const samples = [[box.left + insetX, box.top + insetY], [box.right - insetX, box.top + insetY],
+        [box.left + insetX, box.bottom - insetY], [box.right - insetX, box.bottom - insetY],
+        [box.left + box.width / 2, box.top + box.height / 2]];
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width, height: box.height,
+        clip: { left, right, top, bottom }, text_fits: element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1,
+        hit_samples: samples, corner_radius: radius,
+        owned_hits: samples.map(([x, y]) => { const hit = document.elementFromPoint(x, y); return Boolean(hit && (hit === element || element.contains(hit))); }) };
+    });
+    report.home_layout_probe = { viewport, element: label, geometry };
+    assert.ok(geometry.width > 0 && geometry.height > 0 && geometry.text_fits, "Active objective text must remain readable");
+    assert.ok(geometry.left >= geometry.clip.left - 1 && geometry.right <= geometry.clip.right + 1
+      && geometry.top >= geometry.clip.top - 1 && geometry.bottom <= geometry.clip.bottom + 1, "Active objective content must fit its visible viewport");
+    assert.ok(geometry.owned_hits.every(Boolean), "Active objective content must be unobscured");
+    elements.push({ label, ...geometry });
+  }
+  assert.ok(documentGeometry.scroll_width <= documentGeometry.document_width + 1, "Home must not overflow horizontally");
+  capture.layout_verified = true;
+  report.checks.push(`active_objective_readable_at_${viewport.width}x${viewport.height}`);
+  delete report.home_layout_probe;
 }
 
 async function waitOwner(predicate, timeout = 120_000, ownerId = receiverJobId, deadline) {
@@ -963,6 +1107,7 @@ try {
   }, { origin: ORIGIN, profile: PROFILE, timeout: remainingMs() }, { timeout: 45_000 });
   runnerStarted = false;
   report.cleanup.runner_stopped = true;
+  report.runner_final_state = { state: "stopped", source: "authenticated_status_poll_after_stop" };
   report.checks.push("managed_runner_stopped_through_ui");
 
   const finalOwner = await appApi(`/receiver-defense/jobs/${receiverJobId}`);
@@ -978,7 +1123,72 @@ try {
   assert.equal(finalOriginal.control?.receiver_state, "stopped");
   assert.ok(finalOriginal.phases.every((item) => item.status === "completed"
     && item.cleanup.receiver === "verified_closed" && item.cleanup.run === "complete"));
+  // Keep completed execution and shutdown evidence even if later UI checks fail.
   report.owner_status = finalOwner.status;
+
+  stage = "home-linked-reference";
+  await waitRememberedWork(linkedOwnerId);
+  const draftBeforeHome = await page.evaluate(() => ({ draft: localStorage.getItem("bluefire.local.scenario.v1"),
+    saved: localStorage.getItem("bluefire.local.scenario-saved.v1") }));
+  assert.ok(typeof draftBeforeHome.draft === "string" && draftBeforeHome.draft.length > 0, "The journey must retain its working draft");
+  const homeProjection = homeRecordProjection(finalOriginal, originalOwnerId);
+  assert.ok(boundedString(finalOriginal.context?.scenario_title, 512));
+  const homeTitle = finalOriginal.context.scenario_title;
+  report.checks.push("latest_validated_linked_receiver_reference_retained");
+
+  // The linked retest has two phases. Reopen its real original through the normal
+  // record route to inspect all three saved outcomes without inventing a baseline.
+  stage = "home-original-record-selection";
+  await page.goto(`${ORIGIN}/#/compare?receiver=1&receiver_job=${originalOwnerId}`);
+  await waitRememberedWork(originalOwnerId);
+  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  let homeCard = await assertHomeRecord(homeProjection, homeTitle);
+  report.checks.push("active_objective_matches_original_record_outcomes_and_retained_policy");
+
+  stage = "home-continue-objective";
+  await homeCard.getByRole("link", { name: "Continue objective", exact: true }).click();
+  await page.waitForFunction(id => location.hash === `#/compare?receiver=1&goal=data-handoff&receiver_job=${id}`, originalOwnerId);
+  await page.getByRole("list", { name: "Recorded phase outcomes", exact: true }).waitFor({ state: "visible" });
+  await waitRememberedWork(originalOwnerId);
+  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  await assertHomeRecord(homeProjection, homeTitle);
+  report.checks.push("active_objective_continues_exact_saved_receiver_route");
+
+  stage = "home-reload-restoration";
+  await page.reload();
+  await waitRememberedWork(originalOwnerId);
+  homeCard = await assertHomeRecord(homeProjection, homeTitle);
+  report.checks.push("active_objective_reference_and_recorded_summary_restored_after_reload");
+
+  stage = "home-direct-read-refresh";
+  const [refreshed] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === "GET"
+      && response.url() === `${ORIGIN}/api/v1/receiver-defense/jobs/${originalOwnerId}`),
+    homeCard.getByRole("button", { name: "Refresh active objective", exact: true }).click(),
+  ]);
+  assert.ok(refreshed.ok());
+  assert.deepEqual(homeRecordProjection(await refreshed.json(), originalOwnerId), homeProjection);
+  homeCard = await assertHomeRecord(homeProjection, homeTitle);
+  report.home_resume = { selected_owner_job_id: originalOwnerId, previous_linked_owner_job_id: linkedOwnerId,
+    recorded_result: homeProjection, direct_refresh_verified: true, reload_restored: true,
+    continuation_route: `/compare?receiver=1&goal=data-handoff&receiver_job=${originalOwnerId}` };
+  report.checks.push("active_objective_refresh_reads_exact_owned_receiver_record");
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
+    await captureActiveHome(homeCard, viewport, homeProjection);
+  }
+
+  stage = "home-show-working-draft";
+  await homeCard.getByRole("button", { name: "Show working draft", exact: true }).click();
+  await page.locator("#working-copy-heading").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".active-objective").count(), 0);
+  assert.equal(await page.evaluate(key => localStorage.getItem(key), ACTIVE_WORK_KEY), null);
+  const draftAfterHome = await page.evaluate(() => ({ draft: localStorage.getItem("bluefire.local.scenario.v1"),
+    saved: localStorage.getItem("bluefire.local.scenario-saved.v1") }));
+  assert.deepEqual(draftAfterHome, draftBeforeHome);
+  report.home_resume.working_draft_unchanged = true;
+  report.home_resume.working_draft_sha256 = createHash("sha256").update(draftBeforeHome.draft).digest("hex");
+  report.checks.push("show_working_draft_clears_navigation_preference_without_changing_draft");
+
   report.request_counts = counts;
   assert.equal(report.blocked_requests.length, 0);
   assert.equal(report.errors.length, 0);

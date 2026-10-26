@@ -22,6 +22,8 @@
 .active-work-actions .button-primary { min-width: 170px; justify-content: space-between; }
 .active-work-latest, .active-work-more { display: inline-flex; align-items: center; gap: 7px; margin-top: 13px; color: var(--blue-soft); font-size: .72rem; line-height: 1.5; text-decoration: none; }
 .active-work-latest svg, .active-work-more svg { width: 13px; height: 13px; }
+.active-work-latest { flex-wrap: wrap; }
+.active-work-latest small { color: var(--muted); font-size: .67rem; }
 .active-work-more { margin-top: 9px; }
 .active-work-plan { min-width: 0; padding-left: 24px; border-left: 1px solid var(--line); }
 .active-work-plan > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

@@ -172,6 +172,10 @@ def suggest_plan(
             "explain only its bounded evidence, conflicts and gaps. Operator imports are not independent "
             "collection or proof of prevention, effective access, complete delivery or full object bytes. "
             "Treat synthetic runner evidence as synthetic. Do not claim to have executed or changed anything. "
+            "A saved file_access_control also has no dispatch capabilities: return empty steps and "
+            "explain its saved baseline, protection metadata and verified fresh observations separately. "
+            "Task-access settlement is not endpoint readiness; neither a mode nor a policy change proves "
+            "denied access. Missing results remain unreported. Do not infer new reads or recovery actions. "
             "Return no code, approvals, invented results or unsupported actions. Explain a supported "
             "next step or return no steps if this request is outside these capabilities."
         ),

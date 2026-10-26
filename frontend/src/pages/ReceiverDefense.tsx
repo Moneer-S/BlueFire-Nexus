@@ -11,6 +11,7 @@ import { ReceiverSavedTests } from "../components/ReceiverSavedTests";
 import { ReceiverTestProgress } from "../components/ReceiverTestProgress";
 import { RetainedReceiverControl } from "../components/RetainedReceiverControl";
 import { ObjectiveContext } from "../components/ObjectiveContext";
+import { useRememberDefensiveWork } from "../state/activeDefensiveWork";
 import "./ReceiverDefense.css";
 
 export function ReceiverDefensePage() {
@@ -67,6 +68,7 @@ export function ReceiverDefensePage() {
   const query = useQuery({ queryKey: ["receiver-test", id], queryFn: async () => checkedReceiverTest(await api.receiverTest(id), id), enabled: receiverJobValid(id) && !write.isPending, retry: false,
     refetchInterval: (state) => state.state.data && ["active", "stopping"].includes(state.state.data.status) ? 1200 : false });
   const envelope = query.data;
+  useRememberDefensiveWork("handoff", query.isSuccess && envelope?.job.job_id === id ? id : undefined);
   const workflowLabel = envelope?.context?.source_control ? "Fresh retest of retained redaction" : envelope?.context?.workflow === "retained_redaction" ? "Retain redaction and verify legitimate use" : "Compare baseline and restored policy";
   const statusTone = envelope?.status === "completed" ? "success" : envelope?.status === "blocked" || envelope?.status === "stopping" ? "warning" : envelope?.status === "stopped" ? "neutral" : "info";
   const assistant = useAssistancePanel();

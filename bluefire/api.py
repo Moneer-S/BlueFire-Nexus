@@ -462,6 +462,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     file_access[1]
                 ),
                 "control": lambda: self.platform_server.service.file_access_control(file_access[1]),
+                "assistant-context": lambda: self.platform_server.service.file_access_assistance_context(
+                    file_access[1]
+                ),
                 "reconciliation": lambda: self.platform_server.service.file_access_reconciliation(
                     file_access[1], file_access[2]
                 ),

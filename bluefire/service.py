@@ -2706,6 +2706,11 @@ class BlueFireService(
     def file_access_control(self, owner_id: str) -> Mapping[str, Any]:
         return self.file_access.control(owner_id)
 
+    def file_access_assistance_context(self, owner_id: str) -> Mapping[str, Any]:
+        from .assistance_file_access_context import context
+
+        return context(self, owner_id=owner_id)
+
     def reconcile_file_access_operation(
         self, job_id: str, request: Mapping[str, Any]
     ) -> Mapping[str, Any]:

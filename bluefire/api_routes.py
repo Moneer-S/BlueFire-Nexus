@@ -707,6 +707,12 @@ class APIRoutes:
         suffix = path[len(prefix) :]
         if suffix in {"status", "review", "operations", "control-list", "setup-import"}:
             return suffix, "", ""
+        assistance = re.fullmatch(
+            r"controls/((?:job-|win-file-control-)[0-9a-f]{32}|file-control-[0-9a-f]{64})/assistant-context",
+            suffix,
+        )
+        if assistance is not None:
+            return "assistant-context", assistance.group(1), ""
         windows_control = re.fullmatch(r"controls/(win-file-control-[0-9a-f]{32})", suffix)
         if windows_control is not None:
             return "control", windows_control.group(1), ""
