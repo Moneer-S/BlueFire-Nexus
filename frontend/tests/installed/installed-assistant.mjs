@@ -520,14 +520,20 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   report.checks.push("execute_runner_stopped_through_ui_and_authenticated_status");
 
   stage = "detection-source-selection";
+  const assistantPanel = page.locator("#experiment-assistant");
+  if (await assistantPanel.isVisible()) {
+    await page.getByRole("button", { name: "Close assistant", exact: true }).click();
+  }
   await gotoJourney(`${origin}/#/detection-lab?run=${encodeURIComponent(runId)}&create=1`, { waitUntil: "domcontentloaded" });
   await page.getByRole("region", { name: "Create detection from run", exact: true }).waitFor();
-  const detectionContextResponse = waitForJourneyResponse(response => new URL(response.url()).pathname === "/api/v1/assistance/detection-context" && response.request().method() === "POST");
   await page.getByRole("combobox", { name: /^Behavior to detect\b/ }).selectOption("sandbox.fixture.create.v1");
   await page.getByRole("combobox", { name: "Rule language", exact: true }).selectOption("sqlite");
   await page.getByRole("combobox", { name: /^Development case\b/ }).selectOption("benign");
+  const detectionContextResponse = waitForJourneyResponse(response => new URL(response.url()).pathname === "/api/v1/assistance/detection-context" && response.request().method() === "POST");
   await page.getByRole("button", { name: "Draft rule with Assistant", exact: true }).click();
   await ensureAssistantOpen();
+  const currentSelection = page.getByRole("button", { name: "Current selection", exact: true });
+  if (await currentSelection.isVisible()) await currentSelection.click();
   expectedDetectionContext = await (await detectionContextResponse).json();
   assert.equal(expectedDetectionContext.selected?.run_id, runId);
   assert.equal(expectedDetectionContext.selected?.behavior_id, "sandbox.fixture.create.v1");
