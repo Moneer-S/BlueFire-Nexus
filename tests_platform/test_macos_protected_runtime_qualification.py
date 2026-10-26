@@ -450,7 +450,9 @@ def test_child_cli_error_keeps_only_allowlisted_setup_stage():
                 "error": {
                     "code": "command_failed",
                     "message": "The protected macOS setup is unavailable.",
-                    "setup_stage": "namespace_creation",
+                    "setup_stage": "package_import_custody",
+                    "setup_site": "package_acl_policy",
+                    "setup_offset": 33,
                     "details": {"path": "/private/var/db/private-workspace"},
                 }
             }
@@ -463,6 +465,34 @@ def test_child_cli_error_keeps_only_allowlisted_setup_stage():
                     "code": "command_failed",
                     "message": "The protected macOS setup is unavailable.",
                     "setup_stage": "/private/var/db/private-workspace",
+                    "setup_site": "/private/var/db/private-workspace",
+                    "setup_offset": 999,
+                }
+            }
+        )
+    )
+    invalid_offset = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The protected macOS setup is unavailable.",
+                    "setup_stage": "package_import_custody",
+                    "setup_site": "package_acl_policy",
+                    "setup_offset": 999,
+                }
+            }
+        )
+    )
+    bool_offset = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The protected macOS setup is unavailable.",
+                    "setup_stage": "package_import_custody",
+                    "setup_site": "package_acl_policy",
+                    "setup_offset": True,
                 }
             }
         )
@@ -471,13 +501,26 @@ def test_child_cli_error_keeps_only_allowlisted_setup_stage():
     assert parsed == {
         "error_code": "command_failed",
         "error_class": "protected_setup_unavailable",
-        "setup_stage": "namespace_creation",
+        "setup_stage": "package_import_custody",
+        "setup_site": "package_acl_policy",
+        "setup_offset": 33,
     }
     assert unknown_stage == {
         "error_code": "command_failed",
         "error_class": "protected_setup_unavailable",
     }
+    assert invalid_offset == {
+        "error_code": "command_failed",
+        "error_class": "protected_setup_unavailable",
+        "setup_stage": "package_import_custody",
+    }
+    assert bool_offset == {
+        "error_code": "command_failed",
+        "error_class": "protected_setup_unavailable",
+        "setup_stage": "package_import_custody",
+    }
     assert local.MACOS_SETUP_DIAGNOSTIC_STAGES == lifecycle._SAFE_SETUP_STAGES
+    assert local.MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS == lifecycle._SAFE_SETUP_SITE_OFFSETS
 
 
 def test_child_cli_error_redacts_unclassified_message_and_rejects_other_codes():
@@ -601,6 +644,8 @@ def test_readiness_failure_diagnostics_keep_specific_stage_and_fixed_fields_only
             "error_code": "command_failed",
             "error_class": "unclassified_command_failure",
             "setup_stage": "native_runner_initialization",
+            "setup_site": "package_acl_policy",
+            "setup_offset": 33,
             "message": "/private/var/db/private-workspace",
         },
     )
@@ -634,3 +679,27 @@ def test_readiness_diagnostics_fall_back_on_malformed_field_types():
     )
 
     assert diagnostics == {"failure_stage": "readiness_wait"}
+
+
+def test_readiness_diagnostics_keep_only_a_known_package_site_and_bounded_offset():
+    diagnostics = lifecycle._safe_readiness_diagnostics(
+        "child_exited_before_readiness",
+        {},
+        {
+            "error_code": "command_failed",
+            "error_class": "protected_setup_unavailable",
+            "setup_stage": "package_import_custody",
+            "setup_site": "package_acl_policy",
+            "setup_offset": 33,
+            "raw_message": "private path and capability data",
+        },
+    )
+
+    assert diagnostics == {
+        "failure_stage": "child_exited_before_readiness",
+        "error_code": "command_failed",
+        "error_class": "protected_setup_unavailable",
+        "setup_stage": "package_import_custody",
+        "setup_site": "package_acl_policy",
+        "setup_offset": 33,
+    }

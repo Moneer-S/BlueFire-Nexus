@@ -8,6 +8,7 @@ import os
 import stat
 import sys
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from bluefire import cli
 from bluefire import macos_file_access_local as local
 from bluefire import macos_file_access_peer as peer
+from bluefire import macos_file_access_workspace_validation as validation
 
 
 def test_fixed_local_config_is_no_model_approved_and_exactly_scoped():
@@ -299,6 +301,58 @@ def test_setup_failure_carries_only_a_fixed_operation_stage():
         local._at_setup_stage("/private/path", lambda: None)
 
 
+def test_package_import_failure_site_uses_only_fixed_code_and_bounded_offsets():
+    def raise_on_relative_package_root():
+        validation._parents(Path("relative/private-root"))
+
+    with pytest.raises(RuntimeError) as caught:
+        raise_on_relative_package_root()
+    diagnostic = local._package_import_failure_site(
+        caught.value, raise_on_relative_package_root.__code__, validation
+    )
+
+    assert diagnostic == ("package_ancestor_path", 1)
+    assert str(Path("relative/private-root")) not in json.dumps(diagnostic)
+
+    with pytest.raises(local.MacOSSetupFailure) as wrapped:
+        local._at_setup_stage(
+            "package_import_custody",
+            raise_on_relative_package_root,
+            failure_site=lambda exc: local._package_import_failure_site(
+                exc, raise_on_relative_package_root.__code__, validation
+            ),
+        )
+    assert wrapped.value.safe_setup_site == "package_ancestor_path"
+    assert wrapped.value.safe_setup_offset == 1
+
+    ranges = local._package_import_site_ranges(raise_on_relative_package_root.__code__, validation)
+    matched, out_of_bounds = local._package_import_site_for_frame(
+        validation._parents.__code__, local._MAX_PACKAGE_SETUP_OFFSET + 1, ranges
+    )
+    unknown_matched, unknown = local._package_import_site_for_frame(
+        (lambda: None).__code__, 1, ranges
+    )
+    assert matched and out_of_bounds is None
+    assert not unknown_matched and unknown is None
+
+
+def test_setup_site_callback_failure_preserves_original_setup_error():
+    def fail_operation():
+        raise RuntimeError("original guarded failure")
+
+    def fail_diagnostics(_exc):
+        raise ValueError("private diagnostic detail")
+
+    with pytest.raises(local.MacOSSetupFailure) as caught:
+        local._at_setup_stage(
+            "package_import_custody", fail_operation, failure_site=fail_diagnostics
+        )
+
+    assert str(caught.value) == "original guarded failure"
+    assert caught.value.safe_setup_stage == "package_import_custody"
+    assert not hasattr(caught.value, "safe_setup_site")
+
+
 def test_cli_includes_setup_stage_only_for_typed_macos_setup_failure(monkeypatch):
     args = ["runner", "macos-file-setup", "--confirm-create-generated-workspace"]
     monkeypatch.setattr(
@@ -306,7 +360,10 @@ def test_cli_includes_setup_stage_only_for_typed_macos_setup_failure(monkeypatch
         "_execute",
         lambda _args: (_ for _ in ()).throw(
             local.MacOSSetupFailure(
-                "namespace_creation", "The protected macOS setup is unavailable."
+                "package_import_custody",
+                "The protected macOS setup is unavailable.",
+                setup_site="package_acl_policy",
+                setup_offset=33,
             )
         ),
     )
@@ -320,7 +377,27 @@ def test_cli_includes_setup_stage_only_for_typed_macos_setup_failure(monkeypatch
         "error": {
             "code": "command_failed",
             "message": "The protected macOS setup is unavailable.",
-            "setup_stage": "namespace_creation",
+            "setup_stage": "package_import_custody",
+            "setup_site": "package_acl_policy",
+            "setup_offset": 33,
+        }
+    }
+
+    malformed = local.MacOSSetupFailure(
+        "package_import_custody", "The protected macOS setup is unavailable."
+    )
+    malformed.safe_setup_site = "/private/var/db/private-workspace"
+    malformed.safe_setup_offset = 999
+    monkeypatch.setattr(cli, "_execute", lambda _args: (_ for _ in ()).throw(malformed))
+    output = io.StringIO()
+    with redirect_stdout(output):
+        result = cli.main(args)
+    assert result == 2
+    assert json.loads(output.getvalue()) == {
+        "error": {
+            "code": "command_failed",
+            "message": "The protected macOS setup is unavailable.",
+            "setup_stage": "package_import_custody",
         }
     }
 

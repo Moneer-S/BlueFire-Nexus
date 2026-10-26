@@ -1059,6 +1059,9 @@ def main(
             failure_type = getattr(module, "MacOSSetupFailure", None)
             stage = getattr(exc, "safe_setup_stage", None)
             allowed_stages = getattr(module, "MACOS_SETUP_DIAGNOSTIC_STAGES", ())
+            setup_site = getattr(exc, "safe_setup_site", None)
+            setup_offset = getattr(exc, "safe_setup_offset", None)
+            allowed_site_offsets = getattr(module, "MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS", {})
             if (
                 isinstance(failure_type, type)
                 and isinstance(exc, failure_type)
@@ -1066,6 +1069,14 @@ def main(
                 and stage in allowed_stages
             ):
                 error["setup_stage"] = stage
+                if (
+                    stage == "package_import_custody"
+                    and type(setup_site) is str
+                    and type(setup_offset) is int
+                    and setup_offset in allowed_site_offsets.get(setup_site, ())
+                ):
+                    error["setup_site"] = setup_site
+                    error["setup_offset"] = setup_offset
         _json({"error": error})
         return 2
     except KeyboardInterrupt:
