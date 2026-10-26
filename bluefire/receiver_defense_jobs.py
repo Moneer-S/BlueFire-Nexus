@@ -12,6 +12,8 @@ from .job_runtime import JobResult, JobRuntimeError
 from .product_store_errors import ProductStoreError
 from .receiver_defense_context import OWNER_KIND, PREPARE_KIND, context
 from .receiver_defense_ownership import ReceiverOwners
+from .receiver_session import PREPARATION_STAGES
+from .receiver_session_contract import ReceiverSessionError
 from .util import content_hash
 
 
@@ -269,8 +271,20 @@ class ReceiverDefenseJobs:
             self.owners.current(ctx.job_id, session)
             records.update(self.store, ctx.job_id, {"preparation": prepared}, active=True)
             return JobResult(progress={"phase": "native_review_ready"})
-        except BaseException:
+        except BaseException as error:
             self.owners.close(ctx.job_id)
+            stage = error.preparation_stage if type(error) is ReceiverSessionError else None
+            if stage in PREPARATION_STAGES:
+                try:
+                    records.update(
+                        self.store,
+                        ctx.job_id,
+                        {"prepare_failure_stage": stage},
+                        active=True,
+                    )
+                except Exception:
+                    # Keep the original preparation failure if diagnostic persistence fails.
+                    pass
             raise
 
     def baseline(self, parent):

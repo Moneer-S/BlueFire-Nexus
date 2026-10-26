@@ -25,7 +25,7 @@ from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ProductStoreError
 from bluefire.receiver_defense_jobs import ReceiverDefenseJobs
 from bluefire.receiver_policy import ReceiverContentPolicy
-from bluefire.receiver_session_contract import prepare_frame, ready_binding
+from bluefire.receiver_session_contract import ReceiverSessionError, prepare_frame, ready_binding
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
 from tests_platform.seed_timing import observe_service_seed
@@ -400,6 +400,43 @@ def test_saved_graph_change_is_refused_without_receiver_prepare(setup):
     with pytest.raises(APIError):
         service.receiver_defense_context(stale)
     assert not sessions and not access.calls
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected"),
+    [("armed_read", "armed_read"), ("/private/path", None)],
+)
+def test_receiver_prepare_failure_persists_only_allowlisted_stage(setup, stage, expected):
+    service, _access, _runner, _sessions, request = setup
+    current = service.receiver_defense_context(request)
+    parent = service.submit_receiver_defense(
+        {
+            **request,
+            "submission_id": str(uuid.uuid4()),
+            "context_digest": current["context_digest"],
+        }
+    )["job"]
+    assert service.job_controller.wait(parent["job_id"], timeout=10)["state"] == "completed"
+
+    def fail_prepare(_policy_id, *, port):
+        del port
+        error = ReceiverSessionError("private worker startup detail")
+        error.preparation_stage = stage
+        raise error
+
+    service.receiver_defense.owners.factory = fail_prepare
+    submission = {
+        "submission_id": str(uuid.uuid4()),
+        "phase": "baseline",
+        "reviewed_by": "Reviewer",
+    }
+    prepare_id = "job-" + uuid.UUID(submission["submission_id"]).hex
+    service.prepare_receiver_defense(parent["job_id"], submission)
+    failed = service.job_controller.wait(prepare_id, timeout=10)
+    assert failed["state"] == "failed"
+    assert failed["error"]["exception_type"] == "ReceiverSessionError"
+    assert failed["progress"].get("prepare_failure_stage") == expected
+    assert "private worker startup detail" not in str(failed["progress"])
 
 
 class _PublicationDiagnostic:

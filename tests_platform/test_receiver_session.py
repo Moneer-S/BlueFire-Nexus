@@ -129,6 +129,88 @@ def test_frame_parser_rejects_extra_fields_duplicate_fields_and_truncation():
         validate_terminal(terminal, binding, task)
 
 
+def test_prepare_failure_records_fixed_generation_frame_stage(monkeypatch):
+    monkeypatch.setattr(session_module.sys, "platform", "linux")
+    monkeypatch.setattr(session_module.LinuxPrivateProcessContainment, "available", lambda: True)
+    monkeypatch.setattr(
+        session_module,
+        "prepare_frame",
+        lambda **_kwargs: (_ for _ in ()).throw(ReceiverSessionError("private frame detail")),
+    )
+    owners = []
+    with pytest.raises(ReceiverSessionError) as caught:
+        OwnedReceiverSession.prepare(REDACTED_ONLY_POLICY, _owner_sink=owners)
+    assert len(owners) == 1
+    assert caught.value.preparation_stage == "generation_frame"
+    assert caught.value.preparation_stage in session_module.PREPARATION_STAGES
+
+
+@pytest.mark.parametrize(("failure_call", "expected_stage"), [(1, "armed_read"), (2, "ready_read")])
+def test_prepare_read_diagnostics_keep_armed_and_ready_boundaries(
+    monkeypatch, failure_call, expected_stage
+):
+    monkeypatch.setattr(session_module.sys, "platform", "linux")
+    monkeypatch.setattr(session_module.LinuxPrivateProcessContainment, "available", lambda: True)
+    monkeypatch.setattr(session_module, "worker_generation", lambda: GENERATION)
+
+    class FakeContainment:
+        @staticmethod
+        def available():
+            return True
+
+        def register(self, _process):
+            pass
+
+        def process_identity(self, _pid):
+            return ("identity", "123456")
+
+        def was_released(self, _process):
+            return True
+
+        def contains(self, _process):
+            return False
+
+        def release(self, _process, *, terminate):
+            return terminate
+
+    monkeypatch.setattr(session_module, "LinuxPrivateProcessContainment", FakeContainment)
+    process = SimpleNamespace(pid=901, returncode=0, stdin=Stream(), stdout=Stream())
+
+    def spawn(_launch_id, sink):
+        sink.append(process)
+        return process
+
+    monkeypatch.setattr(session_module, "_spawn_owned_worker", spawn)
+    monkeypatch.setattr(session_module, "write_frame", lambda *_args: None)
+    calls = 0
+
+    def read(_descriptor, *, deadline_ns):
+        nonlocal calls
+        calls += 1
+        if calls == failure_call:
+            raise ReceiverSessionError("private frame detail")
+        return {
+            "kind": "armed",
+            "launch_id": launch_id[0],
+            "process_id": process.pid,
+            "parent_process_id": session_module.os.getpid(),
+        }
+
+    launch_id = []
+    original_spawn = session_module._spawn_owned_worker
+
+    def capture_spawn(identifier, sink):
+        launch_id.append(identifier)
+        return original_spawn(identifier, sink)
+
+    monkeypatch.setattr(session_module, "_spawn_owned_worker", capture_spawn)
+    monkeypatch.setattr(session_module, "read_frame", read)
+    with pytest.raises(ReceiverSessionError) as caught:
+        OwnedReceiverSession.prepare(REDACTED_ONLY_POLICY)
+    assert caught.value.preparation_stage == expected_stage
+    assert calls == failure_call
+
+
 class Stream(io.BytesIO):
     def fileno(self):
         return 17

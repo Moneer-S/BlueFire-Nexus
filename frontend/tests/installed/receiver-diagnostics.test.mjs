@@ -23,6 +23,7 @@ test("projects bounded owner and preparation status plus shared preflight labels
           prepare_started: false,
           execution_started: false,
           receiver_closed: true,
+          prepare_failure_stage: "generation_frame",
           preparation: null,
           preflight_refusal: {
             status: "refused",
@@ -46,6 +47,7 @@ test("projects bounded owner and preparation status plus shared preflight labels
   assert.equal(result.receiver_job_state, "failed");
   assert.equal(result.receiver_job_error_code, "execution_callback_failed");
   assert.equal(result.receiver_job_error_type, "ReceiverSessionError");
+  assert.equal(result.receiver_prepare_failure_stage, "generation_frame");
   assert.deepEqual(result.preflight_refusal?.problem_labels, ["target_scope_outside_profile"]);
   assert.equal(result.preflight_refusal?.problem_count, 1);
   const serialized = JSON.stringify(result);
@@ -74,6 +76,7 @@ test("unknown exception class names are collapsed without changing cleanup facts
   }, "baseline");
   assert.equal(result.receiver_job_error_code, "execution_callback_failed");
   assert.equal(result.receiver_job_error_type, "other");
+  assert.equal(result.receiver_prepare_failure_stage, "missing");
   assert.equal(result.receiver_cleanup, "verified_closed");
   const serialized = JSON.stringify(result);
   assert.equal(serialized.includes("PrivatePathAndSecretCanary"), false);
@@ -109,6 +112,20 @@ test("malformed or missing owner state stays unknown without retaining extra fie
   assert.equal(result.phase_status, "missing");
   assert.equal(result.receiver_job_state, "missing");
   assert.equal(result.receiver_job_error_type, "other");
+  assert.equal(result.receiver_prepare_failure_stage, "missing");
   assert.equal(result.preflight_refusal, null);
   assert.equal(JSON.stringify(result).includes("/private"), false);
+});
+
+test("preparation-stage projection accepts only fixed stage codes", () => {
+  const base = stage => receiverPreparationDiagnostic({
+    phases: [{
+      phase: "baseline",
+      receiver_job: { progress: { prepare_failure_stage: stage } },
+    }],
+  }, "baseline");
+  assert.equal(base("armed_read").receiver_prepare_failure_stage, "armed_read");
+  assert.equal(base("ready_read").receiver_prepare_failure_stage, "ready_read");
+  assert.equal(base("/private/path").receiver_prepare_failure_stage, "other");
+  assert.equal(base("private frame contents").receiver_prepare_failure_stage, "other");
 });

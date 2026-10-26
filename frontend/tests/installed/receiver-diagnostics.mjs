@@ -27,6 +27,11 @@ const JOB_ERROR_TYPES = new Set([
   "PermissionError", "ProductStoreError", "ReceiverSessionError", "RunnerTransportError",
   "TimeoutError", "TypeError", "ValueError",
 ]);
+const PREPARATION_STAGES = [
+  "armed_read", "armed_validate", "attempt_sink", "containment_register", "deadline_check",
+  "generation_frame", "monitor_start", "pipe_check", "platform_containment", "prepared_write",
+  "process_identity", "ready_read", "ready_validate", "worker_spawn",
+];
 const PREPARE_HTTP_ERROR_CODES = new Set([
   "browser_session_required", "invalid_service_response", "receiver_defense_refused", "service_error",
 ]);
@@ -83,6 +88,7 @@ export function receiverPreparationDiagnostic(owner, phaseName, prepareHttp = nu
     receiver_job_state: enumValue(receiverJob.state, JOB_STATES),
     receiver_job_error_code: errorCode(receiverJob.error?.code, JOB_ERROR_CODES),
     receiver_job_error_type: errorType(receiverJob.error?.exception_type),
+    receiver_prepare_failure_stage: enumValue(progress.prepare_failure_stage, PREPARATION_STAGES),
     execution_job_state: enumValue(executionJob.state, JOB_STATES),
     execution_job_error_code: errorCode(executionJob.error?.code, JOB_ERROR_CODES),
     prepare_started: booleanValue(progress.prepare_started),
