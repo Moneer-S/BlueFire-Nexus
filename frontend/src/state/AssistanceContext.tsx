@@ -5,6 +5,7 @@ import { validRunDetectionSelection, type RunDetectionSelection } from "../lib/d
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 import { validGraphSelection, type GraphStepSelection, type GraphSelection } from "../lib/assistance";
 import { validFileAccessAssistanceSelection, type FileAccessAssistanceSelection } from "../lib/file-access-assistance";
+import { validComparisonAssistanceSelection, type ComparisonAssistanceSelection } from "../lib/comparison-assistance";
 
 export interface AssistanceSelection {
   runId: string;
@@ -30,7 +31,8 @@ export interface RunDetectionWorkspaceSelection { kind: "run_detection"; selecte
 export interface ReceiverWorkspaceSelection { kind: "receiver"; selected: ReceiverAssistanceSelection; title: string; manualEdits: false }
 export interface AuditWorkspaceSelection { kind: "audit"; selected: AuditAssistanceSelection; title: string; manualEdits: false }
 export interface FileAccessWorkspaceSelection { kind: "file_access"; selected: FileAccessAssistanceSelection; title: string; manualEdits: false }
-export type WorkspaceSelection = AuditWorkspaceSelection | FileAccessWorkspaceSelection | ReceiverWorkspaceSelection | AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection | RunDetectionWorkspaceSelection;
+export interface ComparisonWorkspaceSelection { kind: "comparison"; selected: ComparisonAssistanceSelection; title: string; manualEdits: false }
+export type WorkspaceSelection = AuditWorkspaceSelection | FileAccessWorkspaceSelection | ComparisonWorkspaceSelection | ReceiverWorkspaceSelection | AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection | RunDetectionWorkspaceSelection;
 const selectionKey = "bluefire.assistance.selection.v1";
 function readSelection(): WorkspaceSelection | undefined {
   try {
@@ -44,6 +46,7 @@ function readSelection(): WorkspaceSelection | undefined {
     if (value.kind === "receiver") return validReceiverAssistanceSelection(value.selected) ? value : undefined;
     if (value.kind === "audit") return validAuditAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
     if (value.kind === "file_access") return validFileAccessAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
+    if (value.kind === "comparison") return validComparisonAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
     if (value.kind === "graph" && (value.editUnavailable === undefined || (typeof value.editUnavailable === "string" && value.editUnavailable.length <= 1000)) && validGraphSelection({ kind: "graph", base_scenario: value.baseScenario, ...(value.editStep ? { edit_step: value.editStep } : {}) })) return value;
   } catch { /* Context is rechecked by the service before submission. */ }
 }
@@ -132,6 +135,16 @@ export function usePublishFileAccessSelection(selection?: FileAccessAssistanceSe
     if (!publish || !selection || !validFileAccessAssistanceSelection(selection)) return;
     const owner = Symbol("file-access-assistance");
     publish(owner, { kind: "file_access", selected: selection, title: title ?? "Saved file-access control", manualEdits: false });
+    return () => publish(owner);
+  }, [publish, selection, title]);
+}
+
+export function usePublishComparisonSelection(selection?: ComparisonAssistanceSelection, title?: string) {
+  const publish = useContext(Context)?.publish;
+  useEffect(() => {
+    if (!publish || !selection || !validComparisonAssistanceSelection(selection)) return;
+    const owner = Symbol("saved-comparison-assistance");
+    publish(owner, { kind: "comparison", selected: selection, title: title ?? "Saved comparison", manualEdits: false });
     return () => publish(owner);
   }, [publish, selection, title]);
 }

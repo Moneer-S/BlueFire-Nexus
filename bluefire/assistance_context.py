@@ -12,6 +12,9 @@ from .application_errors import APIError
 from .assistance_audit_context import KIND as AUDIT_KIND
 from .assistance_audit_context import context as audit_context
 from .assistance_audit_context import selection as audit_selection
+from .assistance_comparison_context import KIND as COMPARISON_KIND
+from .assistance_comparison_context import context as comparison_context
+from .assistance_comparison_context import selection as comparison_selection
 from .assistance_file_access_context import KIND as FILE_ACCESS_KIND
 from .assistance_file_access_context import context as file_access_context
 from .assistance_file_access_context import selection as file_access_selection
@@ -28,10 +31,16 @@ from .graph_ai_jobs import GraphAIJobs
 from .job_runtime import RunJobController
 from .method_comparison_jobs import MethodComparisonJobs
 from .product_store import ProductStore
+from .product_store_errors import ProductStoreError
 from .registry import BehaviorRegistry
 from .util import content_hash
 
-ANALYSIS_KINDS = frozenset({AUDIT_KIND, FILE_ACCESS_KIND})
+_ANALYSIS_ADAPTERS = {
+    AUDIT_KIND: (audit_selection, audit_context),
+    FILE_ACCESS_KIND: (file_access_selection, file_access_context),
+    COMPARISON_KIND: (comparison_selection, comparison_context),
+}
+ANALYSIS_KINDS = frozenset(_ANALYSIS_ADAPTERS)
 
 
 class AssistanceContext(Protocol):
@@ -54,6 +63,8 @@ class AssistanceContext(Protocol):
 
     def _runtime_ai(self) -> AIConfig: ...
 
+    def comparison_snapshot(self, snapshot_id: str) -> Mapping[str, Any]: ...
+
 
 LIMITATIONS = [
     "Assistance selects existing product capabilities; a suggestion is not a successful experiment.",
@@ -71,8 +82,7 @@ def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
         "saved_graph",
         "saved_scenario",
         "run_detection",
-        AUDIT_KIND,
-        FILE_ACCESS_KIND,
+        *ANALYSIS_KINDS,
         *RECEIVER_KINDS,
     }:
         return request
@@ -90,8 +100,7 @@ def is_graph(request: Mapping[str, Any]) -> bool:
             "saved_graph",
             "saved_scenario",
             "run_detection",
-            AUDIT_KIND,
-            FILE_ACCESS_KIND,
+            *ANALYSIS_KINDS,
             *RECEIVER_KINDS,
         }
     )
@@ -115,16 +124,18 @@ def is_analysis_only(request):
 
 def analysis_selection(value):
     """Validate the exact saved binding without flattening the durable selection."""
-    return (file_access_selection if value.get("kind") == FILE_ACCESS_KIND else audit_selection)(
-        value
-    )
+    adapter = _ANALYSIS_ADAPTERS.get(value.get("kind"))
+    if adapter is None:
+        raise ProductStoreError("Select an exact saved analysis context.")
+    return adapter[0](value)
 
 
 def analysis_context(service, chosen):
     """Reuse the read-only source adapters for capability-free explanations."""
-    return (file_access_context if chosen.get("kind") == FILE_ACCESS_KIND else audit_context)(
-        service, chosen
-    )
+    adapter = _ANALYSIS_ADAPTERS.get(chosen.get("kind"))
+    if adapter is None:
+        raise ProductStoreError("Select an exact saved analysis context.")
+    return adapter[1](service, chosen)
 
 
 def fresh_analysis_context(service, chosen, captured):

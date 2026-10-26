@@ -273,6 +273,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         comparison_snapshot_prefix = comparison_snapshots_path + "/"
         if path.startswith(comparison_snapshot_prefix):
             snapshot_id = path[len(comparison_snapshot_prefix) :]
+            if re.fullmatch(r"run-comparison-[0-9a-f]{64}/assistant-context", snapshot_id):
+                if self._routes._management_query_free():
+                    self._dispatch(
+                        lambda: self.platform_server.service.comparison_assistance_context(
+                            snapshot_id.split("/")[0]
+                        )
+                    )
+                return
             if not snapshot_id or "/" in snapshot_id:
                 self._error(
                     HTTPStatus.NOT_FOUND,

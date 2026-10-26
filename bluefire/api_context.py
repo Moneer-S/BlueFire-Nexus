@@ -457,6 +457,9 @@ class PlatformService(Protocol):
     def comparison_snapshot(self, snapshot_id: str) -> JsonResult:
         """Reopen one saved comparison and report current source integrity."""
 
+    def comparison_assistance_context(self, snapshot_id: str) -> JsonResult:
+        """Explain one immutable comparison through a bounded analysis-only context."""
+
 
 class RouteRequest(Protocol):
     """Only the request path and error response are needed to parse routes."""
