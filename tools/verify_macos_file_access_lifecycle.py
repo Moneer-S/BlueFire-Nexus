@@ -172,6 +172,9 @@ _SAFE_NATIVE_STARTUP_EXIT_LABELS = frozenset(
         "runtime_supported_check",
         "initial_clock_or_deadline",
         "initial_descriptor_inventory",
+        "initial_descriptor_inventory_query",
+        "initial_descriptor_inventory_rows",
+        "initial_descriptor_inventory_standard_streams",
         "readonly_descriptor",
         "credential_selection",
         "post_drop_descriptor_inventory",
@@ -188,6 +191,9 @@ _SAFE_NATIVE_STARTUP_EXIT_CODES = {
     85: "post_drop_descriptor_inventory",
     86: "initial_resource_validation",
     87: "channel_initialization",
+    88: "initial_descriptor_inventory_query",
+    89: "initial_descriptor_inventory_rows",
+    90: "initial_descriptor_inventory_standard_streams",
 }
 _SAFE_NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS = frozenset(
     {

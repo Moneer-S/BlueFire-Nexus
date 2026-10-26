@@ -13,6 +13,9 @@ NATIVE_STARTUP_EXIT_LABELS = {
     85: "post_drop_descriptor_inventory",
     86: "initial_resource_validation",
     87: "channel_initialization",
+    88: "initial_descriptor_inventory_query",
+    89: "initial_descriptor_inventory_rows",
+    90: "initial_descriptor_inventory_standard_streams",
 }
 NATIVE_STARTUP_EXIT_ROLES = ("reader", "owner", "control")
 NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS = frozenset(

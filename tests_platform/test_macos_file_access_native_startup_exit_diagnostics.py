@@ -58,7 +58,7 @@ def test_only_exact_reserved_reaped_native_code_maps_to_fixed_label(monkeypatch,
     assert original.retained_native_startup_exits() == {"owner": label}
 
 
-@pytest.mark.parametrize("code", [None, False, True, 0, 2, 3, 4, -15, 79, 88, "80"])
+@pytest.mark.parametrize("code", [None, False, True, 0, 2, 3, 4, -15, 79, 91, "80"])
 def test_unavailable_generic_signal_unknown_and_bool_codes_have_no_cause(monkeypatch, code):
     retained = _worker(monkeypatch, code)
     original = _creator({"reader": retained})
@@ -71,7 +71,7 @@ def test_unavailable_generic_signal_unknown_and_bool_codes_have_no_cause(monkeyp
     [
         (0, {"status": "clean_exit", "returncode": 0}),
         (2, {"status": "other_exit", "returncode": 2}),
-        (88, {"status": "other_exit", "returncode": 88}),
+        (91, {"status": "other_exit", "returncode": 91}),
         (
             84,
             {
@@ -262,27 +262,54 @@ def _cli_error(monkeypatch, failure):
     return json.loads(output.getvalue())["error"]
 
 
+@pytest.mark.parametrize(
+    "code,label",
+    [
+        (88, "initial_descriptor_inventory_query"),
+        (89, "initial_descriptor_inventory_rows"),
+        (90, "initial_descriptor_inventory_standard_streams"),
+    ],
+)
+def test_inventory_substage_labels_cross_cli_and_verifier(monkeypatch, code, label):
+    retained = _worker(monkeypatch, code)
+    original = _creator({"reader": retained})
+    original._retired_workers_closed = True
+    failure = local.MacOSSetupFailure(
+        "namespace_creation", "The original sealed Darwin namespace is unavailable."
+    )
+    local._attach_retired_native_startup_exits(failure, original, {"workers_closed": True})
+
+    error = _cli_error(monkeypatch, failure)
+    expected_exit = {"reader": label}
+    assert error["native_startup_exits"] == expected_exit
+    parsed = verifier._parse_child_cli_error(json.dumps({"error": error}))
+    assert parsed["native_startup_exits"] == expected_exit
+    readiness = verifier._safe_readiness_diagnostics("child_exited_before_readiness", {}, parsed)
+    assert readiness["native_startup_exits"] == expected_exit
+    assert code != 0
+
+
 def test_cli_and_verifier_independently_revalidate_only_fixed_labels(monkeypatch):
     failure = local.MacOSSetupFailure(
         "namespace_creation", "The original sealed Darwin namespace is unavailable."
     )
-    failure.safe_native_startup_exits = {"reader": "initial_resource_validation"}
+    failure.safe_native_startup_exits = {"reader": "initial_descriptor_inventory_rows"}
     failure.safe_native_startup_statuses = {
         "reader": {
             "status": "reserved_stage_exit",
-            "returncode": 86,
-            "label": "initial_resource_validation",
+            "returncode": 89,
+            "label": "initial_descriptor_inventory_rows",
         },
         "owner": {"status": "other_exit", "returncode": 2},
     }
     error = _cli_error(monkeypatch, failure)
-    assert error["native_startup_exits"] == {"reader": "initial_resource_validation"}
+    assert error["native_startup_exits"] == {"reader": "initial_descriptor_inventory_rows"}
     assert error["native_startup_statuses"] == failure.safe_native_startup_statuses
     parsed = verifier._parse_child_cli_error(json.dumps({"error": error}))
-    assert parsed["native_startup_exits"] == {"reader": "initial_resource_validation"}
+    assert parsed["native_startup_exits"] == {"reader": "initial_descriptor_inventory_rows"}
     assert parsed["native_startup_statuses"] == failure.safe_native_startup_statuses
     readiness = verifier._safe_readiness_diagnostics("child_exited_before_readiness", {}, parsed)
-    assert readiness["native_startup_exits"] == {"reader": "initial_resource_validation"}
+    assert readiness["native_startup_exits"] == {"reader": "initial_descriptor_inventory_rows"}
     assert readiness["native_startup_statuses"] == failure.safe_native_startup_statuses
 
     no_reserved_exit = local.MacOSSetupFailure(

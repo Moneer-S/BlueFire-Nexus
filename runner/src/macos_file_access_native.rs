@@ -17,12 +17,16 @@ pub(super) struct Recipe {
 pub(super) enum StartupFailureStage {
     RuntimeSupportedCheck,
     InitialClockOrDeadline,
+    #[cfg(test)]
     InitialDescriptorInventory,
     ReadonlyDescriptor,
     CredentialSelection,
     PostDropDescriptorInventory,
     InitialResourceValidation,
     ChannelInitialization,
+    InitialDescriptorInventoryQuery,
+    InitialDescriptorInventoryRows,
+    InitialDescriptorInventoryStandardStreams,
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -31,12 +35,35 @@ impl StartupFailureStage {
         match self {
             Self::RuntimeSupportedCheck => 80,
             Self::InitialClockOrDeadline => 81,
+            #[cfg(test)]
             Self::InitialDescriptorInventory => 82,
             Self::ReadonlyDescriptor => 83,
             Self::CredentialSelection => 84,
             Self::PostDropDescriptorInventory => 85,
             Self::InitialResourceValidation => 86,
             Self::ChannelInitialization => 87,
+            Self::InitialDescriptorInventoryQuery => 88,
+            Self::InitialDescriptorInventoryRows => 89,
+            Self::InitialDescriptorInventoryStandardStreams => 90,
+        }
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DescriptorInventoryFailure {
+    QueryResultShape,
+    ExpectedRowsAndTypes,
+    StandardStreams,
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+impl DescriptorInventoryFailure {
+    pub(super) const fn startup_stage(self) -> StartupFailureStage {
+        match self {
+            Self::QueryResultShape => StartupFailureStage::InitialDescriptorInventoryQuery,
+            Self::ExpectedRowsAndTypes => StartupFailureStage::InitialDescriptorInventoryRows,
+            Self::StandardStreams => StartupFailureStage::InitialDescriptorInventoryStandardStreams,
         }
     }
 }
@@ -535,7 +562,11 @@ mod darwin {
         Ok(())
     }
 
-    fn descriptor_inventory(held: i32, channel: i32, read: Option<i32>) -> Result<(), ()> {
+    fn descriptor_inventory(
+        held: i32,
+        channel: i32,
+        read: Option<i32>,
+    ) -> Result<(), super::DescriptorInventoryFailure> {
         let mut rows = unsafe { std::mem::zeroed::<[FdInfo; 16]>() };
         let bytes = unsafe {
             proc_pidinfo(
@@ -550,7 +581,7 @@ mod darwin {
             || bytes as usize >= size_of::<[FdInfo; 16]>()
             || !(bytes as usize).is_multiple_of(size_of::<FdInfo>())
         {
-            return Err(());
+            return Err(super::DescriptorInventoryFailure::QueryResultShape);
         }
         let rows = &rows[..bytes as usize / size_of::<FdInfo>()];
         super::inventory(
@@ -561,20 +592,22 @@ mod darwin {
             held,
             channel,
             read,
-        )?;
+        )
+        .map_err(|_| super::DescriptorInventoryFailure::ExpectedRowsAndTypes)?;
         let mut null = unsafe { std::mem::zeroed::<libc::stat>() };
         if unsafe { libc::lstat(c"/dev/null".as_ptr(), &mut null) } != 0
             || null.st_mode & libc::S_IFMT != libc::S_IFCHR
         {
-            return Err(());
+            return Err(super::DescriptorInventoryFailure::StandardStreams);
         }
         for fd in 0..=2 {
-            let meta = metadata(fd)?;
+            let meta =
+                metadata(fd).map_err(|_| super::DescriptorInventoryFailure::StandardStreams)?;
             let kind = meta.mode() & libc::S_IFMT as u32;
             if kind != libc::S_IFIFO as u32
                 && (kind != libc::S_IFCHR as u32 || meta.rdev() != null.st_rdev as u64)
             {
-                return Err(());
+                return Err(super::DescriptorInventoryFailure::StandardStreams);
             }
         }
         Ok(())
@@ -593,7 +626,7 @@ mod darwin {
             self.held.ok_or(())
         }
         fn inventory(&self) -> Result<(), ()> {
-            descriptor_inventory(self.held()?, self.channel, self.read_fd)
+            descriptor_inventory(self.held()?, self.channel, self.read_fd).map_err(|_| ())
         }
     }
 
@@ -868,10 +901,8 @@ mod darwin {
             cleanup_unknown: false,
         };
         let startup = (|| -> Result<(), super::StartupFailureStage> {
-            super::startup_step(
-                super::StartupFailureStage::InitialDescriptorInventory,
-                backend.inventory(),
-            )?;
+            descriptor_inventory(held, channel_fd, None)
+                .map_err(super::DescriptorInventoryFailure::startup_stage)?;
             super::startup_step(
                 super::StartupFailureStage::ReadonlyDescriptor,
                 readonly(held),

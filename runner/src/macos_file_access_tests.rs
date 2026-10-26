@@ -27,11 +27,14 @@ fn native_startup_failure_codes_are_reserved_and_stage_propagation_is_closed() {
         (Stage::PostDropDescriptorInventory, 85),
         (Stage::InitialResourceValidation, 86),
         (Stage::ChannelInitialization, 87),
+        (Stage::InitialDescriptorInventoryQuery, 88),
+        (Stage::InitialDescriptorInventoryRows, 89),
+        (Stage::InitialDescriptorInventoryStandardStreams, 90),
     ];
     let mut codes = Vec::new();
     for (stage, code) in stages {
         assert_eq!(stage.exit_code(), code);
-        assert!((80..=87).contains(&code));
+        assert!((80..=90).contains(&code));
         assert!(![0, 2, 3, 4].contains(&code));
         assert_eq!(native::startup_step(stage, Ok(7)), Ok(7));
         assert_eq!(native::startup_step(stage, Err::<(), ()>(())), Err(stage));
@@ -39,7 +42,28 @@ fn native_startup_failure_codes_are_reserved_and_stage_propagation_is_closed() {
     }
     codes.sort_unstable();
     codes.dedup();
-    assert_eq!(codes, (80..=87).collect::<Vec<_>>());
+    assert_eq!(codes, (80..=90).collect::<Vec<_>>());
+}
+
+#[test]
+fn descriptor_inventory_failure_categories_map_to_fixed_nonzero_startup_codes() {
+    use native::DescriptorInventoryFailure as Failure;
+
+    let categories = [
+        (Failure::QueryResultShape, 88),
+        (Failure::ExpectedRowsAndTypes, 89),
+        (Failure::StandardStreams, 90),
+    ];
+    for (category, code) in categories {
+        let stage = category.startup_stage();
+        assert_eq!(stage.exit_code(), code);
+        assert_ne!(stage.exit_code(), 0);
+        assert_eq!(native::startup_step(stage, Err::<(), ()>(())), Err(stage));
+    }
+    assert_eq!(
+        native::StartupFailureStage::InitialDescriptorInventory.exit_code(),
+        82
+    );
 }
 
 fn request(operation: &str) -> Request {
