@@ -686,7 +686,7 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   assert.ok(evaluationsAgain.evaluations?.some(item => item.evaluation_id === evaluationId && item.source?.run_id === runId && item.development_case === true));
   stage = "detection-saved-evaluation-rendered-reopen";
   await page.getByRole("tab", { name: "Run evaluations", exact: true }).click();
-  const retainedEvaluationCard = page.locator(".evaluation-history article").filter({ hasText: evaluationId });
+  const retainedEvaluationCard = page.locator("article.detection-evaluation-report").filter({ hasText: evaluationId });
   await retainedEvaluationCard.waitFor({ state: "visible", timeout: remainingJourneyMs(10_000) });
   assert.equal(await retainedEvaluationCard.count(), 1, "The exact retained evaluation must appear once in the rendered history.");
   const developmentEvidence = retainedEvaluationCard.getByText("Development evidence", { exact: true });
@@ -717,6 +717,7 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   const originalViewport = page.viewportSize();
   try {
     for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
+      stage = `detection-evaluation-layout-${viewport.width}x${viewport.height}`;
       await page.setViewportSize(viewport);
       await resultHeading.evaluate(element => element.scrollIntoView({ block: "start", inline: "nearest", behavior: "instant" }));
       const layout = await retainedEvaluationCard.evaluate(card => {
@@ -735,10 +736,11 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
           heading_unobscured: hit === heading || heading.contains(hit),
         };
       });
-      assert.ok(layout?.facts_span_card && layout.facts_contained, "Evaluation facts must use the report width, not collapse into a nested grid column.");
-      assert.ok(layout.heading_in_view && layout.heading_unobscured, "The measured conclusion must be visible and unobscured before capture.");
-      report.detection_reopened_layout.push({ viewport, ...layout });
+      report.detection_reopened_layout.push({ viewport, ...(layout ?? { measurement_available: false }) });
       await captureAssistantView(viewport.width === 1440 ? "assistant-generated-fixture-detection-result-reopened" : "assistant-generated-fixture-detection-result-reopened-1366x768");
+      assert.ok(layout?.facts_span_card && layout.facts_contained, "Evaluation facts must use the report width, not collapse into a nested grid column.");
+      assert.ok(layout.heading_in_view, "The measured conclusion must be inside the viewport.");
+      assert.ok(layout.heading_unobscured, "The measured conclusion must not be covered by another surface.");
     }
   } finally {
     await page.setViewportSize(originalViewport);
