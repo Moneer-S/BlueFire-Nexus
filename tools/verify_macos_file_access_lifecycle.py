@@ -161,8 +161,7 @@ def _parse_child_cli_error(raw: str) -> dict[str, str] | None:
         if (
             type(setup_site) is str
             and type(setup_offset) is int
-            and setup_offset
-            in _SAFE_SETUP_SITE_OFFSETS.get(setup_stage, {}).get(setup_site, ())
+            and setup_offset in _SAFE_SETUP_SITE_OFFSETS.get(setup_stage, {}).get(setup_site, ())
         ):
             result["setup_site"] = setup_site
             result["setup_offset"] = setup_offset

@@ -356,9 +356,7 @@ def test_namespace_creation_failure_site_is_fixed_stage_scoped_and_deepest():
         namespace_create()
 
     creator = SimpleNamespace(
-        MacOSFileAccessCreator=SimpleNamespace(
-            create=SimpleNamespace(__func__=creator_create)
-        )
+        MacOSFileAccessCreator=SimpleNamespace(create=SimpleNamespace(__func__=creator_create))
     )
     namespace = SimpleNamespace(
         SealedMacOSNamespace=SimpleNamespace(
@@ -373,9 +371,7 @@ def test_namespace_creation_failure_site_is_fixed_stage_scoped_and_deepest():
         _validate_darwin_descriptor_security=lambda: None,
     )
     contract = SimpleNamespace(validate_credentials=lambda: None)
-    worker = SimpleNamespace(
-        MacOSFileAccessWorker=SimpleNamespace(start=lambda: None)
-    )
+    worker = SimpleNamespace(MacOSFileAccessWorker=SimpleNamespace(start=lambda: None))
 
     with pytest.raises(RuntimeError) as caught:
         creator_create()
@@ -385,14 +381,17 @@ def test_namespace_creation_failure_site_is_fixed_stage_scoped_and_deepest():
     )
     assert diagnostic is not None
     assert diagnostic[0] == "namespace_sealed_resource"
-    assert diagnostic[1] in local.MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS[
-        "namespace_creation"
-    ][diagnostic[0]]
+    assert (
+        diagnostic[1]
+        in local.MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS["namespace_creation"][diagnostic[0]]
+    )
     assert str(Path("private path and local detail")) not in json.dumps(diagnostic)
 
     failure = local.MacOSSetupFailure(
-        "namespace_creation", "The protected macOS setup is unavailable.",
-        setup_site="namespace_worker_start", setup_offset=121,
+        "namespace_creation",
+        "The protected macOS setup is unavailable.",
+        setup_site="namespace_worker_start",
+        setup_offset=121,
     )
     assert failure.safe_setup_stage == "namespace_creation"
     assert failure.safe_setup_site == "namespace_worker_start"
