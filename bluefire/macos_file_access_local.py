@@ -35,6 +35,52 @@ _SUPPORTED_METHODS = (
     "macos.file_access.close_attempt.v1",
 )
 
+MACOS_SETUP_DIAGNOSTIC_STAGES = frozenset(
+    {
+        "platform_runtime_gate",
+        "request_validation",
+        "package_import_custody",
+        "interpreter_custody",
+        "runtime_import_custody",
+        "runner_manifest",
+        "workspace_parent_reservation",
+        "protected_setup_lifecycle",
+        "local_account_inventory",
+        "active_process_inventory",
+        "temporary_identity_selection",
+        "native_resource_validation",
+        "native_runner_initialization",
+        "namespace_creation",
+        "resource_baseline_review",
+        "workspace_directory_creation",
+        "owner_service_prepare",
+        "service_startup",
+        "ui_readiness",
+    }
+)
+
+
+class MacOSSetupFailure(RuntimeError):
+    """A setup error annotated with one fixed, non-sensitive operation stage."""
+
+    def __init__(self, stage: str, message: str) -> None:
+        if stage not in MACOS_SETUP_DIAGNOSTIC_STAGES:
+            raise ValueError("unknown macOS setup diagnostic stage")
+        super().__init__(message)
+        self.safe_setup_stage = stage
+
+
+def _at_setup_stage(stage: str, operation: Callable[[], Any]) -> Any:
+    """Tag expected setup failures without retaining their underlying details."""
+    if stage not in MACOS_SETUP_DIAGNOSTIC_STAGES:
+        raise ValueError("unknown macOS setup diagnostic stage")
+    try:
+        return operation()
+    except MacOSSetupFailure:
+        raise
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        raise MacOSSetupFailure(stage, str(exc)) from None
+
 
 def _require(condition: bool, message: str = "The protected macOS setup is unavailable.") -> None:
     if not condition:
@@ -156,10 +202,10 @@ def temporary_credentials() -> tuple[dict[str, Any], dict[str, Any]]:
     No local users or groups are created. The IDs must be absent from both the
     host account databases and the live process table before any resource is made.
     """
-    used_uids, used_gids = _registered_ids()
+    used_uids, used_gids = _at_setup_stage("local_account_inventory", _registered_ids)
     used_uids.add(0)
     used_gids.add(0)
-    process_uids, process_gids = _active_ids()
+    process_uids, process_gids = _at_setup_stage("active_process_inventory", _active_ids)
     used_uids.update(process_uids)
     used_gids.update(process_gids)
     available = [
@@ -412,11 +458,13 @@ def _verified_interpreter(python: Path, validation: Any) -> str:
 
 
 def _with_setup_reservation(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-    descriptor = _acquire_setup_reservation()
+    descriptor = _at_setup_stage("workspace_parent_reservation", _acquire_setup_reservation)
     try:
         return operation()
     finally:
-        _release_setup_reservation(descriptor)
+        _at_setup_stage(
+            "workspace_parent_reservation", lambda: _release_setup_reservation(descriptor)
+        )
 
 
 def _fresh_shutdown_binding(creator: Any) -> dict[str, Any] | None:
@@ -465,66 +513,103 @@ def _shutdown_projection(
 
 def run_local_supervisor(*, port: int = 0, no_browser: bool = False) -> dict[str, Any]:
     """Run the original root custodian and stop only on explicit process exit."""
-    _platform_gate()
-    _require(type(port) is int and 0 <= port <= 65535 and type(no_browser) is bool)
+    _at_setup_stage("platform_runtime_gate", _platform_gate)
+    _at_setup_stage(
+        "request_validation",
+        lambda: _require(type(port) is int and 0 <= port <= 65535 and type(no_browser) is bool),
+    )
     from . import macos_file_access_workspace
     from .api import browser_console_url
     from .macos_file_access_peer import _supported_runtime
     from .runner_bootstrap import load_runner_manifest
 
-    _require(_supported_runtime())
+    _at_setup_stage("platform_runtime_gate", lambda: _require(_supported_runtime()))
     package_module = sys.modules.get("bluefire")
-    _require(package_module is not None)
+    _at_setup_stage("package_import_custody", lambda: _require(package_module is not None))
     package_file = getattr(package_module, "__file__", None)
-    _require(type(package_file) is str and bool(package_file))
-    package_root = Path(cast(str, package_file)).resolve(strict=True).parent.parent
-    _require(package_root.name in {"site-packages", "dist-packages"})
-    validation = macos_file_access_workspace.validation
-    validation._parents(package_root)
-    source_sha256 = _walk_imports(package_root, limit=_MAX_IMPORT_FILES)
-    validation._import_inventory(
-        [str(package_root)],
-        {str(package_root / name): digest for name, digest in source_sha256.items()},
+    _at_setup_stage(
+        "package_import_custody", lambda: _require(type(package_file) is str and bool(package_file))
     )
-    python = Path(sys.executable).resolve(strict=True)
-    python_sha256 = _verified_interpreter(python, validation)
+    package_root = _at_setup_stage(
+        "package_import_custody",
+        lambda: Path(cast(str, package_file)).resolve(strict=True).parent.parent,
+    )
+    _at_setup_stage(
+        "package_import_custody",
+        lambda: _require(package_root.name in {"site-packages", "dist-packages"}),
+    )
+    validation = macos_file_access_workspace.validation
+    def inventory_package_imports() -> dict[str, str]:
+        validation._parents(package_root)
+        return _walk_imports(package_root, limit=_MAX_IMPORT_FILES)
+
+    source_sha256 = _at_setup_stage("package_import_custody", inventory_package_imports)
+    _at_setup_stage(
+        "package_import_custody",
+        lambda: validation._import_inventory(
+            [str(package_root)],
+            {str(package_root / name): digest for name, digest in source_sha256.items()},
+        ),
+    )
+    python = _at_setup_stage(
+        "interpreter_custody", lambda: Path(sys.executable).resolve(strict=True)
+    )
+    python_sha256 = _at_setup_stage(
+        "interpreter_custody", lambda: _verified_interpreter(python, validation)
+    )
     # This executes the pinned interpreter as root. Its parent chain and file
     # custody are verified before the first subprocess probe.
-    runtime_import_roots = _isolated_runtime_roots(python)
+    runtime_import_roots = _at_setup_stage(
+        "runtime_import_custody", lambda: _isolated_runtime_roots(python)
+    )
     runtime_sha256: dict[str, str] = {}
     runtime_bytes = 0
-    for raw_root in runtime_import_roots:
-        root = Path(raw_root)
-        if not root.exists():
-            _require(root.suffix == ".zip")
-            continue
-        if root.is_file():
-            runtime_sha256[str(root)] = _hash_file(root)
-            runtime_bytes += root.stat().st_size
-        else:
-            for relative, digest in _walk_imports(root, limit=4096).items():
-                path = root / relative
-                runtime_sha256[str(path)] = digest
-                runtime_bytes += path.stat().st_size
-        _require(len(runtime_sha256) <= 4096 and runtime_bytes <= _MAX_IMPORT_BYTES)
-    validation._import_inventory(runtime_import_roots, runtime_sha256)
-    manifest = load_runner_manifest(resource_root=resources.files("bluefire.native"))
-    native_resource = resources.files("bluefire.native").joinpath(manifest.filename)
-    _ensure_workspace_parent()
-    return _with_setup_reservation(
-        lambda: _run_reserved_workspace(
-            port=port,
-            no_browser=no_browser,
-            python=python,
-            python_sha256=python_sha256,
-            package_root=package_root,
-            source_sha256=source_sha256,
-            runtime_import_roots=runtime_import_roots,
-            runtime_sha256=runtime_sha256,
-            manifest=manifest,
-            native_resource=native_resource,
-            browser_console_url=browser_console_url,
-            macos_file_access_workspace=macos_file_access_workspace,
+    def inventory_runtime_imports() -> None:
+        nonlocal runtime_bytes
+        for raw_root in runtime_import_roots:
+            root = Path(raw_root)
+            if not root.exists():
+                _require(root.suffix == ".zip")
+                continue
+            if root.is_file():
+                runtime_sha256[str(root)] = _hash_file(root)
+                runtime_bytes += root.stat().st_size
+            else:
+                for relative, digest in _walk_imports(root, limit=4096).items():
+                    path = root / relative
+                    runtime_sha256[str(path)] = digest
+                    runtime_bytes += path.stat().st_size
+            _require(len(runtime_sha256) <= 4096 and runtime_bytes <= _MAX_IMPORT_BYTES)
+        validation._import_inventory(runtime_import_roots, runtime_sha256)
+
+    _at_setup_stage("runtime_import_custody", inventory_runtime_imports)
+    native_resources = _at_setup_stage(
+        "runner_manifest", lambda: resources.files("bluefire.native")
+    )
+    manifest = _at_setup_stage(
+        "runner_manifest", lambda: load_runner_manifest(resource_root=native_resources)
+    )
+    native_resource = _at_setup_stage(
+        "runner_manifest", lambda: native_resources.joinpath(manifest.filename)
+    )
+    _at_setup_stage("workspace_parent_reservation", _ensure_workspace_parent)
+    return _at_setup_stage(
+        "protected_setup_lifecycle",
+        lambda: _with_setup_reservation(
+            lambda: _run_reserved_workspace(
+                port=port,
+                no_browser=no_browser,
+                python=python,
+                python_sha256=python_sha256,
+                package_root=package_root,
+                source_sha256=source_sha256,
+                runtime_import_roots=runtime_import_roots,
+                runtime_sha256=runtime_sha256,
+                manifest=manifest,
+                native_resource=native_resource,
+                browser_console_url=browser_console_url,
+                macos_file_access_workspace=macos_file_access_workspace,
+            )
         )
     )
 
@@ -547,15 +632,22 @@ def _run_reserved_workspace(
     from . import macos_file_access_bridge, macos_file_access_creator
     from .runner_client import SubprocessRustRunner
 
-    owner_credential, reader_credential = temporary_credentials()
+    owner_credential, reader_credential = _at_setup_stage(
+        "temporary_identity_selection", temporary_credentials
+    )
     runtime_root = WORKSPACE_PARENT / ("runner-runtime-" + secrets.token_hex(16))
-    _make_directory(runtime_root, mode=0o700)
+    _at_setup_stage("workspace_directory_creation", lambda: _make_directory(runtime_root, mode=0o700))
 
     with resources.as_file(native_resource) as native_path:
         native = Path(native_path).resolve(strict=True)
-        _require(_hash_file(native) == manifest.sha256)
-        macos_file_access_workspace.validation._protected_file(native, manifest.sha256)
-        runtime = SubprocessRustRunner(native, runtime_root)
+        _at_setup_stage("native_resource_validation", lambda: _require(_hash_file(native) == manifest.sha256))
+        _at_setup_stage(
+            "native_resource_validation",
+            lambda: macos_file_access_workspace.validation._protected_file(native, manifest.sha256),
+        )
+        runtime = _at_setup_stage(
+            "native_runner_initialization", lambda: SubprocessRustRunner(native, runtime_root)
+        )
         retained_creators: list[Any] = []
         retained_owners: list[Any] = []
         creator = owner = None
@@ -569,51 +661,64 @@ def _run_reserved_workspace(
 
         signal.signal(signal.SIGTERM, stop_on_sigterm)
         try:
-            creator = macos_file_access_creator.MacOSFileAccessCreator.create(
-                runtime,
-                owner=owner_credential,
-                reader=reader_credential,
-                retained=retained_creators,
+            creator = _at_setup_stage(
+                "namespace_creation",
+                lambda: macos_file_access_creator.MacOSFileAccessCreator.create(
+                    runtime,
+                    owner=owner_credential,
+                    reader=reader_credential,
+                    retained=retained_creators,
+                ),
             )
-            binding = creator.review_context("baseline")["binding"]
+            binding = _at_setup_stage(
+                "resource_baseline_review", lambda: creator.review_context("baseline")["binding"]
+            )
             generation = binding["generation"]
             workspace_root = WORKSPACE_PARENT / generation
-            _require(not workspace_root.exists() and not workspace_root.is_symlink())
-            _make_directory(
-                workspace_root,
-                mode=0o700,
-                owner=owner_credential["effective_uid"],
-                group=owner_credential["effective_gid"],
+            def create_workspace_directories() -> None:
+                _require(not workspace_root.exists() and not workspace_root.is_symlink())
+                _make_directory(
+                    workspace_root,
+                    mode=0o700,
+                    owner=owner_credential["effective_uid"],
+                    group=owner_credential["effective_gid"],
+                )
+                _make_directory(
+                    workspace_root / "runs",
+                    mode=0o700,
+                    owner=owner_credential["effective_uid"],
+                    group=owner_credential["effective_gid"],
+                )
+                cache_parent = WORKSPACE_PARENT / "runtime-cache"
+                if cache_parent.exists() or cache_parent.is_symlink():
+                    macos_file_access_workspace.validation._directory(cache_parent)
+                    _require(stat.S_IMODE(cache_parent.lstat().st_mode) == 0o711)
+                else:
+                    _make_directory(cache_parent, mode=0o711)
+                pycache_root = cache_parent / generation
+                _make_directory(pycache_root, mode=0o755)
+
+            _at_setup_stage("workspace_directory_creation", create_workspace_directories)
+            owner = _at_setup_stage(
+                "owner_service_prepare",
+                lambda: macos_file_access_workspace.MacOSWorkspaceOwner.prepare(
+                    creator,
+                    python=python,
+                    python_sha256=python_sha256,
+                    package_root=package_root,
+                    source_sha256=source_sha256,
+                    runtime_import_roots=runtime_import_roots,
+                    runtime_sha256=runtime_sha256,
+                    workspace_root=workspace_root,
+                    config=_fixed_config(),
+                    retained=retained_owners,
+                    port=port,
+                ),
             )
-            _make_directory(
-                workspace_root / "runs",
-                mode=0o700,
-                owner=owner_credential["effective_uid"],
-                group=owner_credential["effective_gid"],
+            _at_setup_stage(
+                "service_startup", lambda: macos_file_access_bridge.start_workspace(owner)
             )
-            cache_parent = WORKSPACE_PARENT / "runtime-cache"
-            if cache_parent.exists() or cache_parent.is_symlink():
-                macos_file_access_workspace.validation._directory(cache_parent)
-                _require(stat.S_IMODE(cache_parent.lstat().st_mode) == 0o711)
-            else:
-                _make_directory(cache_parent, mode=0o711)
-            pycache_root = cache_parent / generation
-            _make_directory(pycache_root, mode=0o755)
-            owner = macos_file_access_workspace.MacOSWorkspaceOwner.prepare(
-                creator,
-                python=python,
-                python_sha256=python_sha256,
-                package_root=package_root,
-                source_sha256=source_sha256,
-                runtime_import_roots=runtime_import_roots,
-                runtime_sha256=runtime_sha256,
-                workspace_root=workspace_root,
-                config=_fixed_config(),
-                retained=retained_owners,
-                port=port,
-            )
-            macos_file_access_bridge.start_workspace(owner)
-            ready = owner.ui_readiness()
+            ready = _at_setup_stage("ui_readiness", owner.ui_readiness)
             url = browser_console_url(
                 ready["host"], ready["port"], ready["browser_bootstrap_capability"]
             )

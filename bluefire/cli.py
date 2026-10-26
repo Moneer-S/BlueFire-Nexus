@@ -1053,7 +1053,20 @@ def main(
         )
         return 2
     except (OSError, RuntimeError, ValueError) as exc:
-        _json({"error": {"code": "command_failed", "message": str(exc)}})
+        error: dict[str, Any] = {"code": "command_failed", "message": str(exc)}
+        if args.command == "runner" and args.runner_command == "macos-file-setup":
+            module = sys.modules.get(f"{__package__}.macos_file_access_local")
+            failure_type = getattr(module, "MacOSSetupFailure", None)
+            stage = getattr(exc, "safe_setup_stage", None)
+            allowed_stages = getattr(module, "MACOS_SETUP_DIAGNOSTIC_STAGES", ())
+            if (
+                isinstance(failure_type, type)
+                and isinstance(exc, failure_type)
+                and type(stage) is str
+                and stage in allowed_stages
+            ):
+                error["setup_stage"] = stage
+        _json({"error": error})
         return 2
     except KeyboardInterrupt:
         return 130

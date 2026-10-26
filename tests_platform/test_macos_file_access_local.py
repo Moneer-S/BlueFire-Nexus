@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import stat
 import sys
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 
 import pytest
@@ -279,3 +282,55 @@ def test_cli_supervisor_requires_fixed_setup_and_rejects_custom_state(monkeypatc
     args.config = "caller-config.yaml"
     with pytest.raises(ValueError, match="fixed protected product state"):
         cli._execute(args)
+
+
+def test_setup_failure_carries_only_a_fixed_operation_stage():
+    with pytest.raises(local.MacOSSetupFailure) as caught:
+        local._at_setup_stage(
+            "native_runner_initialization",
+            lambda: (_ for _ in ()).throw(RuntimeError("The protected macOS setup is unavailable.")),
+        )
+
+    assert str(caught.value) == "The protected macOS setup is unavailable."
+    assert caught.value.safe_setup_stage == "native_runner_initialization"
+    with pytest.raises(ValueError, match="unknown macOS setup diagnostic stage"):
+        local._at_setup_stage("/private/path", lambda: None)
+
+
+def test_cli_includes_setup_stage_only_for_typed_macos_setup_failure(monkeypatch):
+    args = ["runner", "macos-file-setup", "--confirm-create-generated-workspace"]
+    monkeypatch.setattr(
+        cli,
+        "_execute",
+        lambda _args: (_ for _ in ()).throw(
+            local.MacOSSetupFailure(
+                "namespace_creation", "The protected macOS setup is unavailable."
+            )
+        ),
+    )
+    output = io.StringIO()
+    with redirect_stdout(output):
+        result = cli.main(args)
+    payload = json.loads(output.getvalue())
+
+    assert result == 2
+    assert payload == {
+        "error": {
+            "code": "command_failed",
+            "message": "The protected macOS setup is unavailable.",
+            "setup_stage": "namespace_creation",
+        }
+    }
+
+    monkeypatch.setattr(
+        cli,
+        "_execute",
+        lambda _args: (_ for _ in ()).throw(RuntimeError("legacy command failure")),
+    )
+    output = io.StringIO()
+    with redirect_stdout(output):
+        result = cli.main(args)
+    assert result == 2
+    assert json.loads(output.getvalue()) == {
+        "error": {"code": "command_failed", "message": "legacy command failure"}
+    }

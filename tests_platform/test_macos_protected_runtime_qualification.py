@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from bluefire import cli
+from bluefire import macos_file_access_local as local
 from tools import provision_macos_protected_python as provision
 from tools import verify_macos_file_access_lifecycle as lifecycle
 
@@ -442,6 +443,43 @@ def test_child_cli_error_retains_only_known_safe_classification():
     }
 
 
+def test_child_cli_error_keeps_only_allowlisted_setup_stage():
+    parsed = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The protected macOS setup is unavailable.",
+                    "setup_stage": "namespace_creation",
+                    "details": {"path": "/private/var/db/private-workspace"},
+                }
+            }
+        )
+    )
+    unknown_stage = lifecycle._parse_child_cli_error(
+        json.dumps(
+            {
+                "error": {
+                    "code": "command_failed",
+                    "message": "The protected macOS setup is unavailable.",
+                    "setup_stage": "/private/var/db/private-workspace",
+                }
+            }
+        )
+    )
+
+    assert parsed == {
+        "error_code": "command_failed",
+        "error_class": "protected_setup_unavailable",
+        "setup_stage": "namespace_creation",
+    }
+    assert unknown_stage == {
+        "error_code": "command_failed",
+        "error_class": "protected_setup_unavailable",
+    }
+    assert local.MACOS_SETUP_DIAGNOSTIC_STAGES == lifecycle._SAFE_SETUP_STAGES
+
+
 def test_child_cli_error_redacts_unclassified_message_and_rejects_other_codes():
     secret_message = (
         "failed at /private/var/db/private-workspace using "
@@ -479,6 +517,7 @@ def test_stdout_reader_parses_pretty_printed_cli_error_after_eof():
             "error": {
                 "code": "command_failed",
                 "message": "The local identity inventory is unavailable.",
+            "setup_stage": "local_account_inventory",
             }
         }
     )
@@ -491,6 +530,7 @@ def test_stdout_reader_parses_pretty_printed_cli_error_after_eof():
     assert child_errors.get_nowait() == {
         "error_code": "command_failed",
         "error_class": "local_identity_inventory_unavailable",
+        "setup_stage": "local_account_inventory",
     }
 
 
@@ -560,6 +600,7 @@ def test_readiness_failure_diagnostics_keep_specific_stage_and_fixed_fields_only
         {
             "error_code": "command_failed",
             "error_class": "unclassified_command_failure",
+            "setup_stage": "native_runner_initialization",
             "message": "/private/var/db/private-workspace",
         },
     )
@@ -572,6 +613,7 @@ def test_readiness_failure_diagnostics_keep_specific_stage_and_fixed_fields_only
         "supervisor_returncode": 2,
         "error_code": "command_failed",
         "error_class": "unclassified_command_failure",
+        "setup_stage": "native_runner_initialization",
     }
 
 
@@ -584,7 +626,11 @@ def test_readiness_diagnostics_fall_back_on_malformed_field_types():
             "streams_drained": 1,
             "supervisor_returncode": True,
         },
-        {"error_code": "command_failed", "error_class": ["unsafe"]},
+        {
+            "error_code": "command_failed",
+            "error_class": ["unsafe"],
+            "setup_stage": "/private/var/db/private-workspace",
+        },
     )
 
     assert diagnostics == {"failure_stage": "readiness_wait"}

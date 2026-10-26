@@ -49,6 +49,29 @@ _KNOWN_SETUP_ERROR_CLASSES = {
 _SAFE_SETUP_ERROR_CLASSES = frozenset(_KNOWN_SETUP_ERROR_CLASSES.values()) | {
     "unclassified_command_failure"
 }
+_SAFE_SETUP_STAGES = frozenset(
+    {
+        "platform_runtime_gate",
+        "request_validation",
+        "package_import_custody",
+        "interpreter_custody",
+        "runtime_import_custody",
+        "runner_manifest",
+        "workspace_parent_reservation",
+        "protected_setup_lifecycle",
+        "local_account_inventory",
+        "active_process_inventory",
+        "temporary_identity_selection",
+        "native_resource_validation",
+        "native_runner_initialization",
+        "namespace_creation",
+        "resource_baseline_review",
+        "workspace_directory_creation",
+        "owner_service_prepare",
+        "service_startup",
+        "ui_readiness",
+    }
+)
 _READINESS_FAILURE_STAGES = frozenset(
     {
         "readiness_wait",
@@ -75,10 +98,14 @@ def _parse_child_cli_error(raw: str) -> dict[str, str] | None:
     message = error.get("message")
     if not isinstance(message, str):
         return None
-    return {
+    result = {
         "error_code": "command_failed",
         "error_class": _KNOWN_SETUP_ERROR_CLASSES.get(message, "unclassified_command_failure"),
     }
+    setup_stage = error.get("setup_stage")
+    if isinstance(setup_stage, str) and setup_stage in _SAFE_SETUP_STAGES:
+        result["setup_stage"] = setup_stage
+    return result
 
 
 def _safe_readiness_diagnostics(
@@ -116,6 +143,9 @@ def _safe_readiness_diagnostics(
     ):
         result["error_code"] = "command_failed"
         result["error_class"] = child_error["error_class"]
+        setup_stage = child_error.get("setup_stage")
+        if isinstance(setup_stage, str) and setup_stage in _SAFE_SETUP_STAGES:
+            result["setup_stage"] = setup_stage
     return result
 
 
