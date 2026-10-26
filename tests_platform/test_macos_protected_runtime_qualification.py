@@ -3,12 +3,42 @@ from __future__ import annotations
 import hashlib
 import json
 import queue
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from tools import provision_macos_protected_python as provision
 from tools import verify_macos_file_access_lifecycle as lifecycle
+
+
+def test_lifecycle_supervisor_invokes_the_executable_cli_module(tmp_path):
+    python = tmp_path / "protected" / "bin" / "python"
+    argv = lifecycle._supervisor_argv(python)
+
+    assert argv == [
+        str(python),
+        "-I",
+        "-B",
+        "-m",
+        "bluefire.cli",
+        "runner",
+        "macos-file-setup",
+        "--confirm-create-generated-workspace",
+        "--port",
+        "0",
+        "--no-browser",
+    ]
+    help_result = subprocess.run(
+        [sys.executable, "-B", "-m", "bluefire.cli", "--help"],
+        capture_output=True,
+        check=False,
+        timeout=10,
+        text=True,
+    )
+    assert help_result.returncode == 0
+    assert "usage:" in help_result.stdout.lower()
 
 
 def _wheel_row(path: Path) -> dict[str, object]:

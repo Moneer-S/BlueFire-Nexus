@@ -128,6 +128,23 @@ class SupervisorHandle:
     reader_threads: tuple[threading.Thread, threading.Thread]
 
 
+def _supervisor_argv(python: Path) -> list[str]:
+    """Build the protected supervisor command through the maintained CLI module."""
+    return [
+        str(python),
+        "-I",
+        "-B",
+        "-m",
+        "bluefire.cli",
+        "runner",
+        "macos-file-setup",
+        "--confirm-create-generated-workspace",
+        "--port",
+        "0",
+        "--no-browser",
+    ]
+
+
 def _json_request(
     host: str, port: int, method: str, path: str, token: str, body: Any = None
 ) -> tuple[int, Any]:
@@ -280,19 +297,7 @@ def _submit_file_access(
 
 def _open_supervisor(python: Path) -> tuple[SupervisorHandle, str, int, str]:
     home = python.parent.parent.parent / "home"
-    argv = [
-        str(python),
-        "-I",
-        "-B",
-        "-m",
-        "bluefire",
-        "runner",
-        "macos-file-setup",
-        "--confirm-create-generated-workspace",
-        "--port",
-        "0",
-        "--no-browser",
-    ]
+    argv = _supervisor_argv(python)
     process = subprocess.Popen(
         argv,
         cwd=home,
