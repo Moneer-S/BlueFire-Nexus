@@ -645,15 +645,17 @@ td .badge { margin-left: 6px; }
 .job-approval-controls { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.8fr) auto; align-items: end; gap: 12px; padding: 14px; border-top: 1px solid rgba(247, 184, 75, 0.2); background: rgba(3, 8, 16, 0.28); }
 .job-approval-controls > p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 0.57rem; line-height: 1.48; }
 .live-path { min-height: 132px; display: flex; gap: 8px; padding: 15px; overflow-x: auto; }
-.live-path article { position: relative; min-width: 145px; flex: 1; display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(5, 12, 22, 0.68); }
+/* A one-column track keeps a long status label or title inside its card. */
+.live-path article { position: relative; flex: 1 0 196px; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(5, 12, 22, 0.68); }
 .live-path article::after { content: ""; position: absolute; top: 50%; right: -8px; width: 8px; height: 1px; background: var(--line-strong); }
 .live-path article:last-child::after { display: none; }
 .live-path article[data-status="succeeded"] { border-color: rgba(69, 211, 157, 0.25); }
 .live-path article[data-status="blocked"], .live-path article[data-status="refused"] { border-color: rgba(247, 184, 75, 0.28); }
 .live-path article[data-status="failed"] { border-color: rgba(255, 110, 121, 0.28); }
-.live-path article header { display: flex; justify-content: space-between; gap: 6px; }
-.live-path article header > span { color: var(--muted); font: 0.54rem ui-monospace, SFMono-Regular, Consolas, monospace; }
-.live-path article strong { font-size: 0.64rem; }
+.live-path article header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 6px; }
+.live-path article header .badge { max-width: 100%; }
+.live-path article header > span:first-child { color: var(--muted); font: 0.54rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.live-path article strong { font-size: 0.64rem; line-height: 1.3; overflow-wrap: anywhere; }
 .live-path article small { color: var(--muted); font-size: 0.53rem; overflow-wrap: anywhere; }
 .console-tabs, .workspace-tabs { display: flex; gap: 3px; padding: 8px 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); overflow-x: auto; }
 .console-detail { min-height: 300px; padding: 15px 18px; }
@@ -662,6 +664,8 @@ td .badge { margin-left: 6px; }
 .console-empty strong { color: var(--text); font-size: 0.72rem; }
 .console-empty span { max-width: 420px; margin-top: 5px; font-size: 0.64rem; line-height: 1.45; }
 .console-empty.compact { min-height: 140px; }
+.live-path > .console-empty { flex: 1; }
+.live-console { scroll-margin-top: 12px; }
 .timeline { list-style: none; margin: 0; padding: 0; }
 .timeline li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
 .timeline li:last-child { border-bottom: 0; }
@@ -1137,7 +1141,7 @@ td,
 .envelope-option > header > code,
 .envelope-actions > article > header > code,
 .envelope-steps > article > header > span,
-.live-path article header > span,
+.live-path article header > span:first-child,
 pre,
 .proposal-digests code,
 .run-select-list code,
@@ -1232,6 +1236,9 @@ div.method-proposal-review, details.method-proposal-review[open] { display: grid
 .settings-build code, .copy-record-id code { overflow-wrap: anywhere; }
 .copy-record-id { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .job-details { padding: 12px 18px; }
+/* Repeated per-event and per-step technical disclosures stay secondary. */
+.job-details > summary, .live-path details > summary, .timeline details > summary { width: fit-content; color: var(--muted); font-size: var(--font-caption); font-weight: 600; }
+.job-details > summary:hover, .live-path details > summary:hover, .timeline details > summary:hover { color: var(--text); }
 
 /* Readable working controls and lists; graph/editor typography stays scoped. */
 .button { font-size: .875rem; font-weight: 600; letter-spacing: 0; }

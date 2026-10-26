@@ -320,6 +320,26 @@ describe("product application", () => {
     expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/runs") && init?.method === "POST")).toBe(false);
   });
 
+  it("brings a started simulation's progress into view below its setup", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    const defaultImplementation = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, init) => String(input).endsWith("/runs/preflight")
+      ? Promise.resolve(json({ ...executePreflight, ready: true, status: "ready" })) : defaultImplementation(input, init));
+    const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView").mockClear();
+    renderApp("/runs?prepare=1");
+    await user.click(await screen.findByRole("button", { name: "Check run" }));
+    const start = screen.getByRole("button", { name: "Start simulation" });
+    await waitFor(() => expect(start).toBeEnabled());
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    await user.click(start);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledOnce());
+    const progress = scrollIntoView.mock.contexts[0] as HTMLElement;
+    expect(progress).toHaveAttribute("id", "run-progress");
+    expect(progress).toHaveFocus();
+    expect(screen.getByText(`Review a new run · ${demoScenario.title}`, { selector: "summary" }).closest("details")).toHaveAttribute("open");
+  });
+
   it("keeps the canonical Execute review visible outside the collapsed browser draft", async () => {
     const user = userEvent.setup();
     renderApp("/runs?prepare=1");

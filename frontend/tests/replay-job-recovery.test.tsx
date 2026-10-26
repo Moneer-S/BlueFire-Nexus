@@ -79,7 +79,7 @@ it("shows a cancelled job's retained events without claiming it is awaiting a ru
   expect(screen.getByText(/no finalized run record is linked/)).toBeVisible();
   expect(screen.queryByText("Awaiting a run")).not.toBeInTheDocument();
   expect(screen.queryByText(/ownership is reconciled/)).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  for (const name of ["Pause", "Resume", "Cancel"]) expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
 });
 
 it("shows each recorded adaptive attempt's method in the live path and runner details", async () => {
