@@ -82,6 +82,16 @@ const exactKeys = (value, names) => value && typeof value === "object" && !Array
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...names].sort());
 const boundedString = (value, max = 128) => typeof value === "string" && value.trim().length > 0 && value.length <= max;
 const safeStatus = (value, allowed) => allowed.includes(value) ? value : value == null ? "missing" : "other";
+const PHASE_ERROR_CODES = new Set([
+  "receiver_publication_uncertain", "receiver_result_insufficient", "receiver_session_unavailable",
+]);
+const EXECUTION_ERROR_CODES = new Set([
+  "run_record_incomplete", "replay_record_incomplete", "run_cleanup_deferred", "replay_cleanup_deferred",
+  "execution_callback_failed",
+]);
+const safePublicErrorCode = (value, allowed) => allowed.has(value) ? value : "unknown";
+assert.equal(safePublicErrorCode("receiver_result_insufficient", PHASE_ERROR_CODES), "receiver_result_insufficient");
+assert.equal(safePublicErrorCode("abcdefghijklmnop123456789", EXECUTION_ERROR_CODES), "unknown");
 const count = (key) => consumeRequestBudget(counts, ROUTE_LIMITS, key);
 let browser, context, page;
 let connected = false;
@@ -106,6 +116,7 @@ let latestPreparationDigest;
 let originalControlDigest;
 let originalEnvelope;
 let linkedEnvelope;
+let baselineBindingDiagnostic;
 let activeOwnerRole = "original";
 const phaseOrders = { original: ["baseline", "protected", "legitimate"], linked: ["protected", "legitimate"] };
 const phaseIndexes = { original: 0, linked: 0 };
@@ -118,6 +129,45 @@ function remainingMs() {
   const remaining = deadlineBudget.remaining(Date.now());
   if (remaining <= 0) throw new Error("Installed receiver deadline exceeded");
   return remaining;
+}
+
+function recordBaselineBindingDiagnostic(assertionId, baseline) {
+  const result = baseline?.result;
+  const executionJob = baseline?.execution_job;
+  const runId = result?.run_id;
+  const resultRef = executionJob?.result_ref;
+  baselineBindingDiagnostic = {
+    assertion_id: assertionId,
+    expected: {
+      baseline_present: true,
+      result_present: true,
+      execution_job_present: true,
+      execution_job_kind: "scenario.run",
+      execution_job_state: "completed",
+      decision: "accepted",
+      phase: "baseline",
+      result_ref_present: true,
+      run_id_present: true,
+      run_id_matches_result_ref: true,
+      run_id_valid: true,
+    },
+    observed: {
+      baseline_present: baseline !== null && baseline !== undefined,
+      result_present: result !== null && result !== undefined,
+      execution_job_present: executionJob !== null && executionJob !== undefined,
+      execution_job_kind: safeStatus(executionJob?.kind, ["scenario.run", "scenario.replay"]),
+      execution_job_state: safeStatus(executionJob?.state,
+        ["queued", "planning", "awaiting_approval", "running", "paused", "cancelling", "cancelled", "completed", "failed", "interrupted"]),
+      decision: safeStatus(result?.decision, ["accepted", "policy_refused", "rejected"]),
+      phase: safeStatus(result?.phase, ["baseline", "protected", "legitimate"]),
+      result_ref_present: typeof resultRef === "string" && resultRef.length > 0,
+      run_id_present: typeof runId === "string" && runId.length > 0,
+      run_id_valid: typeof runId === "string" && RUN_ID.test(runId),
+      run_id_matches_result_ref: typeof runId === "string" && typeof resultRef === "string" && runId === resultRef,
+    },
+    phase_error_code: safePublicErrorCode(baseline?.problem?.code, PHASE_ERROR_CODES),
+    execution_error_code: safePublicErrorCode(executionJob?.error?.code, EXECUTION_ERROR_CODES),
+  };
 }
 
 function boundedTimeout(requested) {
@@ -1015,15 +1065,24 @@ try {
   await page.getByRole("button", { name: "Approve and release job", exact: true }).click();
   await waitOwner((owner) => owner.phases?.[0]?.status === "completed");
   stage = "baseline-result-binding";
+  recordBaselineBindingDiagnostic("completed_baseline_phase_lookup", undefined);
   const baseline = receiverCompletedPhase(latestOwner, "baseline");
+  recordBaselineBindingDiagnostic("completed_baseline_phase_present", baseline);
   assert.ok(baseline, "The refreshed baseline phase must include completed execution and preparation records");
   const result = baseline.result;
+  recordBaselineBindingDiagnostic("baseline_result_present", baseline);
   assert.ok(result);
+  recordBaselineBindingDiagnostic("execution_job_kind_scenario_run", baseline);
   assert.equal(baseline.execution_job.kind, "scenario.run");
+  recordBaselineBindingDiagnostic("execution_job_state_completed", baseline);
   assert.equal(baseline.execution_job.state, "completed");
+  recordBaselineBindingDiagnostic("baseline_decision_accepted", baseline);
   assert.equal(result.decision, "accepted");
+  recordBaselineBindingDiagnostic("baseline_result_phase", baseline);
   assert.equal(result.phase, "baseline");
+  recordBaselineBindingDiagnostic("run_id_matches_execution_result_ref", baseline);
   assert.equal(result.run_id, baseline.execution_job.result_ref);
+  recordBaselineBindingDiagnostic("run_id_matches_required_format", baseline);
   assert.match(result.run_id, RUN_ID);
   stage = "baseline-run-source";
   assert.equal(result.run?.mode, "execute");
@@ -1262,6 +1321,9 @@ try {
 } catch (error) {
   const errorType = ["AssertionError", "TimeoutError", "TypeError", "Error"].includes(error?.name) ? error.name : "other";
   const failure = { stage, kind: "journey_failed", error_type: errorType };
+  if (stage === "baseline-result-binding" && baselineBindingDiagnostic) {
+    failure.baseline_binding = baselineBindingDiagnostic;
+  }
   if (stage.startsWith("baseline-control-")) failure.visible_controls = await visibleControlsDiagnostic();
   report.errors.push(failure);
   report.request_counts = counts;
