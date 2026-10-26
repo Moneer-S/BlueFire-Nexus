@@ -180,6 +180,41 @@ def test_native_wheel_build_and_verification_use_the_exact_archive():
     ]
 
 
+def test_installed_assistant_replacement_reuses_linux_wheel_and_uploads_only_selected_evidence():
+    steps = {step["name"]: step for step in _package_job()["steps"]}
+    verify = steps["Verify installed Assistant comparison restart and explicit replacement"]
+    existing = steps["Verify installed Assistant cancellation and reload recovery"]
+    assert verify["if"] == existing["if"]
+    assert verify["timeout-minutes"] == 8
+    command = verify["run"]
+    for source in (
+        "tools/verify_installed_assistant_replacement.py",
+        "tools/verify_installed_reopen.py",
+        "frontend/tests/installed/installed-assistant-replacement.mjs",
+    ):
+        assert f'cp {source} "$RUNNER_TEMP/' in command
+    assert 'wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)' in command
+    assert 'test "${#wheels[@]}" = 1' in command
+    assert '"$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -I -B' in command
+    assert '--forbid-root "$GITHUB_WORKSPACE"' in command
+    assert (
+        '--playwright "$GITHUB_WORKSPACE/wheel-source/frontend/node_modules/@playwright/test/index.mjs"'
+        in command
+    )
+    assert '--wheel "${wheels[0]}"' in command
+    assert '--output "$RUNNER_TEMP/bluefire-installed-assistant-replacement-evidence"' in command
+    upload = steps["Upload installed Linux browser verification evidence"]["with"][
+        "path"
+    ].splitlines()
+    replacement = [item for item in upload if "assistant-replacement-evidence" in item]
+    assert replacement == [
+        "${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/receipt.json",
+        "${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/browser-report.json",
+        "${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/assistant-blocked-original-1440x900.png",
+        "${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/assistant-completed-replacement-1440x900.png",
+    ]
+
+
 def test_windows_installed_verifier_resolves_one_node_path_with_spaces(tmp_path):
     if os.name != "nt":
         pytest.skip("PowerShell application lookup is Windows-specific")
