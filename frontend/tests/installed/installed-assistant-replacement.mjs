@@ -152,7 +152,7 @@ async function captureAssistantView(name) {
     mask: [page.locator('input[type="password"]'), page.getByLabel("One-time connection code", { exact: false })],
   });
   assert.ok(screenshot.byteLength > 0 && screenshot.byteLength <= 4 * 1024 * 1024);
-  assert.equal(screenshot.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  assert.equal(screenshot.subarray(0, 8).toString("hex"), "89504e470d0a1a0a"); // pragma: allowlist secret - Public PNG signature.
   assert.equal(screenshot.readUInt32BE(16), 1440);
   assert.equal(screenshot.readUInt32BE(20), 900);
   const file = `${name}-1440x900.png`;

@@ -203,7 +203,11 @@ def test_failure_progress_retains_only_bounded_stages_counts_and_observed_states
     }
     source = {
         "errors": [
-            {"stage": "first-explanation", "kind": "journey_failed", "secret": "never copy"}
+            {
+                "stage": "first-explanation",
+                "kind": "journey_failed",
+                "secret": "never copy",  # pragma: allowlist secret - Fixed test sentinel.
+            }
         ],
         "attempted_writes": attempts,
         "observed_states": {
