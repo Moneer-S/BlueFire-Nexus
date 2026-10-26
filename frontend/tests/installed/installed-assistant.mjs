@@ -6,6 +6,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { preflightDiagnostic } from "./preflight-diagnostics.mjs";
+import { waitForRunApproval as pollForRunApproval } from "./run-job-state.mjs";
 
 const [modulePath, output, port, fixturePort, outerDeadlineArg] = process.argv.slice(2);
 const outerDeadlineMs = Number(outerDeadlineArg);
@@ -176,8 +177,8 @@ async function captureAssistantView(name) {
   });
 }
 
-async function api(path) {
-  const timeoutMs = remainingJourneyMs(10_000);
+async function api(path, maximumMs = 10_000) {
+  const timeoutMs = remainingJourneyMs(maximumMs);
   page.setDefaultTimeout(timeoutMs);
   return page.evaluate(async ({ path, timeoutMs }) => {
     const session = sessionStorage.getItem("bluefire.browser-session.v1");
@@ -262,6 +263,19 @@ async function waitForRunJob(jobId, timeoutMs = 120_000) {
     await new Promise(resolve => setTimeout(resolve, 250));
   }
   throw new Error("The reviewed generated-fixture run did not reach a terminal state.");
+}
+
+async function waitForRunApproval(jobId, timeoutMs = 20_000) {
+  const deadline = Date.now() + remainingJourneyMs(timeoutMs);
+  return pollForRunApproval({
+    jobId,
+    deadline,
+    readJob: (identifier, remainingMs) => api(
+      `/jobs/${encodeURIComponent(identifier)}`,
+      Math.min(10_000, remainingMs),
+    ),
+    sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+  });
 }
 
 async function stopRunnerThroughUi() {
@@ -443,7 +457,13 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   const submitted = await submittedResponse.json();
   runJobId = submitted.job?.job_id;
   assert.match(runJobId ?? "", /^job-[0-9a-f]{32}$/);
-  assert.equal(submitted.job.state, "awaiting_approval");
+  assert.equal(submitted.job.job_id, runJobId);
+  assert.ok(["queued", "planning", "awaiting_approval"].includes(submitted.job.state));
+  stage = "execute-run-approval-state";
+  const approvalJob = await waitForRunApproval(runJobId, remainingJourneyMs(20_000));
+  assert.equal(approvalJob.job_id, runJobId);
+  assert.equal(approvalJob.state, "awaiting_approval");
+  page.setDefaultTimeout(remainingJourneyMs(10_000));
   stage = "execute-run-approval";
   const terminalJobPromise = waitForRunJob(runJobId, remainingJourneyMs(110_000));
   await page.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ }).check();
