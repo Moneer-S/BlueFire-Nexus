@@ -1,6 +1,7 @@
 // The installed Assistant journey uses only a bounded loopback structured-output fixture.
 /* global process, URL, sessionStorage, fetch, setTimeout, clearTimeout, AbortController, AbortSignal, structuredClone, document, location */
 import assert from "node:assert/strict";
+import { readCanonicalRunIdentity } from "./run-result-identity.mjs";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -522,9 +523,14 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   const selectedRun = page.getByRole("region", { name: "Selected run", exact: true });
   await selectedRun.waitFor({ state: "visible", timeout: remainingJourneyMs(12_000) });
   await selectedRun.getByText("Completed", { exact: true }).waitFor({ state: "visible", timeout: remainingJourneyMs(5_000) });
-  const runIdentity = page.getByText("Run identity, environment and technical record", { exact: true });
+  const runIdentityPanel = page.locator(".historical-run-page details.run-review-details")
+    .filter({ has: page.getByText("Run identity, environment and technical record", { exact: true }) });
+  assert.equal(await runIdentityPanel.count(), 1, "The canonical run identity disclosure must be unique.");
+  const runIdentity = runIdentityPanel.getByText("Run identity, environment and technical record", { exact: true });
   await runIdentity.click();
-  await page.locator(".historical-run-page").getByText(runId, { exact: true }).waitFor({ state: "visible", timeout: remainingJourneyMs(5_000) });
+  const canonicalIdentity = await page.evaluate(readCanonicalRunIdentity);
+  assert.deepEqual(canonicalIdentity, { identity_sections: 1, run_id_rows: 1, run_id_values: 1, run_id: runId },
+    "The canonical labeled Run ID field must match the completed run.");
   await runIdentity.click();
   const runHistoryLink = page.locator(".historical-run-page").getByRole("link", { name: "Run history", exact: true });
   await runHistoryLink.scrollIntoViewIfNeeded({ timeout: remainingJourneyMs(5_000) });
