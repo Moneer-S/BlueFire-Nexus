@@ -65,6 +65,31 @@ describe("readable graph framing", () => {
     }
   });
 
+  it.each([0, 8])("fits a nearly fitting compact plan in a shorter desktop canvas when focusing step %i", (selectedIndex) => {
+    const cards = Array.from({ length: 9 }, (_, index) => ({ x: 32 + Math.floor(index / 3) * 308, y: 32 + index % 3 * 148, width: 292, height: 104 }));
+    const frame = { x: 12, y: 16, width: 1118, height: 436 };
+    const viewport = focusedGraphViewport(cards[selectedIndex]!, cards, frame);
+    expect(viewport.zoom).toBeGreaterThanOrEqual(.9);
+    expect(viewport.zoom).toBeLessThan(1);
+    for (const card of cards) {
+      expect(viewport.x + card.x * viewport.zoom).toBeGreaterThanOrEqual(frame.x + 24 - .001);
+      expect(viewport.x + (card.x + card.width) * viewport.zoom).toBeLessThanOrEqual(frame.x + frame.width - 24 + .001);
+      expect(viewport.y + card.y * viewport.zoom).toBeGreaterThanOrEqual(frame.y + 24 - .001);
+      expect(viewport.y + (card.y + card.height) * viewport.zoom).toBeLessThanOrEqual(frame.y + frame.height - 24 + .001);
+    }
+  });
+
+  it.each([0, 127])("uses the occupied canvas near end step %i without shrinking a long plan", (selectedIndex) => {
+    const cards = Array.from({ length: 128 }, (_, index) => ({ x: 32 + index * 308, y: 32, width: 292, height: 104 }));
+    const frame = { x: 17, y: 23, width: 600, height: 380 };
+    const selected = cards[selectedIndex]!;
+    const viewport = focusedGraphViewport(selected, cards, frame);
+    expect(viewport.zoom).toBe(1);
+    if (selectedIndex === 0) expect(viewport.x + selected.x).toBe(frame.x + 24);
+    else expect(viewport.x + selected.x + selected.width).toBe(frame.x + frame.width - 24);
+    expect(viewport.y + selected.y + selected.height / 2).toBe(frame.y + frame.height / 2);
+  });
+
   it("keeps selection readable when a long plan cannot fit at its scale", () => {
     const cards = Array.from({ length: 128 }, (_, index) => ({ x: 32 + index * 308, y: 32, width: 292, height: 104 }));
     const frame = { width: 600, height: 380 };

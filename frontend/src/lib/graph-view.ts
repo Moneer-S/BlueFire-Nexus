@@ -39,11 +39,25 @@ export function graphBoundsViewport(nodes: readonly GraphNodeBounds[], frame: Gr
   };
 }
 
-/** Focus keeps a compact plan in context when doing so needs no smaller cards. */
+/** Keep compact context readable; at path ends, use the canvas for connected work. */
 export function focusedGraphViewport(selected: GraphNodeBounds, context: readonly GraphNodeBounds[], frame: GraphFrame): GraphViewport {
   const focused = readableGraphViewport(selected, frame);
-  const whole = graphBoundsViewport([selected, ...context], frame, 24, focused.zoom);
-  return whole && whole.zoom >= focused.zoom ? whole : focused;
+  const cards = [selected, ...context];
+  const padding = 24;
+  const whole = graphBoundsViewport(cards, frame, padding, focused.zoom);
+  // A small adjustment can fit a compact plan in a shorter desktop window.
+  // Longer plans retain readable cards instead of shrinking to an overview.
+  if (whole && whole.zoom >= focused.zoom * 0.9) return whole;
+  const constrain = (position: number, start: number, end: number, size: number, origin: number) => {
+    if ((end - start) * focused.zoom <= size - padding * 2) return origin + size / 2 - (start + end) / 2 * focused.zoom;
+    return Math.min(origin + padding - start * focused.zoom,
+      Math.max(origin + size - padding - end * focused.zoom, position));
+  };
+  return {
+    ...focused,
+    x: constrain(focused.x, Math.min(...cards.map(card => card.x)), Math.max(...cards.map(card => card.x + card.width)), frame.width, frame.x ?? 0),
+    y: constrain(focused.y, Math.min(...cards.map(card => card.y)), Math.max(...cards.map(card => card.y + card.height)), frame.height, frame.y ?? 0),
+  };
 }
 
 /** Reveal only the obscured distance. Panel changes never reset user zoom. */
