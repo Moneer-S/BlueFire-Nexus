@@ -162,6 +162,11 @@ export function EvaluationReport({ report, compact = false }: { report: Detectio
   const backend = `${report.backend.name}${report.backend.version ? ` · ${report.backend.version}` : ""} · ${report.backend.executed ? "Executed" : "Not executed"}`;
   if (!compact) {
     const title = result.state === "backend_error" ? "Evaluation engine error" : result.state === "insufficient_evidence" ? "Insufficient evidence" : result.match_count === null ? "Match count unavailable" : measured;
+    const evidenceSummary = [
+      result.gap_count > 0 ? `${result.gap_count} evidence ${result.gap_count === 1 ? "gap" : "gaps"}` : null,
+      result.missing_fields.length > 0 ? `${result.missing_fields.length} missing ${result.missing_fields.length === 1 ? "field" : "fields"}` : null,
+      result.diagnostic_codes.length > 0 ? `${result.diagnostic_codes.length} ${result.diagnostic_codes.length === 1 ? "diagnostic" : "diagnostics"}` : null,
+    ].filter(Boolean).join(" · ");
     return <article className="detection-evaluation-report">
       <div className="evaluation-result-meta"><span>Revision {report.candidate.revision}</span><time dateTime={report.created_at}>{formatDate(report.created_at)}</time></div>
       <h3 className="evaluation-result-title">{title}</h3>
@@ -169,7 +174,7 @@ export function EvaluationReport({ report, compact = false }: { report: Detectio
       <div className="evaluation-result-badges"><Badge>{sentence(activityLabel(report))} activity · operator assigned</Badge><Badge tone={result.state === "insufficient_evidence" || result.state === "backend_error" ? "warning" : "info"}>{sentence(result.state)}</Badge></div>
       {report.development_case ? <p className="evaluation-evidence-note"><strong>Development evidence</strong><span>This data was used or declared for rule development. An independent label cannot make it unseen. Evaluate separate data before judging improvement.</span></p> : null}
       {activityLabel(report) === "benign" && result.state === "matched" ? <Callout tone="warning" title="Match in a declared benign case">This rule matched observed records in an operator-assigned benign case. Review this potential false positive; the label does not suppress the measured match.</Callout> : null}
-      {result.gap_count > 0 || result.missing_fields.length > 0 || result.diagnostic_codes.length > 0 ? <p className="evaluation-review-note"><strong>Evidence needs review</strong> · {result.gap_count} evidence gaps · {result.missing_fields.length} missing fields · {result.diagnostic_codes.length} diagnostics. See evidence and engine details.</p> : null}
+      {evidenceSummary ? <p className="evaluation-review-note"><strong>Evidence needs review</strong> · {evidenceSummary}. See evidence and engine details.</p> : null}
       <DataList items={[
         { label: "Source run", value: <RunReference runId={report.source.run_id} /> },
         { label: "Observed / all records", value: `${report.source.observed_count} / ${report.source.evidence_count}` },

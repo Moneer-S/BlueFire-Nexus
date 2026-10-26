@@ -249,3 +249,21 @@ it("keeps the active evaluation open so a refusal remains visible", async () => 
   expect(await screen.findByText("Source evidence could not be loaded.")).toBeVisible();
   expect(toggle).toBeEnabled();
 });
+
+it.each([
+  { gaps: 0, fields: [], diagnostics: ["backend_unavailable"], summary: "1 diagnostic" },
+  { gaps: 1, fields: ["path"], diagnostics: [], summary: "1 evidence gap · 1 missing field" },
+  { gaps: 2, fields: ["path", "artifact_type"], diagnostics: ["backend_unavailable", "source_contains_evidence_gaps"], summary: "2 evidence gaps · 2 missing fields · 2 diagnostics" },
+])("summarizes nonzero evidence limits as $summary while retaining exact details", async ({ gaps, fields, diagnostics, summary }) => {
+  const value = report(candidateId, runId, "unknown");
+  value.result = { ...value.result, gap_count: gaps, missing_fields: fields, diagnostic_codes: diagnostics };
+  retained.push(value);
+  mount();
+  const note = (await screen.findByText("Evidence needs review")).closest("p")!;
+  expect(note).toHaveTextContent(`Evidence needs review · ${summary}. See evidence and engine details.`);
+  expect(note).not.toHaveTextContent(/0 evidence gaps|0 missing fields|0 diagnostics/);
+  await userEvent.setup().click(screen.getByText("Evidence and engine details"));
+  expect(screen.getByText("Evidence gaps").parentElement).toHaveTextContent(`Evidence gaps${gaps}`);
+  expect(screen.getByText("Missing fields").parentElement).toHaveTextContent(fields.join(", ") || "None reported");
+  expect(screen.getByText("Diagnostics").parentElement).toHaveTextContent(diagnostics.length ? diagnostics.map(value => value.replaceAll("_", " ").replace(/^./, letter => letter.toUpperCase())).join(", ") : "None");
+});

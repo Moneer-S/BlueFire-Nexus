@@ -30,7 +30,7 @@ export function RunReference({ runId, label, onNavigate }: { runId: string; labe
   return <div className="run-reference">
     {label ? <small>{label}</small> : null}
     <Link onClick={onNavigate} to={`/runs/${encodeURIComponent(runId)}`} aria-label={label ? `${label}: ${name}` : name}>{name}</Link>
-    {run ? <small>{sentence(run.mode)}{time && Number.isFinite(Date.parse(time)) ? <> · <time dateTime={time}>{formatDate(time)}</time></> : null}{profile ? <> · Profile: {profile}</> : null}</small> : query.isError ? <small>Run details unavailable</small> : null}
-    <details><summary>Run identity</summary><CopyRunId key={runId} runId={runId}/></details>
+    {run ? <small>{sentence(run.mode)}{time && Number.isFinite(Date.parse(time)) ? <> · <time dateTime={time}>{formatDate(time)}</time></> : null}</small> : query.isError ? <small>Run details unavailable</small> : null}
+    <details><summary>Run identity</summary><CopyRunId key={runId} runId={runId}/>{profile ? <div>Profile: <code>{profile}</code></div> : null}</details>
   </div>;
 }
