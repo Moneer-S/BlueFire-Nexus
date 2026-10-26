@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import Any, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 from urllib.parse import urlencode
 
 from .ai_assistance import COMPARE, REVISE
@@ -31,6 +31,9 @@ from .product_store import ProductStore
 from .registry import BehaviorRegistry
 from .util import content_hash
 
+if TYPE_CHECKING:
+    from .file_access_control import FileAccessControl
+
 ANALYSIS_KINDS = frozenset({AUDIT_KIND, FILE_ACCESS_KIND})
 
 
@@ -45,7 +48,6 @@ class AssistanceContext(Protocol):
     assistance_receiver: Any
     receiver_defense: Any
     s3_access: Any
-    file_access: Any
     method_comparison: MethodComparisonJobs
     product_store: ProductStore
     registry: BehaviorRegistry
@@ -53,6 +55,9 @@ class AssistanceContext(Protocol):
     _provider_access: AIProviderAccess
 
     def _runtime_ai(self) -> AIConfig: ...
+
+    @property
+    def file_access(self) -> FileAccessControl: ...
 
 
 LIMITATIONS = [
@@ -120,14 +125,16 @@ def analysis_selection(value):
     )
 
 
-def analysis_context(service, chosen):
+def analysis_context(service: AssistanceContext, chosen: Mapping[str, Any]) -> Mapping[str, Any]:
     """Reuse the read-only source adapters for capability-free explanations."""
     return (file_access_context if chosen.get("kind") == FILE_ACCESS_KIND else audit_context)(
         service, chosen
     )
 
 
-def fresh_analysis_context(service, chosen, captured):
+def fresh_analysis_context(
+    service: AssistanceContext, chosen: Mapping[str, Any], captured: Mapping[str, Any]
+) -> Mapping[str, Any]:
     """Revalidate before provider use/publication while preserving the captured document."""
     current = analysis_context(service, chosen)
     if current != captured:
