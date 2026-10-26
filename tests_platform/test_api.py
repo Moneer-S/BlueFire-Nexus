@@ -169,6 +169,10 @@ class StubService:
         self.calls.append(("file_access_control", owner_id))
         return {"saved": True}
 
+    def file_access_assistance_context(self, owner_id):
+        self.calls.append(("file_access_assistance_context", owner_id))
+        return {"saved": True}
+
     def reconcile_file_access_operation(self, job_id, request):
         self.calls.append(("reconcile_file_access_operation", job_id, request))
         return {"saved": True}

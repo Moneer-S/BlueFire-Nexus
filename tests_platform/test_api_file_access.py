@@ -162,9 +162,6 @@ def test_file_access_does_not_add_unsupported_http_methods():
 def test_saved_control_assistance_context_keeps_read_guards(owner):
     suffix = PREFIX + f"controls/{owner}/assistant-context"
     service = StubService()
-    service.file_access_assistance_context = lambda identifier: service.calls.append(
-        ("file_access_assistance_context", identifier)
-    ) or {"saved": True}
     with running_server(service) as (server, _):
         status, _, payload = request(server, "GET", suffix)
         assert status == 200 and json_body(payload) == {"saved": True}
