@@ -5,6 +5,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout } from "node:timers";
 import { pathToFileURL, URLSearchParams } from "node:url";
 
 const [modulePath, output, port] = process.argv.slice(2);
@@ -1140,11 +1141,11 @@ try {
     assert.ok(fontResponse && fontResponse.status === 200 && fontResponse.bytes > 0 && /^[0-9a-f]{64}$/.test(fontResponse.sha256), "Installed Inter font must be fetched with nonempty response bytes.");
     const fontState = await page.evaluate(async () => {
       await document.fonts.ready;
-      const faces = [...document.fonts].filter(face => face.family.replace(/[\"']/g, "") === "Inter");
+      const faces = [...document.fonts].filter(face => face.family.replace(/["']/g, "") === "Inter");
       const conclusion = document.querySelector(".comparison-conclusion h2");
       return {
         font_set_status: document.fonts.status,
-        faces: faces.map(face => ({ family: face.family.replace(/[\"']/g, ""), status: face.status, weight: face.weight })),
+        faces: faces.map(face => ({ family: face.family.replace(/["']/g, ""), status: face.status, weight: face.weight })),
         check: document.fonts.check('400 16px "Inter"', "BlueFire comparison"),
         conclusion_family: conclusion ? getComputedStyle(conclusion).fontFamily : "",
       };
