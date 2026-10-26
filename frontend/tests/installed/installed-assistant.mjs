@@ -632,7 +632,14 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   const evaluationResult = savedDetection.evaluation.result;
   assert.equal(typeof evaluationResult.state, "string");
   assert.ok(Number.isSafeInteger(evaluationResult.match_count) && evaluationResult.match_count >= 0);
-  assert.ok(Number.isSafeInteger(evaluationResult.benign_match_count) && evaluationResult.benign_match_count >= 0);
+  assert.ok(Array.isArray(evaluationResult.evaluated_evidence_ids));
+  assert.ok(Array.isArray(evaluationResult.matched_evidence_ids));
+  assert.equal(evaluationResult.match_count, evaluationResult.matched_evidence_ids.length);
+  assert.ok(evaluationResult.matched_evidence_ids.every(id => evaluationResult.evaluated_evidence_ids.includes(id)));
+  assert.equal(savedDetection.evaluation.case_role, "benign");
+  assert.equal(savedDetection.evaluation.classification?.activity_label, "benign");
+  assert.equal(savedDetection.evaluation.classification?.evaluation_use, "development");
+  assert.equal(savedDetection.evaluation.development_case, true);
   report.detection_application = {
     candidate_id: savedDetection.application.candidate_id,
     evaluation_id: savedDetection.application.evaluation_id,
@@ -641,7 +648,6 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
     backend_executed: savedDetection.evaluation.backend.executed,
     result_state: evaluationResult.state,
     observed_match_count: evaluationResult.match_count,
-    benign_match_count: evaluationResult.benign_match_count,
   };
   const candidateId = savedDetection.application.candidate_id;
   const evaluationId = savedDetection.application.evaluation_id;

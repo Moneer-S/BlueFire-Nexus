@@ -14,5 +14,10 @@
 .active-objective-evidence nav { display: flex; flex-wrap: wrap; gap: 9px 16px; }
 .active-objective-evidence nav a { display: inline-flex; align-items: center; gap: 6px; color: var(--blue-soft); font-size: .71rem; line-height: 1.5; text-decoration: none; }
 .active-objective-evidence nav svg { width: 13px; height: 13px; }
+.active-objective-sources { margin-top: 12px; color: var(--muted); font-size: .71rem; }
+.active-objective-sources summary { width: fit-content; cursor: pointer; }
+.active-objective-sources summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.active-objective-sources dl { margin: 8px 0 0; }
+.active-objective-sources dd { font-weight: 400; }
 .active-objective-evidence > p { color: var(--muted); font-size: .75rem; line-height: 1.6; }
 @container overview (max-width: 430px) { .active-objective-context { grid-template-columns: minmax(0, 1fr); } }

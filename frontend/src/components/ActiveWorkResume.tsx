@@ -9,6 +9,8 @@ import "./ActiveWorkResume.css";
 export function ActiveWorkResume({ reference }: { reference: ActiveWorkReference }) {
   const work = useActiveWorkSummary(reference);
   const value = work.data;
+  const outcomeResults = value?.results.filter(result => result.label !== "Evidence source") ?? [];
+  const sourceResults = value?.results.filter(result => result.label === "Evidence source") ?? [];
   return <section className="active-work active-objective" aria-labelledby="active-objective-heading">
     <div className="active-work-content">
       <div className="active-work-heading"><span className="active-work-symbol"><ShieldCheck aria-hidden="true" /></span><div><h2 id="active-objective-heading">Active objective</h2><h3>{value ? displayTitle(value.title) : "Saved defensive work"}</h3></div></div>
@@ -24,7 +26,11 @@ export function ActiveWorkResume({ reference }: { reference: ActiveWorkReference
       {value ? <div className="active-objective-state"><span>Recorded state: {sentence(value.recordedState)}</span><Button variant="ghost" size="small" aria-label="Refresh active objective" disabled={work.isFetching} onClick={() => { void work.refetch(); }}><RefreshCw aria-hidden="true" />Refresh</Button></div> : null}
     </div>
     <div className="active-work-plan active-objective-evidence"><header><h3>Current evidence</h3></header>
-      {value ? <><dl>{value.results.map((result, index) => <div key={`${result.label}-${index}`}><dt>{result.label}</dt><dd data-tone={result.tone}>{result.value}</dd></div>)}</dl>{value.links.length ? <nav aria-label="Objective records">{value.links.map(link => <Link key={`${link.href}-${link.label}`} to={link.href}>{link.label}<ArrowRight aria-hidden="true" /></Link>)}</nav> : null}</> : <p>Evidence will appear after the saved record is loaded.</p>}
+      {value ? <>
+        <dl>{outcomeResults.map((result, index) => <div key={`${result.label}-${index}`}><dt>{result.label}</dt><dd data-tone={result.tone}>{result.value}</dd></div>)}</dl>
+        {value.links.length ? <nav aria-label="Objective records">{value.links.map(link => <Link key={`${link.href}-${link.label}`} to={link.href}>{link.label}<ArrowRight aria-hidden="true" /></Link>)}</nav> : null}
+        {sourceResults.length ? <details className="active-objective-sources"><summary>Evidence sources</summary><dl>{sourceResults.map((result, index) => <div key={`${result.label}-${index}`}><dt>{result.label}</dt><dd data-tone={result.tone}>{result.value}</dd></div>)}</dl></details> : null}
+      </> : <p>Evidence will appear after the saved record is loaded.</p>}
     </div>
   </section>;
 }

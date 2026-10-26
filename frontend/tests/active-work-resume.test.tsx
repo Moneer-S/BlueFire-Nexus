@@ -174,6 +174,34 @@ describe("active work resume", () => {
     expect(screen.getByLabelText("Current route")).toHaveTextContent("/overview?tab=work");
   });
 
+  it("keeps phase outcomes and record links visible while disclosing exact evidence provenance", async () => {
+    const provenance = "Owned loopback receiver decision; Run evidence: Observed evidence; Executed evidence";
+    loadActiveWork.mockResolvedValue(summary(reference, { results: [
+      { label: "Baseline", value: "Accepted by the receiver" },
+      { label: "Redaction required", value: "Prevented by the receiver" },
+      { label: "Legitimate redacted use", value: "Accepted by the receiver" },
+      { label: "Evidence source", value: provenance },
+    ] }));
+    const user = userEvent.setup();
+    mountResume();
+
+    const card = await screen.findByRole("region", { name: "Active objective" });
+    await within(card).findByText("Redaction required");
+    const evidence = within(card).getByText("Current evidence").closest(".active-objective-evidence");
+    expect(evidence).not.toBeNull();
+    expect(card.querySelectorAll(".active-objective-evidence > dl > div")).toHaveLength(3);
+    expect(within(card).getByRole("link", { name: "Open saved evidence" })).toHaveAttribute("href", `/runs/${reference.id}`);
+    const disclosure = within(card).getByText("Evidence sources", { selector: "summary" });
+    expect(disclosure.parentElement).not.toHaveAttribute("open");
+    expect(disclosure.parentElement?.querySelector("dd")).toHaveTextContent(provenance);
+
+    await user.click(disclosure);
+    expect(disclosure.parentElement).toHaveAttribute("open");
+    expect(within(card).getByText(provenance)).toBeVisible();
+    await user.click(disclosure);
+    expect(disclosure.parentElement).not.toHaveAttribute("open");
+  });
+
   it("shows the current draft without changing its contents when the active objective is dismissed", async () => {
     const draftBytes = JSON.stringify({ title: "Current draft", marker: "keep-this-local-work" });
     window.localStorage.setItem("bluefire.local.scenario.v1", draftBytes);

@@ -555,10 +555,20 @@ async function assertHomeRecord(projection, recordTitle) {
   const rows = await card.locator(".active-objective-evidence > dl > div").evaluateAll(elements => elements.map(element => ({
     label: element.querySelector("dt")?.textContent, value: element.querySelector("dd")?.textContent,
   })));
-  assert.deepEqual(rows.slice(0, 3), projection.phases.map(item => ({ label: HOME_PHASE_LABELS[item.phase], value: HOME_DECISION_LABELS[item.decision] })));
-  assert.equal(rows.length, 4);
-  assert.equal(rows[3].label, "Evidence source");
-  assert.ok(rows[3].value.startsWith("Owned loopback receiver decision"));
+  assert.deepEqual(rows, projection.phases.map(item => ({ label: HOME_PHASE_LABELS[item.phase], value: HOME_DECISION_LABELS[item.decision] })));
+  const sourceDisclosure = card.locator(".active-objective-sources");
+  assert.equal(await sourceDisclosure.count(), 1);
+  assert.equal(await sourceDisclosure.locator("summary").textContent(), "Evidence sources");
+  assert.equal(await sourceDisclosure.getAttribute("open"), null);
+  await sourceDisclosure.locator("summary").click();
+  const source = await sourceDisclosure.locator("dl > div").evaluate(element => ({
+    label: element.querySelector("dt")?.textContent, value: element.querySelector("dd")?.textContent,
+  }));
+  assert.equal(source.label, "Evidence source");
+  assert.ok(source.value.startsWith("Owned loopback receiver decision"));
+  assert.ok(source.value.includes("Run evidence:"));
+  await sourceDisclosure.locator("summary").click();
+  assert.equal(await sourceDisclosure.getAttribute("open"), null);
   assert.equal(await card.locator(".active-objective-state > span").textContent(), "Recorded state: Completed");
   assert.equal(await card.getByRole("link", { name: "Continue objective", exact: true }).getAttribute("href"),
     `#/compare?receiver=1&goal=data-handoff&receiver_job=${projection.owner_job_id}`);
@@ -596,7 +606,7 @@ async function captureActiveHome(card, viewport, projection) {
     ["show_working_draft", card.getByRole("button", { name: "Show working draft", exact: true })],
     ["refresh", card.getByRole("button", { name: "Refresh active objective", exact: true })],
     ...projection.phases.map((item, index) => [item.phase, card.locator(".active-objective-evidence > dl > div").nth(index)]),
-    ["evidence_source", card.locator(".active-objective-evidence > dl > div").nth(3)],
+    ["evidence_sources", card.locator(".active-objective-sources > summary")],
   ];
   const elements = [];
   capture.elements = elements;
