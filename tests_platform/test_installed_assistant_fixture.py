@@ -114,7 +114,6 @@ def assistant_report() -> dict[str, object]:
             "backend_executed": True,
             "result_state": "matched",
             "observed_match_count": 1,
-            "benign_match_count": 1,
         },
         "detection_reopened": {
             "candidate_id": candidate_id,
@@ -250,10 +249,20 @@ def test_fixture_rejects_per_request_byte_limit() -> None:
     assert not allowed(request, index=0, body_bytes=0)
 
 
-def test_assistant_journey_validator_accepts_honest_benign_match_result() -> None:
+def test_assistant_journey_validator_accepts_observed_match_count_and_development_classification() -> (
+    None
+):
     report = assistant_report()
-    assert report["detection_application"]["benign_match_count"] == 1
+    assert report["detection_application"]["observed_match_count"] == 1
+    assert "benign_match_count" not in report["detection_application"]
     assert _assistant_fixture_journey_passed(report)
+
+
+@pytest.mark.parametrize("count", [True, -1, 1.0, "1", None])
+def test_assistant_journey_validator_rejects_invalid_observed_match_count(count) -> None:
+    report = assistant_report()
+    report["detection_application"]["observed_match_count"] = count
+    assert not _assistant_fixture_journey_passed(report)
 
 
 @pytest.mark.parametrize(

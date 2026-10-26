@@ -684,6 +684,25 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   const evaluationsAgain = await api(`/detections/${encodeURIComponent(candidateId)}/evaluations`);
   assert.equal(reopenedAgain.candidate?.document?.definition_digest, reopenedDocument.definition_digest);
   assert.ok(evaluationsAgain.evaluations?.some(item => item.evaluation_id === evaluationId && item.source?.run_id === runId && item.development_case === true));
+  stage = "detection-saved-evaluation-rendered-reopen";
+  await page.getByRole("tab", { name: "Run evaluations", exact: true }).click();
+  const retainedEvaluationCard = page.locator(".evaluation-history article").filter({ hasText: evaluationId });
+  await retainedEvaluationCard.waitFor({ state: "visible", timeout: remainingJourneyMs(10_000) });
+  assert.equal(await retainedEvaluationCard.count(), 1, "The exact retained evaluation must appear once in the rendered history.");
+  const developmentEvidence = retainedEvaluationCard.getByText("Development evidence", { exact: true });
+  await developmentEvidence.waitFor({ state: "visible", timeout: remainingJourneyMs(5_000) });
+  assert.equal(await retainedEvaluationCard.getByText("Development data", { exact: true }).isVisible(), true);
+  const immutableRecordSummary = retainedEvaluationCard.getByText("Inspect immutable evaluation record", { exact: true });
+  await immutableRecordSummary.click();
+  const immutableRecord = retainedEvaluationCard.locator("pre").filter({ hasText: evaluationId });
+  await immutableRecord.waitFor({ state: "visible", timeout: remainingJourneyMs(5_000) });
+  const renderedEvaluation = JSON.parse(await immutableRecord.innerText());
+  assert.equal(renderedEvaluation.evaluation_id, evaluationId);
+  assert.equal(renderedEvaluation.candidate?.candidate_id, candidateId);
+  assert.equal(renderedEvaluation.source?.run_id, runId);
+  assert.equal(renderedEvaluation.development_case, true);
+  await immutableRecordSummary.click();
+  await retainedEvaluationCard.scrollIntoViewIfNeeded({ timeout: remainingJourneyMs(5_000) });
   report.detection_reopened = {
     candidate_id: candidateId,
     revision: reopenedDocument.revision,

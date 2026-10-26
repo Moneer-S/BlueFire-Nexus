@@ -637,8 +637,6 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and bool(detection["result_state"])
         and type(detection.get("observed_match_count")) is int
         and detection["observed_match_count"] >= 0
-        and type(detection.get("benign_match_count")) is int
-        and detection["benign_match_count"] >= 0
         and isinstance(value.get("detection_reopened"), dict)
         and value["detection_reopened"].get("candidate_id") == detection.get("candidate_id")
         and value["detection_reopened"].get("evaluation_id") == detection.get("evaluation_id")
