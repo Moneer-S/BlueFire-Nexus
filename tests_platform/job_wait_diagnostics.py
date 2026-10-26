@@ -24,6 +24,8 @@ STAGES = {
 STATES = {state.value for state in JobState}
 RECEIVER_EXECUTE_CODE = BlueFireService._execute_job.__code__
 MAX_EXECUTE_LINE_OFFSET = 128
+REPLAY_EXECUTE_CODE = BlueFireService._execute_replay_job.__code__
+MAX_REPLAY_EXECUTE_LINE_OFFSET = 128
 ERROR_CODES = {
     "execution_callback_failed",
     "job_scheduling_failed",
@@ -91,6 +93,42 @@ def _label(value, allowed):
     return value if type(value) is str and value in allowed else "unknown"
 
 
+def _process_thread_sample():
+    # These are process-thread snapshots, not proof of this job's worker ownership.
+    process_frames = sys._current_frames()
+    stacks = []
+    receiver_execute_offsets = []
+    replay_execute_offsets = []
+    for frame in islice(process_frames.values(), 8):
+        functions = []
+        receiver_execute_offset = None
+        replay_execute_offset = None
+        for _ in range(24):
+            functions.append(_label(frame.f_code.co_name, FUNCTIONS))
+            if frame.f_code is RECEIVER_EXECUTE_CODE and receiver_execute_offset is None:
+                offset = frame.f_lineno - RECEIVER_EXECUTE_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_EXECUTE_LINE_OFFSET:
+                    receiver_execute_offset = offset
+            if frame.f_code is REPLAY_EXECUTE_CODE and replay_execute_offset is None:
+                offset = frame.f_lineno - REPLAY_EXECUTE_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_REPLAY_EXECUTE_LINE_OFFSET:
+                    replay_execute_offset = offset
+            frame = frame.f_back
+            if frame is None:
+                break
+        stacks.append(functions)
+        if receiver_execute_offset is not None:
+            receiver_execute_offsets.append(receiver_execute_offset)
+        if replay_execute_offset is not None:
+            replay_execute_offsets.append(replay_execute_offset)
+    return {
+        "process_thread_functions": stacks,
+        "process_threads_truncated": len(process_frames) > 8,
+        "receiver_execute_line_offsets": receiver_execute_offsets,
+        "replay_execute_line_offsets": replay_execute_offsets,
+    }
+
+
 def _report(timeout, stage):
     evidence = {"stage": _label(stage, STAGES), "last_wait_job": {"available": False}}
     trace = timeout.__traceback__
@@ -120,29 +158,22 @@ def _report(timeout, stage):
                 }
             break
         trace = trace.tb_next
-    # These are process-thread snapshots, not proof of this job's worker ownership.
-    process_frames = sys._current_frames()
-    stacks = []
-    execute_offsets = []
-    for frame in islice(process_frames.values(), 8):
-        functions = []
-        execute_offset = None
-        for _ in range(24):
-            functions.append(_label(frame.f_code.co_name, FUNCTIONS))
-            if frame.f_code is RECEIVER_EXECUTE_CODE and execute_offset is None:
-                offset = frame.f_lineno - RECEIVER_EXECUTE_CODE.co_firstlineno
-                if type(offset) is int and 0 <= offset <= MAX_EXECUTE_LINE_OFFSET:
-                    execute_offset = offset
-            frame = frame.f_back
-            if frame is None:
-                break
-        stacks.append(functions)
-        if execute_offset is not None:
-            execute_offsets.append(execute_offset)
-    evidence["process_thread_functions"] = stacks
-    evidence["process_threads_truncated"] = len(process_frames) > 8
-    evidence["receiver_execute_line_offsets"] = execute_offsets
+    evidence.update(_process_thread_sample())
     return json.dumps(evidence, sort_keys=True)
+
+
+def report_replay_callback_entry(add_report_section=None):
+    """Emit bounded process-thread evidence after the replay callback-entry wait fails."""
+    try:
+        evidence = {"stage": "replay_callback_entry", **_process_thread_sample()}
+        payload = json.dumps(evidence, sort_keys=True)
+        if add_report_section is None:
+            print("Replay callback-entry diagnostic: " + payload, flush=True)
+        else:
+            add_report_section("call", "Replay callback-entry diagnostic", payload)
+    except BaseException:
+        # A diagnostic failure must not replace the rendezvous assertion.
+        pass
 
 
 @contextmanager

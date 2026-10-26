@@ -216,6 +216,59 @@ def test_receiver_execute_site_uses_exact_code_object_and_bounded_relative_offse
     assert len(serialized.encode()) < 8192
 
 
+def test_replay_callback_entry_site_uses_exact_code_object_and_bounded_offset(
+    monkeypatch,
+):
+    code = diagnostic.REPLAY_EXECUTE_CODE
+    known_offset = 7
+    exact_frame = SimpleNamespace(
+        f_code=code,
+        f_lineno=code.co_firstlineno + known_offset,
+        f_back=None,
+    )
+    spoof_frame = SimpleNamespace(
+        f_code=SimpleNamespace(co_name=code.co_name),
+        f_lineno=code.co_firstlineno + known_offset,
+        f_back=None,
+    )
+    out_of_range_frame = SimpleNamespace(
+        f_code=code,
+        f_lineno=code.co_firstlineno + diagnostic.MAX_REPLAY_EXECUTE_LINE_OFFSET + 1,
+        f_back=None,
+    )
+    monkeypatch.setattr(
+        diagnostic.sys,
+        "_current_frames",
+        lambda: {1: exact_frame, 2: spoof_frame, 3: out_of_range_frame},
+    )
+    sections = []
+    diagnostic.report_replay_callback_entry(lambda *args: sections.append(args))
+    assert len(sections) == 1
+    when, title, payload = sections[0]
+    assert (when, title) == ("call", "Replay callback-entry diagnostic")
+    report = json.loads(payload)
+    assert report["stage"] == "replay_callback_entry"
+    assert report["replay_execute_line_offsets"] == [known_offset]
+    assert report["process_thread_functions"][0] == ["_execute_replay_job"]
+    assert "job_id" not in report
+    assert len(payload.encode()) < 8192
+
+
+def test_replay_callback_entry_diagnostic_failure_preserves_timeout_assertion(monkeypatch):
+    def unavailable():
+        raise RuntimeError(PRIVATE)
+
+    def broken_sink(*_args):
+        raise RuntimeError(PRIVATE)
+
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", unavailable)
+    entered_in_time = False
+    with pytest.raises(AssertionError):
+        if not entered_in_time:
+            diagnostic.report_replay_callback_entry(broken_sink)
+        assert entered_in_time
+
+
 @pytest.mark.parametrize(
     "options",
     [
