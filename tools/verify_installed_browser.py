@@ -995,9 +995,11 @@ def _run_receiver_phase(
         os.environ.clear()
         os.environ.update(receiver_environment)
         os.chdir(receiver_root / "work")
+        from bluefire.runner_bootstrap import managed_product_root
+
         receiver_service = service_type(
             runs_dir=receiver_root / "runs",
-            runner_lifecycle=runner_lifecycle_type(receiver_root / "managed-runner"),
+            runner_lifecycle=runner_lifecycle_type(managed_product_root()),
         )
         report["receiver_service_closed"] = False
         receiver_capability = generate_capability()
@@ -1218,7 +1220,7 @@ def main() -> int:
             "environment_names": sorted(environment),
             "not_proven": [
                 "CLI launch",
-                "native execution beyond the optional retained-redaction receiver journey",
+                "native execution beyond the owned generated-fixture and optional retained-redaction receiver journeys",
                 "effective-access validation",
                 "live model inference",
                 "Assistant recovery across process restart",

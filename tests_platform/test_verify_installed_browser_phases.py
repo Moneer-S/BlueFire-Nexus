@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from bluefire import runner_bootstrap
+from bluefire.runner_bootstrap import managed_product_root
 from tools import verify_installed_browser as browser
 from tools.verify_installed_browser import (
     _PRIMARY_PHASE_CLEANUP_KEYS,
@@ -136,6 +138,7 @@ def test_receiver_service_uses_owned_parent_environment_and_restores_it(
     primary_cwd = Path.cwd()
     primary_environment = dict(os.environ)
     events: list[tuple[str, str, Path, Path | None, Path | None]] = []
+    worker_derived_roots: list[Path] = []
     report: dict[str, object] = {
         "status": "failed_or_incomplete",
         "receiver_driver_cleanup_confirmed": False,
@@ -149,6 +152,16 @@ def test_receiver_service_uses_owned_parent_environment_and_restores_it(
 
     class FakeService:
         def __init__(self, *, runs_dir: Path, runner_lifecycle: FakeLifecycle) -> None:
+            # The parent passes the canonical product root's parent as the
+            # worker's XDG_STATE_HOME; derive the worker lookup independently.
+            worker_state_home = managed_product_root(platform_name="linux").parent.resolve(
+                strict=True
+            )
+            worker_derived_roots.append(
+                managed_product_root(
+                    environ={"XDG_STATE_HOME": str(worker_state_home)}, platform_name="linux"
+                )
+            )
             events.append(
                 (
                     "service_init",
@@ -189,6 +202,7 @@ def test_receiver_service_uses_owned_parent_environment_and_restores_it(
             )
 
     server = FakeServer()
+    monkeypatch.setattr(runner_bootstrap, "current_platform", lambda _value=None: "linux")
     monkeypatch.setattr(browser.subprocess, "Popen", lambda *args, **kwargs: FakeChild())
     monkeypatch.setattr(browser, "stop_group", lambda _process: True)
 
@@ -227,10 +241,12 @@ def test_receiver_service_uses_owned_parent_environment_and_restores_it(
             receiver_home,
             runtime / "receiver" / "work",
             runtime / "receiver" / "runs",
-            runtime / "receiver" / "managed-runner",
+            runtime / "receiver" / "state" / "bluefire-nexus",
         ),
         ("service_close", receiver_home, runtime / "receiver" / "work", None, None),
     ]
+    assert worker_derived_roots == [events[0][4]]
+    assert worker_derived_roots[0].is_relative_to(runtime / "receiver" / "state")
     assert os.environ == primary_environment
     assert Path.cwd() == primary_cwd
     assert cleanup_errors == []

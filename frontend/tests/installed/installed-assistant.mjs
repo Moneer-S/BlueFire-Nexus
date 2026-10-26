@@ -601,7 +601,7 @@ async function executeGeneratedFixtureJourney(savedEnvelope, immutable) {
   assert.equal(sourceEnvelope.proposal?.selected?.behavior_id, "sandbox.fixture.create.v1");
   assert.equal(sourceEnvelope.proposal?.selected?.target_language, "sqlite");
   assert.equal(sourceEnvelope.proposal?.selected?.case_role, "benign");
-  assert.equal(sourceEnvelope.proposal?.source_binding_digest, expectedDetectionContext.selected?.source_binding_digest);
+  assert.equal(sourceEnvelope.proposal?.selected?.source_binding_digest, expectedDetectionContext.selected?.source_binding_digest);
   assert.deepEqual(sourceEnvelope.proposal?.evidence_refs, [observed[0].evidence_id]);
   detectionProposalDigest = sourceEnvelope.proposal.proposal_digest;
   assert.ok(digest(detectionProposalDigest));
