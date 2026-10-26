@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { receiverPreparationDiagnostic, receiverPrepareHttpDiagnostic } from "./receiver-diagnostics.mjs";
 
 test("projects bounded owner and preparation status plus shared preflight labels", () => {
