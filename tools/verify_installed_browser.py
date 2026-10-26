@@ -395,6 +395,8 @@ def _receiver_phase_block_reason(
 ) -> str | None:
     if not runtime_admitted:
         return "installed_runtime_not_admitted"
+    if report.get("browser_phase_status") != "passed":
+        return "primary_browser_phase_not_passed"
     if any(report.get(key) is not True for key in _PRIMARY_PHASE_CLEANUP_KEYS):
         return "primary_phase_cleanup_unconfirmed"
     if work_remaining is None or work_remaining <= 0:
@@ -429,7 +431,8 @@ def _runtime_cleanup_confirmed(report: dict[str, object]) -> bool:
 
 def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
     return (
-        report.get("receiver_phase_status") == "passed"
+        report.get("browser_phase_status") == "passed"
+        and report.get("receiver_phase_status") == "passed"
         and report.get("receiver_driver_started") is True
         and report.get("receiver_retained_redaction_driver_passed") is True
         and _runtime_cleanup_confirmed(report)
@@ -934,6 +937,7 @@ def _run_receiver_phase(
     environment: dict[str, str],
     work_deadline: float,
     service_type,
+    runner_lifecycle_type,
     create_server,
     generate_capability,
     cleanup_errors: list[str],
@@ -952,6 +956,8 @@ def _run_receiver_phase(
     receiver_thread = None
     receiver_child = None
     receiver_driver_report: dict[str, object] | None = None
+    prior_environment = dict(os.environ)
+    prior_cwd = Path.cwd()
     report["receiver_phase_status"] = "running"
     report["receiver_process_group_stopped"] = True
     report["receiver_http_server_closed"] = True
@@ -972,7 +978,13 @@ def _run_receiver_phase(
                 "TMPDIR": str(receiver_root / "temp"),
             }
         )
-        receiver_service = service_type(runs_dir=receiver_root / "runs")
+        os.environ.clear()
+        os.environ.update(receiver_environment)
+        os.chdir(receiver_root / "work")
+        receiver_service = service_type(
+            runs_dir=receiver_root / "runs",
+            runner_lifecycle=runner_lifecycle_type(receiver_root / "managed-runner"),
+        )
         report["receiver_service_closed"] = False
         receiver_capability = generate_capability()
         receiver_server = create_server(
@@ -1071,6 +1083,15 @@ def _run_receiver_phase(
                 cleanup_errors.append("receiver_service_close")
         elif receiver_service is not None:
             cleanup_errors.append("receiver_service_close_deferred")
+        try:
+            os.chdir(prior_cwd)
+        except OSError:
+            cleanup_errors.append("receiver_working_directory_restore")
+        try:
+            os.environ.clear()
+            os.environ.update(prior_environment)
+        except Exception:
+            cleanup_errors.append("receiver_environment_restore")
 
 
 def main() -> int:
@@ -1136,6 +1157,7 @@ def main() -> int:
 
     import bluefire
     from bluefire.api import create_server, generate_browser_bootstrap_capability
+    from bluefire.runner_lifecycle import ManagedRunnerLifecycle
     from bluefire.service import BlueFireService
 
     package = Path(bluefire.__file__).resolve(strict=True).parent
@@ -1492,6 +1514,7 @@ def main() -> int:
                     environment=environment,
                     work_deadline=work_deadline,
                     service_type=BlueFireService,
+                    runner_lifecycle_type=ManagedRunnerLifecycle,
                     create_server=create_server,
                     generate_capability=generate_browser_bootstrap_capability,
                     cleanup_errors=cleanup_errors,
