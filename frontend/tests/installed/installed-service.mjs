@@ -33,6 +33,7 @@ const responsiveReadPaths = new Set([
   "/api/v1/comparison-snapshots", "/api/v1/detection-lab/health", "/api/v1/detections",
   "/api/v1/resources/research-sources", "/api/v1/resources/runner-profiles",
   "/api/v1/resources/runners", "/api/v1/resources/model-providers", "/api/v1/ai/authorizations",
+  "/api/v1/receiver-defense/jobs",
   "/api/v1/s3-access/environments", "/api/v1/s3-access/exercises",
   "/api/v1/ad-smb/environments", "/api/v1/ad-smb/workflows",
   "/api/v1/file-access/status", "/api/v1/assistance/graph-context",

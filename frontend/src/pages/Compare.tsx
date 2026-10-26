@@ -465,6 +465,8 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
   const changed = comparison.deltas.filter(hasMaterialDelta).length;
   const comparedRuns = comparison.summaries.filter(item => item.run_id !== baseline?.run_id);
   const orderedRuns = baseline ? [baseline, ...comparedRuns] : comparison.summaries;
+  const firstName = orderedRuns[0] ? names[orderedRuns[0].run_id] : undefined;
+  const sharedName = firstName && orderedRuns.length > 1 && orderedRuns.every(run => names[run.run_id] === firstName) ? firstName : undefined;
   const stepPresentations = new Map<string, ReturnType<typeof comparisonStepPresentation>>(orderedRuns.map(summary => {
     const sources = runs.filter(run => run.run_id === summary.run_id);
     return [summary.run_id, comparisonStepPresentation(summary, catalog, sources.length === 1 ? sources[0] : undefined)];
@@ -495,10 +497,10 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
       <div className="comparison-conclusion-metrics"><div><strong>{changed}</strong><span>compared runs changed</span></div><div><strong>{pathChanges}</strong><span>compared paths changed</span></div><div><strong>{cleanupUnknown}</strong><span>runs with cleanup unreported</span></div>{onExplain ? <Button size="small" variant="secondary" onClick={onExplain}>Explain comparison</Button> : null}</div>
     </section>
     <section className="comparison-run-overview" role="group" aria-label="Comparison run order">
-      <header className="comparison-section-heading"><h2>Baseline and compared runs</h2><div className="comparison-run-actions"><span>{comparison.run_ids.length} runs reviewed</span>{reportUrl ? <a className="button button-secondary button-small comparison-download" href={reportUrl} download="bluefire-comparison.md"><Download aria-hidden="true"/>Download report</a> : null}</div></header>
+      <header className="comparison-section-heading"><h2>{sharedName ?? "Baseline and compared runs"}</h2><div className="comparison-run-actions"><span>{comparison.run_ids.length} runs reviewed</span>{reportUrl ? <a className="button button-secondary button-small comparison-download" href={reportUrl} download="bluefire-comparison.md"><Download aria-hidden="true"/>Download report</a> : null}</div></header>
       <div className="compare-story">{orderedRuns.map(summary => <article className="compare-story-run" key={summary.run_id} aria-label={`${comparedRunLabel(summary.run_id)} result`}>
-        <header><Badge tone={summary.run_id === baseline?.run_id ? "info" : "neutral"}>{comparedRunLabel(summary.run_id)}</Badge><span>{summary.mode === "simulate" ? "Simulate · synthetic" : summary.mode ? sentence(summary.mode) : "Mode not reported"}</span></header>
-        <h3><Link to={runReviewPath(summary.run_id)}>{names[summary.run_id] ?? "Run"}<ArrowUpRight aria-hidden="true"/></Link></h3>{runReference(summary.run_id)}
+        <header>{sharedName ? <Link className="comparison-role-link" to={runReviewPath(summary.run_id)} aria-label={summary.run_id === baseline?.run_id ? "Review baseline run" : `Review ${comparedRunLabel(summary.run_id).toLowerCase()}`}><Badge tone={summary.run_id === baseline?.run_id ? "info" : "neutral"}>{comparedRunLabel(summary.run_id)}</Badge><ArrowUpRight aria-hidden="true"/></Link> : <Badge tone={summary.run_id === baseline?.run_id ? "info" : "neutral"}>{comparedRunLabel(summary.run_id)}</Badge>}<span>{summary.mode === "simulate" ? "Simulate · synthetic" : summary.mode ? sentence(summary.mode) : "Mode not reported"}</span></header>
+        {!sharedName ? <h3><Link to={runReviewPath(summary.run_id)}>{names[summary.run_id] ?? "Run"}<ArrowUpRight aria-hidden="true"/></Link></h3> : null}{runReference(summary.run_id)}
         <div className="compare-run-objective"><span>Objective</span><strong data-state={typeof summary.objective_reached !== "boolean" ? "unknown" : summary.objective_reached ? "achieved" : "unmet"}>{objectiveLabel(summary.objective_reached, summary.mode)}</strong></div>
         <footer><span><GitBranch aria-hidden="true"/>{summary.path.length} recorded {pathUnit(summary)}</span><span><Eye aria-hidden="true"/>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "observed artifact")}</span><details className="comparison-run-record"><summary>Run record</summary><code>{summary.run_id}</code></details></footer>
       </article>)}</div>

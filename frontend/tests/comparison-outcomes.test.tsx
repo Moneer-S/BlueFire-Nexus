@@ -81,7 +81,10 @@ it("keeps identical run titles distinguishable by role and timestamp with stored
   expect(order.getByRole("article", { name: "Compared run 1 result" })).toBeVisible();
   expect(order.getByText(baselineId, { selector: "code" })).not.toBeVisible();
   expect(order.getByText(comparedId, { selector: "code" })).not.toBeVisible();
-  expect(order.getAllByText("Same experiment")).toHaveLength(2);
+  expect(order.getByRole("heading", { name: "Same experiment" })).toBeVisible();
+  expect(order.getAllByText("Same experiment")).toHaveLength(1);
+  expect(order.getByRole("link", { name: "Review baseline run" })).toHaveAttribute("href", `/runs/${baselineId}`);
+  expect(order.getByRole("link", { name: "Review compared run 1" })).toHaveAttribute("href", `/runs/${comparedId}`);
   expect(document.querySelector('time[datetime="2026-10-21T05:03:01Z"]')).toBeInTheDocument();
   expect(document.querySelector('time[datetime="2026-10-21T05:03:02Z"]')).toBeInTheDocument();
   for (const summary of order.getAllByText("Run record")) await user.click(summary);

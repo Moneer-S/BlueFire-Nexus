@@ -443,16 +443,26 @@ function FileAccessAssistanceEvidence({ summary }: { summary: FileAccessAssistan
 }
 
 function ComparisonAssistanceEvidence({ summary }: { summary: ComparisonAssistanceSummary }) {
+  const verifiedSourceCount = summary.source_integrity.runs.filter(run => run.status === "verified").length;
+  const sourceIntegritySummary = summary.source_integrity.status === "verified"
+    ? `${verifiedSourceCount} of ${summary.source_integrity.runs.length} original run records verified.`
+    : `${verifiedSourceCount} of ${summary.source_integrity.runs.length} original run records verified. Saved comparison retained; some source records need attention.`;
   const integrity = summary.source_integrity.status === "verified"
     ? "All saved source bundles are currently verified."
     : `${summary.source_integrity.runs.filter(run => run.status !== "verified").length} source bundle(s) are missing, changed, or invalid. Historical comparison facts remain as saved; no runs were recomputed.`;
   const objective = (value: boolean | null) => value === null ? "not reported" : value ? "recorded as reached" : "recorded as not reached";
   const legitimateUse = summary.saved_comparison.legitimate_use;
-  return <details className="assistant-source-details">
-    <summary>Saved comparison evidence</summary>
-    <p>{summary.saved_comparison.run_count} saved runs · run 1 is the recorded baseline. {integrity}</p>
-    <ul>{summary.saved_comparison.runs.map(run => <li key={run.position}>Run {run.position}: {run.mode ? sentence(run.mode) : "mode not reported"}; objective {objective(run.objective_reached)}; {run.recorded_attempts === null ? "attempt count not reported" : `${run.recorded_attempts} recorded attempt${run.recorded_attempts === 1 ? "" : "s"}`}; {run.observations.evidence_records === null ? "evidence record counts not reported" : "evidence record populations retained separately"}.</li>)}</ul>
-    {legitimateUse.state === "saved_s3_read_results" ? <><p>Saved S3 read results: {sentence(legitimateUse.comparison_state)} · change {sentence(legitimateUse.change_state)}. These rows do not establish effective access or defensive effectiveness.</p><ul>{legitimateUse.rows.map(row => <li key={`${row.reader}-${row.purpose}`}>{sentence(row.reader)} {sentence(row.purpose)}: baseline {sentence(row.baseline.state)} ({row.baseline.provenance ? sentence(row.baseline.provenance) : "provenance not reported"}); retest {sentence(row.retest.state)} ({row.retest.provenance ? sentence(row.retest.provenance) : "provenance not reported"}).</li>)}</ul></> : <p>Legitimate-use comparison: {legitimateUse.state === "not_recorded" ? "not recorded" : `unavailable · ${sentence(legitimateUse.reason)}`}.</p>}
-    <p>Source integrity is separate from the historical saved comparison. Missing source bundles are not substituted.</p>
-  </details>;
+  return <>
+    <div className="assistant-comparison-summary" role="group" aria-label="Saved comparison summary">
+      <strong>{summary.saved_comparison.run_count} saved runs · Run {summary.saved_comparison.baseline_position} is the recorded baseline.</strong>
+      <p>{sourceIntegritySummary}</p>
+    </div>
+    <details className="assistant-source-details">
+      <summary>Saved comparison evidence</summary>
+      <p>{summary.saved_comparison.run_count} saved runs · run {summary.saved_comparison.baseline_position} is the recorded baseline. {integrity}</p>
+      <ul>{summary.saved_comparison.runs.map(run => <li key={run.position}>Run {run.position}: {run.mode ? sentence(run.mode) : "mode not reported"}; objective {objective(run.objective_reached)}; {run.recorded_attempts === null ? "attempt count not reported" : `${run.recorded_attempts} recorded attempt${run.recorded_attempts === 1 ? "" : "s"}`}; {run.observations.evidence_records === null ? "evidence record counts not reported" : "evidence record populations retained separately"}.</li>)}</ul>
+      {legitimateUse.state === "saved_s3_read_results" ? <><p>Saved S3 read results: {sentence(legitimateUse.comparison_state)} · change {sentence(legitimateUse.change_state)}. These rows do not establish effective access or defensive effectiveness.</p><ul>{legitimateUse.rows.map(row => <li key={`${row.reader}-${row.purpose}`}>{sentence(row.reader)} {sentence(row.purpose)}: baseline {sentence(row.baseline.state)} ({row.baseline.provenance ? sentence(row.baseline.provenance) : "provenance not reported"}); retest {sentence(row.retest.state)} ({row.retest.provenance ? sentence(row.retest.provenance) : "provenance not reported"}).</li>)}</ul></> : <p>Legitimate-use comparison: {legitimateUse.state === "not_recorded" ? "not recorded" : `unavailable · ${sentence(legitimateUse.reason)}`}.</p>}
+      <p>Source integrity is separate from the historical saved comparison. Missing source bundles are not substituted.</p>
+    </details>
+  </>;
 }
