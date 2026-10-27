@@ -674,6 +674,9 @@ td .badge { margin-left: 6px; }
 .timeline { list-style: none; margin: 0; padding: 0; }
 .timeline li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
 .timeline li:last-child { border-bottom: 0; }
+.timeline-decision { margin-top: 6px; }
+.timeline-decision > p { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--muted); }
+.timeline-decision > p svg { flex: none; width: 13px; height: 13px; margin-top: 2px; color: var(--blue-soft); }
 .timeline-dot { width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 4px rgba(56, 168, 255, 0.1); }
 .timeline-dot.succeeded, .timeline-dot.completed { background: var(--green); }
 .timeline-dot.blocked, .timeline-dot.refused { background: var(--amber); }

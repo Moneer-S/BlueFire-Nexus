@@ -61,7 +61,7 @@
 .run-outcome-symbol { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--blue) 55%, var(--line)); border-radius: 50%; color: var(--blue-soft); background: color-mix(in srgb, var(--blue) 10%, var(--surface)); }
 .run-outcome[data-result="achieved"] .run-outcome-symbol { color: var(--green); border-color: color-mix(in srgb, var(--green) 42%, var(--line)); background: color-mix(in srgb, var(--green) 10%, var(--surface)); }
 .run-outcome-symbol svg { width: 21px; height: 21px; }
-.run-outcome h2 { margin: 0; font-size: 1.375rem; letter-spacing: -.015em; line-height: 1.3; overflow-wrap: anywhere; }
+.run-outcome h2, .run-outcome h3 { margin: 0; font-size: 1.375rem; letter-spacing: -.015em; line-height: 1.3; overflow-wrap: anywhere; }
 .run-objective { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 7px; margin-top: 8px; }
 .run-objective strong { color: var(--muted); font-size: .6875rem; font-weight: 500; }
 .run-objective p { margin: 0; font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; }
@@ -172,7 +172,7 @@
   .run-evidence-summary { grid-template-columns: minmax(0, 1fr); }
   .run-step-heading { flex-wrap: wrap; }
   .run-step-heading .badge { max-width: 100%; text-align: left; }
-  .run-outcome h2 { font-size: 1.4rem; }
+  .run-outcome h2, .run-outcome h3 { font-size: 1.4rem; }
 }
 @container run-review (max-width: 420px) {
   .run-outcome-facts { grid-template-columns: minmax(0, 1fr); }
@@ -242,3 +242,7 @@
 .review-step-settings { min-width: 0; grid-column: 2 / -1; }
 .review-step-settings .data-list { margin: 0; }
 .review-step-settings dd { overflow-wrap: anywhere; }
+
+/* A finished run leads its live panel with the recorded conclusion. */
+.live-run-outcome { padding: 14px 15px 2px; }
+.live-run-outcome .run-outcome h3 { font-size: 1.2rem; }

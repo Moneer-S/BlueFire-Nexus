@@ -5,7 +5,7 @@ import { RunnerInventoryRecovery } from "./ExecuteRunnerReadiness";
 import { RunNameControl, CopyRunId } from "../components/RunNameControl";
 import { assistanceRunLink } from "../lib/run-assistance";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, ArrowLeft, ArrowRight, CircleStop, Clock3, Download, FileCheck2, FileSearch, FlaskConical, Gauge, GitCompareArrows, ListTree, Pause, Play, RotateCcw, ShieldCheck, Sparkles, Target, TerminalSquare } from "lucide-react";
+import { Activity, AlertTriangle, GitBranch, ArrowLeft, ArrowRight, CircleStop, Clock3, Download, FileCheck2, FileSearch, FlaskConical, Gauge, GitCompareArrows, ListTree, Pause, Play, RotateCcw, ShieldCheck, Sparkles, Target, TerminalSquare } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError, DEMO_MODE, type ReplayPreparation } from "../lib/api";
@@ -356,7 +356,7 @@ export function RunWorkspace({ embedded }: { embedded?: { job: RunJob; releaseEn
     });
     return () => cancelAnimationFrame(frame);
   });
-  const runMutation = useMutation({ mutationFn: () => api.submitRun(scenario, runConfig), onMutate: () => { setNotice(runConfig.mode === "simulate" ? "Submitting a durable Simulate job." : "Creating a durable Execute job with a separate approval gate."); setActiveRun(null); }, onSuccess: async (submission) => { const snapshot = await synchronizeJobSnapshot({ ...submission.job, approval_request: submission.approval_request ?? submission.job.approval_request }); trackActiveJob(snapshot); setJobPreflight(submission.preflight ?? undefined); setApprovalRequest(snapshot.approval_request ?? null); setNotice(`Job ${snapshot.job_id} was accepted in ${sentence(snapshot.state)} state.`); if (!embedded && runConfig.mode === "simulate") setRevealProgress(true); void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); void queryClient.invalidateQueries({ queryKey: ["runs"] }); }, onError: (error) => setNotice(error instanceof Error ? error.message : "Job submission was refused."), onSettled: clearApproval });
+  const runMutation = useMutation({ mutationFn: () => api.submitRun(scenario, runConfig), onMutate: () => { setNotice(runConfig.mode === "simulate" ? "Submitting a durable Simulate job." : "Creating a durable Execute job with a separate approval gate."); setActiveRun(null); }, onSuccess: async (submission) => { const snapshot = await synchronizeJobSnapshot({ ...submission.job, approval_request: submission.approval_request ?? submission.job.approval_request }); trackActiveJob(snapshot); setJobPreflight(submission.preflight ?? undefined); setApprovalRequest(snapshot.approval_request ?? null); setNotice(`Job ${snapshot.job_id} was accepted in ${sentence(snapshot.state)} state.`); if (!embedded && runConfig.mode === "simulate") { setSetupExpanded(false); setRevealProgress(true); } void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); void queryClient.invalidateQueries({ queryKey: ["runs"] }); }, onError: (error) => setNotice(error instanceof Error ? error.message : "Job submission was refused."), onSettled: clearApproval });
   const approvalMutation = useMutation({ mutationFn: ({ jobId, approvedBy }: { jobId: string; approvedBy: string }) => api.approveJob(jobId, approvedBy), onSuccess: async (result, variables) => { const snapshot = await synchronizeJobSnapshot({ ...result.job, approval_request: result.approval_request ?? result.job.approval_request }); void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); if (activeJobIdRef.current !== variables.jobId || snapshot.job_id !== variables.jobId) return; trackActiveJob(snapshot); setApprovalRequest(snapshot.approval_request ?? null); setNotice(`The exact envelope for ${snapshot.job_id} was approved once and released to the job controller.`); }, onError: (error, variables) => { if (activeJobIdRef.current === variables.jobId) setNotice(error instanceof Error ? error.message : "Job approval was refused."); }, onSettled: (_result, _error, variables) => { if (activeJobIdRef.current !== variables.jobId) return; setJobApprovalConfirmed(false); setJobApprovedBy(""); clearApproval(); } });
   const runnerLifecycleMutation = useMutation({
     mutationFn: async ({ action, selection }: { action: "bootstrap" | "start"; selection: typeof runnerSelection }) => {
@@ -548,6 +548,7 @@ function LiveConsole({ catalog, run: linkedRun, job, events, pending, approvalPr
   const emptyTitle = pending && !run ? job?.state === "awaiting_approval" ? "Waiting for your approval" : job ? sentence(job.state) : "Submitting request" : retained.record ? "No retained step records" : run ? `Run ${sentence(run.status).toLowerCase()}` : terminal ? `Job ${sentence(job!.state).toLowerCase()}` : "Awaiting a run";
   const emptyDetail = pending && !run ? job?.state === "awaiting_approval" ? "Review the saved plan below. The next execution phase is waiting for approval." : job ? "Following the saved operation. Step results appear as they are recorded." : "Waiting for the service to return the saved operation." : run ? "The saved record contains no completed steps. Review its events and limitations for context." : terminal ? typeof job?.progress.run_id === "string" ? "This job has ended. Its recorded events remain available below, but no finalized run record is linked." : "This job ended before a run record was linked." : "Planner, policy, dispatch, evidence, detection, and cleanup events will remain separate.";
   return <Panel className="live-console" id="run-progress" tabIndex={-1} aria-label="Run progress"><PanelHeader title={run ? runLabel(run) : job ? "Run progress" : pending ? "Submitting run" : "No active run"} detail={retained.record ? `${sentence(retained.record.mode)} · Job ${sentence(job!.state).toLowerCase()} · Retained observations` : run ? `${sentence(run.mode)} · ${sentence(run.status)} · ${run.is_demo ? "sanitized demo" : "canonical local record"}` : job ? `${sentence(job.state)} · Updated ${formatDate(job.updated_at)}` : "Complete preflight, then submit a durable local job."} actions={<div className="run-controls">{ended ? null : <><Button size="small" variant="ghost" disabled={!canPause || controlPending} onClick={() => onControl("pause")} title={canPause ? "Pause at the next cooperative checkpoint" : "Pause requires a running controller-owned job"}><Pause/>Pause</Button><Button size="small" variant="ghost" disabled={!canResume || controlPending} onClick={() => onControl("resume")} title={canResume ? "Resume the cooperatively paused job" : "Resume requires a paused controller-owned job"}><RotateCcw/>Resume</Button></>}{isRetryableInterruptedJob(job) ? <Button size="small" variant="secondary" disabled={!retryEnabled || controlPending} onClick={onRetry} title={retryEnabled ? "Create a replacement job with fresh preflight and approval" : "Retry requires a fresh empty active-job inventory"}><RotateCcw/>Retry as replacement</Button> : null}{ended ? null : <Button size="small" variant="danger" disabled={!canCancel || controlPending} onClick={() => onControl("cancel")} title={canCancel ? "Request cooperative cancellation" : "Cancel requires a nonterminal controller-owned job"}><CircleStop/>Cancel</Button>}{linkedRun ? <Button size="small" variant={ended ? "primary" : "secondary"} onClick={onReview}><FileSearch/>Review</Button> : null}</div>} />
+    {ended && linkedRun ? <div className="live-run-outcome"><RunOutcomeSummary run={linkedRun} catalog={catalog} showObjective={false} heading="h3" /></div> : null}
     {job ? <details className="job-details"><summary>Job details</summary><DataList items={[{ label: "Job ID", value: <code>{job.job_id}</code> }, { label: "Last update", value: formatDate(job.updated_at) }]} /></details> : null}
     {DEMO_MODE ? <div className="console-banner"><Sparkles/>Demo lifecycle states are presentation fixtures only. No runner was dispatched.</div> : null}
     {job?.state === "awaiting_approval" && job.progress.approval_kind !== "ai_proposal" ? mutableControlsEnabled ? <JobApprovalGate catalog={catalog} job={job} preflight={approvalPreflight} approvalRequest={approvalRequest} proposalReview={proposalReview} confirmed={approvalConfirmed} approvedBy={approvedBy} pending={approvalPending} releaseEnabled={releaseEnabled} onConfirmed={onApprovalConfirmed} onApprovedBy={onApprovedBy} onApprove={onApprove} /> : <Callout tone="warning" title="Controller ownership unavailable">Approval remains disabled until fresh active-job inventory confirms that this controller owns the job.</Callout> : null}
@@ -608,9 +609,17 @@ function JobApprovalGate({ catalog, job, preflight: ordinaryPreflight, approvalR
 function Timeline({ catalog, run, job, events: incrementalEvents, pending }: { catalog?: CatalogResponse; run: RunRecord | null; job: RunJob | null; events: RunEventPage["items"]; pending: boolean }) {
   const events = incrementalEvents.length ? incrementalEvents : run?.events?.length ? run.events : run?.steps.map((step, index) => ({ event_type: "step.completed", data: step, sequence: index + 1 })) ?? (job ? [{ type: job.state, sequence: 1, disposition: job.state === "awaiting_approval" ? "Execution callback has not started" : `Durable job phase ${String(job.progress.phase ?? job.state)}`, timestamp: job.updated_at }] : []);
   if (!events.length && !pending) return <div className="console-empty compact"><Clock3/><span>No audit events are available.</span></div>;
-  return <ol className="timeline">{pending && !events.length ? <li><span className="timeline-dot planning"/><div><strong>Planning request submitted</strong><p>Waiting for the service to accept the request. Its saved status will appear here.</p></div><time>Now</time></li> : events.map((event, index) => {
+  // A routing decision reads as the next line of the step result it follows,
+  // instead of a separate row after every step; proposals keep their own rows.
+  const entries: { view: ReturnType<typeof runEventPresentation>; decision?: ReturnType<typeof runEventPresentation> }[] = [];
+  for (const event of events) {
     const view = runEventPresentation(event, catalog, run, job?.request?.mode);
-    return <li key={view.sequence ?? index + 1}><span className={`timeline-dot ${normalizeStatus(view.status)}`}/><div><strong>{view.title}</strong><p>{view.detail}</p><details><summary>Event details</summary><DataList items={[{ label: "Event type", value: <code>{view.type}</code> }, ...(view.stepId ? [{ label: "Step ID", value: <code>{view.stepId}</code> }] : []), ...(view.methodId ? [{ label: "Method ID", value: <code>{view.methodId}</code> }] : []), ...(view.behaviorId ? [{ label: "Behavior ID", value: <code>{view.behaviorId}</code> }] : [])]} /></details></div><time>{view.timestamp ? formatDate(view.timestamp) : `#${view.sequence ?? index + 1}`}</time></li>;
+    const previous = entries.at(-1);
+    if (view.type === "planner.decision" && view.title === "Plan decision" && previous?.view.type === "step.completed" && !previous.decision) previous.decision = view;
+    else entries.push({ view });
+  }
+  return <ol className="timeline">{pending && !events.length ? <li><span className="timeline-dot planning"/><div><strong>Planning request submitted</strong><p>Waiting for the service to accept the request. Its saved status will appear here.</p></div><time>Now</time></li> : entries.map(({ view, decision }, index) => {
+    return <li key={view.sequence ?? index + 1}><span className={`timeline-dot ${normalizeStatus(view.status)}`}/><div><strong>{view.title}</strong><p>{view.detail}</p>{decision ? <div className="timeline-decision"><p><GitBranch aria-hidden="true"/>{decision.detail}</p></div> : null}<details><summary>Event details</summary><DataList items={[{ label: "Event type", value: <code>{view.type}</code> }, ...(view.stepId ? [{ label: "Step ID", value: <code>{view.stepId}</code> }] : []), ...(view.methodId ? [{ label: "Method ID", value: <code>{view.methodId}</code> }] : []), ...(view.behaviorId ? [{ label: "Behavior ID", value: <code>{view.behaviorId}</code> }] : [])]} /></details>{decision ? <details><summary>Decision details</summary><DataList items={[{ label: "Event type", value: <code>{decision.type}</code> }, ...(decision.stepId ? [{ label: "Step ID", value: <code>{decision.stepId}</code> }] : []), ...(decision.methodId ? [{ label: "Method ID", value: <code>{decision.methodId}</code> }] : []), ...(decision.behaviorId ? [{ label: "Behavior ID", value: <code>{decision.behaviorId}</code> }] : [])]} /></details> : null}</div><time>{view.timestamp ? formatDate(view.timestamp) : `#${view.sequence ?? index + 1}`}</time></li>;
   })}</ol>;
 }
 
@@ -640,6 +649,31 @@ export function DetectionDetail({ run }: { run: RunRecord | null }) {
 }
 
 
+/** The recorded conclusion shared by the live run panel and the run review. */
+function RunOutcomeSummary({ run, catalog, showObjective = true, heading = "h2" }: { run: RunRecord; catalog?: CatalogResponse; showObjective?: boolean; heading?: "h2" | "h3" }) {
+  const Heading = heading;
+  const stopped = (run.steps ?? []).find((step) => step.execution_disposition !== "counterfactual" && ["blocked", "control_blocked", "refused", "failed", "error", "cancelled"].includes(step.status));
+  const observed = run.evidence?.records?.filter((record) => record.provenance === "observed");
+  const outcome = objectiveLabel(run.objective_reached, run.mode);
+  const cleanup = cleanupSummary(run.cleanup, run.mode);
+  const needsCleanup = cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed");
+  const stepName = (step: RunStep) => recordedStepLabels(step, catalog, run).name;
+  const outcomeDescription = run.objective_reached === true
+    ? run.mode === "simulate" ? "The simulated path reached the experiment's objective. This does not establish a real effect or a working defense." : "The run records its objective as achieved. Check independent observations below to assess what was verified."
+    : run.objective_reached === false ? "The run did not achieve its objective. An unmet objective alone does not establish that a target control prevented it."
+    : "This record does not establish whether the objective was achieved. Review the path and available evidence before drawing a conclusion.";
+  return <>
+    <section className="run-outcome" aria-label="Recorded run outcome" data-result={run.objective_reached === true ? "achieved" : run.objective_reached === false ? "not-achieved" : "unknown"}>
+      <div className="run-outcome-main"><div className="run-outcome-heading"><span className="run-outcome-symbol"><Target aria-hidden="true"/></span><Heading>{outcome}</Heading></div>{showObjective && run.objective ? <div className="run-objective"><strong>Objective</strong><p>{run.objective}</p></div> : null}<details className="run-result-notes"><summary>Result details</summary><p>{outcomeDescription}</p><ul><li>{observed?.length === 0 ? "No independent confirmation is recorded." : observed ? "Collector observations; inspect their content and limitations." : "The evidence document is unavailable."}</li>{!stopped ? <li>This does not establish that the path completed.</li> : null}<li>{cleanup === "No real effects" ? "The cleanup record states that the simulation had no real effects." : run.mode === "simulate" ? "Simulation mode does not establish cleanup; review the recorded cleanup result." : "Recorded cleanup result; inspect any outstanding effects."}</li></ul></details></div>
+      <dl className="run-outcome-facts">
+        <div><dt>Independent observations</dt><dd>{observed ? `${observed.length} observed records` : "Not reported"}</dd></div>
+        <div><dt>First stopped step</dt><dd>{stopped ? <>{stepName(stopped)}<small>{stepOutcomeLabel(stopped, run.mode)}</small></> : "None recorded"}</dd></div>
+        <div className={needsCleanup ? "cleanup-attention" : ""}><dt>Cleanup</dt><dd>{cleanup}</dd></div>
+      </dl>
+    </section>
+  </>;
+}
+
 export function RunReview({ run, catalog, showObjective = true }: { run: RunRecord; catalog: CatalogResponse; showObjective?: boolean }) {
   const pathRef = useRef<HTMLElement>(null);
   const evidenceRef = useRef<HTMLDetailsElement>(null);
@@ -666,26 +700,11 @@ export function RunReview({ run, catalog, showObjective = true }: { run: RunReco
   ].filter(([count]) => typeof count === "number" && count > 0).map(([count, label]) => `${count} ${label}`).join(" · ");
   const detections = run.detections?.candidates;
   const aiProposals = Array.isArray(run.ai_proposals) ? run.ai_proposals : [];
-  const outcome = objectiveLabel(run.objective_reached, run.mode);
-  const cleanup = cleanupSummary(run.cleanup, run.mode);
-  const needsCleanup = cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed");
-  const stepName = (step: RunStep) => recordedStepLabels(step, catalog, run).name;
-  const outcomeDescription = run.objective_reached === true
-    ? run.mode === "simulate" ? "The simulated path reached the experiment's objective. This does not establish a real effect or a working defense." : "The run records its objective as achieved. Check independent observations below to assess what was verified."
-    : run.objective_reached === false ? "The run did not achieve its objective. An unmet objective alone does not establish that a target control prevented it."
-    : "This record does not establish whether the objective was achieved. Review the path and available evidence before drawing a conclusion.";
   return <div className="review-stack run-review">
     <div className="run-review-toolbar"><nav aria-label="Run review sections"><Button size="small" variant="ghost" onClick={() => focusSection(pathRef.current)}><ListTree aria-hidden="true"/>Path & steps</Button><Button size="small" variant="ghost" onClick={() => focusSection(evidenceRef.current)}><FileSearch aria-hidden="true"/>Evidence</Button><Button size="small" variant="ghost" onClick={() => focusSection(detectionRef.current)}><FlaskConical aria-hidden="true"/>Detection work</Button><Button size="small" variant="ghost" onClick={() => focusSection(cleanupRef.current)}><ShieldCheck aria-hidden="true"/>Cleanup</Button><Button size="small" variant="ghost" onClick={() => focusSection(exportRef.current)}><Download aria-hidden="true"/>Export</Button></nav></div>
     {run.is_demo ? <Callout title="Seeded review">This is a sanitized Simulate record. It does not prove runner execution, independent observation, or a real control block.</Callout> : null}
     {run.approval_pause ? <Callout tone="warning" title="Waiting for a reviewed continuation">The planner paused before the next action. Return to its saved job to review the proposed change and, for Execute, approve the next run.</Callout> : null}
-    <section className="run-outcome" aria-label="Recorded run outcome" data-result={run.objective_reached === true ? "achieved" : run.objective_reached === false ? "not-achieved" : "unknown"}>
-      <div className="run-outcome-main"><div className="run-outcome-heading"><span className="run-outcome-symbol"><Target aria-hidden="true"/></span><h2>{outcome}</h2></div>{showObjective && run.objective ? <div className="run-objective"><strong>Objective</strong><p>{run.objective}</p></div> : null}<details className="run-result-notes"><summary>Result details</summary><p>{outcomeDescription}</p><ul><li>{observed?.length === 0 ? "No independent confirmation is recorded." : observed ? "Collector observations; inspect their content and limitations." : "The evidence document is unavailable."}</li>{!stopped ? <li>This does not establish that the path completed.</li> : null}<li>{cleanup === "No real effects" ? "The cleanup record states that the simulation had no real effects." : run.mode === "simulate" ? "Simulation mode does not establish cleanup; review the recorded cleanup result." : "Recorded cleanup result; inspect any outstanding effects."}</li></ul></details></div>
-      <dl className="run-outcome-facts">
-        <div><dt>Independent observations</dt><dd>{observed ? `${observed.length} observed records` : "Not reported"}</dd></div>
-        <div><dt>First stopped step</dt><dd>{stopped ? <>{stepName(stopped)}<small>{stepOutcomeLabel(stopped, run.mode)}</small></> : "None recorded"}</dd></div>
-        <div className={needsCleanup ? "cleanup-attention" : ""}><dt>Cleanup</dt><dd>{cleanup}</dd></div>
-      </dl>
-    </section>
+    <RunOutcomeSummary run={run} catalog={catalog} showObjective={showObjective} />
     {stopped?.error?.message ? <Callout tone="warning" title={stepOutcomeLabel(stopped, run.mode)}>{stopped.error.message}</Callout> : null}
     <div className="run-review-body">
       <div className="run-review-path"><AdaptiveRunPath run={run} catalog={catalog}/>

@@ -311,3 +311,25 @@ it.each(["none", "restoration", "missing-preparation", "missing-step", "changed-
   expect(screen.getByRole("checkbox", { name: /I approve this exact/ })).not.toBeChecked();
   expect(approve).not.toHaveBeenCalled();
 });
+
+it("reads each routing decision as the next line of the step result it follows", async () => {
+  const job = { ...replayJob(firstId, "cancelled"), request: { mode: "simulate" }, progress: { run_id: "run-routed" } };
+  inventory([]);
+  vi.spyOn(api, "job").mockResolvedValue(job);
+  const behavior = demoCatalog.behaviors[0]!;
+  const items = [1, 2].flatMap((step) => [
+    { sequence: step * 2 - 1, event_type: "step.completed", data: { step_id: `routed-${step}`, behavior_id: behavior.id, simulation_id: behavior.simulation_id, status: "success" } },
+    { sequence: step * 2, event_type: "planner.decision", data: { step_id: `routed-${step}`, strategy: "deterministic", reason: "Follow the registered success branch." } },
+  ]);
+  vi.spyOn(api, "runEvents").mockImplementation(async (_id, cursor = 0) => ({ schema_version: "bluefire.event-page.v1", run_id: "run-routed", after_sequence: cursor, next_sequence: 4, has_more: false, items: cursor ? [] : items }));
+  mount();
+  expect(await screen.findAllByText("Step result recorded")).toHaveLength(2);
+  // Each decision stays inspectable, but no longer takes its own row.
+  expect(screen.queryByText("Plan decision")).not.toBeInTheDocument();
+  expect(document.querySelectorAll(".timeline > li")).toHaveLength(2);
+  const decisions = screen.getAllByText("Decision details");
+  expect(decisions).toHaveLength(2);
+  const first = decisions[0]!.closest("details")!;
+  await userEvent.setup().click(first.querySelector("summary")!);
+  expect(within(first).getByText("planner.decision", { exact: true })).toBeVisible();
+});
