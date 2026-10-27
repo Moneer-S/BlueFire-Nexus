@@ -267,5 +267,8 @@ it("names conditions that repeat a success destination on that route and draws t
   await user.click(routeButtons()[15]!);
   await waitFor(() => expect(parallel[1]).toHaveClass("selected"));
   expect(parallel[1]).not.toHaveClass("route-idle");
+  // The drawn condition speaks for itself; the success route stops repeating it.
+  await waitFor(() => expect(success.querySelector("title")).toHaveTextContent(/^Route 5: On success$/));
+  expect(success.querySelector(".react-flow__edge-text")).toBeNull();
   expect(cached()).toEqual(scenario);
 });

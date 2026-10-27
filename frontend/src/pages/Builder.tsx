@@ -125,7 +125,7 @@ const minimumReadableGraphZoom = 0.8;
 const deleteKeys = ["Backspace", "Delete"];
 const connectionLineStyle = { stroke: "#38a8ff", strokeWidth: 2 };
 const proOptions = { hideAttribution: true };
-const miniMapStyle = { width: 132, height: 80 };
+const miniMapStyle = { width: 168, height: 88 };
 const rightRouteGutter = 72;
 // Stage containers extend this far beyond their cards.
 const bandPadding = 22;
@@ -316,7 +316,11 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     // A condition that repeats its success route's destination is stated on that
     // success route ("Also partial") and drawn only while its step or route is in focus.
     const idleParallel = Boolean(edge.data?.parallel) && edge.id !== selectedRouteId && edge.source !== selectedId && edge.target !== selectedId;
-    return { ...edge, data: routedData.get(edge.id) ?? edge.data, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), className: idleParallel ? "route-idle" : undefined, focusable: idleParallel ? false : edge.focusable, style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45
+    const data = routedData.get(edge.id) ?? edge.data;
+    // Once those conditions are drawn, the success route no longer needs to name them.
+    const conditionsDrawn = Boolean(data?.alsoOn?.length) && (edge.source === selectedId || edge.target === selectedId
+      || edges.some(other => other.id === selectedRouteId && other.data?.parallel && other.source === edge.source && other.target === edge.target));
+    return { ...edge, data: conditionsDrawn ? { ...data!, alsoOn: undefined } : data, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), className: idleParallel ? "route-idle" : undefined, focusable: idleParallel ? false : edge.focusable, style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45
       // While a step is open in the inspector, its own routes carry the view.
       : inspectorOpen && selectedId && edge.source !== selectedId && edge.target !== selectedId ? .4 : 1 } };
   }), [edgeIsShown, edges, inspectorOpen, selectedId, selectedRouteId, routedData]);
@@ -931,7 +935,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
         }} onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
         <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly && !deletion.summary} nodesConnectable={!review?.readOnly && !deletion.summary} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly || deletion.summary ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
           {runBands.length ? <ViewportPortal><svg className="graph-run-bands" aria-hidden="true" width="1" height="1">{runBands.map(band => <g key={band.id} className={[band.stepIds.includes(selectedId) ? "selected" : "", "kind" in band ? "branch-region" : ""].filter(Boolean).join(" ") || undefined}><rect x={band.x} y={band.y} width={band.width} height={band.height} rx="10"/><text x={band.x + 12} y={band.y + 15}>{band.label}</text></g>)}</svg></ViewportPortal> : null}
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(117,198,255,.12)"/>{scenario.steps.length > 3 && miniMapOpen ? <MiniMap style={miniMapStyle} position="bottom-left" pannable zoomable nodeColor={(node) => node.selected ? "var(--blue)" : "var(--muted)"} bgColor="var(--ink-950)" maskColor="color-mix(in srgb, var(--ink-1000) 72%, transparent)"/> : null}<Controls position="bottom-right" showInteractive={false} onZoomIn={claimViewport} onZoomOut={claimViewport} onFitView={claimViewport}/>
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(117,198,255,.12)"/>{scenario.steps.length > 3 && miniMapOpen ? <MiniMap style={miniMapStyle} position="bottom-left" pannable zoomable nodeBorderRadius={6} nodeColor={(node) => node.selected ? "var(--blue)" : "var(--muted-strong)"} bgColor="var(--ink-950)" maskColor="color-mix(in srgb, var(--ink-1000) 72%, transparent)"/> : null}<Controls position="bottom-right" showInteractive={false} onZoomIn={claimViewport} onZoomOut={claimViewport} onFitView={claimViewport}/>
         </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Add the first step</strong><span>Choose a method to begin designing this experiment.</span><Button variant="primary" disabled={review?.readOnly} onClick={() => { setPaletteOpen(true); setInspectorOpen(false); }}>Add first step</Button></div> : null}</div>
         {routesOpen ? <BuilderRoutes routes={visibleRoutes} total={scenario.edges.length} selected={selectedRoute} readOnly={Boolean(review?.readOnly)} select={selectRoute} inspect={(source) => { selectStep(source); setRoutesOpen(false); window.requestAnimationFrame(() => document.getElementById(inspectorToggleId)?.focus()); }} remove={(id) => { void flow.deleteElements({ edges: [{ id }] }); }} close={() => { setRoutesOpen(false); document.getElementById(routesToggleId)?.focus(); }} /> : null}
         </div>
