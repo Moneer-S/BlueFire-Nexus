@@ -211,3 +211,9 @@
   .compare-page .delta-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .compare-page .delta-columns { grid-template-columns: minmax(0, 1fr); }
 }
+/* Same-named runs differ by result, mode and ID, not by a pair of pills per row. */
+.compare-page .run-select-list .run-select-id { font-family: var(--font-mono, ui-monospace, monospace); color: var(--muted-strong); }
+.compare-page .run-select-list .run-select-mode.mode-execute { color: var(--amber-soft); }
+.compare-page .run-select-result { font-size: .8125rem; font-weight: 600; text-align: right; color: var(--muted-strong); }
+.compare-page .run-select-result.tone-achieved { color: var(--green); }
+.compare-page .run-select-result.tone-danger { color: var(--red); }

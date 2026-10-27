@@ -26,7 +26,7 @@ import { AdaptiveDecision, AdaptiveRunPath } from "./AdaptiveRunPath";
 import { continuationApprovalPreflight, hasAdaptiveApprovalReview, hasUsableStoredApprovalReview, requiresAdaptiveReview } from "../lib/approvalReview";
 import { hasReplayExtent, settlePendingReplay } from "../lib/replay-submission";
 
-import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, runLimitationGroups, stepOutcomeLabel } from "../lib/run-presentation";
+import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, runLimitationGroups, runResult, shortRunId, stepOutcomeLabel } from "../lib/run-presentation";
 
 import { RunExports } from "../components/RunExports";
 import { recordedStepLabels, runEventPresentation } from "../lib/run-progress-presentation";
@@ -486,15 +486,13 @@ function RunHistoryPanel({ runs, unavailable, pending, error, retry }: { runs?: 
 function RunHistoryRow({ run }: { run: RunRecord }) {
   const ran = (run.steps ?? []).filter(step => step.execution_disposition !== "counterfactual");
   const stoppedAt = ran.findIndex(step => ["blocked", "control_blocked", "refused", "failed", "error", "cancelled"].includes(step.status));
-  const settled = run.status === "completed" || run.status === "succeeded";
-  const result = settled ? objectiveLabel(run.objective_reached, run.mode) : sentence(run.status);
-  const tone = !settled ? run.status === "failed" ? "danger" : "neutral" : run.objective_reached === true ? "achieved" : run.objective_reached === false ? "danger" : "neutral";
+  const result = runResult(run);
   const cleanup = cleanupSummary(run.cleanup, run.mode);
   const seconds = run.created_at && run.finalized_at ? (Date.parse(run.finalized_at) - Date.parse(run.created_at)) / 1000 : undefined;
   const duration = seconds === undefined || !Number.isFinite(seconds) || seconds < 0 ? undefined : seconds < 60 ? `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s` : `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`;
   return <tr>
-    <td><Link to={runReviewPath(run.run_id)} aria-label={"Review run " + runLabel(run) + " · " + sentence(run.mode) + " · " + formatDate(run.created_at)}>{runLabel(run)}</Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}<small>{sentence(run.mode)} · <code>{run.run_id.split("-").at(-1)?.slice(0, 8)}</code></small></td>
-    <td><span className={`run-history-result tone-${tone}`}>{result}</span>{cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed") ? <small className="cleanup-attention">Cleanup needs attention</small> : null}</td>
+    <td><Link to={runReviewPath(run.run_id)} aria-label={"Review run " + runLabel(run) + " · " + sentence(run.mode) + " · " + formatDate(run.created_at)}>{runLabel(run)}</Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}<small>{sentence(run.mode)} · <code>{shortRunId(run.run_id)}</code></small></td>
+    <td><span className={`run-history-result tone-${result.tone}`}>{result.label}</span>{cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed") ? <small className="cleanup-attention">Cleanup needs attention</small> : null}</td>
     <td>{ran.length} {ran.length === 1 ? "step" : "steps"}{stoppedAt >= 0 ? <small>Stopped at step {stoppedAt + 1}</small> : null}</td>
     <td>{formatDate(run.created_at)}{duration ? <small>Took {duration}</small> : null}</td>
   </tr>;
