@@ -17,7 +17,7 @@ import "./Builder.css";
 import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-authoring";
 import { ParameterField } from "../components/ParameterField";
 import { BuilderEvidenceTray } from "../components/BuilderEvidenceTray";
-import { connectedRunBands } from "../lib/connected-run-bands";
+import { branchRegionBands, connectedRunBands } from "../lib/connected-run-bands";
 import { graphNodeTitle } from "../lib/graph-node-title";
 import { graphNodeIcon } from "../lib/graph-node-icon";
 import { inspectorMethodTitle } from "../lib/inspector-method-title";
@@ -75,7 +75,7 @@ function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): F
   const routes: FlowEdge[] = scenario.edges.map((edge, index) => {
     const lane = incoming.get(edge.to_step) ?? 0;
     incoming.set(edge.to_step, lane + 1);
-    return { id: `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`, source: edge.from_step, target: edge.to_step, sourceHandle: `route:${edge.outcome}`, targetHandle: "route:in", type: "outcomeRoute", ariaLabel: `Route ${index + 1}: ${title(edge.from_step)}: ${branchLabels[edge.outcome]} → ${title(edge.to_step)} (${edge.from_step} → ${edge.to_step})`, markerEnd: { type: MarkerType.ArrowClosed, color: outcomeColors[edge.outcome] }, style: { stroke: outcomeColors[edge.outcome], strokeWidth: 2, strokeDasharray: edge.outcome === "success" ? undefined : "8 5" }, data: { kind: "route", outcome: edge.outcome, number: index + 1, lane, parallel: edge.outcome !== "success" && scenario.edges.some(other => other.outcome === "success" && other.from_step === edge.from_step && other.to_step === edge.to_step), sourceTitle: title(edge.from_step), targetTitle: title(edge.to_step) } };
+    return { id: `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`, source: edge.from_step, target: edge.to_step, sourceHandle: `route:${edge.outcome}`, targetHandle: "route:in", type: "outcomeRoute", ariaLabel: `Route ${index + 1}: ${title(edge.from_step)}: ${branchLabels[edge.outcome]} → ${title(edge.to_step)} (${edge.from_step} → ${edge.to_step})`, markerEnd: { type: MarkerType.ArrowClosed, color: outcomeColors[edge.outcome] }, style: { stroke: outcomeColors[edge.outcome], strokeWidth: 2, strokeDasharray: edge.outcome === "success" ? undefined : "8 5" }, data: { kind: "route", outcome: edge.outcome, number: index + 1, lane, parallel: edge.outcome !== "success" && scenario.edges.some(other => other.outcome === "success" && other.from_step === edge.from_step && other.to_step === edge.to_step), alsoOn: edge.outcome === "success" ? [...new Set(scenario.edges.filter(other => other.outcome !== "success" && other.from_step === edge.from_step && other.to_step === edge.to_step).map(other => other.outcome))] : undefined, sourceTitle: title(edge.from_step), targetTitle: title(edge.to_step) } };
   });
   const artifacts: FlowEdge[] = [];
   for (const target of scenario.steps) for (const [input, binding] of Object.entries(target.inputs)) {
@@ -127,6 +127,10 @@ const connectionLineStyle = { stroke: "#38a8ff", strokeWidth: 2 };
 const proOptions = { hideAttribution: true };
 const miniMapStyle = { width: 132, height: 80 };
 const rightRouteGutter = 72;
+// Stage containers extend this far beyond their cards.
+const bandPadding = 22;
+// The opening frame keeps those containers and their labels clear of the canvas edge.
+const openingFramePadding = bandPadding + 18;
 const sameViewport = (left: GraphViewport, right: GraphViewport) => left.zoom === right.zoom && Math.abs(left.x - right.x) < 0.001 && Math.abs(left.y - right.y) < 0.001;
 
 function visibleCanvasFrame(canvas: HTMLElement): GraphFrame {
@@ -301,15 +305,21 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const routeObstacles = useMemo<RouteObstacle[]>(() => JSON.parse(routeGeometry) as RouteObstacle[], [routeGeometry]);
   const runBands = useMemo(() => {
     const ordinals = new Map(scenario.steps.map((step, index) => [step.id, index + 1]));
-    return connectedRunBands(routeObstacles.map(card => ({ ...card, ordinal: ordinals.get(card.id) ?? 0 })), graph.edges, { padding: 22 });
+    const cards = routeObstacles.map(card => ({ ...card, ordinal: ordinals.get(card.id) ?? 0 }));
+    const runs = connectedRunBands(cards, graph.edges, { padding: bandPadding });
+    return [...runs, ...branchRegionBands(cards, graph.edges, runs, { padding: bandPadding })];
   }, [graph.edges, routeObstacles, scenario.steps]);
   const routedData = useMemo(() => new Map(edgeDefinitions.map(edge => [edge.id, edge.data ? { ...edge.data, obstacles: routeObstacles } : undefined])), [edgeDefinitions, routeObstacles]);
   const edgeIsShown = useCallback((edge: FlowEdge) => shownIds.has(edge.source) && shownIds.has(edge.target) && (edge.data?.kind !== "artifact" || showInputs) && (edge.data?.kind !== "route" || edge.data.outcome === "success" || allBranches || expandedBranches.has(edge.source)), [allBranches, expandedBranches, showInputs, shownIds]);
   const selectedRouteId = edges.find((edge) => edge.selected && edge.data?.kind === "route" && edgeIsShown(edge))?.id;
-  const displayEdges = useMemo(() => edges.map((edge) => ({ ...edge, data: routedData.get(edge.id) ?? edge.data, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45
-    : edge.data?.parallel && edge.id !== selectedRouteId && edge.source !== selectedId && edge.target !== selectedId ? .18
-    // While a step is open in the inspector, its own routes carry the view.
-    : inspectorOpen && selectedId && edge.source !== selectedId && edge.target !== selectedId ? .4 : 1 } })), [edgeIsShown, edges, inspectorOpen, selectedId, selectedRouteId, routedData]);
+  const displayEdges = useMemo(() => edges.map((edge) => {
+    // A condition that repeats its success route's destination is stated on that
+    // success route ("Also partial") and drawn only while its step or route is in focus.
+    const idleParallel = Boolean(edge.data?.parallel) && edge.id !== selectedRouteId && edge.source !== selectedId && edge.target !== selectedId;
+    return { ...edge, data: routedData.get(edge.id) ?? edge.data, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), className: idleParallel ? "route-idle" : undefined, focusable: idleParallel ? false : edge.focusable, style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45
+      // While a step is open in the inspector, its own routes carry the view.
+      : inspectorOpen && selectedId && edge.source !== selectedId && edge.target !== selectedId ? .4 : 1 } };
+  }), [edgeIsShown, edges, inspectorOpen, selectedId, selectedRouteId, routedData]);
   const visibleRoutes = displayEdges.filter((edge) => !edge.hidden && edge.data?.kind === "route");
   const selectedRoute = visibleRoutes.find((edge) => edge.id === selectedRouteId);
   useEffect(() => {
@@ -410,7 +420,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       return { ...item.position, width: (item.measured?.width ?? GRAPH_NODE_WIDTH) + (routes ? rightRouteGutter : 0), height: item.measured?.height ?? GRAPH_NODE_HEIGHT };
     }) : [];
     const next = mode === "reveal" ? revealGraphContext(preferred ?? current, bounds, neighbors, frame)
-      : mode === "start" ? readableGraphViewport(bounds, frame, true) : focusedGraphViewport(bounds, context, frame, mode === "opening");
+      : mode === "start" ? readableGraphViewport(bounds, frame, true) : focusedGraphViewport(bounds, context, frame, mode === "opening", mode === "opening" ? openingFramePadding : undefined);
     if (!sameViewport(next, current)) void flow.setViewport(next, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return next;
   }, [allBranches, expandedBranches, flow, graph.edges]);
@@ -920,7 +930,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           if (id && visibleRoutes.some((edge) => edge.id === id)) { event.preventDefault(); selectRoute(id); }
         }} onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
         <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly && !deletion.summary} nodesConnectable={!review?.readOnly && !deletion.summary} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly || deletion.summary ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
-          {runBands.length ? <ViewportPortal><svg className="graph-run-bands" aria-hidden="true" width="1" height="1">{runBands.map(band => <g key={band.id} className={band.stepIds.includes(selectedId) ? "selected" : undefined}><rect x={band.x} y={band.y} width={band.width} height={band.height} rx="10"/><text x={band.x + 12} y={band.y + 15}>{band.label}</text></g>)}</svg></ViewportPortal> : null}
+          {runBands.length ? <ViewportPortal><svg className="graph-run-bands" aria-hidden="true" width="1" height="1">{runBands.map(band => <g key={band.id} className={[band.stepIds.includes(selectedId) ? "selected" : "", "kind" in band ? "branch-region" : ""].filter(Boolean).join(" ") || undefined}><rect x={band.x} y={band.y} width={band.width} height={band.height} rx="10"/><text x={band.x + 12} y={band.y + 15}>{band.label}</text></g>)}</svg></ViewportPortal> : null}
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(117,198,255,.12)"/>{scenario.steps.length > 3 && miniMapOpen ? <MiniMap style={miniMapStyle} position="bottom-left" pannable zoomable nodeColor={(node) => node.selected ? "var(--blue)" : "var(--muted)"} bgColor="var(--ink-950)" maskColor="color-mix(in srgb, var(--ink-1000) 72%, transparent)"/> : null}<Controls position="bottom-right" showInteractive={false} onZoomIn={claimViewport} onZoomOut={claimViewport} onFitView={claimViewport}/>
         </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Add the first step</strong><span>Choose a method to begin designing this experiment.</span><Button variant="primary" disabled={review?.readOnly} onClick={() => { setPaletteOpen(true); setInspectorOpen(false); }}>Add first step</Button></div> : null}</div>
         {routesOpen ? <BuilderRoutes routes={visibleRoutes} total={scenario.edges.length} selected={selectedRoute} readOnly={Boolean(review?.readOnly)} select={selectRoute} inspect={(source) => { selectStep(source); setRoutesOpen(false); window.requestAnimationFrame(() => document.getElementById(inspectorToggleId)?.focus()); }} remove={(id) => { void flow.deleteElements({ edges: [{ id }] }); }} close={() => { setRoutesOpen(false); document.getElementById(routesToggleId)?.focus(); }} /> : null}

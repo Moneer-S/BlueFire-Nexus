@@ -24,6 +24,8 @@ export type BuilderFlowEdge = Edge<{
   number?: number;
   /** A conditional outcome that reaches the same step as its success route. */
   parallel?: boolean;
+  /** On a success route: the conditional outcomes that reach the same step. */
+  alsoOn?: readonly Outcome[];
   lane?: number;
   sourceTitle?: string;
   targetTitle?: string;

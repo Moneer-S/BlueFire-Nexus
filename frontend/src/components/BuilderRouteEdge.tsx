@@ -7,9 +7,10 @@ export function BuilderRouteEdge({ id, source, target, sourceX, sourceY, targetX
   const payload = data?.artifactLabel?.length && data.artifactLabel.length > 22 ? `${data.artifactLabel.slice(0, 19)}...` : data?.artifactLabel;
   const outcome = data?.outcome ? { success: "On success", partial: "Partly complete", blocked: "When blocked", failed: "On failure" }[data.outcome] : "Connection";
   const shortOutcome = data?.outcome ? { success: "Success", partial: "Partial", blocked: "Blocked", failed: "Failed" }[data.outcome] : "Connection";
-  // A condition that only repeats its success route's destination needs no
-  // label until the route itself is selected.
-  const label = data?.kind === "artifact" ? payload : selected ? `R${data?.number ?? "?"} · ${shortOutcome}` : data?.outcome !== "success" && !data?.parallel ? shortOutcome : undefined;
+  // A condition that only repeats its success route's destination is named on
+  // the success route instead, until the condition itself is selected.
+  const also = data?.alsoOn?.length === 3 ? "Any outcome" : data?.alsoOn?.length ? `Also ${data.alsoOn.join(", ")}` : undefined;
+  const label = data?.kind === "artifact" ? payload : selected ? `R${data?.number ?? "?"} · ${shortOutcome}` : data?.outcome !== "success" ? (data?.parallel ? undefined : shortOutcome) : also;
   const labelWidth = Math.max(30, (label?.length ?? 0) * 6.5 + 14);
   const route = useMemo(() => routePath({ source: { x: sourceX, y: sourceY }, target: { x: targetX, y: targetY }, sourceId: source, targetId: target, sourceSide: sourcePosition, targetSide: targetPosition, obstacles: data?.obstacles, lane: data?.lane, labelWidth }), [source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data?.obstacles, data?.lane, labelWidth]);
   // Conditional ports are vertically separated. Keep their labels beside those
@@ -19,7 +20,7 @@ export function BuilderRouteEdge({ id, source, target, sourceX, sourceY, targetX
   const sourceLabelClear = sourceLabel && !(data?.obstacles ?? []).some(rect => sourceLabel.x + labelWidth / 2 > rect.x - 4 && sourceLabel.x - labelWidth / 2 < rect.x + rect.width + 4 && sourceLabel.y + 10 > rect.y - 4 && sourceLabel.y - 10 < rect.y + rect.height + 4);
   const labelPosition = sourceLabelClear ? sourceLabel : route.payloadLabel;
   return <g data-route-obstructed={route.obstructed || undefined} data-route-kind={data?.kind} data-route-outcome={data?.outcome}>
-    {data?.kind === "route" ? <title>{`Route ${data.number}: ${outcome}`}</title> : null}
+    {data?.kind === "route" ? <title>{`Route ${data.number}: ${outcome}${also && data.outcome === "success" ? `. ${also}` : ""}`}</title> : null}
     {data?.kind === "artifact" ? <title>{data.artifactLabel}: {data.artifactType ?? "Input dependency"}</title> : null}
     {route.obstructed ? <title>Saved positions overlap this connection. Auto-layout can separate the cards.</title> : null}
     <BaseEdge id={id} path={route.path}

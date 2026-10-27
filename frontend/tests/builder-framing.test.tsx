@@ -203,9 +203,9 @@ describe("Builder viewport controls", () => {
     await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
     expectReadableSelection("wide_step_1");
     expect(state.viewport.zoom).toBe(1);
-    // The entry card starts at the canvas padding instead of its centre, so the
-    // following cards occupy the rest of the width rather than half of it.
-    expect(state.viewport.x + 32).toBe(24);
+    // The entry card starts at the canvas padding (clear of its stage container)
+    // instead of its centre, so the following cards occupy the rest of the width.
+    expect(state.viewport.x + 32).toBe(40);
     const visible = scenario.steps.filter((_, index) => state.viewport.x + 32 + index * 276 + 220 <= width);
     expect(visible.length).toBeGreaterThanOrEqual(3);
     // A single row is centred in the available height, not pinned to the top.

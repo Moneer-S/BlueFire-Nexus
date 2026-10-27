@@ -191,3 +191,61 @@ export function connectedRunBands(
   }
   return bands;
 }
+
+export interface BranchRegionBand extends ConnectedRunBand {
+  readonly kind: "fallback" | "branches";
+}
+
+/**
+ * Presentation-only regions around a real decision: a step with two or more
+ * distinct destinations, those destinations, and the step each alternative
+ * rejoins on success. Labelled "fallback" only when every alternative route is
+ * a blocked or failed outcome. Declined when the region would enclose an
+ * unrelated card or overlap a connected-run band, so it never claims a step it
+ * does not contain. Positions are read, never changed.
+ */
+export function branchRegionBands(
+  input: readonly BandCard[],
+  edges: readonly BandEdge[],
+  existing: readonly ConnectedRunBand[],
+  options: Pick<BandOptions, "padding"> = {},
+): BranchRegionBand[] {
+  if (input.length > MAX_CARDS || edges.length > MAX_EDGES) return [];
+  const padding = options.padding ?? 12;
+  if (!finiteNonnegative(padding)) return [];
+  const cards = input.filter(card => !card.hidden);
+  const byId = new Map(cards.map(card => [card.id, card]));
+  const banded = new Set(existing.flatMap(band => band.stepIds));
+  const taken: Rect[] = existing.map(band => ({ x: band.x, y: band.y, width: band.width, height: band.height }));
+  const regions: BranchRegionBand[] = [];
+  let checks = 0;
+  for (const decision of cards) {
+    const outgoing = edges.filter(edge => edge.from_step === decision.id && byId.has(edge.to_step) && edge.to_step !== decision.id);
+    const destinations = new Set(outgoing.map(edge => edge.to_step));
+    if (destinations.size < 2) continue;
+    const primary = outgoing.find(edge => edge.outcome === "success")?.to_step;
+    const alternatives = outgoing.filter(edge => edge.to_step !== primary);
+    const members = new Set([decision.id, ...destinations]);
+    for (const alternative of new Set(alternatives.map(edge => edge.to_step))) {
+      const rejoin = edges.find(edge => edge.from_step === alternative && edge.outcome === "success")?.to_step;
+      if (rejoin && rejoin !== decision.id && byId.has(rejoin)) members.add(rejoin);
+    }
+    if (members.size > 6 || [...members].some(id => banded.has(id))) continue;
+    const memberCards = [...members].map(id => byId.get(id)!);
+    const rect = bounds(memberCards, padding);
+    let clear = true;
+    for (const card of cards) {
+      if (members.has(card.id)) continue;
+      if (++checks > MAX_COLLISION_CHECKS) return regions;
+      if (overlaps(rect, card)) { clear = false; break; }
+    }
+    if (!clear || taken.some(other => overlaps(rect, other))) continue;
+    // A fallback is the one place a step goes when it does not succeed; any other
+    // shape (no success route, or several alternative destinations) is a branch.
+    const kind = primary && new Set(alternatives.map(edge => edge.to_step)).size === 1 ? "fallback" : "branches";
+    const ordinals = memberCards.map(card => card.ordinal);
+    regions.push({ id: `branch-region:${decision.id}`, kind, stepIds: [...members], ordinals, label: `${ordinalLabel(ordinals)} · ${kind}`, ...rect });
+    taken.push(rect);
+  }
+  return regions;
+}

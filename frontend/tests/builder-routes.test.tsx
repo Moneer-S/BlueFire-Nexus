@@ -247,3 +247,25 @@ it.each(["click", "keyboard"])("reopens a retained selected route after closing 
   expect(routeButtons()[6]).toHaveAttribute("aria-pressed", "true");
   expect(cached()).toEqual(demoScenario);
 });
+
+it("names conditions that repeat a success destination on that route and draws them only while in focus", async () => {
+  const user = userEvent.setup();
+  mount();
+  await showFullRouteGraph(user);
+  // authorized_peer_handoff continues to cleanup on every outcome (routes 5, 15, 16 and 17).
+  const success = await screen.findByTestId("rf__edge-route-authorized_peer_handoff-success-cleanup_workspace-4");
+  await waitFor(() => expect(success.querySelector("title")).toHaveTextContent("Route 5: On success. Any outcome"));
+  const label = success.querySelector(".react-flow__edge-text");
+  if (label) expect(label).toHaveTextContent("Any outcome");
+  const parallel = (["partial", "blocked", "failed"] as const).map((outcome, index) => screen.getByTestId(`rf__edge-route-authorized_peer_handoff-${outcome}-cleanup_workspace-${14 + index}`));
+  for (const edge of parallel) {
+    expect(edge).toHaveClass("route-idle");
+    expect(edge).not.toHaveAttribute("tabindex");
+  }
+  // Every route stays listed and selectable; selecting one draws it.
+  expect(routeButtons()).toHaveLength(17);
+  await user.click(routeButtons()[15]!);
+  await waitFor(() => expect(parallel[1]).toHaveClass("selected"));
+  expect(parallel[1]).not.toHaveClass("route-idle");
+  expect(cached()).toEqual(scenario);
+});

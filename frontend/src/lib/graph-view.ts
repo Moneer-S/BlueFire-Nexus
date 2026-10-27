@@ -40,9 +40,8 @@ export function graphBoundsViewport(nodes: readonly GraphNodeBounds[], frame: Gr
 }
 
 /** Keep compact context readable; at path ends, use the canvas for connected work. */
-export function focusedGraphViewport(selected: GraphNodeBounds, context: readonly GraphNodeBounds[], frame: GraphFrame, fitHeight = false): GraphViewport {
+export function focusedGraphViewport(selected: GraphNodeBounds, context: readonly GraphNodeBounds[], frame: GraphFrame, fitHeight = false, padding = 24): GraphViewport {
   const cards = [selected, ...context];
-  const padding = 24;
   const readable = readableGraphViewport(selected, frame);
   // When opening, columns only slightly taller than the canvas fit their height
   // at a readable scale, so the bottom row is not clipped while panning sideways.
