@@ -77,6 +77,7 @@
   margin-top: -6px;
 }
 .detection-tools > details > summary { padding: 4px 0; cursor: pointer; font-size: .76rem; color: var(--muted-strong); }
+.detection-tools .new-rule-draft-cue { display: inline; margin-left: 10px; color: var(--blue-soft); font-size: .72rem; overflow-wrap: anywhere; }
 .detection-tools > details[open] { flex: 1 0 100%; }
 .detection-tools > details > .panel { margin-top: 10px; }
 .detection-tools > details .detail-body { max-width: 920px; }
@@ -462,3 +463,5 @@
 @media (prefers-reduced-motion: reduce) {
   .detection-page .candidate-list-items > button { transition: none; }
 }
+/* Without a selected candidate the assistance row sits directly in the panel. */
+.candidate-workspace > .panel > .detection-assistance { padding: 14px 18px; margin: 0; border-top: 0; border-bottom: 1px solid var(--line); }

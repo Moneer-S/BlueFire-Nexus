@@ -9,7 +9,7 @@ import {
 import {
   ArrowRight, Check, Clipboard, Command as CommandIcon, Copy, Download, FileText, Filter, GitBranch, LayoutGrid, Maximize2, Minimize2, MoreHorizontal,
   PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Redo2, RotateCcw,
-  ListOrdered, Network, Plus, ScanSearch, Search, Trash2, Undo2, X,
+  ListOrdered, Monitor, Network, Plus, ScanSearch, Search, Trash2, Undo2, X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -17,10 +17,11 @@ import "./Builder.css";
 import { guaranteedInputSources, stepParameterSummary } from "../lib/graph-authoring";
 import { ParameterField } from "../components/ParameterField";
 import { BuilderEvidenceTray } from "../components/BuilderEvidenceTray";
-import { connectedRunBands } from "../lib/connected-run-bands";
+import { branchRegionBands, connectedRunBands } from "../lib/connected-run-bands";
 import { graphNodeTitle } from "../lib/graph-node-title";
+import { graphNodeIcon } from "../lib/graph-node-icon";
 import { inspectorMethodTitle } from "../lib/inspector-method-title";
-import { branchLabels, focusedGraphLayout, focusedGraphViewport, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphFrame, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
+import { branchLabels, focusedGraphLayout, focusedGraphViewport, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, platformLabel, readableGraphViewport, revealGraphContext, type GraphFrame, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
 import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
@@ -46,7 +47,7 @@ import { Badge, Button, EmptyState, ErrorState, Field, IconButton, LoadingState,
 const outcomes: Outcome[] = ["success", "partial", "blocked", "failed"];
 const outcomeColors: Record<Outcome, string> = { success: "#8dabc4", partial: "#d9b364", blocked: "#dc9066", failed: "#dc7f8b" };
 
-interface BehaviorNodeData extends Record<string, unknown> { step: ScenarioStep; behavior?: Behavior; invalid?: boolean; method?: string; ordinal: number; routeIn?: Position; routeOut?: Position; }
+interface BehaviorNodeData extends Record<string, unknown> { step: ScenarioStep; behavior?: Behavior; invalid?: boolean; method?: string; ordinal: number; routeIn?: Position; routeOut?: Position; platforms?: string; }
 type BehaviorFlowNode = Node<BehaviorNodeData, "behavior">;
 type FlowEdge = BuilderFlowEdge;
 
@@ -55,6 +56,13 @@ function renameAdaptiveExecutionStep(policy: AdaptiveExecution, previousId: stri
     return { ...policy, steps: policy.steps.map(item => item.step_id === previousId ? { ...item, step_id: nextId } : item) };
   }
   return { ...policy, steps: policy.steps.map(item => item.step_id === previousId ? { ...item, step_id: nextId } : item) };
+}
+
+const platformKey = (behavior: Behavior) => [...behavior.platforms].sort().join("|");
+/** The platform set every step shares, or undefined when steps differ. */
+function sharedPlatforms(items: readonly (Behavior | undefined)[]) {
+  const keys = new Set(items.filter((item): item is Behavior => Boolean(item)).map(platformKey));
+  return keys.size === 1 ? [...keys][0] : undefined;
 }
 
 function behaviorNode(step: ScenarioStep, behavior: Behavior | undefined, index: number, scenario: ScenarioGraph, fallbackLayout: NonNullable<Scenario["layout"]>, invalid = false): BehaviorFlowNode {
@@ -67,7 +75,7 @@ function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): F
   const routes: FlowEdge[] = scenario.edges.map((edge, index) => {
     const lane = incoming.get(edge.to_step) ?? 0;
     incoming.set(edge.to_step, lane + 1);
-    return { id: `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`, source: edge.from_step, target: edge.to_step, sourceHandle: `route:${edge.outcome}`, targetHandle: "route:in", type: "outcomeRoute", ariaLabel: `Route ${index + 1}: ${title(edge.from_step)}: ${branchLabels[edge.outcome]} → ${title(edge.to_step)} (${edge.from_step} → ${edge.to_step})`, markerEnd: { type: MarkerType.ArrowClosed, color: outcomeColors[edge.outcome] }, style: { stroke: outcomeColors[edge.outcome], strokeWidth: 2, strokeDasharray: edge.outcome === "success" ? undefined : "8 5" }, data: { kind: "route", outcome: edge.outcome, number: index + 1, lane, sourceTitle: title(edge.from_step), targetTitle: title(edge.to_step) } };
+    return { id: `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`, source: edge.from_step, target: edge.to_step, sourceHandle: `route:${edge.outcome}`, targetHandle: "route:in", type: "outcomeRoute", ariaLabel: `Route ${index + 1}: ${title(edge.from_step)}: ${branchLabels[edge.outcome]} → ${title(edge.to_step)} (${edge.from_step} → ${edge.to_step})`, markerEnd: { type: MarkerType.ArrowClosed, color: outcomeColors[edge.outcome] }, style: { stroke: outcomeColors[edge.outcome], strokeWidth: 2, strokeDasharray: edge.outcome === "success" ? undefined : "8 5" }, data: { kind: "route", outcome: edge.outcome, number: index + 1, lane, parallel: edge.outcome !== "success" && scenario.edges.some(other => other.outcome === "success" && other.from_step === edge.from_step && other.to_step === edge.to_step), alsoOn: edge.outcome === "success" ? [...new Set(scenario.edges.filter(other => other.outcome !== "success" && other.from_step === edge.from_step && other.to_step === edge.to_step).map(other => other.outcome))] : undefined, sourceTitle: title(edge.from_step), targetTitle: title(edge.to_step) } };
   });
   const artifacts: FlowEdge[] = [];
   for (const target of scenario.steps) for (const [input, binding] of Object.entries(target.inputs)) {
@@ -81,6 +89,7 @@ function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): F
 const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProps<BehaviorFlowNode>) {
   const behavior = data.behavior;
   const title = graphNodeTitle(displayTitle(behavior?.title ?? "Unavailable step"), behavior?.execution_state, data.invalid);
+  const NodeIcon = graphNodeIcon(behavior);
   const updateNodeInternals = useUpdateNodeInternals();
   const handleSignature = JSON.stringify([
     behavior?.inputs.slice(0, 4).map((input) => input.name) ?? [],
@@ -99,10 +108,11 @@ const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProp
     <Handle type="target" position={data.routeIn ?? Position.Left} id="route:in" className="route-handle route-in" style={data.routeIn === Position.Top ? { left: 20 } : undefined} title="Continue from another step" />
     {(behavior?.inputs ?? []).slice(0, 4).map((input, index, items) => <Handle key={input.name} type="target" position={Position.Top} id={`in:${input.name}`} className="typed-handle input-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Requires ${inputTypeLabel(input.type)}: ${inputLabel(input.name)}`} />)}
     <header><span className="node-order">Step {data.ordinal}</span>{data.invalid || behavior?.execution_state !== "action" ? <span className={`node-kind ${data.invalid ? "attention" : ""}`}>{data.invalid ? "Needs attention" : behavior?.execution_state === "simulation" ? "Simulation" : "Research only"}</span> : title.method ? <span className="node-method" title={title.method}>{title.method}</span> : null}</header>
-    <div className="node-title"><span className="node-icon"><FileText aria-hidden="true"/></span><strong title={title.fullTitle}>{title.title}</strong></div>
+    <div className="node-title"><span className="node-icon"><NodeIcon aria-hidden="true"/></span><strong title={title.fullTitle}>{title.title}</strong></div>
     {data.method ? <p className="node-context" title={`Run override: ${displayTitle(data.method)}`}>Run override: {displayTitle(data.method)}</p> : null}
     {!data.method && stepParameterSummary(data.step, behavior) ? <p className="node-context" title={stepParameterSummary(data.step, behavior)}>{stepParameterSummary(data.step, behavior)}</p> : null}
-    <footer>{data.step.alternates.length ? <span><GitBranch/>{data.step.alternates.length} saved {data.step.alternates.length === 1 ? "alternative" : "alternatives"}</span> : <span>{behavior?.platforms.map(inputLabel).join(" · ")}</span>}</footer>
+    {/* Only what differs between steps: platforms shared by the plan are in its header. */}
+    {data.step.alternates.length ? <footer><span><GitBranch/>{data.step.alternates.length} saved {data.step.alternates.length === 1 ? "alternative" : "alternatives"}</span></footer> : data.platforms ? <footer><span>{data.platforms}</span></footer> : null}
     {(behavior?.outputs ?? []).slice(0, 4).map((output, index, items) => <Handle key={output.name} type="source" position={Position.Bottom} id={`out:${output.name}`} className="typed-handle output-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Produces ${inputTypeLabel(output.type)}: ${inputLabel(output.name)}`} />)}
     <div className="route-handles">{outcomes.map((outcome, index) => <Handle key={outcome} type="source" position={outcome === "success" ? data.routeOut ?? Position.Right : Position.Right} id={`route:${outcome}`} className={`route-handle route-${outcome}`} style={outcome === "success" && data.routeOut === Position.Bottom ? { left: 20 } : { top: `${20 + index * 20}%` }} title={branchLabels[outcome]} />)}</div>
   </article>;
@@ -115,8 +125,12 @@ const minimumReadableGraphZoom = 0.8;
 const deleteKeys = ["Backspace", "Delete"];
 const connectionLineStyle = { stroke: "#38a8ff", strokeWidth: 2 };
 const proOptions = { hideAttribution: true };
-const miniMapStyle = { width: 132, height: 80 };
+const miniMapStyle = { width: 168, height: 88 };
 const rightRouteGutter = 72;
+// Stage containers extend this far beyond their cards.
+const bandPadding = 22;
+// The opening frame keeps those containers and their labels clear of the canvas edge.
+const openingFramePadding = bandPadding + 18;
 const sameViewport = (left: GraphViewport, right: GraphViewport) => left.zoom === right.zoom && Math.abs(left.x - right.x) < 0.001 && Math.abs(left.y - right.y) < 0.001;
 
 function visibleCanvasFrame(canvas: HTMLElement): GraphFrame {
@@ -170,10 +184,19 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const actionMap = useMemo(() => new Map(actions.map((item) => [item.id, item])), [actions]);
   const [invalidNodes, setInvalidNodes] = useState<Set<string>>(new Set());
   const methodOverrides = review ? undefined : product.runConfig.actionImplementations;
-  const makeNodes = useCallback((value: ScenarioGraph) => value.steps.map((step, index) => {
-    const node = behaviorNode(step, behaviorMap.get(step.behavior_id), index, value, fallbackLayout, invalidNodes.has(step.id));
-    return { ...node, data: { ...node.data, method: actionMap.get(methodOverrides?.[step.id] ?? "")?.title } };
-  }), [actionMap, behaviorMap, fallbackLayout, invalidNodes, methodOverrides]);
+  const makeNodes = useCallback((value: ScenarioGraph) => {
+    const shared = sharedPlatforms(value.steps.map(step => behaviorMap.get(step.behavior_id)));
+    return value.steps.map((step, index) => {
+      const behavior = behaviorMap.get(step.behavior_id);
+      const node = behaviorNode(step, behavior, index, value, fallbackLayout, invalidNodes.has(step.id));
+      const platforms = behavior && platformKey(behavior) !== shared ? behavior.platforms.map(platformLabel).join(" · ") : undefined;
+      return { ...node, data: { ...node.data, method: actionMap.get(methodOverrides?.[step.id] ?? "")?.title, platforms } };
+    });
+  }, [actionMap, behaviorMap, fallbackLayout, invalidNodes, methodOverrides]);
+  const planPlatforms = useMemo(() => {
+    const behaviorsInPlan = scenario.steps.map(step => behaviorMap.get(step.behavior_id));
+    return sharedPlatforms(behaviorsInPlan) !== undefined ? behaviorsInPlan[0]?.platforms.map(platformLabel).join(", ") : undefined;
+  }, [behaviorMap, scenario.steps]);
   const [initialView] = useState(() => review ? defaultGraphView(scenario) : readWorkingGraphView(scenario));
   const edgeDefinitions = useMemo(() => flowEdges(graph, behaviorMap), [graph, behaviorMap]);
   const [nodes, setNodes] = useState<BehaviorFlowNode[]>(() => makeNodes(graph).map((node) => ({ ...node, selected: node.id === initialView.selected?.id })));
@@ -212,6 +235,10 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   // choice does not overwrite the operator's saved inspector preference.
   const [inspectorAlongsideAssistant, setInspectorAlongsideAssistant] = useState(false);
   const inspectorVisible = assistant?.open ? inspectorAlongsideAssistant : inspectorOpen;
+  const setInspectorVisibility = useCallback((visible: boolean) => {
+    if (assistant?.open) setInspectorAlongsideAssistant(visible);
+    else setInspectorOpen(visible);
+  }, [assistant?.open]);
   useEffect(() => { if (!assistant?.open) setInspectorAlongsideAssistant(false); }, [assistant?.open]);
   const [viewMode, setViewMode] = useState(initialView.mode);
   const [allBranches, setAllBranches] = useState(initialView.allBranches);
@@ -236,7 +263,8 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     writeWorkingGraphView(scenario, view);
   }, [review, scenario, selectedId, viewMode, allBranches, expandedBranches, focusedSection, inspectorOpen, routesOpen, showInputs]);
   const [graphZoom, setGraphZoom] = useState(1);
-  const [miniMapOpen, setMiniMapOpen] = useState(false);
+  // Plans too long to read at once start with the overview map for orientation.
+  const [miniMapOpen, setMiniMapOpen] = useState(() => scenario.steps.length > 12);
   const summaryZoom = graphZoom < minimumReadableGraphZoom;
   const sections = useMemo(() => graphSections(visibleGraph.ordered, graph.edges, graph.start), [visibleGraph, graph.edges, graph.start]);
   // Route edits can renumber groups. Resolve the selected step's group before
@@ -265,12 +293,17 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     };
   }, []);
   const displayNodes = useMemo(() => projectedNodes.map(node => {
-    const incoming = graph.edges.find(edge => edge.to_step === node.id && edge.outcome === "success");
+    // Prefer a success predecessor directly above, so a rejoin listed first
+    // cannot turn the straight route into a hook.
+    const predecessors = graph.edges.filter(edge => edge.to_step === node.id && edge.outcome === "success");
+    const incoming = predecessors.find(edge => { const source = projectedNodes.find(item => item.id === edge.from_step); return source && Math.abs(source.position.x - node.position.x) < 1 && source.position.y < node.position.y; }) ?? predecessors[0];
     const outgoing = graph.edges.find(edge => edge.from_step === node.id && edge.outcome === "success");
     const before = projectedNodes.find(item => item.id === incoming?.from_step);
     const after = projectedNodes.find(item => item.id === outgoing?.to_step);
+    // Vertical ports when the success neighbour is below in the same lane, or
+    // (leaving a side lane) below and to the left, as in a column flow.
     const routeIn = before && Math.abs(before.position.x - node.position.x) < 1 && before.position.y < node.position.y ? Position.Top : Position.Left;
-    const routeOut = after && Math.abs(after.position.x - node.position.x) < 1 && after.position.y > node.position.y ? Position.Bottom : Position.Right;
+    const routeOut = after && after.position.x < node.position.x + 1 && after.position.y > node.position.y + GRAPH_NODE_HEIGHT ? Position.Bottom : Position.Right;
     return { ...node, data: routeNodeData(node.data, routeIn, routeOut) };
   }), [graph.edges, projectedNodes, routeNodeData]);
   // Selection updates React Flow's node records, but does not invalidate routes.
@@ -281,13 +314,32 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const routeObstacles = useMemo<RouteObstacle[]>(() => JSON.parse(routeGeometry) as RouteObstacle[], [routeGeometry]);
   const runBands = useMemo(() => {
     const ordinals = new Map(scenario.steps.map((step, index) => [step.id, index + 1]));
-    return connectedRunBands(routeObstacles.map(card => ({ ...card, ordinal: ordinals.get(card.id) ?? 0 })), graph.edges, { padding: 22 });
+    const cards = routeObstacles.map(card => ({ ...card, ordinal: ordinals.get(card.id) ?? 0 }));
+    const runs = connectedRunBands(cards, graph.edges, { padding: bandPadding });
+    return [...runs, ...branchRegionBands(cards, graph.edges, runs, { padding: bandPadding })];
   }, [graph.edges, routeObstacles, scenario.steps]);
   const routedData = useMemo(() => new Map(edgeDefinitions.map(edge => [edge.id, edge.data ? { ...edge.data, obstacles: routeObstacles } : undefined])), [edgeDefinitions, routeObstacles]);
   const edgeIsShown = useCallback((edge: FlowEdge) => shownIds.has(edge.source) && shownIds.has(edge.target) && (edge.data?.kind !== "artifact" || showInputs) && (edge.data?.kind !== "route" || edge.data.outcome === "success" || allBranches || expandedBranches.has(edge.source)), [allBranches, expandedBranches, showInputs, shownIds]);
   const selectedRouteId = edges.find((edge) => edge.selected && edge.data?.kind === "route" && edgeIsShown(edge))?.id;
-  const displayEdges = useMemo(() => edges.map((edge) => ({ ...edge, data: routedData.get(edge.id) ?? edge.data, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45 : 1 } })), [edgeIsShown, edges, selectedRouteId, routedData]);
-  const visibleRoutes = displayEdges.filter((edge) => !edge.hidden && edge.data?.kind === "route");
+  const displayEdges = useMemo(() => {
+    const selectedParallel = edges.find(edge => edge.id === selectedRouteId && edge.data?.parallel);
+    return edges.map((edge) => {
+      // A condition that repeats its success route's destination is stated on that
+      // success route ("Also partial"). Its own geometry appears when inspected;
+      // the complete route list remains available independently of that drawing.
+      const idleParallel = Boolean(edge.data?.parallel) && edge.id !== selectedRouteId && edge.source !== selectedId && edge.target !== selectedId;
+      const data = routedData.get(edge.id) ?? edge.data;
+      // Name only conditions still folded. Inspecting one route must not erase
+      // the map's explanation of its other, still-folded sibling conditions.
+      const alsoOn = edge.source === selectedId || edge.target === selectedId ? undefined : data?.alsoOn?.filter(outcome =>
+        !(selectedParallel?.source === edge.source && selectedParallel.target === edge.target && selectedParallel.data?.outcome === outcome));
+      const also = alsoOn?.length ? alsoOn.length === 3 ? "Any outcome" : `Also ${alsoOn.join(", ")}` : undefined;
+      return { ...edge, ariaLabel: also ? `${edge.ariaLabel}. ${also}` : edge.ariaLabel, data: data?.alsoOn ? { ...data, alsoOn } : data, hidden: !edgeIsShown(edge) || idleParallel, selected: edge.selected && edgeIsShown(edge), style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45
+        // While a step is open in the inspector, its own routes carry the view.
+        : inspectorVisible && selectedId && edge.source !== selectedId && edge.target !== selectedId ? .4 : 1 } };
+    });
+  }, [edgeIsShown, edges, inspectorVisible, selectedId, selectedRouteId, routedData]);
+  const visibleRoutes = displayEdges.filter((edge) => edgeIsShown(edge) && edge.data?.kind === "route");
   const selectedRoute = visibleRoutes.find((edge) => edge.id === selectedRouteId);
   useEffect(() => {
     setSelectedId((current) => shownIds.has(current) ? current : "");
@@ -296,7 +348,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   }, [edgeIsShown, shownIds, review?.readOnly]);
   useEffect(() => { if (selectedRouteId) setRoutesOpen(true); }, [selectedRouteId]);
   const routesToggleId = useId();
-  const hiddenBranches = displayEdges.filter((edge) => edge.hidden && edge.data?.kind === "route").length;
+  const hiddenBranches = edges.filter((edge) => !edgeIsShown(edge) && edge.data?.kind === "route").length;
   const groupBoundaries = useMemo(() => {
     if (focusedSection === null || sections.length <= 1) return undefined;
     const incoming = scenario.edges.filter(edge => !shownIds.has(edge.from_step) && shownIds.has(edge.to_step));
@@ -339,8 +391,8 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const graphCanvas = useRef<HTMLDivElement>(null);
   const orderedSteps = useRef<HTMLOListElement>(null);
   const [selectionToReveal, setSelectionToReveal] = useState("");
-  const selectStep = useCallback((id: string) => { setSelectedId(id); setSelectionToReveal(id); setNodes((items) => items.map((node) => ({ ...node, selected: node.id === id }))); setEdges((items) => items.map((edge) => ({ ...edge, selected: false }))); setInspectorOpen(true); setPaletteOpen(false); }, []);
-  const selectRoute = useCallback((id: string) => { setRoutesOpen(true); setSelectedId(""); setNodes((items) => items.map((node) => ({ ...node, selected: false }))); setEdges((items) => items.map((edge) => ({ ...edge, selected: edge.id === id }))); setInspectorOpen(false); setPaletteOpen(false); }, []);
+  const selectStep = useCallback((id: string) => { setSelectedId(id); setSelectionToReveal(id); setNodes((items) => items.map((node) => ({ ...node, selected: node.id === id }))); setEdges((items) => items.map((edge) => ({ ...edge, selected: false }))); if (!assistant?.open) setInspectorOpen(true); setPaletteOpen(false); }, [assistant?.open]);
+  const selectRoute = useCallback((id: string) => { setRoutesOpen(true); setSelectedId(""); setNodes((items) => items.map((node) => ({ ...node, selected: false }))); setEdges((items) => items.map((edge) => ({ ...edge, selected: edge.id === id }))); setInspectorVisibility(false); setPaletteOpen(false); }, [setInspectorVisibility]);
   const onEdgeClick = useCallback((_: unknown, edge: FlowEdge) => { if (edge.data?.kind === "route") selectRoute(edge.id); }, [selectRoute]);
   const onNodeClick = useCallback((_: unknown, node: BehaviorFlowNode) => selectStep(node.id), [selectStep]);
   const revealSearchResult = useCallback((id: string) => {
@@ -358,11 +410,9 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     if (event) claimViewport();
     setGraphZoom(Math.round(viewport.zoom * 100) / 100);
   }, [claimViewport]);
-  const togglePalette = () => { setPaletteOpen((open) => !open); setInspectorOpen(false); };
+  const togglePalette = () => { setPaletteOpen((open) => !open); setInspectorVisibility(false); };
   const toggleInspector = () => {
-    if (assistant?.open) {
-      setInspectorAlongsideAssistant(!inspectorVisible);
-    } else setInspectorOpen((open) => !open);
+    setInspectorVisibility(!inspectorVisible);
     setPaletteOpen(false);
   };
   const inspectorToggleId = useId();
@@ -373,7 +423,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const initialFrameDone = useRef(false);
   const framedFocusMode = useRef(focusMode);
   const framedViewMode = useRef(viewMode);
-  const frameStep = useCallback((id: string, mode: "start" | "readable" | "reveal", duration = 0, preferred?: GraphViewport) => {
+  const frameStep = useCallback((id: string, mode: "start" | "opening" | "readable" | "reveal", duration = 0, preferred?: GraphViewport) => {
     const canvas = graphCanvas.current;
     const node = flow.getNode(id);
     if (!canvas || !node || node.hidden || !canvas.clientWidth || !canvas.clientHeight) return false;
@@ -388,16 +438,16 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       const neighbor = flow.getNode(neighborId);
       return neighbor && !neighbor.hidden ? [{ ...neighbor.position, width: neighbor.measured?.width ?? GRAPH_NODE_WIDTH, height: neighbor.measured?.height ?? GRAPH_NODE_HEIGHT }] : [];
     });
-    const context = mode === "readable" ? flow.getNodes().filter(item => !item.hidden && item.id !== id).map(item => {
+    const context = mode === "readable" || mode === "opening" ? flow.getNodes().filter(item => !item.hidden && item.id !== id).map(item => {
       const routes = graph.edges.some(edge => edge.from_step === item.id && (edge.outcome === "success" ? item.data.routeOut !== Position.Bottom : allBranches || expandedBranches.has(item.id)));
       return { ...item.position, width: (item.measured?.width ?? GRAPH_NODE_WIDTH) + (routes ? rightRouteGutter : 0), height: item.measured?.height ?? GRAPH_NODE_HEIGHT };
     }) : [];
     const next = mode === "reveal" ? revealGraphContext(preferred ?? current, bounds, neighbors, frame)
-      : mode === "readable" ? focusedGraphViewport(bounds, context, frame) : readableGraphViewport(bounds, frame, true);
+      : mode === "start" ? readableGraphViewport(bounds, frame, true) : focusedGraphViewport(bounds, context, frame, mode === "opening", mode === "opening" ? openingFramePadding : undefined);
     if (!sameViewport(next, current)) void flow.setViewport(next, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return next;
   }, [allBranches, expandedBranches, flow, graph.edges]);
-  const fitNodes = useCallback((ids: readonly string[], duration = 0, readable = false) => {
+  const fitNodes = useCallback((ids: readonly string[], duration = 0, readable = false, fallback: "start" | "opening" = "start") => {
     const canvas = graphCanvas.current;
     if (!canvas || !canvas.clientWidth || !canvas.clientHeight) return false;
     const bounds = ids.flatMap(id => {
@@ -411,27 +461,27 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     if (readable && viewport.zoom < minimumReadableGraphZoom) {
       // A scheduled group change may still capture the previous selection.
       const anchor = ids.includes(selectedId) ? selectedId : ids.includes(scenario.start) ? scenario.start : ids[0];
-      return anchor ? Boolean(frameStep(anchor, "start", duration)) : false;
+      return anchor ? Boolean(frameStep(anchor, fallback, duration)) : false;
     }
     void flow.setViewport(viewport, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return true;
   }, [allBranches, expandedBranches, flow, frameStep, graph.edges, scenario.start, selectedId]);
   useEffect(() => {
-    if (!selectionToReveal || selectionToReveal !== selectedId || !inspectorOpen || viewMode !== "steps") return;
+    if (!selectionToReveal || selectionToReveal !== selectedId || viewMode !== "steps") return;
     const row = [...(orderedSteps.current?.querySelectorAll<HTMLButtonElement>("button[data-step-id]") ?? [])]
       .find(button => button.dataset.stepId === selectionToReveal);
     if (!row) return;
     row.scrollIntoView({ block: "nearest", behavior: "instant" });
     setSelectionToReveal("");
-  }, [inspectorOpen, selectedId, selectionToReveal, viewMode]);
+  }, [selectedId, selectionToReveal, viewMode]);
 
   useEffect(() => {
-    if (!selectionToReveal || selectionToReveal !== selectedId || !inspectorOpen || !nodesInitialized || viewMode !== "graph") return;
+    if (!selectionToReveal || selectionToReveal !== selectedId || !nodesInitialized || viewMode !== "graph") return;
     const frame = requestAnimationFrame(() => {
       if (frameStep(selectionToReveal, flow.getZoom() < minimumReadableGraphZoom ? "readable" : "reveal")) setSelectionToReveal("");
     });
     return () => cancelAnimationFrame(frame);
-  }, [flow, frameStep, inspectorOpen, nodesInitialized, selectedId, selectionToReveal, viewMode]);
+  }, [flow, frameStep, nodesInitialized, selectedId, selectionToReveal, viewMode]);
 
   const routeDockWasOpen = useRef(routesOpen);
   const routeDockRevealPending = useRef(false);
@@ -527,7 +577,9 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           // Establish usable graph space before accepting its first frame.
           if (frame.height < GRAPH_NODE_HEIGHT + 96) revealCanvasToolbar(canvas);
           lastScroll = scrollPosition();
-          initialFrameDone.current = fitNodes(shownSteps.map(step => step.id), 0, true);
+          // Opening frames the selection with its visible path: an entry step
+          // anchors the leading edge so the continuation fills the canvas.
+          initialFrameDone.current = fitNodes(shownSteps.map(step => step.id), 0, true, "opening");
         } else if (initialFrameDone.current && selectedId) {
           const current = flow.getViewport();
           // A later operator pan, zoom, focus, or card move owns the view from then on.
@@ -817,7 +869,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       setSelectedId(nextSelection.id);
       setNodes((items) => items.map((node) => ({ ...node, selected: node.id === nextSelection.id })));
     }
-    setInspectorOpen(false); setPaletteOpen(false);
+    setInspectorVisibility(false); setPaletteOpen(false);
     window.requestAnimationFrame(() => { fitNodes(targetSection?.steps.map(step => step.id) ?? visibleGraph.ordered.map(step => step.id), 180, true); });
   };
   const showAllBranches = () => {
@@ -835,7 +887,8 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       window.setTimeout(() => { fitNodes(shownSteps.map(step => step.id), 180, true); }, 0);
     } else {
       applyScenario({ ...scenario, layout: initialGraphLayout(scenario) }); setCompatibility("Steps arranged by their connections. Use Undo to restore your positions.");
-      window.setTimeout(() => { fitNodes(shownSteps.map(step => step.id), 180, true); }, 0);
+      // Frame the new arrangement as on opening, so its columns are not clipped.
+      window.setTimeout(() => { fitNodes(shownSteps.map(step => step.id), 180, true, "opening"); }, 0);
     }
   };
   const runCommand = (action: () => void) => { setCommandPaletteOpen(false); action(); };
@@ -858,7 +911,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     <header className="page-header builder-header"><div className="builder-heading"><h1 aria-label={displayTitle(scenario.title)}><input className="builder-name-input" aria-label="Experiment name" disabled={review?.readOnly} value={scenario.title} onChange={(event) => applyScenario({ ...scenario, title: event.target.value }, false)} /></h1><p title={review?.description ?? scenario.purpose}>{review?.description ?? scenario.purpose}</p></div><div className="page-actions builder-actions"><Button variant="secondary" onClick={() => validateMutation.mutate(structuredClone(scenario))} disabled={validateMutation.isPending}><Check/>Validate</Button>{review ? review.controls : <><Button variant="secondary" onClick={saveVersion} disabled={saveMutation.isPending}>{saveMutation.isPending ? "Saving version" : "Save version"}</Button><Link className="button button-primary button-medium" to="/runs?prepare=1">Review run<ArrowRight/></Link></>}</div></header>
     {review?.details}
     <AdaptiveRepair scenario={scenario} behaviors={behaviorMap} actions={actionMap} overrides={runConfig.actionImplementations} onSelect={selectStep} onChange={applyScenario} readOnly={review?.readOnly} />
-    <div className="experiment-summary"><div className="experiment-facts"><span><Network/>{scenario.steps.length} steps</span><span><GitBranch/>{scenario.edges.filter(edge => edge.outcome !== "success").length} conditional routes</span><Badge tone={review?.readOnly ? "neutral" : dirty ? "warning" : "neutral"} dot>{review?.statusLabel ?? (dirty ? "Unsaved changes" : "Working copy")}</Badge><Badge tone={displayedValidation === "valid" ? "success" : displayedValidation === "invalid" ? "danger" : "neutral"}>{displayedValidation === "valid" ? "Ready for review" : displayedValidation === "invalid" ? "Needs attention" : "Not validated"}</Badge></div><details className="purpose-editor" open={purposeOpen} onToggle={(event) => setPurposeOpen(event.currentTarget.open)}><summary>{scenario.purpose.trim() ? "Experiment purpose" : "Describe the experiment question"}</summary><Field label="Experiment question" hint="What do you want to learn or verify? Required before saving."><textarea aria-label="Experiment question" ref={purposeInput} rows={2} disabled={review?.readOnly} value={scenario.purpose} required aria-invalid={purposeMissing && !scenario.purpose.trim()} onChange={(event) => { setPurposeMissing(false); applyScenario({ ...scenario, purpose: event.target.value }, false); }} placeholder="Describe the behavior, observation or detection you want to test." /></Field></details>{!review ? <div className="builder-assistance-actions"><Button variant="ghost" size="small" onClick={() => assistant?.setOpen(true)} disabled={!assistant}>Plan with Assistant</Button><Link className="button button-ghost button-small" to="/scenarios">Browse examples</Link></div> : null}</div>
+    <div className="experiment-summary"><div className="experiment-facts"><span><Network/>{scenario.steps.length} steps</span><span><GitBranch/>{scenario.edges.filter(edge => edge.outcome !== "success").length} conditional routes</span>{planPlatforms ? <span><Monitor/>{planPlatforms}</span> : null}<span className={`experiment-state ${review?.readOnly ? "" : dirty ? "attention" : ""}`}>{review?.statusLabel ?? (dirty ? "Unsaved changes" : "Working copy")}</span><span className={`experiment-state ${displayedValidation === "valid" ? "ready" : displayedValidation === "invalid" ? "danger" : ""}`}>{displayedValidation === "valid" ? "Ready for review" : displayedValidation === "invalid" ? "Needs attention" : "Not validated"}</span></div><details className="purpose-editor" open={purposeOpen} onToggle={(event) => setPurposeOpen(event.currentTarget.open)}><summary>{scenario.purpose.trim() ? "Experiment purpose" : "Describe the experiment question"}</summary><Field label="Experiment question" hint="What do you want to learn or verify? Required before saving."><textarea aria-label="Experiment question" ref={purposeInput} rows={2} disabled={review?.readOnly} value={scenario.purpose} required aria-invalid={purposeMissing && !scenario.purpose.trim()} onChange={(event) => { setPurposeMissing(false); applyScenario({ ...scenario, purpose: event.target.value }, false); }} placeholder="Describe the behavior, observation or detection you want to test." /></Field></details>{!review ? <div className="builder-assistance-actions"><Button variant="ghost" size="small" onClick={() => assistant?.setOpen(true)} disabled={!assistant}>Plan with Assistant</Button><Link className="button button-ghost button-small" to="/scenarios">Browse examples</Link></div> : null}</div>
     {compatibility ? <div className={`compatibility-banner ${compatibility.error ? "error" : ""}`} role={compatibility.error ? "alert" : "status"}><GitBranch/>{compatibility.message}<button onClick={() => setCompatibility(undefined)} aria-label="Dismiss compatibility message">×</button></div> : null}
     <div className="graph-review-editor">
     <div className={`builder-layout ${paletteOpen ? "" : "palette-hidden"} ${inspectorVisible ? "" : "inspector-hidden"}`} style={{ "--palette-width": `${paletteWidth}px`, "--inspector-width": `${inspectorWidth}px` } as CSSProperties}>
@@ -873,7 +926,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
             <BuilderStepSearch steps={scenario.steps} behaviors={behaviorMap} onSelect={revealSearchResult} />
             <output className="graph-scale" aria-label="Graph zoom">{Math.round(graphZoom * 100)}%</output>
             <div className="graph-utility-actions">
-            {viewMode === "graph" ? <IconButton id={routesToggleId} label={routesOpen ? "Hide route list" : "Show route list"} aria-pressed={routesOpen} onClick={() => { setRoutesOpen(value => !value); if (!routesOpen) { setInspectorOpen(false); setPaletteOpen(false); } }}><GitBranch/></IconButton> : null}
+            {viewMode === "graph" ? <IconButton id={routesToggleId} label={routesOpen ? "Hide route list" : "Show route list"} aria-pressed={routesOpen} onClick={() => { setRoutesOpen(value => !value); if (!routesOpen) { setInspectorVisibility(false); setPaletteOpen(false); } }}><GitBranch/></IconButton> : null}
             <IconButton id={inspectorToggleId} label={inspectorVisible ? "Hide node inspector" : "Show node inspector"} aria-pressed={inspectorVisible} aria-controls={inspectorPanelId} onClick={toggleInspector}>{inspectorVisible ? <PanelRightClose/> : <PanelRightOpen/>}</IconButton>
             <IconButton label={focusMode ? "Exit graph focus mode" : "Enter graph focus mode"} aria-pressed={focusMode} onClick={() => setFocusMode((active) => !active)}>{focusMode ? <Minimize2/> : <Maximize2/>}</IconButton>
             <details className="graph-options"><summary aria-label="View options"><MoreHorizontal/><span className="sr-only">View options</span></summary><div>
@@ -901,16 +954,16 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           if (id && visibleRoutes.some((edge) => edge.id === id)) { event.preventDefault(); selectRoute(id); }
         }} onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
         <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly && !deletion.summary} nodesConnectable={!review?.readOnly && !deletion.summary} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly || deletion.summary ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
-          {runBands.length ? <ViewportPortal><svg className="graph-run-bands" aria-hidden="true" width="1" height="1">{runBands.map(band => <g key={band.id} className={band.stepIds.includes(selectedId) ? "selected" : undefined}><rect x={band.x} y={band.y} width={band.width} height={band.height} rx="10"/><text x={band.x + 12} y={band.y + 15}>{band.label}</text></g>)}</svg></ViewportPortal> : null}
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(117,198,255,.12)"/>{scenario.steps.length > 3 && miniMapOpen ? <MiniMap style={miniMapStyle} position="bottom-left" pannable zoomable nodeColor={(node) => node.selected ? "var(--blue)" : "var(--muted)"} bgColor="var(--ink-950)" maskColor="color-mix(in srgb, var(--ink-1000) 72%, transparent)"/> : null}<Controls position="bottom-right" showInteractive={false} onZoomIn={claimViewport} onZoomOut={claimViewport} onFitView={claimViewport}/>
-        </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Add the first step</strong><span>Choose a method to begin designing this experiment.</span><Button variant="primary" disabled={review?.readOnly} onClick={() => { setPaletteOpen(true); setInspectorOpen(false); }}>Add first step</Button></div> : null}</div>
-        {routesOpen ? <BuilderRoutes routes={visibleRoutes} total={scenario.edges.length} selected={selectedRoute} readOnly={Boolean(review?.readOnly)} select={selectRoute} inspect={(source) => { selectStep(source); setRoutesOpen(false); window.requestAnimationFrame(() => document.getElementById(inspectorToggleId)?.focus()); }} remove={(id) => { void flow.deleteElements({ edges: [{ id }] }); }} close={() => { setRoutesOpen(false); document.getElementById(routesToggleId)?.focus(); }} /> : null}
+          {runBands.length ? <ViewportPortal><svg className="graph-run-bands" aria-hidden="true" width="1" height="1">{runBands.map(band => <g key={band.id} className={[band.stepIds.includes(selectedId) ? "selected" : "", "kind" in band ? "branch-region" : ""].filter(Boolean).join(" ") || undefined}><rect x={band.x} y={band.y} width={band.width} height={band.height} rx="10"/>{"kind" in band ? <GitBranch x={band.x + 10} y={band.y + 5} width={12} height={12} strokeWidth={2.25}/> : null}<text x={band.x + ("kind" in band ? 27 : 12)} y={band.y + 15}>{band.label}</text></g>)}</svg></ViewportPortal> : null}
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(117,198,255,.12)"/>{scenario.steps.length > 3 && miniMapOpen ? <MiniMap style={miniMapStyle} position="bottom-left" pannable zoomable nodeBorderRadius={6} nodeColor={(node) => node.selected ? "var(--blue)" : "var(--muted-strong)"} bgColor="var(--ink-950)" maskColor="color-mix(in srgb, var(--ink-1000) 72%, transparent)"/> : null}<Controls position="bottom-right" showInteractive={false} onZoomIn={claimViewport} onZoomOut={claimViewport} onFitView={claimViewport}/>
+        </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Add the first step</strong><span>Choose a method to begin designing this experiment.</span><Button variant="primary" disabled={review?.readOnly} onClick={() => { setPaletteOpen(true); setInspectorVisibility(false); }}>Add first step</Button></div> : null}</div>
+        {routesOpen ? <BuilderRoutes routes={visibleRoutes} total={scenario.edges.length} selected={selectedRoute} readOnly={Boolean(review?.readOnly)} select={selectRoute} inspect={(source) => { selectStep(source); setInspectorVisibility(true); setRoutesOpen(false); window.requestAnimationFrame(() => document.getElementById(inspectorToggleId)?.focus()); }} remove={(id) => { void flow.deleteElements({ edges: [{ id }] }); }} close={() => { setRoutesOpen(false); document.getElementById(routesToggleId)?.focus(); }} /> : null}
         </div>
         {viewMode === "graph" ? <footer className="graph-key"><div className="graph-legend" aria-label="Connection types"><span><i className="legend-success"/>Success</span><span><i className="legend-conditional"/>Conditional</span><span><i className="legend-data"/>Data</span></div>{scenario.steps.length > 3 ? <button type="button" className="graph-overview-toggle" aria-pressed={miniMapOpen} onClick={() => setMiniMapOpen(open => !open)}><LayoutGrid aria-hidden="true"/>{miniMapOpen ? "Hide overview" : "Overview map"}</button> : null}</footer> : null}
         {viewMode === "graph" ? <BuilderEvidenceTray key={scenario.id} step={selected} ordinal={selected ? scenario.steps.indexOf(selected) + 1 : undefined} behavior={selectedBehavior} /> : null}
         <GraphValidationFeedback state={displayedValidation} findings={validationIssues} stepCount={scenario.steps.length} routeCount={scenario.edges.length} readOnly={review?.readOnly} name={id => graphStepName(scenario, behaviorMap, id)} onSelect={id => { setAllBranches(true); setFocusedSection(null); selectStep(id); }} />
       </Panel>
-      <Panel id={inspectorPanelId} className="inspector-panel" hidden={!inspectorVisible}>{inspectorOpen || inspectorAlongsideAssistant ? <><header className="inspector-header"><span className="inspector-step-icon"><FileText/></span><div><h2>{displayTitle(selectedBehavior?.title ?? "Select a step")}</h2><p>{selected ? `Step ${scenario.steps.indexOf(selected) + 1} · ${selectedBehavior?.execution_state === "action" ? "Method" : selectedBehavior?.execution_state === "simulation" ? "Simulation" : "Research only"}` : "Method, evidence, and parameters"}</p></div><IconButton label="Close step details" onClick={() => { if (assistant?.open) setInspectorAlongsideAssistant(false); else setInspectorOpen(false); document.getElementById(inspectorToggleId)?.focus(); }}><X/></IconButton></header>{selected && selectedBehavior ? <Inspector scenario={scenario} step={selected} behavior={selectedBehavior} behaviors={behaviorMap} actions={actionMap} readOnly={Boolean(review?.readOnly)} onAlternative={useAlternative} updateStep={updateStep} updateScenario={applyScenario} renameStep={renameStep} selectedAction={runConfig.actionImplementations?.[selected.id] ?? ""} allowRunOverride={!review} onAction={(actionId) => { const next = { ...(runConfig.actionImplementations ?? {}) }; if (actionId) next[selected.id] = actionId; else delete next[selected.id]; setRunConfig({ ...runConfig, actionImplementations: next }); }} /> : <EmptyState title="Select a step" description="Select a step on the canvas or in the list to choose its method, inputs, and branches." />}</> : null}</Panel>
+      <Panel id={inspectorPanelId} className="inspector-panel" hidden={!inspectorVisible}>{inspectorOpen || inspectorAlongsideAssistant ? <><header className="inspector-header"><span className="inspector-step-icon">{(() => { const StepIcon = graphNodeIcon(selectedBehavior); return <StepIcon aria-hidden="true"/>; })()}</span><div><h2>{displayTitle(selectedBehavior?.title ?? "Select a step")}</h2><p>{selected ? `Step ${scenario.steps.indexOf(selected) + 1} · ${selectedBehavior?.execution_state === "action" ? "Method" : selectedBehavior?.execution_state === "simulation" ? "Simulation" : "Research only"}` : "Method, evidence, and parameters"}</p></div><IconButton label="Close step details" onClick={() => { setInspectorVisibility(false); document.getElementById(inspectorToggleId)?.focus(); }}><X/></IconButton></header>{selected && selectedBehavior ? <Inspector scenario={scenario} step={selected} behavior={selectedBehavior} behaviors={behaviorMap} actions={actionMap} readOnly={Boolean(review?.readOnly)} onAlternative={useAlternative} updateStep={updateStep} updateScenario={applyScenario} renameStep={renameStep} selectedAction={runConfig.actionImplementations?.[selected.id] ?? ""} allowRunOverride={!review} onAction={(actionId) => { const next = { ...(runConfig.actionImplementations ?? {}) }; if (actionId) next[selected.id] = actionId; else delete next[selected.id]; setRunConfig({ ...runConfig, actionImplementations: next }); }} /> : <EmptyState title="Select a step" description="Select a step on the canvas or in the list to choose its method, inputs, and branches." />}</> : null}</Panel>
     </div>
     </div>
     <GraphDeleteDialog summary={deletion.summary} confirm={deletion.confirm} cancel={deletion.cancel} restoreFocus={deletion.restoreFocus} />
@@ -954,14 +1007,14 @@ function Inspector({ scenario, step, behavior, behaviors, actions, readOnly, upd
     setTab(tabs[next]!); event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]")[next]?.focus();
   }}>{sentence(item)}</button>)}</div><fieldset className="graph-review-editor inspector-fields" disabled={readOnly}><div className="inspector-body">
     <div role="tabpanel" id={`${tabId}-method-panel`} aria-labelledby={`${tabId}-method`} hidden={tab !== "method"}>
-    <section><h3>Selected method</h3><article className="method-card current-method" aria-label={`Primary method: ${behaviorTitle}`}><div className="method-card-heading"><FileText/><strong title={behaviorTitle}>{behaviorMethodTitle}</strong><Badge tone="info">Primary</Badge></div><p>{behavior.purpose}</p><div className="chip-list"><Badge tone={behavior.safety_tier === "restricted" ? "danger" : behavior.safety_tier === "controlled" ? "warning" : "success"}>{sentence(behavior.safety_tier)}</Badge>{behavior.platforms.map(item => <Badge key={item}>{inputLabel(item)}</Badge>)}</div></article></section>
+    <section><h3>Selected method</h3><article className="method-card current-method" aria-label={`Primary method: ${behaviorTitle}`}><div className="method-card-heading"><FileText/><strong title={behaviorTitle}>{behaviorMethodTitle}</strong><Badge tone="info">Primary</Badge></div><p>{behavior.purpose}</p><div className="chip-list"><Badge tone={behavior.safety_tier === "restricted" ? "danger" : behavior.safety_tier === "controlled" ? "warning" : "success"}>{sentence(behavior.safety_tier)}</Badge>{behavior.platforms.map(item => <Badge key={item}>{platformLabel(item)}</Badge>)}</div></article></section>
     {(behavior.compatible_behaviors?.length || step.alternates.length) ? <section><h3>Alternative methods</h3>{[...new Set([...(behavior.compatible_behaviors ?? []), ...step.alternates])].filter(id => id !== behavior.id).map(id => {
       const alternative = behaviors.get(id);
       const title = alternative?.title ? displayTitle(alternative.title) : id;
       const methodTitle = alternative ? inspectorMethodTitle(alternative, actions) : id;
-      return <article className="method-card alternative-method" aria-label={`Alternative method: ${title}`} key={id}><strong title={title}>{methodTitle}</strong><p>{alternative?.purpose ?? "This method is unavailable in the loaded catalog."}</p><div className="chip-list">{alternative?.platforms.map(item => <Badge key={item}>{inputLabel(item)}</Badge>)}</div><Button size="small" variant="primary" disabled={!alternative} onClick={() => onAlternative(step.id, id)} aria-label={`Use ${title} for this step`}>Use this method<ArrowRight/></Button><label className="check-row"><input type="checkbox" aria-label={title} checked={step.alternates.includes(id)} onChange={event => updateStep(step.id, next => ({ ...next, alternates: event.target.checked ? [...next.alternates, id] : next.alternates.filter(value => value !== id) }))}/><span>Keep as a saved alternative</span></label></article>;
+      return <article className="method-card alternative-method" aria-label={`Alternative method: ${title}`} key={id}><strong title={title}>{methodTitle}</strong><p>{alternative?.purpose ?? "This method is unavailable in the loaded catalog."}</p><div className="chip-list">{alternative?.platforms.map(item => <Badge key={item}>{platformLabel(item)}</Badge>)}</div><Button size="small" variant="primary" disabled={!alternative} onClick={() => onAlternative(step.id, id)} aria-label={`Use ${title} for this step`}>Use this method<ArrowRight/></Button><label className="check-row"><input type="checkbox" aria-label={title} checked={step.alternates.includes(id)} onChange={event => updateStep(step.id, next => ({ ...next, alternates: event.target.checked ? [...next.alternates, id] : next.alternates.filter(value => value !== id) }))}/><span>Keep as a saved alternative</span></label></article>;
     })}<p>Saved alternatives are available for reuse. Adaptive retry choices separately control changes during execution.</p></section> : null}
-    <section><Field label="Run method override" hint={!allowRunOverride ? "Adopt this reviewed experiment before choosing a run override." : behavior.action_ids.length ? "Optional for this run, across Simulate and Execute. Reviewed for compatibility and approval before execution; not saved with the experiment." : "This step has no executable method. Choose a supported alternative to execute it."}><select aria-label="Run method override" value={selectedAction} onChange={event => onAction(event.target.value)} disabled={!allowRunOverride || !behavior.action_ids.length}><option value="">Recommended at run review</option>{behavior.action_ids.map(id => <option key={id} value={id}>{actions.get(id)?.title ? displayTitle(actions.get(id)!.title) : id}{actions.get(id)?.platforms.length ? ` · ${actions.get(id)!.platforms.join(" / ")}` : ""}</option>)}</select></Field></section>
+    <section><Field label="Run method override" hint={!allowRunOverride ? "Adopt this reviewed experiment before choosing a run override." : behavior.action_ids.length ? "Optional for this run, across Simulate and Execute. Reviewed for compatibility and approval before execution; not saved with the experiment." : "This step has no executable method. Choose a supported alternative to execute it."}><select aria-label="Run method override" value={selectedAction} onChange={event => onAction(event.target.value)} disabled={!allowRunOverride || !behavior.action_ids.length}><option value="">Recommended at run review</option>{behavior.action_ids.map(id => <option key={id} value={id}>{actions.get(id)?.title ? displayTitle(actions.get(id)!.title) : id}{actions.get(id)?.platforms.length ? ` · ${actions.get(id)!.platforms.map(platformLabel).join(" / ")}` : ""}</option>)}</select></Field></section>
     <AdaptiveMethodEditor key={`${step.id}:${JSON.stringify(scenario.adaptive_execution)}:${selectedAction}`} scenario={scenario} step={step} behaviors={behaviors} actions={actions} selectedAction={selectedAction} onChange={updateScenario} />
     </div>
     <div role="tabpanel" id={`${tabId}-evidence-panel`} aria-labelledby={`${tabId}-evidence`} hidden={tab !== "evidence"}>

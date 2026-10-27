@@ -279,7 +279,7 @@ async function renderedGraphEdges(prefix) {
       && !/rgba\([^)]*,\s*0(?:\.0*)?\)$/.test(style.stroke)
       && Number.parseFloat(style.strokeWidth) > 0 && Number(style.strokeOpacity) > 0;
     return {
-      id: edge.getAttribute("data-id"), pathCount: paths.length,
+      id: edge.getAttribute("data-id"), name: edge.getAttribute("aria-label"), pathCount: paths.length,
       finitePath: Boolean(d && !/NaN|Infinity/.test(d)),
       length, width: box.width, height: box.height,
       // A painted vertical or horizontal SVG path can have one zero-sized axis.
@@ -290,25 +290,38 @@ async function renderedGraphEdges(prefix) {
   }));
 }
 
-async function assertRenderedGraphEdges(prefix, expectedIds, outcomes) {
+function assertGraphEdgeGeometry(edge, outcome) {
+  assert.ok(edge, "An inspected connection must have its own rendered path");
+  assert.equal(edge.pathCount, 1, "Each drawn connection must have one rendered path");
+  assert.ok(edge.finitePath && Number.isFinite(edge.length) && edge.length > 0, "Drawn connections must have finite nonzero path geometry");
+  assert.equal(edge.visible, true, "Drawn connections must have painted visible paths, including straight routes");
+  if (outcome) assert.equal(edge.dashed, outcome !== "success", "Fallback and partial routes must remain visually distinct from success routes");
+}
+
+async function assertRenderedGraphEdges(prefix, expectedIds, routes) {
   const rendered = await renderedGraphEdges(prefix);
-  report.graph_edge_probe = { kind: outcomes ? "outcome_routes" : "input_connections", expected_count: expectedIds.length, actual_count: rendered.length };
-  assert.equal(rendered.length, expectedIds.length, "Every expected graph connection must have exactly one edge group");
+  report.graph_edge_probe = { kind: routes ? "outcome_routes" : "input_connections", expected_count: expectedIds.length, actual_count: rendered.length };
   const actualIds = rendered.map(edge => edge.id);
-  report.graph_edge_probe.identities_match = sameStructure([...actualIds].sort(), [...expectedIds].sort());
-  assert.deepEqual([...actualIds].sort(), [...expectedIds].sort(), "Rendered connections must retain exactly the saved endpoints and meanings");
+  assert.equal(new Set(actualIds).size, actualIds.length, "No connection may be drawn more than once");
+  assert.ok(actualIds.every(id => expectedIds.includes(id)), "Drawn connections must retain saved identities");
   for (const [index, id] of expectedIds.entries()) {
     const edge = rendered.find(item => item.id === id);
+    const route = routes?.[index];
+    if (!edge && route && route.outcome !== "success") {
+      const successIndex = routes.findIndex(other => other.outcome === "success" && other.from_step === route.from_step && other.to_step === route.to_step);
+      const success = rendered.find(item => item.id === expectedIds[successIndex]);
+      assert.ok(success && (success.name?.includes("Any outcome") || success.name?.includes(`Also ${route.outcome}`) || success.name?.includes(`, ${route.outcome}`)), "A folded condition must be named on its visible shared-destination route");
+      continue;
+    }
+    assert.ok(edge, "Every nonfolded connection must be drawn");
     report.graph_edge_probe = { ...report.graph_edge_probe, checked_index: index, path_count: edge.pathCount,
       finite_path: edge.finitePath === true, length: Number.isFinite(edge.length) ? edge.length : null,
       width: Number.isFinite(edge.width) ? edge.width : null, height: Number.isFinite(edge.height) ? edge.height : null,
       visible: edge.visible, stroke_visible: edge.strokeVisible === true,
-      dashed: edge.dashed, ...(outcomes ? { expected_dashed: outcomes[index] !== "success" } : {}) };
-    assert.equal(edge.pathCount, 1, "Each saved connection must have one rendered path");
-    assert.ok(edge.finitePath && Number.isFinite(edge.length) && edge.length > 0, "Every saved connection must have finite nonzero path geometry");
-    assert.equal(edge.visible, true, "Every saved connection must have a painted visible path, including straight routes");
-    if (outcomes) assert.equal(edge.dashed, outcomes[index] !== "success", "Fallback and partial routes must remain visually distinct from success routes");
+      dashed: edge.dashed, ...(route ? { expected_dashed: route.outcome !== "success" } : {}) };
+    assertGraphEdgeGeometry(edge, route?.outcome);
   }
+  report.graph_edge_probe.identities_match = true;
   delete report.graph_edge_probe;
 }
 
@@ -677,7 +690,7 @@ try {
   assert.equal(await page.locator(".react-flow__node:visible").count(), reviewedScenarioDocument.steps.length);
   stage = "graph-connected-plan-outcome-routes";
   const expectedRoutes = reviewedScenarioDocument.edges.map((route, index) => `route-${route.from_step}-${route.outcome}-${route.to_step}-${index}`);
-  await assertRenderedGraphEdges("route-", expectedRoutes, reviewedScenarioDocument.edges.map(route => route.outcome));
+  await assertRenderedGraphEdges("route-", expectedRoutes, reviewedScenarioDocument.edges);
   const expectedBindings = reviewedScenarioDocument.steps.flatMap(consumer => Object.entries(consumer.inputs ?? {}).map(([input, binding]) => `artifact-${binding.from_step}-${binding.artifact}-${consumer.id}-${input}`));
   stage = "graph-connected-plan-input-connections";
   await graphOptions(true);
@@ -685,6 +698,8 @@ try {
   await graphOptions(false);
   await assertRenderedGraphEdges("artifact-", expectedBindings);
   stage = "graph-connected-plan-readable-routes";
+  const selectedStepBeforeRoutes = await page.locator(".react-flow__node.selected").getAttribute("data-id");
+  assert.ok(reviewedScenarioDocument.steps.some(step => step.id === selectedStepBeforeRoutes));
   await page.getByRole("button", { name: "Show route list", exact: true }).click();
   const routeButtons = page.getByRole("list", { name: "Visible routes", exact: true }).getByRole("button");
   assert.equal(await routeButtons.count(), reviewedScenarioDocument.edges.length);
@@ -692,8 +707,20 @@ try {
     const routeText = await routeButtons.nth(index).innerText();
     const outcome = { success: "On success", partial: "When partly complete", blocked: "When blocked", failed: "On failure" }[route.outcome];
     assert.ok(routeText.includes(outcome) && routeText.includes(route.from_step) && routeText.includes(route.to_step), "Route meaning and endpoints must remain available in the readable route list");
+    if (index === 0) await routeButtons.first().focus();
+    else await routeButtons.nth(index - 1).press("ArrowDown");
+    await page.waitForFunction(id => {
+      const button = [...document.querySelectorAll(".builder-routes button[data-route]")].find(item => item.getAttribute("data-route") === id);
+      const edge = [...document.querySelectorAll(".react-flow__edge")].find(item => item.getAttribute("data-id") === id);
+      return button === document.activeElement && button?.getAttribute("aria-pressed") === "true" && edge?.classList.contains("selected");
+    }, expectedRoutes[index]);
+    const inspected = (await renderedGraphEdges("route-")).find(edge => edge.id === expectedRoutes[index]);
+    assertGraphEdgeGeometry(inspected, route.outcome);
   }
   await page.getByRole("button", { name: "Close route list", exact: true }).click();
+  await page.getByRole("button", { name: "Steps", exact: true }).click();
+  await page.locator(`.ordered-steps button[data-step-id="${selectedStepBeforeRoutes}"]`).click();
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
   await graphOptions(true);
   await page.getByLabel("Show input connections", { exact: true }).uncheck();
   await graphOptions(false);
@@ -1059,7 +1086,7 @@ try {
   stage = "detection-navigation-revision-fill-title";
   await page.getByRole("textbox", { name: "Revision title", exact: true }).fill(navigationRevisionTitle);
   stage = "detection-navigation-revision-fill-reason";
-  await advancedRevisions.getByRole("textbox", { name: /^Required research reason\b/ }).fill(navigationRevisionReason);
+  await advancedRevisions.getByRole("textbox", { name: "Required research reason", exact: true }).fill(navigationRevisionReason);
   stage = "detection-navigation-revision-clone-submit";
   const navigationRevisionResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/detections/${ownedDetectionId}/clone` && response.request().method() === "POST");
   await page.getByRole("button", { name: "Create immutable clone", exact: true }).click();

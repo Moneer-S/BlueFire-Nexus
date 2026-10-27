@@ -178,7 +178,7 @@ async function main() {
   stage = "normal-provider-authorization";
   await page.goto(`${origin}/#/settings`, { waitUntil: "domcontentloaded" });
   await page.getByRole("heading", { name: "Model connection", exact: true }).waitFor();
-  await page.locator("label.field").filter({ has: page.locator(".field-label").getByText("API style", { exact: true }) }).locator("select").selectOption("openai_responses");
+  await page.getByRole("combobox", { name: "API style", exact: true }).selectOption("openai_responses");
   await page.getByLabel("Model ID", { exact: false }).fill(model);
   await page.getByLabel("Request endpoint", { exact: false }).fill(`${fixtureOrigin}/v1/responses`);
   await page.getByLabel("Secret environment reference", { exact: false }).fill("");

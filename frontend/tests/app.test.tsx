@@ -1,3 +1,4 @@
+import { objectiveLabel } from "../src/lib/run-presentation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -318,6 +319,29 @@ describe("product application", () => {
       });
     });
     expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/runs") && init?.method === "POST")).toBe(false);
+  });
+
+  it("collapses a started simulation's setup to its summary and brings progress into view", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    const defaultImplementation = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, init) => String(input).endsWith("/runs/preflight")
+      ? Promise.resolve(json({ ...executePreflight, ready: true, status: "ready" })) : defaultImplementation(input, init));
+    const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView").mockClear();
+    renderApp("/runs?prepare=1");
+    await user.click(await screen.findByRole("button", { name: "Check run" }));
+    const start = screen.getByRole("button", { name: "Start simulation" });
+    await waitFor(() => expect(start).toBeEnabled());
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    await user.click(start);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledOnce());
+    const progress = scrollIntoView.mock.contexts[0] as HTMLElement;
+    expect(progress).toHaveAttribute("id", "run-progress");
+    expect(progress).toHaveFocus();
+    // The reviewed setup stays one click away instead of pushing the run below it.
+    const setup = screen.getByText(`Review a new run · ${demoScenario.title}`, { selector: "summary" }).closest("details")!;
+    expect(setup).not.toHaveAttribute("open");
+    expect(setup.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("keeps the canonical Execute review visible outside the collapsed browser draft", async () => {
@@ -1007,6 +1031,19 @@ describe("product application", () => {
     expect(await screen.findByRole("link", { name: "Review latest result" })).toHaveAttribute("href", `/runs/${encodeURIComponent(completedRun.run_id)}`);
     expect(screen.getByRole("button", { name: "Review" })).toBeEnabled();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull();
+    // A finalized result offers its review as the next step, not lifecycle controls.
+    expect(screen.getByRole("button", { name: "Review" })).toHaveClass("button-primary");
+    for (const name of ["Pause", "Resume", "Cancel"]) expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    // The live panel leads with the same recorded conclusion as the run review.
+    const conclusion = within(screen.getByRole("region", { name: "Run progress" })).getByRole("region", { name: "Recorded run outcome" });
+    expect(within(conclusion).getByRole("heading", { level: 3 })).toHaveTextContent(objectiveLabel(completedRun.objective_reached, completedRun.mode));
+    // Returning to Runs restores the finalized result without its released job.
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("link", { name: "Build" }));
+    await user.click(await screen.findByRole("link", { name: "Runs" }));
+    expect(await screen.findByRole("button", { name: "Review" })).toHaveClass("button-primary");
+    expect(screen.queryByText(runningJob.job_id)).not.toBeInTheDocument();
+    for (const name of ["Pause", "Resume", "Cancel"]) expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
   });
 
   it("does not re-offer a terminal job from a stale inventory snapshot", async () => {

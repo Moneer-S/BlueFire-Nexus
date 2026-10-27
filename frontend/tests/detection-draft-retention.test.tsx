@@ -247,12 +247,12 @@ it("preserves an oversized live edit across candidate switches in the open sessi
 });
 
 async function openManual(user: ReturnType<typeof userEvent.setup>) {
-  await screen.findByRole("heading", { name: "Baseline SQL" });
-  await user.click(screen.getByText("New rule", { selector: "summary" }));
+  const summary = await screen.findByText("New rule", { selector: "summary" });
+  if (!(summary.parentElement as HTMLDetailsElement).open) await user.click(summary);
   expect(screen.getByRole("textbox", { name: "Title" })).toBeVisible();
 }
 
-it("keeps manual New rule inputs open across navigation, reload and evidence selections without saving", async () => {
+it("keeps manual New rule inputs available across navigation, reload and evidence selections without saving", async () => {
   const { user, remount } = setup();
   const save = vi.spyOn(api, "upsertDetection");
   await openManual(user);
@@ -263,10 +263,12 @@ it("keeps manual New rule inputs open across navigation, reload and evidence sel
   await user.selectOptions(screen.getByRole("combobox", { name: "Target language" }), "sqlite");
   await user.click(screen.getByRole("link", { name: "Leave lab" }));
   await user.click(screen.getByRole("link", { name: "Return to lab" }));
-  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  expect(await screen.findByText("Draft kept · Manual collection draft")).toBeVisible();
+  expect(screen.getByRole("textbox", { name: "Title" })).not.toBeVisible();
+  await openManual(user);
   expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Manual collection draft");
   remount(`/detection-lab?run=${demoRuns[1]!.run_id}&candidate=${otherId}&candidate_scope=registry`);
-  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  await openManual(user);
   expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Manual collection draft");
   expect(screen.getByRole("combobox", { name: "Registered behavior" })).toHaveValue(behavior.id);
   expect(screen.getByRole("combobox", { name: "Target language" })).toHaveValue("sqlite");
@@ -339,7 +341,7 @@ it("shows unavailable retained manual choices truthfully and refuses save withou
   sessionStorage.setItem(manualKey, raw);
   const { user } = setup();
   const save = vi.spyOn(api, "upsertDetection");
-  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  await openManual(user);
   expect(screen.getByRole("combobox", { name: "Registered behavior" })).toHaveValue(value.behaviorId);
   expect(screen.getByRole("combobox", { name: "Target language" })).toHaveValue(value.language);
   expect(screen.getByRole("option", { name: "Unavailable behavior" })).toBeVisible();
@@ -359,9 +361,7 @@ it("loads a legacy manual draft without permissionCondition as staged", async ()
   const raw = JSON.stringify({ binding: "manual-new-rule", value });
   sessionStorage.setItem(manualKey, raw);
   const { user } = setup();
-  // Retained manual inputs already open the disclosure; do not close it.
-  await screen.findByRole("heading", { name: "Baseline SQL" });
-  expect(screen.getByRole("textbox", { name: "Title" })).toBeVisible();
+  await openManual(user);
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "Value for condition 1" })).toHaveValue("file_observation");
   expect(screen.getByRole("textbox", { name: "Value for condition 2" })).toHaveValue("staged/");
@@ -384,7 +384,7 @@ it.each([false, true])("preserves newer manual edits when an earlier save comple
   expect(save).toHaveBeenCalledTimes(1);
   expect(save.mock.calls[0]![0]).toMatchObject({ title: "Submitted manual rule", behavior_id: manualDefaults.behaviorId, target_language: "sqlite" });
   expect(screen.getByRole("button", { name: "Discard New rule inputs" })).toBeDisabled();
-  if (remountWhilePending) remount();
+  if (remountWhilePending) { remount(); await openManual(user); }
   const newer = await screen.findByRole("textbox", { name: "Title" });
   await user.clear(newer); await user.paste("Newer manual draft");
   const location = screen.getByTestId("location").textContent;
@@ -393,7 +393,7 @@ it.each([false, true])("preserves newer manual edits when an earlier save comple
   expect(screen.getByTestId("location").textContent).toBe(location);
   expect(save.mock.calls[0]![0]).toMatchObject({ title: "Submitted manual rule" });
   remount();
-  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  await openManual(user);
   expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Newer manual draft");
   expect(save).toHaveBeenCalledTimes(1);
 });
@@ -432,7 +432,7 @@ it("keeps manual inputs after save and describes the returned rule's existing st
   expect(screen.queryByText(/It has not been parsed or exercised/)).not.toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title + " my input");
   remount();
-  expect(await screen.findByRole("textbox", { name: "Title" })).toBeVisible();
+  await openManual(user);
   expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue(manualDefaults.title + " my input");
   expect(save).toHaveBeenCalledTimes(1);
 });
@@ -446,6 +446,7 @@ it("starts a full-run rule in SQLite while preserving an older manual language c
   expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
   await user.selectOptions(screen.getByRole("combobox", { name: "Target language" }), "internal");
   remount();
+  await openManual(user);
   expect(await screen.findByRole("combobox", { name: "Target language" })).toHaveValue("internal");
   expect(save).not.toHaveBeenCalled();
 });
@@ -569,7 +570,7 @@ it.each(["inputs", "navigation", "remount"])("does not redirect or discard edits
   await submitSecond(user);
   await user.click(await screen.findByRole("button", { name: "Start another draft" }));
   if (change === "inputs") await user.type(screen.getByRole("textbox", { name: "Title" }), " newer");
-  else if (change === "remount") remount();
+  else if (change === "remount") { remount(); await openManual(user); }
   else { await user.click(screen.getByRole("button", { name: /Other SQL/ })); await user.click(screen.getByRole("button", { name: /Baseline SQL/ })); }
   await screen.findByRole("textbox", { name: "Title" });
   const previous = screen.getByTestId("location").textContent;

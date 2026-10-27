@@ -73,7 +73,10 @@ jobs:
         include:
           - os: windows-latest
             python-version: "3.10"
-            partition: a-d
+            partition: a-b
+          - os: windows-latest
+            python-version: "3.10"
+            partition: c-d
           - os: windows-latest
             python-version: "3.10"
             partition: e-q
@@ -161,14 +164,6 @@ jobs:
           BLUEFIRE_TEST_PARTITION: ${{ matrix.partition }}
         run: |
           switch -CaseSensitive ($env:BLUEFIRE_TEST_PARTITION) {
-            'a-d' {
-              $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
-                Where-Object { $_.Name -cmatch '^test_[a-d].*\.py$' } |
-                Sort-Object Name |
-                ForEach-Object { "tests_platform/$($_.Name)" })
-              if ($testFiles.Count -eq 0) { throw 'Empty a-d test partition' }
-              python -m pytest -vv --durations=50 @testFiles
-            }
             'e-q' {
               $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
                 Where-Object { $_.Name -cmatch '^test_[e-q].*\.py$' } |

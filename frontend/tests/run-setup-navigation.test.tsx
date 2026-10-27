@@ -339,3 +339,45 @@ it.each([["new run", "/runs?prepare=1"], ["Simulate", "/runs?setup=simulate"]])(
   expect(config()).toEqual(before);
   expect(nonReads()).toEqual([]);
 });
+
+it("states each run's result, path and duration so runs of one experiment can be told apart", async () => {
+  const { client } = mount("/runs", "simulate");
+  await screen.findByRole("heading", { name: "Run history" });
+  const base = demoRuns[0]!;
+  const steps = base.steps.slice(0, 3);
+  const runs = [
+    { ...base, run_id: "run-20300101T000000Z-aaaaaaaabbbbbbbb", mode: "simulate" as const, status: "completed", objective_reached: true, created_at: "2030-01-01T00:00:00.000Z", finalized_at: "2030-01-01T00:00:00.200Z",
+      steps: [...steps, { ...steps[0]!, step_id: "continued", execution_disposition: "counterfactual" }] },
+    { ...base, run_id: "run-20300101T000100Z-ccccccccdddddddd", mode: "execute" as const, status: "completed", objective_reached: false, created_at: "2030-01-01T00:01:00Z", finalized_at: "2030-01-01T00:02:05Z",
+      steps: [steps[0]!, { ...steps[1]!, status: "blocked" }] },
+    { ...base, run_id: "run-20300101T000200Z-eeeeeeeeffffffff", status: "failed", created_at: "2030-01-01T00:02:00Z", finalized_at: undefined },
+  ];
+  await act(async () => { client.setQueryData(["runs"], { runs, unavailable_run_count: 0 }); });
+  const rows = (await screen.findAllByRole("row")).slice(1);
+  expect(rows).toHaveLength(3);
+  expect(within(rows[0]!).getByText("Achieved (synthetic)")).toBeVisible();
+  expect(rows[0]).toHaveTextContent("aaaaaaaa");
+  expect(rows[0]).toHaveTextContent("3 steps");
+  expect(rows[0]).toHaveTextContent("Took 0.2 s");
+  expect(within(rows[1]!).getByText("Not achieved")).toBeVisible();
+  expect(rows[1]).toHaveTextContent("First issue at step 2");
+  expect(rows[1]).toHaveTextContent("Took 1 min 5 s");
+  expect(within(rows[2]!).getByText("Failed")).toBeVisible();
+  expect(rows[2]).not.toHaveTextContent("Took");
+});
+
+it("does not describe a recovered fallback as a stopped run in history", async () => {
+  const { client } = mount("/runs", "simulate");
+  await screen.findByRole("heading", { name: "Run history" });
+  const base = demoRuns[0]!;
+  const recovered = { ...structuredClone(base), run_id: "run-recovered-fallback", mode: "simulate" as const, status: "completed", objective_reached: true,
+    steps: [{ ...base.steps[0]!, status: "failed" }, { ...base.steps[1]!, status: "success" }, { ...base.steps[2]!, status: "success" }] };
+  const before = structuredClone(recovered);
+  await act(async () => { client.setQueryData(["runs"], { runs: [recovered], unavailable_run_count: 0 }); });
+  const row = (await screen.findAllByRole("row"))[1]!;
+  expect(within(row).getByText("Achieved (synthetic)")).toBeVisible();
+  expect(row).toHaveTextContent("3 steps");
+  expect(row).toHaveTextContent("First issue at step 1");
+  expect(row).not.toHaveTextContent(/Stopped at/);
+  expect(recovered).toEqual(before);
+});

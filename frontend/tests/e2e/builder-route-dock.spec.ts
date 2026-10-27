@@ -41,7 +41,11 @@ for (const width of [1100, 640]) {
     await page.getByRole("button", { name: "Canvas", exact: true }).click();
     const canvas = page.getByLabel("Scenario graph canvas");
     await expect(page.locator(".react-flow__node:visible")).toHaveCount(scenario.steps.length);
-    await expect(page.locator(".react-flow__edge:visible")).toHaveCount(scenario.edges.length);
+    const drawnIds = scenario.edges.flatMap((edge, index) => edge.outcome !== "success"
+      && edge.from_step !== scenario.start && edge.to_step !== scenario.start
+      && scenario.edges.some(other => other.outcome === "success" && other.from_step === edge.from_step && other.to_step === edge.to_step)
+      ? [] : [`route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`]);
+    await expect.poll(() => page.locator(".react-flow__edge:visible").evaluateAll(edges => edges.map(edge => edge.getAttribute("data-id")).sort())).toEqual(drawnIds.sort());
     await frame(page);
     await page.getByRole("button", { name: /^Zoom in$/i }).click();
     await settle(page);
@@ -110,6 +114,9 @@ for (const width of [1100, 640]) {
     await lastRoute.focus();
     await expect(lastRoute).toBeInViewport();
     await expect(lastRoute).toHaveAttribute("aria-pressed", "true");
+    const inspectedRoute = await lastRoute.getAttribute("data-route");
+    await expect(page.locator(`.react-flow__edge[data-id="${inspectedRoute}"]`)).toBeVisible();
+    await expect(page.locator(`.react-flow__edge[data-id="${inspectedRoute}"]`)).toHaveClass(/selected/);
     await viewOptions(page, true);
     await expect(page.getByRole("button", { name: "Focus selected step" })).toBeDisabled();
     await viewOptions(page, false);

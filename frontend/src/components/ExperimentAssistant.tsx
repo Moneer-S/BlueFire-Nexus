@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ArrowUp, Check, ChevronRight, FileCheck2, History, Layers3, MessageSquareText, Settings2, Sparkles, Square, X } from "lucide-react";
+import { ArrowRight, ArrowUp, Check, ChevronRight, CircleAlert, CircleOff, FileCheck2, History, Layers3, LoaderCircle, MessageSquareText, Settings2, Square, X, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
@@ -23,6 +23,11 @@ import type { CatalogResponse, DetectionCaseRole } from "../types";
 import { Button, ErrorState, Field, sentence } from "./Primitives";
 import "./ExperimentAssistant.css";
 
+// The response heading's icon states what the operator should expect next.
+const statusIcons: Record<AssistanceStatus, LucideIcon> = {
+  planning: LoaderCircle, working: LoaderCircle, cancelling: LoaderCircle, off: CircleOff, cancelled: Square,
+  awaiting_review: CircleAlert, awaiting_execute_approval: CircleAlert, ready_to_continue: CircleAlert, blocked: CircleAlert, completed: Check,
+};
 const labels: Record<AssistanceStatus, string> = {
   planning: "Planning the work", off: "AI is off", working: "Work in progress", awaiting_review: "Your review is needed",
   awaiting_execute_approval: "Execute approval is needed", ready_to_continue: "Next step needs attention", completed: "Work completed",
@@ -199,6 +204,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     onSuccess: cache });
   const cancel = useMutation({ mutationFn: async () => { setStopRequested(jobId); await client.cancelQueries({ queryKey: key, exact: true }); return api.controlJob(jobId, "cancel"); }, onSuccess: () => { void operation.refetch(); } });
   const turn = operation.data?.turn;
+  const StatusIcon = turn ? statusIcons[turn.status] : Check;
   const continuation = turn?.continuation;
   const triggerStatus = ownedReceipt && ownedJobId !== jobId ? ownerStatus.isError ? "Status unavailable" : ownerStatus.data ? triggerLabels[ownerStatus.data.turn.status] : "Checking status" : receipt ? operation.isError ? "Status unavailable" : turn ? triggerLabels[turn.status] : "Checking status" : undefined;
   const guidance = turn?.status === "ready_to_continue" ? turn.recovery : undefined;
@@ -290,6 +296,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
   const displayedMode = receipt?.autonomy ?? autonomy;
   // Saved receipts capture the connection ID, not a model name from today's catalog.
   const modelSummary = receipt ? receipt.provider_id ?? "No provider" : selectedProvider?.model || "No model selected";
+  const setupNote = !DEMO_MODE && (!selectedProvider || providerUnready || autonomy === "off");
   const assistantState = triggerStatus ?? (autonomy === "off" ? "AI off" : !selectedProvider ? "Setup needed" : providerUnready ? "Connection needed" : "Ready to draft");
   const suggestions = comparisonSelection || fileAccessSelection ? [] : auditSelection ? [
     { title: "Explain the findings", detail: "Matched records and conflicting evidence", message: "Explain the matched records, conflicts, and missing evidence in this saved audit review." },
@@ -317,8 +324,9 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     <button ref={triggerRef} aria-expanded={open} aria-controls="experiment-assistant" onClick={() => setOpen(!open)} className="assistant-trigger" aria-label={triggerStatus ? `Assistant: ${triggerStatus}` : "Assistant"}><MessageSquareText aria-hidden="true" /><span>Assistant</span>{triggerStatus ? <span className="assistant-trigger-status">{triggerStatus}</span> : null}</button>
     {open ? createPortal(<aside id="experiment-assistant" className="experiment-assistant" tabIndex={-1} aria-labelledby="assistant-title" onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); close(); } }}>
       <header className="assistant-header">
-        <Sparkles className="assistant-mark" aria-hidden="true" />
-        <div><h2 id="assistant-title">BlueFire Assistant</h2><p className="assistant-state"><i aria-hidden="true" data-state={assistantState} />{assistantState}</p></div>
+        <MessageSquareText className="assistant-mark" aria-hidden="true" />
+        {/* The composer's setup note states an off or unready mode once; the header repeats nothing. */}
+        <div><h2 id="assistant-title">BlueFire Assistant</h2>{setupNote && !triggerStatus ? null : <p className="assistant-state"><i aria-hidden="true" data-state={assistantState} />{assistantState}</p>}</div>
         <div className="assistant-header-actions"><button type="button" className="assistant-icon-button" aria-label="Assistant settings" aria-expanded={settingsOpen} aria-controls="assistant-settings" onClick={() => setSettingsOpen(!settingsOpen)}><Settings2 aria-hidden="true" /></button><button onClick={close} className="assistant-icon-button assistant-close" aria-label="Close assistant"><X aria-hidden="true" /></button></div>
       </header>
       <div className="assistant-body">
@@ -354,7 +362,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
           {submittedRunIntent ? <details className="assistant-details"><summary>Submitted run settings</summary><dl><dt>Runner profile</dt><dd>{submittedRunIntent.runner_profile_id ?? "Not selected"}</dd><dt>Scope</dt><dd>{submittedRunIntent.target_scope.scope_refs.join(", ")}</dd><dt>AI during the run</dt><dd>{sentence(submittedRunIntent.autonomy)} · {submittedRunIntent.ai_provider_id ?? "No provider"}</dd></dl></details> : null}
           {!turn && !operation.isError ? <p role="status">Finding the saved operation…</p> : null}
           {turn ? <>
-            <div className="assistant-response-heading"><Sparkles aria-hidden="true" /><h3 aria-live="polite">{labels[turn.status]}</h3></div>
+            <div className="assistant-response-heading" data-status={turn.status}><StatusIcon aria-hidden="true" /><h3 aria-live="polite">{labels[turn.status]}</h3></div>
             <p className="assistant-response-message">{turn.message}</p>
             {turn.plan.length ? <details className="assistant-work-plan" open={turn.status === "working" || turn.status === "planning"}><summary>Work plan <span>{turn.plan.length} {turn.plan.length === 1 ? "step" : "steps"}</span></summary><ol className="assistant-plan">{turn.plan.map((step, index) => {
               const result = turn.results.find((item) => item.step_id === step.step_id && (item.kind !== "receiver_phase" && item.kind !== "receiver_inspection" || turn.status === "completed"));
@@ -376,14 +384,14 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
           </> : null}
           {operation.isError && !submit.isPending ? <><ErrorState title="Saved work could not be checked" error={operation.error} retry={() => { void operation.refetch(); }} /><p>The original request and its {sentence(receipt.autonomy)} mode are retained. Retry that exact request to find or start the operation once.</p><Button disabled={submit.isPending || stopping} onClick={() => submit.mutate(receipt)}>Retry original request</Button></> : null}
         </section> : <>
-          {DEMO_MODE ? <p className="assistant-empty">This preview cannot run assistant operations. Open the installed local service to plan an experiment or work from observed evidence.</p> : !selection ? <div className="assistant-empty"><div className="assistant-welcome-icon"><Sparkles aria-hidden="true" /></div><h3>What are you working on?</h3><p>Open an experiment or select observed evidence to start a request.</p><Link className="assistant-starter-link" onClick={navigate} to="/builder"><Layers3 aria-hidden="true" /><span>Open Builder<small>Create or improve an experiment</small></span><ChevronRight aria-hidden="true" /></Link><Link className="assistant-starter-link" onClick={navigate} to="/detection-lab"><FileCheck2 aria-hidden="true" /><span>Open Detection Lab<small>Work from observed evidence</small></span><ChevronRight aria-hidden="true" /></Link></div> : <>
+          {DEMO_MODE ? <p className="assistant-empty">This preview cannot run assistant operations. Open the installed local service to plan an experiment or work from observed evidence.</p> : !selection ? <div className="assistant-empty"><div className="assistant-welcome-icon"><MessageSquareText aria-hidden="true" /></div><h3>What are you working on?</h3><p>Open an experiment or select observed evidence to start a request.</p><Link className="assistant-starter-link" onClick={navigate} to="/builder"><Layers3 aria-hidden="true" /><span>Open Builder<small>Create or improve an experiment</small></span><ChevronRight aria-hidden="true" /></Link><Link className="assistant-starter-link" onClick={navigate} to="/detection-lab"><FileCheck2 aria-hidden="true" /><span>Open Detection Lab<small>Work from observed evidence</small></span><ChevronRight aria-hidden="true" /></Link></div> : <>
             <section className="assistant-context" aria-label={selectionIsCurrent ? "Current selection" : "Previous selection"}>
               {!selectionIsCurrent ? <>
                 <small>Previous selection</small><strong>{selection.title}</strong>
                 <p>This selection is from another view. Reopen its source before starting new work. Your draft is preserved.</p>
                 {returnPath ? <Link className="button button-secondary button-medium" onClick={navigate} to={returnPath}>Reopen source<ArrowRight aria-hidden="true" /></Link> : <p>This exact setup cannot be reopened. Your captured context and draft are preserved.</p>}
               </> : <>
-                <small className="assistant-context-eyebrow"><Layers3 aria-hidden="true" />{contextLabel}</small><strong>{contextTitle}</strong>
+                {graphSelection && (graphSelection.editStep || graphSelection.editUnavailable) ? null : <small className="assistant-context-eyebrow"><Layers3 aria-hidden="true" />{contextLabel}</small>}<strong>{contextTitle}</strong>
                 {graphSelection && (graphSelection.editStep || graphSelection.editUnavailable) ? <Field className="assistant-operation-choice" label="Assistant operation"><select value={graphOperation} onChange={event => chooseGraphOperation(event.target.value)}><option value="edit_step">Edit selected step</option><option value="new">New experiment</option></select></Field> : null}
                 {auditSelection ? <p>{auditDescription}</p> : comparisonSelection && comparisonReference ? <ComparisonAssistanceEvidence summary={comparisonReference} /> : receiverSelection ? <p>{receiverSelection.selected.kind === "receiver_scenario" ? `Version ${receiverSelection.selected.selection.version} · ${receiverSelection.selected.run_intent.runner_profile_id}. Prepare and Execute require review.` : "Explain verified evidence. This request cannot stop or take ownership of the receiver test."}</p> : creationSelection ? <><p>{sentence(creationSelection.selected.target_language)} · {sentence(creationSelection.selected.case_role)} development case. Review in Detection Lab before saving.</p><RunReference runId={creationSelection.selected.run_id} label="Source observations" onNavigate={navigate}/></> : savedGraphSelection ? <p>Version {savedRunSource(savedGraphSelection.selected).version} · {sentence(savedGraphSelection.selected.run_intent.mode)} · {savedGraphSelection.selected.run_intent.runner_profile_id || "Select a runner profile"}. These run settings stay bound to your request.</p> : graphSelection ? <>{wantsStepEdit && graphSelection.editUnavailable ? <p role="status">{graphSelection.editUnavailable}</p> : editingStep ? <><p className="assistant-action-summary">Change this step’s parameters. Review before saving a separate experiment; nothing runs.</p><details className="assistant-source-details"><summary>Experiment purpose and model data</summary><p><strong>{editingStep.scenario.title}</strong> · {editingStep.dirty ? "Unsaved working graph" : "Current working graph"}</p><p>Purpose: {editingStep.scenario.purpose}</p><p>The model receives your objective, this step’s parameters and their allowed schema. Other steps, inputs and routes stay in this product and cannot change.</p></details></> : <p>Describe your objective. Review the proposed experiment in Builder before saving.</p>}</> : detectionSelection ? <RunReference runId={detectionSelection.runId} label="Source observations" onNavigate={navigate}/> : null}
                 {fileAccessReference ? <FileAccessAssistanceEvidence summary={fileAccessReference} /> : null}
@@ -393,13 +401,13 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
             {selectionIsCurrent && context.isError ? <ErrorState title="Context is unavailable" error={context.error} retry={() => { void context.refetch(); }} /> : null}
             {selected && !current ? <p role="alert">This selection changed. Reopen the saved object before starting.</p> : null}
             {selection.manualEdits ? <p role="alert">Save or restore your manual rule edits before starting assistant work.</p> : null}
-            {selectionIsCurrent && contextAvailable && !selection.manualEdits && !message.trim() && suggestions.length ? <section className="assistant-starters" aria-label="Suggested requests"><h3>{editingStep ? "What should change?" : "Start with a request"}</h3><p>{editingStep ? "Describe the outcome you want from this step." : "Use a starting point, or write your own request below."}</p>{suggestions.map(item => <button type="button" key={item.title} className="assistant-starter" onClick={() => applySuggestion(item.message)}><span><strong>{item.title}</strong><small>{item.detail}</small></span><ChevronRight aria-hidden="true" /></button>)}</section> : null}
+            {selectionIsCurrent && contextAvailable && !selection.manualEdits && !message.trim() && suggestions.length ? <section className="assistant-starters" aria-label="Suggested requests">{editingStep ? null : <><h3>Start with a request</h3><p>Use a starting point, or write your own request below.</p></>}{suggestions.map(item => <button type="button" key={item.title} className="assistant-starter" onClick={() => applySuggestion(item.message)}><span><strong>{item.title}</strong><small>{item.detail}</small></span><ChevronRight aria-hidden="true" /></button>)}</section> : null}
           </>}
         </>}
         {localError || submit.error || recover.error || cancel.error ? <ErrorState title="Assistant needs attention" error={localError ?? submit.error ?? recover.error ?? cancel.error} /> : null}
       </div>
       {!receipt ? <section className="assistant-composer" aria-label="Assistant controls">
-        {!DEMO_MODE && (!selectedProvider || providerUnready || autonomy === "off") ? <div className="assistant-setup-note" data-ai-off={autonomy === "off"}>
+        {setupNote ? <div className="assistant-setup-note" data-ai-off={autonomy === "off"}>
           <span>{autonomy === "off" ? "AI is off. Your draft stays here." : providerUnready ? "Model connection needs attention." : "Choose a model to start work."}</span>
           {!models.length || providerUnready ? <Link onClick={navigate} to="/settings#model-connection">{providerUnready ? "Review connection" : "Set up a model"}</Link> : !selectedProvider ? <button type="button" onClick={() => setSettingsOpen(true)}>Choose model</button> : <button type="button" onClick={() => setAssistantPreferences({ ...assistantPreferences, autonomy: "assist" })}>Turn on Assist</button>}
         </div> : null}
@@ -408,7 +416,8 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
           <Field className="assistant-message-field" label="What would you like to do?"><textarea ref={composerRef} rows={3} maxLength={1000} value={message} onChange={event => updateMessage(event.target.value)} placeholder={editingStep ? "Describe what should change…" : "Ask a question or describe the work…"} /></Field>
           <div className="assistant-send-row"><span>{analysisOnlySelection ? "Explanation only" : savedGraphSelection || receiverSelection ? "Execute requires approval" : "Review before saving"}</span><Button type="submit" variant="primary" className="assistant-send" aria-label="Start work" disabled={!ready || submit.isPending || DEMO_MODE}><ArrowUp aria-hidden="true" /></Button></div>
         </form>
-        <button type="button" className="assistant-configuration" onClick={() => setSettingsOpen(!settingsOpen)} aria-expanded={settingsOpen} aria-controls="assistant-settings" aria-label="Review Assistant settings"><Settings2 aria-hidden="true" /><span>{sentence(autonomy)} <i aria-hidden="true">·</i> {modelSummary}</span><ChevronRight aria-hidden="true" /></button>
+        {/* The setup note already states the mode; the settings entry then shows only its label. */}
+        <button type="button" className="assistant-configuration" onClick={() => setSettingsOpen(!settingsOpen)} aria-expanded={settingsOpen} aria-controls="assistant-settings" aria-label="Review Assistant settings"><Settings2 aria-hidden="true" /><span>{setupNote ? "Assistant settings" : <>{sentence(autonomy)} <i aria-hidden="true">·</i> {modelSummary}</>}</span><ChevronRight aria-hidden="true" /></button>
       </section> : <footer className="assistant-work-controls" aria-label="Saved work controls">
         {turn ? <>
           {actionPath ? <Link className="button button-primary button-medium assistant-next-action" onClick={navigate} to={actionPath}>{actionLabel}<ArrowRight aria-hidden="true" /></Link> : null}

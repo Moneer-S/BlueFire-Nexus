@@ -12,6 +12,17 @@ export function objectiveLabel(reached?: boolean, mode?: string): string {
   return reached === true ? (mode === "simulate" ? "Achieved (synthetic)" : "Achieved") : reached === false ? "Not achieved" : "Not established";
 }
 
+/** A run list's result column: the objective result once a run settles, otherwise its lifecycle status. */
+export function runResult(run: Pick<RunRecord, "status" | "objective_reached" | "mode">): { label: string; tone: "achieved" | "danger" | "neutral" } {
+  if (run.status !== "completed" && run.status !== "succeeded") return { label: run.status.replaceAll("_", " ").replace(/^./, letter => letter.toUpperCase()), tone: run.status === "failed" ? "danger" : "neutral" };
+  return { label: objectiveLabel(run.objective_reached, run.mode), tone: run.objective_reached === true ? "achieved" : run.objective_reached === false ? "danger" : "neutral" };
+}
+
+/** The first eight characters of a run ID's random suffix, enough to tell same-named runs apart. */
+export function shortRunId(runId: string): string {
+  return runId.split("-").at(-1)?.slice(0, 8) ?? runId;
+}
+
 export function stepOutcomeLabel(step: RunStep, mode: string): string {
   if (step.execution_disposition === "counterfactual") return "Simulated continuation";
   if (mode === "execute" && step.interruption?.schema_version === "bluefire.execution-interruption.v1") return step.interruption.dispatch_requested === false ? "Cancelled before dispatch" : "Interrupted";
