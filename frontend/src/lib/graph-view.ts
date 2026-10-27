@@ -164,20 +164,18 @@ export function graphView(scenario: ScenarioGraph, allBranches: boolean, expande
   return { visible, ordered, hiddenSteps: scenario.steps.length - visible.size, hiddenBranches };
 }
 
-const FLOW_ROW_GAP = 44;
+const FLOW_ROW_GAP = 64;
 const FLOW_LANE_GAP = 80;
 const FLOW_COLUMN_GAP = 112;
 const FLOW_SINGLE_ROW_RANKS = 4;
 
-/** Target rows per flow column: three fit a laptop canvas; longer plans use four. */
-export function flowColumnRows(rankCount: number) {
-  return rankCount <= 12 ? 3 : 4;
-}
+/** Rows per flow column: three fit a 1366x768 Build canvas at a readable scale. */
+export const FLOW_COLUMN_ROWS = 3;
 
 /**
- * Column sizes for consecutive ranks. Balanced heights are preferred, but a
- * column may take one extra row to keep a decision with its branches; a break
- * crossed by a decision's outcomes or a branch entry costs more than imbalance.
+ * Column sizes for consecutive ranks, at most `rows` each. Balanced heights are
+ * preferred, but a break crossed by a decision's outcomes or a branch entry
+ * costs more than a shorter column, so decisions stay with their branches.
  */
 function flowColumnSizes(scenario: ScenarioGraph, rankOf: ReadonlyMap<string, number>, rankCount: number, spine: ReadonlySet<string>, rows: number) {
   const destinations = new Map<string, Set<string>>();
@@ -192,7 +190,7 @@ function flowColumnSizes(scenario: ScenarioGraph, rankOf: ReadonlyMap<string, nu
   const cost = [0], previous = [0];
   for (let end = 1; end <= rankCount; end += 1) {
     cost[end] = Infinity;
-    for (let size = 1; size <= Math.min(rows + 1, end); size += 1) {
+    for (let size = 1; size <= Math.min(rows, end); size += 1) {
       const start = end - size;
       const candidate = cost[start]! + (size - rows) ** 2 * 1.5 + (start > 0 ? breakCost[start - 1]! : 0);
       if (candidate < cost[end]!) { cost[end] = candidate; previous[end] = start; }
@@ -205,21 +203,29 @@ function flowColumnSizes(scenario: ScenarioGraph, rankOf: ReadonlyMap<string, nu
 
 /**
  * Columns of consecutive ranks. The success path keeps the first lane so its
- * edges stay straight; fallbacks, alternatives and detached steps take side
- * lanes in their own rank. Returns undefined when one row already reads well.
+ * edges stay straight; fallbacks and alternatives take side lanes in their own
+ * rank, and unconnected steps follow the plan. Returns undefined when one row
+ * already reads well.
  */
 function columnFlowPositions(scenario: ScenarioGraph, ordered: readonly ScenarioStep[], rowLayout: NonNullable<Scenario["layout"]>) {
-  const rankX = [...new Set(ordered.map(step => Math.round(rowLayout[step.id]!.x)))].sort((a, b) => a - b);
+  const linked = new Set(scenario.edges.flatMap(edge => [edge.from_step, edge.to_step]));
+  for (const step of ordered) for (const binding of Object.values(step.inputs)) if (binding.from_step !== step.id) { linked.add(step.id); linked.add(binding.from_step); }
+  const connected = ordered.filter(step => linked.has(step.id));
+  const detached = ordered.filter(step => !linked.has(step.id));
+  const rankX = [...new Set(connected.map(step => Math.round(rowLayout[step.id]!.x)))].sort((a, b) => a - b);
   if (rankX.length <= FLOW_SINGLE_ROW_RANKS) return undefined;
-  const rankOf = new Map(ordered.map(step => [step.id, rankX.indexOf(Math.round(rowLayout[step.id]!.x))]));
-  const ranks = rankX.map((_, rank) => ordered.filter(step => rankOf.get(step.id) === rank).sort((a, b) => rowLayout[a.id]!.y - rowLayout[b.id]!.y));
+  const rankOf = new Map(connected.map(step => [step.id, rankX.indexOf(Math.round(rowLayout[step.id]!.x))]));
+  const ranks = rankX.map((_, rank) => connected.filter(step => rankOf.get(step.id) === rank).sort((a, b) => rowLayout[a.id]!.y - rowLayout[b.id]!.y));
   const spine = new Set(graphView(scenario, false).ordered.map(step => step.id));
   const lanes = new Map<string, number>();
   for (const rank of ranks) {
     const taken = new Set<number>();
-    for (const step of rank) if (spine.has(step.id)) { lanes.set(step.id, 0); taken.add(0); }
+    // A success loop can put two success-path steps in one rank; only the
+    // first keeps the straight lane, the other is placed beside it.
+    const straight = rank.find(step => spine.has(step.id));
+    if (straight) { lanes.set(straight.id, 0); taken.add(0); }
     for (const step of rank) {
-      if (spine.has(step.id)) continue;
+      if (step === straight) continue;
       // A side chain stays in its predecessor's lane where that lane is free.
       const predecessor = scenario.edges.find(edge => edge.to_step === step.id && lanes.has(edge.from_step) && !spine.has(edge.from_step));
       let lane = predecessor ? lanes.get(predecessor.from_step)! : 1;
@@ -227,7 +233,7 @@ function columnFlowPositions(scenario: ScenarioGraph, ordered: readonly Scenario
       lanes.set(step.id, lane); taken.add(lane);
     }
   }
-  const sizes = flowColumnSizes(scenario, rankOf, ranks.length, spine, flowColumnRows(ranks.length));
+  const sizes = flowColumnSizes(scenario, rankOf, ranks.length, spine, FLOW_COLUMN_ROWS);
   const positions: NonNullable<Scenario["layout"]> = {};
   let first = 0, x = 32;
   for (const size of sizes) {
@@ -235,13 +241,16 @@ function columnFlowPositions(scenario: ScenarioGraph, ordered: readonly Scenario
     first += size;
     const steps = columnRanks.flat();
     // Without the success path, a column starts at its first occupied lane.
-    const offset = steps.some(step => spine.has(step.id)) ? 0 : Math.min(...steps.map(step => lanes.get(step.id)!));
+    const offset = steps.some(step => lanes.get(step.id) === 0) ? 0 : Math.min(...steps.map(step => lanes.get(step.id)!));
     const widest = Math.max(...steps.map(step => lanes.get(step.id)! - offset));
     columnRanks.forEach((rank, row) => rank.forEach(step => {
       positions[step.id] = { x: x + (lanes.get(step.id)! - offset) * (GRAPH_NODE_WIDTH + FLOW_LANE_GAP), y: 32 + row * (GRAPH_NODE_HEIGHT + FLOW_ROW_GAP) };
     }));
     x += (widest + 1) * GRAPH_NODE_WIDTH + widest * FLOW_LANE_GAP + FLOW_COLUMN_GAP;
   }
+  detached.forEach((step, index) => {
+    positions[step.id] = { x: x + Math.floor(index / FLOW_COLUMN_ROWS) * (GRAPH_NODE_WIDTH + FLOW_COLUMN_GAP), y: 32 + index % FLOW_COLUMN_ROWS * (GRAPH_NODE_HEIGHT + FLOW_ROW_GAP) };
+  });
   return positions;
 }
 

@@ -231,7 +231,8 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     writeWorkingGraphView(scenario, view);
   }, [review, scenario, selectedId, viewMode, allBranches, expandedBranches, focusedSection, inspectorOpen, routesOpen, showInputs]);
   const [graphZoom, setGraphZoom] = useState(1);
-  const [miniMapOpen, setMiniMapOpen] = useState(false);
+  // Plans too long to read at once start with the overview map for orientation.
+  const [miniMapOpen, setMiniMapOpen] = useState(() => scenario.steps.length > 12);
   const summaryZoom = graphZoom < minimumReadableGraphZoom;
   const sections = useMemo(() => graphSections(visibleGraph.ordered, graph.edges, graph.start), [visibleGraph, graph.edges, graph.start]);
   // Route edits can renumber groups. Resolve the selected step's group before
@@ -260,7 +261,10 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     };
   }, []);
   const displayNodes = useMemo(() => projectedNodes.map(node => {
-    const incoming = graph.edges.find(edge => edge.to_step === node.id && edge.outcome === "success");
+    // Prefer a success predecessor directly above, so a rejoin listed first
+    // cannot turn the straight route into a hook.
+    const predecessors = graph.edges.filter(edge => edge.to_step === node.id && edge.outcome === "success");
+    const incoming = predecessors.find(edge => { const source = projectedNodes.find(item => item.id === edge.from_step); return source && Math.abs(source.position.x - node.position.x) < 1 && source.position.y < node.position.y; }) ?? predecessors[0];
     const outgoing = graph.edges.find(edge => edge.from_step === node.id && edge.outcome === "success");
     const before = projectedNodes.find(item => item.id === incoming?.from_step);
     const after = projectedNodes.find(item => item.id === outgoing?.to_step);
@@ -828,7 +832,8 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       window.setTimeout(() => { fitNodes(shownSteps.map(step => step.id), 180, true); }, 0);
     } else {
       applyScenario({ ...scenario, layout: initialGraphLayout(scenario) }); setCompatibility("Steps arranged by their connections. Use Undo to restore your positions.");
-      window.setTimeout(() => { fitNodes(shownSteps.map(step => step.id), 180, true); }, 0);
+      // Frame the new arrangement as on opening, so its columns are not clipped.
+      window.setTimeout(() => { fitNodes(shownSteps.map(step => step.id), 180, true, "opening"); }, 0);
     }
   };
   const runCommand = (action: () => void) => { setCommandPaletteOpen(false); action(); };
@@ -953,7 +958,7 @@ function Inspector({ scenario, step, behavior, behaviors, actions, readOnly, upd
       const methodTitle = alternative ? inspectorMethodTitle(alternative, actions) : id;
       return <article className="method-card alternative-method" aria-label={`Alternative method: ${title}`} key={id}><strong title={title}>{methodTitle}</strong><p>{alternative?.purpose ?? "This method is unavailable in the loaded catalog."}</p><div className="chip-list">{alternative?.platforms.map(item => <Badge key={item}>{platformLabel(item)}</Badge>)}</div><Button size="small" variant="primary" disabled={!alternative} onClick={() => onAlternative(step.id, id)} aria-label={`Use ${title} for this step`}>Use this method<ArrowRight/></Button><label className="check-row"><input type="checkbox" aria-label={title} checked={step.alternates.includes(id)} onChange={event => updateStep(step.id, next => ({ ...next, alternates: event.target.checked ? [...next.alternates, id] : next.alternates.filter(value => value !== id) }))}/><span>Keep as a saved alternative</span></label></article>;
     })}<p>Saved alternatives are available for reuse. Adaptive retry choices separately control changes during execution.</p></section> : null}
-    <section><Field label="Run method override" hint={!allowRunOverride ? "Adopt this reviewed experiment before choosing a run override." : behavior.action_ids.length ? "Optional for this run, across Simulate and Execute. Reviewed for compatibility and approval before execution; not saved with the experiment." : "This step has no executable method. Choose a supported alternative to execute it."}><select aria-label="Run method override" value={selectedAction} onChange={event => onAction(event.target.value)} disabled={!allowRunOverride || !behavior.action_ids.length}><option value="">Recommended at run review</option>{behavior.action_ids.map(id => <option key={id} value={id}>{actions.get(id)?.title ? displayTitle(actions.get(id)!.title) : id}{actions.get(id)?.platforms.length ? ` · ${actions.get(id)!.platforms.join(" / ")}` : ""}</option>)}</select></Field></section>
+    <section><Field label="Run method override" hint={!allowRunOverride ? "Adopt this reviewed experiment before choosing a run override." : behavior.action_ids.length ? "Optional for this run, across Simulate and Execute. Reviewed for compatibility and approval before execution; not saved with the experiment." : "This step has no executable method. Choose a supported alternative to execute it."}><select aria-label="Run method override" value={selectedAction} onChange={event => onAction(event.target.value)} disabled={!allowRunOverride || !behavior.action_ids.length}><option value="">Recommended at run review</option>{behavior.action_ids.map(id => <option key={id} value={id}>{actions.get(id)?.title ? displayTitle(actions.get(id)!.title) : id}{actions.get(id)?.platforms.length ? ` · ${actions.get(id)!.platforms.map(platformLabel).join(" / ")}` : ""}</option>)}</select></Field></section>
     <AdaptiveMethodEditor key={`${step.id}:${JSON.stringify(scenario.adaptive_execution)}:${selectedAction}`} scenario={scenario} step={step} behaviors={behaviors} actions={actions} selectedAction={selectedAction} onChange={updateScenario} />
     </div>
     <div role="tabpanel" id={`${tabId}-evidence-panel`} aria-labelledby={`${tabId}-evidence`} hidden={tab !== "evidence"}>
