@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ArrowUp, Check, ChevronRight, FileCheck2, History, Layers3, MessageSquareText, Settings2, Sparkles, Square, X } from "lucide-react";
+import { ArrowRight, ArrowUp, Check, ChevronRight, CircleAlert, CircleOff, FileCheck2, History, Layers3, LoaderCircle, MessageSquareText, Settings2, Square, X, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
@@ -23,6 +23,11 @@ import type { CatalogResponse, DetectionCaseRole } from "../types";
 import { Button, ErrorState, Field, sentence } from "./Primitives";
 import "./ExperimentAssistant.css";
 
+// The response heading's icon states what the operator should expect next.
+const statusIcons: Record<AssistanceStatus, LucideIcon> = {
+  planning: LoaderCircle, working: LoaderCircle, cancelling: LoaderCircle, off: CircleOff, cancelled: Square,
+  awaiting_review: CircleAlert, awaiting_execute_approval: CircleAlert, ready_to_continue: CircleAlert, blocked: CircleAlert, completed: Check,
+};
 const labels: Record<AssistanceStatus, string> = {
   planning: "Planning the work", off: "AI is off", working: "Work in progress", awaiting_review: "Your review is needed",
   awaiting_execute_approval: "Execute approval is needed", ready_to_continue: "Next step needs attention", completed: "Work completed",
@@ -199,6 +204,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     onSuccess: cache });
   const cancel = useMutation({ mutationFn: async () => { setStopRequested(jobId); await client.cancelQueries({ queryKey: key, exact: true }); return api.controlJob(jobId, "cancel"); }, onSuccess: () => { void operation.refetch(); } });
   const turn = operation.data?.turn;
+  const StatusIcon = turn ? statusIcons[turn.status] : Check;
   const continuation = turn?.continuation;
   const triggerStatus = ownedReceipt && ownedJobId !== jobId ? ownerStatus.isError ? "Status unavailable" : ownerStatus.data ? triggerLabels[ownerStatus.data.turn.status] : "Checking status" : receipt ? operation.isError ? "Status unavailable" : turn ? triggerLabels[turn.status] : "Checking status" : undefined;
   const guidance = turn?.status === "ready_to_continue" ? turn.recovery : undefined;
@@ -356,7 +362,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
           {submittedRunIntent ? <details className="assistant-details"><summary>Submitted run settings</summary><dl><dt>Runner profile</dt><dd>{submittedRunIntent.runner_profile_id ?? "Not selected"}</dd><dt>Scope</dt><dd>{submittedRunIntent.target_scope.scope_refs.join(", ")}</dd><dt>AI during the run</dt><dd>{sentence(submittedRunIntent.autonomy)} · {submittedRunIntent.ai_provider_id ?? "No provider"}</dd></dl></details> : null}
           {!turn && !operation.isError ? <p role="status">Finding the saved operation…</p> : null}
           {turn ? <>
-            <div className="assistant-response-heading"><Sparkles aria-hidden="true" /><h3 aria-live="polite">{labels[turn.status]}</h3></div>
+            <div className="assistant-response-heading" data-status={turn.status}><StatusIcon aria-hidden="true" /><h3 aria-live="polite">{labels[turn.status]}</h3></div>
             <p className="assistant-response-message">{turn.message}</p>
             {turn.plan.length ? <details className="assistant-work-plan" open={turn.status === "working" || turn.status === "planning"}><summary>Work plan <span>{turn.plan.length} {turn.plan.length === 1 ? "step" : "steps"}</span></summary><ol className="assistant-plan">{turn.plan.map((step, index) => {
               const result = turn.results.find((item) => item.step_id === step.step_id && (item.kind !== "receiver_phase" && item.kind !== "receiver_inspection" || turn.status === "completed"));
@@ -378,7 +384,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
           </> : null}
           {operation.isError && !submit.isPending ? <><ErrorState title="Saved work could not be checked" error={operation.error} retry={() => { void operation.refetch(); }} /><p>The original request and its {sentence(receipt.autonomy)} mode are retained. Retry that exact request to find or start the operation once.</p><Button disabled={submit.isPending || stopping} onClick={() => submit.mutate(receipt)}>Retry original request</Button></> : null}
         </section> : <>
-          {DEMO_MODE ? <p className="assistant-empty">This preview cannot run assistant operations. Open the installed local service to plan an experiment or work from observed evidence.</p> : !selection ? <div className="assistant-empty"><div className="assistant-welcome-icon"><Sparkles aria-hidden="true" /></div><h3>What are you working on?</h3><p>Open an experiment or select observed evidence to start a request.</p><Link className="assistant-starter-link" onClick={navigate} to="/builder"><Layers3 aria-hidden="true" /><span>Open Builder<small>Create or improve an experiment</small></span><ChevronRight aria-hidden="true" /></Link><Link className="assistant-starter-link" onClick={navigate} to="/detection-lab"><FileCheck2 aria-hidden="true" /><span>Open Detection Lab<small>Work from observed evidence</small></span><ChevronRight aria-hidden="true" /></Link></div> : <>
+          {DEMO_MODE ? <p className="assistant-empty">This preview cannot run assistant operations. Open the installed local service to plan an experiment or work from observed evidence.</p> : !selection ? <div className="assistant-empty"><div className="assistant-welcome-icon"><MessageSquareText aria-hidden="true" /></div><h3>What are you working on?</h3><p>Open an experiment or select observed evidence to start a request.</p><Link className="assistant-starter-link" onClick={navigate} to="/builder"><Layers3 aria-hidden="true" /><span>Open Builder<small>Create or improve an experiment</small></span><ChevronRight aria-hidden="true" /></Link><Link className="assistant-starter-link" onClick={navigate} to="/detection-lab"><FileCheck2 aria-hidden="true" /><span>Open Detection Lab<small>Work from observed evidence</small></span><ChevronRight aria-hidden="true" /></Link></div> : <>
             <section className="assistant-context" aria-label={selectionIsCurrent ? "Current selection" : "Previous selection"}>
               {!selectionIsCurrent ? <>
                 <small>Previous selection</small><strong>{selection.title}</strong>

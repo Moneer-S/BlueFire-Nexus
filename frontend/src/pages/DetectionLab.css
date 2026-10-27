@@ -459,3 +459,5 @@
 @media (prefers-reduced-motion: reduce) {
   .detection-page .candidate-list-items > button { transition: none; }
 }
+/* Without a selected candidate the assistance row sits directly in the panel. */
+.candidate-workspace > .panel > .detection-assistance { padding: 14px 18px; margin: 0; border-top: 0; border-bottom: 1px solid var(--line); }
