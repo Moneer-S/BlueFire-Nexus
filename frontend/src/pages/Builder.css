@@ -129,22 +129,23 @@
 .workbench-builder .step-technical-details { padding-top: 16px; color: var(--muted); font-size: .72rem; }
 .workbench-builder .step-technical-details summary { cursor: pointer; margin-bottom: 10px; }
 /* Step card: icon tile beside a text column, as in the workbench reference. */
-.workbench-builder .flow-node { box-sizing: border-box; width: 220px; height: 104px; min-height: 104px; display: grid; grid-template-columns: 32px minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; column-gap: 10px; align-content: start; padding: 10px 12px 9px 10px; border-radius: 9px; background: linear-gradient(160deg, color-mix(in srgb, var(--blue) 7%, var(--surface-strong)), var(--surface) 70%); border-color: color-mix(in srgb, var(--blue) 18%, var(--line-strong)); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.26); transition: border-color 120ms, box-shadow 120ms; }
+.workbench-builder .flow-node { box-sizing: border-box; width: 220px; height: 88px; min-height: 88px; display: grid; grid-template-columns: 32px minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; column-gap: 10px; align-content: start; padding: 9px 12px 7px 10px; border-radius: 9px; background: linear-gradient(160deg, color-mix(in srgb, var(--blue) 7%, var(--surface-strong)), var(--surface) 70%); border-color: color-mix(in srgb, var(--blue) 18%, var(--line-strong)); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.26); transition: border-color 120ms, box-shadow 120ms; }
 .workbench-builder .flow-node:hover { border-color: color-mix(in srgb, var(--blue) 40%, var(--line-strong)); }
 .workbench-builder .flow-node .node-title, .workbench-builder .flow-node .route-handles { display: contents; }
 .workbench-builder .flow-node > header { grid-column: 2; grid-row: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 6px; min-width: 0; }
 .workbench-builder .flow-node > header span { font-family: inherit; font-size: .64rem; font-weight: 600; line-height: 1.25; color: var(--muted); }
-.workbench-builder .flow-node > header .node-order { flex-shrink: 0; color: var(--blue-soft); letter-spacing: .03em; text-transform: uppercase; }
+.workbench-builder .flow-node > header .node-order { flex-shrink: 0; color: var(--muted); font-family: inherit; font-weight: 600; }
 .workbench-builder .flow-node > header .node-method, .workbench-builder .flow-node > header .node-kind { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .workbench-builder .flow-node > header .attention { color: var(--red); }
 .workbench-builder .node-icon { grid-column: 1; grid-row: 1 / span 2; align-self: start; display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--blue) 12%, var(--surface)); color: var(--blue-soft); }
 .workbench-builder .node-icon svg { width: 17px; height: 17px; }
-.workbench-builder .node-title strong { grid-column: 2; grid-row: 2; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; min-width: 0; margin-top: 3px; overflow: hidden; overflow-wrap: anywhere; font-family: inherit; font-weight: 650; font-size: .86rem; line-height: 1.26; color: var(--text); }
-.workbench-builder .flow-node .node-context { grid-column: 2; grid-row: 3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; overflow-wrap: anywhere; margin: 3px 0 0; font-size: .7rem; line-height: 1.3; color: var(--muted-strong); }
+.workbench-builder .node-title strong { grid-column: 2; grid-row: 2; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; min-width: 0; margin-top: 1px; overflow: hidden; overflow-wrap: anywhere; font-family: inherit; font-weight: 650; font-size: .86rem; line-height: 1.22; color: var(--text); }
+.workbench-builder .flow-node .node-context { grid-column: 2; grid-row: 3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; overflow-wrap: anywhere; margin: 2px 0 0; font-size: .7rem; line-height: 1.28; color: var(--muted-strong); }
 .workbench-builder .flow-node > footer { grid-column: 2; grid-row: 4; align-self: end; margin: 0; font-family: inherit; font-size: .64rem; line-height: 1.3; color: var(--muted); }
 .workbench-builder .flow-node > footer > span { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .workbench-builder .flow-node > footer svg { flex: none; width: 11px; height: 11px; }
-.workbench-builder .flow-node.selected { border-color: var(--blue); background: linear-gradient(160deg, color-mix(in srgb, var(--blue) 22%, var(--surface)), color-mix(in srgb, var(--blue) 9%, var(--surface)) 75%); box-shadow: 0 0 0 1px var(--blue), 0 8px 22px rgba(0, 0, 0, 0.26), 0 0 28px color-mix(in srgb, var(--blue) 22%, transparent); }
+.workbench-builder .flow-node.selected { border-color: var(--blue); background: linear-gradient(160deg, color-mix(in srgb, var(--blue) 16%, var(--surface)), var(--surface) 75%); box-shadow: 0 0 0 1px var(--blue), 0 8px 22px rgba(0, 0, 0, 0.26); }
+.workbench-builder .flow-node.selected .node-order { color: var(--blue-soft); }
 .workbench-builder .flow-node.selected .node-icon { border-color: color-mix(in srgb, var(--blue) 60%, var(--line)); background: color-mix(in srgb, var(--blue) 24%, var(--surface)); color: var(--text); }
 .workbench-builder .flow-node.invalid { border-color: var(--red); }
 /* Readable at overview zoom: drop secondary lines, enlarge the title. */
@@ -325,3 +326,10 @@
   .workbench-builder .inspector-fields, .workbench-builder .inspector-editor { flex: none; }
   .workbench-builder > .compatibility-banner { position: static; width: auto; max-width: none; }
 }
+
+/* Plan facts read as plain text; state words carry colour only when they need attention. */
+.workbench-builder .experiment-facts .experiment-state { padding-left: 12px; border-left: 1px solid var(--line); color: var(--muted-strong); }
+.workbench-builder .experiment-facts .experiment-state.attention { color: var(--amber-soft); }
+.workbench-builder .experiment-facts .experiment-state.ready { color: var(--green); }
+.workbench-builder .experiment-facts .experiment-state.danger { color: var(--red); }
+.workbench-builder .flow-node:not(:has(> footer)) .node-context { -webkit-line-clamp: 2; }

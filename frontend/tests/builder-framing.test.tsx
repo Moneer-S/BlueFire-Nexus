@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { BuilderPage } from "../src/pages/Builder";
+import { GRAPH_NODE_HEIGHT } from "../src/lib/graph-view";
 import { ProductProvider } from "../src/state/ProductContext";
 import type { Outcome, Scenario } from "../src/types";
 
@@ -134,7 +135,7 @@ function expectReadableSelection(id: string) {
   expect(x).toBeGreaterThanOrEqual(0);
   expect(y).toBeGreaterThanOrEqual(0);
   expect(x + 220 * state.viewport.zoom).toBeLessThanOrEqual(width);
-  expect(y + 104 * state.viewport.zoom).toBeLessThanOrEqual(height);
+  expect(y + GRAPH_NODE_HEIGHT * state.viewport.zoom).toBeLessThanOrEqual(height);
 }
 
 async function navigateReadable(action: () => void, selectedId: string, visibleSteps: number) {
@@ -208,7 +209,7 @@ describe("Builder viewport controls", () => {
     const visible = scenario.steps.filter((_, index) => state.viewport.x + 32 + index * 276 + 220 <= width);
     expect(visible.length).toBeGreaterThanOrEqual(3);
     // A single row is centred in the available height, not pinned to the top.
-    expect(state.viewport.y + 32 + 52).toBe(height / 2);
+    expect(state.viewport.y + 32 + GRAPH_NODE_HEIGHT / 2).toBe(height / 2);
   });
 
   it("reveals a step selected in Steps when returning to an unchanged Canvas without changing zoom", async () => {
@@ -286,7 +287,7 @@ describe("Builder viewport controls", () => {
     const selected = rendered.layout!.selected!;
     const bounds = canvas.getBoundingClientRect(), pane = main.getBoundingClientRect();
     expect(bounds.top + state.viewport.y + selected.y).toBeGreaterThanOrEqual(pane.top);
-    expect(bounds.top + state.viewport.y + selected.y + 104 + 44).toBeLessThanOrEqual(pane.bottom);
+    expect(bounds.top + state.viewport.y + selected.y + GRAPH_NODE_HEIGHT + 44).toBeLessThanOrEqual(pane.bottom);
     expect(state.viewport.x + selected.x).toBeGreaterThanOrEqual(48);
     expect(state.viewport.x + selected.x + 220 + 72).toBeLessThanOrEqual(canvas.clientWidth - 48);
     expect(main.querySelector(".graph-topbar")!.getBoundingClientRect().top).toBe(pane.top + 8);
@@ -442,7 +443,7 @@ describe("Builder viewport controls", () => {
     fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
     fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
     expect(state.viewport.zoom).toBe(1);
-    expect(state.viewport.y + 180 + 104 / 2).toBe(556 / 2);
+    expect(state.viewport.y + 180 + GRAPH_NODE_HEIGHT / 2).toBe(556 / 2);
     expect(main.scrollTop).toBe(142);
     const focused = { ...state.viewport };
     flow.setViewport.mockClear();
@@ -488,7 +489,7 @@ describe("Builder viewport controls", () => {
     expect(state.viewport.x + selected.x).toBeGreaterThanOrEqual(0);
     expect(state.viewport.x + selected.x + 220 + 72).toBeLessThanOrEqual(canvas.clientWidth);
     expect(visible.top + state.viewport.y + selected.y).toBeGreaterThanOrEqual(pane.top);
-    expect(visible.top + state.viewport.y + selected.y + 104).toBeLessThanOrEqual(pane.bottom);
+    expect(visible.top + state.viewport.y + selected.y + GRAPH_NODE_HEIGHT).toBeLessThanOrEqual(pane.bottom);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
     const restored = { ...state.viewport };
     flow.setViewport.mockClear();
@@ -512,7 +513,7 @@ describe("Builder viewport controls", () => {
     const selected = rendered.layout![rendered.start]!;
     const bounds = canvas.getBoundingClientRect(), pane = main.getBoundingClientRect();
     expect(bounds.top + state.viewport.y + selected.y * state.viewport.zoom).toBeGreaterThanOrEqual(pane.top);
-    expect(bounds.top + state.viewport.y + (selected.y + 104) * state.viewport.zoom).toBeLessThanOrEqual(pane.bottom);
+    expect(bounds.top + state.viewport.y + (selected.y + GRAPH_NODE_HEIGHT) * state.viewport.zoom).toBeLessThanOrEqual(pane.bottom);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
 
     const chosen = { x: -400, y: -200, zoom: 1.2 };
@@ -596,7 +597,7 @@ describe("Builder viewport controls", () => {
       expect(state.viewport.x + position.x).toBeGreaterThanOrEqual(24);
       expect(state.viewport.x + position.x + 220).toBeLessThanOrEqual(width - 24);
       expect(state.viewport.y + position.y).toBeGreaterThanOrEqual(24);
-      expect(state.viewport.y + position.y + 104).toBeLessThanOrEqual(height - 24);
+      expect(state.viewport.y + position.y + GRAPH_NODE_HEIGHT).toBeLessThanOrEqual(height - 24);
     }
     expect(state.viewport.x + layout.context_step_8!.x + 220 + 72).toBeLessThanOrEqual(width - 24);
     expect(state.props.nodes?.find(node => node.id === "context_step_8")?.selected).toBe(true);
@@ -612,12 +613,12 @@ describe("Builder viewport controls", () => {
     fireEvent.click(screen.getByRole("button", { name: `Select ${target.id}` }));
     await waitFor(() => expect(state.viewport.zoom).toBe(1));
     // Focus centers the occupied column, including its conditional-route gutter.
-    expect(state.viewport).toEqual({ x: 131, y: -186, zoom: 1 });
+    expect(state.viewport).toEqual({ x: 131, y: -178, zoom: 1 });
     expectReadableSelection(target.id);
     state.viewport = { x: 2, y: 3, zoom: 0.4 };
     fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
     fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
-    expect(state.viewport).toEqual({ x: 131, y: -186, zoom: 1 });
+    expect(state.viewport).toEqual({ x: 131, y: -178, zoom: 1 });
     expectReadableSelection(target.id);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(scenario);
   });

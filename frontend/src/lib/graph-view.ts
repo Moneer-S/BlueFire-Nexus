@@ -4,7 +4,7 @@ import type { Outcome, Scenario, ScenarioStep } from "../types";
 export type ScenarioGraph = Pick<Scenario, "steps" | "edges" | "start" | "layout">;
 
 export const GRAPH_NODE_WIDTH = 220;
-export const GRAPH_NODE_HEIGHT = 104;
+export const GRAPH_NODE_HEIGHT = 88;
 
 export type GraphViewport = { x: number; y: number; zoom: number };
 export type GraphFrame = { width: number; height: number; x?: number; y?: number };

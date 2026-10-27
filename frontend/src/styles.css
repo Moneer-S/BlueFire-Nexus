@@ -129,12 +129,6 @@ svg { flex: 0 0 auto; }
 .nav-link:hover { color: var(--text); background: var(--surface-soft); }
 .nav-link.active { border-color: var(--line-strong); background: var(--surface-soft); color: var(--text); }
 .nav-link.active svg { color: var(--blue-soft); }
-.sidebar-status { position: absolute; left: 12px; right: 12px; bottom: 15px; min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-soft); }
-.sidebar-status > div { min-width: 0; display: flex; align-items: center; gap: 9px; }
-.sidebar-status strong, .sidebar-status small { display: block; white-space: nowrap; }
-.sidebar-status strong { font-size: 0.67rem; }
-.sidebar-status small { margin-top: 3px; color: var(--muted); font-size: 0.56rem; }
-.sidebar-status > svg { width: 17px; color: var(--green); }
 .service-light { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 4px rgba(247, 184, 75, 0.12); }
 .service-light.ready { background: var(--green); box-shadow: 0 0 0 4px rgba(69, 211, 157, 0.12); }
 .service-light.error { background: var(--red); box-shadow: 0 0 0 4px rgba(255, 110, 121, 0.12); }
@@ -158,8 +152,6 @@ svg { flex: 0 0 auto; }
 .nav-collapsed .nav-link svg { width: 19px; height: 19px; }
 .nav-collapsed .nav-group { margin-bottom: 9px; }
 .nav-collapsed .sidebar nav { padding-inline: 12px; }
-.nav-collapsed .sidebar-status { justify-content: center; padding-inline: 8px; }
-.nav-collapsed .sidebar-status > div { gap: 0; }
 .nav-collapsed .sidebar-collapse svg { transform: none; }
 
 /* Foundation */
@@ -1012,7 +1004,6 @@ pre { max-width: 100%; margin: 0; overflow: auto; color: var(--muted-strong); fo
 
 .brand small,
 .nav-group > p,
-.sidebar-status small,
 .workspace-topbar > div:first-child > span,
 .eyebrow,
 .data-list dt,

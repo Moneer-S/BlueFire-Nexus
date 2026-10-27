@@ -176,12 +176,9 @@ function WorkspaceShell() {
           <button className="nav-disclosure" aria-label={moreOpen ? "Hide more tools" : "Show more tools"} aria-expanded={moreOpen} aria-controls="more-navigation" onClick={() => setMoreOpen((value) => !value)}><MoreHorizontal aria-hidden="true"/><span>More tools</span><ChevronDown aria-hidden="true"/></button>
           {moreOpen && <div id="more-navigation" className="nav-group secondary-nav" aria-label="More tools">{moreItems.map(renderLink)}</div>}
         </nav>
-        <div className="sidebar-status">
-          <div><span className={`service-light ${connection.light}`} role="img" aria-label={connection.title}/><span><strong>{connection.title}</strong><details className="connection-details"><summary>Connection details</summary><p>{connection.detail}</p></details>{connection.state !== "connected" && connection.state !== "demo" ? <button type="button" className="service-recheck" disabled={connection.checking} onClick={connection.check}>{connection.checking ? "Checking connection" : "Check connection"}</button> : null}</span></div>
-        </div>
       </aside>
       <div className="workspace-shell" inert={mobileOpen}>
-        <header className="workspace-topbar"><WorkspaceSearch destinations={allItems} scenarios={scenarios.data?.scenarios ?? []} current={current} /><div className="topbar-actions"><span className="topbar-connection" title={connection.detail}><span className={`service-light ${connection.light}`} aria-hidden="true"/>{connection.label}</span><ExperimentAssistant providers={catalog.data?.ai.providers ?? []} /></div></header>
+        <header className="workspace-topbar"><WorkspaceSearch destinations={allItems} scenarios={scenarios.data?.scenarios ?? []} current={current} /><div className="topbar-actions"><div className="service-status">{connection.state !== "connected" && connection.state !== "demo" ? <button type="button" className="service-recheck" disabled={connection.checking} onClick={connection.check}>{connection.checking ? "Checking connection" : "Check connection"}</button> : null}<details className="connection-details"><summary aria-label={`${connection.title}. Connection details`}><span className={`service-light ${connection.light}`} role="img" aria-label={connection.title}/><span>{connection.label}</span></summary><div className="connection-panel"><strong>{connection.title}</strong><p>{connection.detail}</p></div></details></div><ExperimentAssistant providers={catalog.data?.ai.providers ?? []} /></div></header>
         <div className={`workspace-content ${assistantOpen ? "assistant-open" : ""}`}><main id="main-content" tabIndex={-1}><LabSessionNotice providers={catalog.data?.ai.providers} /><Outlet /></main><div id="assistant-dock" /></div>
       </div>
     </div>

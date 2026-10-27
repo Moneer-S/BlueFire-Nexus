@@ -113,7 +113,7 @@ describe("Builder graph step search", () => {
     const selected = state.props.nodes?.find(node => node.id === "orphan_step");
     expect(selected?.hidden).toBe(false);
     // Focus keeps the tail readable without leaving empty space past the graph.
-    await waitFor(() => expect(state.viewport).toEqual({ x: -544, y: -488, zoom: 1 }));
+    await waitFor(() => expect(state.viewport).toEqual({ x: -544, y: -472, zoom: 1 }));
     const selectedRect = {
       left: state.viewport.x + selected!.position.x * state.viewport.zoom,
       top: state.viewport.y + selected!.position.y * state.viewport.zoom,
