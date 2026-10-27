@@ -41,7 +41,8 @@ export const CanonicalPlanReview = memo(function CanonicalPlanReview({ plan, cle
       return <article key={String(step.step_id ?? index)}>
         <span>{String(index + 1).padStart(2, "0")}</span>
         <div><strong>{displayTitle(String(title))}</strong>{purpose ? <p>{String(purpose)}</p> : null}
-          <small>{step.action_id ? "Execute the selected method" : "Simulate this step"}{permittedCount && permittedCount > 1 ? ` · ${permittedCount} allowed methods` : ""}</small>
+          {/* The plan header states the mode; repeat it per step only with more to say. */}
+          {step.action_id || (permittedCount && permittedCount > 1) ? <small>{step.action_id ? "Execute the selected method" : "Simulate this step"}{permittedCount && permittedCount > 1 ? ` · ${permittedCount} allowed methods` : ""}</small> : null}
         </div>
         {settings.length ? <div className="review-step-settings"><DataList items={settings.slice(0, 4).map(([name, value]) => ({ label: sentence(name), value: parameterValueLabel(behaviorId, name, value) ?? (typeof value === "boolean" ? value ? "Yes" : "No" : String(value)) }))}/>{settings.length > 4 ? <small>{settings.length - 4} more settings in step details</small> : null}</div> : null}
         <details><summary>Step details</summary><dl>

@@ -246,3 +246,15 @@
 /* A finished run leads its live panel with the recorded conclusion. */
 .live-run-outcome { padding: 14px 15px 2px; }
 .live-run-outcome .run-outcome h3 { font-size: 1.2rem; }
+
+/* Plan review rows: number, step, then its parameters as compact inline chips. */
+.runs-page .review-steps > article { grid-template-columns: 28px minmax(0, 1fr); gap: 2px 12px; padding: 11px 0; }
+.runs-page .review-steps > article > span { grid-row: 1 / span 3; }
+.runs-page .review-steps > article > div:not(.review-step-settings) { grid-column: 2; grid-row: 1; }
+.runs-page .review-steps > article > .review-step-settings { grid-column: 2; grid-row: 2; justify-items: start; }
+.runs-page .review-steps > article > details { grid-column: 2; grid-row: 3; }
+.runs-page .review-steps p { margin: 3px 0 0; }
+.runs-page .review-step-settings dl { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; padding: 0; }
+.runs-page .review-step-settings dl > div { display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: color-mix(in srgb, var(--blue) 6%, transparent); }
+.runs-page .review-step-settings dt { margin: 0; color: var(--muted); font-size: .7rem; letter-spacing: 0; text-transform: none; }
+.runs-page .review-step-settings dd { margin: 0; color: var(--text-soft); font-size: .7rem; }
