@@ -522,6 +522,12 @@ function PlanPreview({ scenarioTitle, stepIds, edgeCount, dirty, config, catalog
 }
 
 function normalizeStatus(status: string) { return status === "success" ? "succeeded" : status === "control_blocked" ? "blocked" : status; }
+// A step's method line appears only when it adds something: not the step title
+// again, and not "Simulation" inside a simulation.
+function distinctMethod(labels: { name: string; method: string }, mode: RunRecord["mode"]) {
+  return labels.method === `Simulation · ${labels.name}` ? mode === "simulate" ? undefined : "Simulation" : labels.method === labels.name ? undefined : labels.method;
+}
+
 function statusTone(status: string) { const value = normalizeStatus(status); return value === "succeeded" || value === "completed" || value === "cleaned" ? "success" as const : ["blocked", "partial", "awaiting_approval", "paused", "cancelling", "cancelled"].includes(value) ? "warning" as const : ["failed", "refused", "interrupted"].includes(value) ? "danger" as const : value === "counterfactual" ? "violet" as const : "info" as const; }
 
 interface LiveConsoleProps {
@@ -577,7 +583,8 @@ function LiveConsole({ catalog, run: linkedRun, job, events, pending, approvalPr
     {retained.requested && retained.isError ? <ErrorState title="Retained observations unavailable" error={retained.error} retry={() => { void retained.refetch(); }} /> : null}
     <div className="live-path">{steps.length ? steps.map((step, index) => {
       const labels = recordedStepLabels(step, catalog, run);
-      return <article key={`${step.step_id}-${index}`} data-status={normalizeStatus(step.status)}><header><span>{String(index + 1).padStart(2, "0")}</span><Badge tone={statusTone(step.status)} dot>{stepOutcomeLabel(step, run!.mode)}</Badge></header><strong>{labels.name}</strong>{labels.method !== labels.name ? <small>{labels.method}</small> : null}<details><summary>Step details</summary><DataList items={[{ label: "Step ID", value: <code>{step.step_id}</code> }, { label: "Method ID", value: <code>{step.action_id ?? step.simulation_id ?? "Not recorded"}</code> }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not recorded") }]} /></details></article>;
+      const method = distinctMethod(labels, run!.mode);
+      return <article key={`${step.step_id}-${index}`} data-status={normalizeStatus(step.status)}><header><span>{String(index + 1).padStart(2, "0")}</span><span className={`run-step-outcome tone-${statusTone(step.status)}`}>{stepOutcomeLabel(step, run!.mode)}</span></header><strong>{labels.name}</strong>{method ? <small>{method}</small> : null}<details><summary>Step details</summary><DataList items={[{ label: "Step ID", value: <code>{step.step_id}</code> }, { label: "Method ID", value: <code>{step.action_id ?? step.simulation_id ?? "Not recorded"}</code> }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not recorded") }]} /></details></article>;
     }) : <div className="console-empty"><Activity/><strong>{emptyTitle}</strong><span>{emptyDetail}</span></div>}</div>
     <div className="console-tabs" role="tablist" aria-label="Run detail views">{(["timeline", "planner", "policy", "runner", "evidence", "detections"] as const).map((item) => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{sentence(item)}</button>)}</div>
     <div className="console-detail">{tab !== "timeline" && retained.requested && !retained.record ? <p>{retained.isError ? "Observations could not be loaded. Try again above." : "Loading retained observations…"}</p> : tab === "timeline" ? <Timeline catalog={catalog} run={run} job={job} events={events} pending={pending} /> : tab === "planner" ? <StructuredPanel value={run?.planner_decisions?.length ? run.planner_decisions : run?.plan} empty="No planner decisions are available." /> : tab === "policy" ? <StructuredPanel value={run?.policy} empty="No policy decisions are available." /> : tab === "runner" ? <RunnerDetail catalog={catalog} run={run} /> : tab === "evidence" ? <EvidenceDetail run={run} catalog={catalog} /> : <DetectionDetail run={run} />}</div>
@@ -728,7 +735,7 @@ export function RunReview({ run, catalog, showObjective = true }: { run: RunReco
         <section ref={pathRef} className="run-path-section" aria-label="Recorded step outcomes"><header><h2 tabIndex={-1}>Path taken</h2><p>{steps.length} recorded steps</p></header>
           {steps.length ? <ol className="run-path-list">{steps.map((step, index) => {
             const labels = recordedStepLabels(step, catalog, run);
-            const method = labels.method === `Simulation · ${labels.name}` ? run.mode === "simulate" ? undefined : "Simulation" : labels.method === labels.name ? undefined : labels.method;
+            const method = distinctMethod(labels, run.mode);
             return <li key={`${step.step_id}-${index}`} data-disposition={step.execution_disposition ?? "not_recorded"} data-status={step.status}>
               <span className="run-step-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
               <div className="run-step-content">
