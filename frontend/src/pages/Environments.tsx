@@ -12,8 +12,9 @@ import "./Environments.css";
 
 const staleTime = 30_000;
 
-function StateBadge({ tone, children }: { tone: "success" | "warning" | "info" | "neutral"; children: string }) {
-  return <Badge tone={tone}>{children}</Badge>;
+// Loaded, ordinary states need no badge; one appears only for something to notice.
+function StateBadge({ tone, children }: { tone: "success" | "warning" | "info" | "neutral"; children: string | null }) {
+  return children ? <Badge tone={tone}>{children}</Badge> : null;
 }
 
 function QueryState({ pending, error, label, retry }: { pending: boolean; error: unknown; label: string; retry: () => void }) {
@@ -106,7 +107,7 @@ export function EnvironmentsPage() {
         <p>{fileStatus.isError ? "Last reported setup; current status could not be refreshed." : !fileCurrent ? fileExpired ? "Saved setup has expired." : fileSetup || fileStatus.data.enrollment ? fileStatus.data.problem?.message ?? "Saved setup is unavailable for file operations." : "No setup is available for this workspace." : fileStatus.data.available ? "Available for reviewed file operations." : fileStatus.data.problem?.message ?? "Setup is saved, but file operations are unavailable."}</p>
       </article><article className="environment-row environment-row-history">
         <p>{fileControls.error ? "History unavailable; see the notice below." : fileControls.isPending ? "Loading saved-control history." : `${fileControls.data?.controls.length} saved ${fileControls.data?.controls.length === 1 ? "control" : "controls"}.`}</p>
-        <StateBadge tone={fileControls.error ? "warning" : fileControls.isPending ? "neutral" : "info"}>{fileControls.error ? "Unavailable" : fileControls.isPending ? "Loading" : "History"}</StateBadge>
+        <StateBadge tone={fileControls.error ? "warning" : fileControls.isPending ? "neutral" : "info"}>{fileControls.error ? "Unavailable" : fileControls.isPending ? "Loading" : null}</StateBadge>
       </article></div> : null}
       {fileControls.error ? <ErrorState title="Saved file-access history unavailable" error={fileControls.error} retry={() => { void fileControls.refetch(); }} /> : null}
       <BandLinks to="/file-access" linkLabel="Open file access" />
@@ -136,12 +137,12 @@ export function EnvironmentsPage() {
       <div className="environment-rows">
         <article className="environment-row"><div><strong>Runner profiles</strong><small>Rules and limits for reviewed runs</small></div>
           <p>{catalog.isError || profiles.isError ? catalog.data || profiles.data ? "Some profile information could not be refreshed." : "Profile information could not be loaded." : catalog.data && profiles.data ? "Review available profiles and saved configurations." : "Profile information is loading."}</p>
-          <StateBadge tone={catalog.isError || profiles.isError ? "warning" : "info"}>{catalog.isError || profiles.isError ? catalog.data || profiles.data ? "Partial status" : "Unavailable" : catalog.data && profiles.data ? "Reported" : "Loading"}</StateBadge>
+          <StateBadge tone={catalog.isError || profiles.isError ? "warning" : "info"}>{catalog.isError || profiles.isError ? catalog.data || profiles.data ? "Partial status" : "Unavailable" : catalog.data && profiles.data ? null : "Loading"}</StateBadge>
           {catalog.data && profiles.data ? <details className="environment-inventory-details"><summary>Inventory details</summary><span>{catalog.data.runner_profiles.length} catalog profiles · {profiles.data.resources.filter(item => item.status === "active").length} active saved profiles · {profiles.data.resources.length} saved profile records.</span></details> : null}
         </article>
         <article className="environment-row"><div><strong>Runner records</strong><small>Saved runners; connectivity is checked when used</small></div>
           <p>{runners.isError ? runners.data ? "Saved runner information could not be refreshed." : "Runner information could not be loaded." : runners.data ? "Saved records; connection is checked when a runner is used." : "Runner information is loading."}</p>
-          <StateBadge tone={runners.isError ? "warning" : "neutral"}>{runners.isError ? runners.data ? "Last reported" : "Unavailable" : runners.data ? "Saved" : "Loading"}</StateBadge>
+          <StateBadge tone={runners.isError ? "warning" : "neutral"}>{runners.isError ? runners.data ? "Last reported" : "Unavailable" : runners.data ? null : "Loading"}</StateBadge>
           {runners.data ? <details className="environment-inventory-details"><summary>Inventory details</summary><span>{runners.data.resources.length} saved {runners.data.resources.length === 1 ? "runner record" : "runner records"}; authentication has not been checked here.</span></details> : null}
         </article>
       </div>
@@ -170,7 +171,7 @@ export function EnvironmentsPage() {
           <span>{authorizations.isError ? authorizations.data ? "Last reported authorization; current status could not be refreshed." : "Authorization status unavailable." : currentAuthorizations === undefined ? "Authorization status is loading." : `${currentAuthorizations} current authorizations reported.`}</span>
         </dd></div>
         <div><dt>Saved provider configurations</dt><dd>
-          <StateBadge tone={catalog.isError || providers.isError ? "warning" : catalog.data && providers.data ? "info" : "neutral"}>{catalog.isError || providers.isError ? catalog.data || providers.data ? "Partial status" : "Unavailable" : catalog.data && providers.data ? "Inventory" : "Loading"}</StateBadge>
+          <StateBadge tone={catalog.isError || providers.isError ? "warning" : catalog.data && providers.data ? "info" : "neutral"}>{catalog.isError || providers.isError ? catalog.data || providers.data ? "Partial status" : "Unavailable" : catalog.data && providers.data ? null : "Loading"}</StateBadge>
           <span>{catalog.isError || providers.isError ? catalog.data || providers.data ? "Some provider information could not be refreshed." : "Provider information could not be loaded." : catalog.data && providers.data ? "Saved configurations and provider health are reported separately." : "Provider information is loading."}</span>
           {catalog.data && providers.data ? <details className="environment-inventory-details"><summary>Inventory details</summary><span>{catalog.data.ai.providers?.length ?? "Not reported"} catalog providers · {providers.data.resources.filter(item => item.status === "active").length} active saved configurations · {providers.data.resources.length} saved configurations.</span></details> : null}
         </dd></div>

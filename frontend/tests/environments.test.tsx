@@ -87,7 +87,8 @@ it("keeps the all-empty overview compact, truthful, and actionable", async () =>
   expect(screen.getAllByText(cloudProblem, { exact: true })).toHaveLength(1);
   expect(await screen.findByText(/Native execution: not reported available/)).toBeVisible();
   expect(screen.getByText("0 saved controls.")).toBeVisible();
-  expect(screen.getByText("History")).toBeVisible();
+  // A loaded, empty history is ordinary and carries no badge.
+  expect(screen.queryByText("History")).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Open S3 access" })).toHaveAttribute("href", "/s3-access");
   expect(screen.getByRole("link", { name: "Open file access" })).toHaveAttribute("href", "/file-access");
   expect(screen.getByRole("link", { name: "Open AD share access" })).toHaveAttribute("href", "/ad-smb");
