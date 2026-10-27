@@ -107,7 +107,7 @@ const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProp
   return <article className={`flow-node tier-${behavior?.safety_tier ?? "safe"} ${selected ? "selected" : ""} ${data.invalid ? "invalid" : ""}`} aria-label={title.method ? title.fullTitle : undefined}>
     <Handle type="target" position={data.routeIn ?? Position.Left} id="route:in" className="route-handle route-in" style={data.routeIn === Position.Top ? { left: 20 } : undefined} title="Continue from another step" />
     {(behavior?.inputs ?? []).slice(0, 4).map((input, index, items) => <Handle key={input.name} type="target" position={Position.Top} id={`in:${input.name}`} className="typed-handle input-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Requires ${inputTypeLabel(input.type)}: ${inputLabel(input.name)}`} />)}
-    <header><span className="node-order">Step {data.ordinal}</span>{data.invalid || behavior?.execution_state !== "action" ? <span className={`node-kind ${data.invalid ? "attention" : ""}`}>{data.invalid ? "Needs attention" : behavior?.execution_state === "simulation" ? "Simulation" : "Research only"}</span> : title.method ? <span className="node-method" title={title.method}>{title.method.replace(/^\((.*)\)$/, "$1")}</span> : null}</header>
+    <header><span className="node-order">Step {data.ordinal}</span>{data.invalid || behavior?.execution_state !== "action" ? <span className={`node-kind ${data.invalid ? "attention" : ""}`}>{data.invalid ? "Needs attention" : behavior?.execution_state === "simulation" ? "Simulation" : "Research only"}</span> : title.method ? <span className="node-method" title={title.method}>{title.method}</span> : null}</header>
     <div className="node-title"><span className="node-icon"><NodeIcon aria-hidden="true"/></span><strong title={title.fullTitle}>{title.title}</strong></div>
     {data.method ? <p className="node-context" title={`Run override: ${displayTitle(data.method)}`}>Run override: {displayTitle(data.method)}</p> : null}
     {!data.method && stepParameterSummary(data.step, behavior) ? <p className="node-context" title={stepParameterSummary(data.step, behavior)}>{stepParameterSummary(data.step, behavior)}</p> : null}
@@ -316,7 +316,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const selectedParallel = edges.find(edge => edge.id === selectedRouteId && edge.data?.parallel);
     return edges.map((edge) => {
       // A condition that repeats its success route's destination is stated on that
-      // success route ("Also partial") and drawn only while its step or route is in focus.
+      // success route ("Also partial") and drawn faintly until its step or route is in focus.
       const idleParallel = Boolean(edge.data?.parallel) && edge.id !== selectedRouteId && edge.source !== selectedId && edge.target !== selectedId;
       const data = routedData.get(edge.id) ?? edge.data;
       // Once those conditions are drawn, the success route no longer needs to name them.

@@ -248,7 +248,7 @@ it.each(["click", "keyboard"])("reopens a retained selected route after closing 
   expect(cached()).toEqual(demoScenario);
 });
 
-it("names conditions that repeat a success destination on that route and draws them only while in focus", async () => {
+it("names conditions that repeat a success destination on that route and draws them faintly until in focus", async () => {
   const user = userEvent.setup();
   mount();
   await showFullRouteGraph(user);
@@ -271,4 +271,20 @@ it("names conditions that repeat a success destination on that route and draws t
   await waitFor(() => expect(success.querySelector("title")).toHaveTextContent(/^Route 5: On success$/));
   expect(success.querySelector(".react-flow__edge-text")).toBeNull();
   expect(cached()).toEqual(scenario);
+});
+
+it("keeps a method qualifier's parentheses so the card title and qualifier restate the full method name", async () => {
+  const behavior = demoCatalog.behaviors.find(item => item.id === "sandbox.collection.stage.v1")!;
+  const original = behavior.title;
+  behavior.title = "Stage selected records (native JSONL)";
+  try {
+    mount();
+    const node = await screen.findByTestId("rf__node-stage_records");
+    await waitFor(() => expect(node.querySelector(".node-method")).toHaveTextContent(/^\(native JSONL\)$/));
+    const title = node.querySelector(".node-title > strong")!;
+    expect(title).toHaveTextContent(/^Stage selected records$/);
+    expect(title).toHaveAttribute("title", "Stage selected records (native JSONL)");
+  } finally {
+    behavior.title = original;
+  }
 });
