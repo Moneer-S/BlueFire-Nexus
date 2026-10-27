@@ -70,8 +70,12 @@ it("shows a cancelled job's retained events without claiming it is awaiting a ru
   vi.spyOn(api, "runEvents").mockImplementation(async (_id, cursor = 0) => ({ schema_version: "bluefire.event-page.v1", run_id: "run-partial", after_sequence: cursor, next_sequence: 3, has_more: false, items: cursor ? [] : [1, 2, 3].map((sequence) => ({ sequence, event_type: "step.completed", data: { step_id: `partial-${sequence}`, behavior_id: demoCatalog.behaviors[0]!.id, simulation_id: demoCatalog.behaviors[0]!.simulation_id, status: "success" } })) }));
   mount();
   expect(await screen.findByText("Job cancelled")).toBeVisible();
-  expect(await screen.findAllByText("Step result recorded")).toHaveLength(3);
-  expect(screen.getAllByText(`${demoCatalog.behaviors[0]!.title} · Simulated success`)).toHaveLength(3);
+  // Step results lead with the step they describe; the event type stays in Event details.
+  await waitFor(() => expect(document.querySelectorAll(".timeline > li")).toHaveLength(3));
+  for (const row of document.querySelectorAll(".timeline > li")) {
+    expect(row.querySelector("strong")).toHaveTextContent(demoCatalog.behaviors[0]!.title);
+    expect(within(row as HTMLElement).getByText("Simulated success", { exact: true })).toBeVisible();
+  }
   const firstEvent = screen.getAllByText("Event details")[0]!.closest("details")!;
   await userEvent.setup().click(firstEvent.querySelector("summary")!);
   expect(within(firstEvent).getByText("partial-1", { exact: true })).toBeVisible();
@@ -323,7 +327,7 @@ it("reads each routing decision as the next line of the step result it follows",
   ]);
   vi.spyOn(api, "runEvents").mockImplementation(async (_id, cursor = 0) => ({ schema_version: "bluefire.event-page.v1", run_id: "run-routed", after_sequence: cursor, next_sequence: 4, has_more: false, items: cursor ? [] : items }));
   mount();
-  expect(await screen.findAllByText("Step result recorded")).toHaveLength(2);
+  await waitFor(() => expect(document.querySelectorAll(".timeline > li strong")).toHaveLength(2));
   // Each decision stays inspectable, but no longer takes its own row.
   expect(screen.queryByText("Plan decision")).not.toBeInTheDocument();
   expect(document.querySelectorAll(".timeline > li")).toHaveLength(2);

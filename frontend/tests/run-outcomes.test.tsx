@@ -38,6 +38,7 @@ it("reads canonical event data without letting obsolete flat fields claim a diff
   const result = runEventPresentation(event, demoCatalog, null, "execute");
   expect(result).toMatchObject({ title: "Step result recorded", stepId: "selected_step", status: "blocked", sequence: 4, type: "step.completed" });
   expect(result.detail).toBe(`${behavior.title} · Stopped by BlueFire policy · This capability is outside the reviewed scope.`);
+  expect(result).toMatchObject({ stepName: behavior.title, outcome: "Stopped by BlueFire policy", reason: "This capability is outside the reviewed scope." });
   expect(event).toEqual(before);
 });
 
