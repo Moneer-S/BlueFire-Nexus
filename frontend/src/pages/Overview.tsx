@@ -1,7 +1,7 @@
 import { displayTitle } from "../lib/display-title";
 import { graphNodeIcon } from "../lib/graph-node-icon";
 import { runLabel } from "../lib/runPresentation";
-import { objectiveLabel } from "../lib/run-presentation";
+import { objectiveLabel, shortRunId } from "../lib/run-presentation";
 import { profileChoiceLabel, scopeLabel } from "../lib/run-review-labels";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Boxes, CircleDot, GitBranch, Network, Play, RotateCcw, ScanLine, Server } from "lucide-react";
@@ -71,7 +71,7 @@ export function OverviewPage() {
           const contexts = activeSummary.data?.runContexts?.filter(context => context.runId === run.run_id) ?? [];
           const context = contexts.length === 1 ? contexts[0] : undefined;
           return <tr key={run.run_id}>
-            <td><div className="recent-work-name"><CircleDot aria-hidden="true" data-status={run.status}/><div><Link to={"/runs/" + encodeURIComponent(run.run_id)}>{runLabel(run)}</Link><small>{context ? <span className="recent-work-phase">{context.phase}</span> : null}{sentence(run.mode)}{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</small></div></div></td>
+            <td><div className="recent-work-name"><CircleDot aria-hidden="true" data-status={run.status}/><div><Link to={"/runs/" + encodeURIComponent(run.run_id)}>{runLabel(run)}</Link><small>{context ? <span className="recent-work-phase">{context.phase}</span> : null}<span className="recent-work-mode">{sentence(run.mode)}</span><span className="recent-work-id">{shortRunId(run.run_id)}</span>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</small></div></div></td>
             <td><time dateTime={run.created_at}>{formatDate(run.created_at)}</time></td><td><div className="recent-work-outcome"><strong>{objectiveLabel(run.objective_reached, run.mode)}</strong>{context?.receiverDecision ? <span className="recent-work-decision">{context.receiverDecision}</span> : null}<small><span className="sr-only">Run status: </span>{sentence(run.status)}</small></div></td>
           </tr>;
         })}</tbody></table></div> : runs.isSuccess && unavailable === 0 ? <div className="work-empty"><CircleDot aria-hidden="true"/><p>No runs have been recorded.</p><Link to="/runs?prepare=1">Review new run<ArrowRight aria-hidden="true"/></Link></div> : null}
@@ -83,7 +83,7 @@ export function OverviewPage() {
       <section className="work-section overview-experiments" aria-labelledby="experiments-heading">
         <header className="work-section-heading"><h2 id="experiments-heading">Experiments</h2><Link to="/scenarios">View all<ArrowRight aria-hidden="true"/></Link></header>
         {experiments.isError ? <><ErrorState title="Experiments unavailable" error={experiments.error} retry={() => experiments.refetch()}/>{experiments.data ? <p className="workspace-note">Showing previously loaded experiments. Your working draft is preserved.</p> : null}</> : null}
-        {experiments.isPending ? <LoadingState label="Loading experiments"/> : experiments.data?.scenarios.length ? <ul className="work-object-list">{experiments.data.scenarios.slice(0, 5).map(item => <li key={item.id}><span className="work-object-icon"><Boxes aria-hidden="true"/></span><span><strong>{displayTitle(item.title)}</strong><small>{item.steps.length} steps · {item.edges.length} routes</small></span><Link aria-label="Open in library" to={"/scenarios?selected=" + encodeURIComponent(item.id)}><ArrowRight aria-hidden="true"/></Link></li>)}</ul> : experiments.isSuccess ? <div className="work-empty"><Boxes aria-hidden="true"/><p>No experiments are available.</p><Link to="/scenarios">Create an experiment<ArrowRight aria-hidden="true"/></Link></div> : null}
+        {experiments.isPending ? <LoadingState label="Loading experiments"/> : experiments.data?.scenarios.length ? <ul className="work-object-list">{experiments.data.scenarios.slice(0, 5).map(item => <li key={item.id}><span><strong>{displayTitle(item.title)}</strong><small>{item.steps.length} steps · {item.edges.length} routes</small></span><Link aria-label="Open in library" to={"/scenarios?selected=" + encodeURIComponent(item.id)}><ArrowRight aria-hidden="true"/></Link></li>)}</ul> : experiments.isSuccess ? <div className="work-empty"><Boxes aria-hidden="true"/><p>No experiments are available.</p><Link to="/scenarios">Create an experiment<ArrowRight aria-hidden="true"/></Link></div> : null}
         <Link className="overview-library-link" to="/getting-started">Start from your own objective<ArrowRight aria-hidden="true"/></Link>
       </section>
     </div>

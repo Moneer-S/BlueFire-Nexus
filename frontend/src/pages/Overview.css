@@ -87,9 +87,7 @@
 .recent-work-name .badge { padding: 1px 5px; font-size: .58rem; }
 .work-object-list { list-style: none; margin: 0; padding: 0; }
 .work-object-list li { display: flex; align-items: center; gap: 10px; padding: 14px 0; border-bottom: 1px solid var(--line); }
-.work-object-list li > span:not(.work-object-icon) { flex: 1; min-width: 0; }
-.work-object-icon { display: grid; place-items: center; flex: 0 0 auto; width: 31px; height: 31px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-soft); color: var(--blue-soft); }
-.work-object-icon svg { width: 16px; height: 16px; }
+.work-object-list li > span { flex: 1; min-width: 0; }
 .work-object-list strong { display: block; font-size: .76rem; font-weight: 550; line-height: 1.45; overflow-wrap: anywhere; }
 .work-object-list small { display: block; margin-top: 4px; color: var(--muted); font-size: .66rem; }
 .work-object-list a { display: grid; place-items: center; flex: 0 0 auto; width: 28px; height: 28px; border-radius: 5px; }
@@ -136,3 +134,5 @@
 }
 
 .active-work-state .attention { color: var(--amber-soft); font-weight: 600; }
+.recent-work-name .recent-work-mode::after { content: "·"; margin-left: 6px; color: var(--muted); }
+.recent-work-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
