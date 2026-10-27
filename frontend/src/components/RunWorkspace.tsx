@@ -734,7 +734,7 @@ export function RunReview({ run, catalog, showObjective = true }: { run: RunReco
             return <li key={`${step.step_id}-${index}`} data-disposition={step.execution_disposition ?? "not_recorded"} data-status={step.status}>
               <span className="run-step-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
               <div className="run-step-content">
-                <div className="run-step-heading"><strong>{labels.name}</strong><Badge tone={step.execution_disposition === "counterfactual" ? "violet" : statusTone(step.status)}>{stepOutcomeLabel(step, run.mode)}</Badge></div>
+                <div className="run-step-heading"><strong>{labels.name}</strong><span className={`run-step-outcome tone-${step.execution_disposition === "counterfactual" ? "violet" : statusTone(step.status)}`}>{stepOutcomeLabel(step, run.mode)}</span></div>
                 <div className="run-step-metadata">
                   {method ? <small>{method}</small> : null}
                 </div>

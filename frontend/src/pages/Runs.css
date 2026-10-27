@@ -123,7 +123,7 @@
 .run-step-content { min-width: 0; }
 .run-step-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .run-step-heading strong { min-width: 0; overflow-wrap: anywhere; }
-.run-step-heading .badge { flex: 0 0 auto; max-width: 48%; padding: 3px 7px; font-size: .625rem; white-space: normal; line-height: 1.3; text-align: right; }
+.run-step-heading .run-step-outcome { max-width: 48%; line-height: 1.3; text-align: right; }
 .run-path-list strong { font-size: .8125rem; font-weight: 600; line-height: 1.45; }
 .run-step-metadata { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 12px; font-size: .6875rem; line-height: 14px; }
 .run-path-list .run-step-metadata > small { min-width: 0; margin: 0; color: var(--muted-strong); font-size: .6875rem; overflow-wrap: anywhere; }
@@ -133,8 +133,8 @@
 .run-step-actions > details > summary { width: fit-content; max-width: 100%; padding: 3px 0; cursor: pointer; }
 .run-step-evidence-preview > summary { display: flex; align-items: center; gap: 7px; color: var(--blue-soft); list-style: none; border-radius: 3px; }
 .run-step-evidence-preview > summary::-webkit-details-marker { display: none; }
-.run-step-evidence-preview > summary::after { content: "+"; padding-inline: 3px; color: var(--muted); }
-.run-step-evidence-preview[open] > summary::after { content: "−"; }
+.run-step-evidence-preview > summary::after { content: ""; width: 5px; height: 5px; margin-left: 2px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; }
+.run-step-evidence-preview[open] > summary::after { transform: rotate(45deg); }
 .run-step-evidence-preview > summary svg { width: 13px; height: 13px; flex: 0 0 auto; }
 .run-step-evidence-preview > summary:hover { color: var(--text); }
 .run-step-evidence-count { color: var(--muted); font-size: .6875rem; }
@@ -171,7 +171,7 @@
   .run-outcome { padding: 18px; }
   .run-evidence-summary { grid-template-columns: minmax(0, 1fr); }
   .run-step-heading { flex-wrap: wrap; }
-  .run-step-heading .badge { max-width: 100%; text-align: left; }
+  .run-step-heading .run-step-outcome { max-width: 100%; text-align: left; }
   .run-outcome h2, .run-outcome h3 { font-size: 1.4rem; }
 }
 @container run-review (max-width: 420px) {
@@ -271,3 +271,10 @@
 .run-history-result.tone-danger { color: var(--red); }
 .run-history-result.tone-neutral { color: var(--muted-strong); }
 .run-history-table td > small.cleanup-attention { color: var(--amber-soft); }
+
+/* Step outcomes in the path read as text; color carries the state, not a pill per row. */
+.run-step-outcome { flex: 0 0 auto; font-size: .75rem; font-weight: 600; color: var(--blue-soft); }
+.run-step-outcome.tone-success { color: var(--green); }
+.run-step-outcome.tone-warning { color: var(--amber-soft); }
+.run-step-outcome.tone-danger { color: var(--red); }
+.run-step-outcome.tone-violet { color: var(--violet); }
