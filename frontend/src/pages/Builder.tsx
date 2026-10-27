@@ -20,7 +20,7 @@ import { BuilderEvidenceTray } from "../components/BuilderEvidenceTray";
 import { connectedRunBands } from "../lib/connected-run-bands";
 import { graphNodeTitle } from "../lib/graph-node-title";
 import { inspectorMethodTitle } from "../lib/inspector-method-title";
-import { branchLabels, focusedGraphLayout, focusedGraphViewport, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, readableGraphViewport, revealGraphContext, type GraphFrame, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
+import { branchLabels, focusedGraphLayout, focusedGraphViewport, GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH, graphBoundsViewport, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, platformLabel, readableGraphViewport, revealGraphContext, type GraphFrame, type GraphViewport, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { defaultGraphView, readWorkingGraphView, writeWorkingGraphView } from "../lib/graph-view-retention";
 import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
@@ -67,7 +67,7 @@ function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): F
   const routes: FlowEdge[] = scenario.edges.map((edge, index) => {
     const lane = incoming.get(edge.to_step) ?? 0;
     incoming.set(edge.to_step, lane + 1);
-    return { id: `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`, source: edge.from_step, target: edge.to_step, sourceHandle: `route:${edge.outcome}`, targetHandle: "route:in", type: "outcomeRoute", ariaLabel: `Route ${index + 1}: ${title(edge.from_step)}: ${branchLabels[edge.outcome]} → ${title(edge.to_step)} (${edge.from_step} → ${edge.to_step})`, markerEnd: { type: MarkerType.ArrowClosed, color: outcomeColors[edge.outcome] }, style: { stroke: outcomeColors[edge.outcome], strokeWidth: 2, strokeDasharray: edge.outcome === "success" ? undefined : "8 5" }, data: { kind: "route", outcome: edge.outcome, number: index + 1, lane, sourceTitle: title(edge.from_step), targetTitle: title(edge.to_step) } };
+    return { id: `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`, source: edge.from_step, target: edge.to_step, sourceHandle: `route:${edge.outcome}`, targetHandle: "route:in", type: "outcomeRoute", ariaLabel: `Route ${index + 1}: ${title(edge.from_step)}: ${branchLabels[edge.outcome]} → ${title(edge.to_step)} (${edge.from_step} → ${edge.to_step})`, markerEnd: { type: MarkerType.ArrowClosed, color: outcomeColors[edge.outcome] }, style: { stroke: outcomeColors[edge.outcome], strokeWidth: 2, strokeDasharray: edge.outcome === "success" ? undefined : "8 5" }, data: { kind: "route", outcome: edge.outcome, number: index + 1, lane, parallel: edge.outcome !== "success" && scenario.edges.some(other => other.outcome === "success" && other.from_step === edge.from_step && other.to_step === edge.to_step), sourceTitle: title(edge.from_step), targetTitle: title(edge.to_step) } };
   });
   const artifacts: FlowEdge[] = [];
   for (const target of scenario.steps) for (const [input, binding] of Object.entries(target.inputs)) {
@@ -98,11 +98,11 @@ const BehaviorNode = memo(function BehaviorNode({ id, data, selected }: NodeProp
   return <article className={`flow-node tier-${behavior?.safety_tier ?? "safe"} ${selected ? "selected" : ""} ${data.invalid ? "invalid" : ""}`} aria-label={title.method ? title.fullTitle : undefined}>
     <Handle type="target" position={data.routeIn ?? Position.Left} id="route:in" className="route-handle route-in" style={data.routeIn === Position.Top ? { left: 20 } : undefined} title="Continue from another step" />
     {(behavior?.inputs ?? []).slice(0, 4).map((input, index, items) => <Handle key={input.name} type="target" position={Position.Top} id={`in:${input.name}`} className="typed-handle input-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Requires ${inputTypeLabel(input.type)}: ${inputLabel(input.name)}`} />)}
-    <header><span className="node-order">Step {data.ordinal}</span>{data.invalid || behavior?.execution_state !== "action" ? <span className={`node-kind ${data.invalid ? "attention" : ""}`}>{data.invalid ? "Needs attention" : behavior?.execution_state === "simulation" ? "Simulation" : "Research only"}</span> : title.method ? <span className="node-method" title={title.method}>{title.method}</span> : null}</header>
+    <header><span className="node-order">Step {data.ordinal}</span>{data.invalid || behavior?.execution_state !== "action" ? <span className={`node-kind ${data.invalid ? "attention" : ""}`}>{data.invalid ? "Needs attention" : behavior?.execution_state === "simulation" ? "Simulation" : "Research only"}</span> : title.method ? <span className="node-method" title={title.method}>{title.method.replace(/^\((.*)\)$/, "$1")}</span> : null}</header>
     <div className="node-title"><span className="node-icon"><FileText aria-hidden="true"/></span><strong title={title.fullTitle}>{title.title}</strong></div>
     {data.method ? <p className="node-context" title={`Run override: ${displayTitle(data.method)}`}>Run override: {displayTitle(data.method)}</p> : null}
     {!data.method && stepParameterSummary(data.step, behavior) ? <p className="node-context" title={stepParameterSummary(data.step, behavior)}>{stepParameterSummary(data.step, behavior)}</p> : null}
-    <footer>{data.step.alternates.length ? <span><GitBranch/>{data.step.alternates.length} saved {data.step.alternates.length === 1 ? "alternative" : "alternatives"}</span> : <span>{behavior?.platforms.map(inputLabel).join(" · ")}</span>}</footer>
+    <footer>{data.step.alternates.length ? <span><GitBranch/>{data.step.alternates.length} saved {data.step.alternates.length === 1 ? "alternative" : "alternatives"}</span> : <span>{behavior?.platforms.map(platformLabel).join(" · ")}</span>}</footer>
     {(behavior?.outputs ?? []).slice(0, 4).map((output, index, items) => <Handle key={output.name} type="source" position={Position.Bottom} id={`out:${output.name}`} className="typed-handle output-handle" style={{ left: `${((index + 1) / (items.length + 1)) * 100}%` }} title={`Produces ${inputTypeLabel(output.type)}: ${inputLabel(output.name)}`} />)}
     <div className="route-handles">{outcomes.map((outcome, index) => <Handle key={outcome} type="source" position={outcome === "success" ? data.routeOut ?? Position.Right : Position.Right} id={`route:${outcome}`} className={`route-handle route-${outcome}`} style={outcome === "success" && data.routeOut === Position.Bottom ? { left: 20 } : { top: `${20 + index * 20}%` }} title={branchLabels[outcome]} />)}</div>
   </article>;
@@ -264,8 +264,10 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
     const outgoing = graph.edges.find(edge => edge.from_step === node.id && edge.outcome === "success");
     const before = projectedNodes.find(item => item.id === incoming?.from_step);
     const after = projectedNodes.find(item => item.id === outgoing?.to_step);
+    // Vertical ports when the success neighbour is below in the same lane, or
+    // (leaving a side lane) below and to the left, as in a column flow.
     const routeIn = before && Math.abs(before.position.x - node.position.x) < 1 && before.position.y < node.position.y ? Position.Top : Position.Left;
-    const routeOut = after && Math.abs(after.position.x - node.position.x) < 1 && after.position.y > node.position.y ? Position.Bottom : Position.Right;
+    const routeOut = after && after.position.x < node.position.x + 1 && after.position.y > node.position.y + GRAPH_NODE_HEIGHT ? Position.Bottom : Position.Right;
     return { ...node, data: routeNodeData(node.data, routeIn, routeOut) };
   }), [graph.edges, projectedNodes, routeNodeData]);
   // Selection updates React Flow's node records, but does not invalidate routes.
@@ -281,7 +283,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const routedData = useMemo(() => new Map(edgeDefinitions.map(edge => [edge.id, edge.data ? { ...edge.data, obstacles: routeObstacles } : undefined])), [edgeDefinitions, routeObstacles]);
   const edgeIsShown = useCallback((edge: FlowEdge) => shownIds.has(edge.source) && shownIds.has(edge.target) && (edge.data?.kind !== "artifact" || showInputs) && (edge.data?.kind !== "route" || edge.data.outcome === "success" || allBranches || expandedBranches.has(edge.source)), [allBranches, expandedBranches, showInputs, shownIds]);
   const selectedRouteId = edges.find((edge) => edge.selected && edge.data?.kind === "route" && edgeIsShown(edge))?.id;
-  const displayEdges = useMemo(() => edges.map((edge) => ({ ...edge, data: routedData.get(edge.id) ?? edge.data, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45 : 1 } })), [edgeIsShown, edges, selectedRouteId, routedData]);
+  const displayEdges = useMemo(() => edges.map((edge) => ({ ...edge, data: routedData.get(edge.id) ?? edge.data, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45 : edge.data?.parallel && edge.id !== selectedRouteId ? .5 : 1 } })), [edgeIsShown, edges, selectedRouteId, routedData]);
   const visibleRoutes = displayEdges.filter((edge) => !edge.hidden && edge.data?.kind === "route");
   const selectedRoute = visibleRoutes.find((edge) => edge.id === selectedRouteId);
   useEffect(() => {
@@ -362,7 +364,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const initialFrameDone = useRef(false);
   const framedFocusMode = useRef(focusMode);
   const framedViewMode = useRef(viewMode);
-  const frameStep = useCallback((id: string, mode: "start" | "readable" | "reveal", duration = 0, preferred?: GraphViewport) => {
+  const frameStep = useCallback((id: string, mode: "start" | "opening" | "readable" | "reveal", duration = 0, preferred?: GraphViewport) => {
     const canvas = graphCanvas.current;
     const node = flow.getNode(id);
     if (!canvas || !node || node.hidden || !canvas.clientWidth || !canvas.clientHeight) return false;
@@ -377,16 +379,16 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       const neighbor = flow.getNode(neighborId);
       return neighbor && !neighbor.hidden ? [{ ...neighbor.position, width: neighbor.measured?.width ?? GRAPH_NODE_WIDTH, height: neighbor.measured?.height ?? GRAPH_NODE_HEIGHT }] : [];
     });
-    const context = mode === "readable" ? flow.getNodes().filter(item => !item.hidden && item.id !== id).map(item => {
+    const context = mode === "readable" || mode === "opening" ? flow.getNodes().filter(item => !item.hidden && item.id !== id).map(item => {
       const routes = graph.edges.some(edge => edge.from_step === item.id && (edge.outcome === "success" ? item.data.routeOut !== Position.Bottom : allBranches || expandedBranches.has(item.id)));
       return { ...item.position, width: (item.measured?.width ?? GRAPH_NODE_WIDTH) + (routes ? rightRouteGutter : 0), height: item.measured?.height ?? GRAPH_NODE_HEIGHT };
     }) : [];
     const next = mode === "reveal" ? revealGraphContext(preferred ?? current, bounds, neighbors, frame)
-      : mode === "readable" ? focusedGraphViewport(bounds, context, frame) : readableGraphViewport(bounds, frame, true);
+      : mode === "start" ? readableGraphViewport(bounds, frame, true) : focusedGraphViewport(bounds, context, frame, mode === "opening");
     if (!sameViewport(next, current)) void flow.setViewport(next, { duration: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? 0 : duration });
     return next;
   }, [allBranches, expandedBranches, flow, graph.edges]);
-  const fitNodes = useCallback((ids: readonly string[], duration = 0, readable = false, fallback: "start" | "readable" = "start") => {
+  const fitNodes = useCallback((ids: readonly string[], duration = 0, readable = false, fallback: "start" | "opening" = "start") => {
     const canvas = graphCanvas.current;
     if (!canvas || !canvas.clientWidth || !canvas.clientHeight) return false;
     const bounds = ids.flatMap(id => {
@@ -518,7 +520,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
           lastScroll = scrollPosition();
           // Opening frames the selection with its visible path: an entry step
           // anchors the leading edge so the continuation fills the canvas.
-          initialFrameDone.current = fitNodes(shownSteps.map(step => step.id), 0, true, "readable");
+          initialFrameDone.current = fitNodes(shownSteps.map(step => step.id), 0, true, "opening");
         } else if (initialFrameDone.current && selectedId) {
           const current = flow.getViewport();
           // A later operator pan, zoom, focus, or card move owns the view from then on.
@@ -944,12 +946,12 @@ function Inspector({ scenario, step, behavior, behaviors, actions, readOnly, upd
     setTab(tabs[next]!); event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]")[next]?.focus();
   }}>{sentence(item)}</button>)}</div><fieldset className="graph-review-editor inspector-fields" disabled={readOnly}><div className="inspector-body">
     <div role="tabpanel" id={`${tabId}-method-panel`} aria-labelledby={`${tabId}-method`} hidden={tab !== "method"}>
-    <section><h3>Selected method</h3><article className="method-card current-method" aria-label={`Primary method: ${behaviorTitle}`}><div className="method-card-heading"><FileText/><strong title={behaviorTitle}>{behaviorMethodTitle}</strong><Badge tone="info">Primary</Badge></div><p>{behavior.purpose}</p><div className="chip-list"><Badge tone={behavior.safety_tier === "restricted" ? "danger" : behavior.safety_tier === "controlled" ? "warning" : "success"}>{sentence(behavior.safety_tier)}</Badge>{behavior.platforms.map(item => <Badge key={item}>{inputLabel(item)}</Badge>)}</div></article></section>
+    <section><h3>Selected method</h3><article className="method-card current-method" aria-label={`Primary method: ${behaviorTitle}`}><div className="method-card-heading"><FileText/><strong title={behaviorTitle}>{behaviorMethodTitle}</strong><Badge tone="info">Primary</Badge></div><p>{behavior.purpose}</p><div className="chip-list"><Badge tone={behavior.safety_tier === "restricted" ? "danger" : behavior.safety_tier === "controlled" ? "warning" : "success"}>{sentence(behavior.safety_tier)}</Badge>{behavior.platforms.map(item => <Badge key={item}>{platformLabel(item)}</Badge>)}</div></article></section>
     {(behavior.compatible_behaviors?.length || step.alternates.length) ? <section><h3>Alternative methods</h3>{[...new Set([...(behavior.compatible_behaviors ?? []), ...step.alternates])].filter(id => id !== behavior.id).map(id => {
       const alternative = behaviors.get(id);
       const title = alternative?.title ? displayTitle(alternative.title) : id;
       const methodTitle = alternative ? inspectorMethodTitle(alternative, actions) : id;
-      return <article className="method-card alternative-method" aria-label={`Alternative method: ${title}`} key={id}><strong title={title}>{methodTitle}</strong><p>{alternative?.purpose ?? "This method is unavailable in the loaded catalog."}</p><div className="chip-list">{alternative?.platforms.map(item => <Badge key={item}>{inputLabel(item)}</Badge>)}</div><Button size="small" variant="primary" disabled={!alternative} onClick={() => onAlternative(step.id, id)} aria-label={`Use ${title} for this step`}>Use this method<ArrowRight/></Button><label className="check-row"><input type="checkbox" aria-label={title} checked={step.alternates.includes(id)} onChange={event => updateStep(step.id, next => ({ ...next, alternates: event.target.checked ? [...next.alternates, id] : next.alternates.filter(value => value !== id) }))}/><span>Keep as a saved alternative</span></label></article>;
+      return <article className="method-card alternative-method" aria-label={`Alternative method: ${title}`} key={id}><strong title={title}>{methodTitle}</strong><p>{alternative?.purpose ?? "This method is unavailable in the loaded catalog."}</p><div className="chip-list">{alternative?.platforms.map(item => <Badge key={item}>{platformLabel(item)}</Badge>)}</div><Button size="small" variant="primary" disabled={!alternative} onClick={() => onAlternative(step.id, id)} aria-label={`Use ${title} for this step`}>Use this method<ArrowRight/></Button><label className="check-row"><input type="checkbox" aria-label={title} checked={step.alternates.includes(id)} onChange={event => updateStep(step.id, next => ({ ...next, alternates: event.target.checked ? [...next.alternates, id] : next.alternates.filter(value => value !== id) }))}/><span>Keep as a saved alternative</span></label></article>;
     })}<p>Saved alternatives are available for reuse. Adaptive retry choices separately control changes during execution.</p></section> : null}
     <section><Field label="Run method override" hint={!allowRunOverride ? "Adopt this reviewed experiment before choosing a run override." : behavior.action_ids.length ? "Optional for this run, across Simulate and Execute. Reviewed for compatibility and approval before execution; not saved with the experiment." : "This step has no executable method. Choose a supported alternative to execute it."}><select aria-label="Run method override" value={selectedAction} onChange={event => onAction(event.target.value)} disabled={!allowRunOverride || !behavior.action_ids.length}><option value="">Recommended at run review</option>{behavior.action_ids.map(id => <option key={id} value={id}>{actions.get(id)?.title ? displayTitle(actions.get(id)!.title) : id}{actions.get(id)?.platforms.length ? ` · ${actions.get(id)!.platforms.join(" / ")}` : ""}</option>)}</select></Field></section>
     <AdaptiveMethodEditor key={`${step.id}:${JSON.stringify(scenario.adaptive_execution)}:${selectedAction}`} scenario={scenario} step={step} behaviors={behaviors} actions={actions} selectedAction={selectedAction} onChange={updateScenario} />

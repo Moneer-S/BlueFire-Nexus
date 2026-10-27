@@ -22,6 +22,8 @@ export type BuilderFlowEdge = Edge<{
   artifactType?: string;
   artifactLabel?: string;
   number?: number;
+  /** A conditional outcome that reaches the same step as its success route. */
+  parallel?: boolean;
   lane?: number;
   sourceTitle?: string;
   targetTitle?: string;
