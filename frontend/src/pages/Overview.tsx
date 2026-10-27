@@ -1,4 +1,5 @@
 import { displayTitle } from "../lib/display-title";
+import { graphNodeIcon } from "../lib/graph-node-icon";
 import { runLabel } from "../lib/runPresentation";
 import { objectiveLabel } from "../lib/run-presentation";
 import { profileChoiceLabel, scopeLabel } from "../lib/run-review-labels";
@@ -25,6 +26,7 @@ export function OverviewPage() {
   const historyIsEmpty = runs.isSuccess && runs.data?.runs.length === 0 && unavailable === 0;
   const latestRun = !scenarioIsSeededFallback ? runs.data?.runs.find(run => run.scenario_id === scenario.id) : undefined;
   const behaviorTitles = new Map(catalog.data?.behaviors.map(behavior => [behavior.id, behavior.title]));
+  const behaviorsById = new Map(catalog.data?.behaviors.map(behavior => [behavior.id, behavior]));
   const dataBindings = scenario.steps.reduce((total, step) => total + Object.keys(step.inputs).length, 0);
   const entry = scenario.steps.find(step => step.id === scenario.start);
   const planSteps = [...(entry ? [entry] : []), ...scenario.steps.filter(step => step.id !== entry?.id)].slice(0, 4);
@@ -38,7 +40,7 @@ export function OverviewPage() {
     {activeWork && !DEMO_MODE ? <ActiveWorkResume reference={activeWork} /> : <section className="active-work" aria-labelledby="working-copy-heading">
       <div className="active-work-content">
         <div className="active-work-heading"><span className="active-work-symbol"><Boxes aria-hidden="true"/></span><div><h2 id="working-copy-heading">{scenarioIsSeededFallback ? "Example plan" : "Working draft"}</h2><h3>{displayTitle(scenario.title)}</h3></div></div>
-        <div className="active-work-state"><Badge tone={scenarioIsSeededFallback ? "neutral" : dirty ? "warning" : "info"}>{scenarioIsSeededFallback ? "Built-in example" : dirty ? "Unsaved changes" : "No unsaved changes"}</Badge><span>{scenarioIsSeededFallback ? "A starting point for your own objective" : "Your current plan in Builder"}</span></div>
+        <div className="active-work-state">{scenarioIsSeededFallback ? <span>Built-in example</span> : dirty ? <span className="attention">Unsaved changes</span> : null}<span>{scenarioIsSeededFallback ? "A starting point for your own objective" : "Your current plan in Build"}</span></div>
         {scenario.purpose ? <p className="active-work-purpose">{scenario.purpose}</p> : null}
         <ul className="active-work-facts" aria-label="Plan contents"><li><Network aria-hidden="true"/>{scenario.steps.length} steps</li><li><GitBranch aria-hidden="true"/>{scenario.edges.length} outcome routes</li><li><Boxes aria-hidden="true"/>{dataBindings} data bindings</li></ul>
         <div className="active-work-actions"><Link className="button button-primary" to="/builder">{scenarioIsSeededFallback ? "Open example plan" : "Continue editing"}<ArrowRight aria-hidden="true"/></Link><Link className="button button-secondary" to="/runs?prepare=1">Review run</Link></div>
@@ -46,7 +48,7 @@ export function OverviewPage() {
       </div>
       <div className="active-work-plan"><header><h3>Plan at a glance</h3><Link to="/builder">Open graph<ArrowRight aria-hidden="true"/></Link></header><ul>{planSteps.map(step => {
         const conditionalRoutes = scenario.edges.filter(edge => edge.from_step === step.id && edge.outcome !== "success").length;
-        return <li key={step.id}><span className={step.id === scenario.start ? "plan-entry" : undefined}><Network aria-hidden="true"/></span><div><strong>{displayTitle(behaviorTitles.get(step.behavior_id) ?? step.behavior_id)}</strong><small>{step.id === scenario.start ? "Starting step" : conditionalRoutes ? `${conditionalRoutes} conditional ${conditionalRoutes === 1 ? "route" : "routes"}` : "Planned method"}</small></div></li>;
+        return <li key={step.id}><span className={step.id === scenario.start ? "plan-entry" : undefined}>{(() => { const StepIcon = graphNodeIcon(behaviorsById.get(step.behavior_id)); return <StepIcon aria-hidden="true"/>; })()}</span><div><strong>{displayTitle(behaviorTitles.get(step.behavior_id) ?? step.behavior_id)}</strong><small>{step.id === scenario.start ? "Starting step" : conditionalRoutes ? `${conditionalRoutes} conditional ${conditionalRoutes === 1 ? "route" : "routes"}` : "Planned method"}</small></div></li>;
       })}</ul>{scenario.steps.length > planSteps.length ? <Link className="active-work-more" to="/builder">View all {scenario.steps.length} steps<ArrowRight aria-hidden="true"/></Link> : null}</div>
     </section>}
 
