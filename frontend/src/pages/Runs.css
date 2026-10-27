@@ -258,3 +258,16 @@
 .runs-page .review-step-settings dl > div { display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: color-mix(in srgb, var(--blue) 6%, transparent); }
 .runs-page .review-step-settings dt { margin: 0; color: var(--muted); font-size: .7rem; letter-spacing: 0; text-transform: none; }
 .runs-page .review-step-settings dd { margin: 0; color: var(--text-soft); font-size: .7rem; }
+
+/* Run history: each row states what differs between runs of one experiment. */
+.run-history-table td { vertical-align: top; }
+.run-history-table td > small { display: block; margin-top: 2px; color: var(--muted); font-size: .75rem; }
+.run-history-table td > small code { font-size: .72rem; color: var(--muted-strong); background: none; padding: 0; }
+.run-history-table td > a { color: var(--text); font-weight: 600; text-decoration: none; }
+.run-history-table td > a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.run-history-table td > .badge { margin-left: 8px; }
+.run-history-result { font-weight: 600; }
+.run-history-result.tone-achieved { color: var(--green); }
+.run-history-result.tone-danger { color: var(--red); }
+.run-history-result.tone-neutral { color: var(--muted-strong); }
+.run-history-table td > small.cleanup-attention { color: var(--amber-soft); }

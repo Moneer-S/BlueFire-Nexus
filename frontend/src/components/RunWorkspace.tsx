@@ -5,7 +5,7 @@ import { RunnerInventoryRecovery } from "./ExecuteRunnerReadiness";
 import { RunNameControl, CopyRunId } from "../components/RunNameControl";
 import { assistanceRunLink } from "../lib/run-assistance";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, GitBranch, ArrowLeft, ArrowRight, CircleStop, Clock3, Download, FileCheck2, FileSearch, FlaskConical, Gauge, GitCompareArrows, ListTree, Pause, Play, RotateCcw, ShieldCheck, Sparkles, Target, TerminalSquare } from "lucide-react";
+import { Activity, AlertTriangle, GitBranch, ArrowLeft, ArrowRight, CircleStop, Clock3, Download, FileCheck2, FileSearch, FlaskConical, Gauge, GitCompareArrows, ListTree, Pause, Play, RotateCcw, Search, ShieldCheck, Sparkles, Target, TerminalSquare } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError, DEMO_MODE, type ReplayPreparation } from "../lib/api";
@@ -474,11 +474,30 @@ function RunHistoryPanel({ runs, unavailable, pending, error, retry }: { runs?: 
   const history = (runs ?? []).filter(run => (runLabel(run) + " " + run.run_id).toLowerCase().includes(search.trim().toLowerCase()));
   return <Panel className="run-history-workspace">
     <PanelHeader title="Run history" actions={<Button size="small" variant="ghost" onClick={retry}><RotateCcw/>Refresh</Button>} />
-    <div className="history-search"><input aria-label="Search runs" placeholder="Search name or run ID" value={search} onChange={event => setSearch(event.target.value)}/></div>
+    <div className="history-search"><Search aria-hidden="true"/><input aria-label="Search runs" placeholder="Search name or run ID" value={search} onChange={event => setSearch(event.target.value)}/></div>
     {error ? <><ErrorState title="Run history unavailable" error={error} retry={retry}/>{runs ? <p className="workspace-note">Showing previously loaded runs.</p> : null}</> : null}
     {unavailable > 0 ? <p role="status">{unavailable} run {unavailable === 1 ? "record could" : "records could"} not be read. Refresh to try again.</p> : null}
-    {pending ? <LoadingState label="Loading run history" /> : history.length ? <div className="table-scroll"><table><thead><tr><th>Run</th><th>Mode</th><th>Created</th><th>Outcome</th></tr></thead><tbody>{history.map(run => <tr key={run.run_id}><td><Link to={runReviewPath(run.run_id)} aria-label={"Review run " + runLabel(run) + " · " + sentence(run.mode) + " · " + formatDate(run.created_at)}><strong>{runLabel(run)}</strong></Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</td><td>{sentence(run.mode)}</td><td>{formatDate(run.created_at)}</td><td><Badge tone={run.status === "failed" ? "danger" : "neutral"}>{sentence(run.status)}</Badge></td></tr>)}</tbody></table></div> : !error && (search || !unavailable) ? <div className="inline-empty"><span>{search ? "No runs match this search." : "No runs yet."}</span>{search ? <Button variant="ghost" size="small" onClick={() => setSearch("")}>Clear search</Button> : <Link to="/runs?prepare=1">Review new run</Link>}</div> : null}
+    {pending ? <LoadingState label="Loading run history" /> : history.length ? <div className="table-scroll"><table className="run-history-table"><thead><tr><th>Run</th><th>Result</th><th>Path</th><th>Created</th></tr></thead><tbody>{history.map(run => <RunHistoryRow key={run.run_id} run={run} />)}</tbody></table></div> : !error && (search || !unavailable) ? <div className="inline-empty"><span>{search ? "No runs match this search." : "No runs yet."}</span>{search ? <Button variant="ghost" size="small" onClick={() => setSearch("")}>Clear search</Button> : <Link to="/runs?prepare=1">Review new run</Link>}</div> : null}
   </Panel>;
+}
+
+// Runs of one experiment share a title, so each row leads with what differs:
+// the recorded result, the path actually taken and when it ran.
+function RunHistoryRow({ run }: { run: RunRecord }) {
+  const ran = (run.steps ?? []).filter(step => step.execution_disposition !== "counterfactual");
+  const stoppedAt = ran.findIndex(step => ["blocked", "control_blocked", "refused", "failed", "error", "cancelled"].includes(step.status));
+  const settled = run.status === "completed" || run.status === "succeeded";
+  const result = settled ? objectiveLabel(run.objective_reached, run.mode) : sentence(run.status);
+  const tone = !settled ? run.status === "failed" ? "danger" : "neutral" : run.objective_reached === true ? "achieved" : run.objective_reached === false ? "danger" : "neutral";
+  const cleanup = cleanupSummary(run.cleanup, run.mode);
+  const seconds = run.created_at && run.finalized_at ? (Date.parse(run.finalized_at) - Date.parse(run.created_at)) / 1000 : undefined;
+  const duration = seconds === undefined || !Number.isFinite(seconds) || seconds < 0 ? undefined : seconds < 60 ? `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s` : `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`;
+  return <tr>
+    <td><Link to={runReviewPath(run.run_id)} aria-label={"Review run " + runLabel(run) + " · " + sentence(run.mode) + " · " + formatDate(run.created_at)}>{runLabel(run)}</Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}<small>{sentence(run.mode)} · <code>{run.run_id.split("-").at(-1)?.slice(0, 8)}</code></small></td>
+    <td><span className={`run-history-result tone-${tone}`}>{result}</span>{cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed") ? <small className="cleanup-attention">Cleanup needs attention</small> : null}</td>
+    <td>{ran.length} {ran.length === 1 ? "step" : "steps"}{stoppedAt >= 0 ? <small>Stopped at step {stoppedAt + 1}</small> : null}</td>
+    <td>{formatDate(run.created_at)}{duration ? <small>Took {duration}</small> : null}</td>
+  </tr>;
 }
 
 function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
