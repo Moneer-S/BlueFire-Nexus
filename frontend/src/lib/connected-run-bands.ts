@@ -199,8 +199,8 @@ export interface BranchRegionBand extends ConnectedRunBand {
 /**
  * Presentation-only regions around a real decision: a step with two or more
  * distinct destinations, those destinations, and the step each alternative
- * rejoins on success. Labelled "fallback" only when every alternative route is
- * a blocked or failed outcome. Declined when the region would enclose an
+ * rejoins on success. Labelled "fallback" when the step has a success route and
+ * every other outcome goes to one place, otherwise "branches". Declined when the region would enclose an
  * unrelated card or overlap a connected-run band, so it never claims a step it
  * does not contain. Positions are read, never changed.
  */

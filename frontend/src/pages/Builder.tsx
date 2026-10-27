@@ -312,18 +312,21 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
   const routedData = useMemo(() => new Map(edgeDefinitions.map(edge => [edge.id, edge.data ? { ...edge.data, obstacles: routeObstacles } : undefined])), [edgeDefinitions, routeObstacles]);
   const edgeIsShown = useCallback((edge: FlowEdge) => shownIds.has(edge.source) && shownIds.has(edge.target) && (edge.data?.kind !== "artifact" || showInputs) && (edge.data?.kind !== "route" || edge.data.outcome === "success" || allBranches || expandedBranches.has(edge.source)), [allBranches, expandedBranches, showInputs, shownIds]);
   const selectedRouteId = edges.find((edge) => edge.selected && edge.data?.kind === "route" && edgeIsShown(edge))?.id;
-  const displayEdges = useMemo(() => edges.map((edge) => {
-    // A condition that repeats its success route's destination is stated on that
-    // success route ("Also partial") and drawn only while its step or route is in focus.
-    const idleParallel = Boolean(edge.data?.parallel) && edge.id !== selectedRouteId && edge.source !== selectedId && edge.target !== selectedId;
-    const data = routedData.get(edge.id) ?? edge.data;
-    // Once those conditions are drawn, the success route no longer needs to name them.
-    const conditionsDrawn = Boolean(data?.alsoOn?.length) && (edge.source === selectedId || edge.target === selectedId
-      || edges.some(other => other.id === selectedRouteId && other.data?.parallel && other.source === edge.source && other.target === edge.target));
-    return { ...edge, data: conditionsDrawn ? { ...data!, alsoOn: undefined } : data, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), className: idleParallel ? "route-idle" : undefined, focusable: idleParallel ? false : edge.focusable, style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45
-      // While a step is open in the inspector, its own routes carry the view.
-      : inspectorOpen && selectedId && edge.source !== selectedId && edge.target !== selectedId ? .4 : 1 } };
-  }), [edgeIsShown, edges, inspectorOpen, selectedId, selectedRouteId, routedData]);
+  const displayEdges = useMemo(() => {
+    const selectedParallel = edges.find(edge => edge.id === selectedRouteId && edge.data?.parallel);
+    return edges.map((edge) => {
+      // A condition that repeats its success route's destination is stated on that
+      // success route ("Also partial") and drawn only while its step or route is in focus.
+      const idleParallel = Boolean(edge.data?.parallel) && edge.id !== selectedRouteId && edge.source !== selectedId && edge.target !== selectedId;
+      const data = routedData.get(edge.id) ?? edge.data;
+      // Once those conditions are drawn, the success route no longer needs to name them.
+      const conditionsDrawn = Boolean(data?.alsoOn?.length) && (edge.source === selectedId || edge.target === selectedId
+        || (selectedParallel?.source === edge.source && selectedParallel.target === edge.target));
+      return { ...edge, data: conditionsDrawn ? { ...data!, alsoOn: undefined } : data, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), className: idleParallel ? "route-idle" : undefined, focusable: idleParallel ? false : edge.focusable, style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45
+        // While a step is open in the inspector, its own routes carry the view.
+        : inspectorOpen && selectedId && edge.source !== selectedId && edge.target !== selectedId ? .4 : 1 } };
+    });
+  }, [edgeIsShown, edges, inspectorOpen, selectedId, selectedRouteId, routedData]);
   const visibleRoutes = displayEdges.filter((edge) => !edge.hidden && edge.data?.kind === "route");
   const selectedRoute = visibleRoutes.find((edge) => edge.id === selectedRouteId);
   useEffect(() => {
