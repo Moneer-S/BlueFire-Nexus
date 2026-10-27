@@ -38,7 +38,7 @@ it("publishes selected step and dirty graph while keeping new experiments explic
   const selection = within(assistant.getByRole("region", { name: "Current selection" }));
   await waitFor(() => expect(editContext).toHaveBeenCalled());
   expect(JSON.parse(builder.getByLabelText("Published selection").textContent!).editStep).toEqual({ scenario: graphDocument(demoScenario), step_id: step.id, dirty: false });
-  expect(selection.getByText("Edit the selected step")).toBeVisible();
+  expect(selection.getByRole("combobox", { name: "Assistant operation" })).toHaveValue("edit_step");
   const details = selection.getByText("Experiment purpose and model data");
   const purpose = selection.getByText(`Purpose: ${demoScenario.purpose}`);
   expect(details.closest("details")).not.toHaveAttribute("open");
@@ -66,7 +66,7 @@ it("publishes selected step and dirty graph while keeping new experiments explic
   expect(name).toHaveValue("");
   expect(selection.getByText(/Complete the current graph fields/)).toBeVisible();
   expect(start).toBeDisabled();
-  expect(selection.getByText("Edit the selected step")).toBeVisible();
+  expect(selection.getByRole("combobox", { name: "Assistant operation" })).toHaveValue("edit_step");
   await user.click(name);
   await user.paste(`${demoScenario.title} changed`);
   await waitFor(() => expect(editContext.mock.lastCall?.[0].edit_step?.scenario.title).toBe(`${demoScenario.title} changed`));
