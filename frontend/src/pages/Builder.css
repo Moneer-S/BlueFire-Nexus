@@ -336,6 +336,7 @@
 /* A decision region: dashed, so it reads as alternative routes rather than a sequence. */
 .workbench-builder .graph-run-bands .branch-region rect { fill: color-mix(in srgb, var(--amber) 3%, transparent); stroke: color-mix(in srgb, var(--amber) 30%, var(--line)); stroke-dasharray: 5 5; }
 .workbench-builder .graph-run-bands .branch-region text { fill: var(--amber-soft); }
+.workbench-builder .graph-run-bands .branch-region svg { color: var(--amber-soft); fill: none; }
 .workbench-builder .graph-run-bands .branch-region.selected rect { fill: color-mix(in srgb, var(--amber) 6%, transparent); stroke: color-mix(in srgb, var(--amber) 55%, var(--line)); }
 /* Conditions that repeat a success route's destination are named on that route. */
 .workbench-builder .react-flow__edge.route-idle { opacity: 0; pointer-events: none; }
