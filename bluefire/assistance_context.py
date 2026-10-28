@@ -9,6 +9,9 @@ from urllib.parse import urlencode
 from .ai_assistance import COMPARE, REVISE
 from .ai_provider_access import AIProviderAccess
 from .application_errors import APIError
+from .assistance_ad_smb_context import KIND as AD_SMB_KIND
+from .assistance_ad_smb_context import context as ad_smb_context
+from .assistance_ad_smb_context import selection as ad_smb_selection
 from .assistance_audit_context import KIND as AUDIT_KIND
 from .assistance_audit_context import context as audit_context
 from .assistance_audit_context import selection as audit_selection
@@ -48,6 +51,7 @@ _ANALYSIS_ADAPTERS: dict[
         Callable[[AssistanceContext, Mapping[str, Any]], Mapping[str, Any]],
     ],
 ] = {
+    AD_SMB_KIND: (ad_smb_selection, ad_smb_context),
     AUDIT_KIND: (audit_selection, audit_context),
     FILE_ACCESS_KIND: (file_access_selection, file_access_context),
     FILE_ACCESS_RETEST_KIND: (file_access_retest_selection, file_access_retest_context),
@@ -67,6 +71,7 @@ class AssistanceContext(Protocol):
     assistance_receiver: Any
     receiver_defense: Any
     s3_access: Any
+    ad_smb: Any
     method_comparison: MethodComparisonJobs
     product_store: ProductStore
     registry: BehaviorRegistry
