@@ -8,7 +8,7 @@ const executionFailureLabels: Record<string, string> = {
   atomic_gzip_unavailable: "System gzip unavailable",
 };
 
-export function objectiveLabel(reached?: boolean, mode?: string): string {
+export function objectiveLabel(reached?: boolean | null, mode?: string): string {
   return reached === true ? (mode === "simulate" ? "Achieved (synthetic)" : "Achieved") : reached === false ? "Not achieved" : "Not established";
 }
 

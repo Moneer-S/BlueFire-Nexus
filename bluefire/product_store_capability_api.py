@@ -325,6 +325,10 @@ class CapabilityStoreMixin:
     def get_capability_attempt(self, attempt_id: str) -> dict[str, Any]:
         return capability_grant_store.get_attempt(self, attempt_id)
 
+    def get_capability_attempt_for_run(self, run_id: str) -> dict[str, Any] | None:
+        """Read the unique persisted attempt for a run without granting new authority."""
+        return capability_grant_store.get_attempt_for_run(self, run_id)
+
     def start_capability_preparation(self, attempt_id: str, **context: Any) -> None:
         capability_grant_store.start_preparation(self, attempt_id, **context)
 

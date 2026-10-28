@@ -20,6 +20,32 @@ it("exports unmet objectives, unknown evidence and failed cleanup without substi
   expect(report).toContain('"objective_reached": false');
 });
 
+it("exports the verified capability result and unknown proof apart from graph completion", () => {
+  const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
+  const digest = `sha256:${"b".repeat(64)}`;
+  for (const [index, run] of comparison.summaries.entries()) {
+    run.mode = "execute";
+    run.graph_objective_reached = true;
+    run.objective_reached = index === 0 ? false : null;
+    run.capability_objective = {
+      schema_version: "bluefire.composition-objective-projection.v1",
+      run_id: run.run_id,
+      attempt_id: `attempt-${String(index + 1).padStart(32, "0")}`,
+      state: index === 0 ? "verified" : "unverified",
+      objective_digest: digest,
+      established: index === 0 ? false : null,
+      result_digest: index === 0 ? digest : null,
+    };
+  }
+
+  const report = comparisonReport(comparison);
+
+  expect(report).toContain("| Not achieved |");
+  expect(report).toContain("| Unknown (proof unavailable) |");
+  expect(report).toContain("Run-level completion: met. Capability proof: verified.");
+  expect(report).toContain("Run-level completion: met. Capability proof: unavailable.");
+});
+
 it("keeps untrusted gap content inert in the readable report and preserves it in JSON", () => {
   const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
   const untrusted = '<img src="https://example.invalid/pixel"> ``` [remote](https://example.invalid)';

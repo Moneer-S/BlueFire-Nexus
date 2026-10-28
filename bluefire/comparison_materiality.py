@@ -52,7 +52,7 @@ def material_delta_fields(
         "path": baseline.get("execution_path") != candidate.get("execution_path"),
         "outcomes": baseline.get("outcomes") != candidate.get("outcomes"),
         "first_prevention": baseline.get("first_block") != candidate.get("first_block"),
-        "objective": baseline.get("objective_reached") != candidate.get("objective_reached"),
+        "objective": delta.get("objective_changed") is True,
         "controls": baseline.get("controls") != candidate.get("controls")
         or baseline.get("policy_states") != candidate.get("policy_states"),
         "telemetry": baseline.get("telemetry") != candidate.get("telemetry"),

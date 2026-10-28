@@ -31,6 +31,36 @@ it("separates an unmet objective, missing observations, and failed cleanup witho
   expect(outcomes.queryByText(/prevented|no recorded gaps|0 observed items/i)).not.toBeInTheDocument();
 });
 
+it("shows verified capability refusal separately from an unavailable proof and completed run", () => {
+  const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
+  const [refused, unknown] = comparison.summaries;
+  const digest = `sha256:${"a".repeat(64)}`;
+  for (const [index, summary] of comparison.summaries.entries()) {
+    summary.mode = "execute";
+    summary.graph_objective_reached = true;
+    summary.capability_objective = {
+      schema_version: "bluefire.composition-objective-projection.v1",
+      run_id: summary.run_id,
+      attempt_id: `attempt-${String(index + 1).padStart(32, "0")}`,
+      state: index === 0 ? "verified" : "unverified",
+      objective_digest: digest,
+      established: index === 0 ? false : null,
+      result_digest: index === 0 ? digest : null,
+    };
+  }
+  refused!.objective_reached = false;
+  unknown!.objective_reached = null;
+
+  render(<MemoryRouter><ComparisonResult comparison={comparison} /></MemoryRouter>);
+
+  expect(outcomeCell("Objective", 0)).toHaveTextContent("Not achieved");
+  expect(outcomeCell("Objective", 1)).toHaveTextContent("Unknown (proof unavailable)");
+  expect(outcomeCell("Run-level completion", 0)).toHaveTextContent("Met");
+  expect(outcomeCell("Run-level completion", 1)).toHaveTextContent("Met");
+  expect(outcomeCell("Capability proof", 0)).toHaveTextContent("Verified");
+  expect(outcomeCell("Capability proof", 1)).toHaveTextContent("Unavailable");
+});
+
 it("keeps an explicit zero observation count and recorded gaps visible", () => {
   const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
   comparison.summaries[0]!.evidence_details = { observed_artifacts: [], evidence_gaps: [{ reason: "collector_unavailable" }] };

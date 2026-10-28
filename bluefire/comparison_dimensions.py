@@ -119,9 +119,19 @@ def summary_dimensions(
             "state": (
                 "objective_reached"
                 if summary.get("objective_reached") is True
-                else "objective_not_reached"
+                else (
+                    "objective_not_reached"
+                    if summary.get("objective_reached") is False
+                    else "objective_unverified"
+                )
             ),
-            "objective_reached": summary.get("objective_reached") is True,
+            "objective_reached": summary.get("objective_reached"),
+            "graph_objective_reached": summary.get("graph_objective_reached"),
+            "source": (
+                "capability_objective"
+                if summary.get("capability_objective") is not None
+                else "graph_run"
+            ),
             "first_blocked_step": _safe_dimension_text(summary.get("first_blocked_step")),
         },
     }
