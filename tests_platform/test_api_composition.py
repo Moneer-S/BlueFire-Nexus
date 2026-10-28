@@ -41,6 +41,33 @@ def test_linux_linkage_route_is_exact_read_only(monkeypatch):
         assert service.calls[-1] == ("unavailable_linkage", JOB_ID, ATTEMPT_ID)
 
 
+def test_linux_linkage_assistance_context_route_is_exact_read_only(monkeypatch):
+    def read(self, owner, attempt):
+        self.calls.append(("file_access_retest_assistance_context", owner, attempt))
+        return {"analysis_only": True, "capabilities": []}
+
+    monkeypatch.setattr(StubService, "file_access_retest_assistance_context", read, raising=False)
+    path = (
+        f"/api/v1/composition/objectives/{JOB_ID}/file-access-linkage/"
+        f"{ATTEMPT_ID}/assistant-context"
+    )
+    with running_server() as (server, service):
+        status, _, body = request(server, "GET", path)
+        assert status == 200 and json.loads(body) == {
+            "analysis_only": True,
+            "capabilities": [],
+        }
+        assert service.calls == [("file_access_retest_assistance_context", JOB_ID, ATTEMPT_ID)]
+        for method, invalid, expected in (
+            ("POST", path, 405),
+            ("GET", path + "?scope=expanded", 400),
+            ("GET", path.replace(ATTEMPT_ID, "attempt-not-canonical"), 400),
+        ):
+            status, _, _ = request(server, method, invalid, body={} if method == "POST" else None)
+            assert status == expected
+        assert service.calls == [("file_access_retest_assistance_context", JOB_ID, ATTEMPT_ID)]
+
+
 @pytest.mark.parametrize(
     "method,suffix,call",
     [

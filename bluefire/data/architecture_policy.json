@@ -314,6 +314,7 @@
         "bluefire.assistance_comparison_context",
         "bluefire.assistance_comparison_s3",
         "bluefire.assistance_file_access_context",
+        "bluefire.assistance_file_access_retest_context",
         "bluefire.assistance_receiver",
         "bluefire.assistance_receiver_context",
         "bluefire.assistance_runs",

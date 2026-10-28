@@ -698,18 +698,18 @@ class APIRoutes:
             return ("", "")
         return (match.group(2) or "read", match.group(1))
 
-    def _file_access_composed_retest_request(self, path: str) -> tuple[str, str] | None:
+    def _file_access_composed_retest_request(self, path: str) -> tuple[str, str, bool] | None:
         prefix = f"{API_PREFIX}/composition/objectives/"
         if not path.startswith(prefix):
             return None
         if not self._management_query_free():
-            return ("", "")
+            return ("", "", False)
         match = re.fullmatch(
-            r"(job-[0-9a-f]{32})/file-access-linkage/(attempt-[0-9a-f]{32})",
+            r"(job-[0-9a-f]{32})/file-access-linkage/(attempt-[0-9a-f]{32})(/assistant-context)?",
             path[len(prefix) :],
         )
         if match is not None:
-            return match.group(1), match.group(2)
+            return match.group(1), match.group(2), match.group(3) is not None
         return None
 
     def _file_access_request(self, path: str) -> tuple[str, str, str] | None:

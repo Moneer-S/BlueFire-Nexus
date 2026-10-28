@@ -490,11 +490,18 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         file_access_linkage = self._routes._file_access_composed_retest_request(path)
         if file_access_linkage is not None:
             if file_access_linkage[0]:
-                self._dispatch(
-                    lambda: self.platform_server.service.file_access_composed_retest_linkage(
-                        file_access_linkage[0], file_access_linkage[1]
+                if file_access_linkage[2]:
+                    self._dispatch(
+                        lambda: self.platform_server.service.file_access_retest_assistance_context(
+                            file_access_linkage[0], file_access_linkage[1]
+                        )
                     )
-                )
+                else:
+                    self._dispatch(
+                        lambda: self.platform_server.service.file_access_composed_retest_linkage(
+                            file_access_linkage[0], file_access_linkage[1]
+                        )
+                    )
             return
         composition = self._routes._composition_request(path)
         if composition is not None:
