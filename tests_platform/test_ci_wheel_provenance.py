@@ -24,8 +24,8 @@ from bluefire.s3_access_runtime import WORKER_FILES
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 WINDOWS_PARTITIONS = {
-    "3.10": ("a-b", "c-d", "e-q", "remainder"),
-    "3.12": ("a-b", "c-d", "e-q", "remainder"),
+    "3.10": ("a-b", "c-d", "e-q", "r", "remainder"),
+    "3.12": ("a-b", "c-d", "e-q", "r", "remainder"),
 }
 
 
@@ -43,7 +43,7 @@ def _package_job():
     assert matrix["os"] == ["ubuntu-latest", "macos-latest"]
     assert matrix["python-version"] == ["3.10", "3.12"]
     windows = matrix["include"]
-    assert len(windows) == 8
+    assert len(windows) == 10
     assert all(set(entry) == {"os", "python-version", "partition"} for entry in windows)
     assert {(entry["os"], entry["python-version"], entry["partition"]) for entry in windows} == {
         ("windows-latest", version, partition)
@@ -56,17 +56,26 @@ def _package_job():
 
 
 def _windows_partition_files(names, partition):
-    ranges = {"a-b": ("a", "b"), "c-d": ("c", "d"), "e-q": ("e", "q")}
+    ranges = {
+        "a-b": ("a", "b"),
+        "c-d": ("c", "d"),
+        "e-q": ("e", "q"),
+        "r": ("r", "r"),
+    }
     if partition not in {*ranges, "remainder"}:
         raise ValueError(f"unknown Windows test partition: {partition}")
 
     def belongs(name):
         match = re.fullmatch(r"test_(.).*\.py", name)
         first = match.group(1) if match is not None else ""
-        in_middle = "a" <= first <= "q"
+        windows_first = first.lower()
+        in_middle = "a" <= windows_first <= "r"
         in_s3_family = re.fullmatch(r"test_s3.*\.py", name) is not None
+        ignored_s3_family = re.fullmatch(r"test_s3.*\.py", name.lower()) is not None
         if partition == "remainder":
-            return not in_middle and not in_s3_family
+            return not in_middle and not ignored_s3_family
+        if partition == "r":
+            return windows_first == "r"
         start, end = ranges[partition]
         return start <= first <= end or (partition == "c-d" and in_s3_family)
 
@@ -81,14 +90,15 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
     python_job = workflow["jobs"]["python"]
     step = next(item for item in python_job["steps"] if item["name"] == "Test Windows partition")
     command = step["run"]
-    assert command.count("Get-ChildItem -LiteralPath tests_platform -File") == 3
+    assert command.count("Get-ChildItem -LiteralPath tests_platform -File") == 4
     assert "Where-Object { $_.Name -cmatch '^test_[a-d].*\\.py$' }" not in command
     assert command.count("Where-Object { $_.Name -cmatch '^test_[a-b].*\\.py$' }") == 1
     assert command.count("-cmatch '^test_[c-d].*\\.py$'") == 1
     assert command.count("Where-Object { $_.Name -cmatch '^test_[e-q].*\\.py$' }") == 1
+    assert command.count("Where-Object { $_.Name -match '^test_r.*\\.py$' }") == 1
     assert command.count("-cmatch '^test_s3.*\\.py$'") == 1
     assert "-or $_.Name -cmatch '^test_s3.*\\.py$'" in command
-    assert "--ignore-glob=tests_platform/test_[a-q]*.py" in command
+    assert "--ignore-glob=tests_platform/test_[a-r]*.py" in command
     assert "--ignore-glob=tests_platform/test_s3*.py" in command
     expected = WINDOWS_PARTITIONS[version]
     assert all(f"'{partition}' {{" in command for partition in expected)
@@ -114,6 +124,25 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
     assert s3_family
     assert partitions["c-d"] & s3_family == s3_family
     assert all(not (partitions[partition] & s3_family) for partition in set(partitions) - {"c-d"})
+    original_remainder = {
+        name
+        for name in names
+        if re.fullmatch(r"test_[a-q].*\.py", name) is None
+        and re.fullmatch(r"test_s3.*\.py", name) is None
+    }
+    assert partitions["r"] | partitions["remainder"] == original_remainder
+    assert partitions["r"].isdisjoint(partitions["remainder"])
+    uppercase_r = {"test_R_future.py"}
+    original_uppercase_r = {
+        name
+        for name in uppercase_r
+        if re.fullmatch(r"test_[a-q].*\.py", name.lower()) is None
+        and re.fullmatch(r"test_s3.*\.py", name.lower()) is None
+    }
+    partitions_for_uppercase_r = _windows_partition_files(uppercase_r, "r") | (
+        _windows_partition_files(uppercase_r, "remainder")
+    )
+    assert original_uppercase_r == partitions_for_uppercase_r == uppercase_r
 
     boundaries = {
         "test_a_boundary.py": "a-b",
@@ -122,9 +151,12 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
         "test_d_boundary.py": "c-d",
         "test_e_boundary.py": "e-q",
         "test_q_boundary.py": "e-q",
-        "test_r_boundary.py": "remainder",
+        "test_r_boundary.py": "r",
+        "test_R_boundary.py": "r",
+        "test_s_boundary.py": "remainder",
         "test_s3_boundary.py": "c-d",
         "test_1_nonletter.py": "remainder",
+        "test__future_unclassified.py": "remainder",
     }
     for name, expected in boundaries.items():
         assert _windows_partition_files({name}, expected) == {name}

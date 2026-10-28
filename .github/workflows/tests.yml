@@ -82,6 +82,9 @@ jobs:
             partition: e-q
           - os: windows-latest
             python-version: "3.10"
+            partition: r
+          - os: windows-latest
+            python-version: "3.10"
             partition: remainder
           - os: windows-latest
             python-version: "3.12"
@@ -92,6 +95,9 @@ jobs:
           - os: windows-latest
             python-version: "3.12"
             partition: e-q
+          - os: windows-latest
+            python-version: "3.12"
+            partition: r
           - os: windows-latest
             python-version: "3.12"
             partition: remainder
@@ -172,6 +178,14 @@ jobs:
               if ($testFiles.Count -eq 0) { throw 'Empty e-q test partition' }
               python -m pytest -vv --durations=50 @testFiles
             }
+            'r' {
+              $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
+                Where-Object { $_.Name -match '^test_r.*\.py$' } |
+                Sort-Object Name |
+                ForEach-Object { "tests_platform/$($_.Name)" })
+              if ($testFiles.Count -eq 0) { throw 'Empty r test partition' }
+              python -m pytest -vv --durations=50 @testFiles
+            }
             'a-b' {
               $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
                 Where-Object { $_.Name -cmatch '^test_[a-b].*\.py$' } |
@@ -189,7 +203,7 @@ jobs:
               python -m pytest -vv --durations=50 @testFiles
             }
             'remainder' {
-              python -m pytest -vv --durations=50 '--ignore-glob=tests_platform/test_[a-q]*.py' '--ignore-glob=tests_platform/test_s3*.py'
+              python -m pytest -vv --durations=50 '--ignore-glob=tests_platform/test_[a-r]*.py' '--ignore-glob=tests_platform/test_s3*.py'
             }
             default { throw "Unknown Windows test partition: $env:BLUEFIRE_TEST_PARTITION" }
           }
