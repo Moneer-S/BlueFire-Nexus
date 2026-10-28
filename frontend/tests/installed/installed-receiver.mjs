@@ -136,6 +136,7 @@ let latestCompositionReview;
 let latestCompositionContext;
 let latestCompositionObjective;
 let compositionSnapshotId;
+let comparisonDiagnostic;
 let comparisonSubmitted = false;
 let phaseBindingDiagnostic;
 let prepareHttpDiagnostic;
@@ -1536,70 +1537,144 @@ try {
   report.runner_final_state = { state: "stopped", source: "authenticated_status_poll_after_stop" };
   report.checks.push("managed_runner_stopped_through_ui");
 
-  stage = "composition-saved-comparison";
+  stage = "composition-saved-comparison-page";
   const comparisonParams = new URLSearchParams({ compare_context: "1" });
   comparisonParams.append("compare_run", baselineRunId);
   comparisonParams.append("compare_run", report.composition.run_id);
   await page.goto(`${ORIGIN}/#/compare?${comparisonParams}`);
   await page.getByRole("button", { name: "Compare selected", exact: true }).waitFor();
+  stage = "composition-saved-comparison-response";
   const comparisonResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/comparisons"
     && response.request().method() === "POST");
   await page.getByRole("button", { name: "Compare selected", exact: true }).click();
-  const comparison = await (await comparisonResponse).json();
+  const response = await comparisonResponse;
+  comparisonDiagnostic = { http_status: response.status() };
+  stage = "composition-saved-comparison-response-json";
+  const comparison = await response.json();
+  stage = "composition-saved-comparison-response-run-ids";
   assert.deepEqual(comparison.run_ids, [baselineRunId, report.composition.run_id]);
+  stage = "composition-saved-comparison-response-baseline-id";
   assert.equal(comparison.baseline_run_id, baselineRunId);
+  stage = "composition-saved-comparison-response-summary-ids";
   assert.deepEqual(comparison.summaries?.map(item => item.run_id), comparison.run_ids);
+  stage = "composition-saved-comparison-projection-read";
   const composedSummary = comparison.summaries[1];
+  comparisonDiagnostic.projection = {
+    state: ["verified", "unverified"].includes(composedSummary?.capability_objective?.state)
+      ? composedSummary.capability_objective.state : "unreported",
+    established: typeof composedSummary?.capability_objective?.established === "boolean"
+      ? composedSummary.capability_objective.established : "unreported",
+    effective_objective: typeof composedSummary?.objective_reached === "boolean"
+      ? composedSummary.objective_reached : "unreported",
+    graph_objective: typeof composedSummary?.graph_objective_reached === "boolean"
+      ? composedSummary.graph_objective_reached : "unreported",
+    cleanup_success: typeof composedSummary?.cleanup_success === "boolean"
+      ? composedSummary.cleanup_success : "unreported",
+  };
+  stage = "composition-saved-comparison-projection-state";
   assert.equal(composedSummary.capability_objective?.state, "verified");
+  stage = "composition-saved-comparison-projection-run-id";
   assert.equal(composedSummary.capability_objective?.run_id, report.composition.run_id);
+  stage = "composition-saved-comparison-projection-attempt-id";
   assert.equal(composedSummary.capability_objective?.attempt_id, report.composition.attempt_id);
+  stage = "composition-saved-comparison-projection-established";
   assert.equal(composedSummary.capability_objective?.established, false);
+  stage = "composition-saved-comparison-projection-result-digest";
   assert.equal(composedSummary.capability_objective?.result_digest, report.composition.verified_result_digest);
+  stage = "composition-saved-comparison-effective-objective";
   assert.equal(composedSummary.objective_reached, false);
+  stage = "composition-saved-comparison-graph-objective";
   assert.equal(composedSummary.graph_objective_reached, true);
+  stage = "composition-saved-comparison-cleanup-success";
   assert.equal(composedSummary.cleanup_success, true);
+  stage = "composition-saved-comparison-baseline-unscoped";
   assert.equal(comparison.summaries[0].capability_objective, null);
+  stage = "composition-saved-comparison-delta-read";
   const composedDelta = comparison.deltas?.find(item => item.from_run_id === baselineRunId
     && item.to_run_id === report.composition.run_id);
+  comparisonDiagnostic.delta = {
+    comparability: ["comparable", "different_objectives", "unverified"].includes(composedDelta?.objective_comparability)
+      ? composedDelta.objective_comparability : "unreported",
+    objective_changed: typeof composedDelta?.objective_changed === "boolean"
+      ? composedDelta.objective_changed : "unreported",
+    recovery_signal: Array.isArray(composedDelta?.signals)
+      ? composedDelta.signals.includes("objective_recovered") : "unreported",
+    regression_signal: Array.isArray(composedDelta?.signals)
+      ? composedDelta.signals.includes("objective_regressed") : "unreported",
+  };
+  stage = "composition-saved-comparison-delta-comparability";
   assert.equal(composedDelta?.objective_comparability, "different_objectives");
+  stage = "composition-saved-comparison-delta-unchanged";
   assert.equal(composedDelta?.objective_changed, false);
+  stage = "composition-saved-comparison-delta-no-recovery";
   assert.ok(!composedDelta?.signals?.includes("objective_recovered"));
+  stage = "composition-saved-comparison-delta-no-regression";
   assert.ok(!composedDelta?.signals?.includes("objective_regressed"));
+  stage = "composition-saved-comparison-save-snapshot-id";
   assert.match(comparison.saved_snapshot?.snapshot_id ?? "", /^run-comparison-[0-9a-f]{64}$/);
   compositionSnapshotId = comparison.saved_snapshot.snapshot_id;
+  stage = "composition-saved-comparison-save-read";
   const savedComparison = await appApi(`/comparison-snapshots/${compositionSnapshotId}`);
+  comparisonDiagnostic.saved_source_integrity = ["verified", "unavailable"].includes(savedComparison?.source_integrity?.status)
+    ? savedComparison.source_integrity.status : "unreported";
+  stage = "composition-saved-comparison-save-identity";
   assert.equal(savedComparison.snapshot_id, compositionSnapshotId);
+  stage = "composition-saved-comparison-save-run-ids";
   assert.deepEqual(savedComparison.comparison.run_ids, comparison.run_ids);
+  stage = "composition-saved-comparison-save-source-integrity";
   assert.equal(savedComparison.source_integrity?.status, "verified");
+  stage = "composition-saved-comparison-save-source-ids";
   assert.deepEqual(savedComparison.source_bindings?.map(binding => binding.run_id), comparison.run_ids);
+  stage = "composition-saved-comparison-save-objective-digest";
   assert.match(savedComparison.source_bindings[1]?.capability_objective_digest ?? "", /^sha256:[0-9a-f]{64}$/);
+  stage = "composition-saved-comparison-render-results";
   await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+  stage = "composition-saved-comparison-render-conclusion";
   await page.getByRole("region", { name: "Comparison conclusion", exact: true })
     .getByText("Objective checks differ", { exact: true }).waitFor();
+  stage = "composition-saved-comparison-render-objective";
   await page.getByRole("region", { name: "Compared run outcomes", exact: true })
     .getByText("Not achieved", { exact: true }).waitFor();
+  stage = "composition-saved-comparison-render-proof";
   await page.getByRole("region", { name: "Compared run outcomes", exact: true })
     .getByText("Verified", { exact: true }).waitFor();
+  stage = "composition-saved-comparison-render-graph";
   await page.getByRole("region", { name: "Compared run outcomes", exact: true })
     .getByText("Met", { exact: true }).waitFor();
-  stage = "composition-saved-comparison-reopen";
+  stage = "composition-saved-comparison-reopen-page";
   await page.goto(`${ORIGIN}/#/compare`);
   const history = page.locator("details.saved-comparisons-browser");
   const historySummary = history.locator(":scope > summary");
+  stage = "composition-saved-comparison-reopen-history";
   await historySummary.waitFor();
   if (!await history.evaluate(element => element.open)) await historySummary.click();
+  stage = "composition-saved-comparison-reopen-select";
   await page.locator(`button[data-snapshot-id=${JSON.stringify(compositionSnapshotId)}]`).click();
+  stage = "composition-saved-comparison-reopen-results";
   await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+  stage = "composition-saved-comparison-reopen-route";
   assert.match(new URL(page.url()).hash, new RegExp(`snapshot=${compositionSnapshotId}`));
+  stage = "composition-saved-comparison-reopen-read";
   const reopenedComparison = await appApi(`/comparison-snapshots/${compositionSnapshotId}`);
+  comparisonDiagnostic.reopened_source_integrity = ["verified", "unavailable"].includes(reopenedComparison?.source_integrity?.status)
+    ? reopenedComparison.source_integrity.status : "unreported";
+  stage = "composition-saved-comparison-reopen-identity";
   assert.equal(reopenedComparison.snapshot_id, savedComparison.snapshot_id);
+  stage = "composition-saved-comparison-reopen-digest";
   assert.equal(reopenedComparison.digest, savedComparison.digest);
+  stage = "composition-saved-comparison-reopen-run-ids";
   assert.deepEqual(reopenedComparison.comparison.run_ids, comparison.run_ids);
+  stage = "composition-saved-comparison-reopen-objective";
   assert.equal(reopenedComparison.comparison.summaries[1].capability_objective?.established, false);
+  stage = "composition-saved-comparison-reopen-result-digest";
   assert.equal(reopenedComparison.comparison.summaries[1].capability_objective?.result_digest, report.composition.verified_result_digest);
+  stage = "composition-saved-comparison-reopen-graph";
   assert.equal(reopenedComparison.comparison.summaries[1].graph_objective_reached, true);
+  stage = "composition-saved-comparison-reopen-comparability";
   assert.equal(reopenedComparison.comparison.deltas[0].objective_comparability, "different_objectives");
+  stage = "composition-saved-comparison-reopen-source-integrity";
   assert.equal(reopenedComparison.source_integrity?.status, "verified");
+  stage = "composition-saved-comparison-reopen-render-conclusion";
   await page.getByRole("region", { name: "Comparison conclusion", exact: true })
     .getByText("Objective checks differ", { exact: true }).waitFor();
   report.composition.graph_objective_reached = composedSummary.graph_objective_reached;
@@ -1726,6 +1801,9 @@ try {
     else failure.phase_binding = phaseBindingDiagnostic;
   }
   if (stage.startsWith("baseline-control-")) failure.visible_controls = await visibleControlsDiagnostic();
+  if (stage.startsWith("composition-saved-comparison") && comparisonDiagnostic) {
+    failure.comparison_diagnostic = comparisonDiagnostic;
+  }
   report.errors.push(failure);
   report.request_counts = counts;
 } finally {
