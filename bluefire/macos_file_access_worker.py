@@ -108,7 +108,7 @@ class MacOSFileAccessWorker:
                 chunk = os.read(descriptor, 1024)
                 if not chunk:
                     break
-                remaining = _setup_failure_diagnostics.MAX_NATIVE_FD_FRAME_BYTES - len(
+                remaining = _setup_failure_diagnostics.MAX_COMBINED_FD_FRAME_BYTES - len(
                     self._native_diagnostic_bytes
                 )
                 self._native_diagnostic_bytes.extend(chunk[:remaining])

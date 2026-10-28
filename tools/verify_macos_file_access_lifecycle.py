@@ -421,11 +421,11 @@ def _safe_native_startup_statuses(value: Any) -> dict[str, dict[str, Any]] | Non
 
 def _parse_child_cli_error(raw: str) -> dict[str, Any] | None:
     """Keep only fixed CLI error codes and classifications, never message text."""
-    if len(raw.encode("utf-8", errors="replace")) > 4096:
+    if len(raw.encode("utf-8", errors="replace")) > _native_diagnostics.MAX_STARTUP_CLI_ERROR_BYTES:
         return None
     try:
         document = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return None
     error = document.get("error") if isinstance(document, dict) else None
     if not isinstance(error, dict) or error.get("code") != "command_failed":
@@ -491,6 +491,19 @@ def _safe_readiness_diagnostics(
         result["supervisor_returncode"] = returncode
     if (
         isinstance(child_error, dict)
+        and type(child_error.get("child_cli_error_withheld")) is str
+        and child_error["child_cli_error_withheld"]
+        in {
+            "envelope_overflow",
+            "invalid_json",
+            "invalid_error",
+            "unrecognized_document",
+            "no_document",
+        }
+    ):
+        result["child_cli_error_withheld"] = child_error["child_cli_error_withheld"]
+    if (
+        isinstance(child_error, dict)
         and child_error.get("error_code") == "command_failed"
         and isinstance(child_error.get("error_class"), str)
         and child_error.get("error_class") in _SAFE_SETUP_ERROR_CLASSES
@@ -540,6 +553,13 @@ def _read_supervisor_stdout(
     child_errors: queue.Queue[dict[str, Any]],
 ) -> None:
     """Retain and parse one bounded complete JSON document after stdout EOF."""
+
+    def reject(reason: str) -> None:
+        try:
+            child_errors.put_nowait({"child_cli_error_withheld": reason})
+        except queue.Full:
+            pass
+
     chunks: list[str] = []
     retained_bytes = 0
     over_limit = False
@@ -557,11 +577,16 @@ def _read_supervisor_stdout(
         chunks.append(chunk)
         retained_bytes += chunk_bytes
     if over_limit:
+        reject("envelope_overflow")
         return
     raw = "".join(chunks)
+    if not raw:
+        reject("no_document")
+        return
     try:
         document = json.loads(raw)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        reject("invalid_json")
         return
     child_error = _parse_child_cli_error(raw)
     if child_error is not None:
@@ -574,6 +599,14 @@ def _read_supervisor_stdout(
         not isinstance(document, dict)
         or document.get("schema_version") != "bluefire.macos-file-access-local-supervisor-result.v1"
     ):
+        if isinstance(document, dict) and "error" in document:
+            reject(
+                "envelope_overflow"
+                if retained_bytes > _native_diagnostics.MAX_STARTUP_CLI_ERROR_BYTES
+                else "invalid_error"
+            )
+        else:
+            reject("unrecognized_document")
         return
     try:
         stdout_lines.put_nowait(raw)

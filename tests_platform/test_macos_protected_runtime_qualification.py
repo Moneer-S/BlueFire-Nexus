@@ -1053,20 +1053,26 @@ def test_stdout_reader_preserves_pretty_printed_supervisor_result():
 
 
 @pytest.mark.parametrize(
-    "raw",
+    "raw,reason",
     [
-        '{"schema_version": "bluefire.macos-file-access-local-supervisor-result.v1"',
-        _pretty_cli_json({"schema_version": "unknown.result.v1", "status": "passed"}),
+        (
+            '{"schema_version": "bluefire.macos-file-access-local-supervisor-result.v1"',
+            "invalid_json",
+        ),
+        (
+            _pretty_cli_json({"schema_version": "unknown.result.v1", "status": "passed"}),
+            "unrecognized_document",
+        ),
     ],
 )
-def test_stdout_reader_discards_malformed_and_unknown_documents(raw):
+def test_stdout_reader_discards_malformed_and_unknown_documents(raw, reason):
     stdout = queue.Queue(maxsize=1)
     child_errors = queue.Queue(maxsize=1)
 
     lifecycle._read_supervisor_stdout(io.StringIO(raw), stdout, child_errors)
 
     assert stdout.empty()
-    assert child_errors.empty()
+    assert child_errors.get_nowait() == {"child_cli_error_withheld": reason}
 
 
 def test_stdout_reader_drains_but_does_not_retain_over_limit_document():
@@ -1082,7 +1088,7 @@ def test_stdout_reader_drains_but_does_not_retain_over_limit_document():
 
     assert stream.tell() == len(raw)
     assert stdout.empty()
-    assert child_errors.empty()
+    assert child_errors.get_nowait() == {"child_cli_error_withheld": "envelope_overflow"}
 
 
 def test_readiness_failure_diagnostics_keep_specific_stage_and_fixed_fields_only():

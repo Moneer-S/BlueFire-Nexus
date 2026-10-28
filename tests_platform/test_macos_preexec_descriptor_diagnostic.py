@@ -31,8 +31,14 @@ def _fake_slots(monkeypatch: pytest.MonkeyPatch, slots: dict[int, tuple[int, int
         mode_type, dev, ino, rdev, _cloexec = slots[fd]
         return SimpleNamespace(st_mode=mode_type, st_dev=dev, st_ino=ino, st_rdev=rdev)
 
-    monkeypatch.setattr(helper.fcntl, "fcntl", get_flags)
-    monkeypatch.setattr(helper.os, "fstat", get_stat)
+    # These modules are shared with pytest and the interpreter. Replace only the
+    # helper's references so unrelated fstat calls keep their actual semantics.
+    monkeypatch.setattr(
+        helper,
+        "fcntl",
+        SimpleNamespace(**{**vars(helper.fcntl), "fcntl": get_flags}),
+    )
+    monkeypatch.setattr(helper, "os", SimpleNamespace(**{**vars(helper.os), "fstat": get_stat}))
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fcntl is unavailable on Windows")
@@ -108,7 +114,11 @@ def test_query_error_and_byte_cap_are_finite_withheld(monkeypatch):
     def query_error(_fd: int, _operation: int) -> int:
         raise OSError(errno.EIO, "private path or credential text")
 
-    monkeypatch.setattr(helper.fcntl, "fcntl", query_error)
+    monkeypatch.setattr(
+        helper,
+        "fcntl",
+        SimpleNamespace(**{**vars(helper.fcntl), "fcntl": query_error}),
+    )
     assert helper._preexec_fd_frame() == (
         diagnostics.PREEXEC_FD_FRAME_PREFIX + b"withheld|query_error\n"
     )

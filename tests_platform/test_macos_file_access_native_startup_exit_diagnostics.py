@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import queue
 import threading
 from contextlib import redirect_stdout
 from types import SimpleNamespace
@@ -270,6 +271,56 @@ def test_drain_io_error_is_not_reported_as_an_overflow(monkeypatch):
     )
 
 
+def test_valid_combined_frames_above_old_capture_cap_survive_until_eof(monkeypatch):
+    retained = _worker(monkeypatch, 96)
+    identity = {"dev": 1, "ino": 2, "mode_type": 0o100000, "rdev": 0}
+    rows = [{"fd": fd, "kind": 1, "identity": identity} for fd in range(6)]
+    native_body = json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows})
+    native_frame = native_body.encode().ljust(diagnostics.MAX_NATIVE_FD_FRAME_BYTES - 1) + b"\n"
+    preexec_frame = diagnostics.PREEXEC_FD_FRAME_PREFIX + b"rows|2,4096,1,4,0,0\n"
+    raw = preexec_frame + native_frame
+    assert 4096 < len(raw) <= diagnostics.MAX_COMBINED_FD_FRAME_BYTES == 5120
+    assert diagnostics.native_fd_rows_from_frame(native_frame) == rows
+    chunks = iter([raw[index : index + 1024] for index in range(0, len(raw), 1024)] + [b""])
+    closed = []
+    monkeypatch.setattr(
+        worker, "os", SimpleNamespace(read=lambda *_args: next(chunks), close=closed.append)
+    )
+    retained._native_diagnostic_thread = SimpleNamespace(join=lambda timeout: None)
+    retained._native_diagnostic_bytes = bytearray()
+    retained._native_diagnostic_complete = False
+    retained._native_diagnostic_overflow = False
+    retained._launch_copy_rows = [
+        {"role": "resource", "fd": 12, "identity": identity},
+        {"role": "primitive_channel", "fd": 13, "identity": identity},
+    ]
+    retained._drain_native_diagnostic(71)
+    assert closed == [71] and retained._native_diagnostic_complete
+    assert not retained._native_diagnostic_overflow
+    status = retained.retained_native_startup_status()
+    assert status["descriptor_observation"]["native_rows"] == rows
+    assert status["preexec_descriptor_observation"]["rows"][0]["fd"] == 2
+    assert retained._native_diagnostic_bytes == b""
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_combined_capture_has_exact_bound_and_still_drains(monkeypatch, extra):
+    retained = _worker(monkeypatch, 96)
+    raw = b"x" * (diagnostics.MAX_COMBINED_FD_FRAME_BYTES + extra)
+    chunks = iter([raw[index : index + 1024] for index in range(0, len(raw), 1024)] + [b""])
+    closed = []
+    monkeypatch.setattr(
+        worker, "os", SimpleNamespace(read=lambda *_args: next(chunks), close=closed.append)
+    )
+    retained._native_diagnostic_bytes = bytearray()
+    retained._native_diagnostic_complete = False
+    retained._native_diagnostic_overflow = False
+    retained._drain_native_diagnostic(71)
+    assert len(retained._native_diagnostic_bytes) == diagnostics.MAX_COMBINED_FD_FRAME_BYTES
+    assert retained._native_diagnostic_overflow is bool(extra)
+    assert retained._native_diagnostic_complete and closed == [71]
+
+
 @pytest.mark.parametrize("code,label", sorted(diagnostics.NATIVE_STARTUP_EXIT_LABELS.items()))
 def test_only_exact_reserved_reaped_native_code_maps_to_fixed_label(monkeypatch, code, label):
     retained = _worker(monkeypatch, code)
@@ -481,6 +532,166 @@ def _cli_error(monkeypatch, failure):
     with redirect_stdout(output):
         assert cli.main(["runner", "macos-file-setup", "--confirm-create-generated-workspace"]) == 2
     return json.loads(output.getvalue())["error"]
+
+
+def test_actual_pretty_cli_combined_failure_survives_eof_and_readiness_projection(monkeypatch):
+    identity = {"dev": 2**64 - 1, "ino": 2**64 - 1, "mode_type": 0o170000, "rdev": 2**64 - 1}
+    preexec_identity = {**identity, "dev": 2**32 - 1, "rdev": 2**32 - 1}
+    status = {
+        **diagnostics.native_startup_status_from_returncode(96),
+        "descriptor_observation": {
+            "schema_version": diagnostics.NATIVE_FD_OBSERVATION_SCHEMA,
+            "scope": "diagnostic_only_no_descriptor_admission",
+            "launch_copy_rows": [
+                {
+                    "role": (
+                        "resource"
+                        if index == 0
+                        else "primitive_channel" if index == 1 else "launch_auxiliary"
+                    ),
+                    "fd": 2**31 - 1 - index,
+                    "identity": identity,
+                }
+                for index in range(diagnostics.MAX_NATIVE_FD_ROWS)
+            ],
+            "native_rows": [
+                {"fd": 2**31 - 1 - index, "kind": 2**32 - 1, "identity": identity}
+                for index in range(diagnostics.MAX_NATIVE_FD_ROWS)
+            ],
+        },
+        "preexec_descriptor_observation": {
+            "schema_version": diagnostics.PREEXEC_FD_OBSERVATION_SCHEMA,
+            "scope": diagnostics.PREEXEC_FD_OBSERVATION_SCOPE,
+            "scan_slots": diagnostics.PREEXEC_FD_SLOTS,
+            "rows": [
+                {"fd": index, "cloexec": True, "identity": preexec_identity}
+                for index in range(diagnostics.MAX_PREEXEC_FD_ROWS)
+            ],
+        },
+    }
+    assert diagnostics.valid_native_startup_status(status)
+    statuses = {role: status for role in ("reader", "owner", "control")}
+    failure = local.MacOSSetupFailure(
+        "namespace_creation", "The original sealed Darwin namespace is unavailable."
+    )
+    failure.safe_native_startup_statuses = statuses
+    monkeypatch.setattr(cli, "_execute", lambda _args: (_ for _ in ()).throw(failure))
+    output = io.StringIO()
+    with redirect_stdout(output):
+        assert cli.main(["runner", "macos-file-setup", "--confirm-create-generated-workspace"]) == 2
+    raw = output.getvalue()
+    assert 4096 < len(raw.encode()) < diagnostics.MAX_STARTUP_CLI_ERROR_BYTES
+    stdout_lines, child_errors = queue.Queue(maxsize=1), queue.Queue(maxsize=1)
+    verifier._read_supervisor_stdout(io.StringIO(raw), stdout_lines, child_errors)
+    assert stdout_lines.empty()
+    readiness = verifier._safe_readiness_diagnostics(
+        "child_exited_before_readiness", {"streams_drained": True}, child_errors.get_nowait()
+    )
+    assert readiness["native_startup_statuses"] == statuses
+    assert readiness["error_code"] == "command_failed"
+    assert "message" not in readiness and "child_cli_error_withheld" not in readiness
+    forged = json.loads(raw)
+    forged["error"]["native_startup_statuses"]["reader"]["private_path"] = "/private/secret"
+    parsed = verifier._parse_child_cli_error(json.dumps(forged, indent=2))
+    assert parsed is not None and "native_startup_statuses" not in parsed
+    assert "secret" not in repr(parsed)
+
+
+@pytest.mark.parametrize(
+    "raw,reason",
+    [
+        ("", "no_document"),
+        ("/private/secret", "invalid_json"),
+        ("[" * 2000, "invalid_json"),
+        ('{"private_path":"/private/secret"}', "unrecognized_document"),
+        ('{"error":{"message":"/private/secret"}}', "invalid_error"),
+        (
+            json.dumps(
+                {
+                    "error": {
+                        "code": "command_failed",
+                        "message": "/private/secret" * diagnostics.MAX_STARTUP_CLI_ERROR_BYTES,
+                    }
+                }
+            ),
+            "envelope_overflow",
+        ),
+        (
+            json.dumps(
+                {
+                    "error": {
+                        "code": "command_failed",
+                        "message": "x" * diagnostics.MAX_STARTUP_CLI_ERROR_BYTES,
+                    }
+                }
+            ),
+            "envelope_overflow",
+        ),
+    ],
+    ids=[
+        "empty",
+        "not-json",
+        "deep-json",
+        "unknown-document",
+        "invalid-error",
+        "stream-overflow",
+        "error-envelope-overflow",
+    ],
+)
+def test_child_parse_rejection_is_finite_and_never_retains_output(raw, reason):
+    stdout_lines, child_errors = queue.Queue(maxsize=1), queue.Queue(maxsize=1)
+    verifier._read_supervisor_stdout(io.StringIO(raw), stdout_lines, child_errors)
+    assert stdout_lines.empty()
+    projected = verifier._safe_readiness_diagnostics(
+        "child_exited_before_readiness", {}, child_errors.get_nowait()
+    )
+    assert projected == {
+        "failure_stage": "child_exited_before_readiness",
+        "child_cli_error_withheld": reason,
+    }
+    for unknown in ("/private/secret", [], {}, True, None):
+        assert "child_cli_error_withheld" not in verifier._safe_readiness_diagnostics(
+            "child_exited_before_readiness", {}, {"child_cli_error_withheld": unknown}
+        )
+
+
+def test_success_stdout_protocol_keeps_existing_independent_budget():
+    raw = json.dumps(
+        {
+            "schema_version": "bluefire.macos-file-access-local-supervisor-result.v1",
+            "padding": "x" * diagnostics.MAX_STARTUP_CLI_ERROR_BYTES,
+        }
+    )
+    stdout_lines, child_errors = queue.Queue(maxsize=1), queue.Queue(maxsize=1)
+    verifier._read_supervisor_stdout(io.StringIO(raw), stdout_lines, child_errors)
+    assert stdout_lines.get_nowait() == raw and child_errors.empty()
+
+
+def test_cli_error_envelope_limit_is_exact_and_keeps_only_projection():
+    document = {"error": {"code": "command_failed", "message": ""}}
+    overhead = len(json.dumps(document).encode())
+    document["error"]["message"] = "x" * (diagnostics.MAX_STARTUP_CLI_ERROR_BYTES - overhead)
+    raw = json.dumps(document)
+    assert len(raw.encode()) == diagnostics.MAX_STARTUP_CLI_ERROR_BYTES
+    expected = {"error_code": "command_failed", "error_class": "unclassified_command_failure"}
+    assert verifier._parse_child_cli_error(raw) == expected
+    assert verifier._parse_child_cli_error(raw + " ") is None
+    stdout_lines, child_errors = queue.Queue(maxsize=1), queue.Queue(maxsize=1)
+    verifier._read_supervisor_stdout(io.StringIO(raw + " "), stdout_lines, child_errors)
+    assert stdout_lines.empty()
+    assert child_errors.get_nowait() == {"child_cli_error_withheld": "envelope_overflow"}
+
+
+def test_decoder_numeric_domain_refusal_is_finite_without_decoder_message(monkeypatch):
+    def refuse(_raw):
+        raise ValueError("private decoder detail /private/secret")
+
+    monkeypatch.setattr(verifier, "json", SimpleNamespace(**{**vars(json), "loads": refuse}))
+    assert verifier._parse_child_cli_error("{}") is None
+    stdout_lines, child_errors = queue.Queue(maxsize=1), queue.Queue(maxsize=1)
+    verifier._read_supervisor_stdout(io.StringIO("{}"), stdout_lines, child_errors)
+    assert stdout_lines.empty()
+    assert child_errors.get_nowait() == {"child_cli_error_withheld": "invalid_json"}
 
 
 def test_withheld_reason_crosses_only_failure_status_projections(monkeypatch):

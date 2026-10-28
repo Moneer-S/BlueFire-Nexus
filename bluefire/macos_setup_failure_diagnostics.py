@@ -18,6 +18,12 @@ PREEXEC_FD_OBSERVATION_SCOPE = "diagnostic_only_fd_slots_0_63_no_descriptor_admi
 PREEXEC_FD_SLOTS = 64
 MAX_PREEXEC_FD_FRAME_BYTES = 1024
 MAX_PREEXEC_FD_ROWS = 15
+# The same owned pipe carries at most one helper frame followed by one native frame.
+MAX_COMBINED_FD_FRAME_BYTES = MAX_PREEXEC_FD_FRAME_BYTES + MAX_NATIVE_FD_FRAME_BYTES
+# Three roles, two native row tables plus one preexec table per role. Each closed
+# numeric row fits in 512 bytes of the CLI's indented JSON, including its keys and
+# indentation; 4096 additional bytes cover the fixed error/status metadata.
+MAX_STARTUP_CLI_ERROR_BYTES = 4096 + 3 * (2 * MAX_NATIVE_FD_ROWS + MAX_PREEXEC_FD_ROWS) * 512
 PREEXEC_FD_EMITTER_WITHHELD_REASONS = frozenset(
     {"query_error", "identity_invalid", "row_cap", "frame_cap"}
 )

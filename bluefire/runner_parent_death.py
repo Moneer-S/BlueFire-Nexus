@@ -116,7 +116,7 @@ def _preexec_fd_frame() -> bytes:
     rows: list[str] = []
     for descriptor in range(_PREEXEC_FD_SLOTS):
         try:
-            flags = fcntl.fcntl(descriptor, fcntl.F_GETFD)
+            flags = getattr(fcntl, "fcntl")(descriptor, getattr(fcntl, "F_GETFD"))  # noqa: B009
         except OSError as exc:
             if exc.errno == errno.EBADF:
                 continue
@@ -129,15 +129,10 @@ def _preexec_fd_frame() -> bytes:
         ino = _preexec_fd_unsigned(details.st_ino, 64)
         rdev = _preexec_fd_unsigned(getattr(details, "st_rdev", 0), 32)
         mode_type = stat.S_IFMT(details.st_mode)
-        if (
-            dev is None
-            or ino is None
-            or rdev is None
-            or type(mode_type) is not int
-            or mode_type & 0o170000 != mode_type
-        ):
+        valid_mode = type(mode_type) is int and mode_type & 0o170000 == mode_type
+        if None in (dev, ino, rdev) or not valid_mode:
             return _preexec_fd_withheld("identity_invalid")
-        cloexec = int(bool(flags & fcntl.FD_CLOEXEC))
+        cloexec = int(bool(flags & getattr(fcntl, "FD_CLOEXEC")))  # noqa: B009
         rows.append(f"{descriptor},{mode_type},{dev},{ino},{rdev},{cloexec}")
         if len(rows) > _PREEXEC_FD_MAX_ROWS:
             return _preexec_fd_withheld("row_cap")
