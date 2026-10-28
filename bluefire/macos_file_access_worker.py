@@ -123,21 +123,35 @@ class MacOSFileAccessWorker:
                 read_failed = True
             self._native_diagnostic_complete = not read_failed
 
-    def _retained_descriptor_observation(self) -> tuple[dict[str, Any] | None, str | None]:
+    def _retained_descriptor_observation(
+        self,
+    ) -> tuple[dict[str, Any] | None, str | None, dict[str, Any] | None, str | None]:
         if self._native_diagnostic_thread is None:
-            return None, "no_frame"
+            return None, "no_frame", None, "no_frame"
         self._native_diagnostic_thread.join(timeout=0.1)
         if self._native_diagnostic_overflow:
-            return None, "overflow"
+            return None, "overflow", None, "overflow"
         if not self._native_diagnostic_complete:
-            return None, "eof_incomplete"
+            return None, "eof_incomplete", None, "eof_incomplete"
         raw = bytes(self._native_diagnostic_bytes)
         self._native_diagnostic_bytes.clear()
         if not raw:
-            return None, "no_frame"
-        native_rows = _setup_failure_diagnostics.native_fd_rows_from_frame(raw)
+            return None, "no_frame", None, "no_frame"
+        preexec_observation: dict[str, Any] | None = None
+        preexec_withheld: str | None = "no_frame"
+        native_raw = raw
+        if raw.startswith(_setup_failure_diagnostics.PREEXEC_FD_FRAME_PREFIX):
+            frame_end = raw.find(b"\n")
+            helper_frame = raw if frame_end < 0 else raw[: frame_end + 1]
+            native_raw = b"" if frame_end < 0 else raw[frame_end + 1 :]
+            preexec_observation, preexec_withheld = (
+                _setup_failure_diagnostics.preexec_fd_observation_from_frame(helper_frame)
+            )
+        if not native_raw:
+            return None, "no_frame", preexec_observation, preexec_withheld
+        native_rows = _setup_failure_diagnostics.native_fd_rows_from_frame(native_raw)
         if native_rows is None:
-            return None, "invalid_frame"
+            return None, "invalid_frame", preexec_observation, preexec_withheld
         observation = {
             "schema_version": _setup_failure_diagnostics.NATIVE_FD_OBSERVATION_SCHEMA,
             "scope": "diagnostic_only_no_descriptor_admission",
@@ -145,8 +159,8 @@ class MacOSFileAccessWorker:
             "native_rows": native_rows,
         }
         if not _setup_failure_diagnostics.valid_native_fd_observation(observation):
-            return None, "invalid_launch_rows"
-        return observation, None
+            return None, "invalid_launch_rows", preexec_observation, preexec_withheld
+        return observation, None, preexec_observation, preexec_withheld
 
     def _guard(self, deadline: int | None = None) -> float:
         wall, monotonic = time.time_ns() // 1_000_000, darwin_clock_ns()
@@ -551,11 +565,17 @@ class MacOSFileAccessWorker:
             code = vars(process).get("returncode")
             status = _setup_failure_diagnostics.native_startup_status_from_returncode(code)
             if type(code) is int and code == 96 and self._native_diagnostic_thread is not None:
-                observation, withheld = self._retained_descriptor_observation()
+                observation, withheld, preexec_observation, preexec_withheld = (
+                    self._retained_descriptor_observation()
+                )
                 if observation is not None:
                     status["descriptor_observation"] = observation
                 elif withheld is not None:
                     status["descriptor_observation_withheld"] = withheld
+                if preexec_observation is not None:
+                    status["preexec_descriptor_observation"] = preexec_observation
+                elif preexec_withheld is not None:
+                    status["preexec_descriptor_observation_withheld"] = preexec_withheld
             return status
         finally:
             self._lock.release()

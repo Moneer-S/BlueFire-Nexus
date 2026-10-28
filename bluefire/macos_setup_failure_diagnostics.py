@@ -12,6 +12,21 @@ NATIVE_FD_OBSERVATION_WITHHELD_REASONS = frozenset(
 )
 MAX_NATIVE_FD_FRAME_BYTES = 4096
 MAX_NATIVE_FD_ROWS = 15
+PREEXEC_FD_FRAME_PREFIX = b"bluefire.macos-preexec-fd-rows.v1|slots=64|"
+PREEXEC_FD_OBSERVATION_SCHEMA = "bluefire.macos-preexec-fd-observation.v1"
+PREEXEC_FD_OBSERVATION_SCOPE = "diagnostic_only_fd_slots_0_63_no_descriptor_admission"
+PREEXEC_FD_SLOTS = 64
+MAX_PREEXEC_FD_FRAME_BYTES = 1024
+MAX_PREEXEC_FD_ROWS = 15
+PREEXEC_FD_EMITTER_WITHHELD_REASONS = frozenset(
+    {"query_error", "identity_invalid", "row_cap", "frame_cap"}
+)
+PREEXEC_FD_OBSERVATION_WITHHELD_REASONS = PREEXEC_FD_EMITTER_WITHHELD_REASONS | {
+    "eof_incomplete",
+    "overflow",
+    "no_frame",
+    "invalid_frame",
+}
 
 
 def _native_fd_identity(value: Any) -> bool:
@@ -115,6 +130,110 @@ def valid_native_fd_observation(value: Any) -> bool:
         and (row["identity"] is None or _native_fd_identity(row["identity"]))
         for row in value["native_rows"]
     )
+
+
+def valid_preexec_fd_observation(value: Any) -> bool:
+    """Validate only the fixed pre-exec slot scan as diagnostic metadata."""
+
+    if (
+        type(value) is not dict
+        or set(value) != {"schema_version", "scope", "scan_slots", "rows"}
+        or value["schema_version"] != PREEXEC_FD_OBSERVATION_SCHEMA
+        or value["scope"] != PREEXEC_FD_OBSERVATION_SCOPE
+        or type(value["scan_slots"]) is not int
+        or value["scan_slots"] != PREEXEC_FD_SLOTS
+        or type(value["rows"]) is not list
+        or len(value["rows"]) > MAX_PREEXEC_FD_ROWS
+    ):
+        return False
+    previous = -1
+    for row in value["rows"]:
+        if (
+            type(row) is not dict
+            or set(row) != {"fd", "cloexec", "identity"}
+            or type(row["fd"]) is not int
+            or not previous < row["fd"] < PREEXEC_FD_SLOTS
+            or type(row["cloexec"]) is not bool
+            or not _native_fd_identity(row["identity"])
+            or row["identity"]["dev"] >= 2**32
+            or row["identity"]["rdev"] >= 2**32
+        ):
+            return False
+        previous = row["fd"]
+    return any(row["fd"] == 2 for row in value["rows"])
+
+
+def preexec_fd_observation_from_frame(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse one exact ASCII helper frame; retain no arbitrary stderr."""
+
+    if (
+        type(raw) is not bytes
+        or not 0 < len(raw) <= MAX_PREEXEC_FD_FRAME_BYTES
+        or not raw.startswith(PREEXEC_FD_FRAME_PREFIX)
+        or not raw.endswith(b"\n")
+        or raw.count(b"\n") != 1
+    ):
+        return None, "invalid_frame"
+    payload = raw[len(PREEXEC_FD_FRAME_PREFIX) : -1]
+    if payload.startswith(b"withheld|"):
+        try:
+            reason = payload[len(b"withheld|") :].decode("ascii")
+        except UnicodeError:
+            return None, "invalid_frame"
+        if reason in PREEXEC_FD_EMITTER_WITHHELD_REASONS:
+            return None, reason
+        return None, "invalid_frame"
+    if not payload.startswith(b"rows|"):
+        return None, "invalid_frame"
+
+    def decimal(component: bytes, upper_bound: int) -> int | None:
+        if (
+            not component
+            or not component.isdigit()
+            or (len(component) > 1 and component.startswith(b"0"))
+            or len(component) > 20
+        ):
+            return None
+        value = int(component)
+        return value if value < upper_bound else None
+
+    body = payload[len(b"rows|") :]
+    encoded_rows = body.split(b";") if body else []
+    if len(encoded_rows) > MAX_PREEXEC_FD_ROWS:
+        return None, "invalid_frame"
+    rows: list[dict[str, Any]] = []
+    for encoded in encoded_rows:
+        fields = encoded.split(b",")
+        if len(fields) != 6 or fields[5] not in {b"0", b"1"}:
+            return None, "invalid_frame"
+        fd = decimal(fields[0], PREEXEC_FD_SLOTS)
+        mode_type = decimal(fields[1], 2**32)
+        dev = decimal(fields[2], 2**32)
+        ino = decimal(fields[3], 2**64)
+        rdev = decimal(fields[4], 2**32)
+        if None in (fd, mode_type, dev, ino, rdev):
+            return None, "invalid_frame"
+        rows.append(
+            {
+                "fd": fd,
+                "cloexec": fields[5] == b"1",
+                "identity": {
+                    "dev": dev,
+                    "ino": ino,
+                    "mode_type": mode_type,
+                    "rdev": rdev,
+                },
+            }
+        )
+    observation = {
+        "schema_version": PREEXEC_FD_OBSERVATION_SCHEMA,
+        "scope": PREEXEC_FD_OBSERVATION_SCOPE,
+        "scan_slots": PREEXEC_FD_SLOTS,
+        "rows": rows,
+    }
+    if not valid_preexec_fd_observation(observation):
+        return None, "invalid_frame"
+    return observation, None
 
 
 NATIVE_STARTUP_EXIT_LABELS = {
@@ -221,10 +340,18 @@ def valid_native_startup_status(value: Any) -> bool:
         )
     has_observation = "descriptor_observation" in value
     has_withheld = "descriptor_observation_withheld" in value
+    has_preexec_observation = "preexec_descriptor_observation" in value
+    has_preexec_withheld = "preexec_descriptor_observation_withheld" in value
     base = {
         key: item
         for key, item in value.items()
-        if key not in {"descriptor_observation", "descriptor_observation_withheld"}
+        if key
+        not in {
+            "descriptor_observation",
+            "descriptor_observation_withheld",
+            "preexec_descriptor_observation",
+            "preexec_descriptor_observation_withheld",
+        }
     }
     if set(base) not in (
         {"status", "returncode"},
@@ -235,16 +362,35 @@ def valid_native_startup_status(value: Any) -> bool:
     if type(code) is not int or not -255 <= code <= 255:
         return False
     expected = native_startup_status_from_returncode(code)
-    if base != expected or (has_observation and has_withheld):
+    if (
+        base != expected
+        or (has_observation and has_withheld)
+        or (has_preexec_observation and has_preexec_withheld)
+        or (
+            (has_preexec_observation or has_preexec_withheld)
+            and not (has_observation or has_withheld)
+        )
+    ):
         return False
-    if not has_observation and not has_withheld:
+    if not any((has_observation, has_withheld, has_preexec_observation, has_preexec_withheld)):
         return True
     if code != 96:
         return False
-    if has_observation:
-        return valid_native_fd_observation(value["descriptor_observation"])
-    reason = value["descriptor_observation_withheld"]
-    return type(reason) is str and reason in NATIVE_FD_OBSERVATION_WITHHELD_REASONS
+    if has_observation and not valid_native_fd_observation(value["descriptor_observation"]):
+        return False
+    if has_withheld:
+        reason = value["descriptor_observation_withheld"]
+        if type(reason) is not str or reason not in NATIVE_FD_OBSERVATION_WITHHELD_REASONS:
+            return False
+    if has_preexec_observation and not valid_preexec_fd_observation(
+        value["preexec_descriptor_observation"]
+    ):
+        return False
+    if has_preexec_withheld:
+        reason = value["preexec_descriptor_observation_withheld"]
+        if type(reason) is not str or reason not in PREEXEC_FD_OBSERVATION_WITHHELD_REASONS:
+            return False
+    return True
 
 
 def valid_native_startup_statuses(value: Any) -> bool:

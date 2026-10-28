@@ -247,6 +247,18 @@ _SAFE_NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS = frozenset(
 _SAFE_DESCRIPTOR_OBSERVATION_WITHHELD_REASONS = frozenset(
     {"eof_incomplete", "overflow", "no_frame", "invalid_frame", "invalid_launch_rows"}
 )
+_SAFE_PREEXEC_OBSERVATION_WITHHELD_REASONS = frozenset(
+    {
+        "eof_incomplete",
+        "overflow",
+        "no_frame",
+        "invalid_frame",
+        "query_error",
+        "identity_invalid",
+        "row_cap",
+        "frame_cap",
+    }
+)
 _SAFE_NATIVE_STARTUP_EXIT_ROLES = frozenset({"reader", "owner", "control"})
 _READINESS_FAILURE_STAGES = frozenset(
     {
@@ -334,10 +346,18 @@ def _safe_native_startup_statuses(value: Any) -> dict[str, dict[str, Any]] | Non
             observation = status.get("descriptor_observation")
             has_observation = "descriptor_observation" in status
             has_withheld = "descriptor_observation_withheld" in status
+            has_preexec_observation = "preexec_descriptor_observation" in status
+            has_preexec_withheld = "preexec_descriptor_observation_withheld" in status
             base = {
                 key: item
                 for key, item in status.items()
-                if key not in {"descriptor_observation", "descriptor_observation_withheld"}
+                if key
+                not in {
+                    "descriptor_observation",
+                    "descriptor_observation_withheld",
+                    "preexec_descriptor_observation",
+                    "preexec_descriptor_observation_withheld",
+                }
             }
             if (
                 set(base)
@@ -363,9 +383,19 @@ def _safe_native_startup_statuses(value: Any) -> dict[str, dict[str, Any]] | Non
                 expected = {"status": "signal_termination", "returncode": code}
             else:
                 expected = {"status": "other_exit", "returncode": code}
-            if base != expected or (has_observation and has_withheld):
+            if (
+                base != expected
+                or (has_observation and has_withheld)
+                or (has_preexec_observation and has_preexec_withheld)
+                or (
+                    (has_preexec_observation or has_preexec_withheld)
+                    and not (has_observation or has_withheld)
+                )
+            ):
                 return None
-            if (has_observation or has_withheld) and code != 96:
+            if (
+                has_observation or has_withheld or has_preexec_observation or has_preexec_withheld
+            ) and code != 96:
                 return None
             if has_observation and not _native_diagnostics.valid_native_fd_observation(observation):
                 return None
@@ -373,6 +403,16 @@ def _safe_native_startup_statuses(value: Any) -> dict[str, dict[str, Any]] | Non
                 type(status["descriptor_observation_withheld"]) is not str
                 or status["descriptor_observation_withheld"]
                 not in _SAFE_DESCRIPTOR_OBSERVATION_WITHHELD_REASONS
+            ):
+                return None
+            if has_preexec_observation and not _native_diagnostics.valid_preexec_fd_observation(
+                status["preexec_descriptor_observation"]
+            ):
+                return None
+            if has_preexec_withheld and (
+                type(status["preexec_descriptor_observation_withheld"]) is not str
+                or status["preexec_descriptor_observation_withheld"]
+                not in _SAFE_PREEXEC_OBSERVATION_WITHHELD_REASONS
             ):
                 return None
         result[role] = dict(status)

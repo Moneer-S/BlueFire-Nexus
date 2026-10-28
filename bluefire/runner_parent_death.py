@@ -34,6 +34,10 @@ _WAIT_NO_HANG = getattr(os, "WNOHANG", 0)
 _MAX_DARWIN_PROCESSES = 131_072
 _DARWIN_NO_FORK_PROFILE = b"(version 1)\n(allow default)\n(deny process-fork)\n"
 _DARWIN_NO_FORK_EXEC_MODE = "--darwin-no-fork-exec-v1"
+_PREEXEC_FD_PREFIX = b"bluefire.macos-preexec-fd-rows.v1|slots=64|"
+_PREEXEC_FD_SLOTS = 64
+_PREEXEC_FD_MAX_ROWS = 15
+_PREEXEC_FD_MAX_FRAME_BYTES = 1024
 
 
 def _private_target(descriptor: int) -> bool:
@@ -93,6 +97,54 @@ def _close_on_exec(descriptors: tuple[int, ...]) -> None:
     for descriptor in descriptors:
         flags = operation(descriptor, get_flags)
         operation(descriptor, set_flags, flags | close_on_exec)
+
+
+def _preexec_fd_withheld(reason: str) -> bytes:
+    return _PREEXEC_FD_PREFIX + b"withheld|" + reason.encode("ascii") + b"\n"
+
+
+def _preexec_fd_unsigned(value: object, bits: int) -> int | None:
+    upper_bound = 1 << bits
+    if type(value) is not int or not -(upper_bound >> 1) <= value < upper_bound:
+        return None
+    return value % upper_bound
+
+
+def _preexec_fd_frame() -> bytes:
+    """Observe only fixed FD slots without opening a descriptor or changing flags."""
+
+    rows: list[str] = []
+    for descriptor in range(_PREEXEC_FD_SLOTS):
+        try:
+            flags = fcntl.fcntl(descriptor, fcntl.F_GETFD)
+        except OSError as exc:
+            if exc.errno == errno.EBADF:
+                continue
+            return _preexec_fd_withheld("query_error")
+        try:
+            details = os.fstat(descriptor)
+        except OSError:
+            return _preexec_fd_withheld("query_error")
+        dev = _preexec_fd_unsigned(details.st_dev, 32)
+        ino = _preexec_fd_unsigned(details.st_ino, 64)
+        rdev = _preexec_fd_unsigned(getattr(details, "st_rdev", 0), 32)
+        mode_type = stat.S_IFMT(details.st_mode)
+        if (
+            dev is None
+            or ino is None
+            or rdev is None
+            or type(mode_type) is not int
+            or mode_type & 0o170000 != mode_type
+        ):
+            return _preexec_fd_withheld("identity_invalid")
+        cloexec = int(bool(flags & fcntl.FD_CLOEXEC))
+        rows.append(f"{descriptor},{mode_type},{dev},{ino},{rdev},{cloexec}")
+        if len(rows) > _PREEXEC_FD_MAX_ROWS:
+            return _preexec_fd_withheld("row_cap")
+    frame = _PREEXEC_FD_PREFIX + b"rows|" + ";".join(rows).encode("ascii") + b"\n"
+    if len(frame) > _PREEXEC_FD_MAX_FRAME_BYTES:
+        return _preexec_fd_withheld("frame_cap")
+    return frame
 
 
 def _parse_arguments(
@@ -501,6 +553,21 @@ def _run_darwin_no_fork_exec(arguments: list[str]) -> int:
         _close_on_exec(
             tuple(sorted(set(close_descriptors) | {control_descriptor, target_descriptor}))
         )
+        if (
+            len(target_arguments) == 14
+            and target_arguments[1] == "macos-file-access-reader"
+            and target_arguments[2] == "--directory-fd"
+            and target_arguments[4] == "--channel-fd"
+            and target_arguments[6] == "--original-deadline-ns"
+            and target_arguments[8] == "--uid"
+            and target_arguments[10] == "--gid"
+            and target_arguments[12] == "--groups"
+        ):
+            try:
+                os.write(2, _preexec_fd_frame())
+            except Exception:
+                # This observation cannot change the existing exec result.
+                pass
         try:
             os.execve(target_arguments[0], target_arguments, dict(os.environ))
         except OSError:

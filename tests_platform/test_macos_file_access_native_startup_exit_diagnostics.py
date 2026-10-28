@@ -71,6 +71,7 @@ def test_settled_original_code_96_retains_only_one_finite_native_frame(monkeypat
     assert status["returncode"] == 96
     assert status["descriptor_observation"]["native_rows"] == rows
     assert status["descriptor_observation"]["scope"] == "diagnostic_only_no_descriptor_admission"
+    assert status["preexec_descriptor_observation_withheld"] == "no_frame"
     assert retained._native_diagnostic_bytes == b""
     assert verifier._safe_native_startup_statuses({"reader": status}) == {"reader": status}
 
@@ -86,6 +87,71 @@ def test_settled_original_code_96_retains_only_one_finite_native_frame(monkeypat
     status = retained.retained_native_startup_status()
     assert "descriptor_observation" not in status
     assert "descriptor_observation_withheld" not in status
+    assert "preexec_descriptor_observation" not in status
+    assert "preexec_descriptor_observation_withheld" not in status
+
+
+def test_preexec_and_native_frames_remain_separate_code_96_diagnostics(monkeypatch):
+    retained = _worker(monkeypatch, 96)
+    identity = {"dev": 1, "ino": 2, "mode_type": 0o100000, "rdev": 0}
+    rows = [
+        {"fd": fd, "kind": 2 if fd == 4 else 1, "identity": identity} for fd in (0, 1, 2, 3, 4, 9)
+    ]
+    preexec_frame = diagnostics.PREEXEC_FD_FRAME_PREFIX + (
+        b"rows|0,8192,1,2,0,0;2,4096,1,4,0,0;3,49152,4294967295,33,0,0\n"
+    )
+    native_frame = (
+        json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}) + "\n"
+    ).encode()
+    retained._native_diagnostic_thread = SimpleNamespace(join=lambda timeout: None)
+    retained._native_diagnostic_complete = True
+    retained._native_diagnostic_overflow = False
+    retained._native_diagnostic_bytes = bytearray(preexec_frame + native_frame)
+    retained._launch_copy_rows = [
+        {"role": "resource", "fd": 12, "identity": identity},
+        {"role": "primitive_channel", "fd": 13, "identity": identity},
+    ]
+    status = retained.retained_native_startup_status()
+    assert status["descriptor_observation"]["native_rows"] == rows
+    assert [row["fd"] for row in status["preexec_descriptor_observation"]["rows"]] == [0, 2, 3]
+    assert status["preexec_descriptor_observation"]["scope"] == (
+        diagnostics.PREEXEC_FD_OBSERVATION_SCOPE
+    )
+    assert retained._native_diagnostic_bytes == b""
+    assert diagnostics.valid_native_startup_status(status)
+    assert verifier._safe_native_startup_statuses({"reader": status}) == {"reader": status}
+
+    retained._native_diagnostic_bytes = bytearray(preexec_frame + native_frame)
+    retained._process.returncode = 0
+    status = retained.retained_native_startup_status()
+    assert status == {"status": "clean_exit", "returncode": 0}
+
+
+def test_invalid_preexec_frame_is_withheld_without_erasing_native_rows(monkeypatch):
+    retained = _worker(monkeypatch, 96)
+    identity = {"dev": 1, "ino": 2, "mode_type": 0o100000, "rdev": 0}
+    rows = [
+        {"fd": fd, "kind": 2 if fd == 4 else 1, "identity": identity} for fd in (0, 1, 2, 3, 4, 9)
+    ]
+    retained._native_diagnostic_thread = SimpleNamespace(join=lambda timeout: None)
+    retained._native_diagnostic_complete = True
+    retained._native_diagnostic_overflow = False
+    retained._native_diagnostic_bytes = bytearray(
+        diagnostics.PREEXEC_FD_FRAME_PREFIX
+        + b"rows|3,49152,1,2,0,0,/private/secret\n"
+        + (
+            json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}) + "\n"
+        ).encode()
+    )
+    retained._launch_copy_rows = [
+        {"role": "resource", "fd": 12, "identity": identity},
+        {"role": "primitive_channel", "fd": 13, "identity": identity},
+    ]
+    status = retained.retained_native_startup_status()
+    assert status["descriptor_observation"]["native_rows"] == rows
+    assert status["preexec_descriptor_observation_withheld"] == "invalid_frame"
+    assert "secret" not in repr(status)
+    assert verifier._safe_native_startup_statuses({"reader": status}) == {"reader": status}
 
 
 @pytest.mark.parametrize(
@@ -123,9 +189,11 @@ def test_only_settled_code_96_reports_finite_withheld_reason(
         },
     ]
     status = retained.retained_native_startup_status()
+    preexec_reason = reason if reason in {"eof_incomplete", "overflow", "no_frame"} else "no_frame"
     assert status == {
         **diagnostics.native_startup_status_from_returncode(96),
         "descriptor_observation_withheld": reason,
+        "preexec_descriptor_observation_withheld": preexec_reason,
     }
     assert diagnostics.valid_native_startup_status(status)
     assert verifier._safe_native_startup_statuses({"reader": status}) == {"reader": status}
