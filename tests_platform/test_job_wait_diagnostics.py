@@ -187,6 +187,36 @@ def test_step_progress_is_allowlisted_and_bounded(
     assert report["total_steps"] == expected_total
 
 
+@pytest.mark.parametrize(
+    "step_id",
+    [
+        "create_fixture",
+        "inspect_fixture_metadata",
+        "stage_records",
+        "transform_fixture",
+        "authorized_peer_handoff",
+        "cleanup_workspace",
+    ],
+)
+def test_known_retained_policy_fixture_steps_are_reported(step_id, monkeypatch, capsys):
+    snapshot = {
+        "state": "running",
+        "progress": {
+            "phase": "running",
+            "current_step_id": step_id,
+            "completed_steps": 2,
+            "total_steps": 6,
+        },
+    }
+    timeout, reads = actual_timeout(snapshot)
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: {})
+    report = emit(timeout, capsys)["last_wait_job"]
+    assert reads == [PRIVATE]
+    assert report["current_step_id"] == step_id
+    assert report["completed_steps"] == 2
+    assert report["total_steps"] == 6
+
+
 @pytest.mark.parametrize("report_section", [False, True])
 def test_process_thread_labels_and_error_fields_are_private_and_bounded(
     monkeypatch, capsys, report_section
