@@ -163,6 +163,111 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
     return result
 
 
+_RECEIVER_BLOCKED_METHODS = {"GET", "HEAD", "POST", "OTHER"}
+_RECEIVER_BLOCKED_PATHS = {"loopback", "non_loopback"}
+_RECEIVER_BLOCKED_REASONS = {
+    "non_loopback",
+    "read_not_allowlisted",
+    "invalid_json_body",
+    "write_not_allowlisted_or_budget_exceeded",
+    "method_not_allowlisted",
+}
+_RECEIVER_POST_ROUTE_FAMILIES = {
+    "session",
+    "provider_save",
+    "provider_activate",
+    "model_authorization_create",
+    "model_authorization_revoke",
+    "runner_bootstrap",
+    "runner_start",
+    "runner_stop",
+    "scenario_version_save",
+    "composition_objective_list",
+    "composition_context",
+    "composition_objective_create",
+    "composition_proposal_context",
+    "composition_proposal",
+    "composition_attempt",
+    "composition_revoke",
+    "comparison_create",
+    "receiver_context",
+    "receiver_owner_create",
+    "receiver_prepare",
+    "receiver_review",
+    "execution_approval",
+    "receiver_cancel",
+    "other",
+}
+_RECEIVER_POST_DENIAL_CATEGORIES = {
+    "budget_exhausted",
+    "invalid_json_body",
+    "origin_rejected",
+    "route_guard_rejected",
+    "unknown_route",
+    "other",
+}
+
+
+def _receiver_blocked_requests_for_receipt(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, object]] = []
+    for item in value[:32]:
+        if not isinstance(item, dict):
+            continue
+        if item.get("kind") == "websocket":
+            result.append({"kind": "websocket", "destination": "blocked"})
+            continue
+        row = {
+            "method": (
+                item["method"]
+                if isinstance(item.get("method"), str)
+                and item["method"] in _RECEIVER_BLOCKED_METHODS
+                else "OTHER"
+            ),
+            "path": (
+                item["path"]
+                if isinstance(item.get("path"), str) and item["path"] in _RECEIVER_BLOCKED_PATHS
+                else "non_loopback"
+            ),
+            "reason": (
+                item["reason"]
+                if isinstance(item.get("reason"), str)
+                and item["reason"] in _RECEIVER_BLOCKED_REASONS
+                else "method_not_allowlisted"
+            ),
+        }
+        if row["method"] == "POST":
+            family = item.get("route_family")
+            category = item.get("denial_category")
+            row["route_family"] = (
+                family
+                if isinstance(family, str) and family in _RECEIVER_POST_ROUTE_FAMILIES
+                else "other"
+            )
+            row["denial_category"] = (
+                category
+                if isinstance(category, str) and category in _RECEIVER_POST_DENIAL_CATEGORIES
+                else "other"
+            )
+            count = item.get("budget_count")
+            limit = item.get("budget_limit")
+            if (
+                row["denial_category"] == "budget_exhausted"
+                and type(count) is int
+                and type(limit) is int
+                and 1 <= count <= 100
+                and 1 <= limit <= 100
+                and count >= limit
+            ):
+                row["budget_count"] = count
+                row["budget_limit"] = limit
+            elif row["denial_category"] == "budget_exhausted":
+                row["denial_category"] = "other"
+        result.append(row)
+    return result
+
+
 def _receiver_report_for_receipt(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("Receiver driver report has an invalid shape")
@@ -196,6 +301,9 @@ def _receiver_report_for_receipt(value: object) -> dict[str, object]:
     projected = {
         key: value.get(key, [] if key in {"checks", "blocked_requests"} else {}) for key in keys
     }
+    projected["blocked_requests"] = _receiver_blocked_requests_for_receipt(
+        value.get("blocked_requests")
+    )
     projected["errors"] = _receiver_errors_for_receipt(value.get("errors"))
     return projected
 

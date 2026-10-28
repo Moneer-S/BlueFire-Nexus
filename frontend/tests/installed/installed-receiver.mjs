@@ -28,6 +28,7 @@ import {
   sameJson as same,
 } from "./receiver-guards.mjs";
 import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
+import { receiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
 import {
   receiverPreparationDiagnostic,
   receiverPrepareHttpDiagnostic,
@@ -82,7 +83,7 @@ const ROUTE_LIMITS = {
   review: 5,
   approval: 5,
   cancel: 1,
-  composition_list: 5,
+  composition_list: 6, // Initial open/reopen plus grant, proposal, attempt, and revoke refreshes.
   composition_context: 1,
   composition_grant: 1,
   composition_proposal_context: 3,
@@ -135,7 +136,14 @@ const EXECUTION_ERROR_CODES = new Set([
 const safePublicErrorCode = (value, allowed) => allowed.has(value) ? value : "unknown";
 assert.equal(safePublicErrorCode("receiver_result_insufficient", PHASE_ERROR_CODES), "receiver_result_insufficient");
 assert.equal(safePublicErrorCode("unrecognized-test-code", EXECUTION_ERROR_CODES), "unknown");
-const count = (key) => consumeRequestBudget(counts, ROUTE_LIMITS, key);
+let lastPostBudgetDenial;
+const count = (key) => {
+  const allowed = consumeRequestBudget(counts, ROUTE_LIMITS, key);
+  if (!allowed && Object.hasOwn(ROUTE_LIMITS, key)) {
+    lastPostBudgetDenial = { key, count: counts[key], limit: ROUTE_LIMITS[key] };
+  }
+  return allowed;
+};
 let browser, context, page;
 let connected = false;
 let stage = "launch";
@@ -470,6 +478,7 @@ function validateScenarioCopy(value) {
 }
 
 function authorizePost(url, body) {
+  lastPostBudgetDenial = undefined;
   const path = url.pathname;
   if (path === "/api/v1/session") return count("session") && body === null;
   const provider = body?.document;
@@ -1189,6 +1198,7 @@ try {
     expectedOrigin: ORIGIN,
     allowedRead,
     authorizePost,
+    describeBlockedPost: (url, reason) => receiverPostDenialDiagnostic(url.pathname, reason, lastPostBudgetDenial),
     onBlocked: (entry) => report.blocked_requests.push(entry),
     onFailure: recordCallbackFailure,
   }));

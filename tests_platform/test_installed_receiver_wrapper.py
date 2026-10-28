@@ -12,6 +12,7 @@ import pytest
 from tools.verify_installed_browser import (
     _RUNTIME_PROCESS_CLEANUP_KEYS,
     _drain_receiver_child_stderr,
+    _receiver_blocked_requests_for_receipt,
     _receiver_child_exit_diagnostic,
     _receiver_driver_passed,
     _receiver_report_for_receipt,
@@ -445,6 +446,78 @@ def test_receiver_bearer_fields_are_rejected_before_receipt_projection() -> None
         _receiver_report_for_receipt(report)
     assert "secret-bearer-value" not in str(raised.value)
     assert "credential" in str(raised.value)
+
+
+def test_receiver_receipt_projects_only_finite_blocked_post_diagnostics() -> None:
+    report = receiver_report()
+    report["blocked_requests"] = [
+        {
+            "method": "POST",
+            "path": "loopback",
+            "reason": "write_not_allowlisted_or_budget_exceeded",
+            "route_family": "composition_objective_list",
+            "denial_category": "budget_exhausted",
+            "budget_count": 5,
+            "budget_limit": 5,
+            "url": "http://127.0.0.1/private?token=secret",
+            "body": {"private": "request"},
+        },
+        {
+            "method": "POST",
+            "path": "loopback",
+            "reason": "write_not_allowlisted_or_budget_exceeded",
+            "route_family": ["private"],
+            "denial_category": "budget_exhausted",
+            "budget_count": True,
+            "budget_limit": 999,
+        },
+    ]
+    receipt = _receiver_report_for_receipt(report)
+    assert receipt["blocked_requests"] == [
+        {
+            "method": "POST",
+            "path": "loopback",
+            "reason": "write_not_allowlisted_or_budget_exceeded",
+            "route_family": "composition_objective_list",
+            "denial_category": "budget_exhausted",
+            "budget_count": 5,
+            "budget_limit": 5,
+        },
+        {
+            "method": "POST",
+            "path": "loopback",
+            "reason": "write_not_allowlisted_or_budget_exceeded",
+            "route_family": "other",
+            "denial_category": "other",
+        },
+    ]
+    assert "secret" not in json.dumps(receipt["blocked_requests"])
+    assert "private" not in json.dumps(receipt["blocked_requests"])
+
+
+def test_receiver_blocked_request_projection_bounds_count_and_legacy_websocket() -> None:
+    projected = _receiver_blocked_requests_for_receipt(
+        [
+            {"kind": "websocket", "destination": "blocked", "url": "/private"},
+            {
+                "method": "POST",
+                "path": "loopback",
+                "reason": "invalid_json_body",
+                "route_family": "session",
+                "denial_category": "invalid_json_body",
+            },
+        ]
+        * 40
+    )
+    assert len(projected) == 32
+    assert projected[0] == {"kind": "websocket", "destination": "blocked"}
+    assert projected[1] == {
+        "method": "POST",
+        "path": "loopback",
+        "reason": "invalid_json_body",
+        "route_family": "session",
+        "denial_category": "invalid_json_body",
+    }
 
 
 def test_receiver_receipt_preserves_bounded_composition_failure_categories() -> None:

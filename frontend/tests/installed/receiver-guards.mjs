@@ -200,7 +200,7 @@ export function classifyRequest({ origin, expectedOrigin, method, url, body, bod
 }
 
 // A failed classifier or Playwright route action must never turn into a permitted request.
-export async function handleReceiverRoute(route, { expectedOrigin, allowedRead, authorizePost, onBlocked, onFailure }) {
+export async function handleReceiverRoute(route, { expectedOrigin, allowedRead, authorizePost, describeBlockedPost, onBlocked, onFailure }) {
   try {
     const request = route.request();
     const url = new URL(request.url());
@@ -222,11 +222,15 @@ export async function handleReceiverRoute(route, { expectedOrigin, allowedRead, 
       authorizePost,
     });
     if (!decision.allowed) {
-      onBlocked({
+      const entry = {
         method: ["GET", "HEAD", "POST"].includes(method) ? method : "OTHER",
         path: url.origin === expectedOrigin ? "loopback" : "non_loopback",
         reason: decision.reason,
-      });
+      };
+      if (method === "POST" && typeof describeBlockedPost === "function") {
+        Object.assign(entry, describeBlockedPost(url, decision.reason));
+      }
+      onBlocked(entry);
       await route.abort();
       return;
     }
