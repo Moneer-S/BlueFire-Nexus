@@ -17,6 +17,7 @@ from bluefire.receiver_session_contract import (
     ReceiverSessionError,
     decode_frame,
     encode_frame,
+    preparation_failure_stage,
     prepare_frame,
     ready_binding,
     task_frame,
@@ -127,6 +128,153 @@ def test_frame_parser_rejects_extra_fields_duplicate_fields_and_truncation():
     terminal["body"] = "not permitted"
     with pytest.raises(ReceiverSessionError):
         validate_terminal(terminal, binding, task)
+
+
+@pytest.mark.parametrize("value", [None, 1, [], {}, "/private/path"])
+def test_preparation_stage_reader_ignores_absent_or_malformed_values(value):
+    error = ReceiverSessionError("private message")
+    if value is not None:
+        error.preparation_stage = value
+    assert preparation_failure_stage(error) is None
+    assert preparation_failure_stage(ValueError("other exception")) is None
+
+
+def test_preparation_stage_reader_accepts_only_fixed_exact_error_type():
+    error = ReceiverSessionError("private message")
+    error.preparation_stage = "ready_read"
+    assert preparation_failure_stage(error) == "ready_read"
+
+    class DerivedReceiverSessionError(ReceiverSessionError):
+        pass
+
+    derived = DerivedReceiverSessionError("private message")
+    derived.preparation_stage = "ready_read"
+    assert preparation_failure_stage(derived) is None
+
+
+def test_prepare_failure_records_fixed_generation_frame_stage(monkeypatch):
+    monkeypatch.setattr(session_module.sys, "platform", "linux")
+    monkeypatch.setattr(session_module.LinuxPrivateProcessContainment, "available", lambda: True)
+    monkeypatch.setattr(
+        session_module,
+        "prepare_frame",
+        lambda **_kwargs: (_ for _ in ()).throw(ReceiverSessionError("private frame detail")),
+    )
+    owners = []
+    with pytest.raises(ReceiverSessionError) as caught:
+        OwnedReceiverSession.prepare(REDACTED_ONLY_POLICY, _owner_sink=owners)
+    assert len(owners) == 1
+    assert caught.value.preparation_stage == "generation_frame"
+    assert caught.value.preparation_stage in session_module.PREPARATION_STAGES
+
+
+@pytest.mark.parametrize(
+    ("failure_call", "exit_code", "release_ok", "expected_stage"),
+    [
+        (1, 75, True, "armed_read"),
+        (2, None, True, "ready_read"),
+        (2, 75, True, "worker_prepare_validation"),
+        (2, 76, True, "worker_enrollment"),
+        (2, 77, True, "worker_listener_startup"),
+        (2, 78, True, "worker_ready_frame"),
+        (2, 74, True, "ready_read"),
+        (2, True, True, "ready_read"),
+        (2, 75, False, "ready_read"),
+    ],
+)
+def test_prepare_read_diagnostics_keep_armed_and_ready_boundaries(
+    monkeypatch, failure_call, exit_code, release_ok, expected_stage
+):
+    monkeypatch.setattr(session_module.sys, "platform", "linux")
+    monkeypatch.setattr(session_module.LinuxPrivateProcessContainment, "available", lambda: True)
+    monkeypatch.setattr(session_module, "worker_generation", lambda: GENERATION)
+
+    class FakeContainment:
+        @staticmethod
+        def available():
+            return True
+
+        def register(self, _process):
+            pass
+
+        def process_identity(self, _pid):
+            return ("identity", "123456")
+
+        def was_released(self, _process):
+            return False
+
+        def contains(self, actual):
+            return actual is process
+
+        def release(self, actual, *, terminate):
+            assert terminate is True
+            if release_ok:
+                actual.released = True
+            return release_ok
+
+    monkeypatch.setattr(session_module, "LinuxPrivateProcessContainment", FakeContainment)
+
+    class StartupProcess:
+        pid = 901
+
+        def __init__(self):
+            self.stdin = Stream()
+            self.stdout = Stream()
+            self.released = False
+            self.returncode_reads = 0
+            self.poll_calls = 0
+
+        @property
+        def returncode(self):
+            assert self.released, "returncode was read before verified cleanup"
+            self.returncode_reads += 1
+            return exit_code
+
+        def poll(self):
+            self.poll_calls += 1
+            raise AssertionError("poll must not reap the owned worker")
+
+    process = StartupProcess()
+    monkeypatch.setattr(session_module, "_RETAINED", {})
+
+    def spawn(_launch_id, sink):
+        sink.append(process)
+        return process
+
+    monkeypatch.setattr(session_module, "_spawn_owned_worker", spawn)
+    monkeypatch.setattr(session_module, "write_frame", lambda *_args: None)
+    calls = 0
+
+    def read(_descriptor, *, deadline_ns):
+        nonlocal calls
+        calls += 1
+        if calls == failure_call:
+            raise ReceiverSessionError("private frame detail")
+        return {
+            "kind": "armed",
+            "launch_id": launch_id[0],
+            "process_id": process.pid,
+            "parent_process_id": session_module.os.getpid(),
+        }
+
+    launch_id = []
+    original_spawn = session_module._spawn_owned_worker
+
+    def capture_spawn(identifier, sink):
+        launch_id.append(identifier)
+        return original_spawn(identifier, sink)
+
+    monkeypatch.setattr(session_module, "_spawn_owned_worker", capture_spawn)
+    monkeypatch.setattr(session_module, "read_frame", read)
+    with pytest.raises(ReceiverSessionError) as caught:
+        OwnedReceiverSession.prepare(REDACTED_ONLY_POLICY)
+    assert caught.value.preparation_stage == expected_stage
+    assert str(caught.value) == "private frame detail"
+    assert calls == failure_call
+    assert process.poll_calls == 0
+    assert process.returncode_reads == int(failure_call == 2 and release_ok)
+    assert process.stdin.closed
+    assert process.stdout.closed is release_ok
 
 
 class Stream(io.BytesIO):

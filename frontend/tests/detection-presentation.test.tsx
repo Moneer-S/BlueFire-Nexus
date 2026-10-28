@@ -69,7 +69,7 @@ it("keeps source context separate and routes rail actions through the existing r
   expect(within(rail).getByText("Parser and fixture checks are lifecycle evidence. Retained run evaluations show their own engine execution and measured result.")).toBeVisible();
   await user.click(within(rail).getByRole("button", { name: "Open run evaluations" }));
   expect(screen.getByRole("tab", { name: "Run evaluations" })).toHaveAttribute("aria-selected", "true");
-  expect(await screen.findByText("No retained run evaluations")).toBeVisible();
+  expect(await screen.findByText("No evaluation results yet")).toBeVisible();
   await user.click(within(rail).getByRole("button", { name: "Review rule revisions" }));
   expect(screen.getByRole("heading", { name: "Compare two revisions" })).toBeVisible();
   expect(action).not.toHaveBeenCalled(); expect(revise).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();

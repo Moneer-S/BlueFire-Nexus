@@ -124,11 +124,22 @@ def _read_json(path: Path) -> Mapping[str, Any]:
 
 def _packaged_ui(repository: Path) -> Path:
     ui_root = repository / "bluefire" / "ui"
-    expected = {"index.html", "app.js", "styles.css"}
+    expected = {"index.html", "app.js", "styles.css", "fonts"}
     _require(ui_root.is_dir() and not ui_root.is_symlink(), "the packaged production UI is absent")
     entries = {item.name: item for item in ui_root.iterdir()}
     _require(set(entries) == expected, "the packaged production UI inventory is not exact")
-    for path in entries.values():
+    fonts = entries["fonts"]
+    font_details = fonts.lstat()
+    _require(
+        stat.S_ISDIR(font_details.st_mode) and not _is_link_or_reparse(font_details),
+        "the packaged production UI font directory is unsafe",
+    )
+    font_entries = {item.name: item for item in fonts.iterdir()}
+    _require(
+        set(font_entries) == {"InterVariable.woff2", "OFL.txt"},
+        "the packaged production UI font inventory is not exact",
+    )
+    for path in (*[entries[name] for name in expected - {"fonts"}], *font_entries.values()):
         details = path.lstat()
         _require(
             details.st_size > 0

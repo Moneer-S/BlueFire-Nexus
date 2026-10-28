@@ -37,6 +37,9 @@
 .environment-row-history { align-items: center; padding-block: 8px 12px; }
 .environment-row-history > p { grid-row: 1; grid-column: 1; margin: 0; }
 .environment-row-history > .badge { margin: 0; }
+.environment-inventory-details { grid-column: 1 / -1; color: var(--muted); font-size: .75rem; line-height: 1.5; }
+.environment-inventory-details summary { width: fit-content; cursor: pointer; color: var(--blue-soft); }
+.environment-inventory-details span { display: block; margin-top: 5px; overflow-wrap: anywhere; }
 .environment-history-note { margin-top: 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: .72rem; }
 .environment-provider-list { display: grid; margin: 2px 0 6px; }
 .environment-provider-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px 12px; min-height: 43px; padding-block: 10px; border-bottom: 1px solid var(--line); font-size: .75rem; }

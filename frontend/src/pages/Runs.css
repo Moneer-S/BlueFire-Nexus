@@ -17,11 +17,15 @@
 .runs-page .run-intent-details > summary, .runs-page .resolved-preflight-details > summary { padding: 12px; font-size: .74rem; color: var(--muted-strong); cursor: pointer; }
 .runs-page .run-intent-details > .callout { margin: 12px; }
 .runs-page .provider-details > .field-note { margin: 0; padding: 0 13px 13px; }
+.runs-page .preview-hero { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.runs-page .preview-hero > svg { flex: none; width: 22px; height: 22px; color: var(--blue-soft); }
 .runs-page .preview-hero small { display: block; margin-top: 7px; color: var(--muted); font-size: .72rem; }
 .runs-page .run-action-bar { flex-wrap: wrap; border: 1px solid var(--line); border-radius: 10px; }
 .runs-page .run-action-bar > div { display: flex; align-items: center; gap: 10px; flex: 1 1 280px; font-size: .76rem; line-height: 1.4; }
 .runs-page .run-action-bar .button { flex-shrink: 0; }
 .runs-page .run-layout > * { min-width: 0; }
+.runs-page .primary-environment { display: grid; gap: 14px; }
+.runs-page .primary-environment > .field-note { margin-top: -8px; }
 .runs-page .primary-environment input, .runs-page .primary-environment select { min-width: 0; }
 .runs-page .provider-details .data-list dd { overflow-wrap: anywhere; }
 .page.historical-run-page { gap: 12px; }
@@ -57,7 +61,7 @@
 .run-outcome-symbol { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--blue) 55%, var(--line)); border-radius: 50%; color: var(--blue-soft); background: color-mix(in srgb, var(--blue) 10%, var(--surface)); }
 .run-outcome[data-result="achieved"] .run-outcome-symbol { color: var(--green); border-color: color-mix(in srgb, var(--green) 42%, var(--line)); background: color-mix(in srgb, var(--green) 10%, var(--surface)); }
 .run-outcome-symbol svg { width: 21px; height: 21px; }
-.run-outcome h2 { margin: 0; font-size: 1.375rem; letter-spacing: -.015em; line-height: 1.3; overflow-wrap: anywhere; }
+.run-outcome h2, .run-outcome h3 { margin: 0; font-size: 1.375rem; letter-spacing: -.015em; line-height: 1.3; overflow-wrap: anywhere; }
 .run-objective { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 7px; margin-top: 8px; }
 .run-objective strong { color: var(--muted); font-size: .6875rem; font-weight: 500; }
 .run-objective p { margin: 0; font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; }
@@ -119,7 +123,7 @@
 .run-step-content { min-width: 0; }
 .run-step-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .run-step-heading strong { min-width: 0; overflow-wrap: anywhere; }
-.run-step-heading .badge { flex: 0 0 auto; max-width: 48%; padding: 3px 7px; font-size: .625rem; white-space: normal; line-height: 1.3; text-align: right; }
+.run-step-heading .run-step-outcome { max-width: 48%; line-height: 1.3; text-align: right; }
 .run-path-list strong { font-size: .8125rem; font-weight: 600; line-height: 1.45; }
 .run-step-metadata { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 12px; font-size: .6875rem; line-height: 14px; }
 .run-path-list .run-step-metadata > small { min-width: 0; margin: 0; color: var(--muted-strong); font-size: .6875rem; overflow-wrap: anywhere; }
@@ -129,8 +133,8 @@
 .run-step-actions > details > summary { width: fit-content; max-width: 100%; padding: 3px 0; cursor: pointer; }
 .run-step-evidence-preview > summary { display: flex; align-items: center; gap: 7px; color: var(--blue-soft); list-style: none; border-radius: 3px; }
 .run-step-evidence-preview > summary::-webkit-details-marker { display: none; }
-.run-step-evidence-preview > summary::after { content: "+"; padding-inline: 3px; color: var(--muted); }
-.run-step-evidence-preview[open] > summary::after { content: "−"; }
+.run-step-evidence-preview > summary::after { content: ""; width: 5px; height: 5px; margin-left: 2px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; }
+.run-step-evidence-preview[open] > summary::after { transform: rotate(45deg); }
 .run-step-evidence-preview > summary svg { width: 13px; height: 13px; flex: 0 0 auto; }
 .run-step-evidence-preview > summary:hover { color: var(--text); }
 .run-step-evidence-count { color: var(--muted); font-size: .6875rem; }
@@ -167,8 +171,8 @@
   .run-outcome { padding: 18px; }
   .run-evidence-summary { grid-template-columns: minmax(0, 1fr); }
   .run-step-heading { flex-wrap: wrap; }
-  .run-step-heading .badge { max-width: 100%; text-align: left; }
-  .run-outcome h2 { font-size: 1.4rem; }
+  .run-step-heading .run-step-outcome { max-width: 100%; text-align: left; }
+  .run-outcome h2, .run-outcome h3 { font-size: 1.4rem; }
 }
 @container run-review (max-width: 420px) {
   .run-outcome-facts { grid-template-columns: minmax(0, 1fr); }
@@ -238,3 +242,39 @@
 .review-step-settings { min-width: 0; grid-column: 2 / -1; }
 .review-step-settings .data-list { margin: 0; }
 .review-step-settings dd { overflow-wrap: anywhere; }
+
+/* A finished run leads its live panel with the recorded conclusion. */
+.live-run-outcome { padding: 14px 15px 2px; }
+.live-run-outcome .run-outcome h3 { font-size: 1.2rem; }
+
+/* Plan review rows: number, step, then its parameters as compact inline chips. */
+.runs-page .review-steps > article { grid-template-columns: 28px minmax(0, 1fr); gap: 2px 12px; padding: 11px 0; }
+.runs-page .review-steps > article > span { grid-row: 1 / span 3; }
+.runs-page .review-steps > article > div:not(.review-step-settings) { grid-column: 2; grid-row: 1; }
+.runs-page .review-steps > article > .review-step-settings { grid-column: 2; grid-row: 2; justify-items: start; }
+.runs-page .review-steps > article > details { grid-column: 2; grid-row: 3; }
+.runs-page .review-steps p { margin: 3px 0 0; }
+.runs-page .review-step-settings dl { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; padding: 0; }
+.runs-page .review-step-settings dl > div { display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: color-mix(in srgb, var(--blue) 6%, transparent); }
+.runs-page .review-step-settings dt { margin: 0; color: var(--muted); font-size: .7rem; letter-spacing: 0; text-transform: none; }
+.runs-page .review-step-settings dd { margin: 0; color: var(--text-soft); font-size: .7rem; }
+
+/* Run history: each row states what differs between runs of one experiment. */
+.run-history-table td { vertical-align: top; }
+.run-history-table td > small { display: block; margin-top: 2px; color: var(--muted); font-size: .75rem; }
+.run-history-table td > small code { font-size: .72rem; color: var(--muted-strong); background: none; padding: 0; }
+.run-history-table td > a { color: var(--text); font-weight: 600; text-decoration: none; }
+.run-history-table td > a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.run-history-table td > .badge { margin-left: 8px; }
+.run-history-result { font-weight: 600; }
+.run-history-result.tone-achieved { color: var(--green); }
+.run-history-result.tone-danger { color: var(--red); }
+.run-history-result.tone-neutral { color: var(--muted-strong); }
+.run-history-table td > small.cleanup-attention { color: var(--amber-soft); }
+
+/* Step outcomes in the path read as text; color carries the state, not a pill per row. */
+.run-step-outcome { flex: 0 0 auto; font-size: .75rem; font-weight: 600; color: var(--blue-soft); }
+.run-step-outcome.tone-success { color: var(--green); }
+.run-step-outcome.tone-warning { color: var(--amber-soft); }
+.run-step-outcome.tone-danger { color: var(--red); }
+.run-step-outcome.tone-violet { color: var(--violet); }

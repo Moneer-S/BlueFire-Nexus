@@ -5688,6 +5688,11 @@ class BlueFireService(
             ) from exc
         return {"snapshots": snapshots}
 
+    def comparison_assistance_context(self, snapshot_id: str) -> Mapping[str, Any]:
+        from .assistance_comparison_context import context
+
+        return context(self, snapshot_id=snapshot_id)
+
     def comparison_snapshot(self, snapshot_id: str) -> Mapping[str, Any]:
         from .comparison_snapshot_store import (
             SnapshotIntegrityError,

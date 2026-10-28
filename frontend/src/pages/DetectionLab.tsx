@@ -10,6 +10,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { detectionDraftIdentity, useDetectionDraft } from "../state/useDetectionDraft";
 import { syntheticSelectionExample } from "../lib/detection-fixtures";
+import { readDetectionAIReceipt } from "../lib/detection-ai";
 import { runLabel } from "../lib/run-presentation";
 import { recordedEvidenceLabels } from "../lib/run-progress-presentation";
 import { simulationProjectionSummary } from "../lib/evidence-projection-summary";
@@ -316,7 +317,8 @@ function DetectionRegistryPage() {
   const retainedInternalPending = Boolean(manualDraft.value.internalConditions && manualInternalConditions.draft);
   const manualDefinition = manualDetectionDefinition(language, manualInternalConditions);
   const manualChanged = detectionDraftIdentity(manualDraft.value) !== detectionDraftIdentity(manualRuleDefaults);
-  const [manualOpen, setManualOpen] = useState(Boolean(manualDraft.retained || manualDraft.warning || manualChanged));
+  // Retaining inputs does not make creation the active task on the next visit.
+  const [manualOpen, setManualOpen] = useState(Boolean(manualDraft.warning));
   const [manualDiscardOpen, setManualDiscardOpen] = useState(false);
   const manualGeneration = useRef(0);
   const manualMounted = useRef(false);
@@ -515,6 +517,7 @@ function DetectionRegistryPage() {
   const manualBehaviorAvailable = catalogQuery.data.behaviors.some(behavior => behavior.id === behaviorId);
   const manualLanguageAvailable = manualRuleLanguages.some(([value]) => value === language);
   const manualCanSave = Boolean(title.trim()) && title.length <= 200 && manualBehaviorAvailable && manualLanguageAvailable && manualDefinition !== null && !retainedInternalPending;
+  const recoverableAIWork = Boolean(searchParams.get("ai_job") || readDetectionAIReceipt());
 
   const sourceContext = <Panel className="context-rail-section source-context-panel">
     <header className="context-panel-heading"><Database aria-hidden="true" /><h3>Evidence &amp; context</h3></header>
@@ -536,13 +539,13 @@ function DetectionRegistryPage() {
   return <div className="page detection-page">
     <PageHeader title="Detection Lab" description="Build rules, inspect evidence, and measure what they detect." actions={<div className="detection-create-action">
       <Link className="button button-secondary button-medium" to={detectionCreationPath(sourceRunId)}>Create from run evidence</Link>
-      <Button variant="primary" onClick={() => setManualOpen(true)} aria-expanded={manualOpen || !candidates.length} aria-controls="detection-new-rule"><Plus />New detection</Button>
+      <Button variant="primary" onClick={() => setManualOpen(true)} aria-expanded={manualOpen} aria-controls="detection-new-rule"><Plus />New detection</Button>
     </div>} />
     {handoffRequested && candidatesQuery.isError ? <ErrorState title="Detection registry unavailable" error={candidatesQuery.error} retry={() => { void candidatesQuery.refetch(); }} /> : null}
     {notice ? <Callout title="Detection update">{notice}</Callout> : null}
     <div className="detection-tools">
-      <details id="detection-new-rule" open={manualOpen || !candidates.length} onToggle={event => setManualOpen(event.currentTarget.open)}>
-        <summary>New rule</summary>
+      <details id="detection-new-rule" open={manualOpen} onToggle={event => setManualOpen(event.currentTarget.open)}>
+        <summary>New rule{manualChanged || manualDraft.retained ? <small className="new-rule-draft-cue">Draft kept{title.trim() ? ` · ${displayTitle(title.trim())}` : " · resume your inputs"}</small> : null}</summary>
         <Panel>
         <PanelHeader title="Start a rule draft" detail="Choose the behavior and query language, then edit and validate its source." />
         <div className="detail-body">
@@ -624,7 +627,7 @@ function DetectionRegistryPage() {
         onRevision={(kind, body) => selected.resourceId && revisionMutation.mutate({ id: selected.resourceId, kind, body, navigation: manualNavigationRef.current })}
         onSourceRevision={(body) => selected.resourceId && sourceRevisionMutation.mutate({ id: selected.resourceId, selection: activeSelection.current, body })}
         onCompare={(candidateId) => selected.resourceId && comparisonMutation.mutate({ baselineId: selected.resourceId, candidateId, sources: structuredClone(lineage.filter(item => item.resourceId === selected.resourceId || item.resourceId === candidateId)), navigation: manualNavigation })}
-      /> : <div className="candidate-workspace"><Panel><DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? emptyAIProviders} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel></div>}
+      /> : <div className="candidate-workspace"><Panel>{recoverableAIWork ? <DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? emptyAIProviders} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /> : null}<EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Choose a saved candidate, start a new detection, or create a rule from run evidence."} /></Panel></div>}
       <aside className="detection-context-rail" aria-label="Selected detector context">
         {sourceContext}
         {sourceRun ? <SourceRecordsPanel key={sourceRun.run_id} run={sourceRun} catalog={catalogQuery.data} /> : null}

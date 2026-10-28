@@ -13,7 +13,8 @@ from typing import Any
 from .version import __version__
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
-_UI_NAMES = ("app.js", "index.html", "styles.css")
+_LEGACY_UI_NAMES = ("app.js", "index.html", "styles.css")
+_UI_NAMES = (*_LEGACY_UI_NAMES, "fonts/InterVariable.woff2")
 _METADATA_FIELDS = {
     "schema_version",
     "version",
@@ -101,13 +102,17 @@ def _metadata(payload: bytes) -> dict[str, Any]:
     ):
         raise ValueError("invalid source identity")
     files = value["ui_files"]
-    if not isinstance(files, list) or len(files) != len(_UI_NAMES):
+    if not isinstance(files, list):
         raise ValueError("invalid asset inventory")
-    for item, name in zip(files, _UI_NAMES, strict=True):
+    names = tuple(item.get("name") if isinstance(item, dict) else None for item in files)
+    if names != _LEGACY_UI_NAMES and names != _UI_NAMES:
+        raise ValueError("invalid asset inventory")
+    for item in files:
         if (
             not isinstance(item, dict)
             or set(item) != {"name", "sha256", "size"}
-            or item["name"] != name
+            or not isinstance(item["name"], str)
+            or item["name"] not in _UI_NAMES
             or type(item["size"]) is not int
             or not 0 < item["size"] <= 8 * 1024 * 1024
             or not isinstance(item["sha256"], str)
@@ -126,7 +131,15 @@ def build_info() -> dict[str, Any]:
         ui = _PACKAGE_ROOT / "ui"
         if ui.is_symlink() or not ui.is_dir():
             raise ValueError("asset directory unavailable")
-        for name in _UI_NAMES:
+        font_dir = ui / "fonts"
+        try:
+            font_dir.lstat()
+            if font_dir.is_symlink():
+                raise ValueError("asset directory unavailable")
+            names: tuple[str, ...] = _UI_NAMES
+        except FileNotFoundError:
+            names = _LEGACY_UI_NAMES
+        for name in names:
             payload = _read_regular(ui / name, 8 * 1024 * 1024)
             files.append({"name": name, "sha256": _digest(payload), "size": len(payload)})
     except (OSError, ValueError):

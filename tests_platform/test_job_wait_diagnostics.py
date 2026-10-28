@@ -57,8 +57,9 @@ def emit(timeout, capsys, *, stage="replay_approval", report_section=True):
 
 
 @pytest.mark.parametrize("state", ["queued", "running", "failed", "completed"])
+@pytest.mark.parametrize("stage", ["replay_approval", "receiver_baseline_terminal"])
 def test_real_wait_snapshot_distinguishes_active_and_terminal_states_without_reread(
-    monkeypatch, capsys, state
+    monkeypatch, capsys, state, stage
 ):
     snapshot = {
         "state": state,
@@ -78,7 +79,8 @@ def test_real_wait_snapshot_distinguishes_active_and_terminal_states_without_rer
     }
     timeout, reads = actual_timeout(snapshot)
     monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: {})
-    report = emit(timeout, capsys)
+    report = emit(timeout, capsys, stage=stage)
+    assert report["stage"] == stage
     assert reads == [PRIVATE]
     assert report["last_wait_job"] == {
         "available": True,
@@ -173,6 +175,193 @@ def test_process_thread_labels_and_error_fields_are_private_and_bounded(
     assert len(report["process_thread_functions"]) == 8
     assert all(len(stack) == 24 for stack in report["process_thread_functions"])
     assert all(set(stack) == {longest, "unknown"} for stack in report["process_thread_functions"])
+
+
+def test_receiver_execute_site_uses_exact_code_object_and_bounded_relative_offset(
+    monkeypatch, capsys
+):
+    timeout = JobWaitTimeout(PRIVATE)
+    code = diagnostic.RECEIVER_EXECUTE_CODE
+    known_offset = 6
+    tail_frame = SimpleNamespace(
+        f_code=RunJobController.wait_for_state.__code__,
+        f_lineno=RunJobController.wait_for_state.__code__.co_firstlineno,
+        f_back=None,
+    )
+    exact_frame = SimpleNamespace(
+        f_code=code,
+        f_lineno=code.co_firstlineno + known_offset,
+        f_back=tail_frame,
+    )
+    spoof_code = SimpleNamespace(co_name=code.co_name)
+    spoof_frame = SimpleNamespace(
+        f_code=spoof_code,
+        f_lineno=code.co_firstlineno + known_offset,
+        f_back=None,
+    )
+    out_of_range_frame = SimpleNamespace(
+        f_code=code,
+        f_lineno=code.co_firstlineno + diagnostic.MAX_EXECUTE_LINE_OFFSET + 1,
+        f_back=None,
+    )
+    monkeypatch.setattr(
+        diagnostic.sys,
+        "_current_frames",
+        lambda: {1: exact_frame, 2: spoof_frame, 3: out_of_range_frame},
+    )
+
+    report = emit(timeout, capsys)
+    assert report["receiver_execute_line_offsets"] == [known_offset]
+    assert report["process_thread_functions"][0][:2] == ["_execute_job", "wait_for_state"]
+    serialized = json.dumps(report, sort_keys=True)
+    assert PRIVATE not in serialized
+    assert len(serialized.encode()) < 8192
+
+
+def test_replay_callback_entry_site_uses_exact_code_object_and_bounded_offset(
+    monkeypatch,
+):
+    code = diagnostic.REPLAY_EXECUTE_CODE
+    known_offset = 7
+    exact_frame = SimpleNamespace(
+        f_code=code,
+        f_lineno=code.co_firstlineno + known_offset,
+        f_back=None,
+    )
+    spoof_frame = SimpleNamespace(
+        f_code=SimpleNamespace(co_name=code.co_name),
+        f_lineno=code.co_firstlineno + known_offset,
+        f_back=None,
+    )
+    out_of_range_frame = SimpleNamespace(
+        f_code=code,
+        f_lineno=code.co_firstlineno + diagnostic.MAX_REPLAY_EXECUTE_LINE_OFFSET + 1,
+        f_back=None,
+    )
+    monkeypatch.setattr(
+        diagnostic.sys,
+        "_current_frames",
+        lambda: {1: exact_frame, 2: spoof_frame, 3: out_of_range_frame},
+    )
+    sections = []
+    diagnostic.report_replay_callback_entry(lambda *args: sections.append(args))
+    assert len(sections) == 1
+    when, title, payload = sections[0]
+    assert (when, title) == ("call", "Replay callback-entry diagnostic")
+    report = json.loads(payload)
+    assert report["stage"] == "replay_callback_entry"
+    assert report["replay_execute_line_offsets"] == [known_offset]
+    assert report["process_thread_functions"][0] == ["_execute_replay_job"]
+    assert "job_id" not in report
+    assert len(payload.encode()) < 8192
+
+
+def test_replay_continuation_sites_use_exact_codes_and_bounded_offsets(monkeypatch):
+    inner_code = diagnostic.REPLAY_CALLBACK_INNER_CODE
+    continuation_code = diagnostic.PROPOSAL_CONTINUATION_CODE
+    inner_offset = 17
+    continuation_offset = 31
+
+    def frame(code, offset):
+        return SimpleNamespace(
+            f_code=code,
+            f_lineno=code.co_firstlineno + offset,
+            f_back=None,
+        )
+
+    sampled = {
+        1: frame(inner_code, inner_offset),
+        2: frame(
+            SimpleNamespace(
+                co_name=inner_code.co_name,
+                co_firstlineno=inner_code.co_firstlineno,
+            ),
+            inner_offset,
+        ),
+        3: frame(inner_code, diagnostic.MAX_REPLAY_CALLBACK_INNER_LINE_OFFSET + 1),
+        4: frame(continuation_code, continuation_offset),
+        5: frame(
+            SimpleNamespace(
+                co_name=continuation_code.co_name,
+                co_firstlineno=continuation_code.co_firstlineno,
+            ),
+            continuation_offset,
+        ),
+        6: frame(
+            continuation_code,
+            diagnostic.MAX_PROPOSAL_CONTINUATION_LINE_OFFSET + 1,
+        ),
+    }
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: sampled)
+    sections = []
+    diagnostic.report_replay_callback_entry(lambda *args: sections.append(args))
+    when, title, payload = sections[0]
+    assert (when, title) == ("call", "Replay callback-entry diagnostic")
+    report = json.loads(payload)
+    assert report["replay_callback_inner_line_offsets"] == [inner_offset]
+    assert report["proposal_continuation_line_offsets"] == [continuation_offset]
+    assert report["process_thread_functions"][0] == ["_execute_job_inner"]
+    assert report["process_thread_functions"][3] == ["_run_ai_proposal_continuation_locked"]
+    serialized = json.dumps(report, sort_keys=True)
+    assert PRIVATE not in serialized
+    assert len(serialized.encode()) < 8192
+
+
+def test_replay_and_product_store_offsets_require_exact_code_and_stay_bounded(monkeypatch):
+    replay_code = diagnostic.REPLAY_LOCKED_CODE
+    connection_code = diagnostic.PRODUCT_STORE_CONNECTION_CODE
+
+    def frame(code, offset):
+        return SimpleNamespace(
+            f_code=code,
+            f_lineno=code.co_firstlineno + offset,
+            f_back=None,
+        )
+
+    sampled = {
+        1: frame(replay_code, 27),
+        2: frame(
+            SimpleNamespace(
+                co_name=replay_code.co_name,
+                co_firstlineno=replay_code.co_firstlineno,
+            ),
+            27,
+        ),
+        3: frame(replay_code, diagnostic.MAX_REPLAY_LOCKED_LINE_OFFSET + 1),
+        4: frame(connection_code, 27),
+        5: frame(
+            SimpleNamespace(
+                co_name=connection_code.co_name,
+                co_firstlineno=connection_code.co_firstlineno,
+            ),
+            27,
+        ),
+        6: frame(connection_code, diagnostic.MAX_PRODUCT_STORE_CONNECTION_LINE_OFFSET + 1),
+    }
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: sampled)
+
+    report = diagnostic._process_thread_sample()
+
+    assert report["replay_locked_line_offsets"] == [27]
+    assert report["product_store_connection_line_offsets"] == [27]
+    serialized = json.dumps(report, sort_keys=True)
+    assert PRIVATE not in serialized
+    assert len(serialized.encode()) < 8192
+
+
+def test_replay_callback_entry_diagnostic_failure_preserves_timeout_assertion(monkeypatch):
+    def unavailable():
+        raise RuntimeError(PRIVATE)
+
+    def broken_sink(*_args):
+        raise RuntimeError(PRIVATE)
+
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", unavailable)
+    entered_in_time = False
+    with pytest.raises(AssertionError):
+        if not entered_in_time:
+            diagnostic.report_replay_callback_entry(broken_sink)
+        assert entered_in_time
 
 
 @pytest.mark.parametrize(
@@ -404,7 +593,7 @@ def test_receiver_terminal_wait_preserves_deadlines_dispatch_and_private_real_sn
         return
     assert len(captured.out.encode()) < 8192
     report = json.loads(captured.out.removeprefix("Job wait diagnostic: "))
-    assert report["stage"] == "receiver_terminal"
+    assert report["stage"] == "receiver_legitimate_terminal"
     assert report["last_wait_job"]["available"] is True
     assert report["last_wait_job"]["state"] == "running"
     assert report["last_wait_job"]["phase"] == "running"

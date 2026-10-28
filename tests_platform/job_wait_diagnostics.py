@@ -6,6 +6,8 @@ from contextlib import contextmanager
 from itertools import islice
 
 from bluefire.job_runtime import JobState, JobWaitTimeout, RunJobController
+from bluefire.product_store import ProductStore
+from bluefire.service import BlueFireService
 
 STAGES = {
     "graph_parent",
@@ -13,11 +15,26 @@ STAGES = {
     "replay_approval",
     "replay_terminal",
     "receiver_terminal",
+    "receiver_baseline_terminal",
+    "receiver_protected_terminal",
+    "receiver_legitimate_terminal",
     "service_terminal",
     "assist_rejection_approval",
     "assist_cancellation_approval",
 }
 STATES = {state.value for state in JobState}
+RECEIVER_EXECUTE_CODE = BlueFireService._execute_job.__code__
+MAX_EXECUTE_LINE_OFFSET = 128
+REPLAY_EXECUTE_CODE = BlueFireService._execute_replay_job.__code__
+MAX_REPLAY_EXECUTE_LINE_OFFSET = 128
+REPLAY_CALLBACK_INNER_CODE = BlueFireService._execute_job_inner.__code__
+MAX_REPLAY_CALLBACK_INNER_LINE_OFFSET = 256
+PROPOSAL_CONTINUATION_CODE = BlueFireService._run_ai_proposal_continuation_locked.__code__
+MAX_PROPOSAL_CONTINUATION_LINE_OFFSET = 256
+REPLAY_LOCKED_CODE = BlueFireService._replay_locked.__code__
+MAX_REPLAY_LOCKED_LINE_OFFSET = 384
+PRODUCT_STORE_CONNECTION_CODE = ProductStore._connection.__wrapped__.__code__
+MAX_PRODUCT_STORE_CONNECTION_LINE_OFFSET = 40
 ERROR_CODES = {
     "execution_callback_failed",
     "job_scheduling_failed",
@@ -66,6 +83,8 @@ FUNCTIONS = {
     "_execute_job",
     "_execute_job_inner",
     "_execute_replay_job",
+    "_run_ai_proposal_continuation",
+    "_run_ai_proposal_continuation_locked",
     "_review_replay_job",
     "_replay_catalog_lease",
     "_replay_locked",
@@ -83,6 +102,81 @@ FUNCTIONS = {
 
 def _label(value, allowed):
     return value if type(value) is str and value in allowed else "unknown"
+
+
+def _process_thread_sample():
+    # These are process-thread snapshots, not proof of this job's worker ownership.
+    process_frames = sys._current_frames()
+    stacks = []
+    receiver_execute_offsets = []
+    replay_execute_offsets = []
+    replay_callback_inner_offsets = []
+    proposal_continuation_offsets = []
+    replay_locked_offsets = []
+    product_store_connection_offsets = []
+    for frame in islice(process_frames.values(), 8):
+        functions = []
+        receiver_execute_offset = None
+        replay_execute_offset = None
+        replay_callback_inner_offset = None
+        proposal_continuation_offset = None
+        replay_locked_offset = None
+        product_store_connection_offset = None
+        for _ in range(24):
+            functions.append(_label(frame.f_code.co_name, FUNCTIONS))
+            if frame.f_code is RECEIVER_EXECUTE_CODE and receiver_execute_offset is None:
+                offset = frame.f_lineno - RECEIVER_EXECUTE_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_EXECUTE_LINE_OFFSET:
+                    receiver_execute_offset = offset
+            if frame.f_code is REPLAY_EXECUTE_CODE and replay_execute_offset is None:
+                offset = frame.f_lineno - REPLAY_EXECUTE_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_REPLAY_EXECUTE_LINE_OFFSET:
+                    replay_execute_offset = offset
+            if frame.f_code is REPLAY_CALLBACK_INNER_CODE and replay_callback_inner_offset is None:
+                offset = frame.f_lineno - REPLAY_CALLBACK_INNER_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_REPLAY_CALLBACK_INNER_LINE_OFFSET:
+                    replay_callback_inner_offset = offset
+            if frame.f_code is PROPOSAL_CONTINUATION_CODE and proposal_continuation_offset is None:
+                offset = frame.f_lineno - PROPOSAL_CONTINUATION_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_PROPOSAL_CONTINUATION_LINE_OFFSET:
+                    proposal_continuation_offset = offset
+            if frame.f_code is REPLAY_LOCKED_CODE and replay_locked_offset is None:
+                offset = frame.f_lineno - REPLAY_LOCKED_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_REPLAY_LOCKED_LINE_OFFSET:
+                    replay_locked_offset = offset
+            if (
+                frame.f_code is PRODUCT_STORE_CONNECTION_CODE
+                and product_store_connection_offset is None
+            ):
+                offset = frame.f_lineno - PRODUCT_STORE_CONNECTION_CODE.co_firstlineno
+                if type(offset) is int and 0 <= offset <= MAX_PRODUCT_STORE_CONNECTION_LINE_OFFSET:
+                    product_store_connection_offset = offset
+            frame = frame.f_back
+            if frame is None:
+                break
+        stacks.append(functions)
+        if receiver_execute_offset is not None:
+            receiver_execute_offsets.append(receiver_execute_offset)
+        if replay_execute_offset is not None:
+            replay_execute_offsets.append(replay_execute_offset)
+        if replay_callback_inner_offset is not None:
+            replay_callback_inner_offsets.append(replay_callback_inner_offset)
+        if proposal_continuation_offset is not None:
+            proposal_continuation_offsets.append(proposal_continuation_offset)
+        if replay_locked_offset is not None:
+            replay_locked_offsets.append(replay_locked_offset)
+        if product_store_connection_offset is not None:
+            product_store_connection_offsets.append(product_store_connection_offset)
+    return {
+        "process_thread_functions": stacks,
+        "process_threads_truncated": len(process_frames) > 8,
+        "receiver_execute_line_offsets": receiver_execute_offsets,
+        "replay_execute_line_offsets": replay_execute_offsets,
+        "replay_callback_inner_line_offsets": replay_callback_inner_offsets,
+        "proposal_continuation_line_offsets": proposal_continuation_offsets,
+        "replay_locked_line_offsets": replay_locked_offsets,
+        "product_store_connection_line_offsets": product_store_connection_offsets,
+    }
 
 
 def _report(timeout, stage):
@@ -114,20 +208,22 @@ def _report(timeout, stage):
                 }
             break
         trace = trace.tb_next
-    # These are process-thread snapshots, not proof of this job's worker ownership.
-    process_frames = sys._current_frames()
-    stacks = []
-    for frame in islice(process_frames.values(), 8):
-        functions = []
-        for _ in range(24):
-            functions.append(_label(frame.f_code.co_name, FUNCTIONS))
-            frame = frame.f_back
-            if frame is None:
-                break
-        stacks.append(functions)
-    evidence["process_thread_functions"] = stacks
-    evidence["process_threads_truncated"] = len(process_frames) > 8
+    evidence.update(_process_thread_sample())
     return json.dumps(evidence, sort_keys=True)
+
+
+def report_replay_callback_entry(add_report_section=None):
+    """Emit bounded process-thread evidence after the replay callback-entry wait fails."""
+    try:
+        evidence = {"stage": "replay_callback_entry", **_process_thread_sample()}
+        payload = json.dumps(evidence, sort_keys=True)
+        if add_report_section is None:
+            print("Replay callback-entry diagnostic: " + payload, flush=True)
+        else:
+            add_report_section("call", "Replay callback-entry diagnostic", payload)
+    except BaseException:
+        # A diagnostic failure must not replace the rendezvous assertion.
+        pass
 
 
 @contextmanager

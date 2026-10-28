@@ -11,7 +11,12 @@ import pytest
 
 from bluefire import receiver_session_channel as channel
 from bluefire import receiver_session_worker as worker
-from bluefire.receiver_session_contract import ReceiverSessionError, task_frame
+from bluefire.receiver_session_contract import (
+    WORKER_STARTUP_EXIT_CODES,
+    ReceiverSessionError,
+    task_frame,
+    worker_startup_failure_stage,
+)
 from tests_platform.test_receiver_session import GENERATION, TASK_ID, documents
 
 
@@ -26,6 +31,8 @@ def worker_double(monkeypatch, tmp_path, *, failure=None, parent_input=b""):
 
         def __init__(self, config):
             events.append("listen")
+            if failure == "listener_startup":
+                raise RuntimeError("private listener failure")
             assert config.authentication_key == b"k" * 32
             assert config.host == "127.0.0.1" and config.content_policy
 
@@ -92,11 +99,15 @@ def worker_double(monkeypatch, tmp_path, *, failure=None, parent_input=b""):
 
     def write(_descriptor, frame):
         events.append(frame["kind"])
+        if failure == "ready_frame" and frame["kind"] == "ready":
+            raise RuntimeError("private readiness frame failure")
         frames.append(frame)
 
     def enrollment(path, *, require_active):
         events.append("enrollment")
         assert path == tmp_path / "enrollment" and require_active
+        if failure == "enrollment":
+            raise RuntimeError("private enrollment failure")
         return SimpleNamespace(hmac_key=lambda: b"k" * 32)
 
     monkeypatch.setattr(worker, "sys", SimpleNamespace(platform="linux"))
@@ -150,23 +161,52 @@ def test_worker_arms_before_authority_and_stops_on_eof_or_extra_input(
     assert b"k" * 32 not in repr(frames).encode()
 
 
-@pytest.mark.parametrize("failure", ["arm", "prepare_eof", "prepare_expired", "bind_eof"])
+@pytest.mark.parametrize(
+    ("failure", "expected_exit"),
+    [
+        ("arm", 74),
+        ("prepare_eof", WORKER_STARTUP_EXIT_CODES["prepare_validation"]),
+        ("prepare_expired", WORKER_STARTUP_EXIT_CODES["prepare_validation"]),
+        ("enrollment", WORKER_STARTUP_EXIT_CODES["enrollment"]),
+        ("listener_startup", WORKER_STARTUP_EXIT_CODES["listener_startup"]),
+        ("ready_frame", WORKER_STARTUP_EXIT_CODES["ready_frame"]),
+        ("bind_eof", 74),
+    ],
+)
 def test_worker_refuses_missing_authority_and_closes_any_prepared_listener(
-    monkeypatch, tmp_path, failure
+    monkeypatch, tmp_path, failure, expected_exit
 ):
     prepared, events, frames = worker_double(monkeypatch, tmp_path, failure=failure)
     arguments = ["--parent", "900", "--launch", prepared["launch_id"]]
-    if failure == "arm":
-        assert worker.run(arguments) == 74
-    else:
-        with pytest.raises(ReceiverSessionError):
-            worker.run(arguments)
-    if failure == "bind_eof":
+    assert worker.run(arguments) == expected_exit
+    if failure in {"bind_eof", "ready_frame"}:
         assert events[-1] == "close"
-        assert "bind" not in events and "serve" not in events
+        if failure == "bind_eof":
+            assert "bind" not in events and "serve" not in events
+    elif failure == "enrollment":
+        assert events[-1] == "enrollment" and "listen" not in events
+    elif failure == "listener_startup":
+        assert "enrollment" in events and "listen" in events and "close" not in events
     else:
         assert "enrollment" not in events and "listen" not in events
     assert all(frame["kind"] != "terminal" for frame in frames)
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "expected"),
+    [
+        (75, "worker_prepare_validation"),
+        (76, "worker_enrollment"),
+        (77, "worker_listener_startup"),
+        (78, "worker_ready_frame"),
+        (74, None),
+        (0, None),
+        (True, None),
+        ("75", None),
+    ],
+)
+def test_worker_startup_exit_projection_is_exact_and_allowlisted(exit_code, expected):
+    assert worker_startup_failure_stage(exit_code) == expected
 
 
 def test_channel_consumes_one_frame_and_refuses_truncated_terminal(monkeypatch):

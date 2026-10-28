@@ -22,11 +22,104 @@ function expectClear(options: RouteGeometry) {
 }
 
 describe("topology layout", () => {
-  it("keeps a long chain in one left-to-right flow instead of wrapping every third card", () => {
+  const overlapFree = (cards: RouteObstacle[]) => cards.every((card, index) => cards.slice(index + 1).every(other =>
+    card.x + card.width <= other.x || other.x + other.width <= card.x || card.y + card.height <= other.y || other.y + other.height <= card.y));
+  // Builder ports (Builder.tsx displayNodes): a success route leaves the bottom
+  // (20px from the left) when the next step is below and not to the right, and
+  // enters the top when a success predecessor is directly above.
+  const ports = (graph: ScenarioGraph, positions: Record<string, { x: number; y: number }>, edge: ScenarioGraph["edges"][number]) => {
+    const source = positions[edge.from_step]!, target = positions[edge.to_step]!;
+    const successTo = graph.edges.find(item => item.from_step === edge.from_step && item.outcome === "success");
+    const after = successTo && positions[successTo.to_step];
+    const bottom = edge.outcome === "success" && after && after.x < source.x + 1 && after.y > source.y + GRAPH_NODE_HEIGHT;
+    const top = graph.edges.some(item => item.to_step === edge.to_step && item.outcome === "success" && positions[item.from_step]!.x === target.x && positions[item.from_step]!.y < target.y);
+    return {
+      source: bottom ? { x: source.x + 20, y: source.y + GRAPH_NODE_HEIGHT } : { x: source.x + GRAPH_NODE_WIDTH, y: source.y + GRAPH_NODE_HEIGHT / 2 },
+      target: top ? { x: target.x + 20, y: target.y } : { x: target.x, y: target.y + GRAPH_NODE_HEIGHT / 2 },
+      sourceSide: bottom ? "bottom" as const : "right" as const, targetSide: top ? "top" as const : "left" as const,
+    };
+  };
+  // A route from a bottom port down to a top port never turns back upward (no U-shaped kink).
+  const flowsDown = (geometry: ReturnType<typeof ports>, points: { x: number; y: number }[]) =>
+    geometry.sourceSide !== "bottom" || geometry.targetSide !== "top" || geometry.target.y <= geometry.source.y
+    || points.slice(1).every((point, index) => point.y >= points[index]!.y);
+  const routeFlows = (graph: ScenarioGraph, positions: Record<string, { x: number; y: number }>, edge: ScenarioGraph["edges"][number], cards: RouteObstacle[]) => {
+    const geometry = ports(graph, positions, edge);
+    // Several routes entering one step use offset lanes; each must still flow down.
+    return [0, 1, 2].every(lane => flowsDown(geometry, expectClear({ ...geometry, lane, sourceId: edge.from_step, targetId: edge.to_step, obstacles: cards }).points));
+  };
+
+  it("reads a long chain top to bottom in balanced columns, left to right, at a readable desktop scale", () => {
     const graph = chain(15), serialized = JSON.stringify(graph), positions = initialGraphLayout(graph);
-    expect(new Set(Object.values(positions).map(point => point.y)).size).toBe(1);
-    for (let index = 1; index < 15; index += 1) expect(positions[`step-${index}`]!.x).toBeGreaterThan(positions[`step-${index - 1}`]!.x + GRAPH_NODE_WIDTH);
+    const columns = [...new Set(Object.values(positions).map(point => point.x))].sort((a, b) => a - b);
+    expect(columns).toHaveLength(5);
+    for (let index = 1; index < 15; index += 1) {
+      const previous = positions[`step-${index - 1}`]!, next = positions[`step-${index}`]!;
+      // Each step is either directly below its predecessor or starts the next column.
+      if (next.x === previous.x) expect(next.y).toBeGreaterThan(previous.y + GRAPH_NODE_HEIGHT);
+      else { expect(next.x).toBeGreaterThan(previous.x + GRAPH_NODE_WIDTH); expect(next.y).toBe(32); }
+    }
+    const counts = columns.map(x => Object.values(positions).filter(point => point.x === x).length);
+    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
+    const cards = bounds(graph);
+    expect(overlapFree(cards)).toBe(true);
+    // Every column fits the measured 1366x768 Build canvas height at a readable scale.
+    for (const x of columns) expect(graphBoundsViewport(cards.filter(card => card.x === x), { width: 1116, height: 435 }, 24)!.zoom).toBeGreaterThanOrEqual(0.8);
     expect(JSON.stringify(graph)).toBe(serialized);
+  });
+
+  it("keeps a short plan in one row and places a fallback beside the straight success path", () => {
+    expect(new Set(Object.values(initialGraphLayout(chain(4))).map(point => point.y)).size).toBe(1);
+    const graph = chain(9);
+    graph.edges = graph.edges.filter(edge => !(edge.from_step === "step-7" && edge.to_step === "step-8"));
+    graph.edges.push({ from_step: "step-6", to_step: "step-7", outcome: "blocked" }, { from_step: "step-6", to_step: "step-7", outcome: "failed" });
+    graph.edges = graph.edges.filter(edge => !(edge.from_step === "step-6" && edge.to_step === "step-7" && edge.outcome === "success"));
+    graph.edges.push({ from_step: "step-6", to_step: "step-8", outcome: "success" }, { from_step: "step-7", to_step: "step-8", outcome: "success" });
+    const serialized = JSON.stringify(graph), positions = initialGraphLayout(graph);
+    const main = positions["step-6"]!, fallback = positions["step-7"]!, join = positions["step-8"]!;
+    // The fallback takes a side lane so the success route 6 -> 8 stays straight.
+    expect(join.x).toBe(main.x);
+    expect(join.y).toBeGreaterThan(main.y + GRAPH_NODE_HEIGHT);
+    expect(fallback.x).toBeGreaterThanOrEqual(main.x + GRAPH_NODE_WIDTH);
+    expect(fallback.y).toBeGreaterThan(main.y);
+    expect(fallback.y).toBeLessThan(join.y);
+    const cards = bounds(graph);
+    expect(overlapFree(cards)).toBe(true);
+    expect(graphBoundsViewport(cards, { width: 1116, height: 435 }, 24)!.zoom).toBeGreaterThanOrEqual(0.8);
+    for (const edge of graph.edges) expect(routeFlows(graph, positions, edge, cards), `${edge.from_step} -> ${edge.to_step}`).toBe(true);
+    expect(JSON.stringify(graph)).toBe(serialized);
+  });
+
+  it("keeps a decision, its fallback and the rejoin in one column instead of splitting them at a balanced break", () => {
+    const graph = chain(5);
+    graph.steps.push(step("fallback"), step("cleanup"));
+    graph.edges.push({ from_step: "step-4", to_step: "fallback", outcome: "blocked" }, { from_step: "step-4", to_step: "fallback", outcome: "failed" },
+      { from_step: "step-4", to_step: "cleanup", outcome: "success" }, { from_step: "fallback", to_step: "cleanup", outcome: "success" });
+    const positions = initialGraphLayout(graph);
+    const decision = positions["step-4"]!, fallback = positions.fallback!, rejoin = positions.cleanup!;
+    expect(rejoin.x).toBe(decision.x);
+    expect(fallback.x).toBeGreaterThan(decision.x);
+    expect(fallback.x).toBeLessThan(decision.x + 2 * GRAPH_NODE_WIDTH + 112);
+    expect(decision.y).toBeLessThan(fallback.y);
+    expect(fallback.y).toBeLessThan(rejoin.y);
+    const cards = bounds(graph);
+    expect(overlapFree(cards)).toBe(true);
+    for (const edge of graph.edges) expect(routeFlows(graph, positions, edge, cards), `${edge.from_step} -> ${edge.to_step}`).toBe(true);
+  });
+
+  it("keeps success-loop drafts and unconnected steps from overlapping or widening the plan", () => {
+    const loop = chain(7);
+    loop.edges.push({ from_step: "step-6", to_step: "step-1", outcome: "success" });
+    const looped = bounds(loop);
+    expect(overlapFree(looped)).toBe(true);
+    const drafted = chain(6);
+    drafted.steps.push(step("new-a"), step("new-b"), step("new-c"));
+    const positions = initialGraphLayout(drafted);
+    const planRight = Math.max(...drafted.steps.slice(0, 6).map(item => positions[item.id]!.x));
+    // Newly added, unconnected steps follow the plan instead of crowding its first column.
+    for (const id of ["new-a", "new-b", "new-c"]) expect(positions[id]!.x).toBeGreaterThan(planRight + GRAPH_NODE_WIDTH);
+    expect(positions["step-1"]!.x).toBe(positions["step-0"]!.x);
+    expect(overlapFree(bounds(drafted))).toBe(true);
   });
 
   it("places alternatives below the continuation and joins after every predecessor", () => {

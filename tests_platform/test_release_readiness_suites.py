@@ -14,6 +14,34 @@ import bluefire.release_readiness_suites as suites_module
 from bluefire.product_acceptance_artifacts import inspect_regular_file
 
 
+def test_ui_digest_binds_font_license_and_rejects_incomplete_inventory(tmp_path: Path) -> None:
+    ui = tmp_path / "ui"
+    ui.mkdir()
+    for name in ("index.html", "app.js", "styles.css"):
+        (ui / name).write_bytes(name.encode())
+    fonts = ui / "fonts"
+    fonts.mkdir()
+    font = fonts / "InterVariable.woff2"
+    font.write_bytes(b"font")
+    (fonts / "OFL.txt").write_bytes(b"license")
+
+    digest = suites_module._ui_digest(ui)
+    assert set(digest) == {
+        "index.html",
+        "app.js",
+        "styles.css",
+        "fonts/InterVariable.woff2",
+        "fonts/OFL.txt",
+    }
+    font.write_bytes(b"changed font")
+    assert (
+        suites_module._ui_digest(ui)["fonts/InterVariable.woff2"]
+        != digest["fonts/InterVariable.woff2"]
+    )
+    font.unlink()
+    assert suites_module._ui_digest(ui) == {}
+
+
 def _cyclonedx(components: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     entries = (
         [

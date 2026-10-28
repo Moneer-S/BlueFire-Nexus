@@ -129,7 +129,14 @@ def _write_asset(
         "Version: 99.0\n"
     ).encode()
     ui_payloads = {
-        name: f"test asset: {name}\n".encode() for name in ("app.js", "index.html", "styles.css")
+        name: f"test asset: {name}\n".encode()
+        for name in (
+            "app.js",
+            "index.html",
+            "styles.css",
+            "fonts/InterVariable.woff2",
+            "fonts/OFL.txt",
+        )
     }
     ui_files = [
         {
@@ -137,7 +144,7 @@ def _write_asset(
             "sha256": "sha256:" + hashlib.sha256(ui_payloads[name]).hexdigest(),
             "size": len(ui_payloads[name]),
         }
-        for name in ui_payloads
+        for name in ("app.js", "index.html", "styles.css", "fonts/InterVariable.woff2")
     ]
     build_info = {
         "schema_version": "bluefire.build-metadata.v1",
@@ -215,6 +222,14 @@ def _asset_dir(tmp_path):
 def test_build_identity_respects_installed_runtime_size_limit(tmp_path):
     _write_asset(tmp_path, TAGS[0], build_info_padding=16384)
     with pytest.raises(ValueError, match="metadata exceeds its size limit"):
+        build_release_asset_outputs(
+            tmp_path, version=VERSION, source_revision=SOURCE_REVISION, expected_tags=(TAGS[0],)
+        )
+
+
+def test_release_wheel_requires_the_bundled_font_license(tmp_path):
+    _write_asset(tmp_path, TAGS[0], ui_member_change=lambda assets: assets.pop("fonts/OFL.txt"))
+    with pytest.raises(ValueError, match="required UI font license"):
         build_release_asset_outputs(
             tmp_path, version=VERSION, source_revision=SOURCE_REVISION, expected_tags=(TAGS[0],)
         )

@@ -21,6 +21,10 @@ import {
   sameJson as same,
 } from "./receiver-guards.mjs";
 import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
+import {
+  receiverPreparationDiagnostic,
+  receiverPrepareHttpDiagnostic,
+} from "./receiver-diagnostics.mjs";
 
 const [modulePath, output, port] = process.argv.slice(2);
 assert.match(port ?? "", /^\d{1,5}$/);
@@ -82,6 +86,16 @@ const exactKeys = (value, names) => value && typeof value === "object" && !Array
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...names].sort());
 const boundedString = (value, max = 128) => typeof value === "string" && value.trim().length > 0 && value.length <= max;
 const safeStatus = (value, allowed) => allowed.includes(value) ? value : value == null ? "missing" : "other";
+const PHASE_ERROR_CODES = new Set([
+  "receiver_publication_uncertain", "receiver_result_insufficient", "receiver_session_unavailable",
+]);
+const EXECUTION_ERROR_CODES = new Set([
+  "run_record_incomplete", "replay_record_incomplete", "run_cleanup_deferred", "replay_cleanup_deferred",
+  "execution_callback_failed",
+]);
+const safePublicErrorCode = (value, allowed) => allowed.has(value) ? value : "unknown";
+assert.equal(safePublicErrorCode("receiver_result_insufficient", PHASE_ERROR_CODES), "receiver_result_insufficient");
+assert.equal(safePublicErrorCode("unrecognized-test-code", EXECUTION_ERROR_CODES), "unknown");
 const count = (key) => consumeRequestBudget(counts, ROUTE_LIMITS, key);
 let browser, context, page;
 let connected = false;
@@ -106,6 +120,9 @@ let latestPreparationDigest;
 let originalControlDigest;
 let originalEnvelope;
 let linkedEnvelope;
+let phaseBindingDiagnostic;
+let prepareHttpDiagnostic;
+let pendingPreparationFailure;
 let activeOwnerRole = "original";
 const phaseOrders = { original: ["baseline", "protected", "legitimate"], linked: ["protected", "legitimate"] };
 const phaseIndexes = { original: 0, linked: 0 };
@@ -118,6 +135,78 @@ function remainingMs() {
   const remaining = deadlineBudget.remaining(Date.now());
   if (remaining <= 0) throw new Error("Installed receiver deadline exceeded");
   return remaining;
+}
+
+function recordPhaseBindingDiagnostic(assertionId, phaseName, phase) {
+  const result = phase?.result;
+  const executionJob = phase?.execution_job;
+  const runId = result?.run_id;
+  const resultRef = executionJob?.result_ref;
+  phaseBindingDiagnostic = {
+    assertion_id: assertionId,
+    expected: {
+      phase: phaseName,
+      phase_status: "completed",
+      result_present: true,
+      execution_job_present: true,
+      execution_job_kind: phaseName === "baseline" ? "scenario.run" : "scenario.replay",
+      execution_job_state: "completed",
+      decision: phaseName === "protected" ? "policy_refused" : "accepted",
+      result_phase: phaseName,
+      preparation_digest_present: true,
+      cleanup_receiver: "verified_closed",
+      cleanup_run: "complete",
+      result_ref_present: true,
+      run_id_present: true,
+      run_id_matches_result_ref: true,
+      run_id_valid: true,
+    },
+    observed: {
+      phase_present: phase !== null && phase !== undefined,
+      phase_name: safeStatus(phase?.phase, ["baseline", "protected", "legitimate"]),
+      phase_status: safeStatus(phase?.status,
+        ["not_started", "preparing", "review_ready", "awaiting_approval", "running", "stopping", "completed", "failed", "declined", "stopped", "interrupted"]),
+      result_present: result !== null && result !== undefined,
+      execution_job_present: executionJob !== null && executionJob !== undefined,
+      execution_job_kind: safeStatus(executionJob?.kind, ["scenario.run", "scenario.replay"]),
+      execution_job_state: safeStatus(executionJob?.state,
+        ["queued", "planning", "awaiting_approval", "running", "paused", "cancelling", "cancelled", "completed", "failed", "interrupted"]),
+      decision: safeStatus(result?.decision, ["accepted", "policy_refused", "rejected"]),
+      result_phase: safeStatus(result?.phase, ["baseline", "protected", "legitimate"]),
+      preparation_digest_present: typeof phase?.preparation?.preparation_digest === "string"
+        && phase.preparation.preparation_digest.length > 0,
+      cleanup_present: phase?.cleanup !== null && phase?.cleanup !== undefined,
+      cleanup_receiver: safeStatus(phase?.cleanup?.receiver,
+        ["not_started", "active", "uncertain", "verified_closed"]),
+      cleanup_run: safeStatus(phase?.cleanup?.run, ["not_started", "pending", "complete"]),
+      result_ref_present: typeof resultRef === "string" && resultRef.length > 0,
+      run_id_present: typeof runId === "string" && runId.length > 0,
+      run_id_valid: typeof runId === "string" && RUN_ID.test(runId),
+      run_id_matches_result_ref: typeof runId === "string" && typeof resultRef === "string" && runId === resultRef,
+    },
+    phase_error_code: safePublicErrorCode(phase?.problem?.code, PHASE_ERROR_CODES),
+    execution_error_code: safePublicErrorCode(executionJob?.error?.code, EXECUTION_ERROR_CODES),
+  };
+}
+
+async function waitCompletedPhase(phaseName) {
+  const pendingExecutionStates = ["queued", "planning", "awaiting_approval", "running", "paused", "cancelling"];
+  const terminalFailureStates = ["failed", "cancelled", "interrupted"];
+  phaseBindingDiagnostic = undefined;
+  await waitOwner((owner) => {
+    const phase = owner.phases?.find((item) => item?.phase === phaseName);
+    const completed = receiverCompletedPhase(owner, phaseName);
+    recordPhaseBindingDiagnostic("completed_phase_wait", phaseName, phase);
+    if (completed) return true;
+    if (["failed", "declined", "stopped", "interrupted"].includes(phase?.status)) return true;
+    if (terminalFailureStates.includes(phase?.execution_job?.state)) return true;
+    return phase?.status === "completed" && !pendingExecutionStates.includes(phase.execution_job?.state);
+  });
+  const phase = latestOwner.phases?.find((item) => item?.phase === phaseName);
+  const completed = receiverCompletedPhase(latestOwner, phaseName);
+  recordPhaseBindingDiagnostic(completed ? "completed_phase_binding" : "completed_phase_binding_failed", phaseName, phase);
+  assert.ok(completed, `${phaseName} must retain a completed execution, preparation, result, and cleanup`);
+  return completed;
 }
 
 function boundedTimeout(requested) {
@@ -214,7 +303,13 @@ function wrapPage(target) {
 
 function allowedRead(url) {
   const path = url.pathname;
-  if (["/", "/index.html", "/ui/app.js", "/ui/styles.css"].includes(path)) return !url.search;
+  if ([
+    "/",
+    "/index.html",
+    "/ui/app.js",
+    "/ui/styles.css",
+    "/ui/fonts/InterVariable.woff2",
+  ].includes(path)) return !url.search;
   if ([
     "/api/v1/session",
     "/api/v1/catalog",
@@ -363,6 +458,15 @@ const ACTIVE_WORK_KEY = "bluefire.local.active-defensive-work.v1";
 const HOME_PHASE_LABELS = { baseline: "Baseline", protected: "Redaction required", legitimate: "Legitimate redacted use" };
 const HOME_DECISION_LABELS = { accepted: "Accepted by the receiver", policy_refused: "Prevented by the receiver" };
 
+function homeObjectiveLabel(reached, mode) {
+  return reached === true ? (mode === "simulate" ? "Achieved (synthetic)" : "Achieved")
+    : reached === false ? "Not achieved" : "Not established";
+}
+
+function homeRunStatusLabel(status) {
+  return status.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
 // Retain only bounded result fields, never the preparation/session-bearing owner document.
 function homeRecordProjection(value, ownerId) {
   assert.equal(value.job?.job_id, ownerId);
@@ -375,10 +479,51 @@ function homeRecordProjection(value, ownerId) {
     assert.equal(item.result?.receiver_observation.schema_version, "bluefire.owned-receiver-observation.v1");
     assert.equal(item.result?.receiver_observation.state, "verified");
     assert.ok(Object.hasOwn(HOME_DECISION_LABELS, item.result?.decision));
-    return { phase: item.phase, decision: item.result.decision };
+    assert.equal(item.result.run?.run_id, item.result.run_id);
+    assert.equal(typeof item.result.run?.status, "string");
+    return { phase: item.phase, decision: item.result.decision, run_id: item.result.run_id,
+      objective_reached: item.result.run.objective_reached, mode: item.result.run.mode, run_status: item.result.run.status };
   });
   return { owner_job_id: ownerId, status: value.status, desired_policy_id: value.control.desired_policy_id,
     control_status: value.control.status, phases };
+}
+
+async function assertRecentOutcomeContexts(projection) {
+  const recentRows = page.locator(".recent-work-table tbody tr");
+  await recentRows.first().waitFor({ state: "visible" });
+  const rows = await recentRows.evaluateAll(elements => elements.map(element => {
+    const runHref = element.querySelector(".recent-work-name a")?.getAttribute("href");
+    const runPath = runHref?.startsWith("#") ? runHref.slice(1) : runHref;
+    return {
+      runId: runPath?.startsWith("/runs/") ? decodeURIComponent(runPath.slice("/runs/".length)) : undefined,
+      phase: element.querySelector(".recent-work-phase")?.textContent?.trim() ?? null,
+      decision: element.querySelector(".recent-work-decision")?.textContent?.trim() ?? null,
+      objective: element.querySelector(".recent-work-outcome > strong")?.textContent?.trim(),
+      status: element.querySelector(".recent-work-outcome > small")?.textContent?.trim(),
+    };
+  }));
+  assert.ok(rows.length > 0, "Home must retain its existing recent run rows");
+  const expected = new Map(projection.phases.map(item => [item.run_id, item]));
+  let matchedOwnerRows = 0;
+  for (const row of rows) {
+    assert.ok(row.runId, "Every recent outcome row must keep its saved run identity");
+    const phase = expected.get(row.runId);
+    if (!phase) {
+      assert.equal(row.phase, null, "An unrelated run must not inherit this receiver workflow's phase");
+      assert.equal(row.decision, null, "An unrelated run must not inherit this receiver's decision");
+      assert.ok(row.objective, "An unrelated run must keep its objective outcome");
+      assert.ok(row.status?.startsWith("Run status: "), "An unrelated run must keep its separate run status");
+      continue;
+    }
+    matchedOwnerRows += 1;
+    assert.equal(row.phase, HOME_PHASE_LABELS[phase.phase]);
+    assert.equal(row.decision, HOME_DECISION_LABELS[phase.decision]);
+    assert.equal(row.objective, homeObjectiveLabel(phase.objective_reached, phase.mode),
+      "Receiver context must not replace the saved objective outcome");
+    assert.equal(row.status, `Run status: ${homeRunStatusLabel(phase.run_status)}`,
+      "Receiver context must leave the saved run status unchanged");
+  }
+  assert.ok(matchedOwnerRows > 0, "At least one recent row must belong to the selected verified receiver workflow");
 }
 
 async function waitRememberedWork(ownerId) {
@@ -410,13 +555,24 @@ async function assertHomeRecord(projection, recordTitle) {
   const rows = await card.locator(".active-objective-evidence > dl > div").evaluateAll(elements => elements.map(element => ({
     label: element.querySelector("dt")?.textContent, value: element.querySelector("dd")?.textContent,
   })));
-  assert.deepEqual(rows.slice(0, 3), projection.phases.map(item => ({ label: HOME_PHASE_LABELS[item.phase], value: HOME_DECISION_LABELS[item.decision] })));
-  assert.equal(rows.length, 4);
-  assert.equal(rows[3].label, "Evidence source");
-  assert.ok(rows[3].value.startsWith("Owned loopback receiver decision"));
+  assert.deepEqual(rows, projection.phases.map(item => ({ label: HOME_PHASE_LABELS[item.phase], value: HOME_DECISION_LABELS[item.decision] })));
+  const sourceDisclosure = card.locator(".active-objective-sources");
+  assert.equal(await sourceDisclosure.count(), 1);
+  assert.equal(await sourceDisclosure.locator("summary").textContent(), "Evidence sources");
+  assert.equal(await sourceDisclosure.getAttribute("open"), null);
+  await sourceDisclosure.locator("summary").click();
+  const source = await sourceDisclosure.locator("dl > div").evaluate(element => ({
+    label: element.querySelector("dt")?.textContent, value: element.querySelector("dd")?.textContent,
+  }));
+  assert.equal(source.label, "Evidence source");
+  assert.ok(source.value.startsWith("Owned loopback receiver decision"));
+  assert.ok(source.value.includes("Run evidence:"));
+  await sourceDisclosure.locator("summary").click();
+  assert.equal(await sourceDisclosure.getAttribute("open"), null);
   assert.equal(await card.locator(".active-objective-state > span").textContent(), "Recorded state: Completed");
   assert.equal(await card.getByRole("link", { name: "Continue objective", exact: true }).getAttribute("href"),
     `#/compare?receiver=1&goal=data-handoff&receiver_job=${projection.owner_job_id}`);
+  await assertRecentOutcomeContexts(projection);
   return card;
 }
 
@@ -450,7 +606,7 @@ async function captureActiveHome(card, viewport, projection) {
     ["show_working_draft", card.getByRole("button", { name: "Show working draft", exact: true })],
     ["refresh", card.getByRole("button", { name: "Refresh active objective", exact: true })],
     ...projection.phases.map((item, index) => [item.phase, card.locator(".active-objective-evidence > dl > div").nth(index)]),
-    ["evidence_source", card.locator(".active-objective-evidence > dl > div").nth(3)],
+    ["evidence_sources", card.locator(".active-objective-sources > summary")],
   ];
   const elements = [];
   capture.elements = elements;
@@ -629,19 +785,30 @@ async function executePhase(phaseName, role) {
   await page.getByRole("checkbox", { name: receiverApprovalAcknowledgementName }).check();
   await page.getByLabel("Operator identity for this job", { exact: true }).fill(`Installed receiver ${role} verifier`);
   await page.getByRole("button", { name: "Approve and release job", exact: true }).click();
-  await waitOwner((owner) => owner.phases?.find((item) => item.phase === phaseName)?.status === "completed");
-  const completed = latestOwner.phases.find((item) => item.phase === phaseName);
+  stage = `${role}-${phaseName}-result-binding`;
+  const completed = await waitCompletedPhase(phaseName);
   const result = completed?.result;
+  recordPhaseBindingDiagnostic("phase_result_present", phaseName, completed);
   assert.ok(result, `${role}/${phaseName} must retain its result`);
+  recordPhaseBindingDiagnostic("execution_job_kind", phaseName, completed);
   assert.equal(completed.execution_job.kind, phaseName === "baseline" ? "scenario.run" : "scenario.replay");
+  recordPhaseBindingDiagnostic("execution_job_state", phaseName, completed);
   assert.equal(completed.execution_job.state, "completed");
+  recordPhaseBindingDiagnostic("result_phase", phaseName, completed);
   assert.equal(result.phase, phaseName);
+  recordPhaseBindingDiagnostic("run_id_matches_result_ref", phaseName, completed);
   assert.equal(result.run_id, completed.execution_job.result_ref);
+  recordPhaseBindingDiagnostic("run_id_format", phaseName, completed);
   assert.match(result.run_id, RUN_ID);
+  recordPhaseBindingDiagnostic("receiver_observation_state", phaseName, completed);
   assert.equal(result.receiver_observation?.state, "verified");
+  recordPhaseBindingDiagnostic("result_cleanup_receiver", phaseName, completed);
   assert.equal(result.cleanup?.receiver, "verified_closed");
+  recordPhaseBindingDiagnostic("result_cleanup_run", phaseName, completed);
   assert.equal(result.cleanup?.run, "complete");
+  recordPhaseBindingDiagnostic("phase_cleanup_receiver", phaseName, completed);
   assert.equal(completed.cleanup?.receiver, "verified_closed");
+  recordPhaseBindingDiagnostic("phase_cleanup_run", phaseName, completed);
   assert.equal(completed.cleanup?.run, "complete");
   const terminal = result.receiver_observation.terminal?.decision;
   assert.equal(terminal?.decision, phaseName === "protected" ? "policy_refused" : "accepted");
@@ -742,11 +909,28 @@ try {
     const path = new URL(response.url()).pathname;
     if (request.method() === "GET" && path === "/api/v1/session" && response.status() === 401) expected401 += 1;
     if (request.method() !== "POST") return;
+    const preparePath = receiverJobId
+      ? `/api/v1/receiver-defense/jobs/${receiverJobId}/prepare`
+      : undefined;
+    const failedPrepareResponse = path === preparePath && !response.ok();
+    const prepareStatus = failedPrepareResponse ? response.status() : null;
+    if (failedPrepareResponse) {
+      prepareHttpDiagnostic = receiverPrepareHttpDiagnostic(prepareStatus, null);
+      if (pendingPreparationFailure?.prepare_http) {
+        Object.assign(pendingPreparationFailure.prepare_http, prepareHttpDiagnostic);
+      }
+    }
     try {
       const contextRequestBody = path === "/api/v1/receiver-defense/context"
         ? request.postDataJSON()
         : undefined;
       const data = await response.json();
+      if (failedPrepareResponse) {
+        prepareHttpDiagnostic = receiverPrepareHttpDiagnostic(prepareStatus, data);
+        if (pendingPreparationFailure?.prepare_http) {
+          Object.assign(pendingPreparationFailure.prepare_http, prepareHttpDiagnostic);
+        }
+      }
       if (path === "/api/v1/receiver-defense/context" && response.ok()
         && receiverContextResponseMatchesRequest(contextRequestBody, latestFinalContextRequest, data)) latestContext = data;
       else if (path === "/api/v1/receiver-defense/jobs" && response.ok()) {
@@ -956,17 +1140,22 @@ try {
   await page.getByRole("checkbox", { name: receiverApprovalAcknowledgementName }).check();
   await page.getByLabel("Operator identity for this job", { exact: true }).fill("Installed receiver baseline verifier");
   await page.getByRole("button", { name: "Approve and release job", exact: true }).click();
-  await waitOwner((owner) => owner.phases?.[0]?.status === "completed");
   stage = "baseline-result-binding";
-  const baseline = receiverCompletedPhase(latestOwner, "baseline");
-  assert.ok(baseline, "The refreshed baseline phase must include completed execution and preparation records");
+  const baseline = await waitCompletedPhase("baseline");
   const result = baseline.result;
+  recordPhaseBindingDiagnostic("baseline_result_present", "baseline", baseline);
   assert.ok(result);
+  recordPhaseBindingDiagnostic("execution_job_kind_scenario_run", "baseline", baseline);
   assert.equal(baseline.execution_job.kind, "scenario.run");
+  recordPhaseBindingDiagnostic("execution_job_state_completed", "baseline", baseline);
   assert.equal(baseline.execution_job.state, "completed");
+  recordPhaseBindingDiagnostic("baseline_decision_accepted", "baseline", baseline);
   assert.equal(result.decision, "accepted");
+  recordPhaseBindingDiagnostic("baseline_result_phase", "baseline", baseline);
   assert.equal(result.phase, "baseline");
+  recordPhaseBindingDiagnostic("run_id_matches_execution_result_ref", "baseline", baseline);
   assert.equal(result.run_id, baseline.execution_job.result_ref);
+  recordPhaseBindingDiagnostic("run_id_matches_required_format", "baseline", baseline);
   assert.match(result.run_id, RUN_ID);
   stage = "baseline-run-source";
   assert.equal(result.run?.mode, "execute");
@@ -1205,6 +1394,18 @@ try {
 } catch (error) {
   const errorType = ["AssertionError", "TimeoutError", "TypeError", "Error"].includes(error?.name) ? error.name : "other";
   const failure = { stage, kind: "journey_failed", error_type: errorType };
+  if (stage.endsWith("-preparation") && currentPhase && receiverJobId) {
+    failure.receiver_preparation = receiverPreparationDiagnostic(
+      latestOwner,
+      currentPhase,
+      prepareHttpDiagnostic,
+    );
+    pendingPreparationFailure = failure.receiver_preparation;
+  }
+  if (phaseBindingDiagnostic && (stage === "baseline-result-binding" || stage.endsWith("-result-binding"))) {
+    if (stage === "baseline-result-binding") failure.baseline_binding = phaseBindingDiagnostic;
+    else failure.phase_binding = phaseBindingDiagnostic;
+  }
   if (stage.startsWith("baseline-control-")) failure.visible_controls = await visibleControlsDiagnostic();
   report.errors.push(failure);
   report.request_counts = counts;

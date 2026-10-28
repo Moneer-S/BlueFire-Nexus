@@ -1,3 +1,11 @@
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/ui/fonts/InterVariable.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
   --ink-1000: #020913;
@@ -78,6 +86,10 @@
 html { min-height: 100%; background: var(--ink-950); scroll-behavior: smooth; }
 body { min-height: 100vh; margin: 0; background: var(--ink-950); color: var(--text); }
 body, button, input, select, textarea { font: inherit; }
+/* Disclosures without a component style otherwise inherit the browser's 16px
+   default. Zero specificity keeps component rules in charge, and min() never
+   enlarges a summary that sits inside a smaller caption context. */
+:where(summary) { cursor: pointer; font-size: min(1em, var(--font-body-sm)); }
 button, input, select, textarea { color: inherit; }
 button, select { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.46; }
@@ -117,12 +129,6 @@ svg { flex: 0 0 auto; }
 .nav-link:hover { color: var(--text); background: var(--surface-soft); }
 .nav-link.active { border-color: var(--line-strong); background: var(--surface-soft); color: var(--text); }
 .nav-link.active svg { color: var(--blue-soft); }
-.sidebar-status { position: absolute; left: 12px; right: 12px; bottom: 15px; min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-soft); }
-.sidebar-status > div { min-width: 0; display: flex; align-items: center; gap: 9px; }
-.sidebar-status strong, .sidebar-status small { display: block; white-space: nowrap; }
-.sidebar-status strong { font-size: 0.67rem; }
-.sidebar-status small { margin-top: 3px; color: var(--muted); font-size: 0.56rem; }
-.sidebar-status > svg { width: 17px; color: var(--green); }
 .service-light { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 4px rgba(247, 184, 75, 0.12); }
 .service-light.ready { background: var(--green); box-shadow: 0 0 0 4px rgba(69, 211, 157, 0.12); }
 .service-light.error { background: var(--red); box-shadow: 0 0 0 4px rgba(255, 110, 121, 0.12); }
@@ -146,8 +152,6 @@ svg { flex: 0 0 auto; }
 .nav-collapsed .nav-link svg { width: 19px; height: 19px; }
 .nav-collapsed .nav-group { margin-bottom: 9px; }
 .nav-collapsed .sidebar nav { padding-inline: 12px; }
-.nav-collapsed .sidebar-status { justify-content: center; padding-inline: 8px; }
-.nav-collapsed .sidebar-status > div { gap: 0; }
 .nav-collapsed .sidebar-collapse svg { transform: none; }
 
 /* Foundation */
@@ -637,15 +641,18 @@ td .badge { margin-left: 6px; }
 .job-approval-controls { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.8fr) auto; align-items: end; gap: 12px; padding: 14px; border-top: 1px solid rgba(247, 184, 75, 0.2); background: rgba(3, 8, 16, 0.28); }
 .job-approval-controls > p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 0.57rem; line-height: 1.48; }
 .live-path { min-height: 132px; display: flex; gap: 8px; padding: 15px; overflow-x: auto; }
-.live-path article { position: relative; min-width: 145px; flex: 1; display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(5, 12, 22, 0.68); }
+/* A one-column track keeps a long status label or title inside its card. */
+.live-path article { position: relative; flex: 1 0 196px; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(5, 12, 22, 0.68); }
 .live-path article::after { content: ""; position: absolute; top: 50%; right: -8px; width: 8px; height: 1px; background: var(--line-strong); }
 .live-path article:last-child::after { display: none; }
 .live-path article[data-status="succeeded"] { border-color: rgba(69, 211, 157, 0.25); }
 .live-path article[data-status="blocked"], .live-path article[data-status="refused"] { border-color: rgba(247, 184, 75, 0.28); }
 .live-path article[data-status="failed"] { border-color: rgba(255, 110, 121, 0.28); }
-.live-path article header { display: flex; justify-content: space-between; gap: 6px; }
-.live-path article header > span { color: var(--muted); font: 0.54rem ui-monospace, SFMono-Regular, Consolas, monospace; }
-.live-path article strong { font-size: 0.64rem; }
+.live-path article header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 6px; }
+.live-path article header .badge { max-width: 100%; white-space: normal; }
+.live-path article header .badge i { flex: none; }
+.live-path article header > span:first-child { color: var(--muted); font: 0.54rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.live-path article strong { font-size: 0.64rem; line-height: 1.3; overflow-wrap: anywhere; }
 .live-path article small { color: var(--muted); font-size: 0.53rem; overflow-wrap: anywhere; }
 .console-tabs, .workspace-tabs { display: flex; gap: 3px; padding: 8px 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); overflow-x: auto; }
 .console-detail { min-height: 300px; padding: 15px 18px; }
@@ -654,9 +661,14 @@ td .badge { margin-left: 6px; }
 .console-empty strong { color: var(--text); font-size: 0.72rem; }
 .console-empty span { max-width: 420px; margin-top: 5px; font-size: 0.64rem; line-height: 1.45; }
 .console-empty.compact { min-height: 140px; }
+.live-path > .console-empty { flex: 1; }
+.live-console { scroll-margin-top: calc(var(--topbar-height, 60px) + 12px); }
 .timeline { list-style: none; margin: 0; padding: 0; }
 .timeline li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
 .timeline li:last-child { border-bottom: 0; }
+.timeline-decision { margin-top: 6px; }
+.timeline-decision > p { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--muted); }
+.timeline-decision > p svg { flex: none; width: 13px; height: 13px; margin-top: 2px; color: var(--blue-soft); }
 .timeline-dot { width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 4px rgba(56, 168, 255, 0.1); }
 .timeline-dot.succeeded, .timeline-dot.completed { background: var(--green); }
 .timeline-dot.blocked, .timeline-dot.refused { background: var(--amber); }
@@ -992,7 +1004,6 @@ pre { max-width: 100%; margin: 0; overflow: auto; color: var(--muted-strong); fo
 
 .brand small,
 .nav-group > p,
-.sidebar-status small,
 .workspace-topbar > div:first-child > span,
 .eyebrow,
 .data-list dt,
@@ -1129,7 +1140,7 @@ td,
 .envelope-option > header > code,
 .envelope-actions > article > header > code,
 .envelope-steps > article > header > span,
-.live-path article header > span,
+.live-path article header > span:first-child,
 pre,
 .proposal-digests code,
 .run-select-list code,
@@ -1224,6 +1235,9 @@ div.method-proposal-review, details.method-proposal-review[open] { display: grid
 .settings-build code, .copy-record-id code { overflow-wrap: anywhere; }
 .copy-record-id { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .job-details { padding: 12px 18px; }
+/* Repeated per-event and per-step technical disclosures stay secondary. */
+.job-details > summary, .live-path details > summary, .timeline details > summary { width: fit-content; color: var(--muted); font-size: var(--font-caption); font-weight: 600; }
+.job-details > summary:hover, .live-path details > summary:hover, .timeline details > summary:hover { color: var(--text); }
 
 /* Readable working controls and lists; graph/editor typography stays scoped. */
 .button { font-size: .875rem; font-weight: 600; letter-spacing: 0; }

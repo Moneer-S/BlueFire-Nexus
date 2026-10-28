@@ -70,8 +70,12 @@ it("shows a cancelled job's retained events without claiming it is awaiting a ru
   vi.spyOn(api, "runEvents").mockImplementation(async (_id, cursor = 0) => ({ schema_version: "bluefire.event-page.v1", run_id: "run-partial", after_sequence: cursor, next_sequence: 3, has_more: false, items: cursor ? [] : [1, 2, 3].map((sequence) => ({ sequence, event_type: "step.completed", data: { step_id: `partial-${sequence}`, behavior_id: demoCatalog.behaviors[0]!.id, simulation_id: demoCatalog.behaviors[0]!.simulation_id, status: "success" } })) }));
   mount();
   expect(await screen.findByText("Job cancelled")).toBeVisible();
-  expect(await screen.findAllByText("Step result recorded")).toHaveLength(3);
-  expect(screen.getAllByText(`${demoCatalog.behaviors[0]!.title} · Simulated success`)).toHaveLength(3);
+  // Step results lead with the step they describe; the event type stays in Event details.
+  await waitFor(() => expect(document.querySelectorAll(".timeline > li")).toHaveLength(3));
+  for (const row of document.querySelectorAll(".timeline > li")) {
+    expect(row.querySelector("strong")).toHaveTextContent(demoCatalog.behaviors[0]!.title);
+    expect(within(row as HTMLElement).getByText("Simulated success", { exact: true })).toBeVisible();
+  }
   const firstEvent = screen.getAllByText("Event details")[0]!.closest("details")!;
   await userEvent.setup().click(firstEvent.querySelector("summary")!);
   expect(within(firstEvent).getByText("partial-1", { exact: true })).toBeVisible();
@@ -79,7 +83,7 @@ it("shows a cancelled job's retained events without claiming it is awaiting a ru
   expect(screen.getByText(/no finalized run record is linked/)).toBeVisible();
   expect(screen.queryByText("Awaiting a run")).not.toBeInTheDocument();
   expect(screen.queryByText(/ownership is reconciled/)).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  for (const name of ["Pause", "Resume", "Cancel"]) expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
 });
 
 it("shows each recorded adaptive attempt's method in the live path and runner details", async () => {
@@ -310,4 +314,47 @@ it.each(["none", "restoration", "missing-preparation", "missing-step", "changed-
   await screen.findByText("Restore and continue");
   expect(screen.getByRole("checkbox", { name: /I approve this exact/ })).not.toBeChecked();
   expect(approve).not.toHaveBeenCalled();
+});
+
+it("reads each routing decision as the next line of the step result it follows", async () => {
+  const job = { ...replayJob(firstId, "cancelled"), request: { mode: "simulate" }, progress: { run_id: "run-routed" } };
+  inventory([]);
+  vi.spyOn(api, "job").mockResolvedValue(job);
+  const behavior = demoCatalog.behaviors[0]!;
+  const items = [1, 2].flatMap((step) => [
+    { sequence: step * 2 - 1, event_type: "step.completed", data: { step_id: `routed-${step}`, behavior_id: behavior.id, simulation_id: behavior.simulation_id, status: "success" } },
+    { sequence: step * 2, event_type: "planner.decision", timestamp: `2030-01-01T00:00:0${step}Z`, data: { step_id: `routed-${step}`, proposed_by: "deterministic-planner.v1", reason: "Follow the registered success branch." } },
+  ]);
+  vi.spyOn(api, "runEvents").mockImplementation(async (_id, cursor = 0) => ({ schema_version: "bluefire.event-page.v1", run_id: "run-routed", after_sequence: cursor, next_sequence: 4, has_more: false, items: cursor ? [] : items }));
+  mount();
+  await waitFor(() => expect(document.querySelectorAll(".timeline > li strong")).toHaveLength(2));
+  // Each decision stays inspectable, but no longer takes its own row.
+  expect(screen.queryByText("Plan decision")).not.toBeInTheDocument();
+  expect(document.querySelectorAll(".timeline > li")).toHaveLength(2);
+  const decisions = screen.getAllByText("Decision details");
+  expect(decisions).toHaveLength(2);
+  const first = decisions[0]!.closest("details")!;
+  await userEvent.setup().click(first.querySelector("summary")!);
+  expect(within(first).getByText("planner.decision", { exact: true })).toBeVisible();
+  expect(within(first).getByText("2030-01-01T00:00:01Z", { exact: true })).toBeVisible();
+  expect(within(first).getByText("2", { exact: true })).toBeVisible();
+});
+
+it.each(["ai-planner", undefined])("keeps %s routing decisions as independent timeline entries", async (proposedBy) => {
+  const job = { ...replayJob(firstId, "cancelled"), request: { mode: "simulate" }, progress: { run_id: "run-planner-decision" } };
+  inventory([]);
+  vi.spyOn(api, "job").mockResolvedValue(job);
+  const behavior = demoCatalog.behaviors[0]!;
+  const items = [
+    { sequence: 1, event_type: "step.completed", data: { step_id: "first", behavior_id: behavior.id, simulation_id: behavior.simulation_id, status: "success" } },
+    { sequence: 2, event_type: "planner.decision", data: { selected_step_id: "next", proposed_by: proposedBy, reason: "Review the proposed next method." } },
+  ];
+  vi.spyOn(api, "runEvents").mockImplementation(async (_id, cursor = 0) => ({ schema_version: "bluefire.event-page.v1", run_id: "run-planner-decision", after_sequence: cursor, next_sequence: 2, has_more: false, items: cursor ? [] : items }));
+  mount();
+  expect(await screen.findByText("Plan decision", { selector: "strong" })).toBeVisible();
+  expect(document.querySelectorAll(".timeline > li")).toHaveLength(2);
+  const decisionRow = screen.getByText("Plan decision", { selector: "strong" }).closest("li")!;
+  expect(within(decisionRow).getByText("#2", { exact: true })).toBeVisible();
+  expect(within(decisionRow).getByText(/Review the proposed next method/)).toBeVisible();
+  expect(screen.queryByText("Decision details")).not.toBeInTheDocument();
 });

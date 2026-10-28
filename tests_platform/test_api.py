@@ -737,6 +737,10 @@ class StubService:
         self.calls.append(("comparison_snapshot", snapshot_id))
         return {"snapshot_id": snapshot_id}
 
+    def comparison_assistance_context(self, snapshot_id: str) -> Mapping[str, Any]:
+        self.calls.append(("comparison_assistance_context", snapshot_id))
+        return {"saved": True}
+
 
 @contextmanager
 def running_server(
@@ -2454,6 +2458,7 @@ def test_static_assets_have_strict_security_headers_and_head_support() -> None:
             ("/", "text/html"),
             ("/ui/app.js", "javascript"),
             ("/ui/styles.css", "text/css"),
+            ("/ui/fonts/InterVariable.woff2", "font/woff2"),
         ):
             status, headers, payload = request(server, "GET", path)
             assert status == 200

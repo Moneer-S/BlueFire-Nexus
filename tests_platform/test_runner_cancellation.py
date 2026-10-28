@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
+import platform
 import shutil
 import signal
 import socket
@@ -24,6 +26,7 @@ import bluefire.runner_private_files as private_files_module
 import bluefire.runner_trust as runner_trust_module
 import bluefire.runner_watchdog as runner_watchdog_module
 from bluefire import runner_linux_containment as linux_containment_module
+from bluefire.runner_bootstrap import load_runner_manifest
 from bluefire.runner_client import (
     RunnerDurableResultExists,
     RunnerPendingResultExists,
@@ -271,6 +274,70 @@ def _runner(
         durable_result_guard=durable_result_guard,
         _watchdog_interpreter=watchdog_interpreter,
     )
+
+
+_VERIFIED_LAUNCH_STDERR_LIMIT_BYTES = 4096
+_VERIFIED_LAUNCH_PYTHON_EXCEPTIONS = frozenset(
+    {b"PermissionError", b"FileNotFoundError", b"OSError", b"RuntimeError", b"ValueError"}
+)
+
+
+def _classify_verified_launch_stderr(stderr: bytes) -> str:
+    if not stderr:
+        return "empty"
+    if b"Fatal Python error:" in stderr:
+        return "fatal_python_runtime"
+    if b"Traceback (most recent call last):" in stderr:
+        return "python_traceback"
+    return "other_nonempty"
+
+
+def _classify_verified_launch_exception_type(stderr: bytes) -> str:
+    if b"Traceback (most recent call last):" not in stderr:
+        return "not_applicable"
+    lines = stderr.rstrip().splitlines()
+    if not lines:
+        return "unknown"
+    candidate = lines[-1].partition(b":")[0].strip()
+    if candidate not in _VERIFIED_LAUNCH_PYTHON_EXCEPTIONS:
+        return "unknown"
+    return candidate.decode("ascii")
+
+
+def _unavailable_verified_launch_stderr() -> dict[str, Any]:
+    return {
+        "class": "unavailable",
+        "exception_type": "unavailable",
+        "captured_bytes": 0,
+        "truncated": False,
+    }
+
+
+def _read_verified_launch_stderr_after_exit(process: subprocess.Popen[bytes]) -> dict[str, Any]:
+    """Read a small stderr sample without waiting after verified child cleanup."""
+    stream = process.stderr
+    if stream is None:
+        return _unavailable_verified_launch_stderr()
+    try:
+        descriptor = stream.fileno()
+        os.set_blocking(descriptor, False)
+        payload = os.read(descriptor, _VERIFIED_LAUNCH_STDERR_LIMIT_BYTES + 1)
+    except BlockingIOError:
+        return _unavailable_verified_launch_stderr()
+    except (OSError, ValueError):
+        return _unavailable_verified_launch_stderr()
+    finally:
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
+    sample = payload[:_VERIFIED_LAUNCH_STDERR_LIMIT_BYTES]
+    return {
+        "class": _classify_verified_launch_stderr(sample),
+        "exception_type": _classify_verified_launch_exception_type(sample),
+        "captured_bytes": len(sample),
+        "truncated": len(payload) > _VERIFIED_LAUNCH_STDERR_LIMIT_BYTES,
+    }
 
 
 def _isolated_module(source: ModuleType, **overrides: object) -> ModuleType:
@@ -688,6 +755,61 @@ def test_receiver_environment_is_consumed_and_invalid_key_factory_fails_closed(
     assert not durable.exists()
 
 
+def _verified_launch_fixture_kind(platform_name: str, architecture: str) -> str:
+    if platform_name.startswith("linux") and architecture.lower() in {"amd64", "x86_64"}:
+        return "linux_native_runner"
+    return "python"
+
+
+def _load_verified_linux_runner_fixture(source_root: Path) -> tuple[Path, bytes]:
+    source = source_root / "bluefire" / "native" / "linux-x86_64" / "bluefire-runner"
+    manifest = load_runner_manifest(
+        resource_root=source.parent,
+        platform_name="linux",
+        architecture="x86_64",
+    )
+    payload = source.read_bytes()
+    assert len(payload) == manifest.size
+    assert hashlib.sha256(payload).hexdigest() == manifest.sha256
+    return source, payload
+
+
+_VERIFIED_LINUX_CAPABILITY_STDOUT = (
+    b'{"live_ready":false,"max_bytes":1048576,"max_message":16384,'
+    b'"max_operation_ns":5000000000,"max_requests":64,'
+    b'"monotonic_clock":"darwin-mach-absolute-ns",'
+    b'"native_backend_available":false,"protocol_supported":true,'
+    b'"schema_version":"bluefire.macos-file-access-capability.v1",'
+    b'"scope":"protocol_support_only"}\n'
+)
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "architecture", "expected"),
+    [
+        ("linux", "x86_64", "linux_native_runner"),
+        ("linux", "AMD64", "linux_native_runner"),
+        ("linux", "aarch64", "python"),
+        ("freebsd14", "x86_64", "python"),
+        ("darwin", "arm64", "python"),
+    ],
+)
+def test_verified_launch_fixture_selection_is_host_specific(
+    platform_name: str,
+    architecture: str,
+    expected: str,
+) -> None:
+    assert _verified_launch_fixture_kind(platform_name, architecture) == expected
+
+
+def test_verified_linux_runner_fixture_matches_committed_manifest() -> None:
+    source_root = Path(__file__).resolve().parents[1]
+    source, payload = _load_verified_linux_runner_fixture(source_root)
+
+    assert source.name == "bluefire-runner"
+    assert payload
+
+
 @pytest.mark.skipif(
     os.name == "nt" or sys.platform == "darwin",
     reason="non-Darwin POSIX descriptor-backed launch boundary",
@@ -696,16 +818,26 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
     tmp_path: Path,
 ) -> None:
     runner = _runner(tmp_path)
-    executable = (tmp_path / "verified-python").resolve()
-    parked = (tmp_path / "verified-python.parked").resolve()
+    fixture_kind = _verified_launch_fixture_kind(sys.platform, platform.machine())
+    executable = (tmp_path / f"verified-{fixture_kind}").resolve()
+    parked = (tmp_path / f"verified-{fixture_kind}.parked").resolve()
     leaked = Path(str(executable) + ".leaked")
-    shutil.copyfile(Path(sys.executable).resolve(strict=True), executable)
+    if fixture_kind == "linux_native_runner":
+        source_root = Path(__file__).resolve().parents[1]
+        _source, payload = _load_verified_linux_runner_fixture(source_root)
+        executable.write_bytes(payload)
+        command_tail = ["macos-file-access-capability"]
+        expected_stdout = _VERIFIED_LINUX_CAPABILITY_STDOUT
+    else:
+        shutil.copyfile(Path(sys.executable).resolve(strict=True), executable)
+        base_executable = Path(os.path.abspath(sys._base_executable))
+        (tmp_path / "pyvenv.cfg").write_text(
+            f"home = {base_executable.parent}\ninclude-system-site-packages = false\n",
+            encoding="utf-8",
+        )
+        command_tail = ["-I", "-B", "-c", "print('trusted')"]
+        expected_stdout = b"trusted\n"
     executable.chmod(0o700)
-    base_executable = Path(os.path.abspath(sys._base_executable))
-    (tmp_path / "pyvenv.cfg").write_text(
-        f"home = {base_executable.parent}\ninclude-system-site-packages = false\n",
-        encoding="utf-8",
-    )
     expected_digest = runner_client_module.file_hash(executable)
     receiver_environment = {
         "BLUEFIRE_RECEIVER_TASK_ID": "task-posix-launch-01",
@@ -720,7 +852,7 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
         )
         executable.chmod(0o700)
         process = runner._spawn(
-            [launch[0], "-I", "-B", "-c", "print('trusted')"],
+            [launch[0], *command_tail],
             stdout=subprocess.PIPE,
             receiver_environment=receiver_environment,
             inherited_descriptors=launch[1],
@@ -730,9 +862,110 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
     assert process.stdout is not None
     stdout = process.stdout.read()
     assert runner._finish_posix_process_group(process) is True
-    assert process.returncode == 0
-    assert stdout == b"trusted\n"
-    assert not leaked.exists()
+    stderr_diagnostic = _read_verified_launch_stderr_after_exit(process)
+    stdout_matches_expected = stdout == expected_stdout
+    leak_file_exists = leaked.exists()
+    diagnostic = (
+        f"stderr_class={stderr_diagnostic['class']}; "
+        f"stderr_exception_type={stderr_diagnostic['exception_type']}; "
+        f"stderr_captured_bytes={stderr_diagnostic['captured_bytes']}; "
+        f"stderr_truncated={stderr_diagnostic['truncated']}; "
+        f"stdout_matches_expected={stdout_matches_expected}; "
+        f"leak_file_exists={leak_file_exists}"
+    )
+    assert (
+        process.returncode == 0
+    ), f"verified_fd_child_nonzero; returncode={process.returncode}; {diagnostic}"
+    assert stdout_matches_expected, f"verified_fd_child_stdout_mismatch; {diagnostic}"
+    assert not leak_file_exists, f"verified_fd_leak_marker_created; {diagnostic}"
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected", "expected_exception"),
+    [
+        (b"", "empty", "not_applicable"),
+        (
+            b"Traceback (most recent call last):\nPermissionError: denied\n",
+            "python_traceback",
+            "PermissionError",
+        ),
+        (
+            b"Traceback (most recent call last):\nFileNotFoundError: missing\n",
+            "python_traceback",
+            "FileNotFoundError",
+        ),
+        (
+            b"Traceback (most recent call last):\nOSError: unavailable\n",
+            "python_traceback",
+            "OSError",
+        ),
+        (
+            b"Traceback (most recent call last):\nRuntimeError: failed\n",
+            "python_traceback",
+            "RuntimeError",
+        ),
+        (
+            b"Traceback (most recent call last):\nValueError: invalid\n",
+            "python_traceback",
+            "ValueError",
+        ),
+        (
+            b"Traceback (most recent call last):\nCustomFailure: unknown\n",
+            "python_traceback",
+            "unknown",
+        ),
+        (b"Fatal Python error: startup failed\n", "fatal_python_runtime", "not_applicable"),
+        (b"opaque diagnostic bytes\n", "other_nonempty", "not_applicable"),
+    ],
+)
+def test_verified_launch_stderr_classification_is_finite(
+    stderr: bytes,
+    expected: str,
+    expected_exception: str,
+) -> None:
+    assert _classify_verified_launch_stderr(stderr) == expected
+    assert _classify_verified_launch_exception_type(stderr) == expected_exception
+
+
+def test_verified_launch_stderr_without_pipe_has_complete_safe_shape() -> None:
+    result = _read_verified_launch_stderr_after_exit(SimpleNamespace(stderr=None))  # type: ignore[arg-type]
+
+    assert result == {
+        "class": "unavailable",
+        "exception_type": "unavailable",
+        "captured_bytes": 0,
+        "truncated": False,
+    }
+
+
+def test_verified_launch_stderr_nonblocking_unavailable_has_complete_safe_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Stream:
+        closed = False
+
+        def fileno(self) -> int:
+            return 123
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = Stream()
+    monkeypatch.setattr(os, "set_blocking", lambda _fd, _blocking: None, raising=False)
+
+    def unavailable_read(_fd: int, _size: int) -> bytes:
+        raise BlockingIOError
+
+    monkeypatch.setattr(os, "read", unavailable_read)
+    result = _read_verified_launch_stderr_after_exit(SimpleNamespace(stderr=stream))  # type: ignore[arg-type]
+
+    assert result == {
+        "class": "unavailable",
+        "exception_type": "unavailable",
+        "captured_bytes": 0,
+        "truncated": False,
+    }
+    assert stream.closed
 
 
 @pytest.mark.skipif(sys.platform == "darwin", reason="Darwin requires proved process ownership")

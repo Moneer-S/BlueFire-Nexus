@@ -1,0 +1,68 @@
+{
+  "package_version": "3.0.0rc2",
+  "build": "Development wheel built from the committed source and packaged UI, reusing the verified native runner. The recording performs no native actions.",
+  "ui_digest": "sha256:f822cd92cadb8d8fa15d5922421c6f75ca4b27f86f0ac804768e3eaf01af9e06",
+  "platform": "Windows x86_64",
+  "recording": {
+    "file": "desktop-workflow.webm",
+    "width": 1440,
+    "height": 900,
+    "duration_seconds": 26.76,
+    "frames_per_second": 25,
+    "edited": false
+  },
+  "graph_viewports": [
+    [
+      1366,
+      768
+    ],
+    [
+      1440,
+      900
+    ],
+    [
+      1920,
+      1080
+    ]
+  ],
+  "scope": "Real installed Python service and packaged browser UI. Reopens generated saved simulations, their unchanged-path comparison, an unsubmitted AI-Off Assistant draft, and a synthetic detection evaluation.",
+  "limits": [
+    "No new run or evaluation during the recording.",
+    "Synthetic records are not independent observations.",
+    "No live inference, fresh native execution, or defensive improvement is claimed by this media."
+  ],
+  "files": [
+    {
+      "file": "desktop-workspace.png",
+      "bytes": 572522,
+      "digest": "sha256:99d7b8c4a2c6a2de04bad8cf3d83cdaa9d68ef786a1aeabbd66460359a29a4db"
+    },
+    {
+      "file": "desktop-graph.png",
+      "bytes": 233128,
+      "digest": "sha256:339a030eda021520dd018a98c12a890199d0f3e7a27cc68cc0cd963308a1bf0b"
+    },
+    {
+      "file": "desktop-assistant.png",
+      "bytes": 264220,
+      "digest": "sha256:09db964d696e8a3b11708f78f9dc17c3bfcda9f7f21b2ed10e9b09db82573b16"
+    },
+    {
+      "file": "compare.png",
+      "bytes": 333357,
+      "digest": "sha256:d217de538bfadbed38d09453fa487724dd773878cca49b709535db7e88358c53"
+    },
+    {
+      "file": "detection-lab.png",
+      "bytes": 462081,
+      "digest": "sha256:04ff69b7d6a95f55661d5f3ced08c320a8b79dfe26ac7cade5b7ae8df5547051"
+    },
+    {
+      "file": "desktop-workflow.webm",
+      "bytes": 2658098,
+      "digest": "sha256:3454f3b3a0e480945737145cc6ffecfec81e6ce95fad179f68ff9f0bc8084e7a"
+    }
+  ],
+  "source_commit": "https://github.com/Moneer-S/BlueFire-Nexus/commit/57740ffe8fe255aeb71051e16215324604771234",
+  "wheel_digest": "sha256:c805ab040102cee13bdd217071578f8f55a2b8084e80efe8bb99ea5976b6fd17"
+}

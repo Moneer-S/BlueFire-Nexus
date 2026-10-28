@@ -73,7 +73,10 @@ jobs:
         include:
           - os: windows-latest
             python-version: "3.10"
-            partition: a-d
+            partition: a-b
+          - os: windows-latest
+            python-version: "3.10"
+            partition: c-d
           - os: windows-latest
             python-version: "3.10"
             partition: e-q
@@ -161,14 +164,6 @@ jobs:
           BLUEFIRE_TEST_PARTITION: ${{ matrix.partition }}
         run: |
           switch -CaseSensitive ($env:BLUEFIRE_TEST_PARTITION) {
-            'a-d' {
-              $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
-                Where-Object { $_.Name -cmatch '^test_[a-d].*\.py$' } |
-                Sort-Object Name |
-                ForEach-Object { "tests_platform/$($_.Name)" })
-              if ($testFiles.Count -eq 0) { throw 'Empty a-d test partition' }
-              python -m pytest -vv --durations=50 @testFiles
-            }
             'e-q' {
               $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
                 Where-Object { $_.Name -cmatch '^test_[e-q].*\.py$' } |
@@ -443,7 +438,11 @@ jobs:
           cp tools/verify_installed_browser.py "$RUNNER_TEMP/verify_installed_browser.py"
           cp frontend/tests/installed/installed-service.mjs "$RUNNER_TEMP/installed-service.mjs"
           cp frontend/tests/installed/installed-assistant.mjs "$RUNNER_TEMP/installed-assistant.mjs"
+          cp frontend/tests/installed/preflight-diagnostics.mjs "$RUNNER_TEMP/preflight-diagnostics.mjs"
+          cp frontend/tests/installed/run-job-state.mjs "$RUNNER_TEMP/run-job-state.mjs"
+          cp frontend/tests/installed/run-result-identity.mjs "$RUNNER_TEMP/run-result-identity.mjs"
           cp frontend/tests/installed/installed-receiver.mjs "$RUNNER_TEMP/installed-receiver.mjs"
+          cp frontend/tests/installed/receiver-diagnostics.mjs "$RUNNER_TEMP/receiver-diagnostics.mjs"
           cp frontend/tests/installed/receiver-guards.mjs "$RUNNER_TEMP/receiver-guards.mjs"
           cp frontend/tests/installed/receiver-deadline.mjs "$RUNNER_TEMP/receiver-deadline.mjs"
           wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { graphBoundsViewport, readableGraphViewport, revealGraphContext, revealGraphNode } from "../src/lib/graph-view";
+import { focusedGraphViewport, graphBoundsViewport, readableGraphViewport, revealGraphContext, revealGraphNode } from "../src/lib/graph-view";
 import { defaultGraphView } from "../src/lib/graph-view-retention";
 import { demoScenario } from "../src/lib/demo";
 
@@ -50,6 +50,68 @@ describe("readable graph framing", () => {
     expect(viewport?.zoom).toBeCloseTo((frame.width - 48) / (allSteps.at(-1)!.x + 220));
     expect(viewport!.zoom).toBeGreaterThan(0.1);
     expect(viewport!.x + (allSteps.at(-1)!.x + 220) * viewport!.zoom).toBeLessThanOrEqual(frame.width - 24);
+  });
+
+  it.each([0, 8])("keeps a compact plan visible when focusing end step %i", (selectedIndex) => {
+    const cards = Array.from({ length: 9 }, (_, index) => ({ x: 32 + Math.floor(index / 3) * 308, y: 32 + index % 3 * 148, width: 292, height: 104 }));
+    const frame = { x: 12, y: 16, width: 1192, height: 568 };
+    const viewport = focusedGraphViewport(cards[selectedIndex]!, cards, frame);
+    expect(viewport.zoom).toBe(1);
+    for (const card of cards) {
+      expect(viewport.x + card.x).toBeGreaterThanOrEqual(frame.x + 24);
+      expect(viewport.x + card.x + card.width).toBeLessThanOrEqual(frame.x + frame.width - 24);
+      expect(viewport.y + card.y).toBeGreaterThanOrEqual(frame.y + 24);
+      expect(viewport.y + card.y + card.height).toBeLessThanOrEqual(frame.y + frame.height - 24);
+    }
+  });
+
+  it.each([0, 8])("fits a nearly fitting compact plan in a shorter desktop canvas when focusing step %i", (selectedIndex) => {
+    const cards = Array.from({ length: 9 }, (_, index) => ({ x: 32 + Math.floor(index / 3) * 308, y: 32 + index % 3 * 148, width: 292, height: 104 }));
+    const frame = { x: 12, y: 16, width: 1118, height: 436 };
+    const viewport = focusedGraphViewport(cards[selectedIndex]!, cards, frame);
+    expect(viewport.zoom).toBeGreaterThanOrEqual(.9);
+    expect(viewport.zoom).toBeLessThan(1);
+    for (const card of cards) {
+      expect(viewport.x + card.x * viewport.zoom).toBeGreaterThanOrEqual(frame.x + 24 - .001);
+      expect(viewport.x + (card.x + card.width) * viewport.zoom).toBeLessThanOrEqual(frame.x + frame.width - 24 + .001);
+      expect(viewport.y + card.y * viewport.zoom).toBeGreaterThanOrEqual(frame.y + 24 - .001);
+      expect(viewport.y + (card.y + card.height) * viewport.zoom).toBeLessThanOrEqual(frame.y + frame.height - 24 + .001);
+    }
+  });
+
+  it.each([0, 127])("uses the occupied canvas near end step %i without shrinking a long plan", (selectedIndex) => {
+    const cards = Array.from({ length: 128 }, (_, index) => ({ x: 32 + index * 308, y: 32, width: 292, height: 104 }));
+    const frame = { x: 17, y: 23, width: 600, height: 380 };
+    const selected = cards[selectedIndex]!;
+    const viewport = focusedGraphViewport(selected, cards, frame);
+    expect(viewport.zoom).toBe(1);
+    if (selectedIndex === 0) expect(viewport.x + selected.x).toBe(frame.x + 24);
+    else expect(viewport.x + selected.x + selected.width).toBe(frame.x + frame.width - 24);
+    expect(viewport.y + selected.y + selected.height / 2).toBe(frame.y + frame.height / 2);
+  });
+
+  it("fits the height of slightly taller flow columns at a readable scale while anchoring the entry", () => {
+    // Eight columns of four rows: too wide to fit, only slightly too tall at 100%.
+    const cards = Array.from({ length: 32 }, (_, index) => ({ x: 32 + Math.floor(index / 4) * 332, y: 32 + index % 4 * 148, width: 220, height: 104 }));
+    const frame = { x: 0, y: 0, width: 1190, height: 565 };
+    // An explicit focus keeps full scale; only the opening frame fits the height.
+    expect(focusedGraphViewport(cards[0]!, cards.slice(1), frame).zoom).toBe(1);
+    const viewport = focusedGraphViewport(cards[0]!, cards.slice(1), frame, true);
+    expect(viewport.zoom).toBeGreaterThanOrEqual(0.8);
+    expect(viewport.zoom).toBeLessThan(1);
+    expect(viewport.x + cards[0]!.x * viewport.zoom).toBeCloseTo(24);
+    for (const card of cards) {
+      expect(viewport.y + card.y * viewport.zoom).toBeGreaterThanOrEqual(24 - .001);
+      expect(viewport.y + (card.y + card.height) * viewport.zoom).toBeLessThanOrEqual(frame.height - 24 + .001);
+    }
+  });
+
+  it("keeps selection readable when a long plan cannot fit at its scale", () => {
+    const cards = Array.from({ length: 128 }, (_, index) => ({ x: 32 + index * 308, y: 32, width: 292, height: 104 }));
+    const frame = { width: 600, height: 380 };
+    const viewport = focusedGraphViewport(cards[70]!, cards, frame);
+    expect(viewport).toEqual(readableGraphViewport(cards[70]!, frame));
+    expect(viewport.zoom).toBe(1);
   });
 
   it("keeps the exact viewport object when the selected node is still visible", () => {

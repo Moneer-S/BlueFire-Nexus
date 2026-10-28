@@ -1,3 +1,4 @@
+import { objectiveLabel } from "../src/lib/run-presentation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -214,7 +215,12 @@ async function addTypedEnumStep(user: ReturnType<typeof userEvent.setup>) {
   const controls = within(await screen.findByLabelText("Graph workspace controls"));
   await user.click(controls.getByRole("button", { name: "Add step" }));
   const palette = within(screen.getByText("Add a step", { selector: "h2" }).closest("section")!);
-  await user.click(await palette.findByRole("button", { name: /Typed enum review/ }));
+  // Locate this card by its visible title before checking its accessible button.
+  // This avoids calculating names for every catalog card on each lookup.
+  const behaviorCard = (await palette.findByText("Typed enum review", { selector: "strong" })).closest("button")!;
+  expect(behaviorCard).toHaveRole("button");
+  expect(behaviorCard).toHaveAccessibleName(/Typed enum review/);
+  await user.click(behaviorCard);
   const inspector = within(screen.getByLabelText("Close step details").closest("section")!);
   await user.click(inspector.getByRole("tab", { name: "Parameters" }));
   return { view, parameters: within(inspector.getByRole("tabpanel", { name: "Parameters" })) };
@@ -318,6 +324,29 @@ describe("product application", () => {
       });
     });
     expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/runs") && init?.method === "POST")).toBe(false);
+  });
+
+  it("collapses a started simulation's setup to its summary and brings progress into view", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    const defaultImplementation = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, init) => String(input).endsWith("/runs/preflight")
+      ? Promise.resolve(json({ ...executePreflight, ready: true, status: "ready" })) : defaultImplementation(input, init));
+    const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView").mockClear();
+    renderApp("/runs?prepare=1");
+    await user.click(await screen.findByRole("button", { name: "Check run" }));
+    const start = screen.getByRole("button", { name: "Start simulation" });
+    await waitFor(() => expect(start).toBeEnabled());
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    await user.click(start);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledOnce());
+    const progress = scrollIntoView.mock.contexts[0] as HTMLElement;
+    expect(progress).toHaveAttribute("id", "run-progress");
+    expect(progress).toHaveFocus();
+    // The reviewed setup stays one click away instead of pushing the run below it.
+    const setup = screen.getByText(`Review a new run · ${demoScenario.title}`, { selector: "summary" }).closest("details")!;
+    expect(setup).not.toHaveAttribute("open");
+    expect(setup.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("keeps the canonical Execute review visible outside the collapsed browser draft", async () => {
@@ -560,11 +589,23 @@ describe("product application", () => {
       return fallback(input, init);
     });
 
+    // Default initialization through Add step is covered above. Start from an
+    // existing draft so this test covers clearing, re-entry, and reload together.
+    const numericStep = { id: "typed_parameters", behavior_id: typedEnumBehavior.id, parameters: { zero_default: 0, optional_number: 0.5, positive_integer: 1 }, inputs: {}, alternates: [] };
+    window.localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify({ ...demoScenario, start: numericStep.id, steps: [...demoScenario.steps, numericStep] }));
     const user = userEvent.setup();
-    const { view, parameters: fields } = await addTypedEnumStep(user);
-    const optionalInteger = fields.getByRole("spinbutton", { name: "Zero default" });
-    const optionalNumber = fields.getByRole("spinbutton", { name: "Optional number" });
-    const requiredInteger = fields.getByRole("spinbutton", { name: "Positive integer" });
+    const view = renderApp("/builder");
+    const controls = within(await screen.findByLabelText("Graph workspace controls"));
+    await user.click(controls.getByRole("button", { name: "Show node inspector" }));
+    const inspector = within(screen.getByLabelText("Close step details").closest("section")!);
+    await user.click(inspector.getByRole("tab", { name: "Parameters" }));
+    const fields = within(inspector.getByRole("tabpanel", { name: "Parameters" }));
+    const optionalInteger = fields.getByLabelText("Zero default");
+    const optionalNumber = fields.getByLabelText("Optional number");
+    const requiredInteger = fields.getByLabelText("Positive integer");
+    expect(optionalInteger).toHaveValue(0);
+    expect(optionalNumber).toHaveValue(0.5);
+    expect(requiredInteger).toHaveValue(1);
 
     await user.clear(optionalInteger);
     await user.clear(optionalNumber);
@@ -582,7 +623,7 @@ describe("product application", () => {
       expect(serialized).not.toContain('"positive_integer":null');
     });
 
-    await user.type(requiredInteger, "3");
+    await user.keyboard("3");
     await waitFor(() => {
       const stored = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}") as { steps?: Array<{ behavior_id: string; parameters: Record<string, unknown> }> };
       const value = stored.steps?.find((step) => step.behavior_id === typedEnumBehavior.id)?.parameters.positive_integer;
@@ -659,16 +700,19 @@ describe("product application", () => {
   it("renders the complete canonical comparison contract with technical data collapsed", async () => {
     const user = userEvent.setup();
     renderApp("/compare");
-    expect(await screen.findByRole("heading", { name: "Compare runs" })).toBeVisible();
-    const runSelectors = screen.getAllByRole("checkbox");
+    const main = within(screen.getByRole("main"));
+    expect(await main.findByRole("heading", { name: "Compare runs" })).toBeVisible();
+    const selection = within(main.getByRole("heading", { name: "Choose runs to compare" }).closest("section")!);
+    const runSelectors = selection.getAllByRole("checkbox");
     expect(runSelectors).toHaveLength(2);
     await user.click(runSelectors[0]!);
     await user.click(runSelectors[1]!);
-    await user.click(screen.getByRole("button", { name: "Compare selected" }));
+    await user.click(selection.getByRole("button", { name: "Compare selected" }));
 
     expect(await screen.findByText("compared runs changed")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Review baseline run summary" })).toHaveAttribute("href", `/runs/${encodeURIComponent(demoRuns[0]!.run_id)}`);
-    expect(screen.getByRole("region", { name: "Compared run outcomes" })).toBeVisible();
+    const outcomes = main.getByRole("region", { name: "Compared run outcomes" });
+    expect(within(outcomes).getByRole("link", { name: "Review baseline run summary" })).toHaveAttribute("href", `/runs/${encodeURIComponent(demoRuns[0]!.run_id)}`);
+    expect(outcomes).toBeVisible();
     expect(screen.getByText("Observed: 3, Synthetic: 1")).not.toBeVisible();
     for (const details of screen.getAllByText("Run context and technical details")) await user.click(details);
     await user.click(screen.getByText("Detailed changes in evidence, policy, and runtime"));
@@ -998,15 +1042,33 @@ describe("product application", () => {
 
     renderApp("/runs?prepare=1");
     expect(await findDisplayedJobId(runningJob.job_id)).toBeVisible();
+    const main = within(screen.getByRole("main"));
+    const progress = within(main.getByRole("region", { name: "Run progress" }));
     releaseControllerSlot = true;
     await waitFor(() => expect(inventoryReleased && Boolean(resolveFinalDetail)).toBe(true));
     expect(displayedJobId(runningJob.job_id)).toBeVisible();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(runningJob.job_id);
 
     await act(async () => { resolveFinalDetail!(); });
-    expect(await screen.findByRole("link", { name: "Review latest result" })).toHaveAttribute("href", `/runs/${encodeURIComponent(completedRun.run_id)}`);
-    expect(screen.getByRole("button", { name: "Review" })).toBeEnabled();
+    expect(await main.findByRole("link", { name: "Review latest result" })).toHaveAttribute("href", `/runs/${encodeURIComponent(completedRun.run_id)}`);
+    const review = progress.getByRole("button", { name: "Review" });
+    expect(review).toBeEnabled();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull();
+    // A finalized result offers its review as the next step, not lifecycle controls.
+    expect(review).toHaveClass("button-primary");
+    for (const name of ["Pause", "Resume", "Cancel"]) expect(progress.queryByRole("button", { name })).not.toBeInTheDocument();
+    // The live panel leads with the same recorded conclusion as the run review.
+    const conclusion = progress.getByRole("region", { name: "Recorded run outcome" });
+    expect(within(conclusion).getByRole("heading", { level: 3 })).toHaveTextContent(objectiveLabel(completedRun.objective_reached, completedRun.mode));
+    // Returning to Runs restores the finalized result without its released job.
+    const user = userEvent.setup();
+    const navigation = within(screen.getByRole("navigation", { name: "Primary navigation" }));
+    await user.click(navigation.getByRole("link", { name: "Build" }));
+    await user.click(navigation.getByRole("link", { name: "Runs" }));
+    const restoredProgress = within(await main.findByRole("region", { name: "Run progress" }));
+    expect(await restoredProgress.findByRole("button", { name: "Review" })).toHaveClass("button-primary");
+    expect(screen.queryByText(runningJob.job_id)).not.toBeInTheDocument();
+    for (const name of ["Pause", "Resume", "Cancel"]) expect(restoredProgress.queryByRole("button", { name })).not.toBeInTheDocument();
   });
 
   it("does not re-offer a terminal job from a stale inventory snapshot", async () => {

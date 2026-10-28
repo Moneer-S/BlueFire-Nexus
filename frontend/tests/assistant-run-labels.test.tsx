@@ -36,12 +36,15 @@ it("uses the shared custom name, recorded context and separately accessible exac
   const { onNavigate } = mountReference();
   const link = await screen.findByRole("link", { name: "Reviewed run: Collection before control" });
   expect(link).toHaveAttribute("href", "/runs/run-a");
-  expect(screen.getByText(/Execute.*Profile: recorded-lab.v1/)).toBeVisible();
+  expect(screen.getByText(/^Execute/)).toBeVisible();
+  expect(screen.getByText(/^Execute/)).not.toHaveTextContent("recorded-lab.v1");
+  expect(screen.getByText("recorded-lab.v1", { selector: "code" })).not.toBeVisible();
   expect(document.querySelector("time")).toHaveAttribute("datetime", "2030-01-01T12:00:00Z");
   expect(screen.getByText("run-a", { selector: "code" })).not.toBeVisible();
   const user = userEvent.setup();
   await user.click(screen.getByText("Run identity", { selector: "summary" }));
   expect(screen.getByText("run-a", { selector: "code" })).toBeVisible();
+  expect(screen.getByText("recorded-lab.v1", { selector: "code" })).toBeVisible();
   expect(screen.getByRole("button", { name: "Copy run ID" })).toBeEnabled();
   await user.click(link);
   expect(onNavigate).toHaveBeenCalledOnce();
@@ -114,6 +117,9 @@ it("names the live selected evidence without making model requests while Off", a
   expect(detail).not.toHaveBeenCalled();
   await userEvent.setup().click(screen.getByRole("button", { name: "Assistant" }));
   expect(await screen.findByRole("link", { name: "Source observations: Selected observation run" })).toHaveAttribute("href", "/runs/run-current");
+  expect(screen.getByText("recorded-lab.v1", { selector: "code" })).not.toBeVisible();
+  await userEvent.setup().click(screen.getByText("Run identity", { selector: "summary" }));
+  expect(screen.getByText("recorded-lab.v1", { selector: "code" })).toBeVisible();
   expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
   expect(submit).not.toHaveBeenCalled();
 });

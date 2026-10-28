@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 from . import release_readiness_runtime as runtime_support
 from .product_acceptance_artifacts import public_text_contains_private_path
 from .product_acceptance_process import _playwright_browsers_path
+from .release_readiness_artifacts import _ui_digest
 from .release_readiness_toolchain import rust_suite_environment
 from .release_readiness_validation import SBOM_REPORT, SUITE_SCHEMA
 
@@ -479,20 +480,6 @@ def _playwright_ids(value: Any) -> tuple[list[str], list[str], list[str]]:
 
     visit(value)
     return sorted(set(passed)), sorted(set(skipped)), sorted(set(failed))
-
-
-def _ui_digest(root: Path) -> Mapping[str, str]:
-    expected = {"index.html", "app.js", "styles.css"}
-    try:
-        entries = {item.name: item for item in root.iterdir() if item.is_file()}
-    except OSError:
-        return {}
-    if set(entries) != expected:
-        return {}
-    return {
-        name: "sha256:" + hashlib.sha256(entries[name].read_bytes()).hexdigest()
-        for name in sorted(entries)
-    }
 
 
 def _playwright_config(frontend: Path, temporary: Path, report: Path) -> Path:

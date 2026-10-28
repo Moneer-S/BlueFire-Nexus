@@ -31,7 +31,9 @@ def submit(service, request):
         }
     )
     owner_id = value["job"]["job_id"]
-    assert service.job_controller.wait(owner_id, timeout=10)["state"] == "completed"
+    with diagnose_job_wait("receiver_terminal"):
+        terminal = service.job_controller.wait(owner_id, timeout=10)
+    assert terminal["state"] == "completed"
     return owner_id
 
 
@@ -70,7 +72,12 @@ def execute(service, owner_id, phase, *, current=None):
     )
     assert waiting["state"] == "awaiting_approval"
     service.approve_job(execution["job_id"], {"approved_by": "Fixture reviewer"})
-    with diagnose_job_wait("receiver_terminal"):
+    wait_stage = {
+        "baseline": "receiver_baseline_terminal",
+        "protected": "receiver_protected_terminal",
+        "legitimate": "receiver_legitimate_terminal",
+    }.get(phase, "receiver_terminal")
+    with diagnose_job_wait(wait_stage):
         terminal = service.job_controller.wait(execution["job_id"], timeout=20)
     assert terminal["state"] == "completed", terminal
     return service.receiver_defense_job(owner_id)
