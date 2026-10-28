@@ -129,7 +129,8 @@
 .workbench-builder .step-technical-details { padding-top: 16px; color: var(--muted); font-size: .72rem; }
 .workbench-builder .step-technical-details summary { cursor: pointer; margin-bottom: 10px; }
 /* Step card: icon tile beside a text column, as in the workbench reference. */
-.workbench-builder .flow-node { box-sizing: border-box; width: 220px; height: 88px; min-height: 88px; display: grid; grid-template-columns: 32px minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; column-gap: 10px; align-content: start; padding: 9px 12px 7px 10px; border-radius: 9px; background: linear-gradient(160deg, color-mix(in srgb, var(--blue) 7%, var(--surface-strong)), var(--surface) 70%); border-color: color-mix(in srgb, var(--blue) 18%, var(--line-strong)); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.26); transition: border-color 120ms, box-shadow 120ms; }
+/* Keep 82px inside for a two-line title, context, and alternative/platform footer. */
+.workbench-builder .flow-node { box-sizing: border-box; width: 220px; height: 96px; min-height: 96px; display: grid; grid-template-columns: 32px minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; column-gap: 10px; align-content: start; padding: 7px 12px 5px 10px; border-radius: 9px; background: linear-gradient(160deg, color-mix(in srgb, var(--blue) 7%, var(--surface-strong)), var(--surface) 70%); border-color: color-mix(in srgb, var(--blue) 18%, var(--line-strong)); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.26); transition: border-color 120ms, box-shadow 120ms; }
 .workbench-builder .flow-node:hover { border-color: color-mix(in srgb, var(--blue) 40%, var(--line-strong)); }
 .workbench-builder .flow-node .node-title, .workbench-builder .flow-node .route-handles { display: contents; }
 .workbench-builder .flow-node > header { grid-column: 2; grid-row: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 6px; min-width: 0; }
