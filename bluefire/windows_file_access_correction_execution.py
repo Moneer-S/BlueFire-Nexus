@@ -42,12 +42,14 @@ class WindowsCorrectionRuntime:
     def _clock(self) -> datetime:
         return datetime.now(timezone.utc)
 
-    def _runner_client(self, setup_receipt: dict) -> Any:
+    def _runner_client(self, setup_receipt: dict, *, recovery: bool = False) -> Any:
         try:
             source = setup_receipt["source"]
-            client, _sandbox = self.control.service.runner_lifecycle.client_for_profile(
-                source["source_profile_id"]
+            lifecycle = self.control.service.runner_lifecycle
+            acquire = (
+                lifecycle.recovery_client_for_profile if recovery else lifecycle.client_for_profile
             )
+            client, _sandbox = acquire(source["source_profile_id"])
             wire._require(dict(client.transport_identity()) == source["transport"])
             return client
         except Exception:
@@ -513,7 +515,7 @@ class WindowsCorrectionRuntime:
             _operation, _prepared, imported, _control = journal.original_at(
                 self.store, connection, job_id
             )
-        client = self._runner_client(imported["setup_receipt"])
+        client = self._runner_client(imported["setup_receipt"], recovery=True)
         try:
             recovered = client.recover(
                 original["task_id"],

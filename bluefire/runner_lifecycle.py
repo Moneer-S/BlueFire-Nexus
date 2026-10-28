@@ -20,7 +20,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol, Sequence, cast
+from typing import Any, Callable, Literal, Mapping, Protocol, Sequence, cast
 
 from .runner_bootstrap import (
     RUNNER_ID,
@@ -943,6 +943,26 @@ class ManagedRunnerLifecycle:
     ) -> tuple[AuthenticatedRunnerClient, Path]:
         """Return a verified client and the exact sandbox for one enrolled profile."""
 
+        return self._profile_client(
+            profile_id, operation="execute", profile_budget_seconds=profile_budget_seconds
+        )
+
+    def recovery_client_for_profile(
+        self, profile_id: str
+    ) -> tuple[AuthenticatedRunnerClient, Path]:
+        """Authenticate original-result recovery without requiring fresh Execute capacity."""
+
+        return self._profile_client(profile_id, operation="recover")
+
+    def _profile_client(
+        self,
+        profile_id: str,
+        *,
+        operation: Literal["execute", "recover"],
+        profile_budget_seconds: int | None = None,
+    ) -> tuple[AuthenticatedRunnerClient, Path]:
+        if operation not in {"execute", "recover"}:
+            raise RunnerLifecycleError("Runner client operation is invalid.")
         enrollment = self._load_active_enrollment()
         bootstrap = self._load_bootstrap(enrollment)
         selected = self._selected_profile(enrollment, profile_id)
@@ -954,16 +974,23 @@ class ManagedRunnerLifecycle:
             )
         except RunnerHostError:
             raise RunnerLifecycleError("Runner host is not authenticated and ready.") from None
-        _control_client, _health = self._authenticated_health(
+        control_client, _health = self._authenticated_health(
             enrollment, bootstrap, record, selected
         )
         ledger = _health.get("ledger")
-        if not isinstance(ledger, Mapping) or ledger.get("accepting_execute") is not True:
+        if not isinstance(ledger, Mapping):
+            raise RunnerLifecycleError("Runner recovery ledger cannot accept execution.")
+        accepting_execute = ledger.get("accepting_execute")
+        if type(accepting_execute) is not bool:
+            raise RunnerLifecycleError("Runner recovery ledger cannot accept execution.")
+        if operation == "execute" and accepting_execute is not True:
             raise RunnerLifecycleError("Runner recovery ledger cannot accept execution.")
         if not self._supports_profile_budget(_health, profile_budget_seconds):
             raise RunnerProfileBudgetError(
                 "Runner deadline cannot cover this profile; after current work completes, stop and start the runner in Runners."
             )
+        if operation == "recover":
+            return control_client, bootstrap.sandbox_path
         client = self._new_client(
             enrollment,
             selected,

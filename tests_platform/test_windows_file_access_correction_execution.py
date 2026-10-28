@@ -15,10 +15,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from bluefire import runner_lifecycle as lifecycle_module
 from bluefire import windows_file_access_correction_execution as module
 from bluefire import windows_file_access_correction_observation as observation
 from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ProductStoreError
+from bluefire.runner_lifecycle import (
+    ManagedRunnerLifecycle,
+    RunnerLifecycleError,
+    RunnerProfileBudgetError,
+)
 from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform import test_windows_file_access_correction_wire as wire_fake
 from tests_platform import test_windows_file_access_process as process_fake
@@ -407,6 +413,9 @@ def execution(reviewed, paired, monkeypatch):
             else pytest.fail("unexpected correction profile")
         )
     )
+    control.service.runner_lifecycle.recovery_client_for_profile = (
+        control.service.runner_lifecycle.client_for_profile
+    )
     ctx = SimpleNamespace(
         job_id=job_id, cancellation_event=threading.Event(), checkpoint=state.phases.append
     )
@@ -455,6 +464,156 @@ def _forbid_new_work(value):
     value.monkeypatch.setattr(observation, "observe_correction_postimage", forbidden)
     value.monkeypatch.setattr(module.control_process, "run_correction_control_process", forbidden)
     value.monkeypatch.setattr(module.wire, "prepare_correction_packet", forbidden)
+
+
+def _capacity_full_lifecycle(value, tmp_path):
+    client = value.state.remote_client
+    transport = dict(client.transport_identity())
+    profile = value.value.saved["imported"]["setup_receipt"]["source"]["source_profile_id"]
+    enrollment = SimpleNamespace(
+        root=tmp_path / "enrollment",
+        allowed_profile_ids=(profile,),
+        metadata={
+            "server_fingerprint": transport["server_fingerprint"],
+            "client_fingerprint": transport["client_fingerprint"],
+        },
+    )
+    bootstrap = SimpleNamespace(
+        binary_digest=transport["runner_binary_digest"], sandbox_path=tmp_path / "sandbox"
+    )
+    record = {"port": 43123, "server_instance_id": "a" * 32}
+    health = {
+        **transport,
+        "schema_version": "bluefire.runner-health.v1",
+        "status": "ready",
+        "profile_id": profile,
+        "server_instance_id": record["server_instance_id"],
+        "ledger": {"accepting_execute": False},
+    }
+    timeouts = []
+
+    def factory(*_args, **kwargs):
+        assert kwargs["profile_id"] == profile and kwargs["port"] == record["port"]
+        timeouts.append(kwargs["socket_timeout_seconds"])
+        return client
+
+    manager = ManagedRunnerLifecycle(
+        tmp_path / "managed", client_factory=factory, start_timeout_seconds=2
+    )
+    value.monkeypatch.setattr(manager, "_load_active_enrollment", lambda: enrollment)
+    value.monkeypatch.setattr(manager, "_load_bootstrap", lambda _enrollment: bootstrap)
+    value.monkeypatch.setattr(lifecycle_module, "read_process_record", lambda *a, **k: record)
+    value.monkeypatch.setattr(client, "health", lambda: health, raising=False)
+    value.control.service.runner_lifecycle = manager
+    return manager, health, profile, timeouts
+
+
+def test_managed_recovery_uses_reserved_control_when_execute_capacity_is_full(execution, tmp_path):
+    v = execution
+    v.state.fault = "retest_persistence"
+    _abort(v, "retest")
+    with pytest.raises(ProductStoreError):
+        v.runtime.execute(v.ctx, v.request)
+    before = _records(v)
+    with v.store._connection(write=True) as connection:
+        connection.execute("DROP TRIGGER synthetic_retest_failure")
+    manager, _health, profile, timeouts = _capacity_full_lifecycle(v, tmp_path)
+    with pytest.raises(RunnerLifecycleError, match="cannot accept execution"):
+        manager.client_for_profile(profile)
+    _forbid_new_work(v)
+    v.runtime.recover(v.job, expected_outcome_digest=before["outcome_digest"])
+    assert _records(v)["outcome"]["state"] == "complete" and _revision_count(v) == 1
+    assert _records(v)["tasks"] == before["tasks"]
+    assert len(v.state.controls) == len(v.state.launches) == 1
+    assert timeouts == [2.0, 2.0]
+    receipt = v.value.saved["imported"]["setup_receipt"]
+    with pytest.raises(ProductStoreError, match="transport is unavailable"):
+        v.runtime._runner_client(receipt)
+
+
+@pytest.mark.parametrize("field", ["enrollment_generation", "runner_binary_digest"])
+def test_capacity_full_recovery_refuses_another_original_transport(execution, tmp_path, field):
+    v = execution
+    v.state.fault = "retest_persistence"
+    _abort(v, "retest")
+    with pytest.raises(ProductStoreError):
+        v.runtime.execute(v.ctx, v.request)
+    before = _records(v)
+    _capacity_full_lifecycle(v, tmp_path)
+    client = v.state.remote_client
+    identity = {**client.transport_identity(), field: "sha256:" + "f" * 64}
+    v.monkeypatch.setattr(client, "transport_identity", lambda: identity)
+    v.monkeypatch.setattr(
+        client,
+        "recover",
+        lambda *args: pytest.fail("Foreign transport must fail before result recovery"),
+    )
+    _forbid_new_work(v)
+    with pytest.raises(ProductStoreError, match="transport is unavailable"):
+        v.runtime._recover_managed_result(v.job)
+    assert _records(v) == before and _revision_count(v) == 0
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("server_instance_id", "b" * 32),
+        ("server_fingerprint", "sha256:" + "f" * 64),
+        ("profile_id", "foreign-profile"),
+        ("runner_binary_digest", "sha256:" + "f" * 64),
+    ],
+)
+def test_capacity_full_recovery_keeps_authenticated_health_identity(
+    execution, tmp_path, field, value
+):
+    manager, health, profile, _timeouts = _capacity_full_lifecycle(execution, tmp_path)
+    health[field] = value
+    with pytest.raises(RunnerLifecycleError, match="health identity does not match"):
+        manager.recovery_client_for_profile(profile)
+
+
+@pytest.mark.parametrize("ledger", [None, False, [], 0, "missing"])
+def test_recovery_acquisition_requires_ledger_health_mapping(execution, tmp_path, ledger):
+    manager, health, profile, _timeouts = _capacity_full_lifecycle(execution, tmp_path)
+    if ledger == "missing":
+        health.pop("ledger")
+    else:
+        health["ledger"] = ledger
+    with pytest.raises(RunnerLifecycleError, match="cannot accept execution"):
+        manager.recovery_client_for_profile(profile)
+    with pytest.raises(RunnerLifecycleError, match="cannot accept execution"):
+        manager.client_for_profile(profile)
+
+
+@pytest.mark.parametrize("accepting", [None, 0, 1, "false", [], {}, "missing"])
+def test_recovery_acquisition_requires_exact_boolean_capacity_health(
+    execution, tmp_path, accepting
+):
+    manager, health, profile, _timeouts = _capacity_full_lifecycle(execution, tmp_path)
+    if accepting == "missing":
+        health["ledger"].pop("accepting_execute")
+    else:
+        health["ledger"]["accepting_execute"] = accepting
+    with pytest.raises(RunnerLifecycleError, match="cannot accept execution"):
+        manager.recovery_client_for_profile(profile)
+    with pytest.raises(RunnerLifecycleError, match="cannot accept execution"):
+        manager.client_for_profile(profile)
+
+
+def test_recovery_acquisition_preserves_profile_budget_and_closed_operation_mode(
+    execution, tmp_path
+):
+    manager, health, profile, _timeouts = _capacity_full_lifecycle(execution, tmp_path)
+    with pytest.raises(RunnerLifecycleError):
+        manager.recovery_client_for_profile("foreign-profile")
+    health["execution_timeout_seconds"] = 30.0
+    with pytest.raises(RunnerProfileBudgetError, match="deadline cannot cover"):
+        manager._profile_client(profile, operation="recover", profile_budget_seconds=70)
+    health["ledger"]["accepting_execute"] = True
+    with pytest.raises(RunnerProfileBudgetError, match="deadline cannot cover"):
+        manager.client_for_profile(profile, profile_budget_seconds=70)
+    with pytest.raises(RunnerLifecycleError, match="operation is invalid"):
+        manager._profile_client(profile, operation="unknown")
 
 
 def test_private_runtime_publishes_one_hardened_revision_from_both_closed_phases(execution):
