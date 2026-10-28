@@ -493,7 +493,7 @@ class AdSmbJobs:
             final["acceptance_binding"] = initial["acceptance_binding"]
         return final, evidence
 
-    def _publish(self, owner, child, executions, outcome):
+    def _publish(self, owner, child, executions, outcome, *, read_only=False):
         run_id = child["progress"]["run_id"]
         path = self.runs._run_path(run_id, must_exist=True)
         docs = self._documents(owner, child)
@@ -534,6 +534,8 @@ class AdSmbJobs:
             ):
                 raise AdSmbError("AD sealed run differs from its exact original terminal evidence.")
             return
+        if read_only:
+            raise AdSmbError("AD saved explanation requires its sealed original run.")
         expected_initial = dict(initial["result"])
         if len(events) == 2 and events[-1]["event_type"] == "run.interrupted":
             interrupted = actual.get("interrupted_at")

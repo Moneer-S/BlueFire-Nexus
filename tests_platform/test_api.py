@@ -133,6 +133,10 @@ class StubService:
         self.calls.append(("ad_smb_workflow", identifier))
         return {"saved": True}
 
+    def ad_smb_assistance_context(self, identifier):
+        self.calls.append(("ad_smb_assistance_context", identifier))
+        return {"saved": True}
+
     def review_ad_smb(self, identifier, request):
         self.calls.append(("review_ad_smb", identifier, request))
         return {"saved": True}

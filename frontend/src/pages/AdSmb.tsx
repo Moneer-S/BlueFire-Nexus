@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, ChevronLeft, ChevronRight, ClipboardCheck, FileSearch, History, Plus, RefreshCw, Square, Undo2, X } from "lucide-react";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, formatDate, sentence } from "../components/Primitives";
 import { ObjectiveContext } from "../components/ObjectiveContext";
+import { AdSmbAssistanceAction } from "../components/AdSmbAssistanceAction";
 import { useRememberDefensiveWork } from "../state/activeDefensiveWork";
 import { adConfirmed, adJobId, adJobValid, adPhaseCurrent, adPhaseLabels, adReadinessLabels, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdPreparationJob, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending, type AdAuditEvent, type AdBudget, type AdChange, type AdEnvironment, type AdNormalizedAudit, type AdOperation, type AdPending, type AdPhase, type AdPreparation, type AdReview, type AdWorkflow } from "../lib/ad-smb";
 import "./AdSmb.css";
@@ -138,6 +139,7 @@ export function AdSmbPage() {
             <p className="ad-smb-limits">Effective access not established. Local read observations do not authenticate the remote reader or prove a fresh server logon.</p>
           </section>
           {shownReview ? <Review key={`${shownReview.workflow}:${shownReview.revision}:${shownReview.phase}`} value={shownReview} environment={value.environment} disabled={!canReview || !adPhaseCurrent(value, shownReview.phase, now)} onSubmit={submit} onClose={() => setReview(undefined)} /> : null}
+          <AdSmbAssistanceAction key={value.id} workflow={value} disabled={workflow.isFetching} />
           <ReadComparison workflow={value} />
           <section className="ad-smb-section" aria-label="Remaining AD authority"><h2>Remaining authority</h2><Budget value={value.remaining} /><p className="ad-smb-limits">Reserved attempts are not refunded.</p></section>
           {value.preparations.length ? <section className="ad-smb-section" aria-label="AD preparation history"><h2>Preparation history</h2>

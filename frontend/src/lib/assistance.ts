@@ -9,6 +9,7 @@ import { checkedReceiverAssistance, isReceiverSelection, validReceiverAssistance
 import { validFileAccessAssistanceSelection, type FileAccessAssistanceSelection } from "./file-access-assistance";
 import { validComparisonAssistanceSelection, type ComparisonAssistanceSelection } from "./comparison-assistance";
 import { validFileAccessRetestAssistanceSelection, type FileAccessRetestAssistanceSelection } from "./file-access-retest-assistance";
+import { validAdSmbAssistanceSelection, type AdSmbAssistanceSelection } from "./ad-smb-assistance";
 
 export type AssistanceCapability = "detection.create_and_evaluate" | "detection.revise_and_evaluate" | "method.compare_same_detector" | "graph.propose_and_validate" | "run.saved_graph_and_inspect" | "receiver.test_and_compare" | "receiver.inspect_and_plan_next";
 export interface GraphStepSelection { scenario: Scenario; step_id: string; dirty: boolean }
@@ -16,7 +17,7 @@ export interface GraphSelection { edit_step?: GraphStepSelection; kind: "graph";
 export interface AssistanceContext {
   schema_version: "bluefire.assistance-context.v1";
   context_digest: string;
-  selected: FileAccessRetestAssistanceSelection | AuditAssistanceSelection | FileAccessAssistanceSelection | ComparisonAssistanceSelection | GraphSelection | SavedRunSelection | RunDetectionSelection | ReceiverAssistanceSelection | {
+  selected: AdSmbAssistanceSelection | FileAccessRetestAssistanceSelection | AuditAssistanceSelection | FileAccessAssistanceSelection | ComparisonAssistanceSelection | GraphSelection | SavedRunSelection | RunDetectionSelection | ReceiverAssistanceSelection | {
     run_id: string; candidate_id: string; candidate_resource_digest: string;
     title: string; definition_digest: string; target_language: string; source_binding: MethodSource;
   };
@@ -40,7 +41,10 @@ export interface AuditAssistanceRequest extends Omit<GraphAssistanceRequest, "se
 export interface FileAccessAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: FileAccessAssistanceSelection }
 export interface ComparisonAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: ComparisonAssistanceSelection }
 export interface FileAccessRetestAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: FileAccessRetestAssistanceSelection }
-export type AssistanceRequest = FileAccessRetestAssistanceRequest | AuditAssistanceRequest | FileAccessAssistanceRequest | ComparisonAssistanceRequest | DetectionAssistanceRequest | GraphAssistanceRequest | SavedGraphAssistanceRequest | RunDetectionAssistanceRequest | ReceiverAssistanceRequest;
+export interface AdSmbAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: AdSmbAssistanceSelection }
+export type AssistanceRequest = AdSmbAssistanceRequest | FileAccessRetestAssistanceRequest | AuditAssistanceRequest | FileAccessAssistanceRequest | ComparisonAssistanceRequest | DetectionAssistanceRequest | GraphAssistanceRequest | SavedGraphAssistanceRequest | RunDetectionAssistanceRequest | ReceiverAssistanceRequest;
+export const isAdSmbRequest = (value: AssistanceRequest): value is AdSmbAssistanceRequest => "selection" in value && value.selection?.kind === "ad_smb_workflow";
+export const isAdSmbSelection = (value: AssistanceContext["selected"]): value is AdSmbAssistanceSelection => "kind" in value && value.kind === "ad_smb_workflow";
 export const isAuditRequest = (value: AssistanceRequest): value is AuditAssistanceRequest => "selection" in value && isAuditSelection(value.selection);
 export const isFileAccessRequest = (value: AssistanceRequest): value is FileAccessAssistanceRequest => "selection" in value && validFileAccessAssistanceSelection(value.selection);
 export const isComparisonRequest = (value: AssistanceRequest): value is ComparisonAssistanceRequest => "selection" in value && validComparisonAssistanceSelection(value.selection);
@@ -61,7 +65,7 @@ export interface AssistanceEnvelope {
   turn: {
     schema_version: "bluefire.assistance-turn.v1"; status: AssistanceStatus; message: string; context_digest: string;
     can_start_new_turn: boolean;
-    selected: FileAccessRetestAssistanceSelection | AuditAssistanceSelection | FileAccessAssistanceSelection | ComparisonAssistanceSelection | GraphSelection | SavedRunSelection | RunDetectionSelection | ReceiverAssistanceSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
+    selected: AdSmbAssistanceSelection | FileAccessRetestAssistanceSelection | AuditAssistanceSelection | FileAccessAssistanceSelection | ComparisonAssistanceSelection | GraphSelection | SavedRunSelection | RunDetectionSelection | ReceiverAssistanceSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
     plan: Array<{ step_id: string; capability_id: AssistanceCapability; title: string; detector_ref: "selected" | "revised" | "none"; reason: string }>;
     active_child: null | { job_id: string; kind: string; state: string; step_id: string; native_path: string };
     receiver_test?: ReceiverAssistanceProgress;
@@ -96,7 +100,9 @@ function readStoredRequest(key: string): AssistanceRequest | undefined {
     if (!value || !uuid.test(value.submission_id) || !digest.test(value.context_digest) || !bounded(value.message, 1000)
       || !["off", "assist", "auto"].includes(value.autonomy)
       || (value.provider_id !== undefined && !bounded(value.provider_id))) return;
-    if (isAuditRequest(value)) {
+    if (isAdSmbRequest(value)) {
+      if (!validAdSmbAssistanceSelection(value.selection)) return;
+    } else if (isAuditRequest(value)) {
       if (!validAuditAssistanceSelection(value.selection)) return;
     } else if (isFileAccessRequest(value)) {
       if (!validFileAccessAssistanceSelection(value.selection)) return;
@@ -172,15 +178,15 @@ export function clearAssistanceReceipt(value: AssistanceRequest): boolean {
 export function matchesAssistanceReceipt(value: AssistanceEnvelope, receipt: AssistanceRequest): boolean {
   try { checkedReceiverAssistance(value); } catch { return false; }
   if (isAuditRequest(receipt) && !validAuditAssistanceSelection(receipt.selection)) return false;
-  if ("selection" in receipt && receipt.selection?.kind === "file_access_retest_comparison") {
-    if (!validFileAccessRetestAssistanceSelection(receipt.selection) || value.turn?.continuation !== null
+  if (isAdSmbRequest(receipt) || "selection" in receipt && receipt.selection?.kind === "file_access_retest_comparison") {
+    if (!(isAdSmbRequest(receipt) ? validAdSmbAssistanceSelection(receipt.selection) : validFileAccessRetestAssistanceSelection(receipt.selection)) || value.turn?.continuation !== null
       || value.turn.recovery !== null || "receiver_test" in value.turn) return false;
     const action = value.turn.next_action;
     if (action !== null && (!action || action.kind !== "new_turn" || action.native_path !== null
       || Object.keys(action).some(key => !["kind", "native_path", "label"].includes(key))
       || (action.label !== undefined && !bounded(action.label)))) return false;
   }
-  if ((isAuditRequest(receipt) || isFileAccessRequest(receipt) || isComparisonRequest(receipt) || isFileAccessRetestRequest(receipt)) && (!Array.isArray(value.turn?.plan) || value.turn.plan.length || value.turn.active_child !== null || !Array.isArray(value.turn.results) || value.turn.results.length)) return false;
+  if ((isAdSmbRequest(receipt) || isAuditRequest(receipt) || isFileAccessRequest(receipt) || isComparisonRequest(receipt) || isFileAccessRetestRequest(receipt)) && (!Array.isArray(value.turn?.plan) || value.turn.plan.length || value.turn.active_child !== null || !Array.isArray(value.turn.results) || value.turn.results.length)) return false;
   return value.job?.kind === "assistance.turn" && value.job.job_id === assistanceJobId(receipt.submission_id)
     && sameJson(value.job.request?.submitted_request, receipt) && value.turn?.schema_version === "bluefire.assistance-turn.v1"
     && value.turn.context_digest === receipt.context_digest && sameJson(value.turn.selected, "selection" in receipt ? receipt.selection
