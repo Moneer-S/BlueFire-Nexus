@@ -15,6 +15,32 @@ _TRACE_BYTES = 65536
 _TRACE_EVENTS = 128
 _TRACE_SECONDS = 30
 _TRACE_STDERR_BYTES = 8192
+_TRACE_COMPILER_TAGS = frozenset(
+    {"D_IDENT_UNDEF", "D_VAR_UNDEF", "D_OP_INCOMPAT", "D_FUNC_UNDEF", "D_SYNTAX"}
+)
+_TRACE_COMPILER_TOKENS = frozenset(
+    {
+        "chosen",
+        "native",
+        "pending",
+        "events",
+        "ticks",
+        "this->image",
+        "self->op",
+        "self->a",
+        "self->b",
+        "self->c",
+        "self->socket",
+        "progenyof",
+        "copyinstr",
+        "strlen",
+        "substr",
+        "strstr",
+        "printf",
+        "ustack",
+        "exit",
+    }
+)
 _TRACE_FAILURE_CODES = frozenset(
     {
         "internal_setup_failed",
@@ -98,6 +124,49 @@ def _stderr_failure_codes(raw: bytes, *, truncated: bool = False) -> set[str]:
     return codes or ({"unknown_stderr"} if raw else set())
 
 
+def _compiler_diagnostic(
+    raw: bytes, *, line_count: int, truncated: bool = False
+) -> dict[str, Any] | None:
+    """Parse Apple's errtags/line format; return no arbitrary error text.
+
+    dt_error.c:dt_set_errmsg prefixes [tag], optional filename, then line number.
+    Only tags and identifier spellings already present in this generator escape
+    this transient buffer. Unknown tags/lines are withheld; unknown tokens stay
+    the fixed enum "unknown". This detail never changes failure classification.
+    """
+    if (
+        truncated
+        or len(raw) > _TRACE_STDERR_BYTES
+        or type(line_count) is not int
+        or not 1 <= line_count <= 128
+    ):
+        return None
+    for message in raw.splitlines():
+        match = re.fullmatch(
+            rb"dtrace: failed to compile script [^\r\n]{1,2048}: \[([A-Z_]{1,32})\] "
+            rb'(?:"[^"\r\n]{1,2048}", )?line ([0-9]{1,3}): ([^\r\n]{1,2048})',
+            message,
+        )
+        if not match:
+            continue
+        tag = match[1].decode("ascii")
+        line = int(match[2])
+        if tag not in _TRACE_COMPILER_TAGS or not 1 <= line <= line_count:
+            continue
+        token = "unknown"
+        for pattern in (
+            rb"failed to resolve ((?:self->|this->)?[A-Za-z_][A-Za-z0-9_]*): [^\r\n]+",
+            rb"((?:self->|this->)?[A-Za-z_][A-Za-z0-9_]*) has not yet been declared or assigned",
+            rb"undefined function name: ([A-Za-z_][A-Za-z0-9_]*)",
+        ):
+            identifier = re.fullmatch(pattern, match[3])
+            if identifier and identifier[1].decode("ascii") in _TRACE_COMPILER_TOKENS:
+                token = identifier[1].decode("ascii")
+                break
+        return {"tag": tag, "line": line, "token": token}
+    return None
+
+
 def _owned_trace_script(owner: int, native_parent: Path) -> str:
     """Use Apple's progenyof(), with no process-name or global data collection.
 
@@ -120,7 +189,7 @@ def _owned_trace_script(owner: int, native_parent: Path) -> str:
 #pragma D option strsize=1024
 #pragma D option bufsize=256k
 #pragma D option dynvarsize=256k
-dtrace:::BEGIN {{ printf("BFTRACE_READY\\n"); }}
+dtrace:::BEGIN {{ chosen = 0; printf("BFTRACE_READY\\n"); }}
 syscall::execve:entry /progenyof({owner}) && !chosen/ {{
     this->image = copyinstr(arg0);
     pending[pid] = strlen(this->image) == {len(prefix) + 64} &&
@@ -305,6 +374,7 @@ class _OwnedStartupTrace:
         self.failures: set[str] = set()
         self.stderr_raw = bytearray()
         self.stdout_bytes = self.stderr_bytes = 0
+        self.script_line_count = 0
         self._result: dict[str, Any] | None = None
         self.ready = threading.Event()
         self.process = None
@@ -315,11 +385,13 @@ class _OwnedStartupTrace:
             self.temporary = tempfile.TemporaryDirectory(prefix="bluefire-owned-trace-")
             os.chmod(self.temporary.name, 0o700)
             script = Path(self.temporary.name) / "owned.d"
-            script.write_text(_owned_trace_script(os.getpid(), native_parent), encoding="ascii")
+            source = _owned_trace_script(os.getpid(), native_parent)
+            self.script_line_count = len(source.splitlines())
+            script.write_text(source, encoding="ascii")
             os.chmod(script, 0o600)
             phase = "spawn_failed"
             self.process = subprocess.Popen(
-                ["/usr/sbin/dtrace", "-q", "-s", str(script)],
+                ["/usr/sbin/dtrace", "-q", "-x", "errtags", "-s", str(script)],
                 env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"},
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -404,6 +476,13 @@ class _OwnedStartupTrace:
         result = _trace_projection(
             bytes(self.raw), impaired=self.impaired, failure_codes=self.failures
         )
+        compiler = _compiler_diagnostic(
+            bytes(self.stderr_raw),
+            line_count=self.script_line_count,
+            truncated=self.stderr_bytes > _TRACE_STDERR_BYTES,
+        )
+        if compiler is not None:
+            result["compiler"] = compiler
         result["tracer"] = {
             "process_created": self.process is not None,
             "returncode": self.process.returncode if self.process is not None else None,

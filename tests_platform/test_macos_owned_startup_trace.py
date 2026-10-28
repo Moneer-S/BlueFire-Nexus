@@ -22,6 +22,7 @@ def _trace_double(process):
     trace.failures = set()
     trace.impaired = False
     trace.stdout_bytes = trace.stderr_bytes = 0
+    trace.script_line_count = 54
     trace._result = None
     trace.ready = threading.Event()
     trace.readers = []
@@ -109,6 +110,10 @@ def test_no_socket_event_is_never_inheritance_attribution():
 
 def test_script_scope_captures_neither_argv_environment_payload_nor_paths():
     script = trace_support._owned_trace_script(12345, Path("/protected/bluefire/native"))
+    # Apple cooks clauses in order; the first selector cannot read a scalar
+    # whose first assignment occurs only in a later exec-success clause.
+    assert "dtrace:::BEGIN { chosen = 0;" in script
+    assert script.index("chosen = 0;") < script.index("!chosen")
     assert "progenyof(12345)" in script
     prefix = "/protected/bluefire/native/.bluefire-verified-launch-"
     assert f"strlen(this->image) == {len(prefix) + 64}" in script
@@ -207,6 +212,40 @@ def test_truncated_or_mixed_stderr_stays_unknown_without_sip_refusal_inference()
 
 
 @pytest.mark.parametrize(
+    "tag,detail,token",
+    [
+        ("D_IDENT_UNDEF", "failed to resolve chosen: Unknown variable name", "chosen"),
+        ("D_VAR_UNDEF", "self->op has not yet been declared or assigned", "self->op"),
+        ("D_FUNC_UNDEF", "undefined function name: substr", "substr"),
+        ("D_SYNTAX", "expected actions { } following probe description and predicate", "unknown"),
+        ("D_OP_INCOMPAT", 'operands have incompatible types: "private" != "long"', "unknown"),
+        ("D_IDENT_UNDEF", "failed to resolve private_credential: Unknown variable name", "unknown"),
+    ],
+)
+def test_compiler_diagnostic_exports_only_allowed_tag_line_and_generated_token(tag, detail, token):
+    raw = (
+        f"dtrace: failed to compile script /private/credential/owned.d: [{tag}] "
+        f'"/private/credential/owned.d", line 6: {detail}\n'
+    ).encode("ascii")
+    result = trace_support._compiler_diagnostic(raw, line_count=54)
+    assert result == {"tag": tag, "line": 6, "token": token}
+    assert "private" not in json.dumps(result) and "credential" not in json.dumps(result)
+    assert trace_support._stderr_failure_codes(raw) == {"dtrace_compile_failure"}
+
+
+@pytest.mark.parametrize(
+    "tag,line", [("D_PRIVATE", 6), ("D_IDENT_UNDEF", 0), ("D_IDENT_UNDEF", 55)]
+)
+def test_unknown_compiler_tags_and_outside_script_lines_are_withheld(tag, line):
+    raw = (
+        f"dtrace: failed to compile script /private/owned.d: [{tag}] "
+        f"line {line}: failed to resolve chosen: Unknown variable name\n"
+    ).encode("ascii")
+    assert trace_support._compiler_diagnostic(raw, line_count=54) is None
+    assert trace_support._compiler_diagnostic(raw, line_count=54, truncated=True) is None
+
+
+@pytest.mark.parametrize(
     "raw,code",
     [
         (b"", "missing_ready_marker"),
@@ -238,7 +277,9 @@ def test_stderr_chunks_are_bounded_and_first_cleanup_result_survives_second_stop
     )
     read_fd, write_fd = os.pipe()
     os.write(
-        write_fd, b"dtrace: failed to compile script /private/credential/owned.d: syntax error\n"
+        write_fd,
+        b"dtrace: failed to compile script /private/credential/owned.d: "
+        b"[D_IDENT_UNDEF] line 6: failed to resolve chosen: Unknown variable name\n",
     )
     os.close(write_fd)
     with os.fdopen(read_fd, "rb") as stream:
@@ -248,6 +289,7 @@ def test_stderr_chunks_are_bounded_and_first_cleanup_result_survives_second_stop
     assert result["status"] == "inconclusive"
     assert {"dtrace_compile_failure", "nonzero_tracer_exit"} <= set(result["failure_codes"])
     assert result["tracer"]["stderr_bytes"] > 0
+    assert result["compiler"] == {"tag": "D_IDENT_UNDEF", "line": 6, "token": "chosen"}
     assert trace.stop() == result
     assert not trace.raw and not trace.stderr_raw
     assert "credential" not in json.dumps(result)
@@ -303,7 +345,13 @@ def test_readiness_and_reader_start_failures_are_distinct_without_process_launch
     process = SimpleNamespace(
         wait=lambda **_: 0, returncode=0, stdout=io.BytesIO(), stderr=io.BytesIO()
     )
-    monkeypatch.setattr(trace_support.subprocess, "Popen", lambda *_a, **_k: process)
+    captured = []
+
+    def spawn(args, **_options):
+        captured.append(args)
+        return process
+
+    monkeypatch.setattr(trace_support.subprocess, "Popen", spawn)
 
     def start():
         if where == "reader":
@@ -321,6 +369,7 @@ def test_readiness_and_reader_start_failures_are_distinct_without_process_launch
     result = trace.stop()
     assert expected in result["failure_codes"]
     assert result["tracer"]["process_created"] is True
+    assert captured[0][:5] == ["/usr/sbin/dtrace", "-q", "-x", "errtags", "-s"]
     assert result["tracer"]["reader_threads_drained"] is (where == "ready")
     assert "private" not in json.dumps(result)
 
