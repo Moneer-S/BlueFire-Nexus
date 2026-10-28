@@ -339,6 +339,7 @@
         "bluefire.cloud_identity_runtime",
         "bluefire.cloud_identity_validation",
         "bluefire.comparison",
+        "bluefire.composition_comparison",
         "bluefire.comparison_dimensions",
         "bluefire.comparison_materiality",
         "bluefire.comparison_s3",
