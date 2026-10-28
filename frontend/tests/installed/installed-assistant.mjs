@@ -350,6 +350,14 @@ async function proveCompositionPurposeAuthorizations() {
     assert.equal(await linux.isEnabled(), true);
     assert.equal(await macos.isEnabled(), true);
     assert.equal(await receiver.isEnabled(), true);
+    report.model_purpose_selection_resets ??= [];
+    report.model_purpose_selection_resets.push({
+      purpose: item.purpose,
+      before: { linux: await linux.isChecked(), macos: await macos.isChecked(), receiver: await receiver.isChecked() },
+    });
+    await linux.uncheck();
+    await macos.uncheck();
+    await receiver.uncheck();
     assert.equal(await linux.isChecked(), false);
     assert.equal(await macos.isChecked(), false);
     assert.equal(await receiver.isChecked(), false);
