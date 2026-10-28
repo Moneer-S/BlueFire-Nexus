@@ -387,6 +387,101 @@ def test_start_stops_owned_clients_even_when_distribution_identity_changes(
     assert not management
 
 
+class _PrivateExitStatus:
+    def __repr__(self):
+        raise AssertionError("a child status must never render arbitrary repr")
+
+    def __str__(self):
+        raise AssertionError("a child status must never render arbitrary text")
+
+
+@pytest.mark.parametrize(
+    ("inner_status", "outer_status", "expected"),
+    [
+        (2, None, "product_session=exit:2; ui_relay=running"),
+        (None, 3, "product_session=running; ui_relay=exit:3"),
+        (2, 3, "product_session=exit:2; ui_relay=exit:3"),
+        (-9, None, "product_session=exit:-9; ui_relay=running"),
+        (None, -15, "product_session=running; ui_relay=exit:-15"),
+        (0, 3, "product_session=exit:0; ui_relay=exit:3"),
+        (2, 0, "product_session=exit:2; ui_relay=exit:0"),
+        (2**32 - 1, None, "product_session=exit:4294967295; ui_relay=running"),
+        (-(2**31), 3, "product_session=exit:-2147483648; ui_relay=exit:3"),
+        (2**32, 3, "product_session=unavailable; ui_relay=exit:3"),
+        (-(2**31) - 1, 3, "product_session=unavailable; ui_relay=exit:3"),
+        (True, 3, "product_session=unavailable; ui_relay=exit:3"),
+        (2.5, 3, "product_session=unavailable; ui_relay=exit:3"),
+        (_PrivateExitStatus(), 3, "product_session=unavailable; ui_relay=exit:3"),
+        (2, _PrivateExitStatus(), "product_session=exit:2; ui_relay=unavailable"),
+    ],
+    ids=[
+        "product-session",
+        "ui-relay",
+        "both",
+        "negative-product-session",
+        "negative-ui-relay",
+        "completed-product-session",
+        "completed-ui-relay",
+        "windows-maximum",
+        "signed-minimum",
+        "above-range",
+        "below-range",
+        "bool",
+        "float",
+        "private-object",
+        "private-ui-relay-object",
+    ],
+)
+def test_start_reports_only_bounded_owned_client_statuses_and_preserves_cleanup(
+    tmp_path, monkeypatch, capsys, inner_status, outer_status, expected
+):
+    lease = lab.DisposableWslDistribution(
+        Path(sys.executable),
+        tmp_path,
+        "BlueFire-Gate11-Run-" + "1" * 16,
+        tmp_path / "install",
+        (1, 2),
+    )
+    processes, management, stopped, finished, verified = [], [], [], [], []
+
+    @contextmanager
+    def owned(_state):
+        yield lease, {}
+
+    def spawn(*_args, **_kwargs):
+        status = inner_status if not processes else outer_status
+        process = SimpleNamespace(poll=lambda: status)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(lab, "owned", owned)
+    monkeypatch.setattr(lab, "verify", lambda *items: verified.append(items))
+    monkeypatch.setattr(lab.subprocess, "Popen", spawn)
+    monkeypatch.setattr(
+        lab.subprocess, "run", lambda command, **_kwargs: management.append(command)
+    )
+    monkeypatch.setattr(lab.TerminalForwarding, "attach", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        lab.TerminalForwarding, "finish", lambda _self, *items: finished.extend(items)
+    )
+    monkeypatch.setattr(lab, "stop_client", lambda process: stopped.append(process))
+
+    with pytest.raises(ValueError) as caught:
+        lab.start(tmp_path, 8767)
+
+    assert str(caught.value) == (
+        "the isolated product session or UI relay failed [" + expected + "]"
+    )
+    assert len(verified) == 2 and all(item == (lease, {}) for item in verified)
+    assert len(management) == 2
+    assert management[0][-2:] == ["stop", "8767"]
+    assert management[1] == [str(lease.executable), "--terminate", lease.distribution_name]
+    assert stopped == list(reversed(processes))
+    assert finished == processes
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
 def test_terminal_pipes_forward_prompt_output_and_multiple_commands() -> None:
     program = (
         "import sys\n"
@@ -531,3 +626,71 @@ def test_guest_refuses_oversized_or_invalid_utf8_command(
     monkeypatch.setattr(guest.os, "read", lambda *_args: data)
     with pytest.raises(ValueError, match="input bound|UTF-8"):
         guest.read_command(bytearray(), 7)
+
+
+def test_file_access_launch_stage_observations_are_exact_and_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bluefire import prepared_lab_guest as guest
+
+    assert guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS == (
+        b"bluefire.file-access-launch-stage.v1 1 enter_file_access_started\n",
+        b"bluefire.file-access-launch-stage.v1 2 fixed_reader_enrollment_returned\n",
+        b"bluefire.file-access-launch-stage.v1 3 inner_file_access_started\n",
+    )
+    writes = []
+    monkeypatch.setattr(
+        guest.os, "write", lambda descriptor, value: writes.append((descriptor, value))
+    )
+    for marker in guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS:
+        guest._observe_file_access_launch_stage(marker)
+    guest._observe_file_access_launch_stage(b"private or unknown stage")
+    guest._observe_file_access_launch_stage("not bytes")  # type: ignore[arg-type]
+
+    assert writes == [(2, marker) for marker in guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS]
+    assert all(len(marker) < 128 and marker.endswith(b"\n") for _, marker in writes)
+
+    def unavailable(_descriptor, _value):
+        raise OSError("diagnostic sink unavailable")
+
+    monkeypatch.setattr(guest.os, "write", unavailable)
+    guest._observe_file_access_launch_stage(guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS[0])
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_target", "file_access"),
+    (
+        ("enter", "enter", False),
+        ("enter-file-access", "enter", True),
+        ("inner", "inner", False),
+        ("inner-file-access", "inner", True),
+    ),
+)
+def test_guest_fixed_modes_select_file_access_observation_without_changing_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    expected_target: str,
+    file_access: bool,
+) -> None:
+    from bluefire import prepared_lab_guest as guest
+
+    calls = []
+
+    def enter(port, parent, *bootstrap, file_access=False):
+        calls.append(("enter", port, (parent, *bootstrap), file_access))
+
+    def inner(port, *bootstrap, file_access=False):
+        calls.append(("inner", port, bootstrap, file_access))
+
+    monkeypatch.setattr(guest.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(guest, "enter", enter)
+    monkeypatch.setattr(guest, "inner", inner)
+    arguments = ["prepared_lab_guest", mode, "8767"]
+    if expected_target == "enter":
+        arguments.append('{"mnt":"m","net":"n","pid":"p","ipc":"i"}')
+    monkeypatch.setattr(guest.sys, "argv", arguments)
+
+    guest.main()
+
+    expected_arguments = tuple(arguments[3:])
+    assert calls == [(expected_target, 8767, expected_arguments, file_access)]

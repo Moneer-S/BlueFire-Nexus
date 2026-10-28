@@ -5,7 +5,7 @@ import { ArrowRight, ChevronLeft, ChevronRight, ClipboardCheck, FileSearch, Hist
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, formatDate, sentence } from "../components/Primitives";
 import { ObjectiveContext } from "../components/ObjectiveContext";
 import { useRememberDefensiveWork } from "../state/activeDefensiveWork";
-import { adConfirmed, adJobId, adJobValid, adPhaseCurrent, adPhaseLabels, adReadinessLabels, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending, type AdAuditEvent, type AdBudget, type AdChange, type AdEnvironment, type AdNormalizedAudit, type AdOperation, type AdPending, type AdPhase, type AdReview, type AdWorkflow } from "../lib/ad-smb";
+import { adConfirmed, adJobId, adJobValid, adPhaseCurrent, adPhaseLabels, adReadinessLabels, adSmbApi, checkedAdEnvironments, checkedAdList, checkedAdPreparationJob, checkedAdReview, checkedAdWorkflow, clearAdPending, readAdPending, storeAdPending, type AdAuditEvent, type AdBudget, type AdChange, type AdEnvironment, type AdNormalizedAudit, type AdOperation, type AdPending, type AdPhase, type AdPreparation, type AdReview, type AdWorkflow } from "../lib/ad-smb";
 import "./AdSmb.css";
 
 export function AdSmbPage() {
@@ -14,6 +14,7 @@ export function AdSmbPage() {
   const adSmbPath = (values: Record<string, string>, remove: string[] = []) => {
     const next = new URLSearchParams(params);
     remove.forEach(key => next.delete(key));
+    if (remove.includes("workflow") || (values.workflow !== undefined && values.workflow !== params.get("workflow"))) next.delete("preparation");
     Object.entries(values).forEach(([key, value]) => next.set(key, value));
     const query = next.toString();
     return "/ad-smb" + (query ? "?" + query : "");
@@ -31,6 +32,7 @@ export function AdSmbPage() {
   const workflow = useQuery({ queryKey: ["ad-smb-workflow", owner], queryFn: async () => checkedAdWorkflow(await adSmbApi.workflow(owner), owner), enabled: adJobValid(owner), retry: false, refetchInterval: query => query.state.data?.pending ? 1500 : false });
   const value = workflow.error ? undefined : workflow.data;
   useRememberDefensiveWork("domain", workflow.isSuccess && value?.id === owner ? owner : undefined);
+  const selectedPreparation = value?.preparations.find(entry => entry.id === params.get("preparation"));
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
   const cancelReads = async () => { await Promise.all([client.cancelQueries({ queryKey: ["ad-smb-workflow"] }), client.cancelQueries({ queryKey: ["ad-smb-workflows"] })]); };
   const refresh = async () => {
@@ -71,7 +73,13 @@ export function AdSmbPage() {
     if (locked.current || pending || localError) return;
     try {
       storeAdPending(submitted); locked.current = true; setPending(submitted); setReview(undefined);
-      setParams((current) => { const next = new URLSearchParams(current); next.set("workflow", submitted.kind === "create" ? submitted.id : submitted.workflow); return next; });
+      setParams((current) => {
+        const next = new URLSearchParams(current);
+        const selectedOwner = submitted.kind === "create" ? submitted.id : submitted.workflow;
+        if (next.get("workflow") !== selectedOwner) next.delete("preparation");
+        next.set("workflow", selectedOwner);
+        return next;
+      });
       write.mutate(submitted);
     } catch (error) { locked.current = false; setLocalError(error); }
   };
@@ -95,7 +103,7 @@ export function AdSmbPage() {
     {[write.error, checkPending.error, loadReview.error, control.error].filter(Boolean).map((error, index) => <ErrorState key={index} error={error} />)}
     <div className="ad-smb-layout">
       <aside className="ad-smb-saved" aria-label="Saved AD exercises"><div className="ad-smb-section-heading"><h2>Saved exercises</h2><Link to={adSmbPath({}, ["workflow"])} aria-label="Environment selection"><Plus size={18} /></Link></div>
-        {saved.isPending ? <LoadingState label="Opening saved AD exercises" /> : saved.error ? <ErrorState error={saved.error} /> : <ul>{saved.data?.map(entry => <li key={entry.id}><Link aria-current={owner === entry.id ? "page" : undefined} to={adSmbPath({ workflow: entry.id })}><strong>{entry.environment.member}</strong><span>{entry.stopped ? "New work stopped" : sentence(entry.policy)} / revision {entry.revision}</span><small>{entry.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Runner-reported evidence"}</small></Link></li>)}</ul>}
+        {saved.isPending ? <LoadingState label="Opening saved AD exercises" /> : saved.error ? <ErrorState error={saved.error} /> : <ul>{saved.data?.map(entry => <li key={entry.id}><Link aria-current={owner === entry.id ? "page" : undefined} to={adSmbPath({ workflow: entry.id })}><strong>{entry.environment.member}</strong><span>{entry.stopped ? "New work stopped" : sentence(entry.policy)} / revision {entry.revision}</span><small>{entry.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Configured environment"}</small></Link></li>)}</ul>}
         {saved.data?.length === 0 ? <p>No saved exercises.</p> : null}
       </aside>
       <div className="ad-smb-workspace">
@@ -118,7 +126,7 @@ export function AdSmbPage() {
             })}
           </>}
         </section> : !adJobValid(owner) ? <ErrorState error={new Error("Open an exact saved AD exercise from the list.")} /> : workflow.error ? <ErrorState title="Saved AD exercise unavailable" error={workflow.error} retry={() => { void workflow.refetch(); }} /> : !value ? <LoadingState label="Opening saved AD exercise" /> : <>
-          <section className="ad-smb-section ad-smb-objective" aria-label="Selected AD objective"><div className="ad-smb-section-heading"><div><h2>Remove probe access, preserve legitimate reads</h2><p className="ad-smb-target">{value.environment.share}</p></div><Badge tone={value.environment.provenance === "synthetic_fixture" ? "warning" : "neutral"}>{value.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Runner-reported"}</Badge></div>
+          <section className="ad-smb-section ad-smb-objective" aria-label="Selected AD objective"><div className="ad-smb-section-heading"><div><h2>Remove probe access, preserve legitimate reads</h2><p className="ad-smb-target">{value.environment.share}</p></div><Badge tone={value.environment.provenance === "synthetic_fixture" ? "warning" : "neutral"}>{value.environment.provenance === "synthetic_fixture" ? "Synthetic fixture" : "Configured environment"}</Badge></div>
             <EnvironmentFacts environment={value.environment} />
             <div className="ad-smb-actions">{value.allowed.filter(phase => adPhaseCurrent(value, phase, now)).map(phase => <Button key={phase} disabled={!canReview} onClick={() => loadReview.mutate({ selected: value, phase })}>{phase === "rollback" ? <Undo2 /> : phase === "inspect" || phase === "audit" ? <FileSearch /> : <ClipboardCheck />}Review {adPhaseLabels[phase].toLowerCase()}</Button>)}
               <Button disabled={control.isPending || (value.stopped && !value.pending)} onClick={() => control.mutate({ id: value.id, operation: "stop" })}><Square />{value.pending ? "Stop current operation" : "Stop new work"}</Button>
@@ -132,6 +140,16 @@ export function AdSmbPage() {
           {shownReview ? <Review key={`${shownReview.workflow}:${shownReview.revision}:${shownReview.phase}`} value={shownReview} environment={value.environment} disabled={!canReview || !adPhaseCurrent(value, shownReview.phase, now)} onSubmit={submit} onClose={() => setReview(undefined)} /> : null}
           <ReadComparison workflow={value} />
           <section className="ad-smb-section" aria-label="Remaining AD authority"><h2>Remaining authority</h2><Budget value={value.remaining} /><p className="ad-smb-limits">Reserved attempts are not refunded.</p></section>
+          {value.preparations.length ? <section className="ad-smb-section" aria-label="AD preparation history"><h2>Preparation history</h2>
+            <p>These requests ended before a run was retained. No stage was dispatched; they are not execution evidence.</p>
+            <ol className="ad-smb-history">{value.preparations.map(entry => <li key={entry.id}>
+              <div className="ad-smb-section-heading"><h3>{adPhaseLabels[entry.phase]}</h3><Badge tone={entry.state === "failed" ? "warning" : "neutral"}>{sentence(entry.state)}</Badge></div>
+              <p className="ad-smb-limits">Not dispatched / {formatDate(entry.settledAt)}</p>
+              <Link className="ad-smb-preparation-link" to={adSmbPath({ workflow: value.id, preparation: entry.id })}>Open saved request<ArrowRight size={14} aria-hidden="true" /></Link>
+              <details><summary>Preparation references</summary><DataList items={[{ label: "Request", value: <code>{entry.id}</code> }, { label: "Reserved", value: formatDate(entry.reservedAt) }, { label: "Request digest", value: <code>{entry.digest}</code> }, { label: "Recorded by", value: "Local controller" }]} /></details>
+            </li>)}</ol>
+          </section> : null}
+          {params.has("preparation") ? selectedPreparation ? <PreparationRequest key={selectedPreparation.id} owner={value.id} selected={selectedPreparation} closePath={adSmbPath({}, ["preparation"])} /> : <ErrorState title="Saved preparation unavailable" error={new Error("This request is not part of the selected exercise's preparation history.")} /> : null}
           <Evidence workflow={value} />
         </>}
       </div>
@@ -139,6 +157,20 @@ export function AdSmbPage() {
   </div>;
 }
 
+function PreparationRequest({ owner, selected, closePath }: { owner: string; selected: AdPreparation; closePath: string }) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { heading.current?.scrollIntoView?.({ block: "start" }); heading.current?.focus({ preventScroll: true }); }, []);
+  const detail = useQuery({ queryKey: ["ad-smb-preparation", owner, selected.id], queryFn: async () => checkedAdPreparationJob(await adSmbApi.job(selected.id), owner, selected), retry: false });
+  return <section className="ad-smb-section ad-smb-preparation-detail" aria-label="Saved AD preparation">
+    <div className="ad-smb-section-heading"><h2 ref={heading} tabIndex={-1}>Saved preparation</h2><Link className="ad-smb-preparation-close" to={closePath} aria-label="Close saved preparation"><X size={18} /></Link></div>
+    {detail.isPending ? <LoadingState label="Opening original request" /> : detail.error ? <ErrorState title="Original request unavailable" error={detail.error} retry={() => { void detail.refetch(); }} /> : <>
+      <h3>{adPhaseLabels[selected.phase]}</h3><Badge tone={selected.state === "failed" ? "warning" : "neutral"}>{sentence(selected.state)}</Badge>
+      <p>The original request ended before a run was retained. No stage was dispatched. Reserved authority remains consumed.</p>
+      <DataList items={[{ label: "Reserved", value: formatDate(selected.reservedAt) }, { label: "Settled", value: formatDate(selected.settledAt) }, { label: "Recorded by", value: "Local controller" }]} />
+      <details><summary>Request references</summary><DataList items={[{ label: "Request", value: <code>{selected.id}</code> }, { label: "Request digest", value: <code>{selected.digest}</code> }, ...(detail.data?.errorCode ? [{ label: "Failure code", value: <code>{detail.data.errorCode}</code> }] : [])]} /></details>
+    </>}
+  </section>;
+}
 function EnvironmentFacts({ environment }: { environment: AdEnvironment }) {
   return <DataList items={[{ label: "Domain", value: environment.domain }, { label: "Member", value: environment.member }, { label: "Client", value: environment.client }, { label: "Scope expires", value: formatDate(environment.expiresAt) }]} />;
 }
@@ -175,6 +207,12 @@ function ReadComparison({ workflow }: { workflow: AdWorkflow }) {
     {retest?.distinctContexts === false || baseline?.distinctContexts === false ? <Callout tone="warning" title="Local contexts reused">Distinct local logon contexts were not established for this read sequence.</Callout> : null}
   </section>;
 }
+function evidenceSource(operation: AdOperation): string {
+  if (!operation.executions.length) return "No execution evidence";
+  if (operation.executions.some(entry => entry.provenance === "controller_local")) return "Local controller; not dispatched";
+  if (operation.executions.every(entry => entry.provenance === "synthetic_fixture")) return "Synthetic fixture";
+  return operation.executions.some(entry => entry.provenance === "synthetic_fixture") ? "Mixed synthetic and runner-reported" : "Runner-reported";
+}
 function Evidence({ workflow }: { workflow: AdWorkflow }) {
   const change = workflow.operations.flatMap(row => row.executions).find(row => row.change)?.change;
   const audit = workflow.operations.find(row => row.phase === "audit");
@@ -182,7 +220,7 @@ function Evidence({ workflow }: { workflow: AdWorkflow }) {
   return <section className="ad-smb-section" aria-label="Retained AD evidence"><h2>Evidence and settlement</h2>
     {change ? <AclChange change={change} environment={workflow.environment} /> : null}
     {auditObservation?.normalized ? <AuditEventTable value={auditObservation.normalized} /> : auditObservation ? <p>Audit retained: {auditObservation.events} source events{auditObservation.truncated ? "; incomplete or truncated capture" : ""}. Normalized event rows are not present in this saved summary. Source authentication and independence are not established.</p> : <p>{audit ? "No audit observation retained." : "Audit not collected."} No independent observation is reported.</p>}
-    <ol className="ad-smb-history">{workflow.operations.map(row => <li key={row.id}><div className="ad-smb-section-heading"><h3>{adPhaseLabels[row.phase]}</h3><Badge tone={row.state === "unknown" || row.expectation === "not_met" ? "warning" : "neutral"}>{sentence(row.state)}</Badge></div><DataList items={[{ label: "Cleanup", value: sentence(row.cleanup) }, { label: "Evidence", value: row.executions.every(execution => execution.provenance === "synthetic_fixture") ? "Synthetic fixture" : row.executions.some(execution => execution.provenance === "synthetic_fixture") ? "Mixed synthetic and runner-reported" : "Runner-reported" }]} /><Link to={`/runs/${encodeURIComponent(row.runId)}`}>Open retained run</Link><details><summary>Evidence references</summary><code>{row.digest}</code><ul>{row.executions.filter(execution => execution.read).map((execution, index) => <li key={index}>{execution.read?.reader} / {execution.read?.purpose}: {execution.read?.bytes} returned bytes; local context <code>{execution.read?.localContext ?? "Not recorded"}</code></li>)}</ul></details></li>)}</ol>
+    <ol className="ad-smb-history">{workflow.operations.map(row => <li key={row.id}><div className="ad-smb-section-heading"><h3>{adPhaseLabels[row.phase]}</h3><Badge tone={row.state === "unknown" || row.expectation === "not_met" ? "warning" : "neutral"}>{sentence(row.state)}</Badge></div><DataList items={[{ label: "Cleanup", value: sentence(row.cleanup) }, { label: "Evidence", value: evidenceSource(row) }]} /><Link to={`/runs/${encodeURIComponent(row.runId)}`}>Open retained run</Link><details><summary>Evidence references</summary><code>{row.digest}</code><ul>{row.executions.filter(execution => execution.read).map((execution, index) => <li key={index}>{execution.read?.reader} / {execution.read?.purpose}: {execution.read?.bytes} returned bytes; local context <code>{execution.read?.localContext ?? "Not recorded"}</code></li>)}</ul></details></li>)}</ol>
     {!workflow.operations.length ? <p>No stage evidence retained.</p> : null}
     <details><summary>Saved workflow reference</summary><code>{workflow.id}</code><p>Revision {workflow.revision}; share state {sentence(workflow.policy)}.</p></details>
   </section>;
