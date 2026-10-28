@@ -121,7 +121,7 @@ _SAFE_SETUP_SITE_OFFSETS = {
         "namespace_descriptor_security": frozenset(range(64)),
         "namespace_sealed_resource": frozenset(range(60)),
         "namespace_binding": frozenset(range(26)),
-        "namespace_worker_start": frozenset(range(133)),
+        "namespace_worker_start": frozenset(range(167)),
         "namespace_worker_guard_wall_window": frozenset({8}),
         "namespace_worker_guard_deadline": frozenset({10}),
         "namespace_worker_guard_wall_clock_order": frozenset({12}),
