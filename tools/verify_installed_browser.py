@@ -1244,6 +1244,63 @@ def stop_group(process: subprocess.Popen[bytes]) -> bool:
     return False
 
 
+def _drain_receiver_child_stderr(stream, state: dict[str, object]) -> None:
+    """Drain the child pipe while keeping at most 8 KiB in memory for classification."""
+    prefix = bytearray()
+    total = 0
+    try:
+        for chunk in iter(lambda: stream.read(4096), b""):
+            total = min(8193, total + len(chunk))
+            prefix.extend(chunk[: max(0, 8192 - len(prefix))])
+    except Exception:
+        state["read_failed"] = True
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            state["read_failed"] = True
+        state["prefix"] = bytes(prefix)
+        state["bytes_capped"] = total
+        state["drained"] = True
+
+
+def _receiver_child_exit_diagnostic(
+    returncode: int | None, stderr_state: dict[str, object]
+) -> dict[str, object]:
+    """Retain only finite child failure facts, never stderr text or a browser capability."""
+    prefix = stderr_state.get("prefix")
+    if not isinstance(prefix, bytes):
+        prefix = b""
+    count = stderr_state.get("bytes_capped")
+    count = count if type(count) is int and 0 <= count <= 8193 else 0
+    if b"ERR_MODULE_NOT_FOUND" in prefix:
+        error_class = "module_link"
+    elif b"ERR_ASSERTION" in prefix or b"AssertionError" in prefix:
+        error_class = "assertion"
+    elif b"SyntaxError" in prefix:
+        error_class = "syntax"
+    elif b"ReferenceError" in prefix:
+        error_class = "reference"
+    elif b"TypeError" in prefix:
+        error_class = "type"
+    elif b"out of memory" in prefix.lower() or b"ERR_OUT_OF_MEMORY" in prefix:
+        error_class = "memory"
+    elif b"EACCES" in prefix or b"EPERM" in prefix:
+        error_class = "access"
+    elif b"ENOENT" in prefix:
+        error_class = "missing_file"
+    else:
+        error_class = "other" if count else "none"
+    return {
+        "returncode": returncode if type(returncode) is int and -255 <= returncode <= 255 else None,
+        "stderr_class": error_class,
+        "stderr_bytes_capped": count,
+        "stderr_truncated": count > 8192,
+        "stderr_drained": stderr_state.get("drained") is True
+        and stderr_state.get("read_failed") is not True,
+    }
+
+
 def _run_receiver_phase(
     *,
     report: dict[str, object],
@@ -1275,6 +1332,8 @@ def _run_receiver_phase(
     receiver_server = None
     receiver_thread = None
     receiver_child = None
+    receiver_stderr_thread = None
+    receiver_stderr_state: dict[str, object] = {"drained": False}
     receiver_fixture = None
     receiver_driver_report: dict[str, object] | None = None
     prior_environment = dict(os.environ)
@@ -1343,27 +1402,53 @@ def _run_receiver_phase(
             cwd=receiver_root / "work",
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             start_new_session=True,
         )
         report["receiver_driver_started"] = True
         report["receiver_process_group_stopped"] = False
-        timeout = _phase_timeout(work_deadline, 360)
-        receiver_child.communicate(
-            json.dumps(
-                {"capability": receiver_capability, "fixture_port": receiver_fixture.port}
-            ).encode(),
-            timeout=timeout if timeout is not None else 0,
+        receiver_stderr_thread = threading.Thread(
+            target=_drain_receiver_child_stderr,
+            args=(receiver_child.stderr, receiver_stderr_state),
+            daemon=True,
         )
+        try:
+            receiver_stderr_thread.start()
+        except Exception:
+            receiver_stderr_thread = None
+            raise
+        timeout = _phase_timeout(work_deadline, 360)
+        try:
+            os.write(
+                receiver_child.stdin.fileno(),
+                json.dumps(
+                    {"capability": receiver_capability, "fixture_port": receiver_fixture.port}
+                ).encode(),
+            )
+        except BrokenPipeError:
+            pass  # An early child exit is retained through its return code and finite stderr class.
+        finally:
+            try:
+                receiver_child.stdin.close()
+            except BrokenPipeError:
+                pass
+        receiver_child.wait(timeout=timeout if timeout is not None else 0)
         receiver_capability = ""
-        receiver_report_path = output / "installed-receiver-report.json"
-        receiver_driver_report = json.loads(receiver_report_path.read_text(encoding="utf-8"))
+        receiver_stderr_thread.join(timeout=min(5, max(0, work_deadline - time.monotonic())))
+        report["receiver_driver_exit"] = _receiver_child_exit_diagnostic(
+            receiver_child.returncode, receiver_stderr_state
+        )
         report["receiver_model_fixture"] = {
             "request_count": len(receiver_fixture.purposes),
             "purposes": list(receiver_fixture.purposes),
             "request_bytes": receiver_fixture.request_bytes,
             "failed": receiver_fixture.failed,
         }
+        receiver_report_path = output / "installed-receiver-report.json"
+        report["receiver_driver_report_present"] = receiver_report_path.is_file()
+        if report["receiver_driver_exit"]["stderr_drained"] is not True:
+            raise RuntimeError("Receiver child stderr did not drain")
+        receiver_driver_report = json.loads(receiver_report_path.read_text(encoding="utf-8"))
         receiver_receipt = _receiver_report_for_receipt(receiver_driver_report)
         driver_cleanup = receiver_driver_report["cleanup"]
         report["receiver_driver_cleanup_confirmed"] = (
@@ -1409,6 +1494,19 @@ def _run_receiver_phase(
             except (OSError, subprocess.TimeoutExpired):
                 report["receiver_process_group_stopped"] = False
                 cleanup_errors.append("receiver_browser_process_group")
+        if receiver_stderr_thread is not None:
+            receiver_stderr_thread.join(timeout=5)
+            if (
+                receiver_stderr_thread.is_alive()
+                or receiver_stderr_state.get("read_failed") is True
+            ):
+                cleanup_errors.append("receiver_child_stderr_drain")
+        elif receiver_child is not None:
+            try:
+                receiver_child.stderr.close()
+            except Exception:
+                pass
+            cleanup_errors.append("receiver_child_stderr_drain")
         if receiver_fixture is not None:
             try:
                 (

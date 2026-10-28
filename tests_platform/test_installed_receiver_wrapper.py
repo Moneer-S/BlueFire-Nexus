@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from tools.verify_installed_browser import (
     _RUNTIME_PROCESS_CLEANUP_KEYS,
+    _drain_receiver_child_stderr,
+    _receiver_child_exit_diagnostic,
     _receiver_driver_passed,
     _receiver_report_for_receipt,
     _receiver_retained_redaction_accepted,
@@ -16,6 +19,50 @@ from tools.verify_installed_browser import (
     _runtime_cleanup_confirmed,
     _runtime_process_cleanup_confirmed,
 )
+
+
+def test_receiver_child_exit_diagnostic_drains_and_sanitizes_bounded_stderr() -> None:
+    secret = b"private-capability-and-workspace-path"
+    state: dict[str, object] = {"drained": False}
+    _drain_receiver_child_stderr(BytesIO(b"Error [ERR_MODULE_NOT_FOUND]: " + secret * 400), state)
+    diagnostic = _receiver_child_exit_diagnostic(1, state)
+    assert diagnostic == {
+        "returncode": 1,
+        "stderr_class": "module_link",
+        "stderr_bytes_capped": 8193,
+        "stderr_truncated": True,
+        "stderr_drained": True,
+    }
+    assert len(state["prefix"]) == 8192
+    assert secret not in repr(diagnostic).encode()
+
+
+def test_receiver_child_exit_diagnostic_refuses_incomplete_drain() -> None:
+    assert _receiver_child_exit_diagnostic(None, {"drained": False}) == {
+        "returncode": None,
+        "stderr_class": "none",
+        "stderr_bytes_capped": 0,
+        "stderr_truncated": False,
+        "stderr_drained": False,
+    }
+
+
+def test_receiver_child_exit_diagnostic_refuses_non_oserror_read_failure() -> None:
+    class FailedStream:
+        closed = False
+
+        def read(self, _size: int) -> bytes:
+            raise ValueError("inert read failure")
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = FailedStream()
+    state: dict[str, object] = {"drained": False}
+    _drain_receiver_child_stderr(stream, state)
+    assert stream.closed
+    assert state["read_failed"] is True
+    assert _receiver_child_exit_diagnostic(1, state)["stderr_drained"] is False
 
 
 def receiver_report() -> dict[str, object]:

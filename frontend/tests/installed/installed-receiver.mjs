@@ -2084,8 +2084,10 @@ try {
     await stopOwnerNormally();
   }
   if (runnerStarted) await stopRunnerNormally();
-  await context?.close().catch(() => { report.errors.push({ stage: "cleanup", kind: "browser_context_close" }); });
-  await browser?.close().catch(() => { report.errors.push({ stage: "cleanup", kind: "browser_close" }); });
+  try { await context?.close(); }
+  catch { report.errors.push({ stage: "cleanup", kind: "browser_context_close" }); }
+  try { await browser?.close(); }
+  catch { report.errors.push({ stage: "cleanup", kind: "browser_close" }); }
   if (report.cleanup?.receiver_control_stopped === false || report.cleanup?.runner_stopped === false
     || (counts.model_authorization > 0 && report.cleanup?.model_authorization_revoked !== true)) {
     report.status = "failed_or_incomplete";
