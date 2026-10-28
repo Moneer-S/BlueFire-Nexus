@@ -567,7 +567,6 @@ fn self_inventory_rejects_smuggled_duplicate_missing_or_wrong_type_descriptors()
         native::inventory(&duplicate, 3, 4, None),
         Err(Failure::UnexpectedRowsPresent)
     );
-    let mut extra = extra;
     extra[0] = (1, 1);
     assert_eq!(
         native::inventory(&extra, 3, 4, Some(9)),
