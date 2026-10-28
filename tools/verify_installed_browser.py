@@ -95,6 +95,7 @@ def _receiver_report_for_receipt(value: object) -> dict[str, object]:
         "baseline",
         "original_control",
         "linked_retest",
+        "composition",
         "phase_evidence",
         "checks",
         "request_counts",
@@ -115,6 +116,120 @@ def _valid_receiver_artifact(value: object) -> bool:
         and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None
         and type(value.get("size_bytes")) is int
         and value["size_bytes"] > 0
+    )
+
+
+def _valid_receiver_composition(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    composition = value.get("composition")
+    counts = value.get("request_counts")
+    checks = value.get("checks")
+    cleanup = value.get("cleanup")
+    evidence = value.get("phase_evidence")
+    if not all(isinstance(item, dict) for item in (composition, counts, cleanup)):
+        return False
+    if not isinstance(checks, list) or not isinstance(evidence, list):
+        return False
+    comparison = composition.get("comparison")
+    result_cleanup = composition.get("cleanup")
+    if not isinstance(comparison, dict) or not isinstance(result_cleanup, dict):
+        return False
+    return (
+        set(composition)
+        == {
+            "control_owner_job_id",
+            "objective_owner_job_id",
+            "grant_id",
+            "grant_status",
+            "attempt_job_id",
+            "attempt_id",
+            "settlement",
+            "run_id",
+            "verified_result_digest",
+            "receiver_decision",
+            "receiver_authenticated",
+            "record_count",
+            "redacted_record_count",
+            "retained_record_count",
+            "empty_record_count",
+            "cleanup",
+            "objective_established",
+            "graph_objective_reached",
+            "comparison",
+        }
+        and composition["control_owner_job_id"] == value.get("original_owner_job_id")
+        and isinstance(composition["objective_owner_job_id"], str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", composition["objective_owner_job_id"]) is not None
+        and isinstance(composition["grant_id"], str)
+        and re.fullmatch(r"grant-[0-9a-f]{32}", composition["grant_id"]) is not None
+        and composition["grant_status"] == "revoked"
+        and isinstance(composition["attempt_job_id"], str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", composition["attempt_job_id"]) is not None
+        and composition["attempt_job_id"] != composition["objective_owner_job_id"]
+        and isinstance(composition["attempt_id"], str)
+        and re.fullmatch(r"attempt-[0-9a-f]{32}", composition["attempt_id"]) is not None
+        and composition["settlement"] == "settled"
+        and isinstance(composition["run_id"], str)
+        and re.fullmatch(r"run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}", composition["run_id"]) is not None
+        and composition["run_id"] != value.get("run_id")
+        and composition["run_id"]
+        not in {row.get("run_id") for row in evidence if isinstance(row, dict)}
+        and isinstance(composition["verified_result_digest"], str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", composition["verified_result_digest"]) is not None
+        and composition["receiver_decision"] == "policy_refused"
+        and composition["receiver_authenticated"] is True
+        and type(composition["record_count"]) is int
+        and composition["record_count"] == 8
+        and type(composition["redacted_record_count"]) is int
+        and composition["redacted_record_count"] == 0
+        and type(composition["retained_record_count"]) is int
+        and composition["retained_record_count"] == 8
+        and type(composition["empty_record_count"]) is int
+        and composition["empty_record_count"] == 0
+        and result_cleanup == {"run": "complete", "receiver": "verified_closed"}
+        and composition["objective_established"] is False
+        and composition["graph_objective_reached"] is True
+        and set(comparison)
+        == {
+            "baseline_run_id",
+            "snapshot_id",
+            "snapshot_digest",
+            "source_integrity",
+            "objective_comparability",
+            "objective_changed",
+            "objective_recovered",
+            "reopened",
+        }
+        and comparison["baseline_run_id"] == value.get("run_id")
+        and isinstance(comparison["snapshot_id"], str)
+        and re.fullmatch(r"run-comparison-[0-9a-f]{64}", comparison["snapshot_id"]) is not None
+        and isinstance(comparison["snapshot_digest"], str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", comparison["snapshot_digest"]) is not None
+        and comparison["source_integrity"] == "verified"
+        and comparison["objective_comparability"] == "different_objectives"
+        and comparison["objective_changed"] is False
+        and comparison["objective_recovered"] is False
+        and comparison["reopened"] is True
+        and cleanup.get("composition_grant_revoked") is True
+        and "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false"
+        in checks
+        and "composed_attempt_grant_revoked_after_verified_cleanup" in checks
+        and "saved_composed_comparison_reopened_with_false_objective_and_distinct_graph_completion"
+        in checks
+        and type(counts.get("composition_list")) is int
+        and 1 <= counts["composition_list"] <= 5
+        and all(
+            type(counts.get(name)) is int and counts[name] == 1
+            for name in (
+                "composition_context",
+                "composition_grant",
+                "composition_proposal_context",
+                "composition_attempt",
+                "composition_revoke",
+                "comparison",
+            )
+        )
     )
 
 
@@ -142,6 +257,7 @@ def _receiver_driver_passed(value: object) -> bool:
         and value.get("installed_wheel_service") is True
         and value.get("native_execution_required") is True
         and value.get("workflow") == "retained_redaction_original_and_linked_retest"
+        and _valid_receiver_composition(value)
         and value.get("external_credentials") is False
         and value.get("live_model_inference") is False
         and type(generated_count) is int

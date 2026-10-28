@@ -35,6 +35,9 @@ def receiver_report() -> dict[str, object]:
             "original_baseline_protected_and_legitimate_use_completed_with_retained_policy",
             "fresh_retest_created_through_retained_control_ui_with_original_lineage",
             "linked_fresh_protected_refusal_and_legitimate_use_completed_under_retained_policy",
+            "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false",
+            "composed_attempt_grant_revoked_after_verified_cleanup",
+            "saved_composed_comparison_reopened_with_false_objective_and_distinct_graph_completion",
         ],
         "blocked_requests": [],
         "errors": [],
@@ -42,6 +45,7 @@ def receiver_report() -> dict[str, object]:
             "original_owner_completed_retained": True,
             "linked_owner_completed_retained": True,
             "runner_stopped": True,
+            "composition_grant_revoked": True,
         },
         "owner_status": "completed",
         "unique_receiver_session_count": 5,
@@ -52,6 +56,13 @@ def receiver_report() -> dict[str, object]:
             "review": 5,
             "approval": 5,
             "cancel": 0,
+            "composition_list": 3,
+            "composition_context": 1,
+            "composition_grant": 1,
+            "composition_proposal_context": 1,
+            "composition_attempt": 1,
+            "composition_revoke": 1,
+            "comparison": 1,
         },
         "source_starter_scenario_id": "scenario.receiver-defense.redaction-validation.v1",
         "saved_scenario_copy": {
@@ -78,6 +89,36 @@ def receiver_report() -> dict[str, object]:
         "run_id": "run-20261021T120000Z-aaaaaaaaaaaaaaaa",
         "receiver_job_id": "job-11111111111111111111111111111111",
         "original_owner_job_id": "job-11111111111111111111111111111111",
+        "composition": {
+            "control_owner_job_id": "job-11111111111111111111111111111111",
+            "objective_owner_job_id": "job-33333333333333333333333333333333",
+            "grant_id": "grant-33333333333333333333333333333333",
+            "grant_status": "revoked",
+            "attempt_job_id": "job-44444444444444444444444444444444",
+            "attempt_id": "attempt-44444444444444444444444444444444",
+            "settlement": "settled",
+            "run_id": "run-20261021T120007Z-2222222222222222",
+            "verified_result_digest": "sha256:" + "c" * 64,
+            "receiver_decision": "policy_refused",
+            "receiver_authenticated": True,
+            "record_count": 8,
+            "redacted_record_count": 0,
+            "retained_record_count": 8,
+            "empty_record_count": 0,
+            "cleanup": {"run": "complete", "receiver": "verified_closed"},
+            "objective_established": False,
+            "graph_objective_reached": True,
+            "comparison": {
+                "baseline_run_id": "run-20261021T120000Z-aaaaaaaaaaaaaaaa",
+                "snapshot_id": "run-comparison-" + "d" * 64,
+                "snapshot_digest": "sha256:" + "e" * 64,
+                "source_integrity": "verified",
+                "objective_comparability": "different_objectives",
+                "objective_changed": False,
+                "objective_recovered": False,
+                "reopened": True,
+            },
+        },
         "linked_owner_job_id": "job-22222222222222222222222222222222",
         "original_control": {
             "status": "retained",
@@ -310,6 +351,59 @@ def test_receiver_bearer_fields_are_rejected_before_receipt_projection() -> None
         _receiver_report_for_receipt(report)
     assert "secret-bearer-value" not in str(raised.value)
     assert "credential" in str(raised.value)
+
+
+def test_composed_receiver_receipt_requires_false_objective_and_current_saved_comparison() -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+    assert _receiver_driver_passed(report)
+    assert _receiver_report_for_receipt(report)["composition"] == report["composition"]
+
+    for field, value in (
+        ("control_owner_job_id", "job-ffffffffffffffffffffffffffffffff"),
+        ("grant_status", "active"),
+        ("settlement", "pending_cleanup"),
+        ("run_id", report["run_id"]),
+        ("receiver_decision", "accepted"),
+        ("receiver_authenticated", False),
+        ("record_count", True),
+        ("redacted_record_count", 8),
+        ("objective_established", True),
+        ("graph_objective_reached", False),
+    ):
+        changed = deepcopy(report)
+        changed["composition"][field] = value
+        assert not _receiver_driver_passed(changed), field
+
+    for field, value in (
+        ("baseline_run_id", "run-20261021T120007Z-2222222222222222"),
+        ("source_integrity", "changed"),
+        ("objective_comparability", "comparable"),
+        ("objective_changed", True),
+        ("objective_recovered", True),
+        ("reopened", False),
+    ):
+        changed = deepcopy(report)
+        changed["composition"]["comparison"][field] = value
+        assert not _receiver_driver_passed(changed), field
+
+    changed = deepcopy(report)
+    changed["composition"]["cleanup"]["receiver"] = "unknown"
+    assert not _receiver_driver_passed(changed)
+    changed = deepcopy(report)
+    changed["request_counts"]["composition_attempt"] = 0
+    assert not _receiver_driver_passed(changed)
+    changed = deepcopy(report)
+    changed["composition"]["receiver_session_id"] = "sensitive-bearer"
+    with pytest.raises(ValueError):
+        _receiver_report_for_receipt(changed)
 
 
 def test_receiver_browser_driver_uses_authenticated_readiness_and_safe_diagnostic() -> None:

@@ -1,5 +1,6 @@
 export function sameJson(left: unknown, right: unknown): boolean;
 export const receiverApprovalAcknowledgementName: RegExp;
+export function receiverCompositionCleanupState(objective: unknown): "settled" | "no_grant" | "unresolved";
 
 export interface ReceiverContextExpectation {
   selection: unknown;

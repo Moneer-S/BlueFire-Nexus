@@ -4,6 +4,26 @@ import { isDeepStrictEqual } from "node:util";
 export const sameJson = isDeepStrictEqual;
 export const receiverApprovalAcknowledgementName = /^I approve this exact immutable job envelope once\s*Unchecked by default and never stored in browser persistence$/;
 
+const terminalCompositionStates = new Set(["completed", "failed", "cancelled", "interrupted"]);
+
+export function receiverCompositionCleanupState(objective) {
+  if (!objective || typeof objective !== "object" || Array.isArray(objective)
+    || !objective.owner || typeof objective.owner !== "object" || Array.isArray(objective.owner)
+    || !Array.isArray(objective.attempts)) return "unresolved";
+  if (objective.grant === null) {
+    return objective.owner.state === "completed" && objective.owner.progress?.admission?.accepted === false
+      && objective.attempts.length === 0 ? "no_grant" : "unresolved";
+  }
+  if (!objective.grant || typeof objective.grant !== "object" || Array.isArray(objective.grant)
+    || objective.grant.status !== "revoked" || objective.grant.cleanup_state !== "settled") return "unresolved";
+  return objective.attempts.every(attempt => attempt && typeof attempt === "object" && !Array.isArray(attempt)
+    && attempt.request?.composition_attempt?.parent_job_id === objective.owner.job_id
+    && terminalCompositionStates.has(attempt.state)
+    && attempt.progress && typeof attempt.progress === "object" && !Array.isArray(attempt.progress)
+    && (attempt.progress.settlement === undefined || attempt.progress.settlement === "settled"))
+    ? "settled" : "unresolved";
+}
+
 export function receiverContextRequestAllowed(body, expected) {
   const linked = expected.sourceControl !== null;
   const keys = linked
