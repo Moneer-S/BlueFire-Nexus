@@ -9,10 +9,23 @@ from types import SimpleNamespace
 
 import pytest
 
+from bluefire import capability_file_access, capability_macos_file_access
 from bluefire.ai_authorized_access import AuthorizedAIProviderAccess
 from bluefire.ai_broker_contract import BrokerEnrollment, schema_identity
 from bluefire.ai_broker_live_authorization import BrokerLiveAuthorizations
-from bluefire.ai_live_authorization import PURPOSES, _schemas, create_authorization, now_ms
+from bluefire.ai_composition_contract import (
+    FILE_ACCESS_OUTPUT_SCHEMA,
+    FILE_ACCESS_PURPOSE,
+    MACOS_FILE_ACCESS_OUTPUT_SCHEMA,
+    MACOS_FILE_ACCESS_PURPOSE,
+)
+from bluefire.ai_live_authorization import (
+    PURPOSES,
+    _schemas,
+    create_authorization,
+    now_ms,
+    request_reservation,
+)
 from bluefire.ai_runtime_composition import (
     KIND,
     OUTPUT_SCHEMA,
@@ -25,10 +38,23 @@ from bluefire.ai_runtime_composition import (
 from bluefire.ai_wire import AIProviderCancelled, AIProviderError, AIProviderTransportError
 from bluefire.capability_composition import compile_initial_graph, compile_revision
 from bluefire.capability_facts import seal_facts
-from bluefire.capability_resources import METHODS, semantic_ports
+from bluefire.capability_grant import create_grant
+from bluefire.capability_packs import (
+    FILE_ACCESS_METHODS,
+    FILE_ACCESS_PACK,
+    MACOS_FILE_ACCESS_METHODS,
+    MACOS_FILE_ACCESS_PACK,
+)
+from bluefire.capability_resources import (
+    LIMIT_BOUNDS,
+    METHODS,
+    CapabilityContractError,
+    semantic_ports,
+)
 from bluefire.job_runtime import RunJobController
 from bluefire.prepared_lab_enrollment import enroll
 from bluefire.product_store import ProductStore
+from bluefire.registry import load_builtin_registry
 from bluefire.util import content_hash
 from tests_platform.test_ai_live_authorization import request as authorization_request
 from tests_platform.test_ai_receiver_inspection import Access
@@ -70,6 +96,77 @@ def context(state, *, initial=True):
         "snapshot": state["grant"]["snapshot"],
         "facts": state["facts"],
         "initial_proposal": candidate(state) if initial else None,
+    }
+
+
+def file_access_context(pack):
+    module, methods = (
+        (capability_file_access, FILE_ACCESS_METHODS)
+        if pack == FILE_ACCESS_PACK
+        else (capability_macos_file_access, MACOS_FILE_ACCESS_METHODS)
+    )
+    limits = {name: low for name, (low, _high) in LIMIT_BOUNDS.items()}
+    limits.update(
+        max_attempts=2,
+        max_nodes_per_attempt=8,
+        max_edges_per_attempt=16,
+        max_business_steps=8,
+        max_generated_bytes=1024 * 1024,
+        max_network_bytes=1024 * 1024,
+        max_peak_workspace_bytes=1024 * 1024,
+        max_workspace_files=8,
+        max_retained_metadata_bytes=1024 * 1024,
+        max_reserved_attempt_ms=10_000,
+        per_attempt_wall_ms=5_000,
+        cleanup_reserve_ms=1_000,
+    )
+    environment = {
+        "environment_id": "environment-1",
+        "environment_generation": "generation-1",
+        "runner_id": "runner-1",
+        "control_owner_id": "control-owner-1",
+        "resource_id": "resource-1",
+        "resource_generation": "generation-1",
+        "control_revision": 1,
+        "mode": "0600",
+    }
+    for key in capability_file_access.ENV_FIELDS:
+        if key.endswith("_digest"):
+            environment[key] = content_hash(key)
+    if pack == MACOS_FILE_ACCESS_PACK:
+        environment.update(
+            workspace_custody_digest=content_hash("workspace custody"),
+            binding_digest=content_hash("original binding"),
+        )
+    grant = create_grant(
+        registry=load_builtin_registry(),
+        implementation_digests={method: content_hash(method) for method in methods},
+        objective={
+            "question": "Verify retained file access.",
+            "predicate": {
+                "kind": capability_file_access.PREDICATE,
+                "record_count": 8,
+                "data_class": "generated_public_jsonl",
+                "sha256": content_hash("records"),
+            },
+        },
+        environment=environment,
+        limits=limits,
+        grant_id="grant-" + ("c" if pack == FILE_ACCESS_PACK else "d") * 32,
+        approved_by="Unit operator",
+        created_at_ms=1_000,
+        expires_at_ms=9_000,
+        pack=pack,
+    )
+    initial = module.initial_proposal()
+    return {
+        "schema_version": "bluefire.composition-proposal-context.v1",
+        "grant_id": grant["grant_id"],
+        "objective": grant["objective"],
+        "snapshot": grant["snapshot"],
+        "facts": module.seal_facts(grant),
+        "initial_proposal": initial,
+        "initial_scenario": {},
     }
 
 
@@ -168,6 +265,56 @@ def test_exact_dialects_registered_schema_and_sanitized_model_context(provider, 
     assert not {"compiled", "lease", "approval", "native_envelope"}.intersection(result)
 
 
+def test_unregistered_pack_cannot_select_a_dynamic_provider_schema(provider, state):
+    supplied = context(state)
+    supplied["snapshot"]["pack"] = "bluefire.unregistered-pack.v1"
+    with pytest.raises(CapabilityContractError, match="unsupported capability pack"):
+        format_request(provider, supplied)
+
+
+@pytest.mark.parametrize(
+    "pack,purpose,schema,methods,required_instruction",
+    [
+        (
+            FILE_ACCESS_PACK,
+            FILE_ACCESS_PURPOSE,
+            FILE_ACCESS_OUTPUT_SCHEMA,
+            FILE_ACCESS_METHODS,
+            "all four owner-verification outcomes to cleanup",
+        ),
+        (
+            MACOS_FILE_ACCESS_PACK,
+            MACOS_FILE_ACCESS_PURPOSE,
+            MACOS_FILE_ACCESS_OUTPUT_SCHEMA,
+            MACOS_FILE_ACCESS_METHODS,
+            "all four owner-verification outcomes to attempt closure",
+        ),
+    ],
+)
+def test_exact_dialects_reuse_closed_file_access_pack_contracts(
+    provider, pack, purpose, schema, methods, required_instruction
+):
+    supplied = file_access_context(pack)
+    body, projected = format_request(provider, supplied)
+    wire = json.loads(body)
+    instruction = wire.get("instructions") or wire["messages"][0]["content"]
+    variants = schema["properties"]["steps"]["items"]["anyOf"]
+    emitted = {row["properties"]["behavior_id"]["enum"][0] for row in variants}
+
+    identity = (purpose, content_hash(schema))
+    enrollment = enroll(provider, "explicit_endpoint")
+    assert schema_identity(body, provider.kind) == identity
+    assert identity in enrollment.schemas and enrollment.validate_body(body) == identity
+    assert emitted == set(methods)
+    assert required_instruction in instruction and "receiver handoff" not in instruction
+    assert {row["behavior_id"] for row in projected["methods"]} == set(methods)
+
+    access = Access(value=supplied["initial_proposal"])
+    result = propose(config=provider, access=access, context=supplied, cancel=threading.Event())
+    assert result["candidate"] == supplied["initial_proposal"]
+    assert len(access.calls) == 1
+
+
 def test_provider_schema_keeps_legacy_and_exact_explicit_input_forms():
     variants = OUTPUT_SCHEMA["properties"]["steps"]["items"]["anyOf"]
     assert len(variants) == 2 * len(METHODS)
@@ -205,7 +352,58 @@ def test_provider_schema_keeps_legacy_and_exact_explicit_input_forms():
             for child in value:
                 check_objects(child)
 
-    check_objects(OUTPUT_SCHEMA)
+    for schema in (OUTPUT_SCHEMA, FILE_ACCESS_OUTPUT_SCHEMA, MACOS_FILE_ACCESS_OUTPUT_SCHEMA):
+        check_objects(schema)
+
+
+@pytest.mark.parametrize(
+    "pack,schema,methods",
+    [
+        (FILE_ACCESS_PACK, FILE_ACCESS_OUTPUT_SCHEMA, FILE_ACCESS_METHODS),
+        (
+            MACOS_FILE_ACCESS_PACK,
+            MACOS_FILE_ACCESS_OUTPUT_SCHEMA,
+            MACOS_FILE_ACCESS_METHODS,
+        ),
+    ],
+)
+def test_file_access_schemas_keep_optional_typed_producer_choices(pack, schema, methods):
+    variants = schema["properties"]["steps"]["items"]["anyOf"]
+    assert len(variants) == 2 * len(methods)
+    for method in methods:
+        legacy, explicit = [
+            row for row in variants if row["properties"]["behavior_id"]["enum"] == [method]
+        ]
+        assert set(legacy["properties"]) == {"id", "behavior_id", "parameters"}
+        assert set(explicit["properties"]) == {"id", "behavior_id", "parameters", "inputs"}
+        ports = {port[0] for port in semantic_ports(method, pack=pack)[0]}
+        assert set(explicit["properties"]["inputs"]["properties"]) == ports
+        for port in semantic_ports(method, pack=pack)[0]:
+            compatible = {
+                output[0]
+                for source in methods
+                for output in semantic_ports(source, pack=pack)[1]
+                if output[1:] == port[1:3]
+            }
+            reference = explicit["properties"]["inputs"]["properties"][port[0]]
+            assert set(reference["properties"]["artifact"]["enum"]) == compatible
+
+
+@pytest.mark.parametrize(
+    "pack,foreign",
+    [
+        (FILE_ACCESS_PACK, capability_macos_file_access),
+        (MACOS_FILE_ACCESS_PACK, capability_file_access),
+    ],
+)
+def test_file_access_context_rejects_cross_pack_model_methods(provider, pack, foreign):
+    with pytest.raises(AIProviderError):
+        propose(
+            config=provider,
+            access=Access(value=foreign.initial_proposal()),
+            context=file_access_context(pack),
+            cancel=threading.Event(),
+        )
 
 
 @pytest.mark.parametrize("selected", ["inspect", "also_inspect"])
@@ -495,6 +693,70 @@ def test_composition_purpose_requires_explicit_exact_schema_authorization_and_bu
     assert error.value.code == "live_usage_exhausted"
     if transport == "direct":
         assert len(underlying.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "pack,purpose,foreign_schema",
+    [
+        (FILE_ACCESS_PACK, FILE_ACCESS_PURPOSE, MACOS_FILE_ACCESS_OUTPUT_SCHEMA),
+        (MACOS_FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PURPOSE, FILE_ACCESS_OUTPUT_SCHEMA),
+    ],
+)
+def test_receiver_authorization_and_cross_pack_schema_cannot_be_reused(
+    provider, pack, purpose, foreign_schema
+):
+    body, _ = format_request(provider, file_access_context(pack))
+    limits = {
+        "max_requests": 1,
+        "max_request_bytes": len(body),
+        "max_reserved_output_tokens": provider.max_output_tokens,
+    }
+    receiver_request = authorization_request(
+        provider,
+        purposes=[PURPOSE],
+        limits=limits,
+        local_endpoint_authorized=True,
+    )
+    authorization_context = {
+        "kind": "direct",
+        "binding_digest": content_hash("unit authorization session"),
+        "expires_at_ms": None,
+    }
+    receiver_authorization = create_authorization(receiver_request, authorization_context)
+    with pytest.raises(AIProviderTransportError) as wrong_purpose:
+        request_reservation(provider, body, receiver_authorization)
+    assert wrong_purpose.value.code == "live_request_out_of_scope"
+
+    receiver_enrollment = BrokerEnrollment.create(
+        provider,
+        session_id="a" * 64,
+        expires_at_ms=now_ms() + 300_000,
+        schemas=((PURPOSE, content_hash(OUTPUT_SCHEMA)),),
+        destination_policy="explicit_endpoint",
+    )
+    with pytest.raises(AIProviderTransportError) as wrong_enrollment:
+        receiver_enrollment.validate_body(body)
+    assert wrong_enrollment.value.code == "broker_schema_unavailable"
+
+    pack_authorization = create_authorization(
+        authorization_request(
+            provider,
+            purposes=[purpose],
+            limits=limits,
+            local_endpoint_authorized=True,
+        ),
+        authorization_context,
+    )
+    altered = json.loads(body)
+    spec = altered.get("text", {}).get("format") or altered["response_format"]["json_schema"]
+    spec["schema"] = foreign_schema
+    altered_body = json.dumps(altered).encode()
+    with pytest.raises(AIProviderTransportError) as wrong_schema:
+        request_reservation(provider, altered_body, pack_authorization)
+    assert wrong_schema.value.code == "live_request_out_of_scope"
+    with pytest.raises(AIProviderTransportError) as wrong_broker_schema:
+        enroll(provider, "explicit_endpoint").validate_body(altered_body)
+    assert wrong_broker_schema.value.code == "broker_schema_unavailable"
 
 
 def test_stale_context_is_durably_refused_without_provider_dispatch(harness):

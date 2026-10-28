@@ -52,6 +52,18 @@ describe("in-product data and usage authorization", () => {
     await waitFor(() => expect(api.authorizeAI).toHaveBeenCalledWith(expect.objectContaining({ purposes: ["bluefire_composition_proposal"], approved_by: "Composition owner" })));
     expect(api.checkAIProvider).not.toHaveBeenCalled(); expect(liveButton()).toBeDisabled();
   });
+  it.each([
+    ["Propose a Linux file-access verification graph", "bluefire_linux_file_access_composition_proposal"],
+    ["Propose a macOS file-access verification graph", "bluefire_macos_file_access_composition_proposal"],
+  ] as const)("authorizes %s independently from receiver composition", async (label, purpose) => {
+    const user = await mount();
+    expect(screen.getByRole("checkbox", { name: "Propose a bounded composition graph" })).not.toBeChecked();
+    await user.click(screen.getByRole("checkbox", { name: label }));
+    await user.type(screen.getByLabelText("Operator identity for model usage"), "File access owner");
+    await user.click(screen.getByRole("checkbox", { name: consent }));
+    await user.click(authorizeButton());
+    await waitFor(() => expect(api.authorizeAI).toHaveBeenCalledWith(expect.objectContaining({ purposes: [purpose], approved_by: "File access owner" })));
+  });
   it("uses one explicit final action for the exact edited connection and bounded purposes, without a model call", async () => {
     const user = await mount();
     expect(api.authorizeAI).not.toHaveBeenCalled(); expect(api.checkAIProvider).not.toHaveBeenCalled(); expect(liveButton()).toBeDisabled();
