@@ -1021,7 +1021,7 @@ try {
   await gotoJourney(`${origin}/#/settings`, { waitUntil: "domcontentloaded" });
   await failOnBlockedWrite(page.getByRole("heading", { name: "Model connection", exact: true }).waitFor());
   stage = "provider-api-style";
-  await page.locator("label.field").filter({ has: page.locator(".field-label").getByText("API style", { exact: true }) }).locator("select").selectOption("openai_responses");
+  await page.getByRole("combobox", { name: "API style", exact: true }).selectOption("openai_responses");
   stage = "provider-model";
   await page.getByLabel("Model ID", { exact: false }).fill(model);
   stage = "provider-endpoint";

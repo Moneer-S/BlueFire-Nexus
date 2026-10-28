@@ -4,7 +4,8 @@ import type { Outcome, Scenario, ScenarioStep } from "../types";
 export type ScenarioGraph = Pick<Scenario, "steps" | "edges" | "start" | "layout">;
 
 export const GRAPH_NODE_WIDTH = 220;
-export const GRAPH_NODE_HEIGHT = 104;
+// Match the border-box card size in Builder.css for layout, ports and obstacles.
+export const GRAPH_NODE_HEIGHT = 96;
 
 export type GraphViewport = { x: number; y: number; zoom: number };
 export type GraphFrame = { width: number; height: number; x?: number; y?: number };
@@ -40,10 +41,15 @@ export function graphBoundsViewport(nodes: readonly GraphNodeBounds[], frame: Gr
 }
 
 /** Keep compact context readable; at path ends, use the canvas for connected work. */
-export function focusedGraphViewport(selected: GraphNodeBounds, context: readonly GraphNodeBounds[], frame: GraphFrame): GraphViewport {
-  const focused = readableGraphViewport(selected, frame);
+export function focusedGraphViewport(selected: GraphNodeBounds, context: readonly GraphNodeBounds[], frame: GraphFrame, fitHeight = false, padding = 24): GraphViewport {
   const cards = [selected, ...context];
-  const padding = 24;
+  const readable = readableGraphViewport(selected, frame);
+  // When opening, columns only slightly taller than the canvas fit their height
+  // at a readable scale, so the bottom row is not clipped while panning sideways.
+  const height = Math.max(...cards.map(card => card.y + card.height)) - Math.min(...cards.map(card => card.y));
+  const heightZoom = (frame.height - padding * 2) / height;
+  const zoom = fitHeight && heightZoom < readable.zoom && heightZoom >= 0.8 ? heightZoom : readable.zoom;
+  const focused = { zoom, x: (frame.x ?? 0) + frame.width / 2 - (selected.x + selected.width / 2) * zoom, y: (frame.y ?? 0) + frame.height / 2 - (selected.y + selected.height / 2) * zoom };
   const whole = graphBoundsViewport(cards, frame, padding, focused.zoom);
   // A small adjustment can fit a compact plan in a shorter desktop window.
   // Longer plans retain readable cards instead of shrinking to an overview.
@@ -130,6 +136,11 @@ export function inputLabel(name: string): string {
   return name.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 }
 
+const platformNames: Record<string, string> = { windows: "Windows", linux: "Linux", macos: "macOS" };
+export function platformLabel(name: string): string {
+  return platformNames[name.toLowerCase()] ?? inputLabel(name);
+}
+
 export function inputTypeLabel(type: string): string {
   const words = type.replace(/^artifact\./, "").replace(/\.v\d+$/, "").replaceAll(".", " ").replaceAll("_", " ");
   return words || "compatible results";
@@ -151,6 +162,96 @@ export function graphView(scenario: ScenarioGraph, allBranches: boolean, expande
   const ordered = [...visible].map((id) => scenario.steps.find((step) => step.id === id)!);
   const hiddenBranches = scenario.edges.filter((edge) => !visible.has(edge.from_step) || !visible.has(edge.to_step) || (!allBranches && edge.outcome !== "success" && !expanded.has(edge.from_step))).length;
   return { visible, ordered, hiddenSteps: scenario.steps.length - visible.size, hiddenBranches };
+}
+
+const FLOW_ROW_GAP = 64;
+const FLOW_LANE_GAP = 80;
+const FLOW_COLUMN_GAP = 112;
+const FLOW_SINGLE_ROW_RANKS = 4;
+
+/** Rows per flow column: three fit a 1366x768 Build canvas at a readable scale. */
+export const FLOW_COLUMN_ROWS = 3;
+
+/**
+ * Column sizes for consecutive ranks, at most `rows` each. Balanced heights are
+ * preferred, but a break crossed by a decision's outcomes or a branch entry
+ * costs more than a shorter column, so decisions stay with their branches.
+ */
+function flowColumnSizes(scenario: ScenarioGraph, rankOf: ReadonlyMap<string, number>, rankCount: number, spine: ReadonlySet<string>, rows: number) {
+  const destinations = new Map<string, Set<string>>();
+  for (const edge of scenario.edges) destinations.set(edge.from_step, (destinations.get(edge.from_step) ?? new Set()).add(edge.to_step));
+  const breakCost = new Array<number>(Math.max(0, rankCount - 1)).fill(0);
+  for (const edge of scenario.edges) {
+    const from = rankOf.get(edge.from_step), to = rankOf.get(edge.to_step);
+    if (from === undefined || to === undefined || to <= from) continue;
+    const splitsDecision = !spine.has(edge.to_step) || (destinations.get(edge.from_step)?.size ?? 0) > 1;
+    for (let index = from; index < to; index += 1) breakCost[index]! += splitsDecision ? 6 : to - from > 1 ? 1 : 0;
+  }
+  const cost = [0], previous = [0];
+  for (let end = 1; end <= rankCount; end += 1) {
+    cost[end] = Infinity;
+    for (let size = 1; size <= Math.min(rows, end); size += 1) {
+      const start = end - size;
+      const candidate = cost[start]! + (size - rows) ** 2 * 1.5 + (start > 0 ? breakCost[start - 1]! : 0);
+      if (candidate < cost[end]!) { cost[end] = candidate; previous[end] = start; }
+    }
+  }
+  const sizes: number[] = [];
+  for (let end = rankCount; end > 0; end = previous[end]!) sizes.unshift(end - previous[end]!);
+  return sizes;
+}
+
+/**
+ * Columns of consecutive ranks. The success path keeps the first lane so its
+ * edges stay straight; fallbacks and alternatives take side lanes in their own
+ * rank, and unconnected steps follow the plan. Returns undefined when one row
+ * already reads well.
+ */
+function columnFlowPositions(scenario: ScenarioGraph, ordered: readonly ScenarioStep[], rowLayout: NonNullable<Scenario["layout"]>) {
+  const linked = new Set(scenario.edges.flatMap(edge => [edge.from_step, edge.to_step]));
+  for (const step of ordered) for (const binding of Object.values(step.inputs)) if (binding.from_step !== step.id) { linked.add(step.id); linked.add(binding.from_step); }
+  const connected = ordered.filter(step => linked.has(step.id));
+  const detached = ordered.filter(step => !linked.has(step.id));
+  const rankX = [...new Set(connected.map(step => Math.round(rowLayout[step.id]!.x)))].sort((a, b) => a - b);
+  if (rankX.length <= FLOW_SINGLE_ROW_RANKS) return undefined;
+  const rankOf = new Map(connected.map(step => [step.id, rankX.indexOf(Math.round(rowLayout[step.id]!.x))]));
+  const ranks = rankX.map((_, rank) => connected.filter(step => rankOf.get(step.id) === rank).sort((a, b) => rowLayout[a.id]!.y - rowLayout[b.id]!.y));
+  const spine = new Set(graphView(scenario, false).ordered.map(step => step.id));
+  const lanes = new Map<string, number>();
+  for (const rank of ranks) {
+    const taken = new Set<number>();
+    // A success loop can put two success-path steps in one rank; only the
+    // first keeps the straight lane, the other is placed beside it.
+    const straight = rank.find(step => spine.has(step.id));
+    if (straight) { lanes.set(straight.id, 0); taken.add(0); }
+    for (const step of rank) {
+      if (step === straight) continue;
+      // A side chain stays in its predecessor's lane where that lane is free.
+      const predecessor = scenario.edges.find(edge => edge.to_step === step.id && lanes.has(edge.from_step) && !spine.has(edge.from_step));
+      let lane = predecessor ? lanes.get(predecessor.from_step)! : 1;
+      while (taken.has(lane)) lane += 1;
+      lanes.set(step.id, lane); taken.add(lane);
+    }
+  }
+  const sizes = flowColumnSizes(scenario, rankOf, ranks.length, spine, FLOW_COLUMN_ROWS);
+  const positions: NonNullable<Scenario["layout"]> = {};
+  let first = 0, x = 32;
+  for (const size of sizes) {
+    const columnRanks = ranks.slice(first, first + size);
+    first += size;
+    const steps = columnRanks.flat();
+    // Without the success path, a column starts at its first occupied lane.
+    const offset = steps.some(step => lanes.get(step.id) === 0) ? 0 : Math.min(...steps.map(step => lanes.get(step.id)!));
+    const widest = Math.max(...steps.map(step => lanes.get(step.id)! - offset));
+    columnRanks.forEach((rank, row) => rank.forEach(step => {
+      positions[step.id] = { x: x + (lanes.get(step.id)! - offset) * (GRAPH_NODE_WIDTH + FLOW_LANE_GAP), y: 32 + row * (GRAPH_NODE_HEIGHT + FLOW_ROW_GAP) };
+    }));
+    x += (widest + 1) * GRAPH_NODE_WIDTH + widest * FLOW_LANE_GAP + FLOW_COLUMN_GAP;
+  }
+  detached.forEach((step, index) => {
+    positions[step.id] = { x: x + Math.floor(index / FLOW_COLUMN_ROWS) * (GRAPH_NODE_WIDTH + FLOW_COLUMN_GAP), y: 32 + index % FLOW_COLUMN_ROWS * (GRAPH_NODE_HEIGHT + FLOW_ROW_GAP) };
+  });
+  return positions;
 }
 
 /** A topology projection only. Callers retain saved positions until explicit auto-layout. */
@@ -179,22 +280,13 @@ export function initialGraphLayout(scenario: ScenarioGraph, preserveSaved = fals
     const position = topology.node(step.id);
     return [step.id, { x: position.x! - GRAPH_NODE_WIDTH / 2, y: position.y! - GRAPH_NODE_HEIGHT / 2 }];
   }));
-  // A small single success chain can use a compact, at-most-three-row overview.
-  // Longer chains retain the continuous left-to-right flow and focus navigation.
-  // Connections still determine order; failure and data routes remain intact.
+  // Plans longer than a few ranks read top to bottom in short balanced columns,
+  // left to right, so an ordinary plan fits a desktop canvas at readable scale
+  // instead of one long row or a thumbnail. Dagre still decides ranks and order;
+  // connections, failure and data routes are unchanged.
   // Saved coordinates are restored below, so opening a graph never moves them.
-  const successEdges = scenario.edges.filter(edge => edge.outcome === "success");
-  const successPath = graphView(scenario, false).ordered;
-  const sequential = successPath.length === ordered.length && successEdges.length === ordered.length - 1
-    && successPath.every((step, index) => index === successPath.length - 1
-      ? !successEdges.some(edge => edge.from_step === step.id)
-      : successEdges.filter(edge => edge.from_step === step.id).length === 1 && successEdges.some(edge => edge.from_step === step.id && edge.to_step === successPath[index + 1]!.id));
-  if (sequential && ordered.length > 3 && ordered.length <= 9) {
-    const rows = Math.ceil(Math.sqrt(ordered.length));
-    successPath.forEach((step, index) => {
-      positions[step.id] = { x: 32 + Math.floor(index / rows) * (GRAPH_NODE_WIDTH + 88), y: 32 + (index % rows) * (GRAPH_NODE_HEIGHT + 44) };
-    });
-  }
+  const flow = columnFlowPositions(scenario, ordered, positions);
+  if (flow) Object.assign(positions, flow);
   if (!preserveSaved) return positions;
   const occupied = ordered.flatMap(step => scenario.layout?.[step.id] ? [scenario.layout[step.id]!] : []);
   for (const step of ordered) {

@@ -90,6 +90,22 @@ describe("readable graph framing", () => {
     expect(viewport.y + selected.y + selected.height / 2).toBe(frame.y + frame.height / 2);
   });
 
+  it("fits the height of slightly taller flow columns at a readable scale while anchoring the entry", () => {
+    // Eight columns of four rows: too wide to fit, only slightly too tall at 100%.
+    const cards = Array.from({ length: 32 }, (_, index) => ({ x: 32 + Math.floor(index / 4) * 332, y: 32 + index % 4 * 148, width: 220, height: 104 }));
+    const frame = { x: 0, y: 0, width: 1190, height: 565 };
+    // An explicit focus keeps full scale; only the opening frame fits the height.
+    expect(focusedGraphViewport(cards[0]!, cards.slice(1), frame).zoom).toBe(1);
+    const viewport = focusedGraphViewport(cards[0]!, cards.slice(1), frame, true);
+    expect(viewport.zoom).toBeGreaterThanOrEqual(0.8);
+    expect(viewport.zoom).toBeLessThan(1);
+    expect(viewport.x + cards[0]!.x * viewport.zoom).toBeCloseTo(24);
+    for (const card of cards) {
+      expect(viewport.y + card.y * viewport.zoom).toBeGreaterThanOrEqual(24 - .001);
+      expect(viewport.y + (card.y + card.height) * viewport.zoom).toBeLessThanOrEqual(frame.height - 24 + .001);
+    }
+  });
+
   it("keeps selection readable when a long plan cannot fit at its scale", () => {
     const cards = Array.from({ length: 128 }, (_, index) => ({ x: 32 + index * 308, y: 32, width: 292, height: 104 }));
     const frame = { width: 600, height: 380 };

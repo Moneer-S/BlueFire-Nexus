@@ -45,6 +45,11 @@
 .compare-page .comparison-conclusion-metrics > .button { white-space: nowrap; }
 .compare-page .comparison-conclusion-metrics strong { color: var(--blue-soft); font-size: 1.16rem; line-height: 1; font-variant-numeric: tabular-nums; }
 .compare-page .comparison-conclusion-metrics span { max-width: 18ch; color: var(--muted); font-size: .73rem; line-height: 1.35; }
+.compare-page .comparison-conclusion-metrics-quiet { grid-template-columns: minmax(0, 1fr); gap: 8px 12px; padding-top: 9px; }
+.compare-page .comparison-conclusion-metrics-quiet.comparison-conclusion-metrics-has-action { grid-template-columns: minmax(0, 1fr) auto; }
+.compare-page .comparison-conclusion-zero-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 18px; }
+.compare-page .comparison-conclusion-metrics .comparison-conclusion-zero-summary span { max-width: none; color: var(--muted); font-size: .72rem; line-height: 1.4; }
+.compare-page .comparison-conclusion-metrics .comparison-conclusion-zero-summary strong { color: var(--muted-strong); font-size: .8rem; }
 .compare-page .comparison-download { white-space: nowrap; }
 .compare-page .comparison-run-actions { display: flex; align-items: center; gap: 12px; }
 .compare-page .comparison-run-actions > span { color: var(--muted); font-size: .75rem; }
@@ -211,3 +216,9 @@
   .compare-page .delta-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .compare-page .delta-columns { grid-template-columns: minmax(0, 1fr); }
 }
+/* Same-named runs differ by result, mode and ID, not by a pair of pills per row. */
+.compare-page .run-select-list .run-select-id { font-family: var(--font-mono, ui-monospace, monospace); color: var(--muted-strong); }
+.compare-page .run-select-list .run-select-mode.mode-execute { color: var(--amber-soft); }
+.compare-page .run-select-result { font-size: .8125rem; font-weight: 600; text-align: right; color: var(--muted-strong); }
+.compare-page .run-select-result.tone-achieved { color: var(--green); }
+.compare-page .run-select-result.tone-danger { color: var(--red); }

@@ -60,17 +60,21 @@ it("detects stopped service on a terminal page, preserves cached work and reconn
 it.each([401, 403])("reports unavailable browser session (%s) without renewing credentials or losing the current result", async (status) => {
   const fetcher = vi.fn().mockResolvedValueOnce(success()).mockResolvedValue(new Response(null, { status }));
   vi.stubGlobal("fetch", fetcher); const view = mount(); await flush(); await flush(15_010);
-  expect(screen.getByText("Session unavailable", { selector: "strong" })).toBeVisible();
+  expect(screen.getAllByRole("img", { name: "Session unavailable" }).at(-1)).toBeVisible();
   expect(screen.getByText("Retained comparison result")).toBeVisible();
   expect(screen.queryByText("Connected")).not.toBeInTheDocument();
-  const details = screen.getByText("Connection details", { selector: "summary" });
+  // One service status in the top bar: its summary names the state and opens the details.
+  const details = document.querySelector<HTMLElement>(".service-status summary")!;
+  expect(details).toHaveAttribute("aria-label", "Session unavailable. Connection details");
   expect(details).toBeVisible(); expect(details.closest("details")).not.toHaveAttribute("open");
+  expect(document.querySelectorAll(".service-status")).toHaveLength(1);
   expect(screen.getByText(/Relaunch with bluefire ui/)).not.toBeVisible();
   expect(screen.getByRole("button", { name: "Check connection" })).toBeVisible();
   expect(screen.getByRole("button", { name: "Check connection" })).toBeEnabled();
   expect(fetcher).toHaveBeenCalledTimes(2);
   fireEvent.click(details); await flush();
   expect(details.closest("details")).toHaveAttribute("open");
+  expect(screen.getByText("Session unavailable", { selector: "strong" })).toBeVisible();
   expect(screen.getByText(/Relaunch with bluefire ui/)).toBeVisible();
   expect(screen.getByText("Retained comparison result")).toBeVisible();
   expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(view.draft);

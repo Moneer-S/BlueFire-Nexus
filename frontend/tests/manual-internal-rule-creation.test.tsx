@@ -31,8 +31,15 @@ function setup() {
   return { user: userEvent.setup(), save, effects, remount: () => { view.unmount(); client.clear(); view = mount(); } };
 }
 
+async function openNewRule(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "New detection" }));
+  expect(screen.getByRole("textbox", { name: "Title" })).toBeVisible();
+}
+
 async function internal(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(await screen.findByRole("textbox", { name: "Title" }), "Collection rule");
+  await openNewRule(user);
+  await user.click(screen.getByRole("textbox", { name: "Title" }));
+  await user.paste("Collection rule");
   await user.selectOptions(screen.getByRole("combobox", { name: "Target language" }), "internal");
   await user.selectOptions(screen.getByRole("combobox", { name: "Condition starter" }), "collection");
 }
@@ -51,7 +58,7 @@ async function add(user: ReturnType<typeof userEvent.setup>, index: number, fiel
   }
   const input = screen.getByLabelText(`Value for condition ${index}`);
   expect(input).toBeVisible();
-  if (input.tagName === "INPUT") { await user.clear(input); await user.type(input, value); }
+  if (input.tagName === "INPUT") { input.focus(); await user.paste(value); }
   else {
     expect(input.tagName).toBe("SELECT");
     await user.selectOptions(input, value);
@@ -92,8 +99,10 @@ it("retains applied and invalid pending conditions across navigation, reload, an
   expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
   await user.click(screen.getByRole("link", { name: "Leave lab" }));
   await user.click(screen.getByRole("link", { name: "Return to lab" }));
+  await openNewRule(user);
   await user.click(await screen.findByRole("button", { name: "Review internal conditions" }));
   remount();
+  await openNewRule(user);
   expect(await screen.findByRole("textbox", { name: "Value for condition 3" })).toHaveValue("1e3");
   expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
   const retained = JSON.parse(JSON.parse(sessionStorage.getItem(key)!).value.internalConditions);
@@ -103,6 +112,7 @@ it("retains applied and invalid pending conditions across navigation, reload, an
   expect(screen.queryByRole("textbox", { name: "Value for condition 3" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Save rule draft" })).toBeEnabled();
   remount();
+  await openNewRule(user);
   expect(await screen.findByRole("textbox", { name: "Value for condition 2" })).toHaveValue("collection_semantics");
   expect(screen.getByRole("button", { name: "Save rule draft" })).toBeEnabled();
   expect(save).not.toHaveBeenCalled();
@@ -128,6 +138,7 @@ it("does not let empty or duplicate conditions replace an applied definition", a
 it.each(["world_writable", "non_owner_writable"] as const)("restores legacy %s inputs and applies their exact permission selection", async condition => {
   sessionStorage.setItem(key, JSON.stringify({ binding: "manual-new-rule", value: { title: "Legacy", behaviorId: "sandbox.collection.stage.v1", language: "internal", permissionCondition: condition } }));
   const { user, save } = setup();
+  await openNewRule(user);
   expect(await screen.findByRole("combobox", { name: "Value for condition 4" })).toHaveValue("true");
   expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
   await user.click(screen.getByRole("button", { name: "Apply conditions" }));
@@ -161,6 +172,7 @@ it("clears both applied and pending conditions only after confirming discard", a
   await user.click(screen.getByRole("button", { name: "Discard these inputs" }));
   expect(sessionStorage.getItem(key)).toBeNull();
   remount();
+  await openNewRule(user);
   await user.selectOptions(await screen.findByRole("combobox", { name: "Target language" }), "internal");
   expect(screen.getByRole("textbox", { name: "Value for condition 2" })).toHaveValue("staged/");
   expect(screen.queryByRole("textbox", { name: "Value for condition 3" })).not.toBeInTheDocument();
@@ -223,6 +235,7 @@ it("preserves unsupported retained condition bytes until confirmed discard", asy
   const raw = JSON.stringify({ binding: "manual-new-rule", value: { title: "Unrecognized", behaviorId: "sandbox.collection.stage.v1", language: "internal", internalConditions } });
   sessionStorage.setItem(key, raw);
   const { user, save } = setup();
+  await openNewRule(user);
   expect(await screen.findByRole("alert")).toHaveTextContent("stored bytes have been left untouched");
   expect(sessionStorage.getItem(key)).toBe(raw);
   await user.click(screen.getByRole("button", { name: "Discard New rule inputs" }));
@@ -247,6 +260,7 @@ it("keeps a valid large applied selection and pending edits visible when browser
   expect(readManualInternalConditions(envelope)?.draft?.conditions).toEqual(conditions);
   sessionStorage.setItem(key, JSON.stringify({ binding: "manual-new-rule", value: { title: "Large rule", behaviorId: "sandbox.collection.stage.v1", language: "internal", internalConditions: JSON.stringify({ source, draft: null }) } }));
   const { user, remount, save } = setup();
+  await openNewRule(user);
   await user.clear(await screen.findByLabelText("Value for condition 1"));
   expect(screen.getByLabelText("Value for condition 2")).toHaveValue("\\".repeat(4096));
   expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
@@ -262,6 +276,7 @@ it("keeps a valid large applied selection and pending edits visible when browser
   expect(screen.getByText(/exceed the selection text limit/)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Apply conditions" }));
   remount();
+  await openNewRule(user);
   expect(await screen.findByLabelText("Value for condition 1")).toHaveValue("\u0001".repeat(4096));
   expect(screen.getByLabelText("Value for condition 2")).toHaveValue("\u0001".repeat(4096));
   expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
@@ -320,6 +335,7 @@ it("retains a differing supported pending source as a mismatch without granting 
   const raw = JSON.stringify({ binding: "manual-new-rule", value: { title: "Mismatched source", behaviorId: "sandbox.collection.stage.v1", language: "internal", internalConditions } });
   sessionStorage.setItem(key, raw);
   const { user, save, effects } = setup();
+  await openNewRule(user);
   expect(await screen.findByRole("alert")).toHaveTextContent("different selection");
   expect(screen.getByRole("button", { name: "Save rule draft" })).toBeDisabled();
   expect(screen.queryByRole("button", { name: "Apply conditions" })).not.toBeInTheDocument();

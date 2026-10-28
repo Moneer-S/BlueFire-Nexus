@@ -38,6 +38,7 @@ it("reads canonical event data without letting obsolete flat fields claim a diff
   const result = runEventPresentation(event, demoCatalog, null, "execute");
   expect(result).toMatchObject({ title: "Step result recorded", stepId: "selected_step", status: "blocked", sequence: 4, type: "step.completed" });
   expect(result.detail).toBe(`${behavior.title} · Stopped by BlueFire policy · This capability is outside the reviewed scope.`);
+  expect(result).toMatchObject({ stepName: behavior.title, outcome: "Stopped by BlueFire policy", reason: "This capability is outside the reviewed scope." });
   expect(event).toEqual(before);
 });
 
@@ -128,6 +129,21 @@ it("qualifies synthetic success and exposes an explicit zero observation count",
   expect(outcome.getByText("0 observed records")).toBeVisible();
   await userEvent.setup().click(outcome.getByText("Result details"));
   expect(outcome.getByText("Simulation mode does not establish cleanup; review the recorded cleanup result.")).toBeVisible();
+});
+
+it("preserves a recovered failure without claiming the successful fallback path stopped", () => {
+  const failed = demoCatalog.behaviors[0]!, fallback = demoCatalog.behaviors[1]!;
+  const record = run({ mode: "simulate", status: "completed", objective_reached: true,
+    steps: [{ step_id: "initial", behavior_id: failed.id, status: "failed" }, { step_id: "fallback", behavior_id: fallback.id, status: "success" }] });
+  const before = structuredClone(record);
+  render(<RunReview run={record} catalog={demoCatalog}/>);
+  const outcome = within(screen.getByRole("region", { name: "Recorded run outcome" }));
+  expect(outcome.getByRole("heading", { name: "Achieved (synthetic)" })).toBeVisible();
+  const issue = outcome.getByText("First issue").closest("div")!;
+  expect(within(issue).getByText(failed.title)).toBeVisible();
+  expect(within(issue).getByText("Simulated failure")).toBeVisible();
+  expect(outcome.queryByText(/stopped/i)).not.toBeInTheDocument();
+  expect(record).toEqual(before);
 });
 
 it("reports no real effects only from an explicit zero-effect simulation record", () => {

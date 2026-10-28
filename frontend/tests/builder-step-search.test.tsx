@@ -96,9 +96,8 @@ describe("Builder graph step search", () => {
     visibleCanvasGeometry = true;
     const saved = renderWorkspace(scenario);
     const user = userEvent.setup();
-    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
-
-    expect(screen.getByRole("button", { name: "Select orphan_step" })).toBeInTheDocument();
+    // The opening frame can equal the default viewport, so wait for the canvas itself.
+    expect(await screen.findByRole("button", { name: "Select orphan_step" })).toBeInTheDocument();
     let dialog = await searchFor(user, "fallback");
     await user.click(within(dialog).getByRole("button", { name: /Use approved local fallback.*fallback/ }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Select fallback" })).toHaveAttribute("aria-pressed", "true"));
@@ -113,7 +112,11 @@ describe("Builder graph step search", () => {
     const selected = state.props.nodes?.find(node => node.id === "orphan_step");
     expect(selected?.hidden).toBe(false);
     // Focus keeps the tail readable without leaving empty space past the graph.
-    await waitFor(() => expect(state.viewport).toEqual({ x: -544, y: -488, zoom: 1 }));
+    await waitFor(() => expect(state.viewport).toEqual({
+      x: 900 - 24 - selected!.position.x - GRAPH_NODE_WIDTH,
+      y: 480 - 24 - selected!.position.y - GRAPH_NODE_HEIGHT,
+      zoom: 1,
+    }));
     const selectedRect = {
       left: state.viewport.x + selected!.position.x * state.viewport.zoom,
       top: state.viewport.y + selected!.position.y * state.viewport.zoom,

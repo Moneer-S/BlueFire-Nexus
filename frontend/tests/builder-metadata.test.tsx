@@ -141,8 +141,10 @@ describe("Builder metadata and graph updates", () => {
             if (!(a.x + graphView.GRAPH_NODE_WIDTH <= b.x || b.x + graphView.GRAPH_NODE_WIDTH <= a.x || a.y + graphView.GRAPH_NODE_HEIGHT <= b.y || b.y + graphView.GRAPH_NODE_HEIGHT <= a.y)) collisions.push([node.id, other.id]);
           }
           expect(collisions).toEqual([]);
+          // Generated column flow reads down each column, then right: a success
+          // route never points back up or left against that reading order.
           const backwardEdges = scenario.edges.filter(edge => edge.outcome === "success" && !scenario.layout?.[edge.from_step] && !scenario.layout?.[edge.to_step]
-            && positions.get(edge.to_step)!.x <= positions.get(edge.from_step)!.x);
+            && positions.get(edge.to_step)!.x <= positions.get(edge.from_step)!.x && positions.get(edge.to_step)!.y <= positions.get(edge.from_step)!.y);
           expect(backwardEdges).toEqual([]);
         }
         const originalCoordinates = nodes.map(({ id, position }) => [id, { ...position }] as const);
@@ -226,6 +228,47 @@ describe("Builder metadata and graph updates", () => {
     expect(screen.getByLabelText(/^Step ID/)).toHaveValue(demoScenario.steps[0]!.id);
     expect(screen.getByRole("button", { name: "Hide node inspector" })).toHaveFocus();
   });
+  it("updates folded route summaries without replacing obstacles or unaffected graph data", async () => {
+    const steps = demoScenario.steps.slice(0, 3).map(step => ({ ...structuredClone(step), inputs: {} }));
+    const scenario: Scenario = {
+      ...structuredClone(demoScenario), id: "builder-aggregate-metadata", steps, start: steps[0]!.id,
+      edges: [
+        { from_step: steps[0]!.id, outcome: "success", to_step: steps[1]!.id },
+        { from_step: steps[1]!.id, outcome: "success", to_step: steps[2]!.id },
+        ...(["partial", "blocked", "failed"] as const).map(outcome => ({ from_step: steps[0]!.id, outcome, to_step: steps[1]!.id })),
+      ],
+      layout: Object.fromEntries(steps.map((step, index) => [step.id, { x: 48, y: 48 + index * 200 }])),
+    };
+    renderBuilder(scenario);
+    fireEvent.click(await screen.findByRole("button", { name: "Show route list" }));
+    const buttons = within(screen.getByRole("list", { name: "Visible routes" })).getAllByRole("button");
+    fireEvent.click(buttons[1]!);
+    const original = renderedGraphs.at(-1)!;
+    const aggregate = original.edges![0]!;
+    const obstacles = aggregate.data!.obstacles;
+    expect(obstacles).toHaveLength(steps.length);
+    const originalBytes = localStorage.getItem("bluefire.local.scenario.v1");
+    expect(aggregate.data!.alsoOn).toEqual(["partial", "blocked", "failed"]);
+    expect(aggregate.ariaLabel).toContain("Any outcome");
+    expect(original.edges!.slice(2).every(edge => edge.hidden)).toBe(true);
+
+    for (const [index, remaining] of [[2, ["blocked", "failed"]], [3, ["partial", "failed"]]] as const) {
+      fireEvent.click(buttons[index]!);
+      const inspected = renderedGraphs.at(-1)!;
+      expect(inspected.edges![0]!.data).not.toBe(aggregate.data);
+      expect(inspected.edges![0]!.data!.alsoOn).toEqual(remaining);
+      expect(inspected.edges![0]!.ariaLabel).toContain(`Also ${remaining.join(", ")}`);
+      expect(inspected.edges![index]!.selected).toBe(true);
+      expect(inspected.edges![index]!.hidden).toBe(false);
+      for (const edge of inspected.edges!) {
+        expect(edge.data!.obstacles).toBe(obstacles);
+        if (edge.id !== aggregate.id) expect(edge.data).toBe(original.edges!.find(item => item.id === edge.id)!.data);
+      }
+      for (const node of inspected.nodes!) expect(node.data).toBe(original.nodes!.find(item => item.id === node.id)!.data);
+      expect(localStorage.getItem("bluefire.local.scenario.v1")).toBe(originalBytes);
+    }
+  });
+
   it("refreshes changed graph inputs and removes a method when its behavior changes", async () => {
     const user = userEvent.setup();
     renderBuilder();

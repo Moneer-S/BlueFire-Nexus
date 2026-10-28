@@ -25,7 +25,7 @@ Connect behavior steps into an experiment, inspect the recorded outcome, then ca
 
 ![BlueFire Nexus Overview with saved experiments and results](docs/assets/screenshots/desktop-workspace.png)
 
-Watch the [post-release development walkthrough](docs/assets/screenshots/desktop-workflow.webm): explore a connected plan, inspect its selected method and expected evidence, open an Assistant draft with graph context, and revisit a saved comparison. The recording uses AI Off and two saved simulations of the same path, whose outcomes are unchanged.
+Watch the [development walkthrough](docs/assets/screenshots/desktop-workflow.webm): explore a connected plan and its inspector, open a contextual Assistant draft, then revisit a saved comparison and detection evaluation. The installed build uses AI Off and clearly labeled synthetic records; both saved simulations took the same path. [Capture details](docs/assets/screenshots/capture.json) identify the source revision and scope.
 
 ## Get started
 

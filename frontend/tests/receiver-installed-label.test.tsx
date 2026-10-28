@@ -8,7 +8,7 @@ import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { receiverContextRequestAllowed, receiverContextRequestIsFinal } from "./installed/receiver-guards.mjs";
 import { ProductProvider } from "../src/state/ProductContext";
 
-it("exposes the saved experiment field name with its wrapped hint for installed browser selection", async () => {
+it("names the saved experiment control exactly and exposes its hint as a description", async () => {
   vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
   vi.spyOn(api, "scenarioVersions").mockResolvedValue({
     schema_version: "bluefire.scenario-version-list.v1",
@@ -24,9 +24,11 @@ it("exposes the saved experiment field name with its wrapped hint for installed 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><ReceiverTestSetup disabled={false} onStart={vi.fn()} /></MemoryRouter></ProductProvider></QueryClientProvider>);
 
-  const field = await screen.findByLabelText("Saved experiment", { exact: false });
-  expect(field).toBeInTheDocument();
-  expect(() => screen.getByLabelText("Saved experiment", { exact: true })).toThrow();
+  const field = await screen.findByRole("combobox", { name: "Saved experiment" });
+  expect(screen.getByLabelText("Saved experiment", { exact: true })).toBe(field);
+  const hint = screen.getByText("Choose an immutable version with a JSONL staging step connected to a peer handoff.");
+  expect(field).toHaveAttribute("aria-describedby", hint.id);
+  expect(field).toHaveAccessibleDescription(hint.textContent!);
 });
 
 it("keeps each real retained-redaction UI context request within the finite driver allowance", async () => {
@@ -52,7 +54,7 @@ it("keeps each real retained-redaction UI context request within the finite driv
   render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><ReceiverTestSetup disabled={false} onStart={vi.fn()} /></MemoryRouter></ProductProvider></QueryClientProvider>);
 
   fireEvent.click(await screen.findByRole("radio", { name: /Retain redaction and verify legitimate use/ }));
-  fireEvent.change(await screen.findByLabelText("Saved experiment", { exact: false }), {
+  fireEvent.change(await screen.findByLabelText("Saved experiment", { exact: true }), {
     target: { value: `${demoScenario.id}:1:${digest}` },
   });
   await waitFor(() => expect(requests.length).toBeGreaterThanOrEqual(1));

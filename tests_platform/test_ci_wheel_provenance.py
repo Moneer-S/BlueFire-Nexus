@@ -24,7 +24,7 @@ from bluefire.s3_access_runtime import WORKER_FILES
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 WINDOWS_PARTITIONS = {
-    "3.10": ("a-d", "e-q", "remainder"),
+    "3.10": ("a-b", "c-d", "e-q", "remainder"),
     "3.12": ("a-b", "c-d", "e-q", "remainder"),
 }
 
@@ -43,7 +43,7 @@ def _package_job():
     assert matrix["os"] == ["ubuntu-latest", "macos-latest"]
     assert matrix["python-version"] == ["3.10", "3.12"]
     windows = matrix["include"]
-    assert len(windows) == 7
+    assert len(windows) == 8
     assert all(set(entry) == {"os", "python-version", "partition"} for entry in windows)
     assert {(entry["os"], entry["python-version"], entry["partition"]) for entry in windows} == {
         ("windows-latest", version, partition)
@@ -56,7 +56,7 @@ def _package_job():
 
 
 def _windows_partition_files(names, partition):
-    ranges = {"a-d": ("a", "d"), "a-b": ("a", "b"), "c-d": ("c", "d"), "e-q": ("e", "q")}
+    ranges = {"a-b": ("a", "b"), "c-d": ("c", "d"), "e-q": ("e", "q")}
     if partition not in {*ranges, "remainder"}:
         raise ValueError(f"unknown Windows test partition: {partition}")
 
@@ -80,8 +80,8 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
     python_job = workflow["jobs"]["python"]
     step = next(item for item in python_job["steps"] if item["name"] == "Test Windows partition")
     command = step["run"]
-    assert command.count("Get-ChildItem -LiteralPath tests_platform -File") == 4
-    assert command.count("Where-Object { $_.Name -cmatch '^test_[a-d].*\\.py$' }") == 1
+    assert command.count("Get-ChildItem -LiteralPath tests_platform -File") == 3
+    assert "Where-Object { $_.Name -cmatch '^test_[a-d].*\\.py$' }" not in command
     assert command.count("Where-Object { $_.Name -cmatch '^test_[a-b].*\\.py$' }") == 1
     assert command.count("Where-Object { $_.Name -cmatch '^test_[c-d].*\\.py$' }") == 1
     assert command.count("Where-Object { $_.Name -cmatch '^test_[e-q].*\\.py$' }") == 1
@@ -108,10 +108,10 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
     assert set.union(*partitions.values()) == names
 
     boundaries = {
-        "test_a_boundary.py": "a-d" if version == "3.10" else "a-b",
-        "test_b_boundary.py": "a-d" if version == "3.10" else "a-b",
-        "test_c_boundary.py": "a-d" if version == "3.10" else "c-d",
-        "test_d_boundary.py": "a-d" if version == "3.10" else "c-d",
+        "test_a_boundary.py": "a-b",
+        "test_b_boundary.py": "a-b",
+        "test_c_boundary.py": "c-d",
+        "test_d_boundary.py": "c-d",
         "test_e_boundary.py": "e-q",
         "test_q_boundary.py": "e-q",
         "test_r_boundary.py": "remainder",

@@ -22,6 +22,10 @@ export type BuilderFlowEdge = Edge<{
   artifactType?: string;
   artifactLabel?: string;
   number?: number;
+  /** A conditional outcome that reaches the same step as its success route. */
+  parallel?: boolean;
+  /** On a success route: the conditional outcomes that reach the same step. */
+  alsoOn?: readonly Outcome[];
   lane?: number;
   sourceTitle?: string;
   targetTitle?: string;
@@ -132,13 +136,17 @@ export function routePath({ source, target, sourceId, targetId, sourceSide = "bo
   const targetVertical = targetSide === "bottom" || targetSide === "top";
   // Perpendicular arrivals need separate outward lanes before they turn back
   // toward a top/bottom join; their middle channel can lie inside the source.
-  const start = portLead(source, sourceSide, obstacles, sourceId, lead + (vertical !== targetVertical ? offset : 0));
-  const end = portLead(target, targetSide, obstacles, targetId);
+  // A bottom port facing a top port across a narrow row gap shares the gap
+  // between both leads, and its channel stays inside it: no U-shaped turn back.
+  const facingGap = sourceSide === "bottom" && targetSide === "top" && target.y > source.y ? target.y - source.y : undefined;
+  const start = portLead(source, sourceSide, obstacles, sourceId, Math.min(lead + (vertical !== targetVertical ? offset : 0), facingGap === undefined ? Infinity : facingGap / 2));
+  const end = portLead(target, targetSide, obstacles, targetId, Math.min(lead, facingGap === undefined ? Infinity : facingGap / 2));
   // Opposing exits must not share a lane: a dashed fallback would otherwise
   // obscure the primary route beneath their common source card.
   const direction = Math.sign(vertical ? end.x - start.x : end.y - start.y);
   const exitOffset = direction ? direction * (8 + offset) : offset;
-  const middle = vertical ? (start.y + end.y) / 2 + exitOffset : (start.x + end.x) / 2 + exitOffset;
+  const centred = vertical ? (start.y + end.y) / 2 + exitOffset : (start.x + end.x) / 2 + exitOffset;
+  const middle = facingGap === undefined ? centred : Math.min(Math.max(centred, start.y), end.y);
   const candidates: RoutePoint[][] = vertical
     ? [[start, { x: start.x, y: middle }, { x: end.x, y: middle }, end]]
     : [[start, { x: middle, y: start.y }, { x: middle, y: end.y }, end]];

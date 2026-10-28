@@ -33,6 +33,12 @@ const jobPattern = /^job-[0-9a-f]{32}$/;
 const runPattern = /^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/;
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
 const sessionPattern = /^[A-Za-z0-9_-]{64}$/;
+const staticReadPaths = new Set(["/", "/ui/app.js", "/ui/styles.css", "/ui/fonts/InterVariable.woff2", "/favicon.ico"]);
+const apiReadPaths = new Set([
+  "/api/v1/session", "/api/v1/build-info", "/api/v1/catalog", "/api/v1/scenarios", "/api/v1/runs",
+  "/api/v1/receiver-defense/jobs", "/api/v1/comparison-snapshots", "/api/v1/settings",
+  "/api/v1/resources/model-providers", "/api/v1/ai/authorizations",
+]);
 const commandLines = createInterface({ input: process.stdin, crlfDelay: Infinity })[Symbol.asyncIterator]();
 async function nextCapability() {
   const next = await commandLines.next();
@@ -49,6 +55,24 @@ let runPreflightPosts = 0, runPosts = 0, comparisonPosts = 0;
 let providerPosts = 0, activationPosts = 0, authorizationPosts = 0, turnPosts = 0;
 let providerConfig, runIds = [], phaseOne, firstGrant, secondGrant, firstAuthorizationContext;
 let recoveryPhaseWriteAttempts = 0;
+const setupJobIds = new Set();
+const setupRunIds = new Set();
+const turnJobIds = new Set();
+
+function allowedRead(url, method) {
+  if (url.username || url.password || url.search) return false;
+  if (staticReadPaths.has(url.pathname)) return method === "GET" || method === "HEAD";
+  if (method !== "GET") return false;
+  if (apiReadPaths.has(url.pathname)) return true;
+  const run = url.pathname.match(/^\/api\/v1\/runs\/(run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16})$/);
+  if (run && setupRunIds.has(run[1])) return true;
+  const job = url.pathname.match(/^\/api\/v1\/jobs\/(job-[0-9a-f]{32})$/);
+  if (job && setupJobIds.has(job[1])) return true;
+  const turn = url.pathname.match(/^\/api\/v1\/assistance\/turns\/(job-[0-9a-f]{32})$/);
+  if (turn && turnJobIds.has(turn[1])) return true;
+  const snapshot = url.pathname.match(/^\/api\/v1\/comparison-snapshots\/(run-comparison-[0-9a-f]{64})(\/assistant-context)?$/);
+  return Boolean(snapshot && snapshot[1] === report.snapshot_id);
+}
 
 function allowedWrite(path, body, raw) {
   if (Buffer.byteLength(raw, "utf8") > 262144) return false;
@@ -111,7 +135,10 @@ function allowedWrite(path, body, raw) {
       && same(body.selection, expectedContext.selected) && body.context_digest === expectedContext.context_digest
       && body.message === prompt && body.autonomy === "assist" && body.provider_id === providerId
       && (!phaseOne || body.submission_id.replaceAll("-", "") !== originalId?.slice(4));
-    if (allowed) turnPosts += 1;
+    if (allowed) {
+      turnPosts += 1;
+      turnJobIds.add(`job-${body.submission_id.replaceAll("-", "")}`);
+    }
     return allowed;
   }
   return false;
@@ -192,9 +219,11 @@ async function createComparison() {
     assert.equal(preflight.plan?.mode, "simulate");
     const submitted = await api("/runs", payload);
     assert.match(submitted.job?.job_id ?? "", jobPattern);
+    setupJobIds.add(submitted.job.job_id);
     const settled = await poll(() => api(`/jobs/${submitted.job.job_id}`), value => ["completed", "failed", "interrupted"].includes(value.state), 90000);
     assert.equal(settled.state, "completed");
     assert.match(settled.result_ref ?? "", runPattern);
+    setupRunIds.add(settled.result_ref);
     const run = await api(`/runs/${settled.result_ref}`);
     assert.equal(run.mode, "simulate");
     assert.equal(run.scenario_id, scenarioId);
@@ -204,12 +233,13 @@ async function createComparison() {
   comparison = await api("/comparisons", { run_ids: runIds });
   assert.deepEqual(comparison.run_ids, runIds);
   assert.deepEqual(comparison.summaries?.map(item => item.run_id), runIds);
-  const saved = await api(`/comparison-snapshots/${comparison.saved_snapshot.snapshot_id}`);
-  assert.equal(saved.snapshot_id, comparison.saved_snapshot.snapshot_id);
+  assert.match(comparison.saved_snapshot?.snapshot_id ?? "", /^run-comparison-[0-9a-f]{64}$/);
+  report.snapshot_id = comparison.saved_snapshot.snapshot_id;
+  const saved = await api(`/comparison-snapshots/${report.snapshot_id}`);
+  assert.equal(saved.snapshot_id, report.snapshot_id);
   assert.match(saved.digest, digestPattern);
   assert.deepEqual(saved.comparison.run_ids, runIds);
   assert.equal(saved.source_integrity?.status, "verified");
-  report.snapshot_id = saved.snapshot_id;
   report.snapshot_digest = saved.digest;
   report.run_ids = [...runIds];
   report.saved_snapshot_hash = sha(saved);
@@ -321,6 +351,8 @@ try {
     const request = route.request(), url = new URL(request.url()), method = request.method();
     let allowed = url.origin === origin && ["GET", "HEAD"].includes(method), reason;
     if (url.origin !== origin) reason = "outside_service_origin";
+    else if (url.username || url.password) { allowed = false; reason = "url_credentials_not_allowlisted"; }
+    else if (["GET", "HEAD"].includes(method) && !allowedRead(url, method)) { allowed = false; reason = "read_not_allowlisted"; }
     else if (method === "POST") {
       let body;
       try { body = request.postData() ? request.postDataJSON() : null; } catch { reason = "invalid_json"; }
