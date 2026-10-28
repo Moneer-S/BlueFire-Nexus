@@ -626,3 +626,71 @@ def test_guest_refuses_oversized_or_invalid_utf8_command(
     monkeypatch.setattr(guest.os, "read", lambda *_args: data)
     with pytest.raises(ValueError, match="input bound|UTF-8"):
         guest.read_command(bytearray(), 7)
+
+
+def test_file_access_launch_stage_observations_are_exact_and_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bluefire import prepared_lab_guest as guest
+
+    assert guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS == (
+        b"bluefire.file-access-launch-stage.v1 1 enter_file_access_started\n",
+        b"bluefire.file-access-launch-stage.v1 2 fixed_reader_enrollment_returned\n",
+        b"bluefire.file-access-launch-stage.v1 3 inner_file_access_started\n",
+    )
+    writes = []
+    monkeypatch.setattr(
+        guest.os, "write", lambda descriptor, value: writes.append((descriptor, value))
+    )
+    for marker in guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS:
+        guest._observe_file_access_launch_stage(marker)
+    guest._observe_file_access_launch_stage(b"private or unknown stage")
+    guest._observe_file_access_launch_stage("not bytes")  # type: ignore[arg-type]
+
+    assert writes == [(2, marker) for marker in guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS]
+    assert all(len(marker) < 128 and marker.endswith(b"\n") for _, marker in writes)
+
+    def unavailable(_descriptor, _value):
+        raise OSError("diagnostic sink unavailable")
+
+    monkeypatch.setattr(guest.os, "write", unavailable)
+    guest._observe_file_access_launch_stage(guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS[0])
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_target", "file_access"),
+    (
+        ("enter", "enter", False),
+        ("enter-file-access", "enter", True),
+        ("inner", "inner", False),
+        ("inner-file-access", "inner", True),
+    ),
+)
+def test_guest_fixed_modes_select_file_access_observation_without_changing_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    expected_target: str,
+    file_access: bool,
+) -> None:
+    from bluefire import prepared_lab_guest as guest
+
+    calls = []
+
+    def enter(port, parent, *bootstrap, file_access=False):
+        calls.append(("enter", port, (parent, *bootstrap), file_access))
+
+    def inner(port, *bootstrap, file_access=False):
+        calls.append(("inner", port, bootstrap, file_access))
+
+    monkeypatch.setattr(guest.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(guest, "enter", enter)
+    monkeypatch.setattr(guest, "inner", inner)
+    arguments = ["prepared_lab_guest", mode, "8767"]
+    if expected_target == "enter":
+        arguments.append('{"mnt":"m","net":"n","pid":"p","ipc":"i"}')
+    monkeypatch.setattr(guest.sys, "argv", arguments)
+
+    guest.main()
+
+    expected_arguments = tuple(arguments[3:])
+    assert calls == [(expected_target, 8767, expected_arguments, file_access)]

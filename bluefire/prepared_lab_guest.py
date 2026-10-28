@@ -36,6 +36,22 @@ from bluefire.prepared_lab_runtime import (
 )
 
 STOP = threading.Event()
+_FILE_ACCESS_LAUNCH_STAGE_MARKERS = (
+    b"bluefire.file-access-launch-stage.v1 1 enter_file_access_started\n",
+    b"bluefire.file-access-launch-stage.v1 2 fixed_reader_enrollment_returned\n",
+    b"bluefire.file-access-launch-stage.v1 3 inner_file_access_started\n",
+)
+
+
+def _observe_file_access_launch_stage(marker: bytes) -> None:
+    """Emit one fixed diagnostic observation; never affect launch or authority."""
+    if type(marker) is not bytes or marker not in _FILE_ACCESS_LAUNCH_STAGE_MARKERS:
+        return
+    try:
+        os.write(2, marker)
+    except OSError:
+        # A diagnostic observation cannot replace the original launch outcome.
+        pass
 
 
 def dropped(command: list[str]) -> list[str]:
@@ -53,6 +69,8 @@ def dropped(command: list[str]) -> list[str]:
 
 
 def enter(port: int, parent: str, *bootstrap: str, file_access: bool = False) -> None:
+    if file_access:
+        _observe_file_access_launch_stage(_FILE_ACCESS_LAUNCH_STAGE_MARKERS[0])
     if uid() != 0 or os.getpid() != 1 or socket.if_nameindex() != [(1, "lo")]:
         raise ValueError("setup requires a new PID and loopback-only network namespace")
     original = json.loads(parent)
@@ -64,8 +82,11 @@ def enter(port: int, parent: str, *bootstrap: str, file_access: bool = False) ->
         from .prepared_lab_file_access import enroll_fixed_reader
 
         enroll_fixed_reader()
+        _observe_file_access_launch_stage(_FILE_ACCESS_LAUNCH_STAGE_MARKERS[1])
     os.execve(  # nosec B606
-        "/usr/bin/setpriv", dropped(guest_command("inner", port, *bootstrap)), ENV
+        "/usr/bin/setpriv",
+        dropped(guest_command("inner-file-access" if file_access else "inner", port, *bootstrap)),
+        ENV,
     )
 
 
@@ -106,7 +127,9 @@ def read_command(pending: bytearray, descriptor: int) -> str | None:
         raise ValueError("product command must use UTF-8") from None
 
 
-def inner(port: int, *bootstrap: str) -> None:
+def inner(port: int, *bootstrap: str, file_access: bool = False) -> None:
+    if file_access:
+        _observe_file_access_launch_stage(_FILE_ACCESS_LAUNCH_STAGE_MARKERS[2])
     if bootstrap:
         from .ai_broker_bootstrap import protect_process
 
@@ -268,8 +291,8 @@ def main() -> None:
         )  # nosec B606
     elif mode in {"enter", "enter-file-access"} and len(args) in {1, 3}:
         enter(port, args[0], *args[1:], file_access=mode == "enter-file-access")
-    elif mode == "inner" and len(args) in {0, 2}:
-        inner(port, *args)
+    elif mode in {"inner", "inner-file-access"} and len(args) in {0, 2}:
+        inner(port, *args, file_access=mode == "inner-file-access")
     elif mode == "outer" and not args:
         outer(port)
     elif mode == "stop" and not args:
