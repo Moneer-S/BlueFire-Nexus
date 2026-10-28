@@ -23,6 +23,13 @@ STAGES = {
     "assist_cancellation_approval",
 }
 STATES = {state.value for state in JobState}
+# Only the reviewed public fixture step IDs may appear in timeout diagnostics.
+DIAGNOSTIC_STEP_IDS = {
+    "create_fixture",
+    "transform_fixture",
+    "cleanup_workspace",
+}
+MAX_DIAGNOSTIC_STEP_COUNT = 256
 RECEIVER_EXECUTE_CODE = BlueFireService._execute_job.__code__
 MAX_EXECUTE_LINE_OFFSET = 128
 REPLAY_EXECUTE_CODE = BlueFireService._execute_replay_job.__code__
@@ -102,6 +109,12 @@ FUNCTIONS = {
 
 def _label(value, allowed):
     return value if type(value) is str and value in allowed else "unknown"
+
+
+def _step_count(value):
+    if type(value) is int and 0 <= value <= MAX_DIAGNOSTIC_STEP_COUNT:
+        return value
+    return "unknown"
 
 
 def _process_thread_sample():
@@ -192,12 +205,25 @@ def _report(timeout, stage):
                 progress = progress if type(progress) is dict else {}
                 error = snapshot.get("error")
                 error = error if type(error) is dict else {}
+                completed_steps = _step_count(progress.get("completed_steps"))
+                total_steps = _step_count(progress.get("total_steps"))
+                if (
+                    type(completed_steps) is int
+                    and type(total_steps) is int
+                    and completed_steps > total_steps
+                ):
+                    completed_steps = total_steps = "unknown"
                 evidence["last_wait_job"] = {
                     "available": True,
                     "state": _label(snapshot.get("state"), STATES),
                     "phase": _label(
                         progress.get("phase"), STATES | {"materializing_checkpoint", "finalizing"}
                     ),
+                    "current_step_id": _label(
+                        progress.get("current_step_id"), DIAGNOSTIC_STEP_IDS
+                    ),
+                    "completed_steps": completed_steps,
+                    "total_steps": total_steps,
                     "error_code": _label(error.get("code"), ERROR_CODES),
                     "error_type": _label(error.get("exception_type"), ERROR_TYPES),
                     "has_error": snapshot.get("error") is not None,

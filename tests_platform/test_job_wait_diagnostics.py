@@ -56,7 +56,7 @@ def emit(timeout, capsys, *, stage="replay_approval", report_section=True):
     return json.loads(payload)
 
 
-@pytest.mark.parametrize("state", ["queued", "running", "failed", "completed"])
+@pytest.mark.parametrize("state", ["queued", "running", "cancelling", "failed", "completed"])
 @pytest.mark.parametrize("stage", ["replay_approval", "receiver_baseline_terminal"])
 def test_real_wait_snapshot_distinguishes_active_and_terminal_states_without_reread(
     monkeypatch, capsys, state, stage
@@ -72,6 +72,9 @@ def test_real_wait_snapshot_distinguishes_active_and_terminal_states_without_rer
         },
         "progress": {
             "phase": state,
+            "current_step_id": "transform_fixture",
+            "completed_steps": 3,
+            "total_steps": 8,
             "plan": PRIVATE,
             "children": PRIVATE,
             "proposal_record_id": PRIVATE,
@@ -86,6 +89,9 @@ def test_real_wait_snapshot_distinguishes_active_and_terminal_states_without_rer
         "available": True,
         "state": state,
         "phase": state,
+        "current_step_id": "transform_fixture",
+        "completed_steps": 3,
+        "total_steps": 8,
         "error_code": "execution_callback_failed",
         "error_type": "ProductStoreError",
         "has_error": True,
@@ -130,6 +136,9 @@ def test_missing_or_malformed_snapshot_fields_emit_only_unknowns(monkeypatch, ca
         "available": True,
         "state": "unknown",
         "phase": "unknown",
+        "current_step_id": "unknown",
+        "completed_steps": "unknown",
+        "total_steps": "unknown",
         "error_code": "unknown",
         "error_type": "unknown",
         "has_error": malformed,
@@ -140,6 +149,44 @@ def test_missing_or_malformed_snapshot_fields_emit_only_unknowns(monkeypatch, ca
     }
 
 
+@pytest.mark.parametrize(
+    "step_id,completed,total,expected_step,expected_completed,expected_total",
+    [
+        (PRIVATE, 3, 8, "unknown", 3, 8),
+        ("unrecognized_step", 3, 8, "unknown", 3, 8),
+        ("transform_fixture", True, 8, "transform_fixture", "unknown", 8),
+        ("transform_fixture", 3, 257, "transform_fixture", 3, "unknown"),
+        ("transform_fixture", 5, 4, "transform_fixture", "unknown", "unknown"),
+    ],
+)
+def test_step_progress_is_allowlisted_and_bounded(
+    monkeypatch,
+    capsys,
+    step_id,
+    completed,
+    total,
+    expected_step,
+    expected_completed,
+    expected_total,
+):
+    snapshot = {
+        "state": "running",
+        "progress": {
+            "phase": "running",
+            "current_step_id": step_id,
+            "completed_steps": completed,
+            "total_steps": total,
+        },
+    }
+    timeout, reads = actual_timeout(snapshot)
+    monkeypatch.setattr(diagnostic.sys, "_current_frames", lambda: {})
+    report = emit(timeout, capsys)["last_wait_job"]
+    assert reads == [PRIVATE]
+    assert report["current_step_id"] == expected_step
+    assert report["completed_steps"] == expected_completed
+    assert report["total_steps"] == expected_total
+
+
 @pytest.mark.parametrize("report_section", [False, True])
 def test_process_thread_labels_and_error_fields_are_private_and_bounded(
     monkeypatch, capsys, report_section
@@ -147,7 +194,12 @@ def test_process_thread_labels_and_error_fields_are_private_and_bounded(
     snapshot = {
         "state": "running",
         "error": {"code": PRIVATE, "exception_type": PRIVATE, "message": PRIVATE},
-        "progress": {"phase": PRIVATE},
+        "progress": {
+            "phase": PRIVATE,
+            "current_step_id": PRIVATE,
+            "completed_steps": True,
+            "total_steps": 257,
+        },
         "request": {"credential": PRIVATE},
     }
     timeout, _ = actual_timeout(snapshot)
@@ -169,6 +221,9 @@ def test_process_thread_labels_and_error_fields_are_private_and_bounded(
     assert len(output.encode()) < 8192
     assert report["stage"] == "unknown"
     assert report["last_wait_job"]["phase"] == "unknown"
+    assert report["last_wait_job"]["current_step_id"] == "unknown"
+    assert report["last_wait_job"]["completed_steps"] == "unknown"
+    assert report["last_wait_job"]["total_steps"] == "unknown"
     assert report["last_wait_job"]["error_code"] == "unknown"
     assert report["last_wait_job"]["error_type"] == "unknown"
     assert report["process_threads_truncated"] is True
