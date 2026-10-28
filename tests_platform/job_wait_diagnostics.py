@@ -26,7 +26,10 @@ STATES = {state.value for state in JobState}
 # Only the reviewed public fixture step IDs may appear in timeout diagnostics.
 DIAGNOSTIC_STEP_IDS = {
     "create_fixture",
+    "inspect_fixture_metadata",
+    "stage_records",
     "transform_fixture",
+    "authorized_peer_handoff",
     "cleanup_workspace",
 }
 MAX_DIAGNOSTIC_STEP_COUNT = 256
