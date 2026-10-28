@@ -193,6 +193,7 @@ runner_profiles:
       - sandbox.restricted.persistence-marker.v1
       - sandbox.fixture.create.v1
       - sandbox.fixture.transform.v1
+      - sandbox.discovery.list.v1
       - sandbox.discovery.metadata.v1
       - sandbox.collection.stage.v1
       - sandbox.observability.variant.v1
