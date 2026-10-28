@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { MessageSquareText } from "lucide-react";
-import { useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { adPhaseLabels, type AdWorkflow } from "../lib/ad-smb";
 import { adSmbAssistanceContext, adSmbAssistanceMatchesWorkflow, type AdSmbAssistanceSummary } from "../lib/ad-smb-assistance";
 import { useAssistancePanel, usePublishAdSmbSelection } from "../state/AssistanceContext";
@@ -9,9 +9,11 @@ import { Button, ErrorState, sentence } from "./Primitives";
 /** Captures the displayed saved result; native workflow controls keep their own lifecycle. */
 export function AdSmbAssistanceAction({ workflow, disabled = false }: { workflow: AdWorkflow; disabled?: boolean }) {
   const panel = useAssistancePanel();
+  const mounted = useRef(false);
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const currentWorkflow = useRef(workflow);
   currentWorkflow.current = workflow;
-  const capture = useMutation({ mutationFn: (source: AdWorkflow) => adSmbAssistanceContext(source.id, undefined, source), onSuccess: data => { if (adSmbAssistanceMatchesWorkflow(data, currentWorkflow.current)) panel?.setOpen(true); } });
+  const capture = useMutation({ mutationFn: (source: AdWorkflow) => adSmbAssistanceContext(source.id, undefined, source), onSuccess: data => { if (mounted.current && adSmbAssistanceMatchesWorkflow(data, currentWorkflow.current)) panel?.setOpen(true); } });
   const captured = !capture.isPending && !capture.isError && capture.data && adSmbAssistanceMatchesWorkflow(capture.data, workflow) ? capture.data : undefined;
   const saved = panel?.selection && "kind" in panel.selection && panel.selection.kind === "ad_smb" && panel.selection.selected.workflow_job_id === workflow.id ? panel.selection.selected : undefined;
   const restored = useQuery({ queryKey: ["ad-smb-assistance-reopen", saved, workflow.id, workflow.revision, workflow.policy, workflow.stopped, workflow.pending, workflow.environment.provenance, workflow.operations.map(op => [op.id, op.phase, op.runId, op.state, op.digest])], queryFn: () => adSmbAssistanceContext(workflow.id, saved, workflow), enabled: Boolean(saved) && !captured && !disabled, retry: false, refetchOnWindowFocus: false });

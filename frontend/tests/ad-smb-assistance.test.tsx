@@ -33,9 +33,9 @@ function envelope(original = body()): AssistanceEnvelope {
     turn: { schema_version: "bluefire.assistance-turn.v1", status: "completed", can_start_new_turn: true, message: "The missing retest remains unknown.", context_digest: original.context_digest, selected: original.selection, plan: [], active_child: null, results: [], continuation: null, recovery: null, next_action: null, limitations: [...adSmbAssistanceLimitations] } } as AssistanceEnvelope;
 }
 function Probe() { const panel = useAssistancePanel(); return <><output aria-label="Saved selection">{JSON.stringify(useAssistanceSelection())}</output><output aria-label="Panel open">{String(panel?.open)}</output><output aria-label="Selection current">{String(panel?.selectionIsCurrent)}</output></>; }
-function mount(source = true) {
+function mount(source = true, keyed = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false }, mutations: { retry: false } } });
-  const tree = (show: boolean, displayed = workflow) => <QueryClientProvider client={client}><MemoryRouter initialEntries={[show ? adSmbAssistancePath(selected) : "/runs"]}><ProductProvider><AssistanceProvider>{show ? <AdSmbAssistanceAction workflow={displayed} /> : null}<Probe /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>;
+  const tree = (show: boolean, displayed = workflow) => <QueryClientProvider client={client}><MemoryRouter initialEntries={[show ? adSmbAssistancePath(selected) : "/runs"]}><ProductProvider><AssistanceProvider>{show ? <AdSmbAssistanceAction key={keyed ? displayed.id : undefined} workflow={displayed} /> : null}<Probe /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>;
   const view = render(tree(source)); return { ...view, leave: () => view.rerender(tree(false)), show: (displayed: typeof workflow) => view.rerender(tree(true, displayed)) };
 }
 function mountJourney(path: string) {
@@ -105,6 +105,26 @@ it("ignores a late preview after switching to another workflow at the same revis
   await act(async () => { resolve(context()); await pending; });
   await waitFor(() => expect(screen.getByRole("button", { name: "Explain saved result" })).toBeEnabled());
   expect(screen.getByLabelText("Panel open")).toHaveTextContent("false"); expect(screen.getByLabelText("Saved selection")).toBeEmptyDOMElement();
+});
+it("does not open or publish from an old keyed workflow instance after its preview resolves", async () => {
+  let resolve!: (value: unknown) => void;
+  const pending = new Promise(done => { resolve = done; }); vi.mocked(request).mockReturnValue(pending);
+  const view = mount(true, true); await userEvent.setup().click(screen.getByRole("button", { name: "Explain saved result" }));
+  view.show({ ...workflow, id: `job-${"9".repeat(32)}` });
+  expect(screen.getByRole("button", { name: "Explain saved result" })).toBeEnabled();
+  await act(async () => { resolve(context()); await pending; });
+  expect(screen.getByLabelText("Panel open")).toHaveTextContent("false"); expect(screen.getByLabelText("Saved selection")).toBeEmptyDOMElement();
+});
+it("ignores a preview after leaving the AD page and preserves its retained request", async () => {
+  const original = body(); expect(storeAssistanceReceipt(original)).toBe(true);
+  vi.spyOn(api, "assistanceTurn").mockResolvedValue(envelope(original));
+  let resolve!: (value: unknown) => void;
+  const pending = new Promise(done => { resolve = done; }); vi.mocked(request).mockReturnValue(pending);
+  const view = mount(); await userEvent.setup().click(screen.getByRole("button", { name: "Explain saved result" }));
+  view.leave(); expect(screen.queryByRole("button", { name: "Explain saved result" })).not.toBeInTheDocument();
+  await act(async () => { resolve(context()); await pending; });
+  expect(screen.getByLabelText("Panel open")).toHaveTextContent("false"); expect(screen.getByLabelText("Saved selection")).toBeEmptyDOMElement();
+  expect(readAssistanceReceipt()).toEqual(original);
 });
 it("submits only the captured saved source through the shared analysis request", async () => {
   localStorage.setItem("bluefire.local.assistant-preferences.v1", JSON.stringify({ autonomy: "assist", provider: provider.provider_id, model: provider.model }));
