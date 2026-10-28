@@ -47,6 +47,8 @@ const PROFILE = "sandbox-endpoint-deep-lab.v1";
 const STARTER = "scenario.receiver-defense.redaction-validation.v1";
 const STARTER_TITLE = "Validate receiver redaction and legitimate use";
 const FILESYSTEM_COLLECTOR = "collector.filesystem.sandbox.v1";
+const COMPOSITION_QUESTION = "Can the retained receiver policy accept all eight generated records after redaction?";
+const COMPOSITION_REVIEWER = "Installed receiver composition verifier";
 const ORIGIN = `http://127.0.0.1:${port}`;
 const ID = /^job-[0-9a-f]{32}$/;
 const RUN_ID = /^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/;
@@ -63,6 +65,13 @@ const ROUTE_LIMITS = {
   review: 5,
   approval: 5,
   cancel: 1,
+  composition_list: 5,
+  composition_context: 1,
+  composition_grant: 1,
+  composition_proposal_context: 1,
+  composition_attempt: 1,
+  composition_revoke: 2,
+  comparison: 1,
 };
 const counts = Object.fromEntries(Object.keys(ROUTE_LIMITS).map((key) => [key, 0]));
 const report = {
@@ -120,6 +129,13 @@ let latestPreparationDigest;
 let originalControlDigest;
 let originalEnvelope;
 let linkedEnvelope;
+let compositionOwnerId;
+let compositionAttemptJobId;
+let latestCompositionReview;
+let latestCompositionContext;
+let latestCompositionObjective;
+let compositionSnapshotId;
+let comparisonSubmitted = false;
 let phaseBindingDiagnostic;
 let prepareHttpDiagnostic;
 let pendingPreparationFailure;
@@ -320,6 +336,8 @@ function allowedRead(url) {
     "/api/v1/receiver-defense/jobs",
     "/api/v1/jobs",
     "/api/v1/runs",
+    "/api/v1/detections",
+    "/api/v1/comparison-snapshots",
   ].includes(path)) return !url.search;
   if (path === "/api/v1/runner") return url.search === `?profile_id=${PROFILE}`;
   if (/^\/api\/v1\/receiver-defense\/jobs\/job-[0-9a-f]{32}$/.test(path)) return !url.search;
@@ -327,6 +345,10 @@ function allowedRead(url) {
   if (/^\/api\/v1\/runs\/run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(path)) return !url.search;
   if (/^\/api\/v1\/runs\/run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}\/events$/.test(path)) {
     return /^\?after_sequence=\d+&limit=\d+$/.test(url.search);
+  }
+  if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}`) return !url.search;
+  if (comparisonSubmitted && /^\/api\/v1\/comparison-snapshots\/run-comparison-[0-9a-f]{64}$/.test(path)) {
+    return !url.search && (!compositionSnapshotId || path.endsWith(`/${compositionSnapshotId}`));
   }
   return false;
 }
@@ -387,6 +409,46 @@ function authorizePost(url, body) {
   }
   if (path === "/api/v1/scenario-versions") {
     return count("save_scenario") && exactKeys(body, ["scenario"]) && validateScenarioCopy(body.scenario);
+  }
+  if (path === "/api/v1/composition/objective-list") {
+    return count("composition_list") && exactKeys(body, ["control_owner_id"])
+      && body.control_owner_id === originalOwnerId && phaseIndexes.original === 3;
+  }
+  if (path === "/api/v1/composition/context") {
+    return count("composition_context") && exactKeys(body, ["control_owner_id", "question", "limits"])
+      && body.control_owner_id === originalOwnerId && body.question === COMPOSITION_QUESTION
+      && body.limits === null && originalEnvelope?.status === "completed"
+      && originalEnvelope.control?.status === "retained" && phaseIndexes.original === 3;
+  }
+  if (path === "/api/v1/composition/objectives") {
+    const ok = count("composition_grant") && exactKeys(body, ["submission_id", "review", "reviewed_by", "review_digest"])
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.submission_id)
+      && same(body.review, { control_owner_id: originalOwnerId, question: COMPOSITION_QUESTION, limits: null })
+      && body.reviewed_by === COMPOSITION_REVIEWER
+      && body.review_digest === latestCompositionReview?.review_digest;
+    if (ok) compositionOwnerId = `job-${body.submission_id.replaceAll("-", "")}`;
+    return ok;
+  }
+  if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/proposal-context`) {
+    return count("composition_proposal_context") && exactKeys(body, ["prior_attempt_id"])
+      && body.prior_attempt_id === null;
+  }
+  if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/attempts`) {
+    const ok = count("composition_attempt") && exactKeys(body, ["submission_id", "proposal", "prior_attempt_id"])
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.submission_id)
+      && body.prior_attempt_id === null && latestCompositionContext?.grant_id === latestCompositionObjective?.grant?.document?.grant_id
+      && same(body.proposal, latestCompositionContext?.initial_proposal);
+    if (ok) compositionAttemptJobId = `job-${body.submission_id.replaceAll("-", "")}`;
+    return ok;
+  }
+  if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/revoke`) {
+    return count("composition_revoke") && exactKeys(body, []);
+  }
+  if (path === "/api/v1/comparisons") {
+    const ok = count("comparison") && compositionAttemptJobId && exactKeys(body, ["run_ids"])
+      && same(body.run_ids, [baselineRunId, report.composition?.run_id]);
+    if (ok) comparisonSubmitted = true;
+    return Boolean(ok);
   }
   if (path === "/api/v1/receiver-defense/context") {
     latestContext = undefined;
@@ -677,6 +739,20 @@ async function waitOwner(predicate, timeout = 120_000, ownerId = receiverJobId, 
   throw new Error("Receiver phase did not reach the expected saved state");
 }
 
+async function waitComposition(predicate, timeout = 110_000) {
+  const until = Date.now() + Math.min(remainingMs(), timeout);
+  while (Date.now() < until) {
+    const requestTimeout = boundedLocalTimeout(until, Date.now(), remainingMs());
+    if (requestTimeout <= 0) break;
+    latestCompositionObjective = await appApi(`/composition/objectives/${compositionOwnerId}`, requestTimeout);
+    assert.equal(latestCompositionObjective.owner?.job_id, compositionOwnerId);
+    if (predicate(latestCompositionObjective)) return latestCompositionObjective;
+    await delay(Math.min(500, Math.max(1, until - Date.now())));
+  }
+  remainingMs();
+  throw new Error("Composed attempt did not reach the expected saved state");
+}
+
 async function waitForState(predicate, label, timeout = 10_000, deadline) {
   const until = deadline ?? Date.now() + Math.min(remainingMs(), timeout);
   while (Date.now() < until) {
@@ -714,6 +790,32 @@ async function stopOwnerNormally() {
     report.cleanup = { ...(report.cleanup ?? {}), receiver_control_stopped: true };
   } catch {
     report.cleanup = { ...(report.cleanup ?? {}), receiver_control_stopped: false };
+  }
+}
+
+async function revokeCompositionNormally() {
+  if (!compositionOwnerId || !connected || !page || page.isClosed()) return;
+  try {
+    const current = await appApi(`/composition/objectives/${compositionOwnerId}`);
+    if (current.grant?.status === "revoked") {
+      report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: true };
+      return;
+    }
+    if (!current.grant) return;
+    const revoked = await page.evaluate(async ({ owner, timeout }) => {
+      const token = sessionStorage.getItem("bluefire.browser-session.v1");
+      const response = await fetch(`/api/v1/composition/objectives/${encodeURIComponent(owner)}/revoke`, {
+        method: "POST", redirect: "error", credentials: "omit",
+        headers: { "X-BlueFire-Session": token, "Content-Type": "application/json", Accept: "application/json" },
+        body: "{}", signal: AbortSignal.timeout(timeout),
+      });
+      return response.ok;
+    }, { owner: compositionOwnerId, timeout: remainingMs() });
+    if (!revoked) throw new Error("Composition revoke was refused");
+    const final = await appApi(`/composition/objectives/${compositionOwnerId}`);
+    report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: final.grant?.status === "revoked" };
+  } catch {
+    report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: false };
   }
 }
 
@@ -933,6 +1035,12 @@ try {
       }
       if (path === "/api/v1/receiver-defense/context" && response.ok()
         && receiverContextResponseMatchesRequest(contextRequestBody, latestFinalContextRequest, data)) latestContext = data;
+      else if (path === "/api/v1/composition/context" && response.ok()) latestCompositionReview = data;
+      else if (path === "/api/v1/composition/objectives" && response.ok()) latestCompositionObjective = data;
+      else if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/proposal-context` && response.ok()) latestCompositionContext = data;
+      else if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/attempts` && response.ok()) latestCompositionObjective = data;
+      else if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/revoke` && response.ok()) latestCompositionObjective = data;
+      else if (path === "/api/v1/comparisons" && response.ok()) compositionSnapshotId = data.saved_snapshot?.snapshot_id;
       else if (path === "/api/v1/receiver-defense/jobs" && response.ok()) {
         const createdId = data.job?.job_id;
         const role = data.context?.source_control ? "linked" : "original";
@@ -1236,7 +1344,113 @@ try {
   };
   report.checks.push("original_baseline_protected_and_legitimate_use_completed_with_retained_policy");
 
+  stage = "composition-review";
+  await page.getByRole("link", { name: "Open composition workspace", exact: true }).click();
+  await page.getByLabel("Objective question", { exact: true }).fill(COMPOSITION_QUESTION);
+  const reviewResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/composition/context"
+    && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Review finite delegation", exact: true }).click();
+  latestCompositionReview = await (await reviewResponse).json();
+  assert.equal(latestCompositionReview.environment?.control_owner_id, originalOwnerId);
+  assert.equal(latestCompositionReview.objective?.predicate?.record_count, 8);
+  assert.equal(latestCompositionReview.objective?.predicate?.kind, "redacted_delivery_preserves_records");
+  assert.match(latestCompositionReview.review_digest ?? "", /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(latestCompositionReview.snapshot?.methods?.map(method => method.action_id), [
+    "sandbox.fixture.create.v1", "sandbox.fixture.transform.v1", "sandbox.discovery.list.v1",
+    "sandbox.discovery.metadata.v1", "sandbox.collection.stage.v1", "sandbox.peer.handoff.v1",
+    "sandbox.cleanup.v1",
+  ]);
+  assert.equal(latestCompositionReview.limits?.per_attempt_wall_ms, 90_000);
+  stage = "composition-grant";
+  await page.getByLabel("Delegation reviewed by", { exact: true }).fill(COMPOSITION_REVIEWER);
+  await page.getByRole("checkbox", { name: "I authorize the reviewed finite capabilities, data effects, cleanup reserve and cumulative budgets for this objective.", exact: true }).check();
+  const grantResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/composition/objectives"
+    && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Issue capability grant", exact: true }).click();
+  latestCompositionObjective = await (await grantResponse).json();
+  assert.equal(latestCompositionObjective.owner?.job_id, compositionOwnerId);
+  assert.equal(latestCompositionObjective.grant?.status, "active");
+  assert.equal(latestCompositionObjective.grant?.document?.environment?.control_owner_id, originalOwnerId);
+  assert.equal(latestCompositionObjective.grant?.document?.objective?.predicate?.record_count, 8);
+  assert.equal(latestCompositionObjective.attempts?.length, 0);
+  const grantId = latestCompositionObjective.grant.document.grant_id;
+  assert.match(grantId ?? "", /^grant-[0-9a-f]{32}$/);
+  await waitForState(() => latestCompositionContext?.grant_id === grantId,
+    "current established composition graph", 20_000);
+  const initial = latestCompositionContext.initial_proposal;
+  assert.equal(initial?.schema_version, "bluefire.composition-proposal.v1");
+  assert.equal(initial.steps?.find(step => step.behavior_id === "sandbox.fixture.transform.v1")?.parameters?.redact_values, false);
+  assert.ok(initial.steps?.some(step => step.behavior_id === "sandbox.peer.handoff.v1"));
+  stage = "composition-attempt";
+  await page.getByRole("button", { name: "Review established graph", exact: true }).click();
+  const attemptResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/composition/objectives/${compositionOwnerId}/attempts`
+    && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).click();
+  latestCompositionObjective = await (await attemptResponse).json();
+  assert.equal(latestCompositionObjective.owner?.job_id, compositionOwnerId);
+  const settledComposition = await waitComposition(value => value.attempts?.some(attempt =>
+    attempt.job_id === compositionAttemptJobId && attempt.progress?.settlement === "settled"
+      && attempt.progress?.verified_result));
+  const composedAttempt = settledComposition.attempts.find(attempt => attempt.job_id === compositionAttemptJobId);
+  const binding = composedAttempt?.request?.composition_attempt;
+  const verified = composedAttempt?.progress?.verified_result;
+  assert.equal(composedAttempt?.state, "completed");
+  assert.equal(binding?.parent_job_id, compositionOwnerId);
+  assert.equal(binding?.grant_id, grantId);
+  assert.equal(binding?.grant_digest, settledComposition.grant.document.grant_digest);
+  assert.match(binding?.attempt_id ?? "", /^attempt-[0-9a-f]{32}$/);
+  assert.match(binding?.run_id ?? "", RUN_ID);
+  assert.equal(verified?.run_id, binding.run_id);
+  assert.equal(verified?.source_binding?.run_id, binding.run_id);
+  assert.match(composedAttempt.progress.verified_result_digest ?? "", /^sha256:[0-9a-f]{64}$/);
+  const receiverObservation = composedAttempt.progress.receiver_observation;
+  assert.equal(receiverObservation?.state, "verified");
+  assert.equal(receiverObservation?.terminal?.decision?.authenticated, true);
+  assert.equal(receiverObservation?.terminal?.decision?.decision, "policy_refused");
+  assert.equal(receiverObservation?.process_exit?.returncode, 0);
+  assert.equal(composedAttempt.progress.receiver_closed, true);
+  assert.deepEqual(verified.receiver_result && {
+    decision: verified.receiver_result.decision,
+    record_count: verified.receiver_result.record_count,
+    redacted_record_count: verified.receiver_result.redacted_record_count,
+    retained_record_count: verified.receiver_result.retained_record_count,
+    empty_record_count: verified.receiver_result.empty_record_count,
+  }, { decision: "policy_refused", record_count: 8, redacted_record_count: 0, retained_record_count: 8, empty_record_count: 0 });
+  assert.deepEqual(verified.cleanup, { run: "complete", receiver: "verified_closed" });
+  assert.equal(verified.objective?.established, false);
+  assert.deepEqual(verified.objective?.checks, {
+    receiver_verified: true, policy_unchanged: true, data_class_preserved: true,
+    record_count_preserved: true, all_records_redacted: false, accepted: false,
+    run_cleaned: true, receiver_closed: true,
+  });
+  report.composition = {
+    control_owner_job_id: originalOwnerId, objective_owner_job_id: compositionOwnerId,
+    grant_id: grantId, grant_status: "active", attempt_job_id: compositionAttemptJobId,
+    attempt_id: binding.attempt_id, settlement: composedAttempt.progress.settlement,
+    run_id: binding.run_id, verified_result_digest: composedAttempt.progress.verified_result_digest,
+    receiver_decision: verified.receiver_result.decision, receiver_authenticated: true,
+    record_count: verified.receiver_result.record_count,
+    redacted_record_count: verified.receiver_result.redacted_record_count,
+    retained_record_count: verified.receiver_result.retained_record_count,
+    empty_record_count: verified.receiver_result.empty_record_count,
+    cleanup: verified.cleanup, objective_established: verified.objective.established,
+  };
+  report.checks.push("finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false");
+  stage = "composition-revoke";
+  const revokeResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/composition/objectives/${compositionOwnerId}/revoke`
+    && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Revoke", exact: true }).click();
+  latestCompositionObjective = await (await revokeResponse).json();
+  assert.equal(latestCompositionObjective.grant?.status, "revoked");
+  assert.equal(latestCompositionObjective.grant?.cleanup_state, "settled");
+  assert.equal(latestCompositionObjective.attempts?.find(attempt => attempt.job_id === compositionAttemptJobId)?.progress?.settlement, "settled");
+  report.composition.grant_status = "revoked";
+  report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: true };
+  report.checks.push("composed_attempt_grant_revoked_after_verified_cleanup");
+
   stage = "linked-retest-setup";
+  await page.goto(`${ORIGIN}/#/compare?receiver=1&receiver_job=${originalOwnerId}`);
+  await waitRememberedWork(originalOwnerId);
   await page.getByRole("button", { name: "Review fresh retest", exact: true }).click();
   const retestAcknowledgement = page.getByRole("checkbox", { name: "I reviewed the retained policy, original baseline lineage, and this retest's scope.", exact: true });
   await retestAcknowledgement.waitFor({ state: "visible" });
@@ -1281,7 +1495,7 @@ try {
   report.phase_evidence = phaseEvidence;
   report.unique_receiver_session_count = receiverSessionIds.size;
   report.checks.push("linked_fresh_protected_refusal_and_legitimate_use_completed_under_retained_policy");
-  report.cleanup = { original_owner_completed_retained: true, linked_owner_completed_retained: true };
+  report.cleanup = { ...(report.cleanup ?? {}), original_owner_completed_retained: true, linked_owner_completed_retained: true };
 
   stage = "runner-cleanup";
   await page.goto(`${ORIGIN}/#/runners?profile=${encodeURIComponent(PROFILE)}`);
@@ -1298,6 +1512,83 @@ try {
   report.cleanup.runner_stopped = true;
   report.runner_final_state = { state: "stopped", source: "authenticated_status_poll_after_stop" };
   report.checks.push("managed_runner_stopped_through_ui");
+
+  stage = "composition-saved-comparison";
+  const comparisonParams = new URLSearchParams({ compare_context: "1" });
+  comparisonParams.append("compare_run", baselineRunId);
+  comparisonParams.append("compare_run", report.composition.run_id);
+  await page.goto(`${ORIGIN}/#/compare?${comparisonParams}`);
+  await page.getByRole("button", { name: "Compare selected", exact: true }).waitFor();
+  const comparisonResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/comparisons"
+    && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Compare selected", exact: true }).click();
+  const comparison = await (await comparisonResponse).json();
+  assert.deepEqual(comparison.run_ids, [baselineRunId, report.composition.run_id]);
+  assert.equal(comparison.baseline_run_id, baselineRunId);
+  assert.deepEqual(comparison.summaries?.map(item => item.run_id), comparison.run_ids);
+  const composedSummary = comparison.summaries[1];
+  assert.equal(composedSummary.capability_objective?.state, "verified");
+  assert.equal(composedSummary.capability_objective?.run_id, report.composition.run_id);
+  assert.equal(composedSummary.capability_objective?.attempt_id, report.composition.attempt_id);
+  assert.equal(composedSummary.capability_objective?.established, false);
+  assert.equal(composedSummary.capability_objective?.result_digest, report.composition.verified_result_digest);
+  assert.equal(composedSummary.objective_reached, false);
+  assert.equal(composedSummary.graph_objective_reached, true);
+  assert.equal(composedSummary.cleanup_success, true);
+  assert.equal(comparison.summaries[0].capability_objective, null);
+  const composedDelta = comparison.deltas?.find(item => item.from_run_id === baselineRunId
+    && item.to_run_id === report.composition.run_id);
+  assert.equal(composedDelta?.objective_comparability, "different_objectives");
+  assert.equal(composedDelta?.objective_changed, false);
+  assert.ok(!composedDelta?.signals?.includes("objective_recovered"));
+  assert.ok(!composedDelta?.signals?.includes("objective_regressed"));
+  assert.match(comparison.saved_snapshot?.snapshot_id ?? "", /^run-comparison-[0-9a-f]{64}$/);
+  compositionSnapshotId = comparison.saved_snapshot.snapshot_id;
+  const savedComparison = await appApi(`/comparison-snapshots/${compositionSnapshotId}`);
+  assert.equal(savedComparison.snapshot_id, compositionSnapshotId);
+  assert.deepEqual(savedComparison.comparison.run_ids, comparison.run_ids);
+  assert.equal(savedComparison.source_integrity?.status, "verified");
+  assert.deepEqual(savedComparison.source_bindings?.map(binding => binding.run_id), comparison.run_ids);
+  assert.match(savedComparison.source_bindings[1]?.capability_objective_digest ?? "", /^sha256:[0-9a-f]{64}$/);
+  await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+  await page.getByRole("region", { name: "Comparison conclusion", exact: true })
+    .getByText("Objective checks differ", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "Compared run outcomes", exact: true })
+    .getByText("Not achieved", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "Compared run outcomes", exact: true })
+    .getByText("Verified", { exact: true }).waitFor();
+  await page.getByRole("region", { name: "Compared run outcomes", exact: true })
+    .getByText("Met", { exact: true }).waitFor();
+  stage = "composition-saved-comparison-reopen";
+  await page.goto(`${ORIGIN}/#/compare`);
+  const history = page.locator("details.saved-comparisons-browser");
+  const historySummary = history.locator(":scope > summary");
+  await historySummary.waitFor();
+  if (!await history.evaluate(element => element.open)) await historySummary.click();
+  await page.locator(`button[data-snapshot-id=${JSON.stringify(compositionSnapshotId)}]`).click();
+  await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+  assert.match(new URL(page.url()).hash, new RegExp(`snapshot=${compositionSnapshotId}`));
+  const reopenedComparison = await appApi(`/comparison-snapshots/${compositionSnapshotId}`);
+  assert.equal(reopenedComparison.snapshot_id, savedComparison.snapshot_id);
+  assert.equal(reopenedComparison.digest, savedComparison.digest);
+  assert.deepEqual(reopenedComparison.comparison.run_ids, comparison.run_ids);
+  assert.equal(reopenedComparison.comparison.summaries[1].capability_objective?.established, false);
+  assert.equal(reopenedComparison.comparison.summaries[1].capability_objective?.result_digest, report.composition.verified_result_digest);
+  assert.equal(reopenedComparison.comparison.summaries[1].graph_objective_reached, true);
+  assert.equal(reopenedComparison.comparison.deltas[0].objective_comparability, "different_objectives");
+  assert.equal(reopenedComparison.source_integrity?.status, "verified");
+  await page.getByRole("region", { name: "Comparison conclusion", exact: true })
+    .getByText("Objective checks differ", { exact: true }).waitFor();
+  report.composition.graph_objective_reached = composedSummary.graph_objective_reached;
+  report.composition.comparison = {
+    baseline_run_id: baselineRunId, snapshot_id: compositionSnapshotId,
+    snapshot_digest: savedComparison.digest, source_integrity: reopenedComparison.source_integrity.status,
+    objective_comparability: reopenedComparison.comparison.deltas[0].objective_comparability,
+    objective_changed: reopenedComparison.comparison.deltas[0].objective_changed,
+    objective_recovered: reopenedComparison.comparison.deltas[0].signals?.includes("objective_recovered") === true,
+    reopened: true,
+  };
+  report.checks.push("saved_composed_comparison_reopened_with_false_objective_and_distinct_graph_completion");
 
   const finalOwner = await appApi(`/receiver-defense/jobs/${receiverJobId}`);
   assert.equal(finalOwner.status, "completed");
@@ -1387,6 +1678,11 @@ try {
   assert.equal(counts.review, 5);
   assert.equal(counts.approval, 5);
   assert.equal(counts.cancel, 0);
+  assert.ok(counts.composition_list >= 1 && counts.composition_list <= ROUTE_LIMITS.composition_list);
+  for (const name of ["composition_context", "composition_grant", "composition_proposal_context", "composition_attempt", "composition_revoke", "comparison"]) {
+    assert.equal(counts[name], 1);
+  }
+  assert.equal(report.cleanup.composition_grant_revoked, true);
   assert.equal(new Set(phaseEvidence.map((item) => item.run_id)).size, 5);
   assert.equal(receiverSessionIds.size, 5);
   report.unique_receiver_session_count = receiverSessionIds.size;
@@ -1413,6 +1709,7 @@ try {
   capability = "";
   deadlineBudget.beginCleanup(Date.now());
   try { setPlaywrightBudget(); } catch { /* Cleanup still closes browser resources when the total budget is spent. */ }
+  await revokeCompositionNormally();
   if (receiverStarted) {
     cleanupCancelAllowed = true;
     await stopOwnerNormally();
