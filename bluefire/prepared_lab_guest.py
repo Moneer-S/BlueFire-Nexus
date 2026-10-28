@@ -24,6 +24,7 @@ from bluefire.prepared_lab_relay import Relay, private_socket, remove_owned_sock
 from bluefire.prepared_lab_runtime import (
     BRIDGE,
     ENV,
+    FILE_ACCESS_LAUNCH_STAGE_MARKERS,
     HOME,
     KINDS,
     PRODUCT,
@@ -31,27 +32,12 @@ from bluefire.prepared_lab_runtime import (
     guest_command,
     isolate_mounts,
     namespaces,
+    observe_file_access_launch_stage,
     stop_child,
     uid,
 )
 
 STOP = threading.Event()
-_FILE_ACCESS_LAUNCH_STAGE_MARKERS = (
-    b"bluefire.file-access-launch-stage.v1 1 enter_file_access_started\n",
-    b"bluefire.file-access-launch-stage.v1 2 fixed_reader_enrollment_returned\n",
-    b"bluefire.file-access-launch-stage.v1 3 inner_file_access_started\n",
-)
-
-
-def _observe_file_access_launch_stage(marker: bytes) -> None:
-    """Emit one fixed diagnostic observation; never affect launch or authority."""
-    if type(marker) is not bytes or marker not in _FILE_ACCESS_LAUNCH_STAGE_MARKERS:
-        return
-    try:
-        os.write(2, marker)
-    except OSError:
-        # A diagnostic observation cannot replace the original launch outcome.
-        pass
 
 
 def dropped(command: list[str]) -> list[str]:
@@ -70,7 +56,7 @@ def dropped(command: list[str]) -> list[str]:
 
 def enter(port: int, parent: str, *bootstrap: str, file_access: bool = False) -> None:
     if file_access:
-        _observe_file_access_launch_stage(_FILE_ACCESS_LAUNCH_STAGE_MARKERS[0])
+        observe_file_access_launch_stage(FILE_ACCESS_LAUNCH_STAGE_MARKERS[0])
     if uid() != 0 or os.getpid() != 1 or socket.if_nameindex() != [(1, "lo")]:
         raise ValueError("setup requires a new PID and loopback-only network namespace")
     original = json.loads(parent)
@@ -82,7 +68,7 @@ def enter(port: int, parent: str, *bootstrap: str, file_access: bool = False) ->
         from .prepared_lab_file_access import enroll_fixed_reader
 
         enroll_fixed_reader()
-        _observe_file_access_launch_stage(_FILE_ACCESS_LAUNCH_STAGE_MARKERS[1])
+        observe_file_access_launch_stage(FILE_ACCESS_LAUNCH_STAGE_MARKERS[2])
     os.execve(  # nosec B606
         "/usr/bin/setpriv",
         dropped(guest_command("inner-file-access" if file_access else "inner", port, *bootstrap)),
@@ -129,7 +115,7 @@ def read_command(pending: bytearray, descriptor: int) -> str | None:
 
 def inner(port: int, *bootstrap: str, file_access: bool = False) -> None:
     if file_access:
-        _observe_file_access_launch_stage(_FILE_ACCESS_LAUNCH_STAGE_MARKERS[2])
+        observe_file_access_launch_stage(FILE_ACCESS_LAUNCH_STAGE_MARKERS[3])
     if bootstrap:
         from .ai_broker_bootstrap import protect_process
 
