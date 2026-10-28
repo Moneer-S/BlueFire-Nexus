@@ -8,7 +8,10 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import {
-  classifyRequest,
+  handleReceiverRoute,
+  closeReceiverWebSocket,
+  observeReceiverEvent,
+  settleReceiverObservers,
   consumeRequestBudget,
   receiverContextRequestAllowed,
   receiverContextRequestIsFinal,
@@ -104,6 +107,13 @@ const report = {
   blocked_requests: [],
   errors: [],
 };
+const callbackFailureKinds = new Set();
+const pendingObservers = new Set();
+function recordCallbackFailure(kind) {
+  if (callbackFailureKinds.has(kind)) return;
+  callbackFailureKinds.add(kind);
+  report.errors.push({ stage: "browser_callback", kind });
+}
 
 const exactKeys = (value, names) => value && typeof value === "object" && !Array.isArray(value)
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...names].sort());
@@ -1140,39 +1150,19 @@ try {
   context = await browser.newContext({ serviceWorkers: "block", viewport: { width: 1440, height: 900 } });
   context.setDefaultTimeout(remainingMs());
   context.setDefaultNavigationTimeout(remainingMs());
-  await context.routeWebSocket("**/*", async (socket) => {
-    report.blocked_requests.push({ kind: "websocket", destination: "blocked" });
-    await socket.close();
-  });
-  await context.route("**/*", async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    const method = request.method();
-    let body;
-    let bodyError = false;
-    if (url.origin === ORIGIN && method === "POST") {
-      try { body = request.postData() ? request.postDataJSON() : null; }
-      catch { bodyError = true; }
-    }
-    const decision = classifyRequest({
-      origin: url.origin,
-      expectedOrigin: ORIGIN,
-      method,
-      url,
-      body,
-      bodyError,
-      allowedRead,
-      authorizePost,
-    });
-    if (!decision.allowed) {
-      report.blocked_requests.push({ method, path: url.origin === ORIGIN ? url.pathname : "non_loopback", reason: decision.reason });
-      await route.abort();
-      return;
-    }
-    await route.continue();
-  });
+  await context.routeWebSocket("**/*", (socket) => closeReceiverWebSocket(socket, {
+    onBlocked: () => report.blocked_requests.push({ kind: "websocket", destination: "blocked" }),
+    onFailure: recordCallbackFailure,
+  }));
+  await context.route("**/*", (route) => handleReceiverRoute(route, {
+    expectedOrigin: ORIGIN,
+    allowedRead,
+    authorizePost,
+    onBlocked: (entry) => report.blocked_requests.push(entry),
+    onFailure: recordCallbackFailure,
+  }));
   page = wrapPage(await context.newPage());
-  page.on("response", async (response) => {
+  page.on("response", observeReceiverEvent(async (response) => {
     const request = response.request();
     if (new URL(response.url()).origin !== ORIGIN) return;
     const path = new URL(response.url()).pathname;
@@ -1233,9 +1223,10 @@ try {
         else linkedEnvelope = data;
       }
     } catch { /* Error details stay out of the retained report. */ }
-  });
-  page.on("pageerror", () => report.errors.push({ stage, kind: "page_error" }));
-  page.on("console", (message) => {
+  }, () => recordCallbackFailure("response_observer_failed"), pendingObservers));
+  page.on("pageerror", observeReceiverEvent(() => report.errors.push({ stage, kind: "page_error" }),
+    () => recordCallbackFailure("pageerror_observer_failed"), pendingObservers));
+  page.on("console", observeReceiverEvent((message) => {
     if (message.type() !== "error") return;
     if (!connected && stage === "connect" && expected401 > 0 && message.location().url === `${ORIGIN}/api/v1/session`
       && /^Failed to load resource: the server responded with a status of 401\b/.test(message.text())) {
@@ -1243,7 +1234,7 @@ try {
       return;
     }
     report.errors.push({ stage, kind: "console_error" });
-  });
+  }, () => recordCallbackFailure("console_observer_failed"), pendingObservers));
 
   stage = "connect";
   await page.goto(ORIGIN, { waitUntil: "domcontentloaded" });
@@ -2088,6 +2079,9 @@ try {
   catch { report.errors.push({ stage: "cleanup", kind: "browser_context_close" }); }
   try { await browser?.close(); }
   catch { report.errors.push({ stage: "cleanup", kind: "browser_close" }); }
+  if (!await settleReceiverObservers(pendingObservers, deadlineBudget.bounded(1000, Date.now()))) {
+    recordCallbackFailure("observer_unsettled");
+  }
   if (report.cleanup?.receiver_control_stopped === false || report.cleanup?.runner_stopped === false
     || (counts.model_authorization > 0 && report.cleanup?.model_authorization_revoked !== true)) {
     report.status = "failed_or_incomplete";
