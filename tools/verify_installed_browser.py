@@ -1291,7 +1291,7 @@ def _receiver_child_exit_diagnostic(
         error_class = "missing_file"
     else:
         error_class = "other" if count else "none"
-    return {
+    diagnostic = {
         "returncode": returncode if type(returncode) is int and -255 <= returncode <= 255 else None,
         "stderr_class": error_class,
         "stderr_bytes_capped": count,
@@ -1299,6 +1299,19 @@ def _receiver_child_exit_diagnostic(
         "stderr_drained": stderr_state.get("drained") is True
         and stderr_state.get("read_failed") is not True,
     }
+    # Only a shipped source basename and bounded line may leave the raw child pipe.
+    source = re.search(
+        rb"(?m)^[ \t]+at [^\r\n]*[/\\]"
+        rb"(installed-receiver\.mjs|receiver-(?:guards|deadline|diagnostics)\.mjs)"
+        rb":([1-9][0-9]{0,3})(?::[0-9]{1,5})?(?:[)\r\n]|$)",
+        prefix,
+    )
+    if source is not None:
+        diagnostic["stderr_source"] = {
+            "file": source.group(1).decode("ascii"),
+            "line": int(source.group(2)),
+        }
+    return diagnostic
 
 
 def _run_receiver_phase(

@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { clearTimeout as cancelTimeout, setTimeout as scheduleTimeout } from "node:timers";
+import { URL } from "node:url";
 
 // Saved JSON objects may be canonicalized; array order and exact values still matter.
 export const sameJson = isDeepStrictEqual;
@@ -170,4 +172,76 @@ export function classifyRequest({ origin, expectedOrigin, method, url, body, bod
       : { allowed: false, reason: "write_not_allowlisted_or_budget_exceeded" };
   }
   return { allowed: false, reason: "method_not_allowlisted" };
+}
+
+// A failed classifier or Playwright route action must never turn into a permitted request.
+export async function handleReceiverRoute(route, { expectedOrigin, allowedRead, authorizePost, onBlocked, onFailure }) {
+  try {
+    const request = route.request();
+    const url = new URL(request.url());
+    const method = request.method();
+    let body;
+    let bodyError = false;
+    if (url.origin === expectedOrigin && method === "POST") {
+      try { body = request.postData() ? request.postDataJSON() : null; }
+      catch { bodyError = true; }
+    }
+    const decision = classifyRequest({
+      origin: url.origin,
+      expectedOrigin,
+      method,
+      url,
+      body,
+      bodyError,
+      allowedRead,
+      authorizePost,
+    });
+    if (!decision.allowed) {
+      onBlocked({
+        method: ["GET", "HEAD", "POST"].includes(method) ? method : "OTHER",
+        path: url.origin === expectedOrigin ? "loopback" : "non_loopback",
+        reason: decision.reason,
+      });
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  } catch {
+    onFailure("request_route_failed");
+    try { await route.abort(); }
+    catch { onFailure("request_abort_failed"); }
+  }
+}
+
+export async function closeReceiverWebSocket(socket, { onBlocked, onFailure }) {
+  try { onBlocked(); }
+  catch { onFailure("websocket_record_failed"); }
+  try { await socket.close(); }
+  catch { onFailure("websocket_close_failed"); }
+}
+
+// EventEmitter does not await async listeners. Track every settled observer for the final report.
+export function observeReceiverEvent(handler, onFailure, pending) {
+  return (...args) => {
+    let observation;
+    try { observation = Promise.resolve(handler(...args)); }
+    catch { onFailure(); return; }
+    const settled = observation.catch(() => { onFailure(); });
+    pending.add(settled);
+    void settled.finally(() => pending.delete(settled));
+  };
+}
+
+export async function settleReceiverObservers(pending, timeoutMs) {
+  if (pending.size === 0) return true;
+  const bounded = Number.isFinite(timeoutMs) ? Math.max(0, Math.min(timeoutMs, 1000)) : 0;
+  if (bounded <= 0) return false;
+  let timer;
+  try {
+    await Promise.race([
+      Promise.allSettled([...pending]),
+      new Promise((resolve) => { timer = scheduleTimeout(resolve, bounded); }),
+    ]);
+  } finally { cancelTimeout(timer); }
+  return pending.size === 0;
 }

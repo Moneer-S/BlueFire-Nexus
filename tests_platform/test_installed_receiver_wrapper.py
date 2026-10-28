@@ -65,6 +65,27 @@ def test_receiver_child_exit_diagnostic_refuses_non_oserror_read_failure() -> No
     assert _receiver_child_exit_diagnostic(1, state)["stderr_drained"] is False
 
 
+def test_receiver_child_exit_diagnostic_retains_only_allowlisted_stack_location() -> None:
+    secret = b"private-capability-and-workspace-path"
+    stderr = (
+        b"Error: " + secret + b"\n"
+        b"    at unexpected (C:\\private\\wrong-helper.mjs:88:3)\n"
+        b"    at route (C:\\private\\receiver-guards.mjs:206:13)\n"
+        b"    at file:///private/installed-receiver.mjs:1240:7\n"
+    )
+    state: dict[str, object] = {"drained": False}
+    _drain_receiver_child_stderr(BytesIO(stderr), state)
+    diagnostic = _receiver_child_exit_diagnostic(1, state)
+    assert diagnostic["stderr_source"] == {"file": "receiver-guards.mjs", "line": 206}
+    assert secret not in repr(diagnostic).encode()
+    assert b"private" not in repr(diagnostic).encode()
+
+    state["prefix"] = b"    at route (C:\\private\\unshipped-helper.mjs:999:1)\n"
+    assert "stderr_source" not in _receiver_child_exit_diagnostic(1, state)
+    state["prefix"] = b"    at route (C:\\private\\receiver-guards.mjs:10000:1)\n"
+    assert "stderr_source" not in _receiver_child_exit_diagnostic(1, state)
+
+
 def receiver_report() -> dict[str, object]:
     return {
         "schema_version": "bluefire.installed-receiver-retained-redaction.v1",
