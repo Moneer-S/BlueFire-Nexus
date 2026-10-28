@@ -1,5 +1,6 @@
 """Exact retained-launch plumbing with fake I/O, never a Darwin process."""
 
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -207,7 +208,17 @@ def fake(monkeypatch):
         )
 
     monkeypatch.setattr(worker, "sys", SimpleNamespace(platform="darwin"))
-    monkeypatch.setattr(worker, "os", SimpleNamespace(getuid=lambda: 0, geteuid=lambda: 0))
+    monkeypatch.setattr(
+        worker,
+        "os",
+        SimpleNamespace(
+            getuid=lambda: 0,
+            geteuid=lambda: 0,
+            pipe=os.pipe,
+            read=os.read,
+            close=os.close,
+        ),
+    )
     monkeypatch.setattr(
         worker,
         "socket",
@@ -273,14 +284,21 @@ def test_fixed_recipe_registered_remapping_and_original_nofork_owner(fake):
     assert state["launch_options"]["environment"] == dict(
         PATH="/usr/bin:/bin", LANG="C", LC_ALL="C"
     )
-    assert (
-        state["launch_options"]["stdout"]
-        == state["launch_options"]["stderr"]
-        == worker.subprocess.DEVNULL
-    )
+    assert state["launch_options"]["stdout"] == worker.subprocess.DEVNULL
+    assert type(state["launch_options"]["stderr"]) is int
+    assert state["launch_options"]["stderr"] >= 3
+    assert state["options"]["_bluefire_descriptor_roles"] == {
+        9: "resource",
+        11: "primitive_channel",
+        100: "launch_auxiliary",
+        101: "launch_auxiliary",
+    }
     assert active[owner._process] is runtime
     assert owner._process in runtime._darwin_no_fork_proven
     assert owner._child_channel.closed
+    owner._native_diagnostic_thread.join(timeout=0.5)
+    assert owner._native_diagnostic_complete
+    assert owner._native_diagnostic_bytes == b""
     result = owner.exchange(request())
     assert result["outcome"] == "allowed" and result["prevention_proven"] is False
     assert state["observed"] == 3

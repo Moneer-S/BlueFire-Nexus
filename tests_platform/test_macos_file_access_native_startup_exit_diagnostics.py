@@ -36,6 +36,7 @@ def _worker(monkeypatch, code):
     value._processes = [process]
     value._proven = [process]
     value._process = process
+    value._native_diagnostic_thread = None
     return value
 
 
@@ -47,6 +48,41 @@ def _creator(workers):
     value._retired_workers_closed = True
     value._workers = workers
     return value
+
+
+def test_settled_original_code_96_retains_only_one_finite_native_frame(monkeypatch):
+    retained = _worker(monkeypatch, 96)
+    identity = {"dev": 1, "ino": 2, "mode_type": 0o100000, "rdev": 0}
+    rows = [
+        {"fd": fd, "kind": 2 if fd == 4 else 1, "identity": identity}
+        for fd in (0, 1, 2, 3, 4, 9)
+    ]
+    retained._native_diagnostic_thread = SimpleNamespace(join=lambda timeout: None)
+    retained._native_diagnostic_complete = True
+    retained._native_diagnostic_overflow = False
+    retained._native_diagnostic_bytes = bytearray(
+        json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}).encode()
+        + b"\n"
+    )
+    retained._launch_copy_rows = [
+        {"role": "resource", "fd": 12, "identity": identity},
+        {"role": "primitive_channel", "fd": 13, "identity": identity},
+    ]
+    status = retained.retained_native_startup_status()
+    assert status["returncode"] == 96
+    assert status["descriptor_observation"]["native_rows"] == rows
+    assert status["descriptor_observation"]["scope"] == "diagnostic_only_no_descriptor_admission"
+    assert retained._native_diagnostic_bytes == b""
+    assert verifier._safe_native_startup_statuses({"reader": status}) == {"reader": status}
+
+    retained._native_diagnostic_bytes = bytearray(b"arbitrary stderr\n")
+    assert "descriptor_observation" not in retained.retained_native_startup_status()
+    retained._native_diagnostic_bytes = bytearray(
+        json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}).encode()
+        + b"\n"
+    )
+    retained._process.returncode = 95
+    assert "descriptor_observation" not in retained.retained_native_startup_status()
 
 
 @pytest.mark.parametrize("code,label", sorted(diagnostics.NATIVE_STARTUP_EXIT_LABELS.items()))

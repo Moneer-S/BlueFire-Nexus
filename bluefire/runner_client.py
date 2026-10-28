@@ -420,6 +420,7 @@ def _prepare_darwin_launch_resources(
     prepared_options = dict(options)
     descriptors: list[int] = []
     links: list[tuple[int, str, tuple[int, int]]] = []
+    descriptor_observation: list[dict[str, Any]] = []
     resources = _DarwinLaunchResources(
         argv=prepared_argv,
         options=prepared_options,
@@ -428,6 +429,15 @@ def _prepare_darwin_launch_resources(
     )
     sink.append(resources)
     try:
+        descriptor_roles = prepared_options.pop("_bluefire_descriptor_roles", None)
+        descriptor_observation_sink = prepared_options.pop(
+            "_bluefire_descriptor_observation_sink", None
+        )
+        if (descriptor_roles is None) != (descriptor_observation_sink is None) or (
+            descriptor_observation_sink is not None
+            and (type(descriptor_observation_sink) is not list or descriptor_observation_sink)
+        ):
+            raise OSError("Darwin descriptor observation is invalid")
         single_descriptor_indexes = tuple(
             prepared_options.pop("_bluefire_descriptor_argument_indexes", ())
         )
@@ -436,10 +446,38 @@ def _prepare_darwin_launch_resources(
         )
         descriptor_map: dict[int, int] = {}
         inherited = tuple(int(value) for value in prepared_options.get("pass_fds", ()))
+        if descriptor_roles is not None and (
+            type(descriptor_roles) is not dict
+            or set(descriptor_roles) != set(inherited)
+            or len(inherited) != len(set(inherited))
+            or any(
+                type(fd) is not int
+                or type(role) is not str
+                or role not in {"resource", "primitive_channel", "launch_auxiliary"}
+                for fd, role in descriptor_roles.items()
+            )
+            or list(descriptor_roles.values()).count("resource") != 1
+            or list(descriptor_roles.values()).count("primitive_channel") != 1
+        ):
+            raise OSError("Darwin descriptor observation roles are invalid")
         for descriptor in inherited:
             duplicate = _duplicate_darwin_descriptor(descriptor)
             descriptors.append(duplicate)
             descriptor_map[descriptor] = duplicate
+            if descriptor_roles is not None:
+                details = os.fstat(duplicate)
+                descriptor_observation.append(
+                    {
+                        "role": descriptor_roles[descriptor],
+                        "fd": duplicate,
+                        "identity": {
+                            "dev": details.st_dev,
+                            "ino": details.st_ino,
+                            "mode_type": stat.S_IFMT(details.st_mode),
+                            "rdev": getattr(details, "st_rdev", 0),
+                        },
+                    }
+                )
         if inherited:
             prepared_options["pass_fds"] = tuple(
                 descriptor_map[descriptor] for descriptor in inherited
@@ -484,6 +522,8 @@ def _prepare_darwin_launch_resources(
             candidate = Path(argument)
             if candidate.is_absolute() and candidate.name.startswith(".bluefire-verified-launch-"):
                 prepared_argv[index] = _clone_darwin_launch_link(argument, links)
+        if descriptor_observation_sink is not None:
+            descriptor_observation_sink.extend(descriptor_observation)
         return resources
     except BaseException:
         resources.close()

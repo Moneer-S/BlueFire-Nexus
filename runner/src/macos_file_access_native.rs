@@ -708,6 +708,7 @@ mod darwin {
         held: i32,
         channel: i32,
         read: Option<i32>,
+        initial: bool,
     ) -> Result<(), super::DescriptorInventoryFailure> {
         let mut rows = unsafe { std::mem::zeroed::<[FdInfo; 16]>() };
         let bytes = unsafe {
@@ -726,7 +727,7 @@ mod darwin {
             return Err(super::DescriptorInventoryFailure::QueryResultShape);
         }
         let rows = &rows[..bytes as usize / size_of::<FdInfo>()];
-        super::inventory(
+        let checked = super::inventory(
             &rows
                 .iter()
                 .map(|row| (row.fd, row.kind))
@@ -734,7 +735,11 @@ mod darwin {
             held,
             channel,
             read,
-        )?;
+        );
+        if initial && checked == Err(super::DescriptorInventoryFailure::UnexpectedRowsPresent) {
+            emit_initial_descriptor_rows(rows);
+        }
+        checked?;
         let mut null = unsafe { std::mem::zeroed::<libc::stat>() };
         if unsafe { libc::lstat(c"/dev/null".as_ptr(), &mut null) } != 0
             || null.st_mode & libc::S_IFMT != libc::S_IFCHR
@@ -754,6 +759,48 @@ mod darwin {
         Ok(())
     }
 
+    /// A failed inventory may describe itself, but never admits another handle.
+    /// The diagnostic is attempted only when stderr is a FIFO. The parent
+    /// accepts one bounded frame only from its settled original code-96 child.
+    fn emit_initial_descriptor_rows(rows: &[FdInfo]) {
+        let mut stderr = unsafe { std::mem::zeroed::<libc::stat>() };
+        if unsafe { libc::fstat(2, &mut stderr) } != 0
+            || stderr.st_mode & libc::S_IFMT != libc::S_IFIFO
+        {
+            return;
+        }
+        let observed = rows
+            .iter()
+            .map(|row| {
+                let mut details = unsafe { std::mem::zeroed::<libc::stat>() };
+                let identity = if unsafe { libc::fstat(row.fd, &mut details) } == 0 {
+                    Some(serde_json::json!({
+                        "dev": details.st_dev as u32,
+                        "ino": details.st_ino as u64,
+                        "mode_type": (details.st_mode & libc::S_IFMT) as u32,
+                        "rdev": details.st_rdev as u32,
+                    }))
+                } else {
+                    None
+                };
+                serde_json::json!({"fd": row.fd, "kind": row.kind, "identity": identity})
+            })
+            .collect::<Vec<_>>();
+        let Ok(mut frame) = serde_json::to_vec(&serde_json::json!({
+            "schema_version": "bluefire.macos-native-fd-rows.v1",
+            "rows": observed,
+        })) else {
+            return;
+        };
+        frame.push(b'\n');
+        if frame.len() > 4096 {
+            return;
+        }
+        // One write stays below PIPE_BUF. A partial frame is rejected by the
+        // parent parser; this path never affects the refusal result.
+        let _ = unsafe { libc::write(2, frame.as_ptr().cast(), frame.len()) };
+    }
+
     struct Native {
         held: Option<i32>,
         channel: i32,
@@ -767,7 +814,7 @@ mod darwin {
             self.held.ok_or(())
         }
         fn inventory(&self) -> Result<(), ()> {
-            descriptor_inventory(self.held()?, self.channel, self.read_fd).map_err(|_| ())
+            descriptor_inventory(self.held()?, self.channel, self.read_fd, false).map_err(|_| ())
         }
     }
 
@@ -1042,7 +1089,7 @@ mod darwin {
             cleanup_unknown: false,
         };
         let startup = (|| -> Result<(), super::StartupFailureStage> {
-            descriptor_inventory(held, channel_fd, None)
+            descriptor_inventory(held, channel_fd, None, true)
                 .map_err(super::DescriptorInventoryFailure::startup_stage)?;
             super::startup_step(
                 super::StartupFailureStage::ReadonlyDescriptor,

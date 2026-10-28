@@ -404,7 +404,7 @@ def test_namespace_creation_failure_site_is_fixed_stage_scoped_and_deepest():
     assert failure.safe_setup_offset == 121
     with pytest.raises(ValueError, match="unknown macOS setup diagnostic site"):
         local.MacOSSetupFailure(
-            "namespace_creation", "safe", setup_site="namespace_worker_start", setup_offset=133
+            "namespace_creation", "safe", setup_site="namespace_worker_start", setup_offset=167
         )
     with pytest.raises(ValueError, match="unknown macOS setup diagnostic site"):
         local.MacOSSetupFailure(

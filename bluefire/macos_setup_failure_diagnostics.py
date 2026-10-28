@@ -2,7 +2,117 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+NATIVE_FD_ROWS_SCHEMA = "bluefire.macos-native-fd-rows.v1"
+NATIVE_FD_OBSERVATION_SCHEMA = "bluefire.macos-fd-observation.v1"
+MAX_NATIVE_FD_FRAME_BYTES = 4096
+MAX_NATIVE_FD_ROWS = 15
+
+
+def _native_fd_identity(value: Any) -> bool:
+    return (
+        type(value) is dict
+        and set(value) == {"dev", "ino", "mode_type", "rdev"}
+        and all(type(item) is int and 0 <= item < 2**64 for item in value.values())
+        and value["mode_type"] & 0o170000 == value["mode_type"]
+    )
+
+
+def native_fd_rows_from_frame(raw: Any) -> list[dict[str, Any]] | None:
+    """Read only one bounded native code-96 frame; never retain arbitrary stderr."""
+
+    if (
+        type(raw) is not bytes
+        or not 0 < len(raw) <= MAX_NATIVE_FD_FRAME_BYTES
+        or not raw.endswith(b"\n")
+        or raw.count(b"\n") != 1
+    ):
+        return None
+
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate native diagnostic key")
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(
+            raw.decode("ascii"),
+            object_pairs_hook=unique,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("nonfinite value")),
+        )
+    except (UnicodeError, ValueError, TypeError, RecursionError):
+        return None
+    if (
+        type(document) is not dict
+        or set(document) != {"schema_version", "rows"}
+        or document["schema_version"] != NATIVE_FD_ROWS_SCHEMA
+        or type(document["rows"]) is not list
+        or not 6 <= len(document["rows"]) <= MAX_NATIVE_FD_ROWS
+    ):
+        return None
+    for row in document["rows"]:
+        if (
+            type(row) is not dict
+            or set(row) != {"fd", "kind", "identity"}
+            or type(row["fd"]) is not int
+            or not 0 <= row["fd"] < 2**31
+            or type(row["kind"]) is not int
+            or not 0 <= row["kind"] < 2**32
+            or (row["identity"] is not None and not _native_fd_identity(row["identity"]))
+        ):
+            return None
+    return document["rows"]
+
+
+def valid_native_fd_observation(value: Any) -> bool:
+    """Validate observations without treating matching inode fields as proof."""
+
+    if (
+        type(value) is not dict
+        or set(value) != {"schema_version", "scope", "launch_copy_rows", "native_rows"}
+        or value["schema_version"] != NATIVE_FD_OBSERVATION_SCHEMA
+        or value["scope"] != "diagnostic_only_no_descriptor_admission"
+        or type(value["launch_copy_rows"]) is not list
+        or not 2 <= len(value["launch_copy_rows"]) <= MAX_NATIVE_FD_ROWS
+        or type(value["native_rows"]) is not list
+        or not 6 <= len(value["native_rows"]) <= MAX_NATIVE_FD_ROWS
+    ):
+        return False
+    roles: list[str] = []
+    launch_fds: list[int] = []
+    for row in value["launch_copy_rows"]:
+        if (
+            type(row) is not dict
+            or set(row) != {"role", "fd", "identity"}
+            or type(row["role"]) is not str
+            or row["role"] not in {"resource", "primitive_channel", "launch_auxiliary"}
+            or type(row["fd"]) is not int
+            or not 3 <= row["fd"] < 2**31
+            or not _native_fd_identity(row["identity"])
+        ):
+            return False
+        roles.append(row["role"])
+        launch_fds.append(row["fd"])
+    if roles.count("resource") != 1 or roles.count("primitive_channel") != 1:
+        return False
+    if len(set(launch_fds)) != len(launch_fds):
+        return False
+    return all(
+        type(row) is dict
+        and set(row) == {"fd", "kind", "identity"}
+        and type(row["fd"]) is int
+        and 0 <= row["fd"] < 2**31
+        and type(row["kind"]) is int
+        and 0 <= row["kind"] < 2**32
+        and (row["identity"] is None or _native_fd_identity(row["identity"]))
+        for row in value["native_rows"]
+    )
+
 
 NATIVE_STARTUP_EXIT_LABELS = {
     80: "runtime_supported_check",
@@ -106,7 +216,9 @@ def valid_native_startup_status(value: Any) -> bool:
             and type(value["reason"]) is str
             and value["reason"] in NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS
         )
-    if set(value) not in (
+    observation = value.get("descriptor_observation")
+    base = {key: item for key, item in value.items() if key != "descriptor_observation"}
+    if set(base) not in (
         {"status", "returncode"},
         {"status", "returncode", "label"},
     ):
@@ -115,7 +227,10 @@ def valid_native_startup_status(value: Any) -> bool:
     if type(code) is not int or not -255 <= code <= 255:
         return False
     expected = native_startup_status_from_returncode(code)
-    return value == expected
+    return base == expected and (
+        "descriptor_observation" not in value
+        or (code == 96 and valid_native_fd_observation(observation))
+    )
 
 
 def valid_native_startup_statuses(value: Any) -> bool:
@@ -178,7 +293,7 @@ _NAMESPACE_CREATION_SITE_OFFSETS = {
     "namespace_descriptor_security": frozenset(range(64)),
     "namespace_sealed_resource": frozenset(range(60)),
     "namespace_binding": frozenset(range(26)),
-    "namespace_worker_start": frozenset(range(133)),
+    "namespace_worker_start": frozenset(range(167)),
     "namespace_worker_guard_wall_window": frozenset({8}),
     "namespace_worker_guard_deadline": frozenset({10}),
     "namespace_worker_guard_wall_clock_order": frozenset({12}),
@@ -189,7 +304,7 @@ SITE_OFFSETS = {
     "namespace_creation": _NAMESPACE_CREATION_SITE_OFFSETS,
 }
 MAX_PACKAGE_OFFSET = 64
-MAX_NAMESPACE_OFFSET = 132
+MAX_NAMESPACE_OFFSET = 166
 MAX_OFFSETS = {
     "package_import_custody": MAX_PACKAGE_OFFSET,
     "namespace_creation": MAX_NAMESPACE_OFFSET,
@@ -422,7 +537,7 @@ def namespace_creation_site_ranges(
         (namespace.SealedMacOSNamespace.binding.__code__, ((0, 25, "namespace_binding"),)),
         (
             worker.MacOSFileAccessWorker.start.__code__,
-            ((0, 132, "namespace_worker_start"),),
+            ((0, 166, "namespace_worker_start"),),
         ),
         (
             worker.MacOSFileAccessWorker._guard.__code__,

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
+from bluefire import macos_setup_failure_diagnostics as _native_diagnostics
 from bluefire import runner_client
 
 API = "/api/v1"
@@ -327,8 +328,10 @@ def _safe_native_startup_statuses(value: Any) -> dict[str, dict[str, Any]] | Non
             ):
                 return None
         else:
+            observation = status.get("descriptor_observation")
+            base = {key: item for key, item in status.items() if key != "descriptor_observation"}
             if (
-                set(status)
+                set(base)
                 not in (
                     {"status", "returncode"},
                     {"status", "returncode", "label"},
@@ -351,7 +354,10 @@ def _safe_native_startup_statuses(value: Any) -> dict[str, dict[str, Any]] | Non
                 expected = {"status": "signal_termination", "returncode": code}
             else:
                 expected = {"status": "other_exit", "returncode": code}
-            if status != expected:
+            if base != expected or (
+                "descriptor_observation" in status
+                and (code != 96 or not _native_diagnostics.valid_native_fd_observation(observation))
+            ):
                 return None
         result[role] = dict(status)
     return result
