@@ -334,7 +334,7 @@ export function GraphWorkspace({ behaviors, actions, review }: { behaviors: Beha
       const alsoOn = edge.source === selectedId || edge.target === selectedId ? undefined : data?.alsoOn?.filter(outcome =>
         !(selectedParallel?.source === edge.source && selectedParallel.target === edge.target && selectedParallel.data?.outcome === outcome));
       const also = alsoOn?.length ? alsoOn.length === 3 ? "Any outcome" : `Also ${alsoOn.join(", ")}` : undefined;
-      return { ...edge, ariaLabel: also ? `${edge.ariaLabel}. ${also}` : edge.ariaLabel, data: data?.alsoOn ? { ...data, alsoOn } : data, hidden: !edgeIsShown(edge) || idleParallel, selected: edge.selected && edgeIsShown(edge), style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45
+      return { ...edge, ariaLabel: also ? `${edge.ariaLabel}. ${also}` : edge.ariaLabel, data: data?.alsoOn?.length ? { ...data, alsoOn } : data, hidden: !edgeIsShown(edge) || idleParallel, selected: edge.selected && edgeIsShown(edge), style: { ...edge.style, opacity: selectedRouteId && edge.id !== selectedRouteId ? .45
         // While a step is open in the inspector, its own routes carry the view.
         : inspectorVisible && selectedId && edge.source !== selectedId && edge.target !== selectedId ? .4 : 1 } };
     });
