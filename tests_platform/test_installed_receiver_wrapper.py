@@ -36,7 +36,9 @@ def receiver_report() -> dict[str, object]:
             "fresh_retest_created_through_retained_control_ui_with_original_lineage",
             "linked_fresh_protected_refusal_and_legitimate_use_completed_under_retained_policy",
             "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false",
+            "single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt",
             "composed_attempt_grant_revoked_after_verified_cleanup",
+            "receiver_composition_model_authorization_revoked_after_one_proposal",
             "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result",
         ],
         "blocked_requests": [],
@@ -46,6 +48,7 @@ def receiver_report() -> dict[str, object]:
             "linked_owner_completed_retained": True,
             "runner_stopped": True,
             "composition_grant_revoked": True,
+            "model_authorization_revoked": True,
         },
         "owner_status": "completed",
         "unique_receiver_session_count": 5,
@@ -59,10 +62,15 @@ def receiver_report() -> dict[str, object]:
             "composition_list": 3,
             "composition_context": 1,
             "composition_grant": 1,
-            "composition_proposal_context": 1,
+            "composition_proposal_context": 2,
+            "composition_proposal": 1,
             "composition_attempt": 1,
             "composition_revoke": 1,
             "comparison": 1,
+            "provider_save": 1,
+            "provider_activate": 1,
+            "model_authorization": 1,
+            "model_authorization_revoke": 1,
         },
         "source_starter_scenario_id": "scenario.receiver-defense.redaction-validation.v1",
         "saved_scenario_copy": {
@@ -109,6 +117,16 @@ def receiver_report() -> dict[str, object]:
             "objective_established": False,
             "finalized_run_objective_reached": False,
             "graph_objective_reached": False,
+            "model_proposal": {
+                "job_id": "job-55555555555555555555555555555555",
+                "proposal_digest": "sha256:" + "6" * 64,
+                "context_digest": "sha256:" + "7" * 64,
+                "provider_id": "provider.installed-receiver-composition.v1",
+                "candidate_ready": True,
+                "reopened": True,
+                "same_initial_graph": True,
+                "model_authorization_requests": 1,
+            },
             "comparison": {
                 "baseline_run_id": "run-20261021T120000Z-aaaaaaaaaaaaaaaa",
                 "snapshot_id": "run-comparison-" + "d" * 64,
@@ -243,6 +261,12 @@ def receiver_report() -> dict[str, object]:
 def clean_wrapper_report() -> dict[str, object]:
     return {
         **{key: True for key in _RUNTIME_PROCESS_CLEANUP_KEYS},
+        "receiver_model_fixture": {
+            "request_count": 1,
+            "purposes": ["bluefire_composition_proposal"],
+            "request_bytes": 1024,
+            "failed": False,
+        },
         "browser_phase_status": "passed",
         "receiver_phase_status": "passed",
         "receiver_driver_started": True,
@@ -412,6 +436,101 @@ def test_composed_receiver_receipt_requires_false_objective_and_current_saved_co
     changed["composition"]["receiver_session_id"] = "sensitive-bearer"
     with pytest.raises(ValueError):
         _receiver_report_for_receipt(changed)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("job_id", "job-invalid"),
+        ("proposal_digest", "sha256:invalid"),
+        ("context_digest", "sha256:invalid"),
+        ("provider_id", "provider.unexpected.v1"),
+        ("candidate_ready", False),
+        ("reopened", False),
+        ("same_initial_graph", False),
+        ("model_authorization_requests", 2),
+        ("model_authorization_requests", True),
+    ],
+)
+def test_receiver_requires_exact_saved_model_proposal_proof(field: str, value: object) -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+    assert _receiver_driver_passed(report)
+    report["composition"]["model_proposal"][field] = value
+    assert not _receiver_driver_passed(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("composition_proposal_context", 1),
+        ("composition_proposal_context", 4),
+        ("composition_proposal", 0),
+        ("model_authorization", 0),
+        ("model_authorization_revoke", 0),
+        ("provider_save", 2),
+        ("provider_activate", 2),
+    ],
+)
+def test_receiver_requires_single_proposal_and_exact_authorization_controls(
+    field: str, value: object
+) -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+    assert _receiver_driver_passed(report)
+    report["request_counts"][field] = value
+    assert not _receiver_driver_passed(report)
+
+
+def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+    assert _receiver_driver_passed(report)
+    report["checks"].remove("receiver_composition_model_authorization_revoked_after_one_proposal")
+    assert not _receiver_driver_passed(report)
+    report["checks"].append("receiver_composition_model_authorization_revoked_after_one_proposal")
+    report["cleanup"]["model_authorization_revoked"] = False
+    assert not _receiver_driver_passed(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("request_count", 0),
+        ("request_count", 2),
+        ("purposes", ["bluefire_ai_graph_draft"]),
+        ("request_bytes", 0),
+        ("request_bytes", True),
+        ("request_bytes", 262_145),
+        ("failed", True),
+    ],
+)
+def test_receiver_wrapper_rejects_unbound_model_fixture(field: str, value: object) -> None:
+    report = clean_wrapper_report()
+    assert _receiver_retained_redaction_accepted(report)
+    report["receiver_model_fixture"][field] = value
+    assert not _receiver_retained_redaction_accepted(report)
 
 
 def test_receiver_browser_driver_uses_authenticated_readiness_and_safe_diagnostic() -> None:

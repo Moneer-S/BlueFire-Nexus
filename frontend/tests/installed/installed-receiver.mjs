@@ -36,9 +36,11 @@ for await (const chunk of process.stdin) {
   assert.ok(inputBytes <= 256, "Capability input exceeded its limit");
   inputChunks.push(chunk);
 }
-let { capability } = JSON.parse(Buffer.concat(inputChunks).toString("utf8"));
+let { capability, fixture_port: fixturePort } = JSON.parse(Buffer.concat(inputChunks).toString("utf8"));
 inputChunks.length = 0;
 assert.match(capability ?? "", /^[A-Za-z0-9_-]{64}$/);
+assert.match(String(fixturePort ?? ""), /^\d{1,5}$/);
+assert.ok(Number(fixturePort) > 0 && Number(fixturePort) <= 65535);
 
 const JOURNEY_BUDGET_MS = 295_000;
 const CLEANUP_BUDGET_MS = 60_000;
@@ -50,6 +52,12 @@ const STARTER_TITLE = "Validate receiver redaction and legitimate use";
 const FILESYSTEM_COLLECTOR = "collector.filesystem.sandbox.v1";
 const COMPOSITION_QUESTION = "Can the retained receiver policy accept all eight generated records after redaction?";
 const COMPOSITION_REVIEWER = "Installed receiver composition verifier";
+const MODEL = "bluefire-local-graph-fixture-v1";
+const PROVIDER_ID = "provider.installed-receiver-composition.v1";
+const MODEL_REVIEWER = "Installed receiver composition fixture reviewer";
+const MODEL_PURPOSE = "bluefire_composition_proposal";
+const MODEL_PURPOSE_LABEL = "Propose a bounded composition graph";
+const PROVIDER_ENDPOINT = `http://127.0.0.1:${fixturePort}/v1/responses`;
 const ORIGIN = `http://127.0.0.1:${port}`;
 const ID = /^job-[0-9a-f]{32}$/;
 const RUN_ID = /^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/;
@@ -69,10 +77,15 @@ const ROUTE_LIMITS = {
   composition_list: 5,
   composition_context: 1,
   composition_grant: 1,
-  composition_proposal_context: 1,
+  composition_proposal_context: 3,
+  composition_proposal: 1,
   composition_attempt: 1,
   composition_revoke: 2,
   comparison: 1,
+  provider_save: 1,
+  provider_activate: 1,
+  model_authorization: 1,
+  model_authorization_revoke: 2,
 };
 const counts = Object.fromEntries(Object.keys(ROUTE_LIMITS).map((key) => [key, 0]));
 const report = {
@@ -136,6 +149,14 @@ let latestCompositionReview;
 let latestCompositionContext;
 let latestCompositionObjective;
 let compositionSnapshotId;
+let compositionProposalJobId;
+let latestCompositionProposal;
+let providerConfig;
+let modelAuthorizationId;
+let expectedModelRevokeId;
+let proposalReadCount = 0;
+let modelAuthorizationReadCount = 0;
+let modelProviderReadCount = 0;
 let comparisonDiagnostic;
 let comparisonSubmitted = false;
 let phaseBindingDiagnostic;
@@ -341,6 +362,14 @@ function allowedRead(url) {
     "/api/v1/detections",
     "/api/v1/comparison-snapshots",
   ].includes(path)) return !url.search;
+  if (path === "/api/v1/resources/model-providers") {
+    modelProviderReadCount += 1;
+    return !url.search && modelProviderReadCount <= 20;
+  }
+  if (path === "/api/v1/ai/authorizations") {
+    modelAuthorizationReadCount += 1;
+    return !url.search && modelAuthorizationReadCount <= 240;
+  }
   if (path === "/api/v1/runner") return url.search === `?profile_id=${PROFILE}`;
   if (/^\/api\/v1\/receiver-defense\/jobs\/job-[0-9a-f]{32}$/.test(path)) return !url.search;
   if (/^\/api\/v1\/jobs\/job-[0-9a-f]{32}$/.test(path)) return !url.search;
@@ -349,6 +378,10 @@ function allowedRead(url) {
     return /^\?after_sequence=\d+&limit=\d+$/.test(url.search);
   }
   if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}`) return !url.search;
+  if (compositionProposalJobId && path === `/api/v1/composition/proposals/${compositionProposalJobId}`) {
+    proposalReadCount += 1;
+    return !url.search && proposalReadCount <= 64;
+  }
   if (comparisonSubmitted && /^\/api\/v1\/comparison-snapshots\/run-comparison-[0-9a-f]{64}$/.test(path)) {
     return !url.search && (!compositionSnapshotId || path.endsWith(`/${compositionSnapshotId}`));
   }
@@ -398,6 +431,36 @@ function validateScenarioCopy(value) {
 function authorizePost(url, body) {
   const path = url.pathname;
   if (path === "/api/v1/session") return count("session") && body === null;
+  const provider = body?.document;
+  const providerExact = exactKeys(provider, ["id", "kind", "model", "endpoint", "api_key", "timeout_seconds", "max_retries", "max_output_tokens", "redaction"])
+    && provider.id === PROVIDER_ID && provider.kind === "openai_responses" && provider.model === MODEL
+    && provider.endpoint === PROVIDER_ENDPOINT && provider.api_key === null
+    && provider.timeout_seconds === 30 && provider.max_retries === 0 && provider.max_output_tokens === 1024
+    && exactKeys(provider.redaction, ["enabled", "redact_keys", "max_string_chars", "include_evidence_content"])
+    && provider.redaction.enabled === true && provider.redaction.include_evidence_content === false
+    && ["api_key", "authorization", "cookie", "credential", "password", "secret", "token"].every(key => provider.redaction.redact_keys.includes(key));
+  if (path === `/api/v1/resources/model-providers/${PROVIDER_ID}`) {
+    const ok = count("provider_save") && exactKeys(body, ["document", "status"]) && body.status === "draft" && providerExact;
+    if (ok) providerConfig = structuredClone(provider);
+    return Boolean(ok);
+  }
+  if (path === `/api/v1/resources/model-providers/${PROVIDER_ID}/activate`) {
+    return count("provider_activate") && exactKeys(body, []);
+  }
+  if (path === "/api/v1/ai/authorizations") {
+    return count("model_authorization") && providerConfig && exactKeys(body, ["provider", "purposes", "data_scope", "limits", "expires_in_seconds", "approved_by", "usage_authorized", "local_endpoint_authorized"])
+      && same(body.provider, providerConfig) && same(body.purposes, [MODEL_PURPOSE])
+      && body.data_scope === "reviewed_lab_context"
+      && exactKeys(body.limits, ["max_requests", "max_request_bytes", "max_reserved_output_tokens"])
+      && body.limits.max_requests === 1 && body.limits.max_request_bytes === 262_144
+      && body.limits.max_reserved_output_tokens === 1024 && body.expires_in_seconds === 300
+      && body.approved_by === MODEL_REVIEWER && body.usage_authorized === true
+      && body.local_endpoint_authorized === true;
+  }
+  if (/^\/api\/v1\/ai\/authorizations\/ai-authorization-[0-9a-f]{32}\/revoke$/.test(path)) {
+    const id = path.slice("/api/v1/ai/authorizations/".length, -"/revoke".length);
+    return count("model_authorization_revoke") && id === expectedModelRevokeId && exactKeys(body, []);
+  }
   if (path === "/api/v1/runner/bootstrap") {
     return count("bootstrap") && exactKeys(body, ["profile_id"]) && body.profile_id === PROFILE;
   }
@@ -435,10 +498,20 @@ function authorizePost(url, body) {
     return count("composition_proposal_context") && exactKeys(body, ["prior_attempt_id"])
       && body.prior_attempt_id === null;
   }
+  if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/proposals`) {
+    const ok = count("composition_proposal") && exactKeys(body, ["submission_id", "provider_id", "context_digest", "prior_attempt_id"])
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.submission_id)
+      && body.provider_id === PROVIDER_ID && body.context_digest === latestCompositionContext?.context_digest
+      && body.prior_attempt_id === null && counts.model_authorization === 1;
+    if (ok) compositionProposalJobId = `job-${body.submission_id.replaceAll("-", "")}`;
+    return Boolean(ok);
+  }
   if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/attempts`) {
     const ok = count("composition_attempt") && exactKeys(body, ["submission_id", "proposal", "prior_attempt_id"])
       && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.submission_id)
       && body.prior_attempt_id === null && latestCompositionContext?.grant_id === latestCompositionObjective?.grant?.document?.grant_id
+      && latestCompositionProposal?.candidate_ready === true
+      && same(body.proposal, latestCompositionProposal?.proposal?.candidate)
       && same(body.proposal, latestCompositionContext?.initial_proposal);
     if (ok) compositionAttemptJobId = `job-${body.submission_id.replaceAll("-", "")}`;
     return ok;
@@ -516,6 +589,66 @@ async function appApi(path, requestedTimeout = remainingMs()) {
     if (!response.ok) throw new Error("Owned status read failed");
     return response.json();
   }, { apiPath: path, timeout });
+}
+
+function ownedModelAuthorization(row) {
+  return row && typeof row === "object" && /^ai-authorization-[0-9a-f]{32}$/.test(row.authorization_id ?? "")
+    && row.provider?.id === PROVIDER_ID && same(row.provider, providerConfig)
+    && same(row.purposes, [MODEL_PURPOSE]) && row.approved_by === MODEL_REVIEWER;
+}
+
+async function readOwnedModelAuthorization() {
+  const value = await appApi("/ai/authorizations");
+  assert.ok(Array.isArray(value.authorizations));
+  const owned = value.authorizations.filter(ownedModelAuthorization);
+  assert.equal(owned.length, 1, "Only one exact receiver model authorization may be owned");
+  if (modelAuthorizationId) assert.equal(owned[0].authorization_id, modelAuthorizationId);
+  modelAuthorizationId = owned[0].authorization_id;
+  return owned[0];
+}
+
+async function revokeModelAuthorizationNormally() {
+  if (counts.model_authorization === 0) {
+    report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: false, model_authorization_not_issued: true };
+    return;
+  }
+  if (!connected || !page || page.isClosed()) {
+    report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: false };
+    return;
+  }
+  try {
+    const until = Date.now() + Math.min(15_000, remainingMs());
+    for (let attempt = 0; attempt < 2 && Date.now() < until; attempt += 1) {
+      const row = await readOwnedModelAuthorization();
+      if (row.status === "revoked") {
+        report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: true };
+        return;
+      }
+      assert.equal(row.status, "active");
+      assert.ok(counts.model_authorization_revoke < ROUTE_LIMITS.model_authorization_revoke);
+      expectedModelRevokeId = row.authorization_id;
+      await page.goto(`${ORIGIN}/#/settings`, { waitUntil: "domcontentloaded" });
+      const button = page.getByRole("button", { name: `Revoke model usage for ${MODEL}`, exact: true });
+      await button.waitFor({ state: "visible" });
+      assert.equal(await button.count(), 1);
+      try { await button.click(); }
+      catch { /* A lost response is reconciled against this exact owned authorization. */ }
+      const settleUntil = Math.min(until, Date.now() + (attempt === 0 ? 1500 : 8000));
+      while (Date.now() < settleUntil) {
+        try {
+          const current = await readOwnedModelAuthorization();
+          if (current.status === "revoked") {
+            report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: true };
+            return;
+          }
+          assert.equal(current.status, "active");
+        } catch { /* Missing or unavailable status cannot establish revocation. */ }
+        await delay(Math.min(150, Math.max(1, settleUntil - Date.now())));
+      }
+    }
+  } catch { /* Unknown authorization status remains an incomplete cleanup. */ }
+  finally { expectedModelRevokeId = undefined; }
+  report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: false };
 }
 
 const ACTIVE_WORK_KEY = "bluefire.local.active-defensive-work.v1";
@@ -1368,6 +1501,47 @@ try {
   };
   report.checks.push("original_baseline_protected_and_legitimate_use_completed_with_retained_policy");
 
+  stage = "composition-model-settings";
+  const retainedControlUrl = page.url();
+  await page.goto(`${ORIGIN}/#/settings`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "Model connection", exact: true }).waitFor();
+  await page.getByRole("combobox", { name: "API style", exact: true }).selectOption("openai_responses");
+  await page.getByLabel("Model ID", { exact: false }).fill(MODEL);
+  await page.getByLabel("Request endpoint", { exact: false }).fill(PROVIDER_ENDPOINT);
+  await page.getByLabel("Secret environment reference", { exact: false }).fill("");
+  await page.locator("details.provider-request-limits > summary").click();
+  await page.getByLabel("Timeout seconds", { exact: true }).fill("30");
+  await page.getByLabel("Output token limit", { exact: false }).fill("1024");
+  await page.getByLabel("Transport retries", { exact: true }).fill("0");
+  await page.locator(".provider-connection-fields > details.provider-field-wide:not(.provider-request-limits) > summary").click();
+  await page.getByLabel("Provider ID", { exact: false }).fill(PROVIDER_ID);
+  stage = "composition-model-save";
+  await page.getByRole("button", { name: "Save secret-free draft", exact: true }).click();
+  await page.getByText(`Responses API · ${MODEL} saved. Activation and model usage authorization remain separate.`, { exact: true }).waitFor();
+  assert.equal(counts.provider_save, 1);
+  stage = "composition-model-consent";
+  const receiverPurpose = page.getByRole("checkbox", { name: MODEL_PURPOSE_LABEL, exact: true });
+  await receiverPurpose.waitFor({ state: "visible" });
+  assert.equal(await receiverPurpose.isChecked(), false);
+  await receiverPurpose.check();
+  await page.getByLabel("Total request attempts", { exact: false }).fill("1");
+  await page.getByLabel("Total request bytes", { exact: false }).fill("262144");
+  await page.getByLabel("Total reserved output tokens", { exact: false }).fill("1024");
+  await page.getByLabel("Authorization duration in seconds", { exact: false }).fill("300");
+  await page.getByLabel("Operator identity for model usage", { exact: true }).fill(MODEL_REVIEWER);
+  await page.getByRole("checkbox", { name: "I authorize requests to this loopback endpoint.", exact: true }).check();
+  await page.getByRole("checkbox", { name: "I authorize the selected model work, reviewed lab data and these usage limits.", exact: true }).check();
+  await page.getByRole("button", { name: "Authorize reviewed model usage", exact: true }).click();
+  await page.getByText("Authorization saved. No model request was sent. Select this provider in Assistant or run setup when ready.", { exact: true }).waitFor();
+  assert.equal(counts.provider_activate, 1);
+  assert.equal(counts.model_authorization, 1);
+  const authorized = await readOwnedModelAuthorization();
+  assert.equal(authorized.status, "active");
+  assert.equal(authorized.usage?.requests, 0);
+  report.checks.push("receiver_composition_loopback_provider_saved_and_exact_purpose_authorized_without_request");
+  await page.goto(retainedControlUrl, { waitUntil: "domcontentloaded" });
+  await page.getByRole("link", { name: "Open composition workspace", exact: true }).waitFor();
+
   stage = "composition-review";
   await page.getByRole("link", { name: "Open composition workspace", exact: true }).click();
   await page.getByLabel("Objective question", { exact: true }).fill(COMPOSITION_QUESTION);
@@ -1405,8 +1579,61 @@ try {
   assert.equal(initial?.schema_version, "bluefire.composition-proposal.v1");
   assert.equal(initial.steps?.find(step => step.behavior_id === "sandbox.fixture.transform.v1")?.parameters?.redact_values, false);
   assert.ok(initial.steps?.some(step => step.behavior_id === "sandbox.peer.handoff.v1"));
+  stage = "composition-model-proposal";
+  await page.getByRole("combobox", { name: "Configured model provider", exact: true }).selectOption(PROVIDER_ID);
+  const proposalResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/composition/objectives/${compositionOwnerId}/proposals`
+    && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Request AI graph", exact: true }).click();
+  latestCompositionProposal = await (await proposalResponse).json();
+  assert.equal(latestCompositionProposal.job?.job_id, compositionProposalJobId);
+  assert.equal(latestCompositionProposal.job?.kind, "composition.proposal");
+  const proposalUntil = Date.now() + Math.min(20_000, remainingMs());
+  while (Date.now() < proposalUntil && latestCompositionProposal?.job?.state !== "completed") {
+    await delay(Math.min(750, Math.max(1, proposalUntil - Date.now())));
+    latestCompositionProposal = await appApi(`/composition/proposals/${compositionProposalJobId}`);
+  }
+  stage = "composition-model-proposal-binding";
+  assert.equal(latestCompositionProposal.job?.state, "completed");
+  assert.equal(latestCompositionProposal.job?.request?.owner_id, compositionOwnerId);
+  assert.equal(latestCompositionProposal.job?.request?.submitted_request?.provider_id, PROVIDER_ID);
+  assert.equal(latestCompositionProposal.job?.request?.submitted_request?.context_digest, latestCompositionContext.context_digest);
+  assert.equal(latestCompositionProposal.job?.request?.submitted_request?.prior_attempt_id, null);
+  assert.equal(latestCompositionProposal.provider_outcome, "candidate");
+  assert.equal(latestCompositionProposal.candidate_ready, true);
+  assert.equal(latestCompositionProposal.proposal?.proposal_job_id, compositionProposalJobId);
+  assert.equal(latestCompositionProposal.proposal?.owner_id, compositionOwnerId);
+  assert.equal(latestCompositionProposal.proposal?.context_digest, latestCompositionContext.context_digest);
+  assert.match(latestCompositionProposal.proposal?.proposal_digest ?? "", /^sha256:[0-9a-f]{64}$/);
+  assert.match(latestCompositionProposal.proposal?.model_context_digest ?? "", /^sha256:[0-9a-f]{64}$/);
+  assert.equal(latestCompositionProposal.proposal?.provider?.provider_id, PROVIDER_ID);
+  assert.equal(latestCompositionProposal.proposal?.provider?.model, MODEL);
+  assert.equal(latestCompositionProposal.proposal?.provider?.attempts, 1);
+  assert.equal(latestCompositionProposal.proposal?.provider?.used_fallback, false);
+  assert.deepEqual(latestCompositionProposal.proposal?.candidate, initial);
+  assert.deepEqual(latestCompositionProposal.proposal?.scenario, latestCompositionContext.initial_scenario);
+  assert.equal((await readOwnedModelAuthorization()).usage?.requests, 1);
+  stage = "composition-model-proposal-inspect";
+  await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Inspect graph", exact: true }).click();
+  await page.locator(".composition-graph").getByText("Compiler-validated projection", { exact: true }).waitFor();
+  stage = "composition-model-proposal-reopen";
+  const proposalDigest = latestCompositionProposal.proposal.proposal_digest;
+  await page.goto(`${ORIGIN}/#/composition?${new URLSearchParams({ control: originalOwnerId, objective: compositionOwnerId, proposal: compositionProposalJobId })}`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).waitFor();
+  latestCompositionProposal = await appApi(`/composition/proposals/${compositionProposalJobId}`);
+  assert.equal(latestCompositionProposal.job?.job_id, compositionProposalJobId);
+  assert.equal(latestCompositionProposal.proposal?.proposal_digest, proposalDigest);
+  assert.deepEqual(latestCompositionProposal.proposal?.candidate, initial);
+  assert.equal(latestCompositionProposal.candidate_ready, true);
+  assert.equal(latestCompositionContext?.context_digest, latestCompositionProposal.proposal?.context_digest);
+  const modelProposalProof = {
+    job_id: compositionProposalJobId, proposal_digest: proposalDigest,
+    context_digest: latestCompositionContext.context_digest, provider_id: PROVIDER_ID,
+    candidate_ready: true, reopened: true, same_initial_graph: true,
+    model_authorization_requests: 1,
+  };
+  report.checks.push("single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt");
   stage = "composition-attempt";
-  await page.getByRole("button", { name: "Review established graph", exact: true }).click();
   const attemptResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/composition/objectives/${compositionOwnerId}/attempts`
     && response.request().method() === "POST");
   await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).click();
@@ -1473,6 +1700,7 @@ try {
     empty_record_count: verified.receiver_result.empty_record_count,
     cleanup: verified.cleanup, objective_established: verified.objective.established,
     finalized_run_objective_reached: finalizedGraphObjectiveReached,
+    model_proposal: modelProposalProof,
   };
   report.checks.push("finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false");
   stage = "composition-revoke";
@@ -1786,6 +2014,12 @@ try {
   report.home_resume.working_draft_sha256 = createHash("sha256").update(draftBeforeHome.draft).digest("hex");
   report.checks.push("show_working_draft_clears_navigation_preference_without_changing_draft");
 
+  stage = "composition-model-authorization-revoke";
+  await revokeModelAuthorizationNormally();
+  assert.equal(report.cleanup.model_authorization_revoked, true);
+  assert.equal(counts.model_authorization_revoke, 1);
+  report.checks.push("receiver_composition_model_authorization_revoked_after_one_proposal");
+
   report.request_counts = counts;
   assert.equal(report.blocked_requests.length, 0);
   assert.equal(report.errors.length, 0);
@@ -1796,10 +2030,12 @@ try {
   assert.equal(counts.approval, 5);
   assert.equal(counts.cancel, 0);
   assert.ok(counts.composition_list >= 1 && counts.composition_list <= ROUTE_LIMITS.composition_list);
-  for (const name of ["composition_context", "composition_grant", "composition_proposal_context", "composition_attempt", "composition_revoke", "comparison"]) {
+  for (const name of ["composition_context", "composition_grant", "composition_proposal", "composition_attempt", "composition_revoke", "comparison", "provider_save", "provider_activate", "model_authorization", "model_authorization_revoke"]) {
     assert.equal(counts[name], 1);
   }
+  assert.ok(counts.composition_proposal_context >= 2 && counts.composition_proposal_context <= ROUTE_LIMITS.composition_proposal_context);
   assert.equal(report.cleanup.composition_grant_revoked, true);
+  assert.equal(report.cleanup.model_authorization_revoked, true);
   assert.equal(new Set(phaseEvidence.map((item) => item.run_id)).size, 5);
   assert.equal(receiverSessionIds.size, 5);
   report.unique_receiver_session_count = receiverSessionIds.size;
@@ -1830,6 +2066,9 @@ try {
   deadlineBudget.beginCleanup(Date.now());
   try { setPlaywrightBudget(); } catch { /* Cleanup still closes browser resources when the total budget is spent. */ }
   await revokeCompositionNormally();
+  if (counts.model_authorization > 0 && report.cleanup?.model_authorization_revoked !== true) {
+    await revokeModelAuthorizationNormally();
+  }
   if (receiverStarted) {
     cleanupCancelAllowed = true;
     await stopOwnerNormally();
@@ -1837,7 +2076,8 @@ try {
   if (runnerStarted) await stopRunnerNormally();
   await context?.close().catch(() => { report.errors.push({ stage: "cleanup", kind: "browser_context_close" }); });
   await browser?.close().catch(() => { report.errors.push({ stage: "cleanup", kind: "browser_close" }); });
-  if (report.cleanup?.receiver_control_stopped === false || report.cleanup?.runner_stopped === false) {
+  if (report.cleanup?.receiver_control_stopped === false || report.cleanup?.runner_stopped === false
+    || (counts.model_authorization > 0 && report.cleanup?.model_authorization_revoked !== true)) {
     report.status = "failed_or_incomplete";
   }
   if (report.errors.length || report.blocked_requests.length) report.status = "failed_or_incomplete";
