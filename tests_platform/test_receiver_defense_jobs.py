@@ -1654,7 +1654,8 @@ def test_cancelled_native_run_preserves_cleanup_and_finalization_boundaries(
 
     service.approve_job(identifier, {"approved_by": "Reviewer"})
     try:
-        terminal = service.job_controller.wait(identifier, timeout=20)
+        with diagnose_job_wait("receiver_terminal"):
+            terminal = service.job_controller.wait(identifier, timeout=20)
     except JobWaitTimeout:
         pytest.fail(f"Receiver execution did not settle: {diagnostic()}")
     assert actions.count("sandbox.collection.stage.v1") == 1, diagnostic()
