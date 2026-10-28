@@ -222,9 +222,7 @@ def _report(timeout, stage):
                     "phase": _label(
                         progress.get("phase"), STATES | {"materializing_checkpoint", "finalizing"}
                     ),
-                    "current_step_id": _label(
-                        progress.get("current_step_id"), DIAGNOSTIC_STEP_IDS
-                    ),
+                    "current_step_id": _label(progress.get("current_step_id"), DIAGNOSTIC_STEP_IDS),
                     "completed_steps": completed_steps,
                     "total_steps": total_steps,
                     "error_code": _label(error.get("code"), ERROR_CODES),
