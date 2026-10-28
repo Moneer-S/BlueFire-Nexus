@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectedRunBands, type BandCard, type BandEdge } from "../src/lib/connected-run-bands";
+import { branchRegionBands, connectedRunBands, type BandCard, type BandEdge } from "../src/lib/connected-run-bands";
 
 const card = (ordinal: number, x = 40, y = (ordinal - 1) * 160): BandCard => ({ id: `step_${ordinal}`, ordinal, x, y, width: 220, height: 104 });
 const edge = (from: number, to: number, outcome: BandEdge["outcome"] = "success"): BandEdge => ({ from_step: `step_${from}`, to_step: `step_${to}`, outcome });
@@ -89,5 +89,38 @@ describe("presentation-only connected run bands", () => {
     const dense = Array.from({ length: 512 }, (_, index) => card(index + 1, Math.floor(index / 2) * 400, (index % 2) * 160));
     const links = Array.from({ length: 256 }, (_, index) => edge(index * 2 + 1, index * 2 + 2));
     expect(connectedRunBands(dense, links)).toEqual([]);
+  });
+});
+
+describe("branch region bands", () => {
+  const card = (id: string, ordinal: number, x: number, y: number): BandCard => ({ id, ordinal, x, y, width: 220, height: 88 });
+  const decision = [card("send", 7, 0, 0), card("fallback", 8, 300, 152), card("cleanup", 9, 0, 304)];
+  const routes: BandEdge[] = [
+    { from_step: "send", to_step: "cleanup", outcome: "success" },
+    { from_step: "send", to_step: "fallback", outcome: "blocked" }, { from_step: "send", to_step: "fallback", outcome: "failed" },
+    { from_step: "fallback", to_step: "cleanup", outcome: "success" },
+  ];
+
+  it("encloses a decision, its fallback and the rejoin with a truthful label", () => {
+    const [region, ...rest] = branchRegionBands(decision, routes, [], { padding: 22 });
+    expect(rest).toHaveLength(0);
+    expect(region!.stepIds).toEqual(["send", "cleanup", "fallback"]);
+    expect(region!.kind).toBe("fallback");
+    expect(region!.label).toBe("Steps 7–9 · fallback");
+    expect(region!.x).toBe(-22);
+    expect(region!.width).toBe(520 + 44);
+  });
+
+  it("calls several alternative destinations branches and declines regions that would claim other cards or bands", () => {
+    const partial = routes.map(edge => edge.outcome === "blocked" ? { ...edge, outcome: "partial" as const } : edge);
+    expect(branchRegionBands(decision, partial, [])[0]!.kind).toBe("fallback");
+    const split = [...routes, { from_step: "send", to_step: "retry", outcome: "partial" as const }, { from_step: "retry", to_step: "cleanup", outcome: "success" as const }];
+    const [branches] = branchRegionBands([...decision, card("retry", 10, 300, 0)], split, []);
+    expect(branches!.kind).toBe("branches");
+    expect(branches!.label).toBe("Steps 7–10 · branches");
+    expect(branchRegionBands([...decision, card("unrelated", 10, 300, 300)], routes, [])).toEqual([]);
+    const run = connectedRunBands([card("before", 6, 0, -152), decision[0]!], [{ from_step: "before", to_step: "send", outcome: "success" }]);
+    expect(branchRegionBands(decision, routes, [{ id: "run", stepIds: ["send"], ordinals: [7], label: "Steps 6–7", x: -12, y: -164, width: 244, height: 264 }])).toEqual([]);
+    expect(run).toBeDefined();
   });
 });

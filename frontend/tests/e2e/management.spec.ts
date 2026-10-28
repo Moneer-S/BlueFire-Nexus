@@ -8,19 +8,22 @@ test("Detection Lab creates an honest hypothesis without simulating validation",
   await page.getByText("Validation stages", { exact: true }).click();
   await expect(page.getByText("Rendered text is not validation.")).toBeVisible();
   await page.getByText("Validation stages", { exact: true }).click();
-  const newRule = page.locator("details").filter({ has: page.locator("summary", { hasText: /^New rule$/ }) });
-  if (await newRule.getAttribute("open") === null) await page.getByText("New rule", { exact: true }).click();
+  const newRule = page.locator("details#detection-new-rule");
+  const newRuleSummary = newRule.locator(":scope > summary");
+  if (await newRule.getAttribute("open") === null) await newRuleSummary.click();
 
   await page.getByRole("textbox", { name: "Title", exact: true }).fill("Collection rule draft");
   await expect(page.getByRole("combobox", { name: "Target language" })).toHaveValue("sqlite");
   await page.getByRole("button", { name: "Save rule draft" }).click();
   await expect(page.getByText(/saved as a strict hypothesis\. It has not been parsed or exercised\./)).toBeVisible();
+  await expect(newRuleSummary).toContainText("Draft kept · Collection rule draft");
+  await expect(newRule.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Collection rule draft");
   await expect(page.getByRole("button", { name: "Validate source" })).toBeDisabled();
   await page.getByRole("button", { name: "Insert SQLite starter" }).click();
   await expect(page.getByText("Query backend unavailable", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Validate source" })).toBeDisabled();
 
-  if (await newRule.getAttribute("open") === null) await page.getByText("New rule", { exact: true }).click();
+  if (await newRule.getAttribute("open") === null) await newRuleSummary.click();
   await page.getByRole("textbox", { name: "Title", exact: true }).fill("Internal matcher hypothesis");
   await page.getByRole("combobox", { name: "Target language" }).selectOption("internal");
   await expect(page.getByRole("button", { name: "Save rule draft" })).toBeDisabled();

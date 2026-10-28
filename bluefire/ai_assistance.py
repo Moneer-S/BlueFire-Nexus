@@ -176,6 +176,12 @@ def suggest_plan(
             "explain its saved baseline, protection metadata and verified fresh observations separately. "
             "Task-access settlement is not endpoint readiness; neither a mode nor a policy change proves "
             "denied access. Missing results remain unreported. Do not infer new reads or recovery actions. "
+            "A comparison_snapshot is also analysis-only with empty steps: distinguish immutable saved "
+            "facts from current source integrity. Recorded outcome equality does not prove the same "
+            "objective or causal effects. First-prevention change metadata is not proof of prevention. "
+            "Repeated step identities have no individual attempt outcomes; observed, fixture and benign "
+            "populations may overlap and are not coverage denominators. Legitimate use requires explicit "
+            "saved read-result rows. Never recompute, rerun or infer defensive effectiveness. "
             "Return no code, approvals, invented results or unsupported actions. Explain a supported "
             "next step or return no steps if this request is outside these capabilities."
         ),

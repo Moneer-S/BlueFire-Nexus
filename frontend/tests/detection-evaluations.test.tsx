@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { DetectionRunEvaluations } from "../src/components/DetectionRunEvaluations";
 import { demoRuns } from "../src/lib/demo";
+import { api } from "../src/lib/api";
 import type { DetectionCandidate, DetectionCaseRole, DetectionRunEvaluation } from "../src/types";
 
 const candidateId = `detection-${"a".repeat(20)}`;
@@ -26,9 +27,9 @@ function report(id: string, source: string, role: DetectionCaseRole): DetectionR
     backend: { name: reportLanguage === "internal" ? "bluefire-structured-matcher" : "SQLite in-memory bounded executor", executed: !missing, version: "test" }, created_at: "2026-09-06T12:00:00Z", limitations: ["Case role is operator-declared."],
   };
 }
-function mount(value = candidate) {
+function mount(value = candidate, comparisonHandoff?: { runId: string; ready: boolean }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter><DetectionRunEvaluations candidate={value} resourceId={candidateId} sourceRunId={runId} runs={[{ ...demoRuns[0]!, run_id: runId }, { ...demoRuns[0]!, run_id: otherRunId }]} revisions={[{ id: parentId, label: "Revision 1" }, { id: candidateId, label: "Revision 2" }]} /></MemoryRouter></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><MemoryRouter><DetectionRunEvaluations candidate={value} resourceId={candidateId} sourceRunId={runId} runs={[{ ...demoRuns[0]!, run_id: runId }, { ...demoRuns[0]!, run_id: otherRunId }]} revisions={[{ id: parentId, label: "Revision 1" }, { id: candidateId, label: "Revision 2" }]} comparisonHandoff={comparisonHandoff} /></MemoryRouter></QueryClientProvider>);
 }
 beforeEach(() => {
   retained = [];
@@ -59,6 +60,8 @@ it("submits source identity and case context only, and exposes a measured benign
   await user.selectOptions(screen.getByRole("combobox", { name: /Activity label/ }), "benign");
   await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
   expect(await screen.findByText("Match in a declared benign case")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "1 matched record" })).toBeVisible();
+  expect(screen.getByText("Does the revised detector identify staged collection?")).toBeVisible();
   const post = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "POST")!;
   expect(String(post[0])).toContain(`/detections/${candidateId}/evaluate-run`);
   expect(JSON.parse(String(post[1]!.body))).toEqual({ run_id: runId, question: expect.any(String), case_role: "benign", activity_label: "benign", evaluation_use: "unspecified" });
@@ -74,8 +77,10 @@ it("retains a telemetry gap as insufficient without presenting a zero-match resu
   mount();
   await user.selectOptions(screen.getByRole("combobox", { name: /Use of this data/ }), "independent");
   await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
-  expect(await screen.findByText("Insufficient evidence or backend unavailable")).toBeInTheDocument();
-  expect(screen.getByText("Source contains evidence gaps")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Insufficient evidence" })).toBeVisible();
+  await user.click(screen.getByText("Evidence and engine details"));
+  expect(screen.getByText("Source contains evidence gaps")).toBeVisible();
+  expect(screen.getByText("No supported match count")).toBeVisible();
   expect(screen.queryByText("0 matched records")).not.toBeInTheDocument();
   expect(retained[0]?.case_role).toBe("unknown");
 });
@@ -112,7 +117,7 @@ it.each(["yara", "spl"])("does not give %s candidates metadata-execution semanti
   mount({ ...candidate, target_language: language });
   expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeDisabled();
   expect(screen.getByText(/YARA cannot inspect file bytes from metadata alone/)).toBeInTheDocument();
-  await screen.findByText("No retained run evaluations");
+  await screen.findByText("No evaluation results yet");
   expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
 });
 
@@ -121,17 +126,144 @@ it("evaluates multiple runs with one exercised internal revision and truthful en
   const user = userEvent.setup();
   const view = mount({ ...candidate, target_language: "internal", state: "observed_exercised" });
   await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
+  await user.click(await screen.findByText("Evidence and engine details"));
   expect(await screen.findByText("Definition digest")).toBeVisible();
   expect(screen.queryByText("Query digest")).not.toBeInTheDocument();
   expect(screen.getByText("bluefire-structured-matcher · test · Executed")).toBeVisible();
   resultState = "not_matched";
   await user.selectOptions(screen.getByRole("combobox", { name: "Evaluation source run" }), otherRunId);
   await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
-  await screen.findByText("All retained evaluation records (2)");
+  await screen.findByText("Other evaluation results (1)");
   expect(retained.map(row => row.candidate.candidate_id)).toEqual([candidateId, candidateId]);
   expect(retained.map(row => row.source.run_id)).toEqual([runId, otherRunId]);
   expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST").every(([url]) => String(url).endsWith("/evaluate-run"))).toBe(true);
   view.unmount();
   mount({ ...candidate, target_language: "internal", state: "observed_exercised" });
-  expect(await screen.findByText("All retained evaluation records (2)")).toBeVisible();
+  expect(await screen.findByText("Other evaluation results (1)")).toBeVisible();
+});
+
+it("leads with the latest selected evaluation and keeps every older record reachable", async () => {
+  resultState = "not_matched";
+  retained.push({ ...report(candidateId, runId, "unknown"), question: "Earlier evaluation", created_at: "2026-09-06T11:00:00Z" });
+  resultState = "matched";
+  retained.push({ ...report(candidateId, otherRunId, "attack"), question: "Latest evaluation", created_at: "2026-09-06T13:00:00Z" });
+  const user = userEvent.setup();
+  mount();
+  const latest = await screen.findByRole("heading", { name: "1 matched record" });
+  expect(latest).toBeVisible();
+  expect(screen.getByText("Latest evaluation", { exact: true })).toBeVisible();
+  expect(await screen.findByRole("link", { name: "Collection after change" })).toBeVisible();
+  const toggle = screen.getByRole("button", { name: "New evaluation" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(latest.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Evaluate full observed run" })).not.toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Related revision reports" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Download evaluation report" })).toBeEnabled();
+  expect(screen.getByText("Earlier evaluation", { exact: true })).not.toBeVisible();
+  await user.click(screen.getByText("Other evaluation results (1)"));
+  expect(screen.getByRole("heading", { name: "0 matched records" })).toBeVisible();
+  expect(screen.getByText("Earlier evaluation", { exact: true })).toBeVisible();
+  const older = screen.getByText("Earlier evaluation", { exact: true }).closest("article")!;
+  await user.click(within(older).getByText("Inspect immutable evaluation record"));
+  expect(within(older).getByText(/"evaluation_id": "evaluation-0"/)).toBeVisible();
+  retained.push({ ...report(parentId, runId, "unknown"), question: "Newer evaluation of related revision", created_at: "2026-09-07T13:00:00Z" });
+  await user.selectOptions(screen.getByRole("combobox", { name: "Related revision reports" }), parentId);
+  expect(await screen.findByText("3 evaluations · Across selected revisions")).toBeVisible();
+  expect(within(latest.closest("article")!).getByText("Latest evaluation", { exact: true })).toBeVisible();
+  expect(screen.getByText("Other evaluation results (2)")).toBeVisible();
+  expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+});
+
+it("preserves editable inputs while folded and only evaluates after explicit submission", async () => {
+  retained.push(report(candidateId, runId, "unknown"));
+  const user = userEvent.setup();
+  mount();
+  await screen.findByRole("heading", { name: "1 matched record" });
+  const toggle = screen.getByRole("button", { name: "New evaluation" });
+  await user.click(toggle);
+  const question = screen.getByRole("textbox", { name: "Experiment question" });
+  await user.type(question, "Review separate activity");
+  await user.selectOptions(screen.getByRole("combobox", { name: "Evaluation source run" }), otherRunId);
+  await user.selectOptions(screen.getByRole("combobox", { name: /Activity label/ }), "benign");
+  await user.selectOptions(screen.getByRole("combobox", { name: /Use of this data/ }), "independent");
+  await user.click(toggle);
+  expect(question).toBeInTheDocument();
+  expect(question).not.toBeVisible();
+  expect(toggle).toHaveFocus();
+  expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  await user.click(toggle);
+  expect(screen.getByRole("textbox", { name: "Experiment question" })).toBe(question);
+  expect(question).toHaveValue("Review separate activity");
+  expect(screen.getByRole("combobox", { name: "Evaluation source run" })).toHaveValue(otherRunId);
+  expect(screen.getByRole("combobox", { name: /Activity label/ })).toHaveValue("benign");
+  expect(screen.getByRole("combobox", { name: /Use of this data/ })).toHaveValue("independent");
+  expect(screen.getByRole("button", { name: "Export evaluation inputs" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Discard evaluation inputs" })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
+  await screen.findByText("Evaluation retained");
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const post = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "POST")!;
+  expect(JSON.parse(String(post[1]!.body))).toEqual({ run_id: otherRunId, question: "Review separate activity", case_role: "benign", activity_label: "benign", evaluation_use: "independent" });
+});
+
+it("keeps a blocked comparison warning visible while saved results fold the form", async () => {
+  retained.push(report(candidateId, runId, "unknown"));
+  const user = userEvent.setup();
+  mount(candidate, { runId, ready: false });
+  await screen.findByRole("heading", { name: "1 matched record" });
+  expect(screen.getByRole("button", { name: "New evaluation" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByText("Comparison setup not ready")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Leave comparison setup" })).toBeEnabled();
+  await user.click(screen.getByRole("button", { name: "New evaluation" }));
+  expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeDisabled();
+  expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+});
+
+it("distinguishes an engine error from insufficient evidence without inventing a match count", async () => {
+  resultState = "backend_error";
+  const failed = report(candidateId, runId, "unknown");
+  failed.result.match_count = null;
+  failed.backend.executed = false;
+  retained.push(failed);
+  mount();
+  expect(await screen.findByRole("heading", { name: "Evaluation engine error" })).toBeVisible();
+  expect(screen.queryByRole("heading", { name: "Insufficient evidence" })).not.toBeInTheDocument();
+  expect(screen.queryByText("0 matched records")).not.toBeInTheDocument();
+  await userEvent.setup().click(screen.getByText("Evidence and engine details"));
+  expect(screen.getByText("No supported match count")).toBeVisible();
+  expect(screen.getByText(/SQLite in-memory bounded executor · test · Not executed/)).toBeVisible();
+});
+
+it("keeps the active evaluation open so a refusal remains visible", async () => {
+  let refuse!: (error: Error) => void;
+  vi.spyOn(api, "evaluateDetectionRun").mockImplementation(() => new Promise((_resolve, reject) => { refuse = reject; }));
+  const user = userEvent.setup();
+  mount();
+  await user.click(screen.getByRole("button", { name: "Evaluate full observed run" }));
+  await screen.findByRole("button", { name: "Evaluating immutable evidence" });
+  const toggle = screen.getByRole("button", { name: "New evaluation" });
+  expect(toggle).toBeDisabled();
+  await user.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await act(async () => refuse(new Error("Source evidence could not be loaded.")));
+  expect(await screen.findByText("Source evidence could not be loaded.")).toBeVisible();
+  expect(toggle).toBeEnabled();
+});
+
+it.each([
+  { gaps: 0, fields: [], diagnostics: ["backend_unavailable"], summary: "1 diagnostic" },
+  { gaps: 1, fields: ["path"], diagnostics: [], summary: "1 evidence gap · 1 missing field" },
+  { gaps: 2, fields: ["path", "artifact_type"], diagnostics: ["backend_unavailable", "source_contains_evidence_gaps"], summary: "2 evidence gaps · 2 missing fields · 2 diagnostics" },
+])("summarizes nonzero evidence limits as $summary while retaining exact details", async ({ gaps, fields, diagnostics, summary }) => {
+  const value = report(candidateId, runId, "unknown");
+  value.result = { ...value.result, gap_count: gaps, missing_fields: fields, diagnostic_codes: diagnostics };
+  retained.push(value);
+  mount();
+  const note = (await screen.findByText("Evidence needs review")).closest("p")!;
+  expect(note).toHaveTextContent(`Evidence needs review · ${summary}. See evidence and engine details.`);
+  expect(note).not.toHaveTextContent(/0 evidence gaps|0 missing fields|0 diagnostics/);
+  await userEvent.setup().click(screen.getByText("Evidence and engine details"));
+  expect(screen.getByText("Evidence gaps").parentElement).toHaveTextContent(`Evidence gaps${gaps}`);
+  expect(screen.getByText("Missing fields").parentElement).toHaveTextContent(fields.join(", ") || "None reported");
+  expect(screen.getByText("Diagnostics").parentElement).toHaveTextContent(diagnostics.length ? diagnostics.map(value => value.replaceAll("_", " ").replace(/^./, letter => letter.toUpperCase())).join(", ") : "None");
 });

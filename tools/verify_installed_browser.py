@@ -38,7 +38,12 @@ def write_new(path: Path, value: object) -> None:
         stream.write("\n")
 
 
-_FIXTURE_PURPOSES = ("bluefire_experiment_assistance", "bluefire_ai_graph_draft")
+_FIXTURE_PURPOSES = (
+    "bluefire_experiment_assistance",
+    "bluefire_ai_graph_draft",
+    "bluefire_experiment_assistance",
+    "bluefire_detection_source_creation",
+)
 _FIXTURE_MODEL = "bluefire-local-graph-fixture-v1"
 _RECEIVER_PROFILE = "sandbox-endpoint-deep-lab.v1"
 _RECEIVER_SCENARIO = "scenario.receiver-defense.redaction-validation.v1"
@@ -46,6 +51,14 @@ _RECEIVER_COPY_SCENARIO = re.compile(
     r"scenario\.receiver-defense\.redaction-validation\.copy\."
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.v1"
 )
+_OVERALL_WORK_BUDGET_SECONDS = 16 * 60
+_OVERALL_CLEANUP_RESERVE_SECONDS = 55
+
+
+class _WorkDeadlineReached(RuntimeError):
+    def __init__(self, phase: str) -> None:
+        super().__init__(phase)
+        self.phase = phase
 
 
 def _contains_receiver_session_token_field(value: object) -> bool:
@@ -357,12 +370,57 @@ _RUNTIME_PROCESS_CLEANUP_KEYS = (
     "receiver_service_closed",
     "receiver_http_server_closed",
     "receiver_service_thread_stopped",
-    "receiver_driver_cleanup_confirmed",
+)
+
+_PRIMARY_PHASE_CLEANUP_KEYS = (
+    "browser_process_group_stopped",
+    "assistant_process_group_stopped",
+    "fixture_thread_stopped",
+    "fixture_http_server_closed",
+    "service_thread_stopped",
+    "http_server_closed",
+    "assistant_service_thread_stopped",
+    "assistant_http_server_closed",
+    "service_closed",
 )
 
 
+def _phase_timeout(deadline: float, maximum: float, *, now: float | None = None) -> float | None:
+    remaining = deadline - (time.monotonic() if now is None else now)
+    return min(maximum, remaining) if remaining > 0 else None
+
+
+def _receiver_phase_block_reason(
+    report: dict[str, object], *, runtime_admitted: bool, work_remaining: float | None
+) -> str | None:
+    if not runtime_admitted:
+        return "installed_runtime_not_admitted"
+    if report.get("browser_phase_status") != "passed":
+        return "primary_browser_phase_not_passed"
+    if any(report.get(key) is not True for key in _PRIMARY_PHASE_CLEANUP_KEYS):
+        return "primary_phase_cleanup_unconfirmed"
+    if work_remaining is None or work_remaining <= 0:
+        return "outer_work_deadline_reached"
+    return None
+
+
+def _required_phases_passed(report: dict[str, object]) -> bool:
+    if report.get("browser_phase_status") != "passed":
+        return False
+    for key in ("assistant_fixture_phase_status", "receiver_phase_status"):
+        status = report.get(key)
+        if status not in {"passed", "not_requested"}:
+            return False
+    return True
+
+
 def _runtime_process_cleanup_confirmed(report: dict[str, object]) -> bool:
-    return all(report.get(key) is True for key in _RUNTIME_PROCESS_CLEANUP_KEYS)
+    receiver_started = report.get("receiver_driver_started") is True
+    if report.get("receiver_phase_status") == "passed" and not receiver_started:
+        return False
+    return all(report.get(key) is True for key in _RUNTIME_PROCESS_CLEANUP_KEYS) and (
+        not receiver_started or report.get("receiver_driver_cleanup_confirmed") is True
+    )
 
 
 def _runtime_cleanup_confirmed(report: dict[str, object]) -> bool:
@@ -373,15 +431,18 @@ def _runtime_cleanup_confirmed(report: dict[str, object]) -> bool:
 
 def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
     return (
-        report.get("receiver_retained_redaction_driver_passed") is True
+        report.get("browser_phase_status") == "passed"
+        and report.get("receiver_phase_status") == "passed"
+        and report.get("receiver_driver_started") is True
+        and report.get("receiver_retained_redaction_driver_passed") is True
         and _runtime_cleanup_confirmed(report)
         and report.get("cleanup_errors") == []
     )
 
 
-def _fixture_outputs() -> dict[str, dict[str, object]]:
-    return {
-        "bluefire_experiment_assistance": {
+def _fixture_outputs() -> tuple[dict[str, object], ...]:
+    return (
+        {
             "message": "Create a separate registered proposal for native review.",
             "steps": [
                 {
@@ -391,10 +452,10 @@ def _fixture_outputs() -> dict[str, dict[str, object]]:
                 }
             ],
         },
-        "bluefire_ai_graph_draft": {
+        {
             "schema_version": "bluefire.ai-graph-draft.v1",
-            "title": "Create and transform a bounded fixture",
-            "purpose": "Prepare a typed fixture and normalize it for later inspection.",
+            "title": "Create, transform, and clean up a bounded fixture",
+            "purpose": "Prepare a typed fixture, normalize it for inspection, and explicitly remove its files.",
             "start": "create_fixture",
             "steps": [
                 {
@@ -407,18 +468,211 @@ def _fixture_outputs() -> dict[str, dict[str, object]]:
                     "behavior_id": "sandbox.fixture.transform.v1",
                     "parameters": {"redact_values": True},
                 },
+                {
+                    "id": "cleanup_workspace",
+                    "behavior_id": "sandbox.cleanup.v1",
+                    "parameters": {"verify_removal": True},
+                },
             ],
             "edges": [
                 {
                     "from_step": "create_fixture",
                     "outcome": "success",
                     "to_step": "transform_fixture",
-                }
+                },
+                {
+                    "from_step": "transform_fixture",
+                    "outcome": "success",
+                    "to_step": "cleanup_workspace",
+                },
             ],
-            "rationale": "Both nodes are registered and their typed artifacts connect.",
+            "rationale": "All three nodes are registered, typed artifacts connect, and cleanup is explicit.",
             "assumptions": ["The operator will review this unsaved draft."],
         },
-    }
+        {
+            "message": "Create a reviewed initial rule from this exact observed run.",
+            "steps": [
+                {
+                    "capability_id": "detection.create_and_evaluate",
+                    "detector_ref": "none",
+                    "reason": "Use only the selected run's observed evidence and retain its development-case limits.",
+                }
+            ],
+        },
+        {
+            "title": "Generated fixture collection rule",
+            "source": "SELECT fixture_id FROM logs WHERE artifact_type = 'collector_observation'",
+            "reason": "Exercise the reviewed source workflow against the supplied normalized observation schema.",
+            "evidence_refs": [],
+            "limitations": [
+                "Generated fixture observations only; normalized metadata, not target telemetry.",
+                "Development-case evaluation only; this does not establish held-out detection quality.",
+            ],
+        },
+    )
+
+
+def _fixture_output_for_request(index: int, request: object) -> dict[str, object]:
+    outputs = _fixture_outputs()
+    if not 0 <= index < len(outputs) or not isinstance(request, dict):
+        raise ValueError("fixture request index is unavailable")
+    output = dict(outputs[index])
+    if index == 3:
+        try:
+            context = json.loads(request["input"])
+            observations = context["observations"]
+            evidence_id = observations[0]["evidence_id"]
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "detection fixture requires a supplied observed evidence reference"
+            ) from exc
+        if not isinstance(evidence_id, str) or not re.fullmatch(
+            r"evidence-[0-9a-f]{20}", evidence_id
+        ):
+            raise ValueError("detection fixture evidence reference is invalid")
+        output["evidence_refs"] = [evidence_id]
+    return output
+
+
+def _assistant_fixture_journey_passed(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    execute = value.get("generated_fixture_execute")
+    preflight = value.get("execute_preflight")
+    graph = value.get("graph_simulation")
+    detection = value.get("detection_application")
+    cleanup = value.get("cleanup")
+    counts = value.get("request_counts")
+    observed_ids = execute.get("observed_evidence_ids") if isinstance(execute, dict) else None
+    observed_records = execute.get("observed_records") if isinstance(execute, dict) else None
+    provider_requests = value.get("provider_requests")
+    deadline_controls = value.get("deadline_controls")
+    checks = value.get("checks")
+    return (
+        value.get("schema_version") == "bluefire.installed-assistant-fixture.v2"
+        and value.get("status") == "passed"
+        and value.get("evidence_scope")
+        == "Generated fixture observations are normalized metadata, not target telemetry or held-out detection evidence."
+        and value.get("blocked_requests") == []
+        and isinstance(deadline_controls, dict)
+        and type(deadline_controls.get("outer_budget_remaining_at_browser_launch_ms")) is int
+        and 0 < deadline_controls["outer_budget_remaining_at_browser_launch_ms"] <= 240_000
+        and deadline_controls.get("work_deadline_enforced") is True
+        and deadline_controls.get("cleanup_reserve_ms") == 55_000
+        and deadline_controls.get("outer_margin_ms") == 2_000
+        and isinstance(value.get("errors"), list)
+        and not value["errors"]
+        and isinstance(checks, list)
+        and "approved_fixture_execute_run_completed_with_explicit_cleanup_and_observed_generated_fixture_metadata"
+        in checks
+        and "reviewed_fixture_detection_saved_and_evaluated_against_its_development_run" in checks
+        and "saved_detection_candidate_and_development_evaluation_reopened_by_exact_ids" in checks
+        and isinstance(graph, dict)
+        and graph.get("native_execution") is False
+        and isinstance(execute, dict)
+        and execute.get("status") == "completed"
+        and execute.get("native_execution") is True
+        and execute.get("mode") == "execute"
+        and execute.get("autonomy") == "off"
+        and execute.get("runner_profile_id") == "sandbox-execute.v1"
+        and isinstance(execute.get("run_id"), str)
+        and re.fullmatch(r"run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}", execute["run_id"]) is not None
+        and isinstance(execute.get("job_id"), str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", execute["job_id"]) is not None
+        and type(execute.get("step_count")) is int
+        and execute["step_count"] == 3
+        and type(execute.get("observed_metadata_record_count")) is int
+        and 1 <= execute["observed_metadata_record_count"] <= 2
+        and isinstance(observed_ids, list)
+        and len(observed_ids) == execute["observed_metadata_record_count"]
+        and all(
+            isinstance(item, str) and re.fullmatch(r"evidence-[0-9a-f]{20}", item)
+            for item in observed_ids
+        )
+        and len(set(observed_ids)) == len(observed_ids)
+        and isinstance(observed_records, list)
+        and len(observed_records) == len(observed_ids)
+        and all(
+            isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
+            for item in observed_records
+        )
+        and {item["evidence_id"] for item in observed_records} == set(observed_ids)
+        and all(
+            isinstance(item, dict)
+            and item.get("run_id") == execute.get("run_id")
+            and item.get("producer") == "collector.filesystem.sandbox.v1"
+            and item.get("step_id") in {"create_fixture", "transform_fixture"}
+            and item.get("behavior_id")
+            == {
+                "create_fixture": "sandbox.fixture.create.v1",
+                "transform_fixture": "sandbox.fixture.transform.v1",
+            }.get(item.get("step_id"))
+            and item.get("action_id") == item.get("behavior_id")
+            for item in observed_records
+        )
+        and isinstance(preflight, dict)
+        and preflight.get("mode") == "execute"
+        and preflight.get("autonomy") == "off"
+        and preflight.get("ai_enabled") is False
+        and preflight.get("ai_provider_id") == "deterministic-offline.v1"
+        and preflight.get("actions")
+        == [
+            "sandbox.fixture.create.v1",
+            "sandbox.fixture.transform.v1",
+            "sandbox.cleanup.v1",
+        ]
+        and isinstance(execute.get("cleanup"), dict)
+        and execute["cleanup"].get("attempted") is True
+        and execute["cleanup"].get("success") is True
+        and isinstance(detection, dict)
+        and isinstance(detection.get("candidate_id"), str)
+        and re.fullmatch(r"detection-[0-9a-f]{20}", detection["candidate_id"]) is not None
+        and isinstance(detection.get("evaluation_id"), str)
+        and re.fullmatch(r"detection-evaluation-[0-9a-f]{64}", detection["evaluation_id"])
+        is not None
+        and detection.get("run_id") == execute.get("run_id")
+        and detection.get("development_case") is True
+        and detection.get("backend_executed") is True
+        and isinstance(detection.get("result_state"), str)
+        and bool(detection["result_state"])
+        and type(detection.get("observed_match_count")) is int
+        and detection["observed_match_count"] >= 0
+        and isinstance(value.get("detection_reopened"), dict)
+        and value["detection_reopened"].get("candidate_id") == detection.get("candidate_id")
+        and value["detection_reopened"].get("evaluation_id") == detection.get("evaluation_id")
+        and value["detection_reopened"].get("run_id") == execute.get("run_id")
+        and type(value["detection_reopened"].get("revision")) is int
+        and value["detection_reopened"]["revision"] > 0
+        and isinstance(value["detection_reopened"].get("definition_digest"), str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value["detection_reopened"]["definition_digest"])
+        is not None
+        and value["detection_reopened"].get("development_case") is True
+        and value["detection_reopened"].get("evaluation_use") == "development"
+        and isinstance(provider_requests, dict)
+        and provider_requests.get("count") == 4
+        and provider_requests.get("purposes") == list(_FIXTURE_PURPOSES)
+        and type(provider_requests.get("request_bytes")) is int
+        and 0 < provider_requests["request_bytes"] <= 2_097_152
+        and isinstance(cleanup, dict)
+        and cleanup.get("runner_stopped") is True
+        and cleanup.get("execute_job_terminal") is True
+        and isinstance(counts, dict)
+        and counts
+        == {
+            "assistant_turns": 2,
+            "model_requests": 4,
+            "run_preflight": 1,
+            "run_submission": 1,
+            "execute_approval": 1,
+            "runner_bootstrap": 1,
+            "runner_start": 1,
+            "runner_stop": 1,
+            "detection_source": 1,
+            "detection_context": 1,
+            "detection_validate": 1,
+            "detection_review": 1,
+        }
+    )
 
 
 def _fixture_request_allowed(
@@ -474,7 +728,7 @@ def _fixture_request_allowed(
 
 
 class LocalGraphFixture:
-    """Strict two-request structured-output endpoint; stores no prompt or response text."""
+    """Strict four-request structured-output endpoint; stores no prompt or response text."""
 
     def __init__(self) -> None:
         fixture = self
@@ -528,7 +782,7 @@ class LocalGraphFixture:
                     return
                 length = int(raw_length)
                 with fixture.lock:
-                    if fixture.post_count >= 3 or fixture.post_bytes + length > 2_097_152:
+                    if fixture.post_count >= 5 or fixture.post_bytes + length > 2_097_152:
                         fixture.failed = True
                         self._send(429, {"error": "fixture_budget_exceeded"})
                         return
@@ -587,7 +841,12 @@ class LocalGraphFixture:
                     fixture._fail()
                     self._send(504, {"error": "fixture_deadline"})
                     return
-                output = _fixture_outputs()[purpose]
+                try:
+                    output = _fixture_output_for_request(index, request)
+                except ValueError:
+                    fixture._fail()
+                    self._send(400, {"error": "fixture_output_binding_failed"})
+                    return
                 self._send(
                     200,
                     {
@@ -677,6 +936,178 @@ def stop_group(process: subprocess.Popen[bytes]) -> bool:
     return False
 
 
+def _run_receiver_phase(
+    *,
+    report: dict[str, object],
+    driver: Path,
+    guards: Path,
+    deadline_file: Path,
+    node: Path,
+    playwright: Path,
+    output: Path,
+    runtime: Path,
+    environment: dict[str, str],
+    work_deadline: float,
+    service_type,
+    runner_lifecycle_type,
+    create_server,
+    generate_capability,
+    cleanup_errors: list[str],
+) -> None:
+    """Run the independent receiver driver with phase-owned state and limits."""
+    timeout = _phase_timeout(work_deadline, 360)
+    if timeout is None:
+        report["receiver_phase_status"] = "not_attempted"
+        report["receiver_phase_reason"] = "outer_work_deadline_reached"
+        return
+
+    receiver_root = runtime / "receiver"
+    receiver_service = None
+    receiver_capability = ""
+    receiver_server = None
+    receiver_thread = None
+    receiver_child = None
+    receiver_driver_report: dict[str, object] | None = None
+    prior_environment = dict(os.environ)
+    prior_cwd = Path.cwd()
+    report["receiver_phase_status"] = "running"
+    report["receiver_process_group_stopped"] = True
+    report["receiver_http_server_closed"] = True
+    report["receiver_service_thread_stopped"] = True
+    report["receiver_service_closed"] = True
+    report["receiver_driver_cleanup_confirmed"] = False
+    try:
+        receiver_root.mkdir(mode=0o700, exist_ok=False)
+        for name in ("home", "state", "temp", "work"):
+            (receiver_root / name).mkdir(mode=0o700, exist_ok=False)
+        receiver_environment = dict(environment)
+        receiver_environment.update(
+            {
+                "HOME": str(receiver_root / "home"),
+                "XDG_STATE_HOME": str(receiver_root / "state"),
+                "XDG_CONFIG_HOME": str(receiver_root / "state"),
+                "XDG_CACHE_HOME": str(receiver_root / "temp"),
+                "TMPDIR": str(receiver_root / "temp"),
+            }
+        )
+        os.environ.clear()
+        os.environ.update(receiver_environment)
+        os.chdir(receiver_root / "work")
+        from bluefire.runner_bootstrap import managed_product_root
+
+        receiver_service = service_type(
+            runs_dir=receiver_root / "runs",
+            runner_lifecycle=runner_lifecycle_type(managed_product_root()),
+        )
+        report["receiver_service_closed"] = False
+        receiver_capability = generate_capability()
+        receiver_server = create_server(
+            receiver_service,
+            host="127.0.0.1",
+            port=0,
+            browser_bootstrap_capability=receiver_capability,
+        )
+        receiver_thread = threading.Thread(target=receiver_server.serve_forever, daemon=False)
+        receiver_thread.start()
+        report["receiver_service_thread_stopped"] = False
+        report["receiver_http_server_closed"] = False
+        timeout = _phase_timeout(work_deadline, 360)
+        if timeout is None:
+            report["receiver_phase_status"] = "not_attempted"
+            report["receiver_phase_reason"] = "outer_work_deadline_reached"
+            return
+        receiver_child = subprocess.Popen(
+            [
+                str(node),
+                str(driver),
+                str(playwright),
+                str(output),
+                str(receiver_server.server_address[1]),
+            ],
+            env=receiver_environment,
+            cwd=receiver_root / "work",
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        report["receiver_driver_started"] = True
+        report["receiver_process_group_stopped"] = False
+        timeout = _phase_timeout(work_deadline, 360)
+        receiver_child.communicate(
+            json.dumps({"capability": receiver_capability}).encode(),
+            timeout=timeout if timeout is not None else 0,
+        )
+        receiver_capability = ""
+        receiver_report_path = output / "installed-receiver-report.json"
+        receiver_driver_report = json.loads(receiver_report_path.read_text(encoding="utf-8"))
+        receiver_receipt = _receiver_report_for_receipt(receiver_driver_report)
+        driver_cleanup = receiver_driver_report["cleanup"]
+        report["receiver_driver_cleanup_confirmed"] = (
+            driver_cleanup.get("original_owner_completed_retained") is True
+            and driver_cleanup.get("linked_owner_completed_retained") is True
+            and driver_cleanup.get("runner_stopped") is True
+            and receiver_driver_report.get("owner_status") == "completed"
+        )
+        report["receiver_retained_redaction"] = {
+            **receiver_receipt,
+            "driver_sha256": digest(driver),
+            "guard_sha256": digest(guards),
+            "deadline_sha256": digest(deadline_file),
+            "browser_returncode": receiver_child.returncode,
+        }
+        report["receiver_retained_redaction_driver_passed"] = (
+            receiver_child.returncode == 0 and _receiver_driver_passed(receiver_driver_report)
+        )
+        report["receiver_phase_status"] = (
+            "passed" if report["receiver_retained_redaction_driver_passed"] else "failed"
+        )
+        if report["receiver_phase_status"] == "failed":
+            report["status"] = "failed_or_incomplete"
+    except Exception as error:
+        report["receiver_phase_status"] = "failed"
+        report["receiver_error_type"] = type(error).__name__
+        report["receiver_driver_cleanup_confirmed"] = bool(
+            receiver_driver_report and _receiver_driver_passed(receiver_driver_report)
+        )
+        report["status"] = "failed_or_incomplete"
+    finally:
+        receiver_capability = ""
+        if receiver_child is not None:
+            try:
+                report["receiver_process_group_stopped"] = stop_group(receiver_child)
+            except (OSError, subprocess.TimeoutExpired):
+                report["receiver_process_group_stopped"] = False
+                cleanup_errors.append("receiver_browser_process_group")
+        if receiver_server is not None:
+            (
+                report["receiver_service_thread_stopped"],
+                report["receiver_http_server_closed"],
+            ) = _stop_http_server(receiver_server, receiver_thread, "receiver_http", cleanup_errors)
+        if (
+            receiver_service is not None
+            and report["receiver_service_thread_stopped"]
+            and report["receiver_http_server_closed"]
+        ):
+            try:
+                receiver_service.close()
+                report["receiver_service_closed"] = True
+            except Exception:
+                report["receiver_service_closed"] = False
+                cleanup_errors.append("receiver_service_close")
+        elif receiver_service is not None:
+            cleanup_errors.append("receiver_service_close_deferred")
+        try:
+            os.chdir(prior_cwd)
+        except OSError:
+            cleanup_errors.append("receiver_working_directory_restore")
+        try:
+            os.environ.clear()
+            os.environ.update(prior_environment)
+        except Exception:
+            cleanup_errors.append("receiver_environment_restore")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--forbid-root", required=True, type=Path)
@@ -689,6 +1120,8 @@ def main() -> int:
     parser.add_argument("--wheel", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
+    outer_deadline = time.monotonic() + _OVERALL_WORK_BUDGET_SECONDS
+    work_deadline = outer_deadline - _OVERALL_CLEANUP_RESERVE_SECONDS
     if sys.platform != "linux" or not sys.flags.isolated:
         raise RuntimeError("Use isolated installed Linux Python for this verifier")
     forbidden = args.forbid_root.resolve(strict=True)
@@ -738,6 +1171,7 @@ def main() -> int:
 
     import bluefire
     from bluefire.api import create_server, generate_browser_bootstrap_capability
+    from bluefire.runner_lifecycle import ManagedRunnerLifecycle
     from bluefire.service import BlueFireService
 
     package = Path(bluefire.__file__).resolve(strict=True).parent
@@ -768,7 +1202,12 @@ def main() -> int:
             "wheel_sha256": digest(wheel),
             "ui_sha256": {
                 name: digest(package / "ui" / name)
-                for name in ("index.html", "app.js", "styles.css")
+                for name in (
+                    "index.html",
+                    "app.js",
+                    "styles.css",
+                    "fonts/InterVariable.woff2",
+                )
             },
             "installed_outside_checkout": True,
             "harness_sha256": digest(Path(__file__)),
@@ -779,7 +1218,7 @@ def main() -> int:
             "environment_names": sorted(environment),
             "not_proven": [
                 "CLI launch",
-                "native execution beyond the optional retained-redaction receiver journey",
+                "native execution beyond the owned generated-fixture and optional retained-redaction receiver journeys",
                 "effective-access validation",
                 "live model inference",
                 "Assistant recovery across process restart",
@@ -800,19 +1239,17 @@ def main() -> int:
     assistant_server = None
     assistant_thread = None
     fixture = None
-    receiver_service = None
-    receiver_capability = ""
-    receiver_server = None
-    receiver_thread = None
-    receiver_child = None
-    receiver_driver_report: dict[str, object] | None = None
     report: dict[str, object] = {
         "schema_version": "bluefire.installed-browser-verification.v1",
         "status": "failed_or_incomplete",
+        "browser_phase_status": "not_attempted",
+        "assistant_fixture_phase_status": "not_attempted" if assistant_driver else "not_requested",
+        "receiver_phase_status": "not_attempted" if receiver_driver else "not_requested",
         "real_installed_service": True,
         "simulation_assistant_native_execution": False,
         "receiver_native_retained_redaction": False,
         "receiver_driver_cleanup_confirmed": receiver_driver is None,
+        "receiver_driver_started": False,
         "live_model_inference": False,
         "assistant_process_group_stopped": True,
         "fixture_thread_stopped": True,
@@ -822,11 +1259,17 @@ def main() -> int:
         "assistant_service_thread_stopped": True,
         "service_closed": False,
         "receiver_http_server_closed": True,
-        "receiver_service_closed": False,
+        "receiver_service_closed": True,
         "receiver_service_thread_stopped": True,
     }
+    runtime_admitted = False
     thread.start()
+    runtime_admitted = True
     try:
+        browser_timeout = _phase_timeout(work_deadline, 240)
+        if browser_timeout is None:
+            raise _WorkDeadlineReached("browser")
+        report["browser_phase_status"] = "running"
         child = subprocess.Popen(
             [str(node), str(driver), str(playwright), str(output), str(server.server_address[1])],
             env=environment,
@@ -835,12 +1278,96 @@ def main() -> int:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        child.communicate(json.dumps({"capability": capability}).encode(), timeout=240)
+        browser_timeout = _phase_timeout(work_deadline, 240)
+        child.communicate(
+            json.dumps({"capability": capability}).encode(),
+            timeout=browser_timeout if browser_timeout is not None else 0,
+        )
         capability = ""
         report["browser_returncode"] = child.returncode
+        report["browser_phase_status"] = "running" if child.returncode == 0 else "failed"
+        if assistant_driver is not None and child.returncode != 0:
+            report["assistant_fixture_phase_reason"] = "browser_phase_not_passed"
+        browser_report_path = output / "browser-report.json"
         if child.returncode == 0:
+            browser_report = json.loads(browser_report_path.read_text(encoding="utf-8"))
+            font = browser_report.get("font_asset")
+            network_font = font.get("network_response") if isinstance(font, dict) else None
+            font_state = font.get("document_font_state") if isinstance(font, dict) else None
+            comparison_assistant = browser_report.get("comparison_assistant")
+            screenshot_names = {
+                item.get("name")
+                for item in browser_report.get("screenshots", [])
+                if isinstance(item, dict)
+            }
+            packaged_font_sha256 = digest(package / "ui" / "fonts" / "InterVariable.woff2")
+            if (
+                browser_report.get("status") != "passed"
+                or not isinstance(network_font, dict)
+                or network_font.get("status") != 200
+                or type(network_font.get("bytes")) is not int
+                or network_font["bytes"] <= 0
+                or network_font.get("sha256") != packaged_font_sha256
+                or not isinstance(font_state, dict)
+                or not any(
+                    isinstance(face, dict)
+                    and face.get("family") == "Inter"
+                    and face.get("status") == "loaded"
+                    for face in font_state.get("faces", [])
+                )
+                or font_state.get("check") is not True
+                or not isinstance(font_state.get("conclusion_family"), str)
+                or "Inter" not in font_state["conclusion_family"]
+                or not isinstance(comparison_assistant, dict)
+                or comparison_assistant.get("status") != "passed"
+                or comparison_assistant.get("snapshot_id")
+                != browser_report.get("comparison_snapshot_id")
+                or re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", comparison_assistant.get("snapshot_digest", "")
+                )
+                is None
+                or re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", comparison_assistant.get("context_digest", "")
+                )
+                is None
+                or comparison_assistant.get("saved_run_count") != 2
+                or comparison_assistant.get("selected_exactly") is not True
+                or comparison_assistant.get("analysis_only_context") is not True
+                or comparison_assistant.get("active_mode") != "Off"
+                or comparison_assistant.get("explanation_mode_available") is not True
+                or comparison_assistant.get("assistant_turn_posts") != 0
+                or comparison_assistant.get("read_only_post_attempts") != 0
+                or comparison_assistant.get("reopened_same_snapshot") is not True
+                or not {"comparison-assistant-1440x900", "comparison-assistant-1366x768"}.issubset(
+                    screenshot_names
+                )
+            ):
+                raise ValueError(
+                    "Installed browser journey did not verify saved-comparison Assistant and packaged Inter evidence"
+                )
+            report["comparison_assistant"] = comparison_assistant
+            report["font_asset"] = {
+                "path": "ui/fonts/InterVariable.woff2",
+                "packaged_sha256": packaged_font_sha256,
+                "network_sha256": network_font["sha256"],
+                "network_bytes": network_font["bytes"],
+                "matches_installed_wheel": True,
+                "document_font_state": font_state,
+            }
+        if child.returncode == 0:
+            report["browser_phase_status"] = "passed"
             report["status"] = "passed"
         if assistant_driver is not None and child.returncode == 0:
+            assistant_timeout = _phase_timeout(work_deadline, 240)
+            if assistant_timeout is None:
+                raise _WorkDeadlineReached("assistant_fixture")
+            report["assistant_fixture_phase_status"] = "running"
+            assistant_outer_budget_ms = min(
+                238_000, max(0, int((work_deadline - time.monotonic()) * 1000))
+            )
+            if assistant_outer_budget_ms <= 0:
+                raise _WorkDeadlineReached("assistant_fixture")
+            assistant_outer_deadline_ms = time.time_ns() // 1_000_000 + assistant_outer_budget_ms
             fixture = LocalGraphFixture()
             fixture.start()
             assistant_capability = generate_browser_bootstrap_capability()
@@ -850,9 +1377,7 @@ def main() -> int:
                 port=0,
                 browser_bootstrap_capability=assistant_capability,
             )
-            assistant_thread = threading.Thread(
-                target=assistant_server.serve_forever, daemon=False
-            )
+            assistant_thread = threading.Thread(target=assistant_server.serve_forever, daemon=False)
             assistant_thread.start()
             assistant_child = subprocess.Popen(
                 [
@@ -862,6 +1387,7 @@ def main() -> int:
                     str(output),
                     str(assistant_server.server_address[1]),
                     str(fixture.port),
+                    str(assistant_outer_deadline_ms),
                 ],
                 env=environment,
                 stdin=subprocess.PIPE,
@@ -869,8 +1395,10 @@ def main() -> int:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            assistant_timeout = _phase_timeout(work_deadline, 240)
             assistant_child.communicate(
-                json.dumps({"capability": assistant_capability}).encode(), timeout=240
+                json.dumps({"capability": assistant_capability}).encode(),
+                timeout=assistant_timeout if assistant_timeout is not None else 0,
             )
             assistant_capability = ""
             assistant_report_path = output / "assistant-browser-report.json"
@@ -887,80 +1415,56 @@ def main() -> int:
             report["assistant_fixture"] = {
                 "status": assistant_report.get("status"),
                 "driver_sha256": digest(assistant_driver),
+                "evidence_scope": assistant_report.get("evidence_scope"),
                 "provider": fixture_summary,
                 "checks": assistant_report.get("checks", []),
                 "screenshots": assistant_report.get("screenshots", []),
                 "blocked_requests": assistant_report.get("blocked_requests", []),
+                "graph_simulation": assistant_report.get("graph_simulation"),
+                "generated_fixture_execute": assistant_report.get("generated_fixture_execute"),
+                "detection_proposal": assistant_report.get("detection_proposal"),
+                "detection_application": assistant_report.get("detection_application"),
+                "detection_reopened": assistant_report.get("detection_reopened"),
+                "deadline_controls": assistant_report.get("deadline_controls"),
+                "request_counts": assistant_report.get("request_counts"),
+                "cleanup": assistant_report.get("cleanup"),
             }
             report["assistant_browser_returncode"] = assistant_child.returncode
             if (
                 assistant_child.returncode != 0
-                or assistant_report.get("status") != "passed"
+                or not _assistant_fixture_journey_passed(assistant_report)
                 or fixture.failed
-                or fixture_summary["request_count"] != 2
+                or fixture_summary["request_count"] != 4
                 or fixture_summary["purposes"] != list(_FIXTURE_PURPOSES)
             ):
+                report["assistant_fixture_phase_status"] = "failed"
                 report["status"] = "failed_or_incomplete"
-        if receiver_driver is not None and report["status"] == "passed":
-            receiver_service = BlueFireService(runs_dir=runtime / "receiver-runs")
-            receiver_capability = generate_browser_bootstrap_capability()
-            receiver_server = create_server(
-                receiver_service,
-                host="127.0.0.1",
-                port=0,
-                browser_bootstrap_capability=receiver_capability,
-            )
-            receiver_thread = threading.Thread(
-                target=receiver_server.serve_forever, daemon=False
-            )
-            receiver_thread.start()
-            receiver_child = subprocess.Popen(
-                [
-                    str(node),
-                    str(receiver_driver),
-                    str(playwright),
-                    str(output),
-                    str(receiver_server.server_address[1]),
-                ],
-                env=environment,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            receiver_child.communicate(
-                json.dumps({"capability": receiver_capability}).encode(), timeout=360
-            )
-            receiver_capability = ""
-            receiver_report_path = output / "installed-receiver-report.json"
-            receiver_driver_report = json.loads(receiver_report_path.read_text(encoding="utf-8"))
-            receiver_receipt = _receiver_report_for_receipt(receiver_driver_report)
-            driver_cleanup = receiver_driver_report["cleanup"]
-            report["receiver_driver_cleanup_confirmed"] = (
-                driver_cleanup.get("original_owner_completed_retained") is True
-                and driver_cleanup.get("linked_owner_completed_retained") is True
-                and driver_cleanup.get("runner_stopped") is True
-                and receiver_driver_report.get("owner_status") == "completed"
-            )
-            report["receiver_retained_redaction"] = {
-                **receiver_receipt,
-                "driver_sha256": digest(receiver_driver),
-                "guard_sha256": digest(receiver_guards),
-                "deadline_sha256": digest(receiver_deadline),
-                "browser_returncode": receiver_child.returncode,
-            }
-            report["receiver_retained_redaction_driver_passed"] = (
-                receiver_child.returncode == 0 and _receiver_driver_passed(receiver_driver_report)
-            )
-            if not report["receiver_retained_redaction_driver_passed"]:
-                report["status"] = "failed_or_incomplete"
-    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError) as error:
+            else:
+                report["assistant_fixture_phase_status"] = "passed"
+    except _WorkDeadlineReached as error:
+        phase_key = {
+            "browser": "browser_phase_status",
+            "assistant_fixture": "assistant_fixture_phase_status",
+        }[error.phase]
+        report[phase_key] = "not_attempted"
+        report[f"{error.phase}_phase_reason"] = "outer_work_deadline_reached"
+        if error.phase == "browser" and assistant_driver is not None:
+            report["assistant_fixture_phase_reason"] = "browser_phase_not_passed"
+        report["status"] = "failed_or_incomplete"
+    except Exception as error:
         report["error_type"] = type(error).__name__
         report["status"] = "failed_or_incomplete"
+        for phase_key in ("browser_phase_status", "assistant_fixture_phase_status"):
+            if report[phase_key] == "running":
+                report[phase_key] = "failed"
+        if (
+            assistant_driver is not None
+            and report["assistant_fixture_phase_status"] == "not_attempted"
+        ):
+            report["assistant_fixture_phase_reason"] = "browser_phase_not_passed"
     finally:
         capability = ""
         assistant_capability = ""
-        receiver_capability = ""
         cleanup_errors = []
         report["browser_process_group_stopped"] = child is None
         try:
@@ -974,12 +1478,6 @@ def main() -> int:
                 report["assistant_process_group_stopped"] = stop_group(assistant_child)
         except (OSError, subprocess.TimeoutExpired):
             cleanup_errors.append("assistant_browser_process_group")
-        report["receiver_process_group_stopped"] = receiver_child is None
-        try:
-            if receiver_child is not None:
-                report["receiver_process_group_stopped"] = stop_group(receiver_child)
-        except (OSError, subprocess.TimeoutExpired):
-            cleanup_errors.append("receiver_browser_process_group")
         if fixture is not None:
             _close_fixture_for_report(fixture, report, cleanup_errors)
         if assistant_server is not None:
@@ -989,29 +1487,6 @@ def main() -> int:
             ) = _stop_http_server(
                 assistant_server, assistant_thread, "assistant_http", cleanup_errors
             )
-        if receiver_server is not None:
-            (
-                report["receiver_service_thread_stopped"],
-                report["receiver_http_server_closed"],
-            ) = _stop_http_server(
-                receiver_server, receiver_thread, "receiver_http", cleanup_errors
-            )
-        if (
-            receiver_service is not None
-            and report["receiver_service_thread_stopped"]
-            and report["receiver_http_server_closed"]
-        ):
-            try:
-                receiver_service.close()
-                report["receiver_service_closed"] = True
-            except Exception:
-                report["receiver_service_closed"] = False
-                cleanup_errors.append("receiver_service_close")
-        else:
-            if receiver_service is None:
-                report["receiver_service_closed"] = True
-            else:
-                cleanup_errors.append("receiver_service_close_deferred")
         (
             report["service_thread_stopped"],
             report["http_server_closed"],
@@ -1027,6 +1502,37 @@ def main() -> int:
                 report["service_closed"] = True
             except Exception:
                 cleanup_errors.append("service_close")
+        if receiver_driver is not None:
+            block_reason = _receiver_phase_block_reason(
+                report,
+                runtime_admitted=runtime_admitted,
+                work_remaining=work_deadline - time.monotonic(),
+            )
+            if block_reason is not None:
+                report["receiver_phase_status"] = "not_attempted"
+                report["receiver_phase_reason"] = block_reason
+                report["receiver_process_group_stopped"] = True
+                report["receiver_http_server_closed"] = True
+                report["receiver_service_thread_stopped"] = True
+                report["receiver_service_closed"] = True
+            else:
+                _run_receiver_phase(
+                    report=report,
+                    driver=receiver_driver,
+                    guards=receiver_guards,
+                    deadline_file=receiver_deadline,
+                    node=node,
+                    playwright=playwright,
+                    output=output,
+                    runtime=runtime,
+                    environment=environment,
+                    work_deadline=work_deadline,
+                    service_type=BlueFireService,
+                    runner_lifecycle_type=ManagedRunnerLifecycle,
+                    create_server=create_server,
+                    generate_capability=generate_browser_bootstrap_capability,
+                    cleanup_errors=cleanup_errors,
+                )
         os.chdir(output)
         if _runtime_process_cleanup_confirmed(report):
             try:
@@ -1036,8 +1542,14 @@ def main() -> int:
         report["temporary_state_removed"] = not runtime.exists()
         report["cleanup_errors"] = cleanup_errors
         report["receiver_native_retained_redaction"] = _receiver_retained_redaction_accepted(report)
-        if cleanup_errors or not _runtime_cleanup_confirmed(report):
+        if (
+            cleanup_errors
+            or not _runtime_cleanup_confirmed(report)
+            or not _required_phases_passed(report)
+        ):
             report["status"] = "failed_or_incomplete"
+        else:
+            report["status"] = "passed"
         # Close the receipt before returning; non-daemon service threads then
         # keep a failed harness under the workflow timeout if any thread lives.
         write_new(output / "receipt.json", report)

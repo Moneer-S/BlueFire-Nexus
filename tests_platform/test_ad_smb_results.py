@@ -153,10 +153,12 @@ def test_member_observation_outside_original_request_window_is_not_fresh(delta):
         results.validate_execution(request, execution)
 
 
-def test_known_partial_observation_does_not_invent_full_stage_or_unknown_effect():
+@pytest.mark.parametrize("phase", ["baseline", "retest"])
+def test_no_observation_does_not_invent_full_stage_or_local_contexts(phase):
     execution = {"dispatch": "not_started", "cleanup": "verified", "observation": None}
-    value = results.outcome("baseline", [execution])
+    value = results.outcome(phase, [execution])
     assert value["state"] == "not_started" and value["read_expectation"] == "incomplete"
+    assert value["distinct_local_contexts"] is None
     assert value["effective_access_claim"] is False
 
 

@@ -155,24 +155,32 @@ def test_only_final_file_eacces_is_denial(monkeypatch, failure, denied):
     document = binding()
     monkeypatch.setattr(probe, "process_facts", lambda: principal(document))
     monkeypatch.setattr(probe, "_directory", lambda _: 10)
-    monkeypatch.setattr(probe.os, "O_PATH", 0, raising=False)
-    monkeypatch.setattr(probe.os, "O_NOFOLLOW", 0, raising=False)
-    monkeypatch.setattr(probe.os, "O_DIRECTORY", 0, raising=False)
-    monkeypatch.setattr(probe.os, "O_CLOEXEC", 0, raising=False)
-    monkeypatch.setattr(probe.os, "O_NONBLOCK", 0, raising=False)
     details = {10: fake_stat(101, stat.S_IFDIR | 0o2710), 11: fake_stat(102, stat.S_IFDIR | 0o2710)}
     file = fake_stat(103, stat.S_IFREG | 0o640, 100)
     closed = []
-    monkeypatch.setattr(probe.os, "fstat", details.__getitem__)
-    monkeypatch.setattr(probe.os, "stat", lambda *_, **__: file)
-    monkeypatch.setattr(probe.os, "close", closed.append)
 
     def opened(name, *_args, **_kwargs):
         if name == "fixtures":
             return 11
         raise OSError(failure, "test final-file refusal")
 
-    monkeypatch.setattr(probe.os, "open", opened)
+    # Keep synthetic filesystem calls local to the probe so pytest can format failures.
+    monkeypatch.setattr(
+        probe,
+        "os",
+        SimpleNamespace(
+            O_RDONLY=probe.os.O_RDONLY,
+            O_PATH=0,
+            O_NOFOLLOW=0,
+            O_DIRECTORY=0,
+            O_CLOEXEC=0,
+            O_NONBLOCK=0,
+            fstat=details.__getitem__,
+            stat=lambda *_, **__: file,
+            close=closed.append,
+            open=opened,
+        ),
+    )
     if denied:
         answer = probe.fresh_read(document)
         assert answer["outcome"] == "permission_denied"

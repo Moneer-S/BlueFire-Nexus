@@ -14,8 +14,12 @@ operations. Reviews bind the saved scope, current evidence, implementation and
 remaining limits. Jobs and run bundles retain the original task context before
 dispatch. Recovery asks only for that original task's stored terminal result;
 it does not rediscover a replacement host, resolve new credentials, or replay
-the operation. Ambiguous execution, cleanup and partial publication stay
-unresolved rather than being presented as successful validation.
+the operation. A terminal local failure carrying the installed executor's exact
+pre-dispatch marker can be settled as not started without contacting a receiver,
+because Execute cannot precede that synchronous checkpoint. Its execution content
+is controller-local and control-blocked, never runner-reported. An unmarked absence,
+ambiguous execution, cleanup and partial publication stay unresolved rather than
+being presented as successful validation.
 
 Execution is unavailable unless exact prior host enrollment and the separate
 admitted receiver configuration are installed and current. The saved workflow is covered

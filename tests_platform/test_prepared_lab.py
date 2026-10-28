@@ -387,6 +387,101 @@ def test_start_stops_owned_clients_even_when_distribution_identity_changes(
     assert not management
 
 
+class _PrivateExitStatus:
+    def __repr__(self):
+        raise AssertionError("a child status must never render arbitrary repr")
+
+    def __str__(self):
+        raise AssertionError("a child status must never render arbitrary text")
+
+
+@pytest.mark.parametrize(
+    ("inner_status", "outer_status", "expected"),
+    [
+        (2, None, "product_session=exit:2; ui_relay=running"),
+        (None, 3, "product_session=running; ui_relay=exit:3"),
+        (2, 3, "product_session=exit:2; ui_relay=exit:3"),
+        (-9, None, "product_session=exit:-9; ui_relay=running"),
+        (None, -15, "product_session=running; ui_relay=exit:-15"),
+        (0, 3, "product_session=exit:0; ui_relay=exit:3"),
+        (2, 0, "product_session=exit:2; ui_relay=exit:0"),
+        (2**32 - 1, None, "product_session=exit:4294967295; ui_relay=running"),
+        (-(2**31), 3, "product_session=exit:-2147483648; ui_relay=exit:3"),
+        (2**32, 3, "product_session=unavailable; ui_relay=exit:3"),
+        (-(2**31) - 1, 3, "product_session=unavailable; ui_relay=exit:3"),
+        (True, 3, "product_session=unavailable; ui_relay=exit:3"),
+        (2.5, 3, "product_session=unavailable; ui_relay=exit:3"),
+        (_PrivateExitStatus(), 3, "product_session=unavailable; ui_relay=exit:3"),
+        (2, _PrivateExitStatus(), "product_session=exit:2; ui_relay=unavailable"),
+    ],
+    ids=[
+        "product-session",
+        "ui-relay",
+        "both",
+        "negative-product-session",
+        "negative-ui-relay",
+        "completed-product-session",
+        "completed-ui-relay",
+        "windows-maximum",
+        "signed-minimum",
+        "above-range",
+        "below-range",
+        "bool",
+        "float",
+        "private-object",
+        "private-ui-relay-object",
+    ],
+)
+def test_start_reports_only_bounded_owned_client_statuses_and_preserves_cleanup(
+    tmp_path, monkeypatch, capsys, inner_status, outer_status, expected
+):
+    lease = lab.DisposableWslDistribution(
+        Path(sys.executable),
+        tmp_path,
+        "BlueFire-Gate11-Run-" + "1" * 16,
+        tmp_path / "install",
+        (1, 2),
+    )
+    processes, management, stopped, finished, verified = [], [], [], [], []
+
+    @contextmanager
+    def owned(_state):
+        yield lease, {}
+
+    def spawn(*_args, **_kwargs):
+        status = inner_status if not processes else outer_status
+        process = SimpleNamespace(poll=lambda: status)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(lab, "owned", owned)
+    monkeypatch.setattr(lab, "verify", lambda *items: verified.append(items))
+    monkeypatch.setattr(lab.subprocess, "Popen", spawn)
+    monkeypatch.setattr(
+        lab.subprocess, "run", lambda command, **_kwargs: management.append(command)
+    )
+    monkeypatch.setattr(lab.TerminalForwarding, "attach", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        lab.TerminalForwarding, "finish", lambda _self, *items: finished.extend(items)
+    )
+    monkeypatch.setattr(lab, "stop_client", lambda process: stopped.append(process))
+
+    with pytest.raises(ValueError) as caught:
+        lab.start(tmp_path, 8767)
+
+    assert str(caught.value) == (
+        "the isolated product session or UI relay failed [" + expected + "]"
+    )
+    assert len(verified) == 2 and all(item == (lease, {}) for item in verified)
+    assert len(management) == 2
+    assert management[0][-2:] == ["stop", "8767"]
+    assert management[1] == [str(lease.executable), "--terminate", lease.distribution_name]
+    assert stopped == list(reversed(processes))
+    assert finished == processes
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
 def test_terminal_pipes_forward_prompt_output_and_multiple_commands() -> None:
     program = (
         "import sys\n"

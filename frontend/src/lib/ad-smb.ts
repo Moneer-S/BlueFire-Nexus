@@ -42,9 +42,10 @@ export interface AdNormalizedAudit {
   captureState: "query_exhausted" | "event_limit" | "byte_limit" | "event_rejected" | "deadline" | "cancelled" | "read_failed" | "cleanup_unknown";
   inputEvents: number; inputBytes: number; duplicateEvents: number; events: AdAuditEvent[]; limitations: string[];
 }
-export interface AdExecution { provenance: "synthetic_fixture" | "runner_reported"; dispatch: "not_started" | "attempted" | "unknown"; cleanup: "verified" | "unknown"; read: AdRead | null; audit: { events: number; truncated: boolean; digest: string; normalized?: AdNormalizedAudit } | null; change: AdChange | null }
+export interface AdExecution { provenance: "synthetic_fixture" | "runner_reported" | "controller_local"; dispatch: "not_started" | "attempted" | "unknown"; cleanup: "verified" | "unknown"; read: AdRead | null; audit: { events: number; truncated: boolean; digest: string; normalized?: AdNormalizedAudit } | null; change: AdChange | null }
 export interface AdOperation { id: string; phase: AdPhase; runId: string; state: "complete" | "partial" | "not_started" | "unknown"; expectation: "matched" | "not_met" | "incomplete" | null; distinctContexts: boolean | null; cleanup: "verified" | "unknown"; digest: string; executions: AdExecution[] }
-export interface AdWorkflow { id: string; environment: AdEnvironment; revision: number; stopped: boolean; pending: string | null; policy: "baseline" | "hardened" | "unknown"; operations: AdOperation[]; allowed: AdPhase[]; remaining: AdBudget; integration: "unavailable" | "injected_adapter" | "configured_admission" }
+export interface AdPreparation { id: string; phase: AdPhase; state: "cancelled" | "failed" | "interrupted"; reservedAt: string; settledAt: string; digest: string }
+export interface AdWorkflow { id: string; environment: AdEnvironment; revision: number; stopped: boolean; pending: string | null; policy: "baseline" | "hardened" | "unknown"; operations: AdOperation[]; preparations: AdPreparation[]; allowed: AdPhase[]; remaining: AdBudget; integration: "unavailable" | "injected_adapter" | "configured_admission" }
 export interface AdWorkflowSummary extends Pick<AdWorkflow, "id" | "revision" | "stopped" | "pending" | "policy"> { environment: Pick<AdEnvironment, "member" | "provenance"> }
 export interface AdReview { workflow: string; revision: number; phase: AdPhase; digest: string; steps: string[]; budget: AdBudget; change: AdChange | null; policy: string }
 export interface AdSubmission { submission_id: string; phase: AdPhase; review_digest: string; reviewed_by: string }
@@ -183,9 +184,10 @@ function auditEvent(value: unknown): AdAuditEvent {
 }
 function execution(value: unknown): AdExecution {
   const row = object(value), observation = row.observation === null ? null : object(row.observation);
-  const result: AdExecution = { provenance: oneOf(row.provenance, ["synthetic_fixture", "runner_reported"]), dispatch: oneOf(row.dispatch, ["not_started", "attempted", "unknown"]), cleanup: oneOf(row.cleanup, ["verified", "unknown"]), read: null, audit: null, change: null };
+  const result: AdExecution = { provenance: oneOf(row.provenance, ["synthetic_fixture", "runner_reported", "controller_local"]), dispatch: oneOf(row.dispatch, ["not_started", "attempted", "unknown"]), cleanup: oneOf(row.cleanup, ["verified", "unknown"]), read: null, audit: null, change: null };
   if (row.schema_version !== "bluefire.ad-smb-execution.v1") throw bad();
   digest(row.request_digest);
+  if (result.provenance === "controller_local" && (result.dispatch !== "not_started" || result.cleanup !== "verified" || observation !== null)) throw bad();
   if (!observation) return result;
   if (result.dispatch !== "attempted") throw bad();
   if ("reader" in observation) {
@@ -217,21 +219,40 @@ function operation(value: unknown): AdOperation {
   const phase = oneOf(row.phase, adPhases), executions = list(row.executions, adSteps[phase].length).map(execution);
   const runId = text(row.run_id, 160); if (!/^run-[A-Za-z0-9_-]+$/.test(runId)) throw bad();
   const state = oneOf(outcome.state, ["complete", "partial", "not_started", "unknown"]);
+  if (executions.some(entry => entry.provenance === "controller_local") && (executions.length !== 1 || state !== "not_started" || outcome.cleanup !== "verified" || outcome.distinct_local_contexts !== null || outcome.read_expectation !== (phase === "baseline" || phase === "retest" ? "incomplete" : null))) throw bad();
   if (state === "complete" && executions.length !== adSteps[phase].length) throw bad();
   if (phase === "baseline" || phase === "retest") for (const [index, entry] of executions.entries()) {
     if (entry.read && (entry.read.reader !== (index === 0 ? "probe" : "legitimate") || entry.read.purpose !== (index === 2 ? "health" : "primary"))) throw bad();
   }
   return { id: job(row.job_id), phase, runId, state, expectation: outcome.read_expectation === null ? null : oneOf(outcome.read_expectation, ["matched", "not_met", "incomplete"] as const), distinctContexts: nullableBool(outcome.distinct_local_contexts), cleanup: oneOf(outcome.cleanup, ["verified", "unknown"]), digest: digest(outcome.evidence_digest), executions };
 }
+function preparation(value: unknown): AdPreparation {
+  const row = object(value);
+  if (Object.keys(row).sort().join() !== "boundary,operation_job_id,phase,producer,request_digest,reserved_at,schema_version,settled_at,terminal_state" || row.schema_version !== "bluefire.ad-smb-preparation-settlement.v1" || row.boundary !== "before_run_retained" || row.producer !== "bluefire.ad-smb-controller") throw bad();
+  const reservedAt = stamp(row.reserved_at), settledAt = stamp(row.settled_at);
+  if (Date.parse(settledAt) < Date.parse(reservedAt)) throw bad();
+  return { id: job(row.operation_job_id), phase: oneOf(row.phase, adPhases), state: oneOf(row.terminal_state, ["cancelled", "failed", "interrupted"]), reservedAt, settledAt, digest: digest(row.request_digest) };
+}
+export function checkedAdPreparationJob(value: unknown, owner: string, selected: AdPreparation): { errorCode: string | null } {
+  const row = object(value), progress = object(row.progress), binding = object(object(row.request).ad_smb);
+  const retained = preparation(progress.preparation_settlement);
+  const terminalPhases: Record<AdPreparation["state"], unknown[]> = { cancelled: ["cancelled"], failed: [null, "failed"], interrupted: [null, "queued", "planning", "awaiting_approval", "running", "paused", "cancelling"] };
+  if (row.schema_version !== "bluefire.job.v1" || row.job_id !== selected.id || row.kind !== "ad_smb.operation" || row.state !== selected.state || row.created_at !== selected.reservedAt || row.result_ref !== null || binding.workflow_job_id !== owner || binding.operation_job_id !== selected.id || binding.phase !== selected.phase || JSON.stringify(retained) !== JSON.stringify(selected) || progress.run_id !== null || list(progress.tasks, 0).length || !terminalPhases[selected.state].includes(progress.phase ?? null) || Object.keys(progress).some(key => !["tasks", "run_id", "phase", "preparation_settlement"].includes(key))) throw bad();
+  const error = row.error == null ? null : object(row.error);
+  return { errorCode: error?.code == null ? null : text(error.code, 100) };
+}
 export function checkedAdWorkflow(value: unknown, expected?: string): AdWorkflow {
   const envelope = object(value), row = object(envelope.workflow), progress = object(row.progress);
   const id = job(row.job_id); if ((expected && id !== expected) || row.kind !== "ad_smb.exercise" || envelope.effective_access_claim !== false) throw bad();
   const operations = list(progress.operations, 6).map(operation), allowed = list(envelope.allowed_phases, 6).map(value => oneOf(value, adPhases));
+  const preparations = Object.hasOwn(progress, "preparation_history") ? list(progress.preparation_history, 6).map(preparation) : [];
   if (new Set(operations.map(row => row.id)).size !== operations.length || new Set(allowed).size !== allowed.length) throw bad();
   const pending = progress.pending_operation === null ? null : job(progress.pending_operation);
   if (pending && (allowed.length || operations.some(row => row.id === pending))) throw bad();
+  if (new Set(preparations.map(row => row.id)).size !== preparations.length || preparations.some((row, index) => row.id === id || row.id === pending || operations.some(operation => operation.id === row.id) || index > 0 && Date.parse(row.settledAt) < Date.parse(preparations[index - 1]!.settledAt))) throw bad();
   const selected = environment(object(row.request).environment);
   if (operations.some(row => row.executions.some(entry => {
+    if (entry.provenance === "controller_local" && selected.provenance !== "runner_reported") return true;
     if (entry.change && entry.change.removed.sid !== selected.principals.probe) return true;
     const normalized = entry.audit?.normalized;
     return Boolean(normalized && (normalized.inputEvents > selected.auditEvents || normalized.inputBytes > selected.auditBytes || normalized.windowStart !== auditUtc(selected.createdAt) || normalized.sourceHostId !== selected.memberHostId || normalized.events.some(event =>
@@ -239,7 +260,7 @@ export function checkedAdWorkflow(value: unknown, expected?: string): AdWorkflow
       || (event.binding === "matched" && (event.principalSid !== selected.principals[event.principalRole!] || event.clientIp !== selected.clientIp))
       || (event.eventId === 5145 && event.binding === "matched" && !selected.files.some(file => file.name === event.relativeTarget && file.purpose === event.filePurpose)))));
   }))) throw bad();
-  return { id, environment: selected, revision: integer(progress.revision, 1000), stopped: bool(progress.stopped), pending, policy: oneOf(progress.policy_state, ["baseline", "hardened", "unknown"]), operations, allowed, remaining: budget(envelope.remaining), integration: oneOf(envelope.execution_integration, ["unavailable", "injected_adapter", "configured_admission"]) };
+  return { id, environment: selected, revision: integer(progress.revision, 1000), stopped: bool(progress.stopped), pending, policy: oneOf(progress.policy_state, ["baseline", "hardened", "unknown"]), operations, preparations, allowed, remaining: budget(envelope.remaining), integration: oneOf(envelope.execution_integration, ["unavailable", "injected_adapter", "configured_admission"]) };
 }
 export function checkedAdList(value: unknown): AdWorkflowSummary[] {
   const envelope = object(value);

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { EnvironmentsPage } from "../src/pages/Environments";
@@ -49,24 +49,27 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 it("shows checked environment readiness separately from saved setup and links to canonical tools", async () => {
   mount();
   expect(await screen.findByText("Synthetic S3 review")).toBeVisible();
-  expect(screen.getByText("Protected setup only")).toBeVisible();
+  expect(screen.getByText("Setup saved")).toBeVisible();
   expect(screen.getByText(/Protected setup is verified/)).toBeVisible();
   expect(screen.getByText("1 saved control.")).toBeVisible();
   expect(screen.getAllByText("Ready for review").length).toBe(1);
-  expect(screen.getByText("Expired")).toBeVisible();
+  expect(screen.getAllByText("Expired").length).toBeGreaterThan(0);
   expect(screen.getByText(/Synthetic fixture/)).toBeVisible();
   expect(screen.getByRole("link", { name: "Open S3 access" })).toHaveAttribute("href", "/s3-access");
   expect(screen.getByRole("link", { name: "Open file access" })).toHaveAttribute("href", "/file-access");
   expect(screen.getByRole("link", { name: "Open AD share access" })).toHaveAttribute("href", "/ad-smb");
   expect(screen.getByRole("link", { name: "Open Runners" })).toHaveAttribute("href", "/runners");
   expect(screen.getByRole("link", { name: "Open model connection settings" })).toHaveAttribute("href", "/settings#model-connection");
+  expect(screen.getAllByText("Inventory details")).toHaveLength(3);
+  fireEvent.click(screen.getAllByText("Inventory details")[0]!);
+  expect(screen.getByText("0 catalog profiles · 1 active saved profiles · 1 saved profile records.")).toBeVisible();
 });
 
 it("keeps independent sections visible when one local status source fails", async () => {
   vi.mocked(s3Api.environments).mockRejectedValueOnce(new Error("S3 status unavailable"));
   vi.mocked(adSmbApi.environments).mockRejectedValueOnce(new Error("AD status unavailable"));
   mount();
-  expect(await screen.findByText("Protected setup only")).toBeVisible();
+  expect(await screen.findByText("Setup saved")).toBeVisible();
   expect(await screen.findByText("S3 enrollment unavailable")).toBeVisible();
   expect(await screen.findByText("AD environment readiness unavailable")).toBeVisible();
 });
@@ -84,7 +87,8 @@ it("keeps the all-empty overview compact, truthful, and actionable", async () =>
   expect(screen.getAllByText(cloudProblem, { exact: true })).toHaveLength(1);
   expect(await screen.findByText(/Native execution: not reported available/)).toBeVisible();
   expect(screen.getByText("0 saved controls.")).toBeVisible();
-  expect(screen.getByText("History")).toBeVisible();
+  // A loaded, empty history is ordinary and carries no badge.
+  expect(screen.queryByText("History")).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Open S3 access" })).toHaveAttribute("href", "/s3-access");
   expect(screen.getByRole("link", { name: "Open file access" })).toHaveAttribute("href", "/file-access");
   expect(screen.getByRole("link", { name: "Open AD share access" })).toHaveAttribute("href", "/ad-smb");
@@ -166,14 +170,24 @@ it("does not preserve available file-access copy after setup expiration", async 
   const setup = windowsSetup();
   vi.mocked(fileAccessApi.status).mockResolvedValue({ ...setup, available: true, problem: null, setup: { ...setup.setup, expires_at_ms: Date.now() - 1 } });
   mount();
-  expect(await screen.findByText("Protected setup is recorded but expired.")).toBeVisible();
-  expect(screen.getByText("Not current")).toBeVisible();
-  expect(screen.queryByText("Current setup is available for reviewed operations.")).not.toBeInTheDocument();
+  expect(await screen.findByText("Saved setup has expired.")).toBeVisible();
+  const fileSection = screen.getByRole("region", { name: "File access" });
+  expect(within(fileSection).getByText("Expired")).toBeVisible();
+  expect(within(fileSection).queryByText("Available for reviewed file operations.")).not.toBeInTheDocument();
 
   cleanup();
   vi.mocked(fileAccessApi.status).mockResolvedValue({ ...setup, available: true, problem: null, setup: { ...setup.setup, expires_at_ms: Date.now() + 300 } });
   mount();
   expect(await screen.findByText("Available for review")).toBeVisible();
-  expect(await screen.findByText("Protected setup is recorded but expired.", {}, { timeout: 2_000 })).toBeVisible();
-  expect(screen.queryByText("Current setup is available for reviewed operations.")).not.toBeInTheDocument();
+  expect(await screen.findByText("Saved setup has expired.", {}, { timeout: 2_000 })).toBeVisible();
+  expect(within(screen.getByRole("region", { name: "File access" })).queryByText("Available for reviewed file operations.")).not.toBeInTheDocument();
+});
+
+it("reports a valid enrollment without available operations as unavailable, not expired", async () => {
+  vi.mocked(fileAccessApi.status).mockResolvedValue({ schema_version: "bluefire.file-access-status.v1", available: false, problem: { code: "native_admission_unavailable", message: "Enrollment is current, but native admission is unavailable." }, enrollment: { enrollment_id: "current-enrollment", enrollment_digest: digest("d"), expires_at_ms: Date.now() + 60_000, owner_uid: 1000, probe_uid: 1002 }, allowed_operations: [] });
+  mount();
+  const fileSection = screen.getByRole("region", { name: "File access" });
+  expect(await within(fileSection).findByText("Unavailable")).toBeVisible();
+  expect(within(fileSection).getByText("Enrollment is current, but native admission is unavailable.")).toBeVisible();
+  expect(within(fileSection).queryByText("Expired")).not.toBeInTheDocument();
 });

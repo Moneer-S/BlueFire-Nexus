@@ -201,6 +201,10 @@ def receiver_report() -> dict[str, object]:
 def clean_wrapper_report() -> dict[str, object]:
     return {
         **{key: True for key in _RUNTIME_PROCESS_CLEANUP_KEYS},
+        "browser_phase_status": "passed",
+        "receiver_phase_status": "passed",
+        "receiver_driver_started": True,
+        "receiver_driver_cleanup_confirmed": True,
         "temporary_state_removed": True,
         "receiver_retained_redaction_driver_passed": True,
         "cleanup_errors": [],
@@ -318,6 +322,7 @@ def test_receiver_browser_driver_uses_authenticated_readiness_and_safe_diagnosti
     ).read_text(encoding="utf-8")
     assert 'assert.equal(ready.process, "authenticated")' in driver
     assert 'assert.equal(ready.process, "running")' not in driver
+    assert '"/ui/fonts/InterVariable.woff2"' in driver
     assert "report.runner_status_diagnostic" in driver
     assert "profile_matches: ready.profile_id === PROFILE" in driver
     assert (
@@ -390,6 +395,14 @@ def test_cleanup_confirmation_requires_boolean_true() -> None:
     report = clean_wrapper_report()
     report["receiver_driver_cleanup_confirmed"] = 1
     assert not _runtime_process_cleanup_confirmed(report)
+    assert not _receiver_retained_redaction_accepted(report)
+
+
+@pytest.mark.parametrize("browser_status", ["failed", "not_attempted", None])
+def test_receiver_acceptance_requires_successful_primary_browser_phase(browser_status) -> None:
+    report = clean_wrapper_report()
+    report["browser_phase_status"] = browser_status
+    assert _runtime_cleanup_confirmed(report)
     assert not _receiver_retained_redaction_accepted(report)
 
 

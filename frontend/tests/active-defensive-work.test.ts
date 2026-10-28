@@ -48,6 +48,7 @@ describe("loadActiveWork", () => {
       { label: "Open saved experiment", href: "/builder?saved_scenario=receiver-collection&version=1&digest=sha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
       { label: "Baseline run evidence", href: "/runs/run-baseline" },
     ]);
+    expect(summary.runContexts).toEqual([{ runId: "run-baseline", phase: "Baseline", receiverDecision: "Accepted by the receiver" }]);
     expect(record).toEqual(before);
   });
 
@@ -141,6 +142,7 @@ describe("loadActiveWork", () => {
       { label: "Evidence source", value: "Not recorded" },
     ]);
     expect(summary.links).toHaveLength(1);
+    expect(summary.runContexts).toEqual([]);
   });
 
   it("rejects a malformed or mismatched direct response without producing a summary", async () => {
@@ -162,6 +164,20 @@ describe("loadActiveWork", () => {
 
     expect(summary.results).toContainEqual({ label: "Baseline", value: "Not enough evidence" });
     expect(summary.results).toContainEqual({ label: "Evidence source", value: "Not recorded" });
+    expect(summary.runContexts).toEqual([{ runId: record.phases[0]!.result!.run_id, phase: "Baseline" }]);
+  });
+
+  it("retains exact run bindings for the protective refusal and legitimate-use phases", async () => {
+    const record = retainedReceiverFixture("legitimate", "completed");
+    receiverTest.mockResolvedValue(record);
+    const before = structuredClone(record);
+    const summary = await loadActiveWork({ family: "handoff", id: receiverFixtureId });
+    expect(summary.runContexts).toEqual(record.phases.map(phase => ({
+      runId: phase.result!.run_id,
+      phase: phase.phase === "baseline" ? "Baseline" : phase.phase === "protected" ? "Redaction required" : "Legitimate redacted use",
+      receiverDecision: phase.phase === "protected" ? "Prevented by the receiver" : "Accepted by the receiver",
+    })));
+    expect(record).toEqual(before);
   });
 
   it("labels a rolled-back policy as desired state and does not imply it remains applied", async () => {

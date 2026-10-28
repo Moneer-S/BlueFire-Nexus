@@ -13,6 +13,7 @@ from typing import Any, Mapping, cast
 
 from .receiver_session_channel import read_frame, require_eof, write_frame
 from .receiver_session_contract import (
+    PREPARATION_STAGES,
     SESSION_SECONDS,
     ReceiverSessionError,
     exact,
@@ -21,6 +22,7 @@ from .receiver_session_contract import (
     validate_ready,
     validate_terminal,
     worker_generation,
+    worker_startup_failure_stage,
 )
 from .runner_bootstrap import managed_product_root
 from .runner_client import _pinned_launch_file
@@ -104,34 +106,47 @@ class OwnedReceiverSession:
         port: int = 4317,
         _owner_sink: list[OwnedReceiverSession] | None = None,
     ) -> OwnedReceiverSession:
-        if _owner_sink:
-            raise ReceiverSessionError("owned receiver attempt sink is already occupied")
-        if not sys.platform.startswith("linux") or not LinuxPrivateProcessContainment.available():
-            raise ReceiverSessionError("owned receiver sessions require Linux pidfd containment")
-        session = cls()
-        if _owner_sink is not None:
-            _owner_sink.append(session)  # Exact attempt retained before any possible launch.
+        stage = "attempt_sink"
+        session: OwnedReceiverSession | None = None
         spawned: list[subprocess.Popen[bytes]] = []
-        prepared = prepare_frame(
-            launch_id=session._launch_id,
-            policy_id=policy_id,
-            port=port,
-            generation=worker_generation(),
-            deadline_ns=time.monotonic_ns() + SESSION_SECONDS * 1_000_000_000,
-            expires_at_ms=time.time_ns() // 1_000_000 + SESSION_SECONDS * 1000,
-        )
         try:
+            if _owner_sink:
+                raise ReceiverSessionError("owned receiver attempt sink is already occupied")
+            stage = "platform_containment"
+            if (
+                not sys.platform.startswith("linux")
+                or not LinuxPrivateProcessContainment.available()
+            ):
+                raise ReceiverSessionError(
+                    "owned receiver sessions require Linux pidfd containment"
+                )
+            session = cls()
+            if _owner_sink is not None:
+                _owner_sink.append(session)  # Exact attempt retained before any possible launch.
+            stage = "generation_frame"
+            prepared = prepare_frame(
+                launch_id=session._launch_id,
+                policy_id=policy_id,
+                port=port,
+                generation=worker_generation(),
+                deadline_ns=time.monotonic_ns() + SESSION_SECONDS * 1_000_000_000,
+                expires_at_ms=time.time_ns() // 1_000_000 + SESSION_SECONDS * 1000,
+            )
+            stage = "worker_spawn"
             process = _spawn_owned_worker(session._launch_id, spawned)
             session._process = process
+            stage = "containment_register"
             session._containment.register(process)
+            stage = "process_identity"
             identity = session._containment.process_identity(process.pid)
+            stage = "pipe_check"
             if process.stdin is None or process.stdout is None:
                 raise ReceiverSessionError("owned receiver channel is unavailable")
             deadline = time.monotonic_ns() + 10_000_000_000
-            armed = exact(
-                read_frame(process.stdout.fileno(), deadline_ns=deadline),
-                {"kind", "launch_id", "process_id", "parent_process_id"},
-            )
+            stage = "armed_read"
+            armed_frame = read_frame(process.stdout.fileno(), deadline_ns=deadline)
+            stage = "armed_validate"
+            armed = exact(armed_frame, {"kind", "launch_id", "process_id", "parent_process_id"})
             if dict(armed) != {
                 "kind": "armed",
                 "launch_id": session._launch_id,
@@ -139,24 +154,45 @@ class OwnedReceiverSession:
                 "parent_process_id": os.getpid(),
             }:
                 raise ReceiverSessionError("owned receiver did not establish parent-death binding")
+            stage = "prepared_write"
             write_frame(process.stdin.fileno(), prepared)
+            stage = "ready_read"
+            ready = read_frame(process.stdout.fileno(), deadline_ns=deadline)
+            stage = "ready_validate"
             session._binding = validate_ready(
-                read_frame(process.stdout.fileno(), deadline_ns=deadline),
+                ready,
                 prepared,
                 process_id=process.pid,
                 creation_identity=str(identity[1]),
             )
+            stage = "deadline_check"
             if time.monotonic_ns() >= prepared["deadline_ns"]:
                 raise ReceiverSessionError("owned receiver readiness expired")
+            stage = "monitor_start"
             session._monitor_thread = threading.Thread(
                 target=session._monitor, name="bluefire-owned-receiver", daemon=True
             )
             session._monitor_thread.start()
             return session
-        except BaseException:
-            if session._process is None and spawned:
+        except BaseException as error:
+            if type(error) is ReceiverSessionError and stage in PREPARATION_STAGES:
+                error.preparation_stage = stage
+            if session is not None and session._process is None and spawned:
                 session._process = spawned[0]
-            session.close()
+            if session is not None:
+                closed = session.close()
+                if (
+                    closed
+                    and type(error) is ReceiverSessionError
+                    and stage == "ready_read"
+                    and session._process is not None
+                ):
+                    try:
+                        worker_stage = worker_startup_failure_stage(session._process.returncode)
+                    except Exception:
+                        worker_stage = None
+                    if worker_stage is not None:
+                        error.preparation_stage = worker_stage
             raise
 
     @property

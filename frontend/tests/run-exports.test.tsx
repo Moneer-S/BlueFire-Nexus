@@ -71,6 +71,12 @@ it("reports actual frozen outcomes, missing evidence and cleanup without claimin
   expect(runReport({ ...run, objective: "<img src=x> [link](https://bad.test)" })).not.toContain("<img");
 });
 
+it("exports no real effects only for a zero-effect simulation cleanup record", () => {
+  const noEffects = { attempted: false, success: null, outstanding_receipt_count: 0 };
+  expect(runReport({ ...run, cleanup: noEffects })).toContain("Cleanup: No real effects");
+  expect(runReport({ ...run, mode: "execute", cleanup: noEffects })).toContain("Cleanup: Not attempted");
+});
+
 it("downloads the Markdown report on click with a run-specific filename", async () => {
   const { create, clicked } = downloads();
   const fetchBundle = vi.spyOn(api, "runBundle");

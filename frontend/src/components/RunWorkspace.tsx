@@ -5,7 +5,7 @@ import { RunnerInventoryRecovery } from "./ExecuteRunnerReadiness";
 import { RunNameControl, CopyRunId } from "../components/RunNameControl";
 import { assistanceRunLink } from "../lib/run-assistance";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, ArrowLeft, ArrowRight, CircleStop, Clock3, Download, FileCheck2, FileSearch, FlaskConical, Gauge, GitCompareArrows, ListTree, Pause, Play, RotateCcw, ShieldCheck, Sparkles, Target, TerminalSquare } from "lucide-react";
+import { Activity, AlertTriangle, GitBranch, ArrowLeft, ArrowRight, CircleStop, Clock3, Download, FileCheck2, FileSearch, FlaskConical, Gauge, GitCompareArrows, ListTree, Pause, Play, RotateCcw, Search, ShieldCheck, Target, TerminalSquare } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError, DEMO_MODE, type ReplayPreparation } from "../lib/api";
@@ -26,7 +26,7 @@ import { AdaptiveDecision, AdaptiveRunPath } from "./AdaptiveRunPath";
 import { continuationApprovalPreflight, hasAdaptiveApprovalReview, hasUsableStoredApprovalReview, requiresAdaptiveReview } from "../lib/approvalReview";
 import { hasReplayExtent, settlePendingReplay } from "../lib/replay-submission";
 
-import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, runLimitationGroups, stepOutcomeLabel } from "../lib/run-presentation";
+import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, runLimitationGroups, runResult, shortRunId, stepOutcomeLabel } from "../lib/run-presentation";
 
 import { RunExports } from "../components/RunExports";
 import { recordedStepLabels, runEventPresentation } from "../lib/run-progress-presentation";
@@ -341,7 +341,22 @@ export function RunWorkspace({ embedded }: { embedded?: { job: RunJob; releaseEn
   const preflightMutation = useMutation({ mutationFn: async (attempt: RunPreflightAttempt) => ({ generation: attempt.generation, report: await api.preflight(attempt.scenario, attempt.config) }), onSuccess: ({ generation, report }, attempt) => { if (generation !== preflightGeneration.current) return; setPreflight(report); setNotice(attempt.config.mode === "execute" && !hasExecutePlanReview(report, attempt.scenario) ? "The service has not returned a complete, usable Execute plan. Review the findings and check the plan again." : report.ready ? undefined : report.status === "approval_required" && report.approval_binding && report.approval_envelope ? "Review the execution plan before creating a request. Execution still needs your approval." : "This run is not ready. Review the findings and check the setup again."); }, onError: (error, attempt) => { if (attempt.generation !== preflightGeneration.current) return; setPreflight(undefined); setNotice(error instanceof Error ? error.message : "Run check failed."); }, onSettled: (_result, _error, attempt) => { if (attempt.generation === preflightGeneration.current) clearApproval(); } });
   const requestPreflight = () => { if (jobActivityBlocksNewIntent) { setNotice("Active-job inventory must be available and empty before starting another preflight."); return; } const generation = ++preflightGeneration.current; preflightMutation.mutate({ generation, scenario: structuredClone(scenario), config: structuredClone(runConfig) }); };
   const invalidatePreflight = () => { preflightGeneration.current += 1; setPreflight(undefined); };
-  const runMutation = useMutation({ mutationFn: () => api.submitRun(scenario, runConfig), onMutate: () => { setNotice(runConfig.mode === "simulate" ? "Submitting a durable Simulate job." : "Creating a durable Execute job with a separate approval gate."); setActiveRun(null); }, onSuccess: async (submission) => { const snapshot = await synchronizeJobSnapshot({ ...submission.job, approval_request: submission.approval_request ?? submission.job.approval_request }); trackActiveJob(snapshot); setJobPreflight(submission.preflight ?? undefined); setApprovalRequest(snapshot.approval_request ?? null); setNotice(`Job ${snapshot.job_id} was accepted in ${sentence(snapshot.state)} state.`); void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); void queryClient.invalidateQueries({ queryKey: ["runs"] }); }, onError: (error) => setNotice(error instanceof Error ? error.message : "Job submission was refused."), onSettled: clearApproval });
+  // A started simulation reports below its setup. Bring its progress into view once.
+  const [revealProgress, setRevealProgress] = useState(false);
+  useEffect(() => {
+    if (!revealProgress) return;
+    const frame = requestAnimationFrame(() => {
+      const target = document.getElementById("run-progress");
+      if (!target) return;
+      setRevealProgress(false);
+      // Move focus only from the submission itself, never from later work.
+      const active = document.activeElement;
+      if (!active || active === document.body || active.closest(".run-action-bar")) target.focus({ preventScroll: true });
+      target.scrollIntoView?.({ block: "start", behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? "auto" : "smooth" });
+    });
+    return () => cancelAnimationFrame(frame);
+  });
+  const runMutation = useMutation({ mutationFn: () => api.submitRun(scenario, runConfig), onMutate: () => { setNotice(runConfig.mode === "simulate" ? "Submitting a durable Simulate job." : "Creating a durable Execute job with a separate approval gate."); setActiveRun(null); }, onSuccess: async (submission) => { const snapshot = await synchronizeJobSnapshot({ ...submission.job, approval_request: submission.approval_request ?? submission.job.approval_request }); trackActiveJob(snapshot); setJobPreflight(submission.preflight ?? undefined); setApprovalRequest(snapshot.approval_request ?? null); setNotice(`Job ${snapshot.job_id} was accepted in ${sentence(snapshot.state)} state.`); if (!embedded && runConfig.mode === "simulate") { setSetupExpanded(false); setRevealProgress(true); } void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); void queryClient.invalidateQueries({ queryKey: ["runs"] }); }, onError: (error) => setNotice(error instanceof Error ? error.message : "Job submission was refused."), onSettled: clearApproval });
   const approvalMutation = useMutation({ mutationFn: ({ jobId, approvedBy }: { jobId: string; approvedBy: string }) => api.approveJob(jobId, approvedBy), onSuccess: async (result, variables) => { const snapshot = await synchronizeJobSnapshot({ ...result.job, approval_request: result.approval_request ?? result.job.approval_request }); void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); if (activeJobIdRef.current !== variables.jobId || snapshot.job_id !== variables.jobId) return; trackActiveJob(snapshot); setApprovalRequest(snapshot.approval_request ?? null); setNotice(`The exact envelope for ${snapshot.job_id} was approved once and released to the job controller.`); }, onError: (error, variables) => { if (activeJobIdRef.current === variables.jobId) setNotice(error instanceof Error ? error.message : "Job approval was refused."); }, onSettled: (_result, _error, variables) => { if (activeJobIdRef.current !== variables.jobId) return; setJobApprovalConfirmed(false); setJobApprovedBy(""); clearApproval(); } });
   const runnerLifecycleMutation = useMutation({
     mutationFn: async ({ action, selection }: { action: "bootstrap" | "start"; selection: typeof runnerSelection }) => {
@@ -459,11 +474,28 @@ function RunHistoryPanel({ runs, unavailable, pending, error, retry }: { runs?: 
   const history = (runs ?? []).filter(run => (runLabel(run) + " " + run.run_id).toLowerCase().includes(search.trim().toLowerCase()));
   return <Panel className="run-history-workspace">
     <PanelHeader title="Run history" actions={<Button size="small" variant="ghost" onClick={retry}><RotateCcw/>Refresh</Button>} />
-    <div className="history-search"><input aria-label="Search runs" placeholder="Search name or run ID" value={search} onChange={event => setSearch(event.target.value)}/></div>
+    <div className="history-search"><Search aria-hidden="true"/><input aria-label="Search runs" placeholder="Search name or run ID" value={search} onChange={event => setSearch(event.target.value)}/></div>
     {error ? <><ErrorState title="Run history unavailable" error={error} retry={retry}/>{runs ? <p className="workspace-note">Showing previously loaded runs.</p> : null}</> : null}
     {unavailable > 0 ? <p role="status">{unavailable} run {unavailable === 1 ? "record could" : "records could"} not be read. Refresh to try again.</p> : null}
-    {pending ? <LoadingState label="Loading run history" /> : history.length ? <div className="table-scroll"><table><thead><tr><th>Run</th><th>Mode</th><th>Created</th><th>Outcome</th></tr></thead><tbody>{history.map(run => <tr key={run.run_id}><td><Link to={runReviewPath(run.run_id)} aria-label={"Review run " + runLabel(run) + " · " + sentence(run.mode) + " · " + formatDate(run.created_at)}><strong>{runLabel(run)}</strong></Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</td><td>{sentence(run.mode)}</td><td>{formatDate(run.created_at)}</td><td><Badge tone={run.status === "failed" ? "danger" : "neutral"}>{sentence(run.status)}</Badge></td></tr>)}</tbody></table></div> : !error && (search || !unavailable) ? <div className="inline-empty"><span>{search ? "No runs match this search." : "No runs yet."}</span>{search ? <Button variant="ghost" size="small" onClick={() => setSearch("")}>Clear search</Button> : <Link to="/runs?prepare=1">Review new run</Link>}</div> : null}
+    {pending ? <LoadingState label="Loading run history" /> : history.length ? <div className="table-scroll"><table className="run-history-table"><thead><tr><th>Run</th><th>Result</th><th>Path</th><th>Created</th></tr></thead><tbody>{history.map(run => <RunHistoryRow key={run.run_id} run={run} />)}</tbody></table></div> : !error && (search || !unavailable) ? <div className="inline-empty"><span>{search ? "No runs match this search." : "No runs yet."}</span>{search ? <Button variant="ghost" size="small" onClick={() => setSearch("")}>Clear search</Button> : <Link to="/runs?prepare=1">Review new run</Link>}</div> : null}
   </Panel>;
+}
+
+// Runs of one experiment share a title, so each row leads with what differs:
+// the recorded result, the path actually taken and when it ran.
+function RunHistoryRow({ run }: { run: RunRecord }) {
+  const ran = (run.steps ?? []).filter(step => step.execution_disposition !== "counterfactual");
+  const stoppedAt = ran.findIndex(step => ["blocked", "control_blocked", "refused", "failed", "error", "cancelled"].includes(step.status));
+  const result = runResult(run);
+  const cleanup = cleanupSummary(run.cleanup, run.mode);
+  const seconds = run.created_at && run.finalized_at ? (Date.parse(run.finalized_at) - Date.parse(run.created_at)) / 1000 : undefined;
+  const duration = seconds === undefined || !Number.isFinite(seconds) || seconds < 0 ? undefined : seconds < 60 ? `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s` : `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`;
+  return <tr>
+    <td><Link to={runReviewPath(run.run_id)} aria-label={"Review run " + runLabel(run) + " · " + sentence(run.mode) + " · " + formatDate(run.created_at)}>{runLabel(run)}</Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}<small>{sentence(run.mode)} · <code>{shortRunId(run.run_id)}</code></small></td>
+    <td><span className={`run-history-result tone-${result.tone}`}>{result.label}</span>{cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed") ? <small className="cleanup-attention">Cleanup needs attention</small> : null}</td>
+    <td>{ran.length} {ran.length === 1 ? "step" : "steps"}{stoppedAt >= 0 ? <small>First issue at step {stoppedAt + 1}</small> : null}</td>
+    <td>{formatDate(run.created_at)}{duration ? <small>Took {duration}</small> : null}</td>
+  </tr>;
 }
 
 function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
@@ -490,6 +522,12 @@ function PlanPreview({ scenarioTitle, stepIds, edgeCount, dirty, config, catalog
 }
 
 function normalizeStatus(status: string) { return status === "success" ? "succeeded" : status === "control_blocked" ? "blocked" : status; }
+// A step's method line appears only when it adds something: not the step title
+// again, and not "Simulation" inside a simulation.
+function distinctMethod(labels: { name: string; method: string }, mode: RunRecord["mode"]) {
+  return labels.method === `Simulation · ${labels.name}` ? mode === "simulate" ? undefined : "Simulation" : labels.method === labels.name ? undefined : labels.method;
+}
+
 function statusTone(status: string) { const value = normalizeStatus(status); return value === "succeeded" || value === "completed" || value === "cleaned" ? "success" as const : ["blocked", "partial", "awaiting_approval", "paused", "cancelling", "cancelled"].includes(value) ? "warning" as const : ["failed", "refused", "interrupted"].includes(value) ? "danger" as const : value === "counterfactual" ? "violet" as const : "info" as const; }
 
 interface LiveConsoleProps {
@@ -528,11 +566,14 @@ function LiveConsole({ catalog, run: linkedRun, job, events, pending, approvalPr
   const canResume = controlActionsEnabled && mutableControlsEnabled && job?.state === "paused";
   const canCancel = Boolean(mutableControlsEnabled && job && !terminalJobStates.has(job.state));
   const terminal = Boolean(job && terminalJobStates.has(job.state));
+  // A finalized run can return without its job; it has nothing left to control.
+  const ended = terminal || (!job && Boolean(run));
   const emptyTitle = pending && !run ? job?.state === "awaiting_approval" ? "Waiting for your approval" : job ? sentence(job.state) : "Submitting request" : retained.record ? "No retained step records" : run ? `Run ${sentence(run.status).toLowerCase()}` : terminal ? `Job ${sentence(job!.state).toLowerCase()}` : "Awaiting a run";
   const emptyDetail = pending && !run ? job?.state === "awaiting_approval" ? "Review the saved plan below. The next execution phase is waiting for approval." : job ? "Following the saved operation. Step results appear as they are recorded." : "Waiting for the service to return the saved operation." : run ? "The saved record contains no completed steps. Review its events and limitations for context." : terminal ? typeof job?.progress.run_id === "string" ? "This job has ended. Its recorded events remain available below, but no finalized run record is linked." : "This job ended before a run record was linked." : "Planner, policy, dispatch, evidence, detection, and cleanup events will remain separate.";
-  return <Panel className="live-console"><PanelHeader title={run ? runLabel(run) : job ? "Run progress" : pending ? "Submitting run" : "No active run"} detail={retained.record ? `${sentence(retained.record.mode)} · Job ${sentence(job!.state).toLowerCase()} · Retained observations` : run ? `${sentence(run.mode)} · ${sentence(run.status)} · ${run.is_demo ? "sanitized demo" : "canonical local record"}` : job ? `${sentence(job.state)} · Updated ${formatDate(job.updated_at)}` : "Complete preflight, then submit a durable local job."} actions={<div className="run-controls"><Button size="small" variant="ghost" disabled={!canPause || controlPending} onClick={() => onControl("pause")} title={canPause ? "Pause at the next cooperative checkpoint" : "Pause requires a running controller-owned job"}><Pause/>Pause</Button><Button size="small" variant="ghost" disabled={!canResume || controlPending} onClick={() => onControl("resume")} title={canResume ? "Resume the cooperatively paused job" : "Resume requires a paused controller-owned job"}><RotateCcw/>Resume</Button>{isRetryableInterruptedJob(job) ? <Button size="small" variant="secondary" disabled={!retryEnabled || controlPending} onClick={onRetry} title={retryEnabled ? "Create a replacement job with fresh preflight and approval" : "Retry requires a fresh empty active-job inventory"}><RotateCcw/>Retry as replacement</Button> : null}<Button size="small" variant="danger" disabled={!canCancel || controlPending} onClick={() => onControl("cancel")} title={canCancel ? "Request cooperative cancellation" : "Cancel requires a nonterminal controller-owned job"}><CircleStop/>Cancel</Button>{linkedRun ? <Button size="small" onClick={onReview}><FileSearch/>Review</Button> : null}</div>} />
+  return <Panel className="live-console" id="run-progress" tabIndex={-1} aria-label="Run progress"><PanelHeader title={run ? runLabel(run) : job ? "Run progress" : pending ? "Submitting run" : "No active run"} detail={retained.record ? `${sentence(retained.record.mode)} · Job ${sentence(job!.state).toLowerCase()} · Retained observations` : run ? `${sentence(run.mode)} · ${sentence(run.status)} · ${run.is_demo ? "sanitized demo" : "canonical local record"}` : job ? `${sentence(job.state)} · Updated ${formatDate(job.updated_at)}` : "Complete preflight, then submit a durable local job."} actions={<div className="run-controls">{ended ? null : <><Button size="small" variant="ghost" disabled={!canPause || controlPending} onClick={() => onControl("pause")} title={canPause ? "Pause at the next cooperative checkpoint" : "Pause requires a running controller-owned job"}><Pause/>Pause</Button><Button size="small" variant="ghost" disabled={!canResume || controlPending} onClick={() => onControl("resume")} title={canResume ? "Resume the cooperatively paused job" : "Resume requires a paused controller-owned job"}><RotateCcw/>Resume</Button></>}{isRetryableInterruptedJob(job) ? <Button size="small" variant="secondary" disabled={!retryEnabled || controlPending} onClick={onRetry} title={retryEnabled ? "Create a replacement job with fresh preflight and approval" : "Retry requires a fresh empty active-job inventory"}><RotateCcw/>Retry as replacement</Button> : null}{ended ? null : <Button size="small" variant="danger" disabled={!canCancel || controlPending} onClick={() => onControl("cancel")} title={canCancel ? "Request cooperative cancellation" : "Cancel requires a nonterminal controller-owned job"}><CircleStop/>Cancel</Button>}{linkedRun ? <Button size="small" variant={ended ? "primary" : "secondary"} onClick={onReview}><FileSearch/>Review</Button> : null}</div>} />
+    {ended && linkedRun ? <div className="live-run-outcome"><RunOutcomeSummary run={linkedRun} catalog={catalog} showObjective={false} heading="h3" /></div> : null}
     {job ? <details className="job-details"><summary>Job details</summary><DataList items={[{ label: "Job ID", value: <code>{job.job_id}</code> }, { label: "Last update", value: formatDate(job.updated_at) }]} /></details> : null}
-    {DEMO_MODE ? <div className="console-banner"><Sparkles/>Demo lifecycle states are presentation fixtures only. No runner was dispatched.</div> : null}
+    {DEMO_MODE ? <div className="console-banner"><FlaskConical aria-hidden="true"/>Demo lifecycle states are presentation fixtures only. No runner was dispatched.</div> : null}
     {job?.state === "awaiting_approval" && job.progress.approval_kind !== "ai_proposal" ? mutableControlsEnabled ? <JobApprovalGate catalog={catalog} job={job} preflight={approvalPreflight} approvalRequest={approvalRequest} proposalReview={proposalReview} confirmed={approvalConfirmed} approvedBy={approvedBy} pending={approvalPending} releaseEnabled={releaseEnabled} onConfirmed={onApprovalConfirmed} onApprovedBy={onApprovedBy} onApprove={onApprove} /> : <Callout tone="warning" title="Controller ownership unavailable">Approval remains disabled until fresh active-job inventory confirms that this controller owns the job.</Callout> : null}
     {job && !terminal && typeof job.progress.proposal_record_id === "string" ? mutableControlsEnabled ? <ProposalReviewWorkspace job={job} onDecision={onProposalDecision} onReviewLoaded={onProposalReviewLoaded}/> : <Callout tone="warning" title="Controller ownership unavailable">Proposal decisions remain disabled until fresh active-job inventory confirms that this controller owns the job.</Callout> : null}
     {job?.error ? <Callout tone="danger" title="Run stopped"><p>{job.error.code === "execution_callback_failed" ? "BlueFire could not finish this run. Inspect the retained steps, evidence and events before preparing another run." : job.error.message ?? "The run ended with a recorded error."}</p>{job.error.code ? <details><summary>Error details</summary><code>{job.error.code}</code></details> : null}</Callout> : null}
@@ -542,7 +583,8 @@ function LiveConsole({ catalog, run: linkedRun, job, events, pending, approvalPr
     {retained.requested && retained.isError ? <ErrorState title="Retained observations unavailable" error={retained.error} retry={() => { void retained.refetch(); }} /> : null}
     <div className="live-path">{steps.length ? steps.map((step, index) => {
       const labels = recordedStepLabels(step, catalog, run);
-      return <article key={`${step.step_id}-${index}`} data-status={normalizeStatus(step.status)}><header><span>{String(index + 1).padStart(2, "0")}</span><Badge tone={statusTone(step.status)} dot>{stepOutcomeLabel(step, run!.mode)}</Badge></header><strong>{labels.name}</strong>{labels.method !== labels.name ? <small>{labels.method}</small> : null}<details><summary>Step details</summary><DataList items={[{ label: "Step ID", value: <code>{step.step_id}</code> }, { label: "Method ID", value: <code>{step.action_id ?? step.simulation_id ?? "Not recorded"}</code> }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not recorded") }]} /></details></article>;
+      const method = distinctMethod(labels, run!.mode);
+      return <article key={`${step.step_id}-${index}`} data-status={normalizeStatus(step.status)}><header><span>{String(index + 1).padStart(2, "0")}</span><span className={`run-step-outcome tone-${statusTone(step.status)}`}>{stepOutcomeLabel(step, run!.mode)}</span></header><strong>{labels.name}</strong>{method ? <small>{method}</small> : null}<details><summary>Step details</summary><DataList items={[{ label: "Step ID", value: <code>{step.step_id}</code> }, { label: "Method ID", value: <code>{step.action_id ?? step.simulation_id ?? "Not recorded"}</code> }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not recorded") }]} /></details></article>;
     }) : <div className="console-empty"><Activity/><strong>{emptyTitle}</strong><span>{emptyDetail}</span></div>}</div>
     <div className="console-tabs" role="tablist" aria-label="Run detail views">{(["timeline", "planner", "policy", "runner", "evidence", "detections"] as const).map((item) => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{sentence(item)}</button>)}</div>
     <div className="console-detail">{tab !== "timeline" && retained.requested && !retained.record ? <p>{retained.isError ? "Observations could not be loaded. Try again above." : "Loading retained observations…"}</p> : tab === "timeline" ? <Timeline catalog={catalog} run={run} job={job} events={events} pending={pending} /> : tab === "planner" ? <StructuredPanel value={run?.planner_decisions?.length ? run.planner_decisions : run?.plan} empty="No planner decisions are available." /> : tab === "policy" ? <StructuredPanel value={run?.policy} empty="No policy decisions are available." /> : tab === "runner" ? <RunnerDetail catalog={catalog} run={run} /> : tab === "evidence" ? <EvidenceDetail run={run} catalog={catalog} /> : <DetectionDetail run={run} />}</div>
@@ -591,9 +633,17 @@ function JobApprovalGate({ catalog, job, preflight: ordinaryPreflight, approvalR
 function Timeline({ catalog, run, job, events: incrementalEvents, pending }: { catalog?: CatalogResponse; run: RunRecord | null; job: RunJob | null; events: RunEventPage["items"]; pending: boolean }) {
   const events = incrementalEvents.length ? incrementalEvents : run?.events?.length ? run.events : run?.steps.map((step, index) => ({ event_type: "step.completed", data: step, sequence: index + 1 })) ?? (job ? [{ type: job.state, sequence: 1, disposition: job.state === "awaiting_approval" ? "Execution callback has not started" : `Durable job phase ${String(job.progress.phase ?? job.state)}`, timestamp: job.updated_at }] : []);
   if (!events.length && !pending) return <div className="console-empty compact"><Clock3/><span>No audit events are available.</span></div>;
-  return <ol className="timeline">{pending && !events.length ? <li><span className="timeline-dot planning"/><div><strong>Planning request submitted</strong><p>Waiting for the service to accept the request. Its saved status will appear here.</p></div><time>Now</time></li> : events.map((event, index) => {
+  // A routing decision reads as the next line of the step result it follows,
+  // instead of a separate row after every step; proposals keep their own rows.
+  const entries: { view: ReturnType<typeof runEventPresentation>; decision?: ReturnType<typeof runEventPresentation> }[] = [];
+  for (const event of events) {
     const view = runEventPresentation(event, catalog, run, job?.request?.mode);
-    return <li key={view.sequence ?? index + 1}><span className={`timeline-dot ${normalizeStatus(view.status)}`}/><div><strong>{view.title}</strong><p>{view.detail}</p><details><summary>Event details</summary><DataList items={[{ label: "Event type", value: <code>{view.type}</code> }, ...(view.stepId ? [{ label: "Step ID", value: <code>{view.stepId}</code> }] : []), ...(view.methodId ? [{ label: "Method ID", value: <code>{view.methodId}</code> }] : []), ...(view.behaviorId ? [{ label: "Behavior ID", value: <code>{view.behaviorId}</code> }] : [])]} /></details></div><time>{view.timestamp ? formatDate(view.timestamp) : `#${view.sequence ?? index + 1}`}</time></li>;
+    const previous = entries.at(-1);
+    if (view.type === "planner.decision" && view.proposedBy === "deterministic-planner.v1" && previous?.view.type === "step.completed" && !previous.decision) previous.decision = view;
+    else entries.push({ view });
+  }
+  return <ol className="timeline">{pending && !events.length ? <li><span className="timeline-dot planning"/><div><strong>Planning request submitted</strong><p>Waiting for the service to accept the request. Its saved status will appear here.</p></div><time>Now</time></li> : entries.map(({ view, decision }, index) => {
+    return <li key={view.sequence ?? index + 1}><span className={`timeline-dot ${normalizeStatus(view.status)}`}/><div><strong>{view.stepName ?? view.title}</strong>{view.stepName ? <p><span className={`run-step-outcome tone-${statusTone(view.status)}`}>{view.outcome}</span>{view.reason ? ` · ${view.reason}` : null}</p> : <p>{view.detail}</p>}{decision ? <div className="timeline-decision"><p><GitBranch aria-hidden="true"/>{decision.detail}</p></div> : null}<details><summary>Event details</summary><DataList items={[{ label: "Event type", value: <code>{view.type}</code> }, ...(view.stepId ? [{ label: "Step ID", value: <code>{view.stepId}</code> }] : []), ...(view.methodId ? [{ label: "Method ID", value: <code>{view.methodId}</code> }] : []), ...(view.behaviorId ? [{ label: "Behavior ID", value: <code>{view.behaviorId}</code> }] : [])]} /></details>{decision ? <details><summary>Decision details</summary><DataList items={[{ label: "Event type", value: <code>{decision.type}</code> }, ...(decision.stepId ? [{ label: "Step ID", value: <code>{decision.stepId}</code> }] : []), ...(decision.methodId ? [{ label: "Method ID", value: <code>{decision.methodId}</code> }] : []), ...(decision.behaviorId ? [{ label: "Behavior ID", value: <code>{decision.behaviorId}</code> }] : []), ...(decision.timestamp ? [{ label: "Recorded at", value: decision.timestamp }] : []), ...(decision.sequence !== undefined ? [{ label: "Sequence", value: String(decision.sequence) }] : [])]} /></details> : null}</div><time>{view.timestamp ? formatDate(view.timestamp) : `#${view.sequence ?? index + 1}`}</time></li>;
   })}</ol>;
 }
 
@@ -623,6 +673,31 @@ export function DetectionDetail({ run }: { run: RunRecord | null }) {
 }
 
 
+/** The recorded conclusion shared by the live run panel and the run review. */
+function RunOutcomeSummary({ run, catalog, showObjective = true, heading = "h2" }: { run: RunRecord; catalog?: CatalogResponse; showObjective?: boolean; heading?: "h2" | "h3" }) {
+  const Heading = heading;
+  const stopped = (run.steps ?? []).find((step) => step.execution_disposition !== "counterfactual" && ["blocked", "control_blocked", "refused", "failed", "error", "cancelled"].includes(step.status));
+  const observed = run.evidence?.records?.filter((record) => record.provenance === "observed");
+  const outcome = objectiveLabel(run.objective_reached, run.mode);
+  const cleanup = cleanupSummary(run.cleanup, run.mode);
+  const needsCleanup = cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed");
+  const stepName = (step: RunStep) => recordedStepLabels(step, catalog, run).name;
+  const outcomeDescription = run.objective_reached === true
+    ? run.mode === "simulate" ? "The simulated path reached the experiment's objective. This does not establish a real effect or a working defense." : "The run records its objective as achieved. Check independent observations below to assess what was verified."
+    : run.objective_reached === false ? "The run did not achieve its objective. An unmet objective alone does not establish that a target control prevented it."
+    : "This record does not establish whether the objective was achieved. Review the path and available evidence before drawing a conclusion.";
+  return <>
+    <section className="run-outcome" aria-label="Recorded run outcome" data-result={run.objective_reached === true ? "achieved" : run.objective_reached === false ? "not-achieved" : "unknown"}>
+      <div className="run-outcome-main"><div className="run-outcome-heading"><span className="run-outcome-symbol"><Target aria-hidden="true"/></span><Heading>{outcome}</Heading></div>{showObjective && run.objective ? <div className="run-objective"><strong>Objective</strong><p>{run.objective}</p></div> : null}<details className="run-result-notes"><summary>Result details</summary><p>{outcomeDescription}</p><ul><li>{observed?.length === 0 ? "No independent confirmation is recorded." : observed ? "Collector observations; inspect their content and limitations." : "The evidence document is unavailable."}</li>{!stopped ? <li>This does not establish that the path completed.</li> : null}<li>{cleanup === "No real effects" ? "The cleanup record states that the simulation had no real effects." : run.mode === "simulate" ? "Simulation mode does not establish cleanup; review the recorded cleanup result." : "Recorded cleanup result; inspect any outstanding effects."}</li></ul></details></div>
+      <dl className="run-outcome-facts">
+        <div><dt>Independent observations</dt><dd>{observed ? `${observed.length} observed records` : "Not reported"}</dd></div>
+        <div><dt>First issue</dt><dd>{stopped ? <>{stepName(stopped)}<small>{stepOutcomeLabel(stopped, run.mode)}</small></> : "None recorded"}</dd></div>
+        <div className={needsCleanup ? "cleanup-attention" : ""}><dt>Cleanup</dt><dd>{cleanup}</dd></div>
+      </dl>
+    </section>
+  </>;
+}
+
 export function RunReview({ run, catalog, showObjective = true }: { run: RunRecord; catalog: CatalogResponse; showObjective?: boolean }) {
   const pathRef = useRef<HTMLElement>(null);
   const evidenceRef = useRef<HTMLDetailsElement>(null);
@@ -649,37 +724,22 @@ export function RunReview({ run, catalog, showObjective = true }: { run: RunReco
   ].filter(([count]) => typeof count === "number" && count > 0).map(([count, label]) => `${count} ${label}`).join(" · ");
   const detections = run.detections?.candidates;
   const aiProposals = Array.isArray(run.ai_proposals) ? run.ai_proposals : [];
-  const outcome = objectiveLabel(run.objective_reached, run.mode);
-  const cleanup = cleanupSummary(run.cleanup);
-  const needsCleanup = cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed");
-  const stepName = (step: RunStep) => recordedStepLabels(step, catalog, run).name;
-  const outcomeDescription = run.objective_reached === true
-    ? run.mode === "simulate" ? "The simulated path reached the experiment's objective. This does not establish a real effect or a working defense." : "The run records its objective as achieved. Check independent observations below to assess what was verified."
-    : run.objective_reached === false ? "The run did not achieve its objective. An unmet objective alone does not establish that a target control prevented it."
-    : "This record does not establish whether the objective was achieved. Review the path and available evidence before drawing a conclusion.";
   return <div className="review-stack run-review">
     <div className="run-review-toolbar"><nav aria-label="Run review sections"><Button size="small" variant="ghost" onClick={() => focusSection(pathRef.current)}><ListTree aria-hidden="true"/>Path & steps</Button><Button size="small" variant="ghost" onClick={() => focusSection(evidenceRef.current)}><FileSearch aria-hidden="true"/>Evidence</Button><Button size="small" variant="ghost" onClick={() => focusSection(detectionRef.current)}><FlaskConical aria-hidden="true"/>Detection work</Button><Button size="small" variant="ghost" onClick={() => focusSection(cleanupRef.current)}><ShieldCheck aria-hidden="true"/>Cleanup</Button><Button size="small" variant="ghost" onClick={() => focusSection(exportRef.current)}><Download aria-hidden="true"/>Export</Button></nav></div>
     {run.is_demo ? <Callout title="Seeded review">This is a sanitized Simulate record. It does not prove runner execution, independent observation, or a real control block.</Callout> : null}
     {run.approval_pause ? <Callout tone="warning" title="Waiting for a reviewed continuation">The planner paused before the next action. Return to its saved job to review the proposed change and, for Execute, approve the next run.</Callout> : null}
-    <section className="run-outcome" aria-label="Recorded run outcome" data-result={run.objective_reached === true ? "achieved" : run.objective_reached === false ? "not-achieved" : "unknown"}>
-      <div className="run-outcome-main"><div className="run-outcome-heading"><span className="run-outcome-symbol"><Target aria-hidden="true"/></span><h2>{outcome}</h2></div>{showObjective && run.objective ? <div className="run-objective"><strong>Objective</strong><p>{run.objective}</p></div> : null}<details className="run-result-notes"><summary>Result details</summary><p>{outcomeDescription}</p><ul><li>{observed?.length === 0 ? "No independent confirmation is recorded." : observed ? "Collector observations; inspect their content and limitations." : "The evidence document is unavailable."}</li>{!stopped ? <li>This does not establish that the path completed.</li> : null}<li>{run.mode === "simulate" ? "Simulate does not perform lab effects." : "Recorded cleanup result; inspect any outstanding effects."}</li></ul></details></div>
-      <dl className="run-outcome-facts">
-        <div><dt>Independent observations</dt><dd>{observed ? `${observed.length} observed records` : "Not reported"}</dd></div>
-        <div><dt>First stopped step</dt><dd>{stopped ? <>{stepName(stopped)}<small>{stepOutcomeLabel(stopped, run.mode)}</small></> : "None recorded"}</dd></div>
-        <div className={needsCleanup ? "cleanup-attention" : ""}><dt>Cleanup</dt><dd>{cleanup}</dd></div>
-      </dl>
-    </section>
+    <RunOutcomeSummary run={run} catalog={catalog} showObjective={showObjective} />
     {stopped?.error?.message ? <Callout tone="warning" title={stepOutcomeLabel(stopped, run.mode)}>{stopped.error.message}</Callout> : null}
     <div className="run-review-body">
       <div className="run-review-path"><AdaptiveRunPath run={run} catalog={catalog}/>
         <section ref={pathRef} className="run-path-section" aria-label="Recorded step outcomes"><header><h2 tabIndex={-1}>Path taken</h2><p>{steps.length} recorded steps</p></header>
           {steps.length ? <ol className="run-path-list">{steps.map((step, index) => {
             const labels = recordedStepLabels(step, catalog, run);
-            const method = labels.method === `Simulation · ${labels.name}` ? run.mode === "simulate" ? undefined : "Simulation" : labels.method === labels.name ? undefined : labels.method;
+            const method = distinctMethod(labels, run.mode);
             return <li key={`${step.step_id}-${index}`} data-disposition={step.execution_disposition ?? "not_recorded"} data-status={step.status}>
               <span className="run-step-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
               <div className="run-step-content">
-                <div className="run-step-heading"><strong>{labels.name}</strong><Badge tone={step.execution_disposition === "counterfactual" ? "violet" : statusTone(step.status)}>{stepOutcomeLabel(step, run.mode)}</Badge></div>
+                <div className="run-step-heading"><strong>{labels.name}</strong><span className={`run-step-outcome tone-${step.execution_disposition === "counterfactual" ? "violet" : statusTone(step.status)}`}>{stepOutcomeLabel(step, run.mode)}</span></div>
                 <div className="run-step-metadata">
                   {method ? <small>{method}</small> : null}
                 </div>

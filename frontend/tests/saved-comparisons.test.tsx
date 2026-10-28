@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { afterEach, expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
+import { writeComparisonContext } from "../src/lib/comparison-context";
 import { compareDemoRuns, demoCatalog, demoRuns } from "../src/lib/demo";
 import { ComparePage } from "../src/pages/Compare";
 import type { ComparisonResponse, RunRecord, SavedComparisonSnapshot, SavedComparisonSummary } from "../src/types";
@@ -206,6 +207,25 @@ it("opens a missing-source snapshot as historical evidence without recomputing",
   expect(await screen.findByText(/shown as saved and was not recomputed/)).toBeVisible();
   expect(screen.getByRole("region", { name: "Comparison results" })).toBeVisible();
   expect(screen.getByText("Saved comparisons", { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
+  expect(compare).not.toHaveBeenCalled();
+});
+
+it("rejects a restored run order that differs from the saved snapshot and recovers only when that snapshot is reopened", async () => {
+  mocks();
+  const compare = vi.spyOn(api, "compare");
+  const snapshot = saved("snapshot-a");
+  const before = structuredClone(snapshot);
+  vi.spyOn(api, "comparisonSnapshot").mockResolvedValue(snapshot);
+  const params = writeComparisonContext(new URLSearchParams({ snapshot: snapshot.snapshot_id }), { runIds: [...runIds].reverse(), baselineId: "", revisedId: "" });
+  mount(`/compare?${params}`);
+  expect(await screen.findByText("Saved comparison selection mismatch")).toBeVisible();
+  expect(screen.queryByRole("region", { name: "Comparison results" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Current detector evaluations" })).not.toBeInTheDocument();
+  expect(compare).not.toHaveBeenCalled();
+  await userEvent.setup().click(snapshotButton("snapshot-a"));
+  expect(await screen.findByRole("region", { name: "Comparison results" })).toBeVisible();
+  expect(screen.queryByText("Saved comparison selection mismatch")).not.toBeInTheDocument();
+  expect(snapshot).toEqual(before);
   expect(compare).not.toHaveBeenCalled();
 });
 

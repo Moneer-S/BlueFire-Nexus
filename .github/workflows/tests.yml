@@ -73,7 +73,10 @@ jobs:
         include:
           - os: windows-latest
             python-version: "3.10"
-            partition: a-d
+            partition: a-b
+          - os: windows-latest
+            python-version: "3.10"
+            partition: c-d
           - os: windows-latest
             python-version: "3.10"
             partition: e-q
@@ -161,14 +164,6 @@ jobs:
           BLUEFIRE_TEST_PARTITION: ${{ matrix.partition }}
         run: |
           switch -CaseSensitive ($env:BLUEFIRE_TEST_PARTITION) {
-            'a-d' {
-              $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
-                Where-Object { $_.Name -cmatch '^test_[a-d].*\.py$' } |
-                Sort-Object Name |
-                ForEach-Object { "tests_platform/$($_.Name)" })
-              if ($testFiles.Count -eq 0) { throw 'Empty a-d test partition' }
-              python -m pytest -vv --durations=50 @testFiles
-            }
             'e-q' {
               $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
                 Where-Object { $_.Name -cmatch '^test_[e-q].*\.py$' } |
@@ -509,7 +504,11 @@ jobs:
           cp tools/verify_installed_browser.py "$RUNNER_TEMP/verify_installed_browser.py"
           cp frontend/tests/installed/installed-service.mjs "$RUNNER_TEMP/installed-service.mjs"
           cp frontend/tests/installed/installed-assistant.mjs "$RUNNER_TEMP/installed-assistant.mjs"
+          cp frontend/tests/installed/preflight-diagnostics.mjs "$RUNNER_TEMP/preflight-diagnostics.mjs"
+          cp frontend/tests/installed/run-job-state.mjs "$RUNNER_TEMP/run-job-state.mjs"
+          cp frontend/tests/installed/run-result-identity.mjs "$RUNNER_TEMP/run-result-identity.mjs"
           cp frontend/tests/installed/installed-receiver.mjs "$RUNNER_TEMP/installed-receiver.mjs"
+          cp frontend/tests/installed/receiver-diagnostics.mjs "$RUNNER_TEMP/receiver-diagnostics.mjs"
           cp frontend/tests/installed/receiver-guards.mjs "$RUNNER_TEMP/receiver-guards.mjs"
           cp frontend/tests/installed/receiver-deadline.mjs "$RUNNER_TEMP/receiver-deadline.mjs"
           wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
@@ -567,6 +566,27 @@ jobs:
             --wheel "${wheels[0]}" \
             --output "$RUNNER_TEMP/bluefire-installed-cancellation-evidence"
 
+      - name: Verify installed Assistant comparison restart and explicit replacement
+        if: always() && matrix.platform == 'linux' && steps.installed-wheel.outcome == 'success' && steps.installed-browser-tooling.outcome == 'success'
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          cp tools/verify_installed_assistant_replacement.py "$RUNNER_TEMP/verify_installed_assistant_replacement.py"
+          cp tools/verify_installed_reopen.py "$RUNNER_TEMP/verify_installed_reopen.py"
+          cp frontend/tests/installed/installed-assistant-replacement.mjs "$RUNNER_TEMP/installed-assistant-replacement.mjs"
+          wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
+          test "${#wheels[@]}" = 1
+          node_path="$(command -v node)"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -I -B verify_installed_assistant_replacement.py \
+            --forbid-root "$GITHUB_WORKSPACE" \
+            --node "$node_path" \
+            --playwright "$GITHUB_WORKSPACE/wheel-source/frontend/node_modules/@playwright/test/index.mjs" \
+            --browser-driver "$RUNNER_TEMP/installed-assistant-replacement.mjs" \
+            --browser-cache "$RUNNER_TEMP/bluefire-installed-browser-cache" \
+            --wheel "${wheels[0]}" \
+            --output "$RUNNER_TEMP/bluefire-installed-assistant-replacement-evidence"
+
       - name: Upload installed Linux browser verification evidence
         if: always() && matrix.platform == 'linux'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -577,6 +597,10 @@ jobs:
             ${{ runner.temp }}/bluefire-installed-browser-evidence/*.png
             ${{ runner.temp }}/bluefire-installed-reopen-evidence/*.json
             ${{ runner.temp }}/bluefire-installed-cancellation-evidence/*.json
+            ${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/receipt.json
+            ${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/browser-report.json
+            ${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/assistant-blocked-original-1440x900.png
+            ${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/assistant-completed-replacement-1440x900.png
           retention-days: 7
           if-no-files-found: warn
 

@@ -546,6 +546,15 @@ class TerminalForwarding:
             raise OSError("some owned product terminal pipes could not be closed")
 
 
+def _client_exit_status(returncode: object) -> str:
+    """Describe an owned launch client, not a guest cause or cleanup receipt."""
+    if returncode is None:
+        return "running"
+    if type(returncode) is int and -(2**31) <= returncode <= 2**32 - 1:
+        return f"exit:{returncode}"
+    return "unavailable"
+
+
 def start(
     state: Path, port: int, *, inference: Mapping[str, Any] | None = None, file_access: bool = False
 ) -> None:
@@ -612,8 +621,13 @@ def start(
                 time.sleep(0.2)
             if terminal.failed.is_set():
                 raise ValueError("the product terminal input or output could not be forwarded")
-            if inner.poll() not in (None, 0) or outer.poll() not in (None, 0):
-                raise ValueError("the isolated product session or UI relay failed")
+            inner_status, outer_status = inner.poll(), outer.poll()
+            if inner_status not in (None, 0) or outer_status not in (None, 0):
+                raise ValueError(
+                    "the isolated product session or UI relay failed "
+                    f"[product_session={_client_exit_status(inner_status)}; "
+                    f"ui_relay={_client_exit_status(outer_status)}]"
+                )
         except KeyboardInterrupt:
             pass
         finally:

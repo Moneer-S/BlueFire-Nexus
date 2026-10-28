@@ -15,6 +15,7 @@ import { ProductProvider } from "../src/state/ProductContext";
 const state = vi.hoisted(() => ({ props: {} as ReactFlowProps, viewport: { x: 0, y: 0, zoom: 1 } as Viewport }));
 const flow = vi.hoisted(() => ({
   getNode: (id: string) => state.props.nodes?.find(node => node.id === id),
+  getNodes: () => state.props.nodes ?? [],
   getViewport: () => state.viewport,
   getZoom: () => state.viewport.zoom,
   setViewport: vi.fn(async (viewport: Viewport) => { state.viewport = viewport; return true; }),
@@ -95,9 +96,8 @@ describe("Builder graph step search", () => {
     visibleCanvasGeometry = true;
     const saved = renderWorkspace(scenario);
     const user = userEvent.setup();
-    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
-
-    expect(screen.getByRole("button", { name: "Select orphan_step" })).toBeInTheDocument();
+    // The opening frame can equal the default viewport, so wait for the canvas itself.
+    expect(await screen.findByRole("button", { name: "Select orphan_step" })).toBeInTheDocument();
     let dialog = await searchFor(user, "fallback");
     await user.click(within(dialog).getByRole("button", { name: /Use approved local fallback.*fallback/ }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Select fallback" })).toHaveAttribute("aria-pressed", "true"));
@@ -111,7 +111,12 @@ describe("Builder graph step search", () => {
     expect(state.props.nodes?.every(node => !node.hidden)).toBe(true);
     const selected = state.props.nodes?.find(node => node.id === "orphan_step");
     expect(selected?.hidden).toBe(false);
-    await waitFor(() => expect(state.viewport).toEqual({ x: -860, y: -652, zoom: 1 }));
+    // Focus keeps the tail readable without leaving empty space past the graph.
+    await waitFor(() => expect(state.viewport).toEqual({
+      x: 900 - 24 - selected!.position.x - GRAPH_NODE_WIDTH,
+      y: 480 - 24 - selected!.position.y - GRAPH_NODE_HEIGHT,
+      zoom: 1,
+    }));
     const selectedRect = {
       left: state.viewport.x + selected!.position.x * state.viewport.zoom,
       top: state.viewport.y + selected!.position.y * state.viewport.zoom,
@@ -122,6 +127,8 @@ describe("Builder graph step search", () => {
     expect(selectedRect.top).toBeGreaterThanOrEqual(0);
     expect(selectedRect.right).toBeLessThanOrEqual(900);
     expect(selectedRect.bottom).toBeLessThanOrEqual(480);
+    expect(selectedRect.right).toBe(900 - 24);
+    expect(selectedRect.bottom).toBe(480 - 24);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(saved);
     expect(state.props.edges?.filter(edge => edge.data?.kind === "route").map(edge => edge.id)).toEqual(saved.edges.map((edge, index) => `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`));
     expect(state.props.nodes?.find(node => node.id === "orphan_step")?.position).toEqual(saved.layout?.orphan_step);

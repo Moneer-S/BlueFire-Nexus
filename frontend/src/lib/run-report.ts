@@ -17,7 +17,7 @@ export function runReport(run: RunRecord): string {
     "", "## Recorded outcome", "", `Objective: ${text(run.objective)}`,
     "", `**${objectiveLabel(run.objective_reached, run.mode)}**`, "",
     run.mode === "simulate" ? "Simulation does not establish real effects or a working defense." : "An achieved objective requires independent observations to establish real effects; a failed objective alone does not prove a target defense stopped it.",
-    "", `Cleanup: ${text(cleanupSummary(run.cleanup))}`,
+    "", `Cleanup: ${text(cleanupSummary(run.cleanup, run.mode))}`,
     run.mode === "simulate" ? "Simulate does not perform target cleanup." : "Missing cleanup records do not establish that effects were removed.",
     "", "## Recorded path", "",
     ...(run.steps?.length ? run.steps.flatMap((step, index) => [

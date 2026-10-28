@@ -25,6 +25,7 @@ from bluefire.operator_ui_journey import (
     REPORT_PATHS,
     SCREENSHOT_ARTIFACTS,
     OperatorUIJourneyError,
+    _packaged_ui,
 )
 from bluefire.operator_ui_source_validation import operator_source_review_is_human_first
 from bluefire.product_acceptance import load_release_contract
@@ -35,6 +36,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _gate() -> Any:
     return next(gate for gate in load_release_contract().gates if gate.gate_id == "GATE-08")
+
+
+def test_packaged_ui_requires_exact_bundled_font_and_license_inventory(tmp_path: Path) -> None:
+    ui = tmp_path / "bluefire" / "ui"
+    ui.mkdir(parents=True)
+    for name in ("index.html", "app.js", "styles.css"):
+        (ui / name).write_text(
+            '<script src="/ui/app.js"></script><link href="/ui/styles.css">',
+            encoding="utf-8",
+        )
+    fonts = ui / "fonts"
+    fonts.mkdir()
+    (fonts / "InterVariable.woff2").write_bytes(b"font")
+    (fonts / "OFL.txt").write_text("license", encoding="utf-8")
+
+    assert _packaged_ui(tmp_path) == ui
+    (fonts / "OFL.txt").unlink()
+    with pytest.raises(OperatorUIJourneyError, match="font inventory is not exact"):
+        _packaged_ui(tmp_path)
 
 
 def _browser_report() -> dict[str, Any]:
@@ -256,7 +276,7 @@ def test_production_browser_harness_is_separate_and_fail_closed() -> None:
         "  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[1]) });"
     ) in spec
     assert (
-        "await material.scrollIntoViewIfNeeded();\n"
+        "await changes.scrollIntoViewIfNeeded();\n"
         "  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[2]) });"
     ) in spec
 

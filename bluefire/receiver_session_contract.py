@@ -14,6 +14,37 @@ from .util import canonical_json_bytes, content_hash, file_hash
 
 FRAME_LIMIT = 8192
 SESSION_SECONDS = 240
+PREPARATION_STAGES = frozenset(
+    {
+        "attempt_sink",
+        "platform_containment",
+        "generation_frame",
+        "worker_spawn",
+        "containment_register",
+        "process_identity",
+        "pipe_check",
+        "armed_read",
+        "armed_validate",
+        "prepared_write",
+        "ready_read",
+        "ready_validate",
+        "deadline_check",
+        "monitor_start",
+        "worker_prepare_validation",
+        "worker_enrollment",
+        "worker_listener_startup",
+        "worker_ready_frame",
+    }
+)
+WORKER_STARTUP_EXIT_CODES = {
+    "prepare_validation": 75,
+    "enrollment": 76,
+    "listener_startup": 77,
+    "ready_frame": 78,
+}
+_WORKER_FAILURE_STAGES = {
+    exit_code: f"worker_{name}" for name, exit_code in WORKER_STARTUP_EXIT_CODES.items()
+}
 _HEX = re.compile(r"[0-9a-f]{64}")
 _HASH = re.compile(r"sha256:[0-9a-f]{64}")
 _GENERATION_FILES = (
@@ -29,6 +60,23 @@ _GENERATION_FILES = (
 
 class ReceiverSessionError(ValueError):
     """A secret-free, path-free session refusal."""
+
+    preparation_stage: str | None = None
+
+
+def preparation_failure_stage(error: BaseException) -> str | None:
+    """Return only a stage attached by the owned-session preparation boundary."""
+    if type(error) is not ReceiverSessionError:
+        return None
+    stage = error.preparation_stage
+    return stage if type(stage) is str and stage in PREPARATION_STAGES else None
+
+
+def worker_startup_failure_stage(exit_code: object) -> str | None:
+    """Map only exact worker startup exit statuses to fixed public stages."""
+    if type(exit_code) is not int:
+        return None
+    return _WORKER_FAILURE_STAGES.get(exit_code)
 
 
 def _require(value: bool) -> None:

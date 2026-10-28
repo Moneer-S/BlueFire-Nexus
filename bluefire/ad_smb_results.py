@@ -28,6 +28,7 @@ from .util import content_hash
 OWNER_KIND = "ad_smb.exercise"
 OPERATION_KIND = "ad_smb.operation"
 ACTION = "owned.ad.smb_access.v1"
+PREPARATION_HISTORY_LIMIT = 6
 PHASES = {
     "inspect": ("inspect_member",),
     "baseline": ("read_probe_primary", "read_legitimate_primary", "read_legitimate_health"),
@@ -195,10 +196,17 @@ def affordable(owner: Mapping[str, Any], phase: str) -> bool:
 
 def allowed_phases(owner: Mapping[str, Any]) -> list[str]:
     progress = owner["progress"]
+    preparation_history = progress.get("preparation_history", [])
+    if (
+        not isinstance(preparation_history, list)
+        or len(preparation_history) > PREPARATION_HISTORY_LIMIT
+    ):
+        raise AdSmbError("AD preparation history exceeds its closed bound.")
     if (
         progress["pending_operation"]
         or progress["policy_state"] == "unknown"
         or len(progress["operations"]) >= 6
+        or len(preparation_history) >= PREPARATION_HISTORY_LIMIT
     ):
         return []
     phases = []
@@ -222,6 +230,12 @@ def allowed_phases(owner: Mapping[str, Any]) -> list[str]:
         phases.append("rollback")
     if progress["operations"] and latest(owner, "audit") is None:
         phases.append("audit")
+    if (
+        len(preparation_history) == PREPARATION_HISTORY_LIMIT - 1
+        and progress["policy_state"] == "hardened"
+        and latest(owner, "rollback") is None
+    ):
+        phases = [phase for phase in phases if phase == "rollback"]
     return [phase for phase in phases if affordable(owner, phase)]
 
 
@@ -235,6 +249,12 @@ def reviewed_change(owner: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def review_document(owner: Mapping[str, Any], phase: str) -> dict[str, Any]:
+    preparation_history = owner["progress"].get("preparation_history", [])
+    if (
+        isinstance(preparation_history, list)
+        and len(preparation_history) >= PREPARATION_HISTORY_LIMIT
+    ):
+        raise AdSmbError("AD preparation history is full; start a new saved exercise.")
     if phase not in allowed_phases(owner):
         raise AdSmbError("This AD stage needs settled original evidence or a new scope.")
     row = {
@@ -450,7 +470,9 @@ def original_context(request: Mapping[str, Any], value: Any) -> dict[str, Any]:
     return row
 
 
-def validate_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]:
+def _validate_execution(
+    request: Mapping[str, Any], value: Any, *, allow_controller_local: bool = False
+) -> dict[str, Any]:
     limit = MAX_AUDIT_EXECUTION_BYTES if request.get("step") == "collect_audit" else 256 * 1024
     row = document(value, limit=limit)
     exact(
@@ -458,12 +480,22 @@ def validate_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]
         {"schema_version", "request_digest", "provenance", "dispatch", "cleanup", "observation"},
         "AD execution",
     )
+    controller_local = row["provenance"] == "controller_local"
     if (
         row["schema_version"] != "bluefire.ad-smb-execution.v1"
         or row["request_digest"] != content_hash(request)
-        or row["provenance"] not in {"runner_reported", "synthetic_fixture"}
+        or row["provenance"] not in {"runner_reported", "synthetic_fixture", "controller_local"}
         or row["dispatch"] not in {"not_started", "attempted", "unknown"}
         or row["cleanup"] not in {"verified", "unknown"}
+        or (
+            controller_local
+            and (
+                not allow_controller_local
+                or row["dispatch"] != "not_started"
+                or row["cleanup"] != "verified"
+                or row["observation"] is not None
+            )
+        )
     ):
         raise AdSmbError("AD execution identity or state is invalid.")
     observation = row["observation"]
@@ -536,6 +568,18 @@ def validate_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]
         observed_at = timestamp(observation["snapshot"]["observed_at"])
         if not timestamp(request["requested_at"]) <= observed_at <= timestamp(request["deadline"]):
             raise AdSmbError("AD member observation is outside its original request window.")
+    return row
+
+
+def validate_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]:
+    return _validate_execution(request, value)
+
+
+def validate_controller_local_execution(request: Mapping[str, Any], value: Any) -> dict[str, Any]:
+    """Validate only the no-dispatch projection admitted by a durable controller marker."""
+    row = _validate_execution(request, value, allow_controller_local=True)
+    if row["provenance"] != "controller_local":
+        raise AdSmbError("AD controller-local execution has invalid identity or state.")
     return row
 
 
@@ -682,9 +726,10 @@ def outcome(
             for execution in operation["executions"]
             if execution["observation"] is not None
         }
-        distinct = len({row["local_authentication_id"] for row in observations}) == len(
-            observations
-        ) and not old_luids.intersection(row["local_authentication_id"] for row in observations)
+        if observations:
+            distinct = len({row["local_authentication_id"] for row in observations}) == len(
+                observations
+            ) and not old_luids.intersection(row["local_authentication_id"] for row in observations)
     elif phase in {"harden", "rollback"}:
         known = known and all(
             row["state"] in {"readback_matched", "not_attempted"} for row in observations

@@ -21,6 +21,7 @@ export type ActiveWorkSummary = {
   results: ActiveWorkResult[];
   href: string;
   links: Array<{ label: string; href: string }>;
+  runContexts?: Array<{ runId: string; phase: string; receiverDecision?: string }>;
 };
 
 const notRecorded = "Not recorded";
@@ -123,6 +124,14 @@ function handoffSummary(reference: ActiveWorkReference, value: ReceiverDefenseEn
         : latestOutcome ? `Latest recorded phase policy: ${policyTitle[policy as keyof typeof policyTitle]}` : notRecorded
       : notRecorded,
     results, href: activeWorkHref(reference), links,
+    runContexts: value.phases.flatMap(row => row.result ? [{
+      runId: row.result.run_id,
+      phase: phaseTitle[row.phase],
+      ...(row.result.receiver_observation.schema_version === "bluefire.owned-receiver-observation.v1"
+        && row.result.receiver_observation.state === "verified"
+        && ["accepted", "policy_refused"].includes(row.result.decision)
+        ? { receiverDecision: receiverOutcome(row) } : {}),
+    }] : []),
   };
 }
 

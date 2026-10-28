@@ -24,7 +24,7 @@ from bluefire.s3_access_runtime import WORKER_FILES
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 WINDOWS_PARTITIONS = {
-    "3.10": ("a-d", "e-q", "remainder"),
+    "3.10": ("a-b", "c-d", "e-q", "remainder"),
     "3.12": ("a-b", "c-d", "e-q", "remainder"),
 }
 
@@ -43,7 +43,7 @@ def _package_job():
     assert matrix["os"] == ["ubuntu-latest", "macos-latest"]
     assert matrix["python-version"] == ["3.10", "3.12"]
     windows = matrix["include"]
-    assert len(windows) == 7
+    assert len(windows) == 8
     assert all(set(entry) == {"os", "python-version", "partition"} for entry in windows)
     assert {(entry["os"], entry["python-version"], entry["partition"]) for entry in windows} == {
         ("windows-latest", version, partition)
@@ -56,7 +56,7 @@ def _package_job():
 
 
 def _windows_partition_files(names, partition):
-    ranges = {"a-d": ("a", "d"), "a-b": ("a", "b"), "c-d": ("c", "d"), "e-q": ("e", "q")}
+    ranges = {"a-b": ("a", "b"), "c-d": ("c", "d"), "e-q": ("e", "q")}
     if partition not in {*ranges, "remainder"}:
         raise ValueError(f"unknown Windows test partition: {partition}")
 
@@ -80,8 +80,8 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
     python_job = workflow["jobs"]["python"]
     step = next(item for item in python_job["steps"] if item["name"] == "Test Windows partition")
     command = step["run"]
-    assert command.count("Get-ChildItem -LiteralPath tests_platform -File") == 4
-    assert command.count("Where-Object { $_.Name -cmatch '^test_[a-d].*\\.py$' }") == 1
+    assert command.count("Get-ChildItem -LiteralPath tests_platform -File") == 3
+    assert "Where-Object { $_.Name -cmatch '^test_[a-d].*\\.py$' }" not in command
     assert command.count("Where-Object { $_.Name -cmatch '^test_[a-b].*\\.py$' }") == 1
     assert command.count("Where-Object { $_.Name -cmatch '^test_[c-d].*\\.py$' }") == 1
     assert command.count("Where-Object { $_.Name -cmatch '^test_[e-q].*\\.py$' }") == 1
@@ -108,10 +108,10 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
     assert set.union(*partitions.values()) == names
 
     boundaries = {
-        "test_a_boundary.py": "a-d" if version == "3.10" else "a-b",
-        "test_b_boundary.py": "a-d" if version == "3.10" else "a-b",
-        "test_c_boundary.py": "a-d" if version == "3.10" else "c-d",
-        "test_d_boundary.py": "a-d" if version == "3.10" else "c-d",
+        "test_a_boundary.py": "a-b",
+        "test_b_boundary.py": "a-b",
+        "test_c_boundary.py": "c-d",
+        "test_d_boundary.py": "c-d",
         "test_e_boundary.py": "e-q",
         "test_q_boundary.py": "e-q",
         "test_r_boundary.py": "remainder",
@@ -177,6 +177,41 @@ def test_native_wheel_build_and_verification_use_the_exact_archive():
         "wheel-source/dist/*.whl",
         "wheel-source/dist/package-inspection.json",
         "${{ runner.temp }}/installed-wheel-smoke.json",
+    ]
+
+
+def test_installed_assistant_replacement_reuses_linux_wheel_and_uploads_only_selected_evidence():
+    steps = {step["name"]: step for step in _package_job()["steps"]}
+    verify = steps["Verify installed Assistant comparison restart and explicit replacement"]
+    existing = steps["Verify installed Assistant cancellation and reload recovery"]
+    assert verify["if"] == existing["if"]
+    assert verify["timeout-minutes"] == 8
+    command = verify["run"]
+    for source in (
+        "tools/verify_installed_assistant_replacement.py",
+        "tools/verify_installed_reopen.py",
+        "frontend/tests/installed/installed-assistant-replacement.mjs",
+    ):
+        assert f'cp {source} "$RUNNER_TEMP/' in command
+    assert 'wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)' in command
+    assert 'test "${#wheels[@]}" = 1' in command
+    assert '"$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -I -B' in command
+    assert '--forbid-root "$GITHUB_WORKSPACE"' in command
+    assert (
+        '--playwright "$GITHUB_WORKSPACE/wheel-source/frontend/node_modules/@playwright/test/index.mjs"'
+        in command
+    )
+    assert '--wheel "${wheels[0]}"' in command
+    assert '--output "$RUNNER_TEMP/bluefire-installed-assistant-replacement-evidence"' in command
+    upload = steps["Upload installed Linux browser verification evidence"]["with"][
+        "path"
+    ].splitlines()
+    replacement = [item for item in upload if "assistant-replacement-evidence" in item]
+    assert replacement == [
+        "${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/receipt.json",
+        "${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/browser-report.json",
+        "${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/assistant-blocked-original-1440x900.png",
+        "${{ runner.temp }}/bluefire-installed-assistant-replacement-evidence/assistant-completed-replacement-1440x900.png",
     ]
 
 
@@ -287,6 +322,9 @@ def test_actual_committed_archives_distinguish_backend_changes_with_identical_ui
     )
     for name in ("app.js", "index.html", "styles.css"):
         (package / "ui" / name).write_text(name + "\n", encoding="utf-8")
+    font = package / "ui" / "fonts" / "InterVariable.woff2"
+    font.parent.mkdir()
+    font.write_bytes(b"fixture font\n")
     backend = package / "backend.py"
     backend.write_text("committed = 1\n", encoding="utf-8")
     executable = source / "fixture-executable.sh"

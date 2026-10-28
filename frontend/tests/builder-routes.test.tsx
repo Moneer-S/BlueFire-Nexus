@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
+import { GRAPH_NODE_HEIGHT, GRAPH_NODE_WIDTH } from "../src/lib/graph-view";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider } from "../src/state/ProductContext";
 import type { Outcome, Scenario } from "../src/types";
@@ -34,16 +35,16 @@ function measurements() {
     return observer;
   });
   Object.defineProperty(SVGElement.prototype, "getBBox", { configurable: true, value: () => ({ x: 0, y: 0, width: 24, height: 12 }) });
-  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 220 : 1000; });
-  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? 150 : 600; });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? GRAPH_NODE_WIDTH : 1000; });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("react-flow__handle") ? 10 : this.classList.contains("react-flow__node") ? GRAPH_NODE_HEIGHT : 600; });
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
     const element = this as HTMLElement;
     const handle = element.classList.contains("react-flow__handle"), node = element.classList.contains("react-flow__node");
     const viewport = element.closest(".react-flow__viewport");
     const scale = viewport && (handle || node) ? new window.DOMMatrixReadOnly(getComputedStyle(viewport).transform).m22 : 1;
-    const x = handle ? (element.style.left.endsWith("%") ? Number.parseFloat(element.style.left) * 2.2 : element.getAttribute("data-handlepos") === "right" ? 220 : 0) * scale : 0;
-    const y = handle ? (element.getAttribute("data-handlepos") === "bottom" ? 150 : element.getAttribute("data-handlepos") === "right" || element.getAttribute("data-handlepos") === "left" ? Number.parseFloat(element.style.top) * 1.5 || 75 : 0) * scale : 0;
-    const width = (handle ? 10 : node ? 220 : 1000) * scale, height = (handle ? 10 : node ? 150 : 600) * scale;
+    const x = handle ? (element.style.left.endsWith("%") ? Number.parseFloat(element.style.left) * GRAPH_NODE_WIDTH / 100 : element.getAttribute("data-handlepos") === "right" ? GRAPH_NODE_WIDTH : 0) * scale : 0;
+    const y = handle ? (element.getAttribute("data-handlepos") === "bottom" ? GRAPH_NODE_HEIGHT : element.getAttribute("data-handlepos") === "right" || element.getAttribute("data-handlepos") === "left" ? Number.parseFloat(element.style.top) * GRAPH_NODE_HEIGHT / 100 || GRAPH_NODE_HEIGHT / 2 : 0) * scale : 0;
+    const width = (handle ? 10 : node ? GRAPH_NODE_WIDTH : 1000) * scale, height = (handle ? 10 : node ? GRAPH_NODE_HEIGHT : 600) * scale;
     return { x, y, width, height, left: x, top: y, right: x + width, bottom: y + height, toJSON: () => ({}) };
   });
 }
@@ -66,35 +67,31 @@ async function showFullRouteGraph(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole("button", { name: "Show route list" }));
 }
 
-it("renders all 17 separate routes with outcome labels where space permits and complete keyboard inspection", async () => {
+it("keeps all 17 route meanings keyboard inspectable and unfolds each selected route", async () => {
   const user = userEvent.setup();
-  const view = mount(true);
+  mount(true);
   await showFullRouteGraph(user);
   expect(screen.getByText("6 steps · 17 routes")).toBeInTheDocument();
-  expect(routeButtons()).toHaveLength(17);
-  await waitFor(() => expect(view.container.querySelectorAll(".react-flow__edge-path")).toHaveLength(17));
-  const labels = Array.from(view.container.querySelectorAll(".react-flow__edge-text")).map((label) => label.textContent);
-  expect(labels.length).toBeGreaterThan(0);
-  expect(labels.every(label => ["Partial", "Blocked", "Failed"].includes(label ?? ""))).toBe(true);
+  const buttons = routeButtons();
+  expect(buttons).toHaveLength(17);
+  const cleanupPaths: string[] = [];
+  await user.click(buttons[0]!);
   for (const [index, edge] of scenario.edges.entries()) {
-    const rendered = screen.getByTestId(`rf__edge-route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`);
+    if (index) await user.keyboard("{ArrowDown}");
+    expect(buttons[index]).toHaveFocus();
+    expect(buttons[index]).toHaveAttribute("aria-pressed", "true");
+    const rendered = await screen.findByTestId(`rf__edge-route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`);
+    await waitFor(() => expect(rendered).toHaveClass("selected"));
     expect(rendered).toHaveAccessibleName(new RegExp(`^Route ${index + 1}:`));
     expect(rendered.querySelector("title")).toHaveTextContent(`Route ${index + 1}:`);
-    if (edge.outcome === "success") expect(rendered.querySelector(".react-flow__edge-text")).toBeNull();
+    const path = rendered.querySelector(".react-flow__edge-path")!;
+    expect(path).toHaveAttribute("d");
+    if (index >= 5) cleanupPaths.push(path.getAttribute("d")!);
   }
-  const cleanupPaths = scenario.edges.slice(5).map((edge, index) => screen.getByTestId(`rf__edge-route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index + 5}`).querySelector(".react-flow__edge-path")!.getAttribute("d"));
   expect(new Set(cleanupPaths).size).toBe(12);
-  await user.click(routeButtons()[5]!);
-  await user.keyboard("{ArrowDown}");
-  expect(routeButtons()[6]).toHaveFocus();
-  expect(routeButtons()[6]).toHaveAttribute("aria-pressed", "true");
-  const selected = screen.getByTestId("rf__edge-route-transform_fixture-blocked-cleanup_workspace-6");
-  await waitFor(() => expect(selected).toHaveClass("selected"));
-  const selectedLabel = selected.querySelector(".react-flow__edge-text");
-  if (selectedLabel) expect(selectedLabel).toHaveTextContent(/R7.*Blocked/);
-  expect(selected).toHaveAccessibleName(/When blocked/);
   expect(cached()).toEqual(demoScenario);
 });
+
 
 it("deletes only the selected route after confirmation and Undo restores every route", async () => {
   const user = userEvent.setup();
@@ -246,4 +243,50 @@ it.each(["click", "keyboard"])("reopens a retained selected route after closing 
   else { edge.focus(); await user.keyboard("{Enter}"); expect(edge).toHaveFocus(); }
   expect(routeButtons()[6]).toHaveAttribute("aria-pressed", "true");
   expect(cached()).toEqual(demoScenario);
+});
+
+it("names shared-destination conditions once and reveals their complete routes through keyboard inspection", async () => {
+  const user = userEvent.setup();
+  mount();
+  await showFullRouteGraph(user);
+  // authorized_peer_handoff continues to cleanup on every outcome (routes 5, 15, 16 and 17).
+  const success = await screen.findByTestId("rf__edge-route-authorized_peer_handoff-success-cleanup_workspace-4");
+  await waitFor(() => expect(success.querySelector("title")).toHaveTextContent("Route 5: On success. Any outcome"));
+  const label = success.querySelector(".react-flow__edge-text");
+  if (label) expect(label).toHaveTextContent("Any outcome");
+  expect(success).toHaveAccessibleName(/Any outcome/);
+  for (const [index, outcome] of (["partial", "blocked", "failed"] as const).entries()) {
+    expect(screen.queryByTestId(`rf__edge-route-authorized_peer_handoff-${outcome}-cleanup_workspace-${14 + index}`)).not.toBeInTheDocument();
+  }
+  // Every route remains listed. Keyboard selection paints its own condition,
+  // even though repeated idle geometry is absent from the canvas.
+  expect(routeButtons()).toHaveLength(17);
+  await user.click(routeButtons()[14]!);
+  await user.keyboard("{ArrowDown}");
+  expect(routeButtons()[15]).toHaveFocus();
+  const selected = await screen.findByTestId("rf__edge-route-authorized_peer_handoff-blocked-cleanup_workspace-15");
+  await waitFor(() => expect(selected).toHaveClass("selected"));
+  expect(selected).toHaveAccessibleName(/When blocked/);
+  // The selected condition speaks for itself; the success route still accounts
+  // for its two hidden siblings without repeating the selected condition.
+  await waitFor(() => expect(success.querySelector("title")).toHaveTextContent(/^Route 5: On success\. Also partial, failed$/));
+  expect(success).toHaveAccessibleName(/Also partial, failed/);
+  expect(success.querySelector(".react-flow__edge-text")).toHaveTextContent("Also partial, failed");
+  expect(cached()).toEqual(scenario);
+});
+
+it("keeps a method qualifier's parentheses so the card title and qualifier restate the full method name", async () => {
+  const behavior = demoCatalog.behaviors.find(item => item.id === "sandbox.collection.stage.v1")!;
+  const original = behavior.title;
+  behavior.title = "Stage selected records (native JSONL)";
+  try {
+    mount();
+    const node = await screen.findByTestId("rf__node-stage_records");
+    await waitFor(() => expect(node.querySelector(".node-method")).toHaveTextContent(/^\(native JSONL\)$/));
+    const title = node.querySelector(".node-title > strong")!;
+    expect(title).toHaveTextContent(/^Stage selected records$/);
+    expect(title).toHaveAttribute("title", "Stage selected records (native JSONL)");
+  } finally {
+    behavior.title = original;
+  }
 });

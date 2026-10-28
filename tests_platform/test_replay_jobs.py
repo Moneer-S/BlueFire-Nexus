@@ -18,7 +18,7 @@ from bluefire.product_store import ProductStoreError
 from bluefire.runner_transport_errors import RunnerTaskCancelled
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
-from tests_platform.job_wait_diagnostics import diagnose_job_wait
+from tests_platform.job_wait_diagnostics import diagnose_job_wait, report_replay_callback_entry
 from tests_platform.test_replay_preparation import ROOT, SCOPE, forbid, source_run
 from tests_platform.test_replay_preparation import service as service
 
@@ -95,7 +95,10 @@ def test_concurrent_duplicate_submissions_publish_one_callback_and_refuse_change
                 )
             )
         assert results[0]["job"]["job_id"] == results[1]["job"]["job_id"]
-        assert entered.wait(10)
+        entered_in_time = entered.wait(10)
+        if not entered_in_time:
+            report_replay_callback_entry(request.node.add_report_section)
+        assert entered_in_time
         assert len(calls) == 1
         with pytest.raises(APIError) as error:
             service.submit_replay(source["run_id"], {**payload, "defense_change": "changed reuse"})

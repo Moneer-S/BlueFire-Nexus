@@ -60,7 +60,8 @@ export function runEventPresentation(value: unknown, catalog?: CatalogResponse, 
     "step.completed": "Step result recorded", "planner.decision": "Plan decision",
   };
   let detail = reason ?? (text(data.execution_disposition) ?? text(data.disposition) ? readable(String(data.execution_disposition ?? data.disposition)) : "No additional detail recorded");
-  if (type === "step.completed" || stepId && text(data.status)) {
+  const stepResult = type === "step.completed" || Boolean(stepId && text(data.status));
+  if (stepResult) {
     detail = `${labels.name} · ${stepOutcomeLabel(step, mode)}${reason ? ` · ${reason}` : ""}`;
   } else if (type === "planner.decision") {
     const origin = data.proposed_by === "deterministic-planner.v1" ? "Deterministic routing" : "Recorded planner decision";
@@ -70,7 +71,10 @@ export function runEventPresentation(value: unknown, catalog?: CatalogResponse, 
   }
   return {
     title: titles[type] ?? readable(type), detail, status: status === "not_reported" ? text(event.status) ?? "observed" : status,
+    // A step result can lead with the step it describes; the event type stays in its details.
+    ...(stepResult ? { stepName: labels.name, outcome: stepOutcomeLabel(step, mode), reason } : {}),
     type, stepId, methodId: step.action_id ?? step.simulation_id, behaviorId: step.behavior_id,
+    proposedBy: text(data.proposed_by),
     timestamp: text(event.timestamp), sequence: typeof event.sequence === "number" ? event.sequence : undefined,
   };
 }

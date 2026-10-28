@@ -17,6 +17,7 @@ from bluefire.receiver_policy import ReceiverContentPolicy
 from bluefire.receiver_session_channel import read_frame, write_frame
 from bluefire.receiver_session_contract import (
     SESSION_SECONDS,
+    WORKER_STARTUP_EXIT_CODES,
     ready_binding,
     validate_prepare,
     validate_task,
@@ -55,80 +56,94 @@ def run(arguments: list[str]) -> int:
             "parent_process_id": parent,
         },
     )
-    prepared = validate_prepare(
-        read_frame(0, deadline_ns=startup_deadline),
-        launch_id=launch,
-        generation=worker_generation(),
-        now_ns=time.monotonic_ns(),
-    )
-    if os.getppid() != parent:
-        return 74
-    # No enrollment read or listener creation occurs before the owned parent
-    # confirms registration by sending the exact prepare frame.
-    enrollment = load_local_enrollment(managed_product_root() / "enrollment", require_active=True)
-    key = enrollment.hmac_key()
-    policy = ReceiverContentPolicy(prepared["policy"]["policy_id"])
-    with LoopbackArtifactReceiver(
-        ReceiverConfig(
-            authentication_key=key,
-            host="127.0.0.1",
-            port=prepared["port"],
-            disposable_peer=True,
-            max_connections=8,
-            max_body_bytes=1024 * 1024,
-            idle_timeout_seconds=float(SESSION_SECONDS),
-            content_policy=policy.policy_id,
+    stage = "prepare_validation"
+    try:
+        prepared = validate_prepare(
+            read_frame(0, deadline_ns=startup_deadline),
+            launch_id=launch,
+            generation=worker_generation(),
+            now_ns=time.monotonic_ns(),
         )
-    ) as receiver:
-        identity = LinuxPrivateProcessContainment.process_identity(os.getpid())
-        binding = ready_binding(
-            prepared,
-            session_id=receiver.session_id,
-            process_id=os.getpid(),
-            creation_identity=str(identity[1]),
-        )
-        write_frame(1, {"kind": "ready", "binding": binding})
-        task = validate_task(
-            read_frame(0, deadline_ns=prepared["deadline_ns"]), binding, now_ns=time.monotonic_ns()
-        )
-        if os.getppid() != parent or worker_generation() != prepared["worker_generation"]:
+        if os.getppid() != parent:
             return 74
-        receiver.bind_policy_task(
-            task["task_id"],
-            task["sha256"],
-            task["size_bytes"],
-            deadline=prepared["deadline_ns"] / 1_000_000_000,
+        # No enrollment read or listener creation occurs before the owned parent
+        # confirms registration by sending the exact prepare frame.
+        stage = "enrollment"
+        enrollment = load_local_enrollment(
+            managed_product_root() / "enrollment", require_active=True
         )
-        write_frame(
-            1,
-            {
-                "kind": "bound",
-                "review_digest": binding["review_digest"],
-                "task_digest": content_hash(task),
-            },
-        )
+        key = enrollment.hmac_key()
+        policy = ReceiverContentPolicy(prepared["policy"]["policy_id"])
+        stage = "listener_startup"
+        with LoopbackArtifactReceiver(
+            ReceiverConfig(
+                authentication_key=key,
+                host="127.0.0.1",
+                port=prepared["port"],
+                disposable_peer=True,
+                max_connections=8,
+                max_body_bytes=1024 * 1024,
+                idle_timeout_seconds=float(SESSION_SECONDS),
+                content_policy=policy.policy_id,
+            )
+        ) as receiver:
+            stage = "ready_frame"
+            identity = LinuxPrivateProcessContainment.process_identity(os.getpid())
+            binding = ready_binding(
+                prepared,
+                session_id=receiver.session_id,
+                process_id=os.getpid(),
+                creation_identity=str(identity[1]),
+            )
+            write_frame(1, {"kind": "ready", "binding": binding})
+            stage = "after_ready"
+            task = validate_task(
+                read_frame(0, deadline_ns=prepared["deadline_ns"]),
+                binding,
+                now_ns=time.monotonic_ns(),
+            )
+            if os.getppid() != parent or worker_generation() != prepared["worker_generation"]:
+                return 74
+            receiver.bind_policy_task(
+                task["task_id"],
+                task["sha256"],
+                task["size_bytes"],
+                deadline=prepared["deadline_ns"] / 1_000_000_000,
+            )
+            write_frame(
+                1,
+                {
+                    "kind": "bound",
+                    "review_digest": binding["review_digest"],
+                    "task_digest": content_hash(task),
+                },
+            )
 
-        def watch_parent() -> None:
-            try:
-                os.read(0, 1)  # EOF or any extra frame stops the single-use session.
-            finally:
-                receiver.stop()
+            def watch_parent() -> None:
+                try:
+                    os.read(0, 1)  # EOF or any extra frame stops the single-use session.
+                finally:
+                    receiver.stop()
 
-        threading.Thread(target=watch_parent, name="bluefire-receiver-parent", daemon=True).start()
-        summary = receiver.serve()
-        decisions = receiver.policy_decisions
-        if len(decisions) > 1:
-            return 74
-        write_frame(
-            1,
-            {
-                "kind": "terminal",
-                "review_digest": binding["review_digest"],
-                "task_digest": content_hash(task),
-                "summary": dict(summary),
-                "decision": dict(decisions[0]) if decisions else None,
-            },
-        )
+            threading.Thread(
+                target=watch_parent, name="bluefire-receiver-parent", daemon=True
+            ).start()
+            summary = receiver.serve()
+            decisions = receiver.policy_decisions
+            if len(decisions) > 1:
+                return 74
+            write_frame(
+                1,
+                {
+                    "kind": "terminal",
+                    "review_digest": binding["review_digest"],
+                    "task_digest": content_hash(task),
+                    "summary": dict(summary),
+                    "decision": dict(decisions[0]) if decisions else None,
+                },
+            )
+    except Exception:
+        return WORKER_STARTUP_EXIT_CODES.get(stage, 74)
     return 0
 
 

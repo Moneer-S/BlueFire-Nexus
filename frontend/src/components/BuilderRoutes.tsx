@@ -12,7 +12,7 @@ export function BuilderRoutes({ routes, total, selected, readOnly, select, inspe
   // The selected-route footer changes list height after native focus scrolling.
   useLayoutEffect(() => { selectedButton.current?.scrollIntoView({ block: "nearest" }); }, [selected?.id]);
   return <aside className="builder-routes" aria-label="Route inspection">
-    <header><div><h2>Routes</h2><p>{routes.length} of {total} shown · numbers match the canvas</p></div><IconButton label="Close route list" onClick={close}><X/></IconButton></header>
+    <header><div><h2>Routes</h2><p>{routes.length} of {total} routes available in this view</p></div><IconButton label="Close route list" onClick={close}><X/></IconButton></header>
     <p className="route-help">Select a route to follow its path. Use ↑ and ↓ to compare routes.</p>
     <ol aria-label="Visible routes">{routes.map((edge) => <li key={edge.id}><button ref={selected?.id === edge.id ? selectedButton : undefined} type="button" data-route={edge.id} aria-pressed={selected?.id === edge.id}
       onFocus={() => select(edge.id)} onClick={() => select(edge.id)} onKeyDown={(event) => {

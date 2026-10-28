@@ -65,7 +65,8 @@ it("shows retained observations in the failed job without promoting a final resu
   expect(screen.queryByText(/canonical local record/)).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Review" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Review latest result" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
+  // An ended job offers no lifecycle controls it cannot honour.
+  for (const name of ["Pause", "Resume", "Cancel"]) expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
   expect(approve).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled(); expect(control).not.toHaveBeenCalled();
 });
 

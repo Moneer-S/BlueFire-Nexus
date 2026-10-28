@@ -5,6 +5,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout } from "node:timers";
 import { pathToFileURL, URLSearchParams } from "node:url";
 
 const [modulePath, output, port] = process.argv.slice(2);
@@ -33,9 +34,11 @@ const responsiveReadPaths = new Set([
   "/api/v1/comparison-snapshots", "/api/v1/detection-lab/health", "/api/v1/detections",
   "/api/v1/resources/research-sources", "/api/v1/resources/runner-profiles",
   "/api/v1/resources/runners", "/api/v1/resources/model-providers", "/api/v1/ai/authorizations",
+  "/api/v1/receiver-defense/jobs",
   "/api/v1/s3-access/environments", "/api/v1/s3-access/exercises",
   "/api/v1/ad-smb/environments", "/api/v1/ad-smb/workflows",
   "/api/v1/file-access/status", "/api/v1/assistance/graph-context",
+  "/ui/fonts/InterVariable.woff2",
 ]);
 const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value)
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
@@ -48,9 +51,11 @@ function responsiveReadAllowed(path) {
   const run = path.match(/^\/api\/v1\/runs\/(run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16})$/);
   if (run) return ownedRunIds.includes(run[1]);
   const detection = path.match(/^\/api\/v1\/detections\/(detection-[0-9a-f]{20})$/);
-  if (detection) return detection[1] === ownedDetectionId;
+  if (detection) return detection[1] === ownedDetectionId || detection[1] === ownedDetectionRevisionId;
   const snapshot = path.match(/^\/api\/v1\/comparison-snapshots\/([A-Za-z0-9_-]+)$/);
-  return Boolean(snapshot && snapshot[1] === report.comparison_snapshot_id);
+  if (snapshot && snapshot[1] === report.comparison_snapshot_id) return true;
+  const assistantContext = path.match(/^\/api\/v1\/comparison-snapshots\/([A-Za-z0-9_-]+)\/assistant-context$/);
+  return Boolean(assistantContext && assistantContext[1] === report.comparison_snapshot_id);
 }
 const withoutLayout = scenario => {
   if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) return null;
@@ -62,12 +67,18 @@ const report = { schema_version: "bluefire.installed-browser-journey.v1", real_s
 let browser, context, page, connected = false, stage = "launch", bootstrapSession401 = 0;
 let sessionPosts = 0, scenarioVersionPosts = 0, scenarioValidationPosts = 0, graphContextPosts = 0, controlListPosts = 0;
 let preflightPosts = 0, simulationRunPosts = 0, comparisonPosts = 0;
+let comparisonAssistantContextGets = 0, comparisonAssistantTurnPosts = 0, readOnlyPostAttempts = 0, detectionRunEvaluationPosts = 0;
+let fontResponseResolve;
+const fontResponsePromise = new Promise(resolve => { fontResponseResolve = resolve; });
+let fontResponseEvidence;
 let detectionFromRunPosts = 0, detectionParsePosts = 0, detectionFixturePosts = 0, detectionBenignPosts = 0;
+let detectionRevisionClonePosts = 0, detectionRevisionParsePosts = 0;
 let readOnlyCapturePhase = false;
 let ownedRunIds = [];
 let ownedScenarioId = "", generatedScenario, savedScenarioDocument, reviewedScenarioDocument, ownedScenarioVersion;
 const runPlanFingerprints = [];
-let sourceDetectionId, ownedDetectionId, expectedMaliciousFixtures, expectedBenignFixtures;
+let sourceDetectionId, ownedDetectionId, ownedDetectionRevisionId, expectedOwnedRevisionCloneBody;
+let expectedMaliciousFixtures, expectedBenignFixtures;
 
 function hasOwnedLayout(layout) {
   const nodeIds = reviewedScenarioDocument?.steps?.map(step => step.id);
@@ -268,7 +279,7 @@ async function renderedGraphEdges(prefix) {
       && !/rgba\([^)]*,\s*0(?:\.0*)?\)$/.test(style.stroke)
       && Number.parseFloat(style.strokeWidth) > 0 && Number(style.strokeOpacity) > 0;
     return {
-      id: edge.getAttribute("data-id"), pathCount: paths.length,
+      id: edge.getAttribute("data-id"), name: edge.getAttribute("aria-label"), pathCount: paths.length,
       finitePath: Boolean(d && !/NaN|Infinity/.test(d)),
       length, width: box.width, height: box.height,
       // A painted vertical or horizontal SVG path can have one zero-sized axis.
@@ -279,25 +290,38 @@ async function renderedGraphEdges(prefix) {
   }));
 }
 
-async function assertRenderedGraphEdges(prefix, expectedIds, outcomes) {
+function assertGraphEdgeGeometry(edge, outcome) {
+  assert.ok(edge, "An inspected connection must have its own rendered path");
+  assert.equal(edge.pathCount, 1, "Each drawn connection must have one rendered path");
+  assert.ok(edge.finitePath && Number.isFinite(edge.length) && edge.length > 0, "Drawn connections must have finite nonzero path geometry");
+  assert.equal(edge.visible, true, "Drawn connections must have painted visible paths, including straight routes");
+  if (outcome) assert.equal(edge.dashed, outcome !== "success", "Fallback and partial routes must remain visually distinct from success routes");
+}
+
+async function assertRenderedGraphEdges(prefix, expectedIds, routes) {
   const rendered = await renderedGraphEdges(prefix);
-  report.graph_edge_probe = { kind: outcomes ? "outcome_routes" : "input_connections", expected_count: expectedIds.length, actual_count: rendered.length };
-  assert.equal(rendered.length, expectedIds.length, "Every expected graph connection must have exactly one edge group");
+  report.graph_edge_probe = { kind: routes ? "outcome_routes" : "input_connections", expected_count: expectedIds.length, actual_count: rendered.length };
   const actualIds = rendered.map(edge => edge.id);
-  report.graph_edge_probe.identities_match = sameStructure([...actualIds].sort(), [...expectedIds].sort());
-  assert.deepEqual([...actualIds].sort(), [...expectedIds].sort(), "Rendered connections must retain exactly the saved endpoints and meanings");
+  assert.equal(new Set(actualIds).size, actualIds.length, "No connection may be drawn more than once");
+  assert.ok(actualIds.every(id => expectedIds.includes(id)), "Drawn connections must retain saved identities");
   for (const [index, id] of expectedIds.entries()) {
     const edge = rendered.find(item => item.id === id);
+    const route = routes?.[index];
+    if (!edge && route && route.outcome !== "success") {
+      const successIndex = routes.findIndex(other => other.outcome === "success" && other.from_step === route.from_step && other.to_step === route.to_step);
+      const success = rendered.find(item => item.id === expectedIds[successIndex]);
+      assert.ok(success && (success.name?.includes("Any outcome") || success.name?.includes(`Also ${route.outcome}`) || success.name?.includes(`, ${route.outcome}`)), "A folded condition must be named on its visible shared-destination route");
+      continue;
+    }
+    assert.ok(edge, "Every nonfolded connection must be drawn");
     report.graph_edge_probe = { ...report.graph_edge_probe, checked_index: index, path_count: edge.pathCount,
       finite_path: edge.finitePath === true, length: Number.isFinite(edge.length) ? edge.length : null,
       width: Number.isFinite(edge.width) ? edge.width : null, height: Number.isFinite(edge.height) ? edge.height : null,
       visible: edge.visible, stroke_visible: edge.strokeVisible === true,
-      dashed: edge.dashed, ...(outcomes ? { expected_dashed: outcomes[index] !== "success" } : {}) };
-    assert.equal(edge.pathCount, 1, "Each saved connection must have one rendered path");
-    assert.ok(edge.finitePath && Number.isFinite(edge.length) && edge.length > 0, "Every saved connection must have finite nonzero path geometry");
-    assert.equal(edge.visible, true, "Every saved connection must have a painted visible path, including straight routes");
-    if (outcomes) assert.equal(edge.dashed, outcomes[index] !== "success", "Fallback and partial routes must remain visually distinct from success routes");
+      dashed: edge.dashed, ...(route ? { expected_dashed: route.outcome !== "success" } : {}) };
+    assertGraphEdgeGeometry(edge, route?.outcome);
   }
+  report.graph_edge_probe.identities_match = true;
   delete report.graph_edge_probe;
 }
 
@@ -382,6 +406,8 @@ try {
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url()), method = request.method();
     let allowed = url.origin === origin && ["GET", "HEAD"].includes(method), reason;
+    if (method === "POST" && /^\/api\/v1\/detections\/detection-[0-9a-f]{20}\/evaluate-run$/.test(url.pathname)) detectionRunEvaluationPosts += 1;
+    if (readOnlyCapturePhase && method === "POST") readOnlyPostAttempts += 1;
     if (url.origin !== origin) reason = "non_loopback";
     else if (readOnlyCapturePhase) {
       allowed = false;
@@ -460,8 +486,13 @@ try {
                 && body.run_id === ownedRunIds[0] && body.candidate_id === sourceDetectionId;
               if (allowed) detectionFromRunPosts += 1; else reason = "detection_import_cap_or_source";
             } else {
-              const match = url.pathname.match(/^\/api\/v1\/detections\/(detection-[0-9a-f]{20})\/(parse|exercise-fixtures|evaluate-benign)$/);
-              if (match && match[1] === ownedDetectionId) {
+              const match = url.pathname.match(/^\/api\/v1\/detections\/(detection-[0-9a-f]{20})\/(clone|parse|exercise-fixtures|evaluate-benign)$/);
+              if (match?.[2] === "clone") {
+                allowed = match[1] === ownedDetectionId && detectionRevisionClonePosts < 1
+                  && expectedOwnedRevisionCloneBody && exactKeys(body, Object.keys(expectedOwnedRevisionCloneBody))
+                  && sameStructure(body, expectedOwnedRevisionCloneBody);
+                if (allowed) detectionRevisionClonePosts += 1; else reason = "detection_revision_clone_cap_or_payload";
+              } else if (match && match[1] === ownedDetectionId) {
                 const action = match[2];
                 if (action === "parse") {
                   allowed = detectionParsePosts < 1 && exactKeys(body, []);
@@ -476,6 +507,9 @@ try {
                     && sameStructure(body.notes, ["Owned synthetic benign nonmatch fixture."]);
                   if (allowed) detectionBenignPosts += 1; else reason = "detection_benign_cap_or_payload";
                 }
+              } else if (match && ownedDetectionRevisionId && match[1] === ownedDetectionRevisionId && match[2] === "parse") {
+                allowed = detectionRevisionParsePosts < 1 && exactKeys(body, []);
+                if (allowed) detectionRevisionParsePosts += 1; else reason = "detection_revision_parse_cap_or_owner";
               } else reason = "write_not_allowlisted";
             }
         }
@@ -490,8 +524,23 @@ try {
     await route.continue();
   });
   page = await context.newPage();
-  page.on("response", response => {
+  page.on("response", async response => {
     if (!connected && stage === "connect" && response.url() === `${origin}/api/v1/session` && response.request().method() === "GET" && response.status() === 401) bootstrapSession401 += 1;
+    const url = new URL(response.url());
+    if (url.origin !== origin || url.pathname !== "/ui/fonts/InterVariable.woff2" || fontResponseEvidence) return;
+    try {
+      const bytes = await response.body();
+      fontResponseEvidence = { path: url.pathname, status: response.status(), content_type: response.headers()["content-type"] ?? "", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+    } catch {
+      fontResponseEvidence = { path: url.pathname, status: response.status(), content_type: response.headers()["content-type"] ?? "", bytes: 0, sha256: "" };
+    }
+    fontResponseResolve(fontResponseEvidence);
+  });
+  page.on("request", request => {
+    const url = new URL(request.url());
+    if (url.origin !== origin) return;
+    if (url.pathname === `/api/v1/comparison-snapshots/${report.comparison_snapshot_id}/assistant-context` && request.method() === "GET") comparisonAssistantContextGets += 1;
+    if (url.pathname === "/api/v1/assistance/turns" && request.method() === "POST") comparisonAssistantTurnPosts += 1;
   });
   page.on("pageerror", () => report.errors.push({ stage, kind: "page-error" }));
   page.on("console", message => {
@@ -626,13 +675,22 @@ try {
   secrets.fill("");
   report.checks.push("working_graph_json_export_preserves_canonical_document_and_layout_without_credentials");
 
+  stage = "graph-dismiss-verified-save-notice";
+  const savedGraphNotice = page.locator(".compatibility-banner");
+  if (await savedGraphNotice.count()) {
+    assert.equal(await savedGraphNotice.getAttribute("role"), "status");
+    assert.ok((await savedGraphNotice.innerText()).includes(`Version ${updated.version} saved.`));
+    await savedGraphNotice.getByRole("button", { name: "Dismiss compatibility message", exact: true }).click();
+    await savedGraphNotice.waitFor({ state: "hidden" });
+  }
+
   stage = "graph-connected-plan-scope";
   assert.equal(await page.getByRole("navigation", { name: "Focused connected path", exact: true }).count(), 0);
   stage = "graph-connected-plan-node-count";
   assert.equal(await page.locator(".react-flow__node:visible").count(), reviewedScenarioDocument.steps.length);
   stage = "graph-connected-plan-outcome-routes";
   const expectedRoutes = reviewedScenarioDocument.edges.map((route, index) => `route-${route.from_step}-${route.outcome}-${route.to_step}-${index}`);
-  await assertRenderedGraphEdges("route-", expectedRoutes, reviewedScenarioDocument.edges.map(route => route.outcome));
+  await assertRenderedGraphEdges("route-", expectedRoutes, reviewedScenarioDocument.edges);
   const expectedBindings = reviewedScenarioDocument.steps.flatMap(consumer => Object.entries(consumer.inputs ?? {}).map(([input, binding]) => `artifact-${binding.from_step}-${binding.artifact}-${consumer.id}-${input}`));
   stage = "graph-connected-plan-input-connections";
   await graphOptions(true);
@@ -640,6 +698,8 @@ try {
   await graphOptions(false);
   await assertRenderedGraphEdges("artifact-", expectedBindings);
   stage = "graph-connected-plan-readable-routes";
+  const selectedStepBeforeRoutes = await page.locator(".react-flow__node.selected").getAttribute("data-id");
+  assert.ok(reviewedScenarioDocument.steps.some(step => step.id === selectedStepBeforeRoutes));
   await page.getByRole("button", { name: "Show route list", exact: true }).click();
   const routeButtons = page.getByRole("list", { name: "Visible routes", exact: true }).getByRole("button");
   assert.equal(await routeButtons.count(), reviewedScenarioDocument.edges.length);
@@ -647,8 +707,20 @@ try {
     const routeText = await routeButtons.nth(index).innerText();
     const outcome = { success: "On success", partial: "When partly complete", blocked: "When blocked", failed: "On failure" }[route.outcome];
     assert.ok(routeText.includes(outcome) && routeText.includes(route.from_step) && routeText.includes(route.to_step), "Route meaning and endpoints must remain available in the readable route list");
+    if (index === 0) await routeButtons.first().focus();
+    else await routeButtons.nth(index - 1).press("ArrowDown");
+    await page.waitForFunction(id => {
+      const button = [...document.querySelectorAll(".builder-routes button[data-route]")].find(item => item.getAttribute("data-route") === id);
+      const edge = [...document.querySelectorAll(".react-flow__edge")].find(item => item.getAttribute("data-id") === id);
+      return button === document.activeElement && button?.getAttribute("aria-pressed") === "true" && edge?.classList.contains("selected");
+    }, expectedRoutes[index]);
+    const inspected = (await renderedGraphEdges("route-")).find(edge => edge.id === expectedRoutes[index]);
+    assertGraphEdgeGeometry(inspected, route.outcome);
   }
   await page.getByRole("button", { name: "Close route list", exact: true }).click();
+  await page.getByRole("button", { name: "Steps", exact: true }).click();
+  await page.locator(`.ordered-steps button[data-step-id="${selectedStepBeforeRoutes}"]`).click();
+  await page.getByRole("button", { name: "Canvas", exact: true }).click();
   await graphOptions(true);
   await page.getByLabel("Show input connections", { exact: true }).uncheck();
   await graphOptions(false);
@@ -995,6 +1067,93 @@ try {
     ],
   });
 
+  stage = "detection-create-owned-navigation-revision";
+  const parentBeforeNavigationRevision = JSON.parse(JSON.stringify(reopenedResource[0].document));
+  const navigationRevisionTitle = "Installed comparison navigation revision";
+  const navigationRevisionReason = "Create one owned child revision to verify missing-evaluation navigation and return to its saved comparison.";
+  expectedOwnedRevisionCloneBody = {
+    reason: navigationRevisionReason,
+    title: navigationRevisionTitle,
+    ...(importedDocument.provenance ? { provenance: importedDocument.provenance } : {}),
+    ...(importedDocument.known_misses ? { known_misses: importedDocument.known_misses } : {}),
+    public_baselines: importedDocument.public_baselines ?? [],
+    ...(importedDocument.predicted_fields ? { predicted_fields: importedDocument.predicted_fields } : {}),
+  };
+  await page.getByRole("tab", { name: "Revisions", exact: true }).click();
+  const advancedRevisions = page.locator("details.detection-advanced-revisions");
+  if (!await advancedRevisions.evaluate(element => element.open)) await advancedRevisions.locator(":scope > summary").click();
+  await page.getByRole("radio", { name: /^Clone unchanged rule behavior\b/ }).check();
+  stage = "detection-navigation-revision-fill-title";
+  await page.getByRole("textbox", { name: "Revision title", exact: true }).fill(navigationRevisionTitle);
+  stage = "detection-navigation-revision-fill-reason";
+  await advancedRevisions.getByRole("textbox", { name: "Required research reason", exact: true }).fill(navigationRevisionReason);
+  stage = "detection-navigation-revision-clone-submit";
+  const navigationRevisionResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/detections/${ownedDetectionId}/clone` && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Create immutable clone", exact: true }).click();
+  const navigationRevisionResponse = await navigationRevisionResponsePromise;
+  assert.equal(navigationRevisionResponse.status(), 201);
+  const navigationRevisionEnvelope = await navigationRevisionResponse.json();
+  const navigationRevisionDocument = detectionDocument(navigationRevisionEnvelope);
+  ownedDetectionRevisionId = navigationRevisionEnvelope.candidate.id;
+  assert.match(ownedDetectionRevisionId, /^detection-[0-9a-f]{20}$/);
+  assert.notEqual(ownedDetectionRevisionId, ownedDetectionId);
+  assert.equal(navigationRevisionDocument.candidate_id, ownedDetectionRevisionId);
+  assert.equal(navigationRevisionDocument.revision, 2);
+  assert.equal(navigationRevisionDocument.revision_root_id, ownedDetectionId);
+  assert.equal(navigationRevisionDocument.parent_candidate_id, ownedDetectionId);
+  assert.equal(navigationRevisionDocument.revision_kind, "clone");
+  assert.equal(navigationRevisionDocument.state, "hypothesis");
+  assert.equal(navigationRevisionDocument.title, navigationRevisionTitle);
+  assert.deepEqual(navigationRevisionDocument.tuning_decisions?.slice(-1), [navigationRevisionReason]);
+  await page.waitForFunction(id => {
+    const params = new URLSearchParams(window.location.hash.split("?")[1]);
+    return params.get("candidate") === id && params.get("candidate_scope") === "registry";
+  }, ownedDetectionRevisionId);
+  await page.getByRole("tab", { name: "Candidate", exact: true }).click();
+  stage = "detection-navigation-revision-child-parse";
+  const navigationRevisionParseResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/detections/${ownedDetectionRevisionId}/parse` && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Validate source", exact: true }).click();
+  const navigationRevisionParseResponse = await navigationRevisionParseResponsePromise;
+  assert.equal(navigationRevisionParseResponse.status(), 200);
+  const parsedNavigationRevision = detectionDocument(await navigationRevisionParseResponse.json());
+  assert.equal(parsedNavigationRevision.candidate_id, ownedDetectionRevisionId);
+  assert.equal(parsedNavigationRevision.revision, 2);
+  assert.equal(parsedNavigationRevision.revision_root_id, ownedDetectionId);
+  assert.equal(parsedNavigationRevision.parent_candidate_id, ownedDetectionId);
+  assert.equal(parsedNavigationRevision.revision_kind, "clone");
+  assert.equal(parsedNavigationRevision.state, "parsed");
+  const registeredNavigationFamily = (await api("/detections")).candidates.filter(candidate => candidate.document.revision_root_id === ownedDetectionId);
+  assert.equal(registeredNavigationFamily.length, 2);
+  const registeredParent = registeredNavigationFamily.find(candidate => candidate.id === ownedDetectionId);
+  const registeredChild = registeredNavigationFamily.find(candidate => candidate.id === ownedDetectionRevisionId);
+  assert.ok(registeredParent && registeredChild);
+  assert.deepEqual(registeredParent.document, parentBeforeNavigationRevision);
+  assert.equal(registeredParent.document.definition_digest, reopenedResource[0].document.definition_digest);
+  assert.equal(registeredParent.document.state, reopenedResource[0].document.state);
+  assert.equal(registeredChild.document.definition_digest, parsedNavigationRevision.definition_digest);
+  assert.equal(registeredChild.document.state, "parsed");
+  const parentRunEvaluations = await api(`/detections/${ownedDetectionId}/evaluations`);
+  const childRunEvaluations = await api(`/detections/${ownedDetectionRevisionId}/evaluations`);
+  assert.equal(parentRunEvaluations.candidate_id, ownedDetectionId);
+  assert.equal(childRunEvaluations.candidate_id, ownedDetectionRevisionId);
+  assert.deepEqual(parentRunEvaluations.evaluations, []);
+  assert.deepEqual(childRunEvaluations.evaluations, []);
+  report.detection_navigation_revision = {
+    parent_candidate_id: ownedDetectionId,
+    parent_revision: registeredParent.document.revision,
+    parent_definition_digest: registeredParent.document.definition_digest,
+    candidate_id: ownedDetectionRevisionId,
+    revision: registeredChild.document.revision,
+    revision_root_id: registeredChild.document.revision_root_id,
+    parent_id: registeredChild.document.parent_candidate_id,
+    definition_digest: registeredChild.document.definition_digest,
+    revision_kind: registeredChild.document.revision_kind,
+    state: registeredChild.document.state,
+    evaluation_count: childRunEvaluations.evaluations.length,
+    created_through: "Detection Lab clone and validate controls",
+  };
+  report.checks.push("one_owned_parsed_revision_created_for_missing_evaluation_navigation");
+
   stage = "comparison-restore-owned-runs";
   const comparisonParams = new URLSearchParams({ compare_context: "1" });
   ownedRunIds.forEach(id => comparisonParams.append("compare_run", id));
@@ -1058,6 +1217,235 @@ try {
     heading: "Compare runs",
     controls: [{ label: "Saved comparisons", locator: comparisonHistorySummary, textFits: true }],
   });
+
+  stage = "comparison-select-owned-revisions-for-missing-evaluation";
+  const snapshotBeforeHandoff = await api(`/comparison-snapshots/${report.comparison_snapshot_id}`);
+  assert.equal(snapshotBeforeHandoff.digest, reloadedSnapshot.digest);
+  assert.deepEqual(snapshotBeforeHandoff.comparison.run_ids, ownedRunIds);
+  assert.deepEqual(snapshotBeforeHandoff.source_bindings, reloadedSnapshot.source_bindings);
+  assert.equal(snapshotBeforeHandoff.source_integrity?.status, "verified");
+  const currentDetectorEvaluations = page.getByRole("region", { name: "Current detector evaluations", exact: true });
+  await currentDetectorEvaluations.waitFor();
+  const originalDetectorSelect = currentDetectorEvaluations.getByRole("combobox", { name: "Original detector", exact: true });
+  const revisedDetectorSelect = currentDetectorEvaluations.getByRole("combobox", { name: "Revised detector", exact: true });
+  await originalDetectorSelect.selectOption(ownedDetectionId);
+  await revisedDetectorSelect.selectOption(ownedDetectionRevisionId);
+  const measuredDetectorComparison = page.getByRole("region", { name: "Measured detector comparison", exact: true });
+  await measuredDetectorComparison.waitFor();
+  assert.equal(await originalDetectorSelect.inputValue(), ownedDetectionId);
+  assert.equal(await revisedDetectorSelect.inputValue(), ownedDetectionRevisionId);
+  assert.equal(new URL(page.url()).hash.includes(`snapshot=${report.comparison_snapshot_id}`), true);
+  const missingRevisionEvaluation = measuredDetectorComparison.getByRole("link", { name: "Evaluate revised on this run", exact: true }).first();
+  await missingRevisionEvaluation.waitFor();
+  const missingRevisionHref = await missingRevisionEvaluation.getAttribute("href");
+  assert.ok(missingRevisionHref);
+  const handoffHref = new URL(missingRevisionHref, origin);
+  assert.equal(handoffHref.hash.split("?")[0], "#/detection-lab");
+  const handoffQuery = new URLSearchParams(handoffHref.hash.slice(handoffHref.hash.indexOf("?") + 1));
+  assert.equal(handoffQuery.get("run"), ownedRunIds[0]);
+  assert.equal(handoffQuery.get("candidate"), ownedDetectionRevisionId);
+  assert.equal(handoffQuery.get("candidate_scope"), "registry");
+  assert.equal(handoffQuery.get("view"), "evaluations");
+  assert.equal(handoffQuery.get("snapshot"), report.comparison_snapshot_id);
+  assert.equal(handoffQuery.get("compare_context"), "1");
+  assert.deepEqual(handoffQuery.getAll("compare_run"), ownedRunIds);
+  assert.equal(handoffQuery.get("compare_baseline"), ownedDetectionId);
+  assert.equal(handoffQuery.get("compare_revised"), ownedDetectionRevisionId);
+  const comparisonPostsBeforeHandoff = comparisonPosts;
+  const evaluationPostsBeforeHandoff = detectionRunEvaluationPosts;
+  const blockedRequestsBeforeHandoff = report.blocked_requests.length;
+  await missingRevisionEvaluation.click();
+  stage = "comparison-missing-evaluation-handoff";
+  await page.getByRole("heading", { name: "Detection Lab", exact: true }).waitFor();
+  const returnToComparison = page.getByRole("button", { name: "Return to comparison", exact: true });
+  await returnToComparison.waitFor();
+  const eligibleRunEvaluation = page.getByRole("button", { name: "Evaluate full observed run", exact: true });
+  await eligibleRunEvaluation.waitFor();
+  assert.equal(await eligibleRunEvaluation.isEnabled(), true);
+  const handoffLocation = new URL(page.url());
+  assert.equal(handoffLocation.hash.split("?")[0], "#/detection-lab");
+  const handoffLocationQuery = new URLSearchParams(handoffLocation.hash.slice(handoffLocation.hash.indexOf("?") + 1));
+  assert.equal(handoffLocationQuery.get("run"), ownedRunIds[0]);
+  assert.equal(handoffLocationQuery.get("candidate"), ownedDetectionRevisionId);
+  assert.equal(handoffLocationQuery.get("candidate_scope"), "registry");
+  assert.equal(handoffLocationQuery.get("view"), "evaluations");
+  assert.equal(handoffLocationQuery.get("snapshot"), report.comparison_snapshot_id);
+  const revisionHistoryAtHandoff = await api(`/detections/${ownedDetectionRevisionId}/evaluations`);
+  assert.deepEqual(revisionHistoryAtHandoff.evaluations, []);
+  await returnToComparison.click();
+  stage = "comparison-return-saved-snapshot";
+  await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+  await page.getByRole("region", { name: "Current detector evaluations", exact: true }).waitFor();
+  const returnedSnapshot = await api(`/comparison-snapshots/${report.comparison_snapshot_id}`);
+  assert.equal(returnedSnapshot.snapshot_id, report.comparison_snapshot_id);
+  assert.equal(returnedSnapshot.digest, snapshotBeforeHandoff.digest);
+  assert.deepEqual(returnedSnapshot.comparison.run_ids, snapshotBeforeHandoff.comparison.run_ids);
+  assert.deepEqual(returnedSnapshot.source_bindings, snapshotBeforeHandoff.source_bindings);
+  assert.deepEqual(returnedSnapshot.source_bindings.map(binding => binding.run_id), ownedRunIds);
+  assert.equal(returnedSnapshot.source_integrity?.status, "verified");
+  assert.deepEqual(returnedSnapshot.source_integrity.runs.map(run => run.status), ["verified", "verified"]);
+  const returnedLocation = new URL(page.url());
+  assert.equal(returnedLocation.hash.split("?")[0], "#/compare");
+  const returnedQuery = new URLSearchParams(returnedLocation.hash.slice(returnedLocation.hash.indexOf("?") + 1));
+  assert.equal(returnedQuery.get("snapshot"), report.comparison_snapshot_id);
+  assert.equal(returnedQuery.get("compare_context"), "1");
+  assert.deepEqual(returnedQuery.getAll("compare_run"), ownedRunIds);
+  assert.equal(returnedQuery.get("compare_baseline"), ownedDetectionId);
+  assert.equal(returnedQuery.get("compare_revised"), ownedDetectionRevisionId);
+  const returnedOriginalSelect = page.getByRole("region", { name: "Current detector evaluations", exact: true }).getByRole("combobox", { name: "Original detector", exact: true });
+  const returnedRevisedSelect = page.getByRole("region", { name: "Current detector evaluations", exact: true }).getByRole("combobox", { name: "Revised detector", exact: true });
+  assert.equal(await returnedOriginalSelect.inputValue(), ownedDetectionId);
+  assert.equal(await returnedRevisedSelect.inputValue(), ownedDetectionRevisionId);
+  const returnedMissingEvaluation = page.getByRole("region", { name: "Measured detector comparison", exact: true }).getByRole("link", { name: "Evaluate revised on this run", exact: true }).first();
+  await returnedMissingEvaluation.waitFor();
+  assert.equal(comparisonPosts, comparisonPostsBeforeHandoff);
+  assert.equal(detectionRunEvaluationPosts, evaluationPostsBeforeHandoff);
+  assert.equal(report.blocked_requests.length, blockedRequestsBeforeHandoff);
+  const revisionHistoryAfterReturn = await api(`/detections/${ownedDetectionRevisionId}/evaluations`);
+  assert.deepEqual(revisionHistoryAfterReturn.evaluations, []);
+  report.comparison_missing_evaluation_handoff = {
+    snapshot_id: report.comparison_snapshot_id,
+    snapshot_digest: returnedSnapshot.digest,
+    run_ids: returnedSnapshot.comparison.run_ids,
+    source_integrity: returnedSnapshot.source_integrity.status,
+    baseline_candidate_id: ownedDetectionId,
+    revised_candidate_id: ownedDetectionRevisionId,
+    missing_run_id: ownedRunIds[0],
+    returned_same_snapshot: true,
+    evaluation_submitted: false,
+    comparison_posts_during_handoff: comparisonPosts - comparisonPostsBeforeHandoff,
+    evaluation_posts_during_handoff: detectionRunEvaluationPosts - evaluationPostsBeforeHandoff,
+    blocked_requests_during_handoff: report.blocked_requests.length - blockedRequestsBeforeHandoff,
+  };
+  report.checks.push("saved_comparison_missing_evaluation_return_preserves_exact_snapshot_and_revision_selection");
+
+  stage = "comparison-assistant-explain-saved-snapshot";
+  const comparisonAssistantPath = `/api/v1/comparison-snapshots/${report.comparison_snapshot_id}/assistant-context`;
+  const blockedBeforeComparisonAssistant = report.blocked_requests.length;
+  readOnlyCapturePhase = true;
+  try {
+    const contextResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === comparisonAssistantPath && response.request().method() === "GET");
+    const comparisonConclusion = page.getByRole("region", { name: "Comparison conclusion", exact: true });
+    const explainComparison = comparisonConclusion.getByRole("button", { name: "Explain comparison", exact: true });
+    await explainComparison.waitFor({ state: "visible" });
+    await explainComparison.click();
+    const contextResponse = await contextResponsePromise;
+    assert.equal(contextResponse.status(), 200);
+    const assistantContext = await contextResponse.json();
+    const expectedSelection = { kind: "comparison_snapshot", snapshot_id: report.comparison_snapshot_id, snapshot_digest: savedComparison.digest };
+    assert.equal(assistantContext.schema_version, "bluefire.assistance-context.v1");
+    assert.deepEqual(assistantContext.selected, expectedSelection);
+    assert.match(assistantContext.context_digest, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(assistantContext.analysis_only, true);
+    assert.deepEqual(assistantContext.capabilities, []);
+    assert.equal(assistantContext.reference_summary.schema_version, "bluefire.comparison-assistance-summary.v1");
+    assert.equal(assistantContext.reference_summary.saved_comparison.run_count, 2);
+    assert.equal(assistantContext.reference_summary.saved_comparison.baseline_position, 1);
+    assert.equal(assistantContext.reference_summary.source_integrity.runs.length, 2);
+    const assistant = page.getByRole("complementary", { name: "BlueFire Assistant", exact: true });
+    const evidenceSummary = assistant.locator(".assistant-source-details > summary");
+    await assistant.getByRole("region", { name: "Current selection", exact: true }).waitFor();
+    await assistant.getByRole("group", { name: "Saved comparison summary", exact: true })
+      .getByText(/saved runs · run 1 is the recorded baseline/i).waitFor();
+    await evidenceSummary.waitFor({ state: "visible" });
+    await evidenceSummary.click();
+    await assistant.locator(".assistant-source-details").getByText(/saved runs · run 1 is the recorded baseline/i).waitFor();
+    await assistant.getByRole("button", { name: "Assistant settings", exact: true }).click();
+    const assistantMode = assistant.getByRole("combobox", { name: /^(AI mode|Assistant mode)\b/ });
+    assert.ok((await assistantMode.locator("option").allTextContents()).includes("Assist · explanation only"));
+    assert.equal(await assistantMode.locator("option:checked").innerText(), "Off");
+    await assistant.getByRole("button", { name: "Assistant settings", exact: true }).click();
+    report.checks.push("saved_comparison_assistant_fetches_exact_analysis_only_context_without_turn_submission");
+
+    stage = "comparison-assistant-navigate-away-and-reopen";
+    await page.getByRole("link", { name: "Overview", exact: true }).click();
+    await page.getByRole("heading", { name: "Overview", exact: true }).waitFor();
+    const previousSelection = assistant.getByRole("region", { name: "Previous selection", exact: true });
+    await previousSelection.waitFor();
+    assert.equal(await previousSelection.getByText("Saved comparison", { exact: true }).count(), 1);
+    await previousSelection.getByRole("link", { name: "Reopen source", exact: true }).click();
+    await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+    assert.ok(new URL(page.url()).hash.includes(`snapshot=${report.comparison_snapshot_id}`));
+    await assistant.getByRole("region", { name: "Current selection", exact: true }).waitFor();
+    await evidenceSummary.waitFor({ state: "visible" });
+
+    const fontResponse = await Promise.race([
+      fontResponsePromise,
+      new Promise(resolve => setTimeout(() => resolve(undefined), 3000)),
+    ]);
+    assert.ok(fontResponse && fontResponse.status === 200 && fontResponse.bytes > 0 && /^[0-9a-f]{64}$/.test(fontResponse.sha256), "Installed Inter font must be fetched with nonempty response bytes.");
+    const fontState = await page.evaluate(async () => {
+      await document.fonts.ready;
+      const faces = [...document.fonts].filter(face => face.family.replace(/["']/g, "") === "Inter");
+      const conclusion = document.querySelector(".comparison-conclusion h2");
+      return {
+        font_set_status: document.fonts.status,
+        faces: faces.map(face => ({ family: face.family.replace(/["']/g, ""), status: face.status, weight: face.weight })),
+        check: document.fonts.check('400 16px "Inter"', "BlueFire comparison"),
+        conclusion_family: conclusion ? getComputedStyle(conclusion).fontFamily : "",
+      };
+    });
+    assert.ok(fontState.faces.some(face => face.status === "loaded"), "Inter must be loaded in document.fonts.");
+    assert.equal(fontState.check, true);
+    assert.match(fontState.conclusion_family, /Inter/);
+    report.font_asset = { network_response: fontResponse, document_font_state: fontState };
+
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
+      stage = `comparison-assistant-${viewport.width}x${viewport.height}`;
+      await page.setViewportSize(viewport);
+      await page.evaluate(() => {
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        document.getElementById("main-content")?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        document.querySelector(".assistant-body")?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      });
+      await evidenceSummary.scrollIntoViewIfNeeded();
+      await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+      const geometry = await assistant.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        const summary = element.querySelector(".assistant-source-details > summary");
+        const summaryBox = summary?.getBoundingClientRect();
+        return { panel: { left: box.left, right: box.right, top: box.top, bottom: box.bottom }, summary: summaryBox ? { left: summaryBox.left, right: summaryBox.right, top: summaryBox.top, bottom: summaryBox.bottom } : null };
+      });
+      assert.ok(geometry.panel.left >= -1 && geometry.panel.right <= viewport.width + 1 && geometry.panel.top >= -1 && geometry.panel.bottom <= viewport.height + 1);
+      assert.ok(geometry.summary && geometry.summary.left >= -1 && geometry.summary.right <= viewport.width + 1 && geometry.summary.top >= -1 && geometry.summary.bottom <= viewport.height + 1);
+      assert.equal(await assistant.getByRole("region", { name: "Current selection", exact: true }).count(), 1);
+      await capture(`comparison-assistant-${viewport.width}x${viewport.height}`, {
+        surface: "saved-comparison-assistant",
+        viewport,
+        snapshot_id: report.comparison_snapshot_id,
+        font_asset_sha256: fontResponse.sha256,
+        loaded_font_faces: fontState.faces.filter(face => face.status === "loaded").length,
+        layout_checks: ["assistant_panel_in_viewport", "saved_comparison_context_visible", "bundled_inter_loaded"],
+      });
+    }
+    assert.ok(comparisonAssistantContextGets >= 1 && comparisonAssistantContextGets <= 2);
+    assert.equal(comparisonAssistantTurnPosts, 0);
+    assert.equal(readOnlyPostAttempts, 0);
+    assert.equal(report.blocked_requests.length, blockedBeforeComparisonAssistant);
+    report.comparison_assistant = {
+      status: "passed",
+      snapshot_id: report.comparison_snapshot_id,
+      snapshot_digest: assistantContext.selected.snapshot_digest,
+      context_digest: assistantContext.context_digest,
+      saved_run_count: assistantContext.reference_summary.saved_comparison.run_count,
+      selected_exactly: true,
+      context_gets: comparisonAssistantContextGets,
+      context_capabilities: assistantContext.capabilities.length,
+      analysis_only_context: assistantContext.analysis_only,
+      active_mode: "Off",
+      explanation_mode_available: true,
+      assistant_turn_posts: comparisonAssistantTurnPosts,
+      read_only_post_attempts: readOnlyPostAttempts,
+      reopened_same_snapshot: true,
+      screenshots: ["comparison-assistant-1440x900", "comparison-assistant-1366x768"],
+    };
+    report.checks.push("saved_comparison_assistant_selection_survives_navigation_and_reopens_exact_snapshot");
+    report.checks.push("bundled_inter_font_loaded_from_installed_service_and_captured_at_two_desktop_sizes");
+    await assistant.getByRole("button", { name: "Close assistant", exact: true }).click();
+    await assistant.waitFor({ state: "detached" });
+  } finally {
+    readOnlyCapturePhase = false;
+  }
 
   stage = "environments-load-overview";
   await page.goto(`${origin}/#/environments`);
@@ -1154,9 +1542,12 @@ try {
   assert.ok(controlListPosts >= 1 && controlListPosts <= 2);
   assert.equal(detectionFromRunPosts, 1);
   assert.equal(detectionParsePosts, 1);
+  assert.equal(detectionRevisionClonePosts, 1);
+  assert.equal(detectionRevisionParsePosts, 1);
+  assert.equal(detectionRunEvaluationPosts, 0);
   assert.equal(detectionFixturePosts, 1);
   assert.equal(detectionBenignPosts, 1);
-  report.request_caps = { session_posts: sessionPosts, scenario_version_posts: scenarioVersionPosts, scenario_validation_posts: scenarioValidationPosts, graph_context_posts: graphContextPosts, control_list_posts: controlListPosts, preflight_posts: preflightPosts, simulation_run_posts: simulationRunPosts, comparison_posts: comparisonPosts, detection_from_run_posts: detectionFromRunPosts, detection_parse_posts: detectionParsePosts, detection_fixture_posts: detectionFixturePosts, detection_benign_posts: detectionBenignPosts };
+  report.request_caps = { session_posts: sessionPosts, scenario_version_posts: scenarioVersionPosts, scenario_validation_posts: scenarioValidationPosts, graph_context_posts: graphContextPosts, control_list_posts: controlListPosts, preflight_posts: preflightPosts, simulation_run_posts: simulationRunPosts, comparison_posts: comparisonPosts, detection_from_run_posts: detectionFromRunPosts, detection_parse_posts: detectionParsePosts, detection_revision_clone_posts: detectionRevisionClonePosts, detection_revision_parse_posts: detectionRevisionParsePosts, detection_run_evaluation_posts: detectionRunEvaluationPosts, detection_fixture_posts: detectionFixturePosts, detection_benign_posts: detectionBenignPosts };
   assert.equal(report.errors.length, 0);
   assert.equal(report.blocked_requests.length, 0);
   report.status = "passed";

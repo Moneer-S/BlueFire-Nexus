@@ -6,12 +6,14 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { BuilderPage } from "../src/pages/Builder";
+import { GRAPH_NODE_HEIGHT } from "../src/lib/graph-view";
 import { ProductProvider } from "../src/state/ProductContext";
 import type { Outcome, Scenario } from "../src/types";
 
 const state = vi.hoisted(() => ({ props: {} as ReactFlowProps, viewport: { x: 0, y: 0, zoom: 1 } as Viewport }));
 const flow = vi.hoisted(() => ({
   getNode: (id: string) => state.props.nodes?.find(node => node.id === id),
+  getNodes: () => state.props.nodes ?? [],
   getViewport: () => state.viewport,
   getZoom: () => state.viewport.zoom,
   setViewport: vi.fn(async (viewport: Viewport) => { state.viewport = viewport; return true; }),
@@ -133,7 +135,7 @@ function expectReadableSelection(id: string) {
   expect(x).toBeGreaterThanOrEqual(0);
   expect(y).toBeGreaterThanOrEqual(0);
   expect(x + 220 * state.viewport.zoom).toBeLessThanOrEqual(width);
-  expect(y + 104 * state.viewport.zoom).toBeLessThanOrEqual(height);
+  expect(y + GRAPH_NODE_HEIGHT * state.viewport.zoom).toBeLessThanOrEqual(height);
 }
 
 async function navigateReadable(action: () => void, selectedId: string, visibleSteps: number) {
@@ -186,6 +188,28 @@ describe("Builder viewport controls", () => {
     flow.setViewport.mockClear();
     fireEvent.click(within(screen.getByLabelText("Graph workspace controls")).getByRole("button", { name: "Fit view" }));
     expect(flow.setViewport).toHaveBeenCalledOnce();
+  });
+
+  it("opens a long left-to-right plan with its entry at the leading edge and the continuation filling the canvas", async () => {
+    const scenario = structuredClone(demoScenario);
+    const template = structuredClone(scenario.steps[0]!);
+    scenario.steps = Array.from({ length: 9 }, (_, index) => ({ ...structuredClone(template), id: `wide_step_${index + 1}`, inputs: {} }));
+    scenario.start = scenario.steps[0]!.id;
+    scenario.edges = scenario.steps.slice(1).map((step, index) => ({ from_step: scenario.steps[index]!.id, outcome: "success" as Outcome, to_step: step.id }));
+    scenario.edges.push({ from_step: "wide_step_6", outcome: "blocked", to_step: "wide_step_9" });
+    delete scenario.adaptive_execution;
+    // One saved row is wider than the canvas at a readable scale.
+    renderBuilder(scenario, Object.fromEntries(scenario.steps.map((step, index) => [step.id, { x: 32 + index * 276, y: 32 }])));
+    await waitFor(() => expect(flow.setViewport).toHaveBeenCalled());
+    expectReadableSelection("wide_step_1");
+    expect(state.viewport.zoom).toBe(1);
+    // The entry card starts at the canvas padding (clear of its stage container)
+    // instead of its centre, so the following cards occupy the rest of the width.
+    expect(state.viewport.x + 32).toBe(40);
+    const visible = scenario.steps.filter((_, index) => state.viewport.x + 32 + index * 276 + 220 <= width);
+    expect(visible.length).toBeGreaterThanOrEqual(3);
+    // A single row is centred in the available height, not pinned to the top.
+    expect(state.viewport.y + 32 + GRAPH_NODE_HEIGHT / 2).toBe(height / 2);
   });
 
   it("reveals a step selected in Steps when returning to an unchanged Canvas without changing zoom", async () => {
@@ -263,7 +287,7 @@ describe("Builder viewport controls", () => {
     const selected = rendered.layout!.selected!;
     const bounds = canvas.getBoundingClientRect(), pane = main.getBoundingClientRect();
     expect(bounds.top + state.viewport.y + selected.y).toBeGreaterThanOrEqual(pane.top);
-    expect(bounds.top + state.viewport.y + selected.y + 104 + 44).toBeLessThanOrEqual(pane.bottom);
+    expect(bounds.top + state.viewport.y + selected.y + GRAPH_NODE_HEIGHT + 44).toBeLessThanOrEqual(pane.bottom);
     expect(state.viewport.x + selected.x).toBeGreaterThanOrEqual(48);
     expect(state.viewport.x + selected.x + 220 + 72).toBeLessThanOrEqual(canvas.clientWidth - 48);
     expect(main.querySelector(".graph-topbar")!.getBoundingClientRect().top).toBe(pane.top + 8);
@@ -419,7 +443,7 @@ describe("Builder viewport controls", () => {
     fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
     fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
     expect(state.viewport.zoom).toBe(1);
-    expect(state.viewport.y + 180 + 104 / 2).toBe(556 / 2);
+    expect(state.viewport.y + 180 + GRAPH_NODE_HEIGHT / 2).toBe(556 / 2);
     expect(main.scrollTop).toBe(142);
     const focused = { ...state.viewport };
     flow.setViewport.mockClear();
@@ -465,7 +489,7 @@ describe("Builder viewport controls", () => {
     expect(state.viewport.x + selected.x).toBeGreaterThanOrEqual(0);
     expect(state.viewport.x + selected.x + 220 + 72).toBeLessThanOrEqual(canvas.clientWidth);
     expect(visible.top + state.viewport.y + selected.y).toBeGreaterThanOrEqual(pane.top);
-    expect(visible.top + state.viewport.y + selected.y + 104).toBeLessThanOrEqual(pane.bottom);
+    expect(visible.top + state.viewport.y + selected.y + GRAPH_NODE_HEIGHT).toBeLessThanOrEqual(pane.bottom);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
     const restored = { ...state.viewport };
     flow.setViewport.mockClear();
@@ -489,7 +513,7 @@ describe("Builder viewport controls", () => {
     const selected = rendered.layout![rendered.start]!;
     const bounds = canvas.getBoundingClientRect(), pane = main.getBoundingClientRect();
     expect(bounds.top + state.viewport.y + selected.y * state.viewport.zoom).toBeGreaterThanOrEqual(pane.top);
-    expect(bounds.top + state.viewport.y + (selected.y + 104) * state.viewport.zoom).toBeLessThanOrEqual(pane.bottom);
+    expect(bounds.top + state.viewport.y + (selected.y + GRAPH_NODE_HEIGHT) * state.viewport.zoom).toBeLessThanOrEqual(pane.bottom);
     expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(rendered);
 
     const chosen = { x: -400, y: -200, zoom: 1.2 };
@@ -573,7 +597,7 @@ describe("Builder viewport controls", () => {
       expect(state.viewport.x + position.x).toBeGreaterThanOrEqual(24);
       expect(state.viewport.x + position.x + 220).toBeLessThanOrEqual(width - 24);
       expect(state.viewport.y + position.y).toBeGreaterThanOrEqual(24);
-      expect(state.viewport.y + position.y + 104).toBeLessThanOrEqual(height - 24);
+      expect(state.viewport.y + position.y + GRAPH_NODE_HEIGHT).toBeLessThanOrEqual(height - 24);
     }
     expect(state.viewport.x + layout.context_step_8!.x + 220 + 72).toBeLessThanOrEqual(width - 24);
     expect(state.props.nodes?.find(node => node.id === "context_step_8")?.selected).toBe(true);
@@ -588,11 +612,17 @@ describe("Builder viewport controls", () => {
     const target = scenario.steps[1]!;
     fireEvent.click(screen.getByRole("button", { name: `Select ${target.id}` }));
     await waitFor(() => expect(state.viewport.zoom).toBe(1));
-    expect(state.viewport).toEqual({ x: 167, y: -186, zoom: 1 });
+    // Focus centers the occupied column, including its conditional-route gutter.
+    expect(state.viewport.x).toBe(131);
+    expect(state.viewport.y + scenario.layout![target.id]!.y + GRAPH_NODE_HEIGHT / 2).toBe(height / 2);
+    const focusedViewport = { ...state.viewport };
+    expectReadableSelection(target.id);
     state.viewport = { x: 2, y: 3, zoom: 0.4 };
     fireEvent.click(screen.getByLabelText("View options", { selector: "summary" }));
     fireEvent.click(screen.getByRole("button", { name: "Focus selected step" }));
-    expect(state.viewport).toEqual({ x: 167, y: -186, zoom: 1 });
+    expect(state.viewport).toEqual(focusedViewport);
+    expectReadableSelection(target.id);
+    expect(JSON.parse(localStorage.getItem("bluefire.local.scenario.v1")!)).toEqual(scenario);
   });
 
   it("keeps conditional route labels inside the canvas when the inspector or Assistant narrows it", async () => {

@@ -76,9 +76,10 @@
 .workbench-builder .graph-canvas { flex: 1; height: auto; min-height: 220px; }
 .workbench-builder .graph-canvas[hidden] { display: none; }
 .workbench-builder .graph-run-bands { position: absolute; inset: 0 auto auto 0; overflow: visible; pointer-events: none; z-index: -1; }
-.workbench-builder .graph-run-bands rect { fill: color-mix(in srgb, var(--blue) 3%, transparent); stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 3 5; }
-.workbench-builder .graph-run-bands text { fill: var(--muted); font-family: inherit; font-size: 10px; font-weight: 550; }
-.workbench-builder .graph-run-bands .selected rect { fill: color-mix(in srgb, var(--blue) 5%, transparent); stroke: color-mix(in srgb, var(--blue) 45%, var(--line)); }
+/* Connected-run containers: a quiet tinted stage around each linear run. */
+.workbench-builder .graph-run-bands rect { fill: color-mix(in srgb, var(--blue) 5%, transparent); stroke: color-mix(in srgb, var(--blue) 22%, var(--line)); stroke-width: 1; }
+.workbench-builder .graph-run-bands text { fill: var(--muted-strong); font-family: inherit; font-size: 11px; font-weight: 650; letter-spacing: .02em; }
+.workbench-builder .graph-run-bands .selected rect { fill: color-mix(in srgb, var(--blue) 9%, transparent); stroke: color-mix(in srgb, var(--blue) 55%, var(--line)); }
 .workbench-builder .graph-run-bands .selected text { fill: var(--blue-soft); }
 .workbench-builder .graph-stage { display: flex; flex: 1; min-height: 220px; min-width: 0; }
 .workbench-builder .graph-stage[hidden] { display: none; }
@@ -127,25 +128,30 @@
 .workbench-builder .inspector-body input, .workbench-builder .inspector-body select { font-size: .76rem; }
 .workbench-builder .step-technical-details { padding-top: 16px; color: var(--muted); font-size: .72rem; }
 .workbench-builder .step-technical-details summary { cursor: pointer; margin-bottom: 10px; }
-.workbench-builder .flow-node { box-sizing: border-box; width: 220px; height: 104px; min-height: 104px; padding: 8px 11px; border-radius: 7px; background: linear-gradient(145deg, var(--surface-strong), var(--surface)); border-color: var(--line-strong); box-shadow: var(--shadow-soft); }
-.workbench-builder .flow-node > strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; font-size: .84rem; line-height: 1.28; margin: 7px 0 4px; }
-.workbench-builder .flow-node .node-context { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; overflow-wrap: anywhere; margin: 2px 0 0; font-size: .68rem; line-height: 1.3; color: var(--muted); }
-.workbench-builder .flow-node.selected { border-color: var(--blue); background: linear-gradient(145deg, color-mix(in srgb, var(--blue) 20%, var(--surface)), color-mix(in srgb, var(--blue) 10%, var(--surface))); box-shadow: 0 0 0 1px var(--blue), var(--shadow-soft), 0 0 24px color-mix(in srgb, var(--blue) 18%, transparent); }
-.workbench-builder .flow-node > header span { font-family: inherit; font-size: .65rem; font-weight: 500; line-height: 1.2; color: var(--muted-strong); }
-.workbench-builder .flow-node > header .node-order { flex-shrink: 0; color: var(--blue-soft); }
-.workbench-builder .flow-node > header .node-method { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .65rem; }
+/* Step card: icon tile beside a text column, as in the workbench reference. */
+/* Keep 82px inside for a two-line title, context, and alternative/platform footer. */
+.workbench-builder .flow-node { box-sizing: border-box; width: 220px; height: 96px; min-height: 96px; display: grid; grid-template-columns: 32px minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; column-gap: 10px; align-content: start; padding: 7px 12px 5px 10px; border-radius: 9px; background: linear-gradient(160deg, color-mix(in srgb, var(--blue) 7%, var(--surface-strong)), var(--surface) 70%); border-color: color-mix(in srgb, var(--blue) 18%, var(--line-strong)); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.26); transition: border-color 120ms, box-shadow 120ms; }
+.workbench-builder .flow-node:hover { border-color: color-mix(in srgb, var(--blue) 40%, var(--line-strong)); }
+.workbench-builder .flow-node .node-title, .workbench-builder .flow-node .route-handles { display: contents; }
+.workbench-builder .flow-node > header { grid-column: 2; grid-row: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 6px; min-width: 0; }
+.workbench-builder .flow-node > header span { font-family: inherit; font-size: .64rem; font-weight: 600; line-height: 1.25; color: var(--muted); }
+.workbench-builder .flow-node > header .node-order { flex-shrink: 0; color: var(--muted); font-family: inherit; font-weight: 600; }
+.workbench-builder .flow-node > header .node-method, .workbench-builder .flow-node > header .node-kind { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .workbench-builder .flow-node > header .attention { color: var(--red); }
-.workbench-builder .node-title { display: flex; align-items: center; gap: 8px; min-height: 31px; margin: 4px 0 2px; }
-.workbench-builder .node-title strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; min-width: 0; overflow: hidden; overflow-wrap: anywhere; font-family: inherit; font-weight: 600; font-size: .82rem; line-height: 1.3; }
-.workbench-builder .node-icon { display: grid; place-items: center; flex: 0 0 26px; height: 28px; border: 1px solid var(--line-strong); border-radius: 5px; background: color-mix(in srgb, var(--blue) 10%, var(--surface)); color: var(--blue-soft); }
+.workbench-builder .node-icon { grid-column: 1; grid-row: 1 / span 2; align-self: start; display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--blue) 12%, var(--surface)); color: var(--blue-soft); }
 .workbench-builder .node-icon svg { width: 17px; height: 17px; }
-.workbench-builder .flow-node > footer { font-family: inherit; font-size: .6rem; margin-top: 3px; color: var(--muted); }
-.workbench-builder .flow-node > footer > span { display: flex; align-items: center; gap: 4px; }
-.workbench-builder .flow-node > footer svg { width: 11px; height: 11px; }
-.workbench-builder.graph-summary-zoom .flow-node .node-context, .workbench-builder.graph-summary-zoom .flow-node > footer { display: none; }
-.workbench-builder.graph-summary-zoom .node-title { min-height: 60px; }
-.workbench-builder.graph-summary-zoom .node-title strong { font-size: 1rem; -webkit-line-clamp: 3; }
-.workbench-builder.graph-summary-zoom .flow-node .node-kind { display: none; }
+.workbench-builder .node-title strong { grid-column: 2; grid-row: 2; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; min-width: 0; margin-top: 1px; overflow: hidden; overflow-wrap: anywhere; font-family: inherit; font-weight: 650; font-size: .86rem; line-height: 1.22; color: var(--text); }
+.workbench-builder .flow-node .node-context { grid-column: 2; grid-row: 3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; overflow-wrap: anywhere; margin: 2px 0 0; font-size: .7rem; line-height: 1.28; color: var(--muted-strong); }
+.workbench-builder .flow-node > footer { grid-column: 2; grid-row: 4; align-self: end; margin: 0; font-family: inherit; font-size: .64rem; line-height: 1.3; color: var(--muted); }
+.workbench-builder .flow-node > footer > span { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.workbench-builder .flow-node > footer svg { flex: none; width: 11px; height: 11px; }
+.workbench-builder .flow-node.selected { border-color: var(--blue); background: linear-gradient(160deg, color-mix(in srgb, var(--blue) 16%, var(--surface)), var(--surface) 75%); box-shadow: 0 0 0 1px var(--blue), 0 8px 22px rgba(0, 0, 0, 0.26); }
+.workbench-builder .flow-node.selected .node-order { color: var(--blue-soft); }
+.workbench-builder .flow-node.selected .node-icon { border-color: color-mix(in srgb, var(--blue) 60%, var(--line)); background: color-mix(in srgb, var(--blue) 24%, var(--surface)); color: var(--text); }
+.workbench-builder .flow-node.invalid { border-color: var(--red); }
+/* Readable at overview zoom: drop secondary lines, enlarge the title. */
+.workbench-builder.graph-summary-zoom .flow-node .node-context, .workbench-builder.graph-summary-zoom .flow-node > footer, .workbench-builder.graph-summary-zoom .flow-node .node-kind { display: none; }
+.workbench-builder.graph-summary-zoom .node-title strong { grid-row: 2 / span 3; font-size: 1.02rem; -webkit-line-clamp: 3; }
 .workbench-builder .flow-node .react-flow__handle { opacity: 0; transition: opacity 120ms; }
 .workbench-builder .flow-node:hover .route-handle, .workbench-builder .flow-node.selected .route-handle, .workbench-builder .react-flow__node:focus-visible .route-handle, .workbench-builder .react-flow:has(.react-flow__connection) .route-handle { opacity: 1; }
 .workbench-builder.show-inputs .flow-node .typed-handle { opacity: 1; }
@@ -236,6 +242,11 @@
 .workbench-builder .adaptive-unavailable { padding: 8px 0; }
 
 .workbench-builder .inspector-header { display: flex; align-items: flex-start; gap: 9px; padding: 13px 12px 10px; }
+.workbench-builder .graph-selection-strip { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 11px; border-bottom: 1px solid var(--line); background: var(--ink-900); font-size: .72rem; }
+.workbench-builder .graph-selection-strip > svg { flex: 0 0 16px; width: 16px; height: 16px; color: var(--blue-soft); }
+.workbench-builder .graph-selection-strip > span { flex-shrink: 0; color: var(--muted); }
+.workbench-builder .graph-selection-strip > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.workbench-builder .graph-selection-strip > button { flex-shrink: 0; margin-left: auto; }
 .workbench-builder .inspector-header > div { min-width: 0; flex: 1; }
 .workbench-builder .inspector-header h2 { margin: 0; font-size: .86rem; line-height: 1.35; overflow-wrap: anywhere; }
 .workbench-builder .inspector-header p { margin: 4px 0 0; color: var(--muted); font-size: .67rem; }
@@ -321,3 +332,15 @@
   .workbench-builder .inspector-fields, .workbench-builder .inspector-editor { flex: none; }
   .workbench-builder > .compatibility-banner { position: static; width: auto; max-width: none; }
 }
+
+/* Plan facts read as plain text; state words carry colour only when they need attention. */
+.workbench-builder .experiment-facts .experiment-state { padding-left: 12px; border-left: 1px solid var(--line); color: var(--muted-strong); }
+.workbench-builder .experiment-facts .experiment-state.attention { color: var(--amber-soft); }
+.workbench-builder .experiment-facts .experiment-state.ready { color: var(--green); }
+.workbench-builder .experiment-facts .experiment-state.danger { color: var(--red); }
+.workbench-builder .flow-node:not(:has(> footer)) .node-context { -webkit-line-clamp: 2; }
+/* A decision region: dashed, so it reads as alternative routes rather than a sequence. */
+.workbench-builder .graph-run-bands .branch-region rect { fill: color-mix(in srgb, var(--amber) 3%, transparent); stroke: color-mix(in srgb, var(--amber) 30%, var(--line)); stroke-dasharray: 5 5; }
+.workbench-builder .graph-run-bands .branch-region text { fill: var(--amber-soft); }
+.workbench-builder .graph-run-bands .branch-region svg { color: var(--amber-soft); fill: none; }
+.workbench-builder .graph-run-bands .branch-region.selected rect { fill: color-mix(in srgb, var(--amber) 6%, transparent); stroke: color-mix(in srgb, var(--amber) 55%, var(--line)); }

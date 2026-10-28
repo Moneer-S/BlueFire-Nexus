@@ -1,7 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { AlertCircle, CheckCircle2, Info, LoaderCircle, X } from "lucide-react";
-import type { ButtonHTMLAttributes, HTMLAttributes, PropsWithChildren, ReactNode } from "react";
+import { Children, cloneElement, isValidElement, useId, type ButtonHTMLAttributes, type HTMLAttributes, type PropsWithChildren, type ReactNode } from "react";
 import { ApiError } from "../lib/api";
 
 export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description?: string; actions?: ReactNode }) {
@@ -32,7 +32,28 @@ export function IconButton({ label, children, className = "", ...props }: Button
 }
 
 export function Field({ label, hint, error, children, className = "" }: PropsWithChildren<{ label: string; hint?: string; error?: string; className?: string }>) {
-  return <label className={`field ${className}`}><span className="field-label">{label}</span>{children}{hint ? <small>{hint}</small> : null}{error ? <small className="field-error">{error}</small> : null}</label>;
+  const fieldId = useId();
+  const labelId = `${fieldId}-label`;
+  const hintId = hint ? `${fieldId}-hint` : undefined;
+  const errorId = error ? `${fieldId}-error` : undefined;
+  let connected = false;
+  // Keep native controls inside wrappers/fragments associated without replacing
+  // their own labels, refs, validation attributes, or existing descriptions.
+  const connectControl = (nodes: ReactNode): ReactNode => Children.map(nodes, child => {
+    if (!isValidElement<HTMLAttributes<HTMLElement> & { type?: string; children?: ReactNode }>(child)) return child;
+    if (!connected && (child.type === "input" && child.props.type !== "hidden" || child.type === "select" || child.type === "textarea")) {
+      connected = true;
+      const descriptions = [...new Set([...(child.props["aria-describedby"]?.split(/\s+/) ?? []), hintId, errorId].filter(Boolean))].join(" ");
+      return cloneElement(child, {
+        "aria-labelledby": child.props["aria-labelledby"] ?? (child.props["aria-label"] ? undefined : labelId),
+        "aria-describedby": descriptions || undefined,
+        "aria-invalid": child.props["aria-invalid"] ?? (error ? true : undefined),
+      });
+    }
+    return child.props.children ? cloneElement(child, {}, connectControl(child.props.children)) : child;
+  });
+  const controls = connectControl(children);
+  return <label className={`field ${className}`}><span className="field-label" id={labelId}>{label}</span>{controls}{hint ? <small id={hintId}>{hint}</small> : null}{error ? <small id={errorId} className="field-error">{error}</small> : null}</label>;
 }
 
 export function Stat({ label, value, detail, tone = "info" }: { label: string; value: ReactNode; detail?: string; tone?: "info" | "success" | "warning" | "danger" }) {
