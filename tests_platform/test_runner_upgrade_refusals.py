@@ -36,7 +36,11 @@ _PRIVATE = "C:\\private\\lab\\history.sqlite3 /private/runner/result.json secret
             "ledger_read",
             "Runner upgrade could not audit the execution ledger and its settled state.",
         ),
-        ("payload", "Runner upgrade could not validate historical execution documents."),
+        ("payload", "Runner upgrade could not audit the execution ledger and its settled state."),
+        (
+            "payload_after_audit",
+            "Runner upgrade could not validate historical execution documents.",
+        ),
         ("documents", "Runner upgrade could not validate historical execution documents."),
         ("result", "Runner upgrade could not validate historical execution results."),
         ("result_namespace", "Runner upgrade could not verify the durable result files."),
@@ -57,7 +61,7 @@ def test_review_reports_the_failed_stage_and_preserves_private_history(
         calls.append(boundary)
         if boundary in {"preflight", "ledger_audit", "ledger_read"}:
             raise sqlite3.DatabaseError(_PRIVATE)
-        if boundary in {"payload", "documents", "result"}:
+        if boundary in {"payload", "payload_after_audit", "documents", "result"}:
             raise ValueError(_PRIVATE)
         raise OSError(_PRIVATE)
 
@@ -81,6 +85,29 @@ def test_review_reports_the_failed_stage_and_preserves_private_history(
         monkeypatch.setattr(upgrade, module_calls[boundary], refuse)
     elif boundary == "payload":
         monkeypatch.setattr(upgrade.AuthenticatedRunnerServer, "_stored_execute_payload", refuse)
+    elif boundary == "payload_after_audit":
+        audit = upgrade.audit_runner_ledger
+        decode = upgrade.AuthenticatedRunnerServer._stored_execute_payload
+        audit_completed = False
+
+        def completed_audit(*args: Any, **kwargs: Any) -> Any:
+            nonlocal audit_completed
+            result = audit(*args, **kwargs)
+            audit_completed = True
+            return result
+
+        def decode_after_audit(*args: Any, **kwargs: Any) -> Any:
+            # Keep strict ledger validation real before injecting a document-stage failure.
+            if audit_completed:
+                return refuse(*args, **kwargs)
+            return decode(*args, **kwargs)
+
+        monkeypatch.setattr(upgrade, "audit_runner_ledger", completed_audit)
+        monkeypatch.setattr(
+            upgrade.AuthenticatedRunnerServer,
+            "_stored_execute_payload",
+            staticmethod(decode_after_audit),
+        )
     else:
         read = upgrade._PinnedPrivateDirectory.read_with_snapshot_identity
 

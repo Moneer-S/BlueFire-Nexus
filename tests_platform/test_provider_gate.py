@@ -830,6 +830,116 @@ def test_structural_validator_requires_each_saved_run_source(relative: str) -> N
         provider_gate._validate_structural(report)
 
 
+def test_runner_managed_duplex_contract_is_integrated(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = REPOSITORY / "bluefire" / "runner_client.py"
+    assert provider_gate_source_audit._runner_client_popen_contract(client)
+    monkeypatch.setattr(
+        provider_gate_source_audit, "_runner_client_managed_duplex_contract", lambda *args: False
+    )
+    assert not provider_gate_source_audit._runner_client_popen_contract(client)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "remove_spawn_guard",
+        "hide_spawn_guard",
+        "bypass_spawn_guard",
+        "remove_watchdog_guard",
+        "default_pipe",
+        "default_managed",
+        "arbitrary_input",
+        "unconditional_pipe",
+        "mismatched_output",
+        "rebind_input",
+        "rebind_managed",
+        "ordinary_caller_input",
+        "ordinary_caller_expansion",
+        "unapproved_caller",
+        "unapproved_alias",
+        "duplicate_method",
+        "async_duplicate_method",
+    ],
+)
+def test_runner_managed_duplex_contract_refuses_mutation(mutation: str) -> None:
+    source = (REPOSITORY / "bluefire" / "runner_client.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    owner = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "SubprocessRustRunner"
+    )
+    methods = {node.name: node for node in owner.body if isinstance(node, ast.FunctionDef)}
+    spawn, watchdog = methods["_spawn"], methods["_spawn_watchdog"]
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    assert provider_gate_source_audit._runner_client_managed_duplex_contract(tree, spawn, parents)
+    calls = {
+        name: next(
+            node
+            for node in ast.walk(methods[name])
+            if isinstance(node, ast.Call) and ast.unparse(node.func) == "self._spawn"
+        )
+        for name in ("_spawn_watchdog", "_invoke", "_invoke_task")
+    }
+    if mutation == "remove_spawn_guard":
+        spawn.body[1] = ast.Pass()
+    elif mutation == "hide_spawn_guard":
+        spawn.body[1] = ast.If(test=ast.Constant(False), body=[spawn.body[1]], orelse=[])
+    elif mutation == "bypass_spawn_guard":
+        spawn.body[0] = ast.Return(value=ast.Constant(None))
+    elif mutation == "remove_watchdog_guard":
+        watchdog.body[0] = ast.Pass()
+    elif mutation in {"default_pipe", "default_managed"}:
+        function, parameter, expression = (
+            (spawn, "stdin", "subprocess.PIPE")
+            if mutation == "default_pipe"
+            else (watchdog, "managed_session", "True")
+        )
+        index = next(
+            i for i, argument in enumerate(function.args.kwonlyargs) if argument.arg == parameter
+        )
+        function.args.kw_defaults[index] = ast.parse(expression, mode="eval").body
+    elif mutation in {"arbitrary_input", "unconditional_pipe", "mismatched_output"}:
+        keyword = "stdout" if mutation == "mismatched_output" else "stdin"
+        expression = "unreviewed_input" if mutation == "arbitrary_input" else "subprocess.PIPE"
+        next(item for item in calls["_spawn_watchdog"].keywords if item.arg == keyword).value = (
+            ast.parse(expression, mode="eval").body
+        )
+    elif mutation in {"rebind_input", "rebind_managed"}:
+        function, index, statement = (
+            (spawn, 2, "stdin = subprocess.PIPE")
+            if mutation == "rebind_input"
+            else (watchdog, 1, "managed_session = True")
+        )
+        function.body.insert(index, ast.parse(statement).body[0])
+    elif mutation == "ordinary_caller_input":
+        calls["_invoke"].keywords.append(
+            ast.keyword(arg="stdin", value=ast.parse("subprocess.PIPE", mode="eval").body)
+        )
+    elif mutation == "ordinary_caller_expansion":
+        expansion = next(item for item in calls["_invoke_task"].keywords if item.arg is None)
+        expansion.value = ast.parse('{"stdin": subprocess.PIPE}', mode="eval").body
+    elif mutation == "unapproved_caller":
+        owner.body.append(
+            ast.parse(
+                "def unreviewed(self, argv):\n    self._spawn(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE)"
+            ).body[0]
+        )
+    elif mutation == "unapproved_alias":
+        owner.body.append(ast.parse("def unreviewed(self):\n    launch = self._spawn").body[0])
+    elif mutation == "duplicate_method":
+        owner.body.append(ast.parse("def _spawn_watchdog(self):\n    pass").body[0])
+    elif mutation == "async_duplicate_method":
+        owner.body.append(ast.parse("async def _spawn_watchdog(self):\n    pass").body[0])
+    else:
+        raise AssertionError(mutation)
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    # Test the structural predicate directly so full-source hashes cannot mask a gap.
+    assert not provider_gate_source_audit._runner_client_managed_duplex_contract(
+        tree, spawn, parents
+    )
+
+
 @pytest.mark.parametrize("platform", ["windows", "linux"])
 def test_containment_owner_remains_pinned_without_new_process_launches(
     tmp_path: Path,

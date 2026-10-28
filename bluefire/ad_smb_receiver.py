@@ -71,9 +71,9 @@ class AdSmbReceiver(EnrolledAdSmbServer):
         return [dict(row) for row in rows]
 
     def _row_context(self, row: Mapping[str, Any]) -> dict[str, Any]:
-        manifest, profile, grant = self._stored_execute_payload(row)
-        if grant is not None:
-            raise AdSmbError("AD cannot use an ordinary service grant.")
+        manifest, profile, grant, managed_descriptor = self._stored_execute_payload(row)
+        if grant is not None or managed_descriptor is not None:
+            raise AdSmbError("AD cannot use another protected execution protocol.")
         value = context(manifest, profile)
         if (
             value["task_id"] != row["task_id"]
@@ -231,8 +231,14 @@ class AdSmbReceiver(EnrolledAdSmbServer):
         *,
         peer_fingerprint: str | None = None,
         service_grant: Any = None,
+        windows_correction_descriptor: Any = None,
+        enrollment_binding: Mapping[str, str] | None = None,
     ) -> tuple[Mapping[str, Any], bool]:
-        if service_grant is not None or peer_fingerprint is None:
+        if (
+            service_grant is not None
+            or windows_correction_descriptor is not None
+            or peer_fingerprint is None
+        ):
             raise _RequestRefusal("request_invalid")
         if not isinstance(self._runner_binary, Path):
             raise _RequestRefusal("request_invalid")

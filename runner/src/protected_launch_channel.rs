@@ -29,7 +29,7 @@ fn require(valid: bool) -> Result<(), String> {
 // Reviewed packaged source, independent of the launch document. A source test
 // checks this pin; keeping only its digest leaves Cargo/sdist builds standalone.
 const WATCHDOG_SOURCE_SHA256: &str =
-    "e2a416f14814d1c93bc5b9ab5e213b08068d27dc8e37a663d2281f8d449384e3"; // pragma: allowlist secret -- public watchdog source checksum, regression-tested
+    "61b6f82ed8980076c1ebdc92d7ed48a40aa62dd4e44595af39067d08d8f94f49"; // pragma: allowlist secret -- public watchdog source checksum, regression-tested
 
 extern "C" {
     fn fcntl(fd: i32, command: i32, ...) -> i32;

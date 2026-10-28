@@ -68,7 +68,7 @@ _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "_run_darwin_launch_worker": "sha256:a969f6e5c14c2bc0b150be268321faf33dd00da035548706cb9eded992ac01aa",
 }
 _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256 = (
-    "sha256:19d8340d9c77f3e4591e457e0441e56812f599af76be6503ae35154db59f57b2"
+    "sha256:62ce17bfab8b7c8e1f5809de19fbb9e8a260db97f903d9d7850a8392f7d8f69b"
 )
 _REVIEWED_DARWIN_CONTAINMENT_SECTIONS = {
     "_validate_macos_launch_parent": "sha256:244beadfd89a4f2e6731109cd100042ba2a1ef8ea40e81bbd98f55211e7ebfb6",
@@ -410,6 +410,136 @@ def _function_parameter_is_unmodified(
     )
 
 
+def _runner_client_managed_duplex_contract(
+    tree: ast.Module,
+    spawn: ast.FunctionDef | ast.AsyncFunctionDef,
+    parents: Mapping[ast.AST, ast.AST],
+) -> bool:
+    owner = parents.get(spawn)
+    if not isinstance(owner, ast.ClassDef) or owner.name != "SubprocessRustRunner":
+        return False
+    names = {"_spawn", "_spawn_watchdog", "_invoke", "_invoke_task"}
+    methods = [
+        node
+        for node in owner.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
+    ]
+    if (
+        len(methods) != len(names)
+        or {node.name for node in methods} != names
+        or any(isinstance(node, ast.AsyncFunctionDef) for node in methods)
+    ):
+        return False
+    by_name = {node.name: node for node in methods}
+    watchdog = by_name["_spawn_watchdog"]
+    if by_name["_spawn"] is not spawn:
+        return False
+
+    for function, name, default in (
+        (spawn, "stdin", "subprocess.DEVNULL"),
+        (watchdog, "managed_session", "False"),
+    ):
+        defaults = [
+            value
+            for argument, value in zip(
+                function.args.kwonlyargs, function.args.kw_defaults, strict=True
+            )
+            if argument.arg == name
+        ]
+        if (
+            len(defaults) != 1
+            or not _expression_matches(defaults[0], default)
+            or not _function_parameter_is_unmodified(function, name)
+        ):
+            return False
+
+    # These top-level refusals dominate every route to the process launch.
+    for function, index, expected in (
+        (
+            spawn,
+            0,
+            """if process_sink:
+    raise RunnerTransportError("runner process ownership sink is not empty")""",
+        ),
+        (
+            spawn,
+            1,
+            """if stdin != subprocess.DEVNULL and os.name != "nt":
+    raise RunnerTransportError("runner duplex watchdog channel is unavailable")""",
+        ),
+        (
+            watchdog,
+            0,
+            """if managed_session and os.name != "nt":
+    raise RunnerTransportError("Managed correction watchdog is unavailable.")""",
+        ),
+    ):
+        if len(function.body) <= index or ast.dump(
+            function.body[index], include_attributes=False
+        ) != ast.dump(ast.parse(expected).body[0], include_attributes=False):
+            return False
+
+    references = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and _ast_qualified_name(node) == "self._spawn"
+    ]
+    if len(references) != 3:
+        return False
+    calls: dict[str, ast.Call] = {}
+    for reference in references:
+        call = parents.get(reference)
+        function = _enclosing_function(reference, parents)
+        if (
+            not isinstance(call, ast.Call)
+            or call.func is not reference
+            or len(call.args) != 1
+            or function is None
+            or function is not by_name.get(function.name)
+            or function.name in calls
+        ):
+            return False
+        calls[function.name] = call
+    if set(calls) != {"_spawn_watchdog", "_invoke", "_invoke_task"}:
+        return False
+
+    service_options = (
+        'cast(dict[str, Any], {"service_launch": service_launch} '
+        "if service_launch is not None else {})"
+    )
+    for name, call in calls.items():
+        stdin = [keyword.value for keyword in call.keywords if keyword.arg == "stdin"]
+        expansions = [keyword.value for keyword in call.keywords if keyword.arg is None]
+        if name == "_spawn_watchdog":
+            stdout = [keyword.value for keyword in call.keywords if keyword.arg == "stdout"]
+            if (
+                len(stdin) != 1
+                or len(stdout) != 1
+                or not all(
+                    _expression_matches(
+                        value, "subprocess.PIPE if managed_session else subprocess.DEVNULL"
+                    )
+                    for value in (*stdin, *stdout)
+                )
+            ):
+                return False
+            expected_expansions = (
+                'cast(dict[str, Any], {"watchdog_executable": interpreter_launch[0]} '
+                "if self._watchdog_python_environment is not None else {})",
+                service_options,
+            )
+        else:
+            if stdin:
+                return False
+            expected_expansions = (service_options,) if name == "_invoke_task" else ()
+        if len(expansions) != len(expected_expansions) or not all(
+            _expression_matches(value, expected)
+            for value, expected in zip(expansions, expected_expansions, strict=True)
+        ):
+            return False
+    return True
+
+
 def _runner_client_popen_contract(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
     if _sha256_bytes(text.encode("utf-8")) != _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256:
@@ -603,6 +733,7 @@ def _runner_client_popen_contract(path: Path) -> bool:
     spawn_valid = (
         len(spawn_call.args) == 1
         and _expression_matches(spawn_call.args[0], "argv")
+        and _runner_client_managed_duplex_contract(tree, spawn, parents)
         and _function_parameter_is_unmodified(spawn, "argv")
         and _watchdog_executable_contract(spawn)
         and _function_parameter_is_unmodified(spawn, "canonical_argv0")
@@ -611,7 +742,7 @@ def _runner_client_popen_contract(path: Path) -> bool:
             (
                 ("cwd", "self.work_root"),
                 ("env", "environment"),
-                ("stdin", "subprocess.DEVNULL"),
+                ("stdin", "stdin"),
                 ("stdout", "stdout"),
                 ("stderr", "stderr"),
                 ("shell", "False"),
