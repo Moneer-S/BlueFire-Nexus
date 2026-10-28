@@ -870,7 +870,8 @@ mod darwin {
             self.held.ok_or(())
         }
         fn inventory(&self) -> Result<(), ()> {
-            descriptor_inventory(self.held()?, self.channel, self.read_fd, false, None).map_err(|_| ())
+            descriptor_inventory(self.held()?, self.channel, self.read_fd, false, None)
+                .map_err(|_| ())
         }
     }
 

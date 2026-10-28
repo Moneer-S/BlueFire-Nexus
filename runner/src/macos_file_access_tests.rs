@@ -149,7 +149,10 @@ fn native_run_entry_fd3_documents_are_finite_and_fit_the_existing_frame_cap() {
         assert_eq!(frame.last(), Some(&b'\n'));
         assert_eq!(frame.iter().filter(|byte| **byte == b'\n').count(), 1);
         let document: serde_json::Value = serde_json::from_slice(&frame).unwrap();
-        assert_eq!(document["schema_version"], "bluefire.macos-native-fd-rows.v1");
+        assert_eq!(
+            document["schema_version"],
+            "bluefire.macos-native-fd-rows.v1"
+        );
         assert_eq!(document["rows"], serde_json::json!(rows));
         if let Some(entry) = entry {
             let observed = &document["native_run_entry_fd3"];
@@ -193,13 +196,11 @@ fn native_run_entry_fd3_documents_are_finite_and_fit_the_existing_frame_cap() {
     let mut too_many = rows;
     too_many.push(too_many[0].clone());
     assert!(native::initial_descriptor_frame(&too_many, None).is_none());
-    assert!(
-        native::initial_descriptor_frame(
-            &[serde_json::json!({"oversized": "x".repeat(4096)})],
-            Some(&NativeRunEntryFd3::Absent),
-        )
-        .is_none()
-    );
+    assert!(native::initial_descriptor_frame(
+        &[serde_json::json!({"oversized": "x".repeat(4096)})],
+        Some(&NativeRunEntryFd3::Absent),
+    )
+    .is_none());
 }
 
 fn request(operation: &str) -> Request {
