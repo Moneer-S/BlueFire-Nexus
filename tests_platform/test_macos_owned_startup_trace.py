@@ -15,6 +15,21 @@ from tools import macos_owned_startup_trace as trace_support
 from tools import verify_macos_file_access_lifecycle as verifier
 
 
+def _trace_double(process):
+    trace = trace_support._OwnedStartupTrace.__new__(trace_support._OwnedStartupTrace)
+    trace.raw = bytearray()
+    trace.stderr_raw = bytearray()
+    trace.failures = set()
+    trace.impaired = False
+    trace.stdout_bytes = trace.stderr_bytes = 0
+    trace._result = None
+    trace.ready = threading.Event()
+    trace.readers = []
+    trace.process = process
+    trace.temporary = None
+    return trace
+
+
 def _complete_trace(stack: str = "") -> bytes:
     return (
         "BFTRACE_READY\nBFTRACE_EXEC\n"
@@ -118,16 +133,14 @@ def test_script_scope_captures_neither_argv_environment_payload_nor_paths():
 def test_stream_overflow_immediately_stops_only_owned_tracer_without_retaining_more():
     read_fd, write_fd = os.pipe()
     signalled = []
-    trace = trace_support._OwnedStartupTrace.__new__(trace_support._OwnedStartupTrace)
+    trace = _trace_double(SimpleNamespace(terminate=lambda: signalled.append("owned_tracer")))
     trace.raw = bytearray(b"x" * trace_support._TRACE_BYTES)
-    trace.impaired = False
-    trace.ready = threading.Event()
-    trace.process = SimpleNamespace(terminate=lambda: signalled.append("owned_tracer"))
     os.write(write_fd, b"overflow-private-value")
     os.close(write_fd)
     with os.fdopen(read_fd, "rb") as stream:
         trace._drain(stream, False)
     assert trace.impaired and signalled == ["owned_tracer"]
+    assert trace.failures == {"stdout_byte_bound"}
     assert len(trace.raw) == trace_support._TRACE_BYTES
     assert b"private" not in trace.raw
 
@@ -137,15 +150,205 @@ def test_cleanup_clears_raw_and_removes_private_directory():
     process = SimpleNamespace(
         stdout=io.BytesIO(), stderr=io.BytesIO(), returncode=0, wait=lambda **_: 0
     )
-    trace = trace_support._OwnedStartupTrace.__new__(trace_support._OwnedStartupTrace)
-    trace.process = process
+    trace = _trace_double(process)
     trace.raw = bytearray(_complete_trace())
-    trace.readers = []
-    trace.impaired = False
     trace.temporary = SimpleNamespace(cleanup=lambda: cleaned.append(True))
     assert trace.stop()["status"] == "owned_syscalls_observed"
     assert trace.raw == b"" and cleaned == [True]
     assert process.stdout.closed and process.stderr.closed
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (
+            b"dtrace: failed to compile script /private/credential/owned.d: line 4: syntax error\n",
+            "dtrace_compile_failure",
+        ),
+        (
+            b"dtrace: failed to compile script /private/owned.d: line 5: probe description syscall::socket:entry does not match any probes\n",
+            "dtrace_probe_unavailable",
+        ),
+        (
+            b"dtrace: failed to initialize dtrace: DTrace requires additional privileges\n",
+            "dtrace_permission_error",
+        ),
+        (b"dtrace: could not enable tracing: Operation not permitted\n", "dtrace_permission_error"),
+        (
+            b"dtrace: system integrity protection is on, some features will not be available\n",
+            "dtrace_advisory",
+        ),
+        (b"private credential: permission denied by something else\n", "unknown_stderr"),
+    ],
+    ids=["compiler", "probe", "init-policy", "enable-policy", "advisory", "unknown"],
+)
+def test_stderr_classification_uses_only_fixed_forms_and_exports_no_text(raw, expected):
+    codes = trace_support._stderr_failure_codes(raw)
+    assert codes == {expected}
+    projected = trace_support._trace_projection(b"", impaired=True, failure_codes=codes)
+    assert projected["reason"] == "tracer_error_loss_or_output_bound"
+    assert expected in projected["failure_codes"]
+    assert projected["status"] == "inconclusive"
+    assert projected["creator_attribution"] == "inconclusive"
+    for forbidden in ("credential", "/private", "socket:entry", "permission denied"):
+        assert forbidden not in json.dumps(projected)
+
+
+def test_truncated_or_mixed_stderr_stays_unknown_without_sip_refusal_inference():
+    advisory = b"dtrace: system integrity protection is on, some features will not be available\n"
+    assert trace_support._stderr_failure_codes(advisory + b"private unknown message\n") == {
+        "dtrace_advisory",
+        "unknown_stderr",
+    }
+    assert trace_support._stderr_failure_codes(advisory, truncated=True) == {
+        "stderr_byte_bound",
+        "unknown_stderr",
+    }
+
+
+@pytest.mark.parametrize(
+    "raw,code",
+    [
+        (b"", "missing_ready_marker"),
+        (b"BFTRACE_READY\n", "missing_owned_exec_marker"),
+        (b"BFTRACE_READY\nBFTRACE_EXEC\n", "missing_owned_exit_marker"),
+        (b"BFTRACE_TIMEOUT\n", "runtime_bound_reached"),
+        (b"BFTRACE_CAP\n", "event_bound_reached"),
+        (b"BFTRACE_ERROR\n", "dtrace_runtime_error"),
+    ],
+    ids=["no-ready", "no-owned-exec", "no-owned-exit", "timeout", "event-cap", "runtime-error"],
+)
+def test_missing_prerequisites_and_trace_bounds_are_finite_inconclusive_codes(raw, code):
+    result = trace_support._trace_projection(raw, impaired=False)
+    assert code in result["failure_codes"]
+    assert result["status"] == "inconclusive"
+    assert "events" not in result
+
+
+def test_stderr_chunks_are_bounded_and_first_cleanup_result_survives_second_stop():
+    signalled = []
+    trace = _trace_double(
+        SimpleNamespace(
+            terminate=lambda: signalled.append("owned_tracer"),
+            wait=lambda **_: -15,
+            returncode=-15,
+            stdout=io.BytesIO(),
+            stderr=io.BytesIO(),
+        )
+    )
+    read_fd, write_fd = os.pipe()
+    os.write(
+        write_fd, b"dtrace: failed to compile script /private/credential/owned.d: syntax error\n"
+    )
+    os.close(write_fd)
+    with os.fdopen(read_fd, "rb") as stream:
+        trace._drain(stream, True)
+    assert signalled == ["owned_tracer"]
+    result = trace.stop()
+    assert result["status"] == "inconclusive"
+    assert {"dtrace_compile_failure", "nonzero_tracer_exit"} <= set(result["failure_codes"])
+    assert result["tracer"]["stderr_bytes"] > 0
+    assert trace.stop() == result
+    assert not trace.raw and not trace.stderr_raw
+    assert "credential" not in json.dumps(result)
+
+
+def test_read_io_failure_is_distinct_without_actual_process_or_trace(monkeypatch):
+    trace = _trace_double(SimpleNamespace())
+    monkeypatch.setattr(
+        trace_support.os, "read", lambda *_: (_ for _ in ()).throw(OSError("private"))
+    )
+    trace._drain(SimpleNamespace(fileno=lambda: 123), False)
+    assert trace.impaired and trace.failures == {"read_io_failed"}
+
+
+def test_stderr_storage_and_counts_are_capped_before_cleanup(monkeypatch):
+    chunks = iter((b"private" * 1000, b"more" * 1000, b""))
+    trace = _trace_double(
+        SimpleNamespace(
+            terminate=lambda: None,
+            wait=lambda **_: 0,
+            returncode=0,
+            stdout=io.BytesIO(),
+            stderr=io.BytesIO(),
+        )
+    )
+    monkeypatch.setattr(trace_support.os, "read", lambda *_: next(chunks))
+    trace._drain(SimpleNamespace(fileno=lambda: 123), True)
+    assert len(trace.stderr_raw) == trace_support._TRACE_STDERR_BYTES
+    result = trace.stop()
+    assert result["tracer"]["stderr_bytes"] == trace_support._TRACE_STDERR_BYTES + 1
+    assert result["tracer"]["stderr_count_capped"] is True
+    assert {"stderr_byte_bound", "unknown_stderr"} <= set(result["failure_codes"])
+    assert not trace.stderr_raw and "private" not in json.dumps(result)
+
+
+def test_known_failure_cannot_upgrade_complete_activity_or_export_unknown_codes():
+    result = trace_support._trace_projection(
+        _complete_trace(),
+        impaired=False,
+        failure_codes={"dtrace_compile_failure", "/private/untrusted-code"},
+    )
+    assert result["status"] == "inconclusive"
+    assert "events" not in result
+    assert result["failure_codes"] == ["dtrace_compile_failure"]
+
+
+@pytest.mark.parametrize(
+    "where,expected", [("ready", "readiness_timeout"), ("reader", "reader_start_failed")]
+)
+def test_readiness_and_reader_start_failures_are_distinct_without_process_launch(
+    monkeypatch, where, expected
+):
+    process = SimpleNamespace(
+        wait=lambda **_: 0, returncode=0, stdout=io.BytesIO(), stderr=io.BytesIO()
+    )
+    monkeypatch.setattr(trace_support.subprocess, "Popen", lambda *_a, **_k: process)
+
+    def start():
+        if where == "reader":
+            raise RuntimeError("private reader initialization")
+
+    monkeypatch.setattr(
+        trace_support.threading,
+        "Thread",
+        lambda **_: SimpleNamespace(start=start, join=lambda **_: None, is_alive=lambda: False),
+    )
+    monkeypatch.setattr(
+        trace_support.threading, "Event", lambda: SimpleNamespace(wait=lambda **_: False)
+    )
+    trace = trace_support._OwnedStartupTrace(Path("/protected/native"))
+    result = trace.stop()
+    assert expected in result["failure_codes"]
+    assert result["tracer"]["process_created"] is True
+    assert result["tracer"]["reader_threads_drained"] is (where == "ready")
+    assert "private" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "where,expected", [("setup", "internal_setup_failed"), ("spawn", "spawn_failed")]
+)
+def test_setup_and_spawn_failures_are_distinct_and_never_launch_dtrace(
+    monkeypatch, tmp_path, where, expected
+):
+    if where == "setup":
+        monkeypatch.setattr(
+            trace_support.tempfile,
+            "TemporaryDirectory",
+            lambda **_: (_ for _ in ()).throw(OSError("private setup")),
+        )
+    else:
+        monkeypatch.setattr(
+            trace_support.subprocess,
+            "Popen",
+            lambda *_a, **_k: (_ for _ in ()).throw(OSError("private spawn")),
+        )
+    trace = trace_support._OwnedStartupTrace(Path("/protected/native"))
+    result = trace.stop()
+    assert expected in result["failure_codes"]
+    assert result["tracer"]["process_created"] is False
+    assert result["tracer"]["reader_threads_drained"] is False
+    assert "private" not in json.dumps(result)
 
 
 def test_diagnostic_cleanup_error_cannot_hide_lifecycle_failure(monkeypatch, tmp_path):

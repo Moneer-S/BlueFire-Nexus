@@ -14,6 +14,33 @@ from typing import Any
 _TRACE_BYTES = 65536
 _TRACE_EVENTS = 128
 _TRACE_SECONDS = 30
+_TRACE_STDERR_BYTES = 8192
+_TRACE_FAILURE_CODES = frozenset(
+    {
+        "internal_setup_failed",
+        "spawn_failed",
+        "reader_start_failed",
+        "read_io_failed",
+        "readiness_timeout",
+        "stdout_byte_bound",
+        "stderr_byte_bound",
+        "nonzero_tracer_exit",
+        "forced_tracer_shutdown",
+        "reader_drain_unconfirmed",
+        "unknown_stderr",
+        "dtrace_compile_failure",
+        "dtrace_probe_unavailable",
+        "dtrace_permission_error",
+        "dtrace_advisory",
+        "missing_ready_marker",
+        "missing_owned_exec_marker",
+        "missing_owned_exit_marker",
+        "event_bound_reached",
+        "runtime_bound_reached",
+        "dtrace_runtime_error",
+        "owned_reexec_observed",
+    }
+)
 _TRACE_SYSTEM_IMAGES = frozenset(
     {
         "dyld",
@@ -27,6 +54,48 @@ _TRACE_SYSTEM_IMAGES = frozenset(
         "libobjc.A.dylib",
     }
 )
+
+
+def _stderr_failure_codes(raw: bytes, *, truncated: bool = False) -> set[str]:
+    """Recognize fixed DTrace diagnostic forms without returning their text.
+
+    Apple's cmd/dtrace/dtrace.c prefixes script compilation, initialization and
+    enabling errors. These are diagnostic classes, not proof that this platform
+    cannot trace an owned process. A generic SIP advisory never means refusal.
+    """
+    codes = set()
+    if truncated or len(raw) > _TRACE_STDERR_BYTES:
+        return {"stderr_byte_bound", "unknown_stderr"}
+    for line in raw.splitlines():
+        if (
+            line
+            == b"dtrace: system integrity protection is on, some features will not be available"
+        ):
+            codes.add("dtrace_advisory")
+        elif line.startswith(
+            (b"dtrace: failed to compile script ", b"dtrace: invalid probe specifier ")
+        ):
+            codes.add(
+                "dtrace_probe_unavailable"
+                if b": probe description " in line and line.endswith(b" does not match any probes")
+                else "dtrace_compile_failure"
+            )
+        elif line in {
+            prefix + detail
+            for prefix in (
+                b"dtrace: failed to initialize dtrace: ",
+                b"dtrace: could not enable tracing: ",
+            )
+            for detail in (
+                b"DTrace requires additional privileges",
+                b"Permission denied",
+                b"Operation not permitted",
+            )
+        }:
+            codes.add("dtrace_permission_error")
+        else:
+            codes.add("unknown_stderr")
+    return codes or ({"unknown_stderr"} if raw else set())
 
 
 def _owned_trace_script(owner: int, native_parent: Path) -> str:
@@ -104,7 +173,9 @@ dtrace:::ERROR {{ printf("BFTRACE_ERROR\\n"); exit(0); }}
 """
 
 
-def _trace_projection(raw: bytes, *, impaired: bool) -> dict[str, Any]:
+def _trace_projection(
+    raw: bytes, *, impaired: bool, failure_codes: set[str] | None = None
+) -> dict[str, Any]:
     """Export only fixed records and allowlisted normalized system frames.
 
     A complete positive observation still says nothing about an absent socket
@@ -120,7 +191,35 @@ def _trace_projection(raw: bytes, *, impaired: bool) -> dict[str, Any]:
         "absence_interpretation": "none",
         "descriptor_authority": "none",
     }
-    if impaired or len(raw) > _TRACE_BYTES:
+    # Additive finite fields preserve the v1 status/reason family. Even when raw
+    # event decoding is withheld, distinguish the unmet tracing prerequisites.
+    marker_set = set(raw.splitlines()) if len(raw) <= _TRACE_BYTES else set()
+    codes = (failure_codes or set()) & _TRACE_FAILURE_CODES
+    if len(raw) > _TRACE_BYTES:
+        codes.add("stdout_byte_bound")
+    for marker, code in (
+        (b"BFTRACE_READY", "missing_ready_marker"),
+        (b"BFTRACE_EXEC", "missing_owned_exec_marker"),
+    ):
+        if marker not in marker_set:
+            codes.add(code)
+    if b"BFTRACE_EXEC" in marker_set and b"BFTRACE_EXIT" not in marker_set:
+        codes.add("missing_owned_exit_marker")
+    for marker, code in (
+        (b"BFTRACE_CAP", "event_bound_reached"),
+        (b"BFTRACE_TIMEOUT", "runtime_bound_reached"),
+        (b"BFTRACE_ERROR", "dtrace_runtime_error"),
+        (b"BFTRACE_REEXEC", "owned_reexec_observed"),
+    ):
+        if marker in marker_set:
+            codes.add(code)
+    result["failure_codes"] = sorted(codes)
+    result["markers"] = {
+        "ready": b"BFTRACE_READY" in marker_set,
+        "owned_exec": b"BFTRACE_EXEC" in marker_set,
+        "owned_exit": b"BFTRACE_EXIT" in marker_set,
+    }
+    if impaired or (failure_codes or set()) & _TRACE_FAILURE_CODES or len(raw) > _TRACE_BYTES:
         result["reason"] = "tracer_error_loss_or_output_bound"
         return result
     try:
@@ -203,15 +302,22 @@ class _OwnedStartupTrace:
     def __init__(self, native_parent: Path):
         self.raw = bytearray()
         self.impaired = False
+        self.failures: set[str] = set()
+        self.stderr_raw = bytearray()
+        self.stdout_bytes = self.stderr_bytes = 0
+        self._result: dict[str, Any] | None = None
         self.ready = threading.Event()
         self.process = None
         self.readers: list[threading.Thread] = []
-        self.temporary = tempfile.TemporaryDirectory(prefix="bluefire-owned-trace-")
-        os.chmod(self.temporary.name, 0o700)
+        self.temporary = None
+        phase = "internal_setup_failed"
         try:
+            self.temporary = tempfile.TemporaryDirectory(prefix="bluefire-owned-trace-")
+            os.chmod(self.temporary.name, 0o700)
             script = Path(self.temporary.name) / "owned.d"
             script.write_text(_owned_trace_script(os.getpid(), native_parent), encoding="ascii")
             os.chmod(script, 0o600)
+            phase = "spawn_failed"
             self.process = subprocess.Popen(
                 ["/usr/sbin/dtrace", "-q", "-s", str(script)],
                 env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"},
@@ -220,26 +326,40 @@ class _OwnedStartupTrace:
                 stderr=subprocess.PIPE,
                 start_new_session=True,
             )
+            phase = "reader_start_failed"
             for stream, is_error in ((self.process.stdout, False), (self.process.stderr, True)):
                 reader = threading.Thread(target=self._drain, args=(stream, is_error), daemon=True)
-                self.readers.append(reader)
                 reader.start()
+                self.readers.append(reader)
             if not self.ready.wait(timeout=4):
-                self.impaired = True
+                self._fail("readiness_timeout")
                 self.stop()
-        except (OSError, ValueError, subprocess.SubprocessError):
-            self.impaired = True
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            self._fail(phase)
             self.stop()
+
+    def _fail(self, code: str) -> None:
+        self.failures.add(code)
+        self.impaired = True
 
     def _drain(self, stream, is_error: bool) -> None:
         process = self.process
         if process is None:
-            self.impaired = True
+            self._fail("read_io_failed")
             return
         try:
             while chunk := os.read(stream.fileno(), 4096):
+                if is_error:
+                    self.stderr_bytes = min(self.stderr_bytes + len(chunk), _TRACE_STDERR_BYTES + 1)
+                    self.stderr_raw.extend(
+                        chunk[: max(0, _TRACE_STDERR_BYTES - len(self.stderr_raw))]
+                    )
+                else:
+                    self.stdout_bytes = min(self.stdout_bytes + len(chunk), _TRACE_BYTES + 1)
                 if is_error or len(self.raw) + len(chunk) > _TRACE_BYTES:
                     self.impaired = True
+                    if not is_error:
+                        self._fail("stdout_byte_bound")
                     # Never reap here: the retained Popen continues to pin the
                     # original tracer PID. Signal that child only, never a group.
                     try:
@@ -251,14 +371,16 @@ class _OwnedStartupTrace:
                 if b"BFTRACE_READY\n" in self.raw:
                     self.ready.set()
         except OSError:
-            self.impaired = True
+            self._fail("read_io_failed")
 
     def stop(self) -> dict[str, Any]:
+        if self._result is not None:
+            return self._result
         if self.process is not None:
             try:
                 self.process.wait(timeout=1)
             except subprocess.TimeoutExpired:
-                self.impaired = True
+                self._fail("forced_tracer_shutdown")
                 self.process.terminate()
                 try:
                     self.process.wait(timeout=2)
@@ -267,11 +389,34 @@ class _OwnedStartupTrace:
                     self.process.wait(timeout=2)
             for reader in self.readers:
                 reader.join(timeout=1)
-            self.impaired |= self.process.returncode != 0 or any(r.is_alive() for r in self.readers)
+            if self.process.returncode != 0:
+                self._fail("nonzero_tracer_exit")
+            if any(r.is_alive() for r in self.readers):
+                self._fail("reader_drain_unconfirmed")
             for stream in (self.process.stdout, self.process.stderr):
                 if stream is not None:
                     stream.close()
-        result = _trace_projection(bytes(self.raw), impaired=self.impaired)
+        self.failures.update(
+            _stderr_failure_codes(
+                bytes(self.stderr_raw), truncated=self.stderr_bytes > _TRACE_STDERR_BYTES
+            )
+        )
+        result = _trace_projection(
+            bytes(self.raw), impaired=self.impaired, failure_codes=self.failures
+        )
+        result["tracer"] = {
+            "process_created": self.process is not None,
+            "returncode": self.process.returncode if self.process is not None else None,
+            "stdout_bytes": self.stdout_bytes,
+            "stdout_count_capped": self.stdout_bytes > _TRACE_BYTES,
+            "stderr_bytes": self.stderr_bytes,
+            "stderr_count_capped": self.stderr_bytes > _TRACE_STDERR_BYTES,
+            "reader_threads_drained": len(self.readers) == 2
+            and all(not r.is_alive() for r in self.readers),
+        }
         self.raw.clear()
-        self.temporary.cleanup()
+        self.stderr_raw.clear()
+        if self.temporary is not None:
+            self.temporary.cleanup()
+        self._result = result
         return result
