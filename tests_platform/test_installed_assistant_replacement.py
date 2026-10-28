@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 from unittest.mock import Mock
 
 from tools import verify_installed_assistant_replacement as verifier
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def request() -> dict[str, object]:
@@ -27,6 +30,18 @@ def request() -> dict[str, object]:
             }
         },
     }
+
+
+def test_browser_read_allowlist_includes_only_the_detection_collection() -> None:
+    driver_path = REPOSITORY_ROOT / "frontend/tests/installed/installed-assistant-replacement.mjs"
+    driver = driver_path.read_text(encoding="utf-8")
+    allowlist = driver.split("const apiReadPaths = new Set([", maxsplit=1)[1].split(
+        "]);", maxsplit=1
+    )[0]
+    assert '"/api/v1/detections"' in allowlist
+    assert "if (url.username || url.password || url.search) return false;" in driver
+    assert 'if (method !== "GET") return false;' in driver
+    assert 'if (url.search && url.pathname.startsWith("/api/"))' in driver
 
 
 def marker() -> dict[str, object]:

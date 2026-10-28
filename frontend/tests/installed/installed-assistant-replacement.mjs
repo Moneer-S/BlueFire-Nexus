@@ -37,7 +37,7 @@ const staticReadPaths = new Set(["/", "/ui/app.js", "/ui/styles.css", "/ui/fonts
 const apiReadPaths = new Set([
   "/api/v1/session", "/api/v1/build-info", "/api/v1/catalog", "/api/v1/scenarios", "/api/v1/runs",
   "/api/v1/receiver-defense/jobs", "/api/v1/comparison-snapshots", "/api/v1/settings",
-  "/api/v1/resources/model-providers", "/api/v1/ai/authorizations",
+  "/api/v1/resources/model-providers", "/api/v1/ai/authorizations", "/api/v1/detections",
 ]);
 const commandLines = createInterface({ input: process.stdin, crlfDelay: Infinity })[Symbol.asyncIterator]();
 async function nextCapability() {
