@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { spawnSync } from "node:child_process";
+import process from "node:process";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "vitest";
-import { closeReceiverWebSocket, handleReceiverRoute, observeReceiverEvent, settleReceiverObservers } from "./receiver-guards.mjs";
+import { closeReceiverWebSocket, handleReceiverRoute, observeReceiverEvent, observeReceiverWait, settleReceiverObservers } from "./receiver-guards.mjs";
 
 const origin = "http://127.0.0.1:4317";
 
@@ -103,4 +107,74 @@ test("observer drain has a ref'ed finite timeout and reports unsettled work", as
   assert.equal(await settleReceiverObservers(pending, 15), false);
   assert.ok(Date.now() - started < 500);
   assert.equal(pending.size, 1);
+});
+
+test("page wait observer preserves original success and failure for its awaiting caller", async () => {
+  const pending = new Set();
+  const failures = [];
+  const response = { ok: true };
+  const success = Promise.resolve(response);
+  assert.equal(observeReceiverWait(success, () => failures.push("unexpected"), pending), success);
+  assert.equal(await success, response);
+
+  const error = new Error("private response URL and capability");
+  const failure = Promise.reject(error);
+  assert.equal(observeReceiverWait(failure, () => failures.push("page_wait_failed"), pending), failure);
+  await assert.rejects(failure, actual => actual === error);
+  assert.equal(await settleReceiverObservers(pending, 1000), true);
+  assert.deepEqual(failures, ["page_wait_failed"]);
+  assert.equal(pending.size, 0);
+});
+
+test("unawaited page wait rejection during closure retains failure and completes cleanup under strict Node handling", () => {
+  const guardsUrl = pathToFileURL(resolve("tests/installed/receiver-guards.mjs")).href;
+  const child = spawnSync(process.execPath, ["--unhandled-rejections=strict", "--input-type=module", "--eval", `
+    import assert from "node:assert/strict";
+    import { setImmediate } from "node:timers/promises";
+    import { observeReceiverWait, settleReceiverObservers } from ${JSON.stringify(guardsUrl)};
+    const pending = new Set();
+    const report = { status: "failed_or_incomplete", errors: [], cleanup: [] };
+    let rejectWait;
+    const wait = new Promise((_resolve, reject) => { rejectWait = reject; });
+    const owned = observeReceiverWait(wait, () => report.errors.push({
+      stage: "composition-review", kind: "page_wait_failed", method: "waitForResponse",
+    }), pending);
+    assert.equal(owned, wait);
+    try {
+      // The intervening UI action fails before the deferred wait can be awaited.
+      throw new Error("private UI action path");
+    } catch {
+      report.errors.push({ stage: "composition-review", kind: "journey_failed" });
+    } finally {
+      rejectWait(new Error("private response URL and capability"));
+      await setImmediate();
+      report.cleanup.push("context_closed", "browser_closed");
+      assert.equal(await settleReceiverObservers(pending, 1000), true);
+      assert.equal(pending.size, 0);
+      console.log(JSON.stringify(report));
+    }
+  `], { encoding: "utf8", timeout: 5000, maxBuffer: 4096 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.signal, null);
+  assert.equal(child.stderr, "");
+  const report = JSON.parse(child.stdout);
+  assert.deepEqual(report, {
+    status: "failed_or_incomplete",
+    errors: [
+      { stage: "composition-review", kind: "journey_failed" },
+      { stage: "composition-review", kind: "page_wait_failed", method: "waitForResponse" },
+    ],
+    cleanup: ["context_closed", "browser_closed"],
+  });
+  assert.equal(child.stdout.includes("private"), false);
+});
+
+test("unsettled page waits stay bounded and are not mistaken for completed observers", async () => {
+  const pending = new Set();
+  let resolveWait;
+  observeReceiverWait(new Promise(resolve => { resolveWait = resolve; }), () => {}, pending);
+  assert.equal(await settleReceiverObservers(pending, 15), false);
+  assert.equal(pending.size, 1);
+  resolveWait();
+  assert.equal(await settleReceiverObservers(pending, 1000), true);
 });

@@ -11,6 +11,7 @@ import {
   handleReceiverRoute,
   closeReceiverWebSocket,
   observeReceiverEvent,
+  observeReceiverWait,
   settleReceiverObservers,
   consumeRequestBudget,
   receiverContextRequestAllowed,
@@ -109,6 +110,7 @@ const report = {
 };
 const callbackFailureKinds = new Set();
 const pendingObservers = new Set();
+const pageWaitFailureKinds = new Set();
 function recordCallbackFailure(kind) {
   if (callbackFailureKinds.has(kind)) return;
   callbackFailureKinds.add(kind);
@@ -344,6 +346,14 @@ function wrapPage(target) {
           if (optionIndex >= 0) args[optionIndex] = withTimeout(args[optionIndex], timeout);
         }
         const result = value.apply(pageTarget, args);
+        if (property === "waitForResponse" || property === "waitForEvent") {
+          const waitStage = stage;
+          return observeReceiverWait(result, () => {
+            if (pageWaitFailureKinds.has(property)) return;
+            pageWaitFailureKinds.add(property);
+            report.errors.push({ stage: waitStage, kind: "page_wait_failed", method: property });
+          }, pendingObservers);
+        }
         return LOCATOR_FACTORIES.has(property) ? wrapLocator(result) : result;
       };
     },
