@@ -631,30 +631,31 @@ def test_guest_refuses_oversized_or_invalid_utf8_command(
 def test_file_access_launch_stage_observations_are_exact_and_best_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from bluefire import prepared_lab_guest as guest
+    from bluefire import prepared_lab_runtime as runtime
 
-    assert guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS == (
-        b"bluefire.file-access-launch-stage.v1 1 enter_file_access_started\n",
-        b"bluefire.file-access-launch-stage.v1 2 fixed_reader_enrollment_returned\n",
-        b"bluefire.file-access-launch-stage.v1 3 inner_file_access_started\n",
+    assert runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS == (
+        b"bluefire.file-access-launch-stage.v2 1 enter_file_access_started\n",
+        b"bluefire.file-access-launch-stage.v2 2 fixed_reader_enrollment_started\n",
+        b"bluefire.file-access-launch-stage.v2 3 fixed_reader_enrollment_returned\n",
+        b"bluefire.file-access-launch-stage.v2 4 inner_file_access_started\n",
     )
     writes = []
     monkeypatch.setattr(
-        guest.os, "write", lambda descriptor, value: writes.append((descriptor, value))
+        runtime.os, "write", lambda descriptor, value: writes.append((descriptor, value))
     )
-    for marker in guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS:
-        guest._observe_file_access_launch_stage(marker)
-    guest._observe_file_access_launch_stage(b"private or unknown stage")
-    guest._observe_file_access_launch_stage("not bytes")  # type: ignore[arg-type]
+    for marker in runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS:
+        runtime.observe_file_access_launch_stage(marker)
+    runtime.observe_file_access_launch_stage(b"private or unknown stage")
+    runtime.observe_file_access_launch_stage("not bytes")  # type: ignore[arg-type]
 
-    assert writes == [(2, marker) for marker in guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS]
+    assert writes == [(2, marker) for marker in runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS]
     assert all(len(marker) < 128 and marker.endswith(b"\n") for _, marker in writes)
 
     def unavailable(_descriptor, _value):
         raise OSError("diagnostic sink unavailable")
 
-    monkeypatch.setattr(guest.os, "write", unavailable)
-    guest._observe_file_access_launch_stage(guest._FILE_ACCESS_LAUNCH_STAGE_MARKERS[0])
+    monkeypatch.setattr(runtime.os, "write", unavailable)
+    runtime.observe_file_access_launch_stage(runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS[0])
 
 
 @pytest.mark.parametrize(

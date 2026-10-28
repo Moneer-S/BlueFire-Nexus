@@ -25,7 +25,14 @@ from .file_access_contract import (
     linux_attr,
 )
 from .file_access_enrollment import SCHEMA, canonical_enrollment
-from .prepared_lab_runtime import ENV, PYTHON, namespaces, stop_child
+from .prepared_lab_runtime import (
+    ENV,
+    FILE_ACCESS_LAUNCH_STAGE_MARKERS,
+    PYTHON,
+    namespaces,
+    observe_file_access_launch_stage,
+    stop_child,
+)
 from .util import canonical_json_bytes
 
 
@@ -63,6 +70,7 @@ def _directory(path: Path, mode: int, uid: int, gid: int) -> None:
 
 def enroll_fixed_reader() -> dict[str, Any]:
     """Only called by the explicit file-access lab start mode, never by a task."""
+    observe_file_access_launch_stage(FILE_ACCESS_LAUNCH_STAGE_MARKERS[1])
     from .ai_broker_bootstrap import (
         bootstrap_pair,
         protected_identity,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess  # nosec B404
 from pathlib import Path
 
@@ -25,6 +26,23 @@ ENV = {
     "PYTHONNOUSERSITE": "1",
 }
 STOP_FILE = ROOT / "session-stop"
+FILE_ACCESS_LAUNCH_STAGE_MARKERS = (
+    b"bluefire.file-access-launch-stage.v2 1 enter_file_access_started\n",
+    b"bluefire.file-access-launch-stage.v2 2 fixed_reader_enrollment_started\n",
+    b"bluefire.file-access-launch-stage.v2 3 fixed_reader_enrollment_returned\n",
+    b"bluefire.file-access-launch-stage.v2 4 inner_file_access_started\n",
+)
+
+
+def observe_file_access_launch_stage(marker: bytes) -> None:
+    """Emit one fixed diagnostic observation; never affect launch or authority."""
+    if type(marker) is not bytes or marker not in FILE_ACCESS_LAUNCH_STAGE_MARKERS:
+        return
+    try:
+        os.write(2, marker)
+    except OSError:
+        # A diagnostic observation cannot replace the original launch outcome.
+        pass
 
 
 def guest_command(mode: str, port: int, *args: str) -> list[str]:
