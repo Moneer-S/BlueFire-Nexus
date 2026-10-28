@@ -201,3 +201,33 @@ def test_ad_api_recovers_only_original_terminal_after_expiry(workspace):
     assert retained[0]["context"] == original[0]["context"]
     assert retained[0]["execution"] is None and retained[0]["recovery"] is not None
     assert server.socket.fileno() == -1
+
+
+def test_ad_api_exposes_preparation_settlement_without_a_run(workspace, monkeypatch):
+    jobs, executor, service = workspace
+    identifier = create(jobs)
+    monkeypatch.setattr(
+        service.store,
+        "create_run",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("authored preparation failure")),
+    )
+    child, _ = submit(jobs, identifier, "inspect")
+    assert child["state"] == "failed"
+    path = ROOT + "/workflows/" + identifier
+
+    with running_server(WorkflowService(jobs)) as (server, _):
+        status, _, body = request(server, "POST", path + "/recover", body={})
+        assert status == 200
+        recovered = json_body(body)
+        assert recovered["workflow"]["progress"]["operations"] == []
+        settlement = recovered["workflow"]["progress"]["preparation_history"][-1]
+        assert settlement["operation_job_id"] == child["job_id"]
+        assert settlement["phase"] == "inspect"
+        assert settlement["terminal_state"] == "failed"
+        assert settlement["boundary"] == "before_run_retained"
+        assert "run_id" not in settlement
+        status, _, body = request(server, "GET", path)
+        assert status == 200 and json_body(body) == recovered
+    assert executor.calls == [] and executor.recovered == []
+    assert service.store.list_runs() == []
+    assert server.socket.fileno() == -1

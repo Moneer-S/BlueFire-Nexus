@@ -38,6 +38,9 @@
 .ad-smb-consent input { flex: 0 0 auto; margin-top: 3px; }
 .ad-smb-history { list-style: none; padding: 0; }
 .ad-smb-history > li { padding-block: 18px; border-bottom: 1px solid var(--line); }
+.ad-smb-preparation-link { display: inline-flex; align-items: center; gap: 6px; }
+.ad-smb-preparation-detail h2 { scroll-margin-top: 88px; }
+.ad-smb-preparation-close { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; }
 .ad-smb-acl { margin-block: 16px; }
 .ad-smb-audit { margin-block: 20px; }
 .ad-smb-audit > .ad-smb-section-heading { align-items: center; margin-bottom: 12px; }

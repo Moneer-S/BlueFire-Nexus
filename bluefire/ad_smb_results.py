@@ -28,6 +28,7 @@ from .util import content_hash
 OWNER_KIND = "ad_smb.exercise"
 OPERATION_KIND = "ad_smb.operation"
 ACTION = "owned.ad.smb_access.v1"
+PREPARATION_HISTORY_LIMIT = 6
 PHASES = {
     "inspect": ("inspect_member",),
     "baseline": ("read_probe_primary", "read_legitimate_primary", "read_legitimate_health"),
@@ -195,10 +196,17 @@ def affordable(owner: Mapping[str, Any], phase: str) -> bool:
 
 def allowed_phases(owner: Mapping[str, Any]) -> list[str]:
     progress = owner["progress"]
+    preparation_history = progress.get("preparation_history", [])
+    if (
+        not isinstance(preparation_history, list)
+        or len(preparation_history) > PREPARATION_HISTORY_LIMIT
+    ):
+        raise AdSmbError("AD preparation history exceeds its closed bound.")
     if (
         progress["pending_operation"]
         or progress["policy_state"] == "unknown"
         or len(progress["operations"]) >= 6
+        or len(preparation_history) >= PREPARATION_HISTORY_LIMIT
     ):
         return []
     phases = []
@@ -222,6 +230,12 @@ def allowed_phases(owner: Mapping[str, Any]) -> list[str]:
         phases.append("rollback")
     if progress["operations"] and latest(owner, "audit") is None:
         phases.append("audit")
+    if (
+        len(preparation_history) == PREPARATION_HISTORY_LIMIT - 1
+        and progress["policy_state"] == "hardened"
+        and latest(owner, "rollback") is None
+    ):
+        phases = [phase for phase in phases if phase == "rollback"]
     return [phase for phase in phases if affordable(owner, phase)]
 
 
@@ -235,6 +249,12 @@ def reviewed_change(owner: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def review_document(owner: Mapping[str, Any], phase: str) -> dict[str, Any]:
+    preparation_history = owner["progress"].get("preparation_history", [])
+    if (
+        isinstance(preparation_history, list)
+        and len(preparation_history) >= PREPARATION_HISTORY_LIMIT
+    ):
+        raise AdSmbError("AD preparation history is full; start a new saved exercise.")
     if phase not in allowed_phases(owner):
         raise AdSmbError("This AD stage needs settled original evidence or a new scope.")
     row = {
