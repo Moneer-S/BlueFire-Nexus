@@ -993,7 +993,17 @@ export interface ComparisonSummary {
   outcomes: Record<string, string>;
   outcome_counts?: Record<string, number>;
   first_blocked_step?: string | null;
-  objective_reached?: boolean;
+  objective_reached?: boolean | null;
+  graph_objective_reached?: boolean;
+  capability_objective?: {
+    schema_version: "bluefire.composition-objective-projection.v1";
+    run_id: string;
+    attempt_id: string;
+    state: "verified" | "unverified";
+    objective_digest: string;
+    established: boolean | null;
+    result_digest: string | null;
+  } | null;
   evidence_provenance?: Record<string, number>;
   evidence_details?: {
     producer_counts?: Record<string, number>;
@@ -1028,6 +1038,7 @@ export interface ComparisonDelta {
   first_path_divergence?: number | null;
   first_blocked_changed?: boolean;
   objective_changed?: boolean;
+  objective_comparability?: "comparable" | "unverified" | "different_objectives";
   cleanup_changed?: boolean;
   evidence_delta?: Record<string, number>;
   evidence_detail_delta?: {
@@ -1153,7 +1164,7 @@ export interface SavedComparisonSnapshot {
   digest: string;
   created_at: string;
   comparison: ComparisonResponse;
-  source_bindings: Array<{ run_id: string; bundle_hash: string }>;
+  source_bindings: Array<{ run_id: string; bundle_hash: string; capability_objective_digest?: string }>;
   source_integrity: {
     status: "verified" | "unavailable";
     runs: Array<{ run_id: string; status: "verified" | "missing" | "changed" | "invalid" }>;

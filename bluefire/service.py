@@ -5644,19 +5644,40 @@ class BlueFireService(
             )
         try:
             from .comparison_snapshot_store import MAX_COMPARISON_RUNS, save
+            from .composition_comparison import projections as capability_objective_projections
 
             if len(run_ids) > MAX_COMPARISON_RUNS:
                 raise ComparisonError("comparison exceeds its run limit")
             before = self._comparison_source_bindings(run_ids)
-            comparison = compare_runs(self.store, run_ids, s3_access=self.s3_access)
+            before_objectives = capability_objective_projections(self, run_ids)
+            comparison_options: dict[str, Any] = {"s3_access": self.s3_access}
+            if before_objectives:
+                comparison_options["capability_objectives"] = before_objectives
+            comparison = compare_runs(self.store, run_ids, **comparison_options)
             after = self._comparison_source_bindings(run_ids)
-            if before != after:
+            after_objectives = capability_objective_projections(self, run_ids)
+            if before != after or before_objectives != after_objectives:
                 raise APIError(
                     HTTPStatus.CONFLICT,
                     "comparison_source_changed",
-                    "A source run changed while the comparison was being captured. Compare again.",
+                    "A source run or objective proof changed while the comparison was being captured. Compare again.",
                 )
-            snapshot = save(self.product_store, comparison, after)
+            bound_sources: builtins.list[Mapping[str, Any]] = [
+                {
+                    **binding,
+                    **(
+                        {
+                            "capability_objective_digest": content_hash(
+                                after_objectives[binding["run_id"]]
+                            )
+                        }
+                        if binding["run_id"] in after_objectives
+                        else {}
+                    ),
+                }
+                for binding in after
+            ]
+            snapshot = save(self.product_store, comparison, bound_sources)
             return {
                 **comparison,
                 "saved_snapshot": {
@@ -5717,6 +5738,8 @@ class BlueFireService(
                 "Saved comparison failed integrity validation.",
             ) from exc
 
+        from .composition_comparison import projections as capability_objective_projections
+
         statuses = []
         for binding in snapshot["source_bindings"]:
             run_id = binding["run_id"]
@@ -5734,6 +5757,17 @@ class BlueFireService(
                     status = "changed"
                 else:
                     status = "verified"
+            if status == "verified" and "capability_objective_digest" in binding:
+                try:
+                    current = capability_objective_projections(self, [run_id]).get(run_id)
+                except (ProductStoreError, RunStoreError, KeyError, TypeError, ValueError):
+                    status = "invalid"
+                else:
+                    if (
+                        current is None
+                        or content_hash(current) != binding["capability_objective_digest"]
+                    ):
+                        status = "changed"
             statuses.append({"run_id": run_id, "status": status})
         source_status = (
             "verified" if all(row["status"] == "verified" for row in statuses) else "unavailable"

@@ -89,16 +89,26 @@ _SEMVER = re.compile(
 )
 _STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9][0-9]*$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ATTEMPT_ID = re.compile(r"^attempt-[0-9a-f]{32}$")
 _BLOCKED_STATUSES = frozenset({"blocked", "control_blocked", "refused"})
+_COMPOSITION_OBJECTIVE_SCHEMA = "bluefire.composition-objective-projection.v1"
 
 
 def compare_runs(
-    store: RunStore, run_ids: Sequence[str], *, s3_access: S3AccessJobs | None = None
+    store: RunStore,
+    run_ids: Sequence[str],
+    *,
+    s3_access: S3AccessJobs | None = None,
+    capability_objectives: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> Mapping[str, Any]:
     if len(run_ids) < 2:
         raise ComparisonError("comparison requires at least two runs")
     if len(run_ids) != len(set(run_ids)):
         raise ComparisonError("comparison run IDs must be unique")
+    if capability_objectives is not None and (
+        not isinstance(capability_objectives, Mapping) or set(capability_objectives) - set(run_ids)
+    ):
+        raise ComparisonError("composition objective projections do not match the selected runs")
     snapshots = []
     for run_id in run_ids:
         try:
@@ -106,7 +116,13 @@ def compare_runs(
         except RunStoreError as exc:
             raise ComparisonError(f"run bundle failed integrity validation: {run_id}") from exc
     try:
-        summaries = [_summarize(snapshot) for snapshot in snapshots]
+        summaries = [
+            _summarize(
+                snapshot,
+                capability_objective=(capability_objectives or {}).get(snapshot["run_id"]),
+            )
+            for snapshot in snapshots
+        ]
     except CollectorError as exc:
         raise ComparisonError(f"collector session failed integrity validation: {exc}") from exc
     baseline = summaries[0]
@@ -126,7 +142,45 @@ def compare_runs(
     return dict(body, comparison_id="comparison-" + content_hash(body)[7:27])
 
 
-def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+def _checked_capability_objective(value: Mapping[str, Any], run_id: str) -> dict[str, Any]:
+    fields = {
+        "schema_version",
+        "run_id",
+        "attempt_id",
+        "state",
+        "objective_digest",
+        "established",
+        "result_digest",
+    }
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ComparisonError("composition objective projection fields are invalid")
+    if (
+        value["schema_version"] != _COMPOSITION_OBJECTIVE_SCHEMA
+        or value["run_id"] != run_id
+        or not isinstance(value["attempt_id"], str)
+        or _ATTEMPT_ID.fullmatch(value["attempt_id"]) is None
+        or not isinstance(value["objective_digest"], str)
+        or _DIGEST.fullmatch(value["objective_digest"]) is None
+    ):
+        raise ComparisonError("composition objective projection identity is invalid")
+    if value["state"] == "verified":
+        if (
+            type(value["established"]) is not bool
+            or not isinstance(value["result_digest"], str)
+            or _DIGEST.fullmatch(value["result_digest"]) is None
+        ):
+            raise ComparisonError("verified composition objective proof is invalid")
+    elif value["state"] == "unverified":
+        if value["established"] is not None or value["result_digest"] is not None:
+            raise ComparisonError("unverified composition objective cannot claim a result")
+    else:
+        raise ComparisonError("composition objective proof state is invalid")
+    return dict(value)
+
+
+def _summarize(
+    snapshot: Mapping[str, Any], *, capability_objective: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     steps = snapshot.get("steps")
     if steps is None:
         steps = (
@@ -219,7 +273,17 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                 for key, value in budget_value.items()
                 if isinstance(value, int) and not isinstance(value, bool)
             }
-    objective_reached = bool(snapshot.get("objective_reached", False))
+    graph_objective_reached = bool(snapshot.get("objective_reached", False))
+    capability_objective = (
+        _checked_capability_objective(capability_objective, snapshot["run_id"])
+        if capability_objective is not None
+        else None
+    )
+    objective_reached = (
+        capability_objective["established"]
+        if capability_objective is not None
+        else graph_objective_reached
+    )
     target_scope = (
         snapshot.get("authorized_target_scope")
         if "authorized_target_scope" in snapshot
@@ -247,6 +311,8 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "first_blocked_step": first_blocked,
         "first_block": first_block,
         "objective_reached": objective_reached,
+        "graph_objective_reached": graph_objective_reached,
+        "capability_objective": capability_objective,
         "evidence_provenance": dict(sorted(provenance.items())),
         "evidence_details": evidence_details,
         "collector_session": summarize_collector_session(
@@ -286,6 +352,20 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _objective_comparability(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> str:
+    before = baseline.get("capability_objective")
+    after = candidate.get("capability_objective")
+    if before is None and after is None:
+        return "comparable"
+    if before is None or after is None:
+        return "different_objectives"
+    if before["state"] != "verified" or after["state"] != "verified":
+        return "unverified"
+    if before["objective_digest"] != after["objective_digest"]:
+        return "different_objectives"
+    return "comparable"
+
+
 def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any]:
     baseline_path = list(baseline["execution_path"])
     candidate_path = list(candidate["execution_path"])
@@ -313,9 +393,14 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
     candidate_outcomes = Counter(candidate["outcome_counts"])
     outcome_keys = sorted(set(baseline_outcomes) | set(candidate_outcomes))
     signals: list[str] = []
-    if not baseline["objective_reached"] and candidate["objective_reached"]:
+    objective_comparability = _objective_comparability(baseline, candidate)
+    objective_changed = (
+        objective_comparability == "comparable"
+        and baseline["objective_reached"] != candidate["objective_reached"]
+    )
+    if objective_changed and candidate["objective_reached"] is True:
         signals.append("objective_recovered")
-    elif baseline["objective_reached"] and not candidate["objective_reached"]:
+    elif objective_changed and candidate["objective_reached"] is False:
         signals.append("objective_regressed")
     if baseline["cleanup_success"] is False and candidate["cleanup_success"] is True:
         signals.append("cleanup_recovered")
@@ -377,7 +462,8 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         "to_run_id": candidate["run_id"],
         "first_path_divergence": first_divergence,
         "first_blocked_changed": baseline["first_blocked_step"] != candidate["first_blocked_step"],
-        "objective_changed": baseline["objective_reached"] != candidate["objective_reached"],
+        "objective_changed": objective_changed,
+        "objective_comparability": objective_comparability,
         "cleanup_changed": baseline["cleanup_success"] != candidate["cleanup_success"],
         "evidence_delta": evidence_delta,
         "evidence_detail_delta": evidence_detail_delta,
@@ -504,12 +590,14 @@ def _frontier_explanation(
             first_difference = index
             break
     path_changed = first_difference is not None
+    objective_comparable = delta.get("objective_comparability") == "comparable"
     objective_success = candidate.get("objective_reached") is True
     from_block = baseline.get("first_block")
     to_block = candidate.get("first_block")
     causal_cohort = _is_causal_replay_cohort(baseline, candidate)
     prevention_supported = bool(
         causal_cohort
+        and objective_comparable
         and path_changed
         and objective_success
         and from_block is not None
@@ -518,7 +606,11 @@ def _frontier_explanation(
     observed_delta = delta.get("observed_detection_match_delta")
     observed_reduction = type(observed_delta) is int and observed_delta < 0
     detection_supported = bool(
-        causal_cohort and path_changed and objective_success and observed_reduction
+        causal_cohort
+        and objective_comparable
+        and path_changed
+        and objective_success
+        and observed_reduction
     )
     path_difference = {
         "changed": path_changed,
@@ -586,10 +678,10 @@ def _frontier_explanation(
             "changed": bool(delta.get("telemetry_added") or delta.get("telemetry_removed")),
         },
         "objective_result": {
-            "from_reached": baseline.get("objective_reached") is True,
-            "to_reached": objective_success,
-            "changed": baseline.get("objective_reached") != candidate.get("objective_reached"),
-            "outcome": _objective_delta_outcome(baseline, candidate),
+            "from_reached": baseline.get("objective_reached"),
+            "to_reached": candidate.get("objective_reached"),
+            "changed": delta.get("objective_changed") is True,
+            "outcome": _objective_delta_outcome(baseline, candidate, delta),
         },
         "authoritative_cleanup": cleanup,
     }
@@ -604,7 +696,15 @@ def _frontier_explanation(
     return explanation
 
 
-def _objective_delta_outcome(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> str:
+def _objective_delta_outcome(
+    baseline: Mapping[str, Any], candidate: Mapping[str, Any], delta: Mapping[str, Any]
+) -> str:
+    if delta.get("objective_comparability") != "comparable":
+        return (
+            "unverified"
+            if delta.get("objective_comparability") == "unverified"
+            else "different_objectives"
+        )
     before = baseline.get("objective_reached") is True
     after = candidate.get("objective_reached") is True
     if not before and after:
@@ -627,13 +727,16 @@ def _defensive_effect(
     regressions: list[str] = []
     causal_cohort = _is_causal_replay_cohort(baseline, candidate)
     if causal_cohort:
+        comparable_objective = delta.get("objective_comparability") == "comparable"
         if (
-            baseline.get("objective_reached") is True
+            comparable_objective
+            and baseline.get("objective_reached") is True
             and candidate.get("objective_reached") is False
         ):
             improvements.append("objective_prevented")
         elif (
-            baseline.get("objective_reached") is False
+            comparable_objective
+            and baseline.get("objective_reached") is False
             and candidate.get("objective_reached") is True
         ):
             regressions.append("objective_recovered")
