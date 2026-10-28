@@ -7,14 +7,19 @@ from copy import deepcopy
 
 import pytest
 
+from bluefire.ai_composition_contract import OUTPUT_SCHEMA
+from bluefire.capability_resources import METHODS
 from tools.verify_installed_browser import (
     _COMPOSITION_PURPOSES,
     _FIXTURE_MODEL,
     _FIXTURE_PURPOSES,
+    _RECEIVER_COMPOSITION_PURPOSE,
     _assistant_fixture_journey_passed,
     _fixture_output_for_request,
     _fixture_outputs,
     _fixture_request_allowed,
+    _receiver_fixture_output_for_request,
+    _receiver_fixture_request_allowed,
 )
 
 
@@ -37,6 +42,74 @@ def request_for(purpose: str) -> dict[str, object]:
             }
         },
     }
+
+
+def receiver_request() -> dict[str, object]:
+    request = request_for(_RECEIVER_COMPOSITION_PURPOSE)
+    request["max_output_tokens"] = 1024
+    request["text"]["format"]["schema"] = deepcopy(OUTPUT_SCHEMA)
+    selected_steps = [
+        ("create_fixture", METHODS[0], {"record_count": 8}),
+        ("transform_fixture", METHODS[1], {"redact_values": False}),
+        ("inspect_fixture_metadata", METHODS[3], {}),
+        ("stage_records", METHODS[4], {"bundle_format": "jsonl"}),
+        ("handoff_to_receiver", METHODS[5], {"port": 4317}),
+        ("cleanup_workspace", METHODS[6], {"verify_removal": True}),
+    ]
+    request["input"] = json.dumps(
+        {
+            "schema_version": "bluefire.composition-model-context.v1",
+            "objective": {
+                "predicate": {
+                    "kind": "redacted_delivery_preserves_records",
+                    "record_count": 8,
+                }
+            },
+            "revision": False,
+            "methods": [{"behavior_id": method} for method in METHODS],
+            "facts": [
+                {
+                    "evidence_ref": "policy",
+                    "kind": "retained_policy",
+                    "provenance": "observed",
+                    "value": {"status": "retained"},
+                }
+            ],
+            "initial_proposal": {
+                "schema_version": "bluefire.composition-proposal.v1",
+                "title": "Installed receiver proposal",
+                "start": "seed",
+                "steps": [
+                    {"id": identity, "behavior_id": method, "parameters": parameters}
+                    for identity, method, parameters in selected_steps
+                ],
+                "edges": [],
+                "evidence_refs": "[EVIDENCE CONTENT OMITTED]",
+                "rationale": "Use the observed retained receiver policy.",
+            },
+        }
+    )
+    return request
+
+
+def receiver_allowed(
+    request: object,
+    *,
+    index: int = 0,
+    purpose: str = _RECEIVER_COMPOSITION_PURPOSE,
+    auth: str | None = None,
+    body_bytes: int = 100,
+    total_bytes: int = 0,
+) -> bool:
+    return _receiver_fixture_request_allowed(
+        request,
+        purpose=purpose,
+        model=request.get("model") if isinstance(request, dict) else None,
+        body_bytes=body_bytes,
+        authorization=auth,
+        request_index=index,
+        accumulated_bytes=total_bytes,
+    )
 
 
 def assistant_report() -> dict[str, object]:
@@ -275,6 +348,118 @@ def test_fixture_rejects_per_request_byte_limit() -> None:
     request = request_for(_FIXTURE_PURPOSES[0])
     assert not allowed(request, index=0, body_bytes=1_048_577)
     assert not allowed(request, index=0, body_bytes=0)
+
+
+def test_receiver_fixture_is_one_exact_request_separate_from_four_assistant_requests() -> None:
+    request = receiver_request()
+    assert receiver_allowed(request)
+    assert not receiver_allowed(request, index=1)
+    assert not allowed(request, index=0)
+    assert allowed(request_for(_FIXTURE_PURPOSES[0]), index=0)
+    assert not receiver_allowed(request_for(_FIXTURE_PURPOSES[0]))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "index", "purpose", "auth", "body_bytes", "total_bytes"),
+    [
+        (
+            lambda request: request.update(model="other-model"),
+            0,
+            _RECEIVER_COMPOSITION_PURPOSE,
+            None,
+            100,
+            0,
+        ),
+        (
+            lambda request: request.update(max_output_tokens=64),
+            0,
+            _RECEIVER_COMPOSITION_PURPOSE,
+            None,
+            100,
+            0,
+        ),
+        (
+            lambda request: request.update(extra="field"),
+            0,
+            _RECEIVER_COMPOSITION_PURPOSE,
+            None,
+            100,
+            0,
+        ),
+        (
+            lambda request: request["text"]["format"].update(name="bluefire_ai_graph_draft"),
+            0,
+            _RECEIVER_COMPOSITION_PURPOSE,
+            None,
+            100,
+            0,
+        ),
+        (
+            lambda request: request["text"]["format"].update(schema={"type": "object"}),
+            0,
+            _RECEIVER_COMPOSITION_PURPOSE,
+            None,
+            100,
+            0,
+        ),
+        (lambda request: None, 0, "bluefire_ai_graph_draft", None, 100, 0),
+        (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, "Bearer secret", 100, 0),
+        (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, None, 0, 0),
+        (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, None, 262_145, 0),
+        (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, None, 100, 262_045),
+    ],
+)
+def test_receiver_fixture_rejects_other_purposes_schemas_and_budgets(
+    mutation, index: int, purpose: str, auth: str | None, body_bytes: int, total_bytes: int
+) -> None:
+    request = receiver_request()
+    mutation(request)
+    assert not receiver_allowed(
+        request,
+        index=index,
+        purpose=purpose,
+        auth=auth,
+        body_bytes=body_bytes,
+        total_bytes=total_bytes,
+    )
+
+
+def test_receiver_fixture_restores_only_the_supplied_retained_policy_reference() -> None:
+    request = receiver_request()
+    context = json.loads(request["input"])
+    expected = {
+        **context["initial_proposal"],
+        "evidence_refs": [context["facts"][0]["evidence_ref"]],
+    }
+    assert _receiver_fixture_output_for_request(request) == expected
+    assert json.loads(request["input"])["initial_proposal"]["evidence_refs"] == (
+        "[EVIDENCE CONTENT OMITTED]"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda context: context.update(revision=True),
+        lambda context: context["objective"]["predicate"].update(record_count=7),
+        lambda context: context["methods"].pop(),
+        lambda context: context["facts"][0].update(evidence_ref="unknown"),
+        lambda context: context["facts"][0].update(provenance="model"),
+        lambda context: context["facts"][0]["value"].update(status="unknown"),
+        lambda context: context["initial_proposal"].update(evidence_refs=["policy"]),
+        lambda context: context["initial_proposal"]["steps"].pop(),
+        lambda context: context["initial_proposal"]["steps"][1]["parameters"].update(
+            redact_values=True
+        ),
+    ],
+)
+def test_receiver_fixture_refuses_unbound_model_context(mutation) -> None:
+    request = receiver_request()
+    context = json.loads(request["input"])
+    mutation(context)
+    request["input"] = json.dumps(context)
+    with pytest.raises(ValueError):
+        _receiver_fixture_output_for_request(request)
 
 
 def test_assistant_journey_validator_accepts_observed_match_count_and_development_classification() -> (

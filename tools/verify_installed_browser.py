@@ -48,6 +48,7 @@ _COMPOSITION_PURPOSES = (
     "bluefire_linux_file_access_composition_proposal",
     "bluefire_macos_file_access_composition_proposal",
 )
+_RECEIVER_COMPOSITION_PURPOSE = "bluefire_composition_proposal"
 _FIXTURE_MODEL = "bluefire-local-graph-fixture-v1"
 _RECEIVER_PROFILE = "sandbox-endpoint-deep-lab.v1"
 _RECEIVER_SCENARIO = "scenario.receiver-defense.redaction-validation.v1"
@@ -136,8 +137,9 @@ def _valid_receiver_composition(value: object) -> bool:
     if not isinstance(checks, list) or not isinstance(evidence, list):
         return False
     comparison = composition.get("comparison")
+    proposal = composition.get("model_proposal")
     result_cleanup = composition.get("cleanup")
-    if not isinstance(comparison, dict) or not isinstance(result_cleanup, dict):
+    if not all(isinstance(item, dict) for item in (comparison, proposal, result_cleanup)):
         return False
     return (
         set(composition)
@@ -161,6 +163,7 @@ def _valid_receiver_composition(value: object) -> bool:
             "objective_established",
             "finalized_run_objective_reached",
             "graph_objective_reached",
+            "model_proposal",
             "comparison",
         }
         and composition["control_owner_job_id"] == value.get("original_owner_job_id")
@@ -197,6 +200,32 @@ def _valid_receiver_composition(value: object) -> bool:
         and type(composition["finalized_run_objective_reached"]) is bool
         and type(composition["graph_objective_reached"]) is bool
         and composition["graph_objective_reached"] is composition["finalized_run_objective_reached"]
+        and set(proposal)
+        == {
+            "job_id",
+            "proposal_digest",
+            "context_digest",
+            "provider_id",
+            "candidate_ready",
+            "reopened",
+            "same_initial_graph",
+            "model_authorization_requests",
+        }
+        and isinstance(proposal["job_id"], str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", proposal["job_id"]) is not None
+        and proposal["job_id"]
+        not in {composition["objective_owner_job_id"], composition["attempt_job_id"]}
+        and all(
+            isinstance(proposal[key], str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", proposal[key]) is not None
+            for key in ("proposal_digest", "context_digest")
+        )
+        and proposal["provider_id"] == "provider.installed-receiver-composition.v1"
+        and proposal["candidate_ready"] is True
+        and proposal["reopened"] is True
+        and proposal["same_initial_graph"] is True
+        and type(proposal["model_authorization_requests"]) is int
+        and proposal["model_authorization_requests"] == 1
         and set(comparison)
         == {
             "baseline_run_id",
@@ -219,6 +248,10 @@ def _valid_receiver_composition(value: object) -> bool:
         and comparison["objective_recovered"] is False
         and comparison["reopened"] is True
         and cleanup.get("composition_grant_revoked") is True
+        and cleanup.get("model_authorization_revoked") is True
+        and "single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt"
+        in checks
+        and "receiver_composition_model_authorization_revoked_after_one_proposal" in checks
         and "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false"
         in checks
         and "composed_attempt_grant_revoked_after_verified_cleanup" in checks
@@ -231,12 +264,18 @@ def _valid_receiver_composition(value: object) -> bool:
             for name in (
                 "composition_context",
                 "composition_grant",
-                "composition_proposal_context",
+                "composition_proposal",
                 "composition_attempt",
                 "composition_revoke",
                 "comparison",
+                "provider_save",
+                "provider_activate",
+                "model_authorization",
+                "model_authorization_revoke",
             )
         )
+        and type(counts.get("composition_proposal_context")) is int
+        and 2 <= counts["composition_proposal_context"] <= 3
     )
 
 
@@ -483,6 +522,8 @@ _RUNTIME_PROCESS_CLEANUP_KEYS = (
     "browser_process_group_stopped",
     "assistant_process_group_stopped",
     "receiver_process_group_stopped",
+    "receiver_fixture_thread_stopped",
+    "receiver_fixture_http_server_closed",
     "fixture_thread_stopped",
     "fixture_http_server_closed",
     "service_thread_stopped",
@@ -553,11 +594,19 @@ def _runtime_cleanup_confirmed(report: dict[str, object]) -> bool:
 
 
 def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
+    fixture = report.get("receiver_model_fixture")
     return (
         report.get("browser_phase_status") == "passed"
         and report.get("receiver_phase_status") == "passed"
         and report.get("receiver_driver_started") is True
         and report.get("receiver_retained_redaction_driver_passed") is True
+        and isinstance(fixture, dict)
+        and type(fixture.get("request_count")) is int
+        and fixture.get("request_count") == 1
+        and fixture.get("purposes") == [_RECEIVER_COMPOSITION_PURPOSE]
+        and type(fixture.get("request_bytes")) is int
+        and 0 < fixture["request_bytes"] <= 262_144
+        and fixture.get("failed") is False
         and _runtime_cleanup_confirmed(report)
         and report.get("cleanup_errors") == []
     )
@@ -655,6 +704,73 @@ def _fixture_output_for_request(index: int, request: object) -> dict[str, object
             raise ValueError("detection fixture evidence reference is invalid")
         output["evidence_refs"] = [evidence_id]
     return output
+
+
+def _receiver_fixture_output_for_request(request: object) -> dict[str, object]:
+    """Return the current fixed graph, restoring only a verified fact reference."""
+    from bluefire.capability_resources import METHODS
+
+    reviewed_steps = (
+        ("create_fixture", "sandbox.fixture.create.v1"),
+        ("transform_fixture", "sandbox.fixture.transform.v1"),
+        ("inspect_fixture_metadata", "sandbox.discovery.metadata.v1"),
+        ("stage_records", "sandbox.collection.stage.v1"),
+        ("handoff_to_receiver", "sandbox.peer.handoff.v1"),
+        ("cleanup_workspace", "sandbox.cleanup.v1"),
+    )
+
+    if not isinstance(request, dict):
+        raise ValueError("receiver fixture requires a structured request")
+    try:
+        supplied = json.loads(request["input"])
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("receiver fixture requires bounded model context") from exc
+    if (
+        not isinstance(supplied, dict)
+        or set(supplied)
+        != {"schema_version", "objective", "revision", "methods", "facts", "initial_proposal"}
+        or supplied["schema_version"] != "bluefire.composition-model-context.v1"
+        or supplied["revision"] is not False
+    ):
+        raise ValueError("receiver fixture context is not an initial proposal")
+    objective, methods, facts, initial = (
+        supplied[key] for key in ("objective", "methods", "facts", "initial_proposal")
+    )
+    if (
+        not isinstance(objective, dict)
+        or not isinstance(objective.get("predicate"), dict)
+        or objective["predicate"].get("kind") != "redacted_delivery_preserves_records"
+        or objective["predicate"].get("record_count") != 8
+        or not isinstance(methods, list)
+        or [row.get("behavior_id") for row in methods if isinstance(row, dict)] != list(METHODS)
+        or len(methods) != len(METHODS)
+        or not isinstance(facts, list)
+        or len(facts) != 1
+        or not isinstance(facts[0], dict)
+        or facts[0].get("evidence_ref") != "policy"
+        or facts[0].get("kind") != "retained_policy"
+        or facts[0].get("provenance") != "observed"
+        or not isinstance(facts[0].get("value"), dict)
+        or facts[0]["value"].get("status") != "retained"
+        or not isinstance(initial, dict)
+        or initial.get("schema_version") != "bluefire.composition-proposal.v1"
+        or initial.get("evidence_refs") != "[EVIDENCE CONTENT OMITTED]"
+        or not isinstance(initial.get("steps"), list)
+        or [
+            (row.get("id"), row.get("behavior_id"))
+            for row in initial["steps"]
+            if isinstance(row, dict)
+        ]
+        != list(reviewed_steps)
+        or len(initial["steps"]) != len(reviewed_steps)
+        or initial["steps"][0].get("parameters") != {"record_count": 8}
+        or initial["steps"][1].get("parameters") != {"redact_values": False}
+        or initial["steps"][3].get("parameters") != {"bundle_format": "jsonl"}
+        or initial["steps"][4].get("parameters") != {"port": 4317}
+        or initial["steps"][5].get("parameters") != {"verify_removal": True}
+    ):
+        raise ValueError("receiver fixture graph or policy fact is out of scope")
+    return {**initial, "evidence_refs": [facts[0]["evidence_ref"]]}
 
 
 def _assistant_fixture_journey_passed(value: object) -> bool:
@@ -839,6 +955,10 @@ def _fixture_request_allowed(
     authorization: str | None,
     request_index: int,
     accumulated_bytes: int,
+    expected_purposes: tuple[str, ...] = _FIXTURE_PURPOSES,
+    output_tokens: int = 64,
+    request_byte_limit: int = 1_048_576,
+    total_byte_limit: int = 2_097_152,
 ) -> bool:
     if not isinstance(request, dict):
         return False
@@ -866,26 +986,42 @@ def _fixture_request_allowed(
         and isinstance(format_document.get("schema"), dict)
         and isinstance(request.get("instructions"), str)
         and isinstance(request.get("input"), str)
-        and request.get("max_output_tokens") == 64
+        and request.get("max_output_tokens") == output_tokens
         and request.get("store") is False
         and request.get("parallel_tool_calls") is False
         and request.get("tools") == []
         and request.get("tool_choice") == "none"
         and authorization is None
-        and request_index < len(_FIXTURE_PURPOSES)
-        and purpose == _FIXTURE_PURPOSES[request_index]
+        and request_index < len(expected_purposes)
+        and purpose == expected_purposes[request_index]
         and format_document.get("name") == purpose
         and model == _FIXTURE_MODEL
         and body_bytes > 0
-        and body_bytes <= 1_048_576
-        and accumulated_bytes + body_bytes <= 2_097_152
+        and body_bytes <= request_byte_limit
+        and accumulated_bytes + body_bytes <= total_byte_limit
+    )
+
+
+def _receiver_fixture_request_allowed(request: object, **kwargs: object) -> bool:
+    from bluefire.ai_composition_contract import OUTPUT_SCHEMA
+
+    return (
+        _fixture_request_allowed(
+            request,
+            expected_purposes=(_RECEIVER_COMPOSITION_PURPOSE,),
+            output_tokens=1024,
+            request_byte_limit=262_144,
+            total_byte_limit=262_144,
+            **kwargs,
+        )
+        and request["text"]["format"]["schema"] == OUTPUT_SCHEMA
     )
 
 
 class LocalGraphFixture:
-    """Strict four-request structured-output endpoint; stores no prompt or response text."""
+    """Strict phase-owned structured-output endpoint; stores no prompt or response text."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, receiver_composition: bool = False) -> None:
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -937,7 +1073,11 @@ class LocalGraphFixture:
                     return
                 length = int(raw_length)
                 with fixture.lock:
-                    if fixture.post_count >= 5 or fixture.post_bytes + length > 2_097_152:
+                    if fixture.post_count >= (
+                        1 if fixture.receiver_composition else 5
+                    ) or fixture.post_bytes + length > (
+                        262_144 if fixture.receiver_composition else 2_097_152
+                    ):
                         fixture.failed = True
                         self._send(429, {"error": "fixture_budget_exceeded"})
                         return
@@ -964,7 +1104,7 @@ class LocalGraphFixture:
                     fixture._fail()
                     self._send(400, {"error": "invalid_length"})
                     return
-                if length > 1_048_576:
+                if length > (262_144 if fixture.receiver_composition else 1_048_576):
                     fixture._fail()
                     self._send(413, {"error": "request_too_large"})
                     return
@@ -978,7 +1118,11 @@ class LocalGraphFixture:
                     return
                 with fixture.lock:
                     index = len(fixture.purposes)
-                    if not _fixture_request_allowed(
+                    allowed = (
+                        _receiver_fixture_request_allowed
+                        if fixture.receiver_composition
+                        else _fixture_request_allowed
+                    )(
                         request,
                         purpose=purpose,
                         model=model,
@@ -986,7 +1130,8 @@ class LocalGraphFixture:
                         authorization=self.headers.get("Authorization"),
                         request_index=index,
                         accumulated_bytes=fixture.request_bytes,
-                    ):
+                    )
+                    if not allowed:
                         fixture.failed = True
                         self._send(400, {"error": "request_out_of_scope"})
                         return
@@ -997,7 +1142,11 @@ class LocalGraphFixture:
                     self._send(504, {"error": "fixture_deadline"})
                     return
                 try:
-                    output = _fixture_output_for_request(index, request)
+                    output = (
+                        _receiver_fixture_output_for_request(request)
+                        if fixture.receiver_composition
+                        else _fixture_output_for_request(index, request)
+                    )
                 except ValueError:
                     fixture._fail()
                     self._send(400, {"error": "fixture_output_binding_failed"})
@@ -1009,7 +1158,10 @@ class LocalGraphFixture:
                         "model": _FIXTURE_MODEL,
                         "status": "completed",
                         "output_text": json.dumps(output, separators=(",", ":")),
-                        "usage": {"input_tokens": 16, "output_tokens": 24},
+                        "usage": {
+                            "input_tokens": 16,
+                            "output_tokens": 256 if fixture.receiver_composition else 24,
+                        },
                     },
                 )
 
@@ -1023,6 +1175,7 @@ class LocalGraphFixture:
             def handle_error(self, _request: object, _client_address: object) -> None:
                 return
 
+        self.receiver_composition = receiver_composition
         self.lock = threading.Lock()
         self.release = threading.Event()
         self.purposes: list[str] = []
@@ -1122,6 +1275,7 @@ def _run_receiver_phase(
     receiver_server = None
     receiver_thread = None
     receiver_child = None
+    receiver_fixture = None
     receiver_driver_report: dict[str, object] | None = None
     prior_environment = dict(os.environ)
     prior_cwd = Path.cwd()
@@ -1130,6 +1284,8 @@ def _run_receiver_phase(
     report["receiver_http_server_closed"] = True
     report["receiver_service_thread_stopped"] = True
     report["receiver_service_closed"] = True
+    report["receiver_fixture_thread_stopped"] = True
+    report["receiver_fixture_http_server_closed"] = True
     report["receiver_driver_cleanup_confirmed"] = False
     try:
         receiver_root.mkdir(mode=0o700, exist_ok=False)
@@ -1166,6 +1322,10 @@ def _run_receiver_phase(
         receiver_thread.start()
         report["receiver_service_thread_stopped"] = False
         report["receiver_http_server_closed"] = False
+        receiver_fixture = LocalGraphFixture(receiver_composition=True)
+        receiver_fixture.start()
+        report["receiver_fixture_thread_stopped"] = False
+        report["receiver_fixture_http_server_closed"] = False
         timeout = _phase_timeout(work_deadline, 360)
         if timeout is None:
             report["receiver_phase_status"] = "not_attempted"
@@ -1190,18 +1350,28 @@ def _run_receiver_phase(
         report["receiver_process_group_stopped"] = False
         timeout = _phase_timeout(work_deadline, 360)
         receiver_child.communicate(
-            json.dumps({"capability": receiver_capability}).encode(),
+            json.dumps(
+                {"capability": receiver_capability, "fixture_port": receiver_fixture.port}
+            ).encode(),
             timeout=timeout if timeout is not None else 0,
         )
         receiver_capability = ""
         receiver_report_path = output / "installed-receiver-report.json"
         receiver_driver_report = json.loads(receiver_report_path.read_text(encoding="utf-8"))
+        report["receiver_model_fixture"] = {
+            "request_count": len(receiver_fixture.purposes),
+            "purposes": list(receiver_fixture.purposes),
+            "request_bytes": receiver_fixture.request_bytes,
+            "failed": receiver_fixture.failed,
+        }
         receiver_receipt = _receiver_report_for_receipt(receiver_driver_report)
         driver_cleanup = receiver_driver_report["cleanup"]
         report["receiver_driver_cleanup_confirmed"] = (
             driver_cleanup.get("original_owner_completed_retained") is True
             and driver_cleanup.get("linked_owner_completed_retained") is True
             and driver_cleanup.get("runner_stopped") is True
+            and driver_cleanup.get("composition_grant_revoked") is True
+            and driver_cleanup.get("model_authorization_revoked") is True
             and receiver_driver_report.get("owner_status") == "completed"
         )
         report["receiver_retained_redaction"] = {
@@ -1212,7 +1382,12 @@ def _run_receiver_phase(
             "browser_returncode": receiver_child.returncode,
         }
         report["receiver_retained_redaction_driver_passed"] = (
-            receiver_child.returncode == 0 and _receiver_driver_passed(receiver_driver_report)
+            receiver_child.returncode == 0
+            and _receiver_driver_passed(receiver_driver_report)
+            and report["receiver_model_fixture"]["request_count"] == 1
+            and report["receiver_model_fixture"]["purposes"] == [_RECEIVER_COMPOSITION_PURPOSE]
+            and 0 < report["receiver_model_fixture"]["request_bytes"] <= 262_144
+            and report["receiver_model_fixture"]["failed"] is False
         )
         report["receiver_phase_status"] = (
             "passed" if report["receiver_retained_redaction_driver_passed"] else "failed"
@@ -1234,6 +1409,23 @@ def _run_receiver_phase(
             except (OSError, subprocess.TimeoutExpired):
                 report["receiver_process_group_stopped"] = False
                 cleanup_errors.append("receiver_browser_process_group")
+        if receiver_fixture is not None:
+            try:
+                (
+                    report["receiver_fixture_thread_stopped"],
+                    report["receiver_fixture_http_server_closed"],
+                    fixture_errors,
+                ) = receiver_fixture.close()
+                cleanup_errors.extend(fixture_errors)
+                if receiver_fixture.failed or fixture_errors:
+                    report["receiver_phase_status"] = "failed"
+                    report["status"] = "failed_or_incomplete"
+            except (OSError, RuntimeError):
+                report["receiver_fixture_thread_stopped"] = False
+                report["receiver_fixture_http_server_closed"] = False
+                report["receiver_phase_status"] = "failed"
+                report["status"] = "failed_or_incomplete"
+                cleanup_errors.append("receiver_fixture_close")
         if receiver_server is not None:
             (
                 report["receiver_service_thread_stopped"],
@@ -1416,6 +1608,8 @@ def main() -> int:
         "receiver_http_server_closed": True,
         "receiver_service_closed": True,
         "receiver_service_thread_stopped": True,
+        "receiver_fixture_thread_stopped": True,
+        "receiver_fixture_http_server_closed": True,
     }
     runtime_admitted = False
     thread.start()
@@ -1674,6 +1868,8 @@ def main() -> int:
                 report["receiver_http_server_closed"] = True
                 report["receiver_service_thread_stopped"] = True
                 report["receiver_service_closed"] = True
+                report["receiver_fixture_thread_stopped"] = True
+                report["receiver_fixture_http_server_closed"] = True
             else:
                 _run_receiver_phase(
                     report=report,
