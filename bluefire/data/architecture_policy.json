@@ -310,6 +310,7 @@
         "bluefire.owned_receiver_registry",
         "bluefire.ai_authorized_access",
         "bluefire.assistance_context",
+        "bluefire.assistance_ad_smb_context",
         "bluefire.assistance_audit_context",
         "bluefire.assistance_comparison_context",
         "bluefire.assistance_comparison_s3",
