@@ -18,12 +18,15 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent.parent))
+    import bluefire.windows_file_access_managed_result as windows_correction_result
+    import bluefire.windows_file_access_managed_session as windows_correction_session
     from bluefire.runner_client import (
         RunnerDurableResultExists,
         RunnerPendingResultExists,
@@ -49,6 +52,8 @@ if __package__ in {None, ""}:
     from bluefire.service_launch import ServiceLaunch, consume_service_launch
     from bluefire.util import canonical_json_bytes, file_hash
 else:
+    from . import windows_file_access_managed_result as windows_correction_result
+    from . import windows_file_access_managed_session as windows_correction_session
     from .runner_client import (
         RunnerDurableResultExists,
         RunnerPendingResultExists,
@@ -130,6 +135,7 @@ class _WatchdogConfig:
     manifest: Mapping[str, Any]
     profile: Mapping[str, Any]
     cancellation_lease_token: str | None
+    windows_correction_session: windows_correction_session.ManagedCorrectionDescriptor | None
     control_root: Path
     control: _PinnedPrivateDirectory
 
@@ -316,6 +322,11 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
             raise OSError("watchdog control identity changed")
         with _PinnedPrivateDirectory(control_root) as pinned:
             raw = pinned.read("config.json", maximum=_CONFIG_LIMIT_BYTES)
+            session_raw = (
+                pinned.read("session.json", maximum=_CONFIG_LIMIT_BYTES)
+                if pinned.has_name("session.json")
+                else None
+            )
             control_identity = pinned.directory_identity()
     except (OSError, RunnerTransportError):
         raise RunnerTransportError("runner watchdog state is unavailable") from None
@@ -383,6 +394,28 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
             and cancellation_lease_token is not None
         )
     ):
+        raise RunnerTransportError("runner watchdog configuration is invalid")
+
+    managed_descriptor = None
+    if manifest.get("action_id") == windows_correction_session.ACTION_ID:
+        if session_raw is None:
+            raise RunnerTransportError("runner watchdog configuration is invalid")
+        try:
+            session_value = SubprocessRustRunner._decode_json(
+                session_raw, "runner managed correction session"
+            )
+            managed_descriptor = windows_correction_session.validate_descriptor(
+                session_value,
+                manifest,
+                profile,
+                task_id=task_id,
+            )
+        except (
+            RunnerTransportError,
+            windows_correction_session.ManagedCorrectionSessionError,
+        ):
+            raise RunnerTransportError("runner watchdog configuration is invalid") from None
+    elif session_raw is not None:
         raise RunnerTransportError("runner watchdog configuration is invalid")
 
     try:
@@ -488,6 +521,7 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
         manifest=manifest,
         profile=profile,
         cancellation_lease_token=cancellation_lease_token,
+        windows_correction_session=managed_descriptor,
         control_root=control_root,
         control=control,
     )
@@ -814,7 +848,7 @@ def _classify_failure(error: RunnerTransportError) -> str:
 
 
 def _cleanup_private_inputs(config: _WatchdogConfig) -> None:
-    for name in ("config.json", "start", "cancel", "ready.json"):
+    for name in ("config.json", "session.json", "start", "cancel", "ready.json"):
         try:
             identity = config.control.file_identity(
                 name,
@@ -848,6 +882,203 @@ def _publish_darwin_no_fork_proof(descriptor: int | None, nonce: str | None) -> 
         os.close(descriptor)
     except OSError:
         raise RunnerTransportError("Darwin watchdog no-fork proof failed") from None
+
+
+def _run_managed_windows_correction(
+    config: _WatchdogConfig,
+    runner: SubprocessRustRunner,
+    cancel_event: threading.Event,
+    receiver_environment: Mapping[str, str],
+) -> None:
+    """Own one live correction through terminal and physical cleanup."""
+
+    import bluefire.windows_file_access_correction_observation as observation
+    import bluefire.windows_file_access_pair_admission as pair_admission
+    import bluefire.windows_session_facts as session_facts
+    from bluefire.windows_file_access_correction_credential import CorrectionBeginProducer
+    from bluefire.windows_file_access_pair_launch import launch_correction_retest
+
+    descriptor = config.windows_correction_session
+    if descriptor is None or os.name != "nt":
+        raise RunnerTransportError("Managed correction watchdog is unavailable.")
+    environment = dict(receiver_environment)
+    if type(receiver_environment) is dict:
+        receiver_environment.clear()
+    key_hex = environment.pop("BLUEFIRE_RECEIVER_TASK_KEY", None)
+    environment_task = environment.pop("BLUEFIRE_RECEIVER_TASK_ID", None)
+    if (
+        environment
+        or environment_task != config.task_id
+        or not isinstance(key_hex, str)
+        or re.fullmatch(r"[0-9a-f]{64}", key_hex) is None
+    ):
+        raise RunnerTransportError("Managed correction receiver authentication is invalid.")
+    key = bytearray.fromhex(key_hex)
+    del key_hex
+    started_at = datetime.now(timezone.utc)
+    ready_bytes: bytes | None = None
+    terminal_bytes: bytes | None = None
+    terminal_returncode: int | None = None
+    consume_receipt: dict[str, Any] | None = None
+    ack_received = threading.Event()
+    retained_owners: list[Any] = []
+
+    try:
+        observation_input, original, packet = windows_correction_session.correction_inputs(
+            descriptor
+        )
+        record, _receipt = pair_admission.checked_provenance(observation_input.checked_setup)
+
+        def require_current() -> None:
+            windows_correction_session.validate_descriptor(
+                descriptor.value,
+                config.manifest,
+                config.profile,
+                task_id=config.task_id,
+            )
+            if cancel_event.is_set():
+                raise RunnerTransportError("Managed correction was cancelled.")
+            principal = session_facts.current_process_principal()
+            principal.validate()
+            if (
+                principal.elevated is not False
+                or principal.user_sid != record["resource"]["owner_sid"]
+            ):
+                raise RunnerTransportError("Managed correction principal is invalid.")
+
+        require_current()
+        checked = observation.observe_correction_postimage(
+            observation_input,
+            now_ms=time.time_ns() // 1_000_000,
+            deadline=descriptor.packet_deadline,
+            cancelled=cancel_event.is_set,
+        )
+        require_current()
+
+        def require_ready() -> None:
+            require_current()
+            if not ack_received.is_set():
+                raise RunnerTransportError("Managed correction acknowledgement is unavailable.")
+
+        def evidence(stage: str, raw: bytes, returncode: int | None, clock: datetime) -> None:
+            del clock
+            nonlocal ready_bytes, terminal_bytes, terminal_returncode, consume_receipt
+            if stage == "packet":
+                if raw != descriptor.packet or returncode is not None:
+                    raise RunnerTransportError("Managed correction packet changed.")
+                return
+            if stage == "ready":
+                if ready_bytes is not None or returncode is not None:
+                    raise RunnerTransportError("Managed correction Ready is invalid.")
+                nonce = windows_correction_session.new_ack_nonce()
+                ready_payload = windows_correction_session.watchdog_ready_payload(
+                    descriptor, raw, nonce
+                )
+                windows_correction_session.write_frame(
+                    sys.stdout.buffer, "ready", ready_payload, key
+                )
+                acknowledgement = windows_correction_session.read_frame(
+                    sys.stdin.buffer,
+                    expected_kind="ack",
+                    key=key,
+                )
+                checked_ack = windows_correction_session.validate_watchdog_ack(
+                    acknowledgement,
+                    descriptor,
+                    ready_payload,
+                )
+                require_current()
+                ready_bytes = raw
+                consume_receipt = dict(checked_ack["persisted_consume_receipt"])
+                ack_received.set()
+                try:
+                    windows_correction_session.write_frame(
+                        sys.stdout.buffer,
+                        "acknowledged",
+                        windows_correction_session.acknowledgement_payload(checked_ack),
+                        key,
+                    )
+                except (OSError, windows_correction_session.ManagedCorrectionSessionError):
+                    # The exact ack already transferred ownership to this watchdog.
+                    pass
+                return
+            if stage == "terminal":
+                if (
+                    terminal_bytes is not None
+                    or not ack_received.is_set()
+                    or type(returncode) is not int
+                    or returncode not in (0, 4)
+                ):
+                    raise RunnerTransportError("Managed correction terminal is invalid.")
+                terminal_bytes, terminal_returncode = raw, returncode
+                return
+            raise RunnerTransportError("Managed correction evidence stage is invalid.")
+
+        producer = CorrectionBeginProducer(
+            checked,
+            original,
+            packet,
+            revalidate_original=require_current,
+            require_ready_allowance=require_ready,
+            cancellation_event=cancel_event,
+        )
+        require_current()
+        launched = launch_correction_retest(
+            checked,
+            original,
+            packet,
+            producer,
+            revalidate_original=require_current,
+            evidence_sink=evidence,
+            cancellation_event=cancel_event,
+            retain_launch_owner=retained_owners.append,
+        )
+        owner = retained_owners[0] if len(retained_owners) == 1 else None
+        cleanup_deadline = time.monotonic() + min(12.0, config.timeout_seconds)
+        while (
+            owner is not None
+            and launched.cleanup != "verified"
+            and time.monotonic() < cleanup_deadline
+        ):
+            if owner.retry_cleanup():
+                launched = owner.outcome(True)
+                break
+            time.sleep(_POLL_SECONDS)
+        process = launched.process
+        if (
+            launched.cleanup != "verified"
+            or process is None
+            or process.cleanup_receipt is None
+            or ready_bytes is None
+            or terminal_bytes is None
+            or terminal_returncode is None
+            or consume_receipt is None
+        ):
+            raise RunnerTransportError("Managed correction closure is unresolved.")
+        receipt = process.cleanup_receipt
+        managed = windows_correction_result.build_managed_result(
+            descriptor,
+            ready=ready_bytes,
+            terminal=terminal_bytes,
+            actual_returncode=terminal_returncode,
+            persisted_consume_receipt=consume_receipt,
+            cleanup_receipt=bytes(receipt._raw),
+        )
+        result = windows_correction_result.build_runner_result(
+            descriptor,
+            managed,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+        )
+        runner._commit_managed_correction_result(
+            result,
+            config.manifest,
+            config.profile,
+            task_id=config.task_id,
+            durable_result_path=config.durable_result_path,
+        )
+    finally:
+        key[:] = b"\0" * len(key)
 
 
 def _run(
@@ -939,6 +1170,14 @@ def _run(
             or runner.watchdog_script_digest != config.watchdog_script_digest
         ):
             return "failed", "runner_identity_changed", None
+        if config.windows_correction_session is not None:
+            _run_managed_windows_correction(
+                config,
+                runner,
+                cancel_event,
+                receiver_environment,
+            )
+            return "succeeded", None, None
         runner._execute_task_locally(
             config.manifest,
             config.profile,

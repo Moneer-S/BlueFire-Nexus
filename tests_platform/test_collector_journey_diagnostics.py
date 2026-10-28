@@ -71,7 +71,7 @@ def service_admission():
 
 
 @pytest.mark.parametrize("fails", [False, True])
-@pytest.mark.parametrize("admission_kind", ["none", "service", "s3"])
+@pytest.mark.parametrize("admission_kind", ["none", "service", "s3", "managed"])
 def test_observer_delegates_once_with_exact_arguments_and_original_result_or_exception(
     tmp_path, monkeypatch, fails, admission_kind
 ):
@@ -100,6 +100,9 @@ def test_observer_delegates_once_with_exact_arguments_and_original_result_or_exc
         kwargs["owned_service_admission"] = admission
     if intent is not None:
         kwargs["s3_access_intent"] = intent
+    if admission_kind == "managed":
+        kwargs["windows_correction_session"] = {"fixture_only": PRIVATE}
+        kwargs["windows_correction_control"] = object()
     if fails:
         with pytest.raises(RunnerTaskTimedOut) as caught:
             runner.execute_task(manifest, profile, **kwargs)
@@ -116,10 +119,34 @@ def test_observer_delegates_once_with_exact_arguments_and_original_result_or_exc
         assert calls[0][3]["owned_service_admission"] is admission
     if intent is not None:
         assert calls[0][3]["s3_access_intent"] is intent
+    if admission_kind == "managed":
+        assert calls[0][3]["windows_correction_session"] is kwargs["windows_correction_session"]
+        assert calls[0][3]["windows_correction_control"] is kwargs["windows_correction_control"]
     assert observer.last_attempt["requested_timeout_ms"] == 29500
     assert observer.last_attempt["profile_timeout_ms"] == 35000
     assert observer.last_attempt["transport_timeout_ms"] == 35000
     assert PRIVATE not in json.dumps(observer.last_attempt)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("supplied", ["windows_correction_session", "windows_correction_control"])
+def test_observer_preserves_base_runner_incomplete_managed_authority_refusal(tmp_path, supplied):
+    observer = diagnostic()
+    runner = observed_runner(observer)
+    destination = tmp_path / "unused-managed-result.json"
+    authority = {} if supplied == "windows_correction_session" else object()
+    with pytest.raises(
+        RunnerTransportError, match="Managed correction session authority is incomplete"
+    ):
+        runner.execute_task(
+            {},
+            {},
+            task_id="managed-diagnostic-test",
+            cancel_event=threading.Event(),
+            durable_result_path=destination,
+            **{supplied: authority},
+        )
+    assert observer.last_unsuccessful_attempt["exception_type"] == "RunnerTransportError"
     assert not destination.exists()
 
 

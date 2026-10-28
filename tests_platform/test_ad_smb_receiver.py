@@ -256,6 +256,27 @@ def test_hook_refusal_rolls_back_reclaimed_control_rows(server):
     assert server._execute_row("health-only")["state"] == "completed"
 
 
+@pytest.mark.parametrize("descriptor", [{}, {"fixture_only": "not-ad-authority"}])
+def test_receiver_refuses_managed_correction_descriptor_before_ad_context(monkeypatch, descriptor):
+    def unexpected(*args, **kwargs):
+        pytest.fail("another protected protocol must not reach AD context or dispatch")
+
+    monkeypatch.setattr(receiver.AdSmbReceiver, "_context", unexpected)
+    monkeypatch.setattr(receiver, "run_worker", unexpected)
+    target = object.__new__(receiver.AdSmbReceiver)
+    with pytest.raises(transport._RequestRefusal) as failure:
+        target._execute_payload(
+            {},
+            enrollment(original()[1]),
+            {},
+            {},
+            peer_fingerprint=pin("9"),
+            windows_correction_descriptor=descriptor,
+            enrollment_binding={"fixture_only": "ordinary-binding"},
+        )
+    assert failure.value.code == "request_invalid"
+
+
 def test_fixed_worker_checks_original_twice_and_commits_failure_truthfully(server, monkeypatch):
     value, channel = original()
     submitted = reserve(server, value)
@@ -276,6 +297,7 @@ def test_fixed_worker_checks_original_twice_and_commits_failure_truthfully(serve
         value["manifest"],
         value["profile"],
         peer_fingerprint=pin("9"),
+        enrollment_binding=binding(server),
     )
     assert not completed and calls == ["initial", "ready"]
     assert result["result"]["issue"] == "native_error"
