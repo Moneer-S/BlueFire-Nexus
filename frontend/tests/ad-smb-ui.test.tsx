@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AdSmbPage } from "../src/pages/AdSmb";
 import { ObjectiveStart } from "../src/components/ObjectiveStart";
 import { adSmbApi, readAdPending, storeAdPending } from "../src/lib/ad-smb";
-import { adChild, adOwner, adPendingFixture, adSubmission, auditWindowStartForFixture, rawAdAcknowledgement, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
+import { adChild, adOwner, adPendingFixture, adSubmission, auditWindowStartForFixture, rawAdAcknowledgement, rawAdControllerLocalWorkflow, rawAdEnvironments, rawAdList, rawAdNormalizedObservation, rawAdReview, rawAdWorkflow } from "./ad-smb-fixture";
 
 vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn(), ApiError: class extends Error {} }));
 function mount(path = `/ad-smb?workflow=${adOwner}`) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><AdSmbPage /></MemoryRouter></QueryClientProvider>), client }; }
@@ -60,6 +60,19 @@ it("loads saved work read-only and hides opaque credentials and binary descripto
   expect(document.body.textContent).not.toMatch(/credential-|PRIVATE_DESCRIPTOR_BYTES|binary_b64/);
   expect(screen.getByText(/Effective access not established/)).toBeInTheDocument();
   expect(adSmbApi.review).not.toHaveBeenCalled(); expect(adSmbApi.submit).not.toHaveBeenCalled(); expect(adSmbApi.recover).not.toHaveBeenCalled();
+});
+it("reopens a local pre-dispatch failure without presenting runner evidence or sending work", async () => {
+  vi.mocked(adSmbApi.workflow).mockResolvedValue(rawAdControllerLocalWorkflow("baseline"));
+  mount();
+  const evidence = await screen.findByRole("region", { name: "Retained AD evidence" });
+  expect(within(evidence).getByText("Local controller; not dispatched")).toBeVisible();
+  expect(within(evidence).getByText("Not started")).toBeVisible();
+  expect(within(evidence).getByRole("link", { name: "Open retained run" })).toHaveAttribute("href", "/runs/run-ad-baseline");
+  expect(screen.queryByText("Runner-reported")).not.toBeInTheDocument();
+  expect(screen.getByText("Configured environment")).toBeVisible();
+  expect(adSmbApi.review).not.toHaveBeenCalled();
+  expect(adSmbApi.submit).not.toHaveBeenCalled();
+  expect(adSmbApi.recover).not.toHaveBeenCalled();
 });
 it.each(["/ad-smb", "/ad-smb?goal=ad-access"])("opens a saved summary through the separate detail request from %s", async path => {
   vi.mocked(adSmbApi.workflow).mockRejectedValue(new Error("Detail unavailable"));

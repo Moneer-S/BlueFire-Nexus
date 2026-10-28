@@ -22,12 +22,14 @@ from .ad_smb_contract import (
 )
 from .ad_smb_execution import (
     AdSmbExecutor,
+    AdSmbPreDispatchCancelled,
+    AdSmbPreDispatchFailure,
     InstalledAdSmbExecutor,
     UnavailableAdSmbExecutor,
     configured_executor,
 )
 from .evidence import EvidenceProvenance, EvidenceRecord
-from .job_runtime import JobResult, JobRuntimeError, RunJobController
+from .job_runtime import JobCancelled, JobResult, JobRuntimeError, RunJobController
 from .product_store import ProductStore
 from .run_store import RunStore
 from .util import content_hash
@@ -283,18 +285,42 @@ class AdSmbJobs:
         }
         records.retain_run(self.store, context.job_id, handle.run_id, initial)
         for index, request in enumerate(payload["requests"]):
-            context.checkpoint()
+            executor = self.executor
+            try:
+                context.checkpoint()
+            except JobCancelled as exc:
+                if self._mark_installed_pre_dispatch(context, executor, index, request):
+                    raise AdSmbPreDispatchCancelled(
+                        "AD installed execution was cancelled before its durable dispatch checkpoint."
+                    ) from exc
+                raise
             owner, _child = records.active(self.store, context.job_id)
-            self._current(owner, request["phase"])
-            if self.clock() >= timestamp(request["deadline"]):
+            try:
+                self._current(owner, request["phase"])
+            except AdSmbError as exc:
+                if self._mark_installed_pre_dispatch(context, executor, index, request):
+                    raise AdSmbPreDispatchFailure(
+                        "AD installed admission refused before its durable dispatch checkpoint."
+                    ) from exc
+                raise
+            deadline = timestamp(request["deadline"])
+            if self.clock() >= deadline:
+                if self._mark_installed_pre_dispatch(context, executor, index, request):
+                    raise AdSmbPreDispatchFailure(
+                        "The saved AD operation deadline ended before installed dispatch."
+                    )
                 raise AdSmbError("The saved AD operation deadline ended before the next step.")
-            execution = self.executor.execute(
-                request,
-                cancellation_event=context.cancellation_event,
-                before_dispatch=lambda original, i=index, saved=request: self._before_dispatch(
-                    context, i, saved, original
-                ),
-            )
+            try:
+                execution = executor.execute(
+                    request,
+                    cancellation_event=context.cancellation_event,
+                    before_dispatch=lambda original, i=index, saved=request: self._before_dispatch(
+                        context, i, saved, original
+                    ),
+                )
+            except (AdSmbPreDispatchCancelled, AdSmbPreDispatchFailure):
+                self._mark_installed_pre_dispatch(context, executor, index, request)
+                raise
             records.record_terminal(self.store, context.job_id, index, execution)
             checked = results.validate_execution(request, execution)
             if (
@@ -306,6 +332,13 @@ class AdSmbJobs:
         outcome = records.finish(self.store, context.job_id, self._publish)
         return JobResult(
             result_ref=handle.run_id, progress={"ad_outcome": outcome}, completion_confirmed=True
+        )
+
+    def _mark_installed_pre_dispatch(self, context, executor, index, request):
+        if type(executor) is not InstalledAdSmbExecutor or index != 0:
+            return False
+        return records.record_installed_pre_dispatch_failure(
+            self.store, context.job_id, index, request
         )
 
     def _before_dispatch(self, context, index, request, original):
@@ -327,6 +360,11 @@ class AdSmbJobs:
             raise AdSmbError("Wait for the original local AD operation to settle.")
         if child["progress"]["run_id"] is None:
             raise AdSmbError("Original AD run identity was not retained; no replay is allowed.")
+        if not child["progress"]["tasks"] or "pre_dispatch_failure" in child["progress"]:
+            # Only the installed executor's explicit pre-checkpoint marker proves
+            # that no original remote task exists to discover or recover.
+            records.adopt_installed_pre_dispatch_failure(self.store, pending)
+            owner, child = records.active(self.store, pending)
         for index, task in enumerate(child["progress"]["tasks"]):
             if task["execution"] is not None or task["recovery"] is not None:
                 continue
@@ -351,18 +389,29 @@ class AdSmbJobs:
     def _expected_final(self, owner, child, executions, outcome):
         run_id = child["progress"]["run_id"]
         evidence = []
-        for request, execution in zip(child["request"]["requests"], executions, strict=False):
+        for index, (request, execution) in enumerate(
+            zip(child["request"]["requests"], executions, strict=False)
+        ):
+            controller_local = (
+                index == 0
+                and child["progress"].get("pre_dispatch_failure") is not None
+                and execution["dispatch"] == "not_started"
+            )
             provenance = (
-                EvidenceProvenance.SYNTHETIC
-                if execution["provenance"] == "synthetic_fixture"
+                EvidenceProvenance.CONTROL_BLOCKED
+                if controller_local
                 else (
-                    EvidenceProvenance.CONTROL_BLOCKED
-                    if execution["dispatch"] == "not_started"
+                    EvidenceProvenance.SYNTHETIC
+                    if execution["provenance"] == "synthetic_fixture"
                     else (
-                        EvidenceProvenance.EXECUTED
-                        if execution["dispatch"] == "attempted"
-                        and execution["observation"] is not None
-                        else EvidenceProvenance.UNKNOWN
+                        EvidenceProvenance.CONTROL_BLOCKED
+                        if execution["dispatch"] == "not_started"
+                        else (
+                            EvidenceProvenance.EXECUTED
+                            if execution["dispatch"] == "attempted"
+                            and execution["observation"] is not None
+                            else EvidenceProvenance.UNKNOWN
+                        )
                     )
                 )
             )
@@ -373,13 +422,25 @@ class AdSmbJobs:
                     behavior_id="identity.ad.smb_access.v1",
                     action_id=results.ACTION,
                     provenance=provenance,
-                    producer="bluefire.ad-smb-adapter",
+                    producer=(
+                        "bluefire.ad-smb-controller"
+                        if controller_local
+                        else "bluefire.ad-smb-adapter"
+                    ),
                     content=execution,
                     target_scope_ref=request["scope_digest"],
                     timestamp=child["created_at"],
                     limitations=(
-                        "Saved runner or fixture projection only; no authenticated remote principal, independent audit or effective-access claim.",
-                        "Local token and LUID do not identify a fresh server logon; remote session closure remains unknown.",
+                        (
+                            "Local controller record only; installed execution failed before its durable original-task checkpoint, so no receiver or runner work is claimed."
+                            if controller_local
+                            else "Saved runner or fixture projection only; no authenticated remote principal, independent audit or effective-access claim."
+                        ),
+                        (
+                            "No authenticated remote principal, independent audit or effective-access claim."
+                            if controller_local
+                            else "Local token and LUID do not identify a fresh server logon; remote session closure remains unknown."
+                        ),
                         "Record timestamp is the job creation time, not a native observation time.",
                     ),
                 ).to_dict()

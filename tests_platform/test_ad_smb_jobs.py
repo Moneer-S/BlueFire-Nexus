@@ -17,11 +17,17 @@ from bluefire.ad_smb_contract import (
     MAX_DOCUMENT_BYTES,
     AdSmbError,
     AdSmbScope,
+    timestamp,
 )
-from bluefire.ad_smb_execution import UnavailableAdSmbExecutor
+from bluefire.ad_smb_execution import (
+    AdSmbPreDispatchCancelled,
+    AdSmbPreDispatchFailure,
+    InstalledAdSmbExecutor,
+    UnavailableAdSmbExecutor,
+)
 from bluefire.ad_smb_jobs import AdSmbJobs
 from bluefire.execution_contracts import execution_task_identity
-from bluefire.job_runtime import TERMINAL_JOB_STATES, JobWaitTimeout, RunJobController
+from bluefire.job_runtime import TERMINAL_JOB_STATES, JobCancelled, JobWaitTimeout, RunJobController
 from bluefire.product_store import ProductStore
 from bluefire.run_store import RunStore
 from bluefire.runner_contracts import seal_profile
@@ -264,6 +270,34 @@ def submit(jobs, identifier, phase, *, wait=True):
     return child, request
 
 
+def installed_checkpoint_executor(fixture_executor, root):
+    calls = []
+
+    def execute_task(*_args, **_kwargs):
+        calls.append("execute")
+        raise AssertionError("Installed transport must not run before its durable checkpoint")
+
+    client = SimpleNamespace(execute_task=execute_task)
+    entry = SimpleNamespace(
+        digest=pin("d"),
+        client=lambda role: calls.append(("client", role)) or client,
+        to_dict=lambda: {"profiles": fixture_executor.profiles},
+    )
+    installed = object.__new__(InstalledAdSmbExecutor)
+    installed.root = root
+    installed.environments = fixture_executor.environments
+    installed.readiness = fixture_executor.readiness
+    installed._identity = lambda _entry, role, _client: calls.append(("identity", role))
+    installed._selected = lambda request: (
+        calls.append("selected")
+        or (entry, "client" if request["step"].startswith("read_") else "member")
+    )
+    installed.recover_original = lambda *_args, **_kwargs: calls.append("recover") or pytest.fail(
+        "Controller-local recovery must not contact the installed receiver"
+    )
+    return installed, entry, calls
+
+
 def test_unavailable_production_path_has_no_fake_readiness(workspace):
     _jobs, _executor, service = workspace
     jobs = AdSmbJobs(service, clock=lambda: NOW)
@@ -310,6 +344,23 @@ def test_original_result_recovery_does_not_rediscover_or_redispatch(workspace):
     child, _ = submit(jobs, identifier, "inspect")
     assert child["state"] == "failed"
     assert child["progress"]["tasks"][0]["execution"] is None
+    assert "pre_dispatch_failure" not in child["progress"]
+    request = child["request"]["requests"][0]
+    task = child["progress"]["tasks"][0]
+    controller_local = {
+        "schema_version": "bluefire.ad-smb-execution.v1",
+        "request_digest": content_hash(request),
+        "provenance": "controller_local",
+        "dispatch": "not_started",
+        "cleanup": "verified",
+        "observation": None,
+    }
+    with pytest.raises(AdSmbError, match="identity or state"):
+        records.record_terminal(service.product_store, child["job_id"], 0, controller_local)
+    with pytest.raises(AdSmbError, match="identity or state"):
+        records.record_recovery(
+            service.product_store, child["job_id"], 0, task["context"], controller_local
+        )
     service.store.recover_interrupted_runs()
     jobs.clock = lambda: NOW + timedelta(days=10)
     executor.environments = lambda: pytest.fail("Recovery must not rediscover admission")
@@ -622,7 +673,7 @@ def test_stale_review_and_changed_enrollment_refuse_before_dispatch(workspace):
 
 
 def test_two_workspaces_share_resource_interlock_and_stop(workspace):
-    jobs, executor, _service = workspace
+    jobs, executor, service = workspace
     first, second = create(jobs), create(jobs)
     executor.hold = True
     child, _ = submit(jobs, first, "inspect", wait=False)
@@ -634,11 +685,12 @@ def test_two_workspaces_share_resource_interlock_and_stop(workspace):
     settled = jobs.controller.wait(child["job_id"], timeout=10)
     assert settled["state"] in {"completed", "cancelled"}
     assert executor.calls == []
+    assert "pre_dispatch_failure" not in service.product_store.get_job(child["job_id"])["progress"]
     assert jobs.read(first)["workflow"]["progress"]["pending_operation"] is None
 
 
 def test_original_task_context_mutation_refused_before_store_commit(workspace):
-    jobs, executor, _service = workspace
+    jobs, executor, service = workspace
     identifier = create(jobs)
     real = executor.original
 
@@ -651,6 +703,525 @@ def test_original_task_context_mutation_refused_before_store_commit(workspace):
     child, _ = submit(jobs, identifier, "inspect")
     assert child["state"] == "failed"
     assert child["progress"]["tasks"] == [] and executor.calls == []
+
+    reopened_store = ProductStore(service.product_store.path)
+    reopened_runs = RunStore(service.store.root)
+    reopened_runs.recover_interrupted_runs()
+    reopened = AdSmbJobs(
+        SimpleNamespace(
+            product_store=reopened_store,
+            store=reopened_runs,
+            job_controller=service.job_controller,
+        ),
+        executor,
+        clock=lambda: NOW + timedelta(days=10),
+    )
+    executor.recover_original = lambda *_args, **_kwargs: pytest.fail(
+        "No remote task exists before the durable dispatch checkpoint"
+    )
+    with pytest.raises(AdSmbError, match="exact installed-executor failure marker"):
+        reopened.recover(identifier)
+
+    retained = reopened_store.get_job(child["job_id"])
+    assert retained["progress"]["tasks"] == []
+    assert "pre_dispatch_failure" not in retained["progress"]
+    assert reopened.read(identifier)["workflow"]["progress"]["pending_operation"] == child["job_id"]
+
+
+@pytest.mark.parametrize(
+    ("exception_type", "terminal_state"),
+    [
+        (AdSmbPreDispatchFailure, "failed"),
+        (AdSmbPreDispatchCancelled, "cancelled"),
+    ],
+)
+def test_custom_executor_cannot_claim_installed_pre_dispatch_recovery(
+    workspace, exception_type, terminal_state
+):
+    jobs, executor, _service = workspace
+    identifier = create(jobs)
+
+    def forged_failure(*_args, **_kwargs):
+        raise exception_type("authored custom executor claim")
+
+    executor.execute = forged_failure
+    child, _ = submit(jobs, identifier, "inspect")
+
+    assert child["state"] == terminal_state
+    assert child["progress"]["tasks"] == []
+    assert "pre_dispatch_failure" not in child["progress"]
+    with pytest.raises(AdSmbError, match="exact installed-executor failure marker"):
+        jobs.recover(identifier)
+
+
+def test_installed_pre_dispatch_cancellation_recovers_locally_and_keeps_budget(workspace):
+    jobs, fixture_executor, service = workspace
+    fixture_executor.selected["provenance"] = "runner_reported"
+    terminal = fixture_executor.terminal
+    fixture_executor.terminal = lambda request: {
+        **terminal(request),
+        "provenance": "runner_reported",
+    }
+    identifier = create(jobs)
+    assert submit(jobs, identifier, "inspect")[0]["state"] == "completed"
+    remaining_before = jobs.read(identifier)["remaining"]
+    installed, entry, calls = installed_checkpoint_executor(fixture_executor, service.store.root)
+    entered, release = threading.Event(), threading.Event()
+
+    def selected(request):
+        calls.append("selected")
+        entered.set()
+        assert release.wait(5)
+        return entry, "client" if request["step"].startswith("read_") else "member"
+
+    installed._selected = selected
+    jobs._executor = installed
+    child, _ = submit(jobs, identifier, "baseline", wait=False)
+    assert entered.wait(5)
+    jobs.stop(identifier)
+    release.set()
+    child = wait_for_ad_job(jobs.controller, child["job_id"])
+
+    assert child["state"] == "cancelled"
+    assert child["progress"]["tasks"] == []
+    assert child["progress"]["pre_dispatch_failure"]["request_index"] == 0
+    remaining_reserved = jobs.read(identifier)["remaining"]
+    assert remaining_reserved == {
+        key: remaining_before[key] - value
+        for key, value in results.phase_budget("baseline").items()
+    }
+    calls_before_recovery = list(calls)
+    recovered = jobs.recover(identifier)
+    operation = recovered["workflow"]["progress"]["operations"][-1]
+    assert operation["job_id"] == child["job_id"]
+    assert operation["outcome"]["state"] == "not_started"
+    assert operation["outcome"]["distinct_local_contexts"] is None
+    assert operation["executions"][0]["provenance"] == "controller_local"
+    assert recovered["workflow"]["progress"]["pending_operation"] is None
+    assert recovered["remaining"] == remaining_reserved
+    assert calls == calls_before_recovery
+    assert "execute" not in calls and "recover" not in calls
+    assert service.store.validate_bundle(child["progress"]["run_id"])["valid"]
+    assert jobs.recover(identifier) == recovered
+
+
+def test_installed_cancel_after_job_checkpoint_before_executor_check_stays_cancelled(
+    workspace,
+):
+    jobs, fixture_executor, service = workspace
+    fixture_executor.selected["provenance"] = "runner_reported"
+    identifier = create(jobs)
+    remaining_before = jobs.read(identifier)["remaining"]
+    installed, _entry, calls = installed_checkpoint_executor(fixture_executor, service.store.root)
+    execute = installed.execute
+    entered, release = threading.Event(), threading.Event()
+
+    def wait_before_executor_check(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return execute(*args, **kwargs)
+
+    installed.execute = wait_before_executor_check
+    jobs._executor = installed
+    child, _ = submit(jobs, identifier, "inspect", wait=False)
+    assert entered.wait(5)
+    jobs.stop(identifier)
+    release.set()
+    child = wait_for_ad_job(jobs.controller, child["job_id"])
+
+    assert child["state"] == "cancelled"
+    assert child["progress"]["tasks"] == []
+    run_id = child["progress"]["run_id"]
+    marker = child["progress"]["pre_dispatch_failure"]
+    assert marker["request_index"] == 0
+    assert marker["run_id"] == run_id
+    assert marker["request_digest"] == content_hash(child["request"]["requests"][0])
+    remaining_reserved = jobs.read(identifier)["remaining"]
+    assert remaining_reserved == {
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
+    }
+    recovered = jobs.recover(identifier)
+    operation = recovered["workflow"]["progress"]["operations"][-1]
+    assert operation["job_id"] == child["job_id"]
+    assert operation["outcome"]["state"] == "not_started"
+    assert operation["executions"][0]["provenance"] == "controller_local"
+    assert recovered["workflow"]["progress"]["pending_operation"] is None
+    assert recovered["remaining"] == remaining_reserved
+    assert calls == []
+    assert service.store.validate_bundle(run_id)["valid"]
+    assert jobs.recover(identifier) == recovered
+
+
+def test_retained_run_checkpoint_cancellation_recovers_locally_without_dispatch(
+    workspace, monkeypatch
+):
+    jobs, fixture_executor, service = workspace
+    fixture_executor.selected["provenance"] = "runner_reported"
+    identifier = create(jobs)
+    remaining_before = jobs.read(identifier)["remaining"]
+    installed, _entry, calls = installed_checkpoint_executor(fixture_executor, service.store.root)
+    jobs._executor = installed
+    entered, release = threading.Event(), threading.Event()
+    retain_run = records.retain_run
+
+    def retain_then_block(*args):
+        retained = retain_run(*args)
+        entered.set()
+        assert release.wait(5)
+        return retained
+
+    monkeypatch.setattr(records, "retain_run", retain_then_block)
+    child, _ = submit(jobs, identifier, "inspect", wait=False)
+    assert entered.wait(5)
+    jobs.stop(identifier)
+    release.set()
+    child = wait_for_ad_job(jobs.controller, child["job_id"])
+
+    assert child["state"] == "cancelled"
+    assert child["progress"]["tasks"] == []
+    assert child["progress"]["pre_dispatch_failure"]["request_index"] == 0
+    remaining_reserved = jobs.read(identifier)["remaining"]
+    assert remaining_reserved == {
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
+    }
+    recovered = jobs.recover(identifier)
+    operation = recovered["workflow"]["progress"]["operations"][-1]
+    assert operation["job_id"] == child["job_id"]
+    assert operation["outcome"]["state"] == "not_started"
+    assert operation["executions"] == [
+        {
+            "schema_version": "bluefire.ad-smb-execution.v1",
+            "request_digest": content_hash(child["request"]["requests"][0]),
+            "provenance": "controller_local",
+            "dispatch": "not_started",
+            "cleanup": "verified",
+            "observation": None,
+        }
+    ]
+    assert recovered["workflow"]["progress"]["pending_operation"] is None
+    assert recovered["remaining"] == remaining_reserved
+    assert calls == []
+    assert service.store.validate_bundle(child["progress"]["run_id"])["valid"]
+    assert jobs.recover(identifier) == recovered
+
+
+def test_owner_stop_race_admission_refusal_recovers_local_no_dispatch(workspace, monkeypatch):
+    jobs, fixture_executor, service = workspace
+    fixture_executor.selected["provenance"] = "runner_reported"
+    identifier = create(jobs)
+    remaining_before = jobs.read(identifier)["remaining"]
+    installed, _entry, calls = installed_checkpoint_executor(fixture_executor, service.store.root)
+    jobs._executor = installed
+    retained, release_run = threading.Event(), threading.Event()
+    retain_run = records.retain_run
+
+    def retain_then_block(*args):
+        value = retain_run(*args)
+        retained.set()
+        assert release_run.wait(5)
+        return value
+
+    monkeypatch.setattr(records, "retain_run", retain_then_block)
+    cancel_entered, release_cancel = threading.Event(), threading.Event()
+    cancel = jobs.controller.cancel
+
+    def delayed_cancel(job_id):
+        cancel_entered.set()
+        assert release_cancel.wait(5)
+        return cancel(job_id)
+
+    monkeypatch.setattr(jobs.controller, "cancel", delayed_cancel)
+    child, _ = submit(jobs, identifier, "inspect", wait=False)
+    assert retained.wait(5)
+    installed.environments = lambda: []
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        stopping = pool.submit(jobs.stop, identifier)
+        assert cancel_entered.wait(5)
+        release_run.set()
+        child = wait_for_ad_job(jobs.controller, child["job_id"])
+        release_cancel.set()
+        stopped = stopping.result(timeout=10)
+
+    assert child["state"] == "failed"
+    assert child["progress"]["tasks"] == []
+    assert child["progress"]["pre_dispatch_failure"]["request_index"] == 0
+    assert stopped["workflow"]["progress"]["stopped"] is True
+    remaining_reserved = jobs.read(identifier)["remaining"]
+    assert remaining_reserved == {
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
+    }
+    recovered = jobs.recover(identifier)
+    operation = recovered["workflow"]["progress"]["operations"][-1]
+    assert operation["job_id"] == child["job_id"]
+    assert operation["outcome"]["state"] == "not_started"
+    assert operation["executions"][0]["provenance"] == "controller_local"
+    assert recovered["workflow"]["progress"]["pending_operation"] is None
+    assert recovered["remaining"] == remaining_reserved
+    assert calls == []
+
+
+def test_saved_deadline_refusal_recovers_local_no_dispatch(workspace, monkeypatch):
+    jobs, fixture_executor, service = workspace
+    fixture_executor.selected["provenance"] = "runner_reported"
+    clock = [NOW]
+    jobs.clock = lambda: clock[0]
+    identifier = create(jobs)
+    remaining_before = jobs.read(identifier)["remaining"]
+    installed, _entry, calls = installed_checkpoint_executor(fixture_executor, service.store.root)
+    jobs._executor = installed
+    retained, release = threading.Event(), threading.Event()
+    retain_run = records.retain_run
+
+    def retain_then_block(*args):
+        value = retain_run(*args)
+        retained.set()
+        assert release.wait(5)
+        return value
+
+    monkeypatch.setattr(records, "retain_run", retain_then_block)
+    child, _ = submit(jobs, identifier, "inspect", wait=False)
+    assert retained.wait(5)
+    clock[0] = timestamp(child["request"]["requests"][0]["deadline"]) + timedelta(microseconds=1)
+    release.set()
+    child = wait_for_ad_job(jobs.controller, child["job_id"])
+
+    assert child["state"] == "failed"
+    assert child["progress"]["tasks"] == []
+    assert child["progress"]["pre_dispatch_failure"]["request_index"] == 0
+    remaining_reserved = jobs.read(identifier)["remaining"]
+    assert remaining_reserved == {
+        key: remaining_before[key] - value for key, value in results.phase_budget("inspect").items()
+    }
+    recovered = jobs.recover(identifier)
+    operation = recovered["workflow"]["progress"]["operations"][-1]
+    assert operation["job_id"] == child["job_id"]
+    assert operation["outcome"]["state"] == "not_started"
+    assert operation["executions"][0]["provenance"] == "controller_local"
+    assert recovered["workflow"]["progress"]["pending_operation"] is None
+    assert recovered["remaining"] == remaining_reserved
+    assert calls == []
+
+
+def test_retained_run_ownership_refusal_remains_unmarked(workspace, monkeypatch):
+    jobs, fixture_executor, service = workspace
+    fixture_executor.selected["provenance"] = "runner_reported"
+    identifier = create(jobs)
+    installed, _entry, calls = installed_checkpoint_executor(fixture_executor, service.store.root)
+    jobs._executor = installed
+    retained, release = threading.Event(), threading.Event()
+    retain_run = records.retain_run
+
+    def retain_then_block(*args):
+        value = retain_run(*args)
+        retained.set()
+        assert release.wait(5)
+        return value
+
+    monkeypatch.setattr(records, "retain_run", retain_then_block)
+    child, _ = submit(jobs, identifier, "inspect", wait=False)
+    assert retained.wait(5)
+    active = records.active
+
+    def refuse_ownership(*_args, **_kwargs):
+        raise AdSmbError("authored exact ownership refusal")
+
+    monkeypatch.setattr(records, "active", refuse_ownership)
+    release.set()
+    child = wait_for_ad_job(jobs.controller, child["job_id"])
+
+    assert child["state"] == "failed"
+    assert child["progress"]["tasks"] == []
+    assert "pre_dispatch_failure" not in child["progress"]
+    assert calls == []
+    monkeypatch.setattr(records, "active", active)
+    with pytest.raises(AdSmbError, match="exact installed-executor failure marker"):
+        jobs.recover(identifier)
+    assert jobs.read(identifier)["workflow"]["progress"]["pending_operation"] == child["job_id"]
+
+
+def test_retained_checkpoint_cancellation_cannot_be_adopted_as_controller_local(
+    workspace, monkeypatch
+):
+    jobs, fixture_executor, service = workspace
+    fixture_executor.selected["provenance"] = "runner_reported"
+    identifier = create(jobs)
+    installed, _entry, calls = installed_checkpoint_executor(fixture_executor, service.store.root)
+    jobs._executor = installed
+    retain = records.retain_original
+
+    def retain_then_cancel(*args):
+        retain(*args)
+        raise JobCancelled("authored cancellation after the durable checkpoint")
+
+    monkeypatch.setattr(records, "retain_original", retain_then_cancel)
+    child, _ = submit(jobs, identifier, "inspect")
+
+    assert child["state"] == "cancelled"
+    assert len(child["progress"]["tasks"]) == 1
+    assert child["progress"]["tasks"][0]["context"] is not None
+    assert child["progress"]["tasks"][0]["execution"] is None
+    assert "pre_dispatch_failure" not in child["progress"]
+    assert "execute" not in calls
+    installed.recover_original = lambda *_args, **_kwargs: calls.append("recover") or {
+        "status": "unavailable",
+        "execution": None,
+    }
+    with pytest.raises(AdSmbError, match="terminal remains unavailable"):
+        jobs.recover(identifier)
+    assert calls.count("recover") == 1
+    assert jobs.read(identifier)["workflow"]["progress"]["pending_operation"] == child["job_id"]
+
+
+def test_installed_pre_dispatch_failure_recovers_after_restart_without_new_work(
+    workspace, monkeypatch
+):
+    jobs, fixture_executor, service = workspace
+    fixture_executor.selected["provenance"] = "runner_reported"
+    terminal = fixture_executor.terminal
+
+    def runner_terminal(request):
+        return {**terminal(request), "provenance": "runner_reported"}
+
+    fixture_executor.terminal = runner_terminal
+    identifier = create(jobs)
+    assert submit(jobs, identifier, "inspect")[0]["state"] == "completed"
+    remaining_before = jobs.read(identifier)["remaining"]
+    local_checks = []
+    installed = object.__new__(InstalledAdSmbExecutor)
+    installed.environments = fixture_executor.environments
+    installed.readiness = fixture_executor.readiness
+
+    def fail_local_precheck(_request):
+        local_checks.append("precheck")
+        raise AdSmbError("authored local installed precheck failure")
+
+    installed._selected = fail_local_precheck
+    installed.recover_original = lambda *_args, **_kwargs: pytest.fail(
+        "Marked pre-dispatch recovery must not contact the receiver"
+    )
+    jobs._executor = installed
+    child, _ = submit(jobs, identifier, "baseline")
+
+    assert child["state"] == "failed"
+    assert child["progress"]["tasks"] == []
+    run_id = child["progress"]["run_id"]
+    first_request = child["request"]["requests"][0]
+    assert child["progress"]["pre_dispatch_failure"] == {
+        "schema_version": "bluefire.ad-smb-pre-dispatch-failure.v1",
+        "operation_job_id": child["job_id"],
+        "run_id": run_id,
+        "request_index": 0,
+        "request_digest": content_hash(first_request),
+        "boundary": "before_durable_original_checkpoint",
+        "producer": "bluefire.ad-smb-controller",
+    }
+    remaining_reserved = jobs.read(identifier)["remaining"]
+    budget = results.phase_budget("baseline")
+    assert remaining_reserved == {
+        key: remaining_before[key] - value for key, value in budget.items()
+    }
+    assert local_checks == ["precheck"]
+    assert len(fixture_executor.calls) == 1
+    assert fixture_executor.calls[0]["phase"] == "inspect"
+
+    first_store = ProductStore(service.product_store.path)
+    second_store = ProductStore(service.product_store.path)
+    first_runs = RunStore(service.store.root)
+    second_runs = RunStore(service.store.root)
+    first_runs.recover_interrupted_runs()
+    first = AdSmbJobs(
+        SimpleNamespace(
+            product_store=first_store, store=first_runs, job_controller=service.job_controller
+        ),
+        installed,
+        clock=lambda: NOW + timedelta(days=10),
+    )
+    second = AdSmbJobs(
+        SimpleNamespace(
+            product_store=second_store, store=second_runs, job_controller=service.job_controller
+        ),
+        installed,
+        clock=lambda: NOW + timedelta(days=10),
+    )
+    exact_marker = deepcopy(child["progress"]["pre_dispatch_failure"])
+    changed_marker = {**exact_marker, "request_digest": pin("0")}
+    with first_store._connection(write=True) as connection:
+        persisted = records.job_at(first_store, connection, child["job_id"])
+        records.patch(connection, persisted, {"pre_dispatch_failure": changed_marker})
+    with pytest.raises(AdSmbError, match="exact installed-executor failure marker"):
+        first.recover(identifier)
+    assert first.read(identifier)["workflow"]["progress"]["pending_operation"] == child["job_id"]
+    with first_store._connection(write=True) as connection:
+        persisted = records.job_at(first_store, connection, child["job_id"])
+        records.patch(connection, persisted, {"pre_dispatch_failure": exact_marker})
+    barrier = threading.Barrier(2)
+    adopt = records.adopt_installed_pre_dispatch_failure
+
+    def synchronized_adopt(*args):
+        barrier.wait(5)
+        return adopt(*args)
+
+    monkeypatch.setattr(records, "adopt_installed_pre_dispatch_failure", synchronized_adopt)
+
+    def recover(instance):
+        try:
+            return instance.recover(identifier)
+        except AdSmbError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        values = [
+            future.result(timeout=10)
+            for future in [pool.submit(recover, instance) for instance in (first, second)]
+        ]
+    assert any(value is not None for value in values)
+    settled = first.read(identifier)
+    operation = settled["workflow"]["progress"]["operations"][-1]
+    assert operation["job_id"] == child["job_id"]
+    assert operation["outcome"]["state"] == "not_started"
+    assert operation["outcome"]["cleanup"] == "verified"
+    assert operation["executions"] == [
+        {
+            "schema_version": "bluefire.ad-smb-execution.v1",
+            "request_digest": content_hash(first_request),
+            "provenance": "controller_local",
+            "dispatch": "not_started",
+            "cleanup": "verified",
+            "observation": None,
+        }
+    ]
+    local_execution = operation["executions"][0]
+    with pytest.raises(AdSmbError, match="identity or state"):
+        results.validate_execution(first_request, local_execution)
+    assert (
+        results.validate_controller_local_execution(first_request, local_execution)
+        == local_execution
+    )
+    for provenance in ("runner_reported", "synthetic_fixture"):
+        with pytest.raises(AdSmbError, match="identity or state"):
+            results.validate_controller_local_execution(
+                first_request,
+                {**local_execution, "provenance": provenance},
+            )
+    for field, value in (
+        ("dispatch", "attempted"),
+        ("cleanup", "unknown"),
+        ("observation", {}),
+    ):
+        with pytest.raises(AdSmbError, match="identity or state"):
+            results.validate_controller_local_execution(
+                first_request,
+                {**local_execution, field: value},
+            )
+    assert settled["remaining"] == remaining_reserved
+    assert local_checks == ["precheck"]
+    evidence = first_runs.read_json(run_id, "evidence.json")["records"]
+    assert len(evidence) == 1
+    assert evidence[0]["provenance"] == "control_blocked"
+    assert evidence[0]["producer"] == "bluefire.ad-smb-controller"
+    assert evidence[0]["content"]["observation"] is None
+    assert first_runs.validate_bundle(run_id)["valid"]
+    assert first.recover(identifier) == settled
 
 
 def test_store_negative_step_indexes_and_boolean_indexes_refused(workspace):

@@ -7,3 +7,7 @@ class ProductStoreError(ValueError):
 
 class RunnerTransportError(RuntimeError):
     """A sanitized failure at the maintained runner transport boundary."""
+
+
+class JobCancelled(Exception):
+    """Cooperative cancellation signal shared across execution boundaries."""
