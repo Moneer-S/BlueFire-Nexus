@@ -425,18 +425,22 @@ jobs:
         run: |
           wheels=(dist/*.whl)
           test "${#wheels[@]}" = 1
-          cp tools/verify_macos_file_access_lifecycle.py "$RUNNER_TEMP/verify_macos_file_access_lifecycle.py"
+          sudo -n /bin/mkdir -m 700 "$BLUEFIRE_MACOS_PROTECTED_PREFIX/diagnostics"
+          sudo -n /usr/bin/install -m 600 -o root -g wheel \
+            tools/verify_macos_file_access_lifecycle.py tools/macos_owned_startup_trace.py \
+            "$BLUEFIRE_MACOS_PROTECTED_PREFIX/diagnostics/"
           sudo -n env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
             HOME="$BLUEFIRE_MACOS_PROTECTED_PREFIX/home" \
             LANG=C LC_ALL=C PYTHONNOUSERSITE=1 \
             "$BLUEFIRE_MACOS_PROTECTED_PREFIX/venv/bin/python" -I -B \
-              "$RUNNER_TEMP/verify_macos_file_access_lifecycle.py" \
+              "$BLUEFIRE_MACOS_PROTECTED_PREFIX/diagnostics/verify_macos_file_access_lifecycle.py" \
               --python "$BLUEFIRE_MACOS_PROTECTED_PREFIX/venv/bin/python" \
               --prefix "$BLUEFIRE_MACOS_PROTECTED_PREFIX" \
               --run-identity "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
               --wheel "${wheels[0]}" \
               --source-revision "$GITHUB_SHA" \
-              --output "$BLUEFIRE_MACOS_LIFECYCLE_REPORT"
+              --output "$BLUEFIRE_MACOS_LIFECYCLE_REPORT" \
+              --owned-startup-trace-output "$RUNNER_TEMP/macos-owned-startup-trace.json"
 
       - name: Upload macOS protected-runtime lifecycle evidence
         if: always() && matrix.platform == 'macos' && matrix.architecture == 'aarch64'
@@ -446,6 +450,7 @@ jobs:
           path: |
             ${{ runner.temp }}/bluefire-macos-protected-python-build.json
             ${{ runner.temp }}/macos-file-access-lifecycle-qualification.json
+            ${{ runner.temp }}/macos-owned-startup-trace.json
           retention-days: 7
           if-no-files-found: warn
 

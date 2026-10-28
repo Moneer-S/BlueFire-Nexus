@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.client
+import importlib.util
 import json
 import os
 import platform
 import queue
 import re
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -29,6 +31,27 @@ API = "/api/v1"
 MAX_BODY = 1024 * 1024
 POLL_SECONDS = 0.5
 JOB_TIMEOUT = 180
+
+
+def _start_owned_startup_trace():
+    """Load only the expected regular sibling; preserve Python -I isolation."""
+    helper = Path(__file__).with_name("macos_owned_startup_trace.py")
+    details = helper.lstat()
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or not 0 < details.st_size <= 32768
+        or details.st_uid != os.geteuid()
+        or details.st_mode & 0o022
+    ):
+        raise ValueError("Optional trace helper is unavailable")
+    spec = importlib.util.spec_from_file_location("_bluefire_owned_startup_trace", helper)
+    if spec is None or spec.loader is None:
+        raise ValueError("Optional trace helper is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._OwnedStartupTrace(
+        Path(_native_diagnostics.__file__).resolve(strict=True).parent / "native"
+    )
 
 
 class QualificationError(RuntimeError):
@@ -1057,6 +1080,20 @@ def _run(args: argparse.Namespace) -> None:
         raise QualificationError(
             "The exact wheel does not match the selected committed source revision."
         )
+    if getattr(args, "owned_startup_trace_output", None):
+        try:
+            args._owned_startup_trace = _start_owned_startup_trace()
+        except (
+            OSError,
+            ValueError,
+            ImportError,
+            AttributeError,
+            SyntaxError,
+            subprocess.SubprocessError,
+        ):
+            # A missing tracer or unavailable private temp directory cannot
+            # prevent the normal lifecycle from running once.
+            args._owned_startup_trace = None
     supervisor, host, port, bootstrap = _open_supervisor(python)
     session = None
     shutdown = None
@@ -1382,6 +1419,7 @@ def main() -> int:
     parser.add_argument("--wheel", required=True)
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--owned-startup-trace-output")
     args = parser.parse_args()
     try:
         _run(args)
@@ -1411,6 +1449,31 @@ def main() -> int:
             pass
         print(json.dumps(failure), file=sys.stderr)
         return 1
+    finally:
+        if args.owned_startup_trace_output:
+            try:
+                trace = getattr(args, "_owned_startup_trace", None)
+                diagnostic = (
+                    trace.stop()
+                    if trace is not None
+                    else {
+                        "schema_version": "bluefire.macos-owned-startup-trace.v1",
+                        "status": "inconclusive",
+                        "reason": "not_started",
+                        "creator_attribution": "inconclusive",
+                        "descriptor_authority": "none",
+                        "absence_interpretation": "none",
+                        "entry_boundary": "not_traced_native_snapshot_remains_separate",
+                    }
+                )
+                output = Path(args.owned_startup_trace_output)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(
+                    json.dumps(diagnostic, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+                )
+            except (OSError, ValueError, subprocess.SubprocessError):
+                # Optional diagnosis cannot replace the lifecycle result.
+                pass
     return 0
 
 
