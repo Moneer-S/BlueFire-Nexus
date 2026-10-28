@@ -487,6 +487,15 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     "This file-access route requires POST.",
                 )
             return
+        file_access_linkage = self._routes._file_access_composed_retest_request(path)
+        if file_access_linkage is not None:
+            if file_access_linkage[0]:
+                self._dispatch(
+                    lambda: self.platform_server.service.file_access_composed_retest_linkage(
+                        file_access_linkage[0], file_access_linkage[1]
+                    )
+                )
+            return
         composition = self._routes._composition_request(path)
         if composition is not None:
             if composition[0] == "read":
@@ -1094,6 +1103,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     "method_not_allowed",
                     "This file-access route requires GET.",
                 )
+            return
+        file_access_linkage = self._routes._file_access_composed_retest_request(path)
+        if file_access_linkage is not None:
+            if file_access_linkage[0]:
+                self._method_not_allowed("GET")
             return
         composition = self._routes._composition_request(path)
         if composition is not None:

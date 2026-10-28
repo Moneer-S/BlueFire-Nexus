@@ -1,11 +1,24 @@
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { compositionPack, compositionRecord, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, type CompositionObjective } from "../lib/composition";
-import { Badge, DataList, sentence } from "./Primitives";
+import { Badge, Callout, DataList, sentence } from "./Primitives";
+import { FileAccessRetestComparison } from "./FileAccessRetestComparison";
 
 export function CompositionAttempts({ objective }: { objective: CompositionObjective }) {
+  const [params] = useSearchParams();
   const macOS = compositionPack(objective.grant.document) === MACOS_FILE_ACCESS_PACK;
   const fileAccess = macOS || compositionPack(objective.grant.document) === FILE_ACCESS_PACK;
+  const selectedAttempt = params.get("attempt");
+  const comparePath = (attempt: string) => {
+    const next = new URLSearchParams(params);
+    next.set("control", objective.grant.document.environment.control_owner_id);
+    next.set("objective", objective.owner.job_id);
+    next.set("pack", FILE_ACCESS_PACK);
+    next.set("attempt", attempt);
+    return `/composition?${next}`;
+  };
   return <section className="composition-section" aria-label="Attempt evidence"><h2>Attempts</h2>
+    {fileAccess && !macOS && selectedAttempt && !objective.attempts.some(attempt => attempt.request.composition_attempt.attempt_id === selectedAttempt)
+      ? <Callout title="This attempt is not part of the selected objective">Choose a recorded attempt below to open its comparison.</Callout> : null}
     {!objective.attempts.length ? <p>No attempt has been dispatched.</p> : <ol className="composition-attempts">{objective.attempts.map((attempt, index) => {
       const progress = attempt.progress;
       const result = compositionRecord(progress.verified_result);
@@ -15,6 +28,9 @@ export function CompositionAttempts({ objective }: { objective: CompositionObjec
       const cleanup = compositionRecord(result.cleanup);
       const verified = typeof progress.verified_result_digest === "string" && typeof result.run_id === "string";
       return <li key={attempt.job_id}><header><h3>Attempt {index + 1}</h3><Badge tone={outcome.established === true && verified ? "success" : "neutral"}>{verified ? outcome.established === true ? "Objective established" : "Objective not established" : sentence(attempt.state)}</Badge></header>
+        {fileAccess && !macOS ? selectedAttempt === attempt.request.composition_attempt.attempt_id
+          ? <FileAccessRetestComparison objective={objective} attempt={attempt} />
+          : <Link className="file-access-retest-open" to={comparePath(attempt.request.composition_attempt.attempt_id)}>Compare with the recorded baseline</Link> : null}
         <DataList items={[
           { label: "Progress", value: sentence(String(progress.phase ?? attempt.state)) },
           { label: "Settlement", value: sentence(String(progress.settlement ?? "pending")) },
