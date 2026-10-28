@@ -7,6 +7,9 @@ from typing import Any
 
 NATIVE_FD_ROWS_SCHEMA = "bluefire.macos-native-fd-rows.v1"
 NATIVE_FD_OBSERVATION_SCHEMA = "bluefire.macos-fd-observation.v1"
+NATIVE_FD_OBSERVATION_WITHHELD_REASONS = frozenset(
+    {"eof_incomplete", "overflow", "no_frame", "invalid_frame", "invalid_launch_rows"}
+)
 MAX_NATIVE_FD_FRAME_BYTES = 4096
 MAX_NATIVE_FD_ROWS = 15
 
@@ -216,8 +219,13 @@ def valid_native_startup_status(value: Any) -> bool:
             and type(value["reason"]) is str
             and value["reason"] in NATIVE_STARTUP_STATUS_UNAVAILABLE_REASONS
         )
-    observation = value.get("descriptor_observation")
-    base = {key: item for key, item in value.items() if key != "descriptor_observation"}
+    has_observation = "descriptor_observation" in value
+    has_withheld = "descriptor_observation_withheld" in value
+    base = {
+        key: item
+        for key, item in value.items()
+        if key not in {"descriptor_observation", "descriptor_observation_withheld"}
+    }
     if set(base) not in (
         {"status", "returncode"},
         {"status", "returncode", "label"},
@@ -227,10 +235,16 @@ def valid_native_startup_status(value: Any) -> bool:
     if type(code) is not int or not -255 <= code <= 255:
         return False
     expected = native_startup_status_from_returncode(code)
-    return base == expected and (
-        "descriptor_observation" not in value
-        or (code == 96 and valid_native_fd_observation(observation))
-    )
+    if base != expected or (has_observation and has_withheld):
+        return False
+    if not has_observation and not has_withheld:
+        return True
+    if code != 96:
+        return False
+    if has_observation:
+        return valid_native_fd_observation(value["descriptor_observation"])
+    reason = value["descriptor_observation_withheld"]
+    return type(reason) is str and reason in NATIVE_FD_OBSERVATION_WITHHELD_REASONS
 
 
 def valid_native_startup_statuses(value: Any) -> bool:

@@ -23,7 +23,12 @@ def _identity(fd):
 
 def _frame(rows):
     return (
-        json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}) + "\n"
+        json.dumps(
+            {"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
     ).encode()
 
 
@@ -121,3 +126,27 @@ def test_only_one_exact_native_frame_can_extend_code_96_diagnostic():
         diagnostics.native_fd_rows_from_frame(_frame([{**rows[0], "path": "/private"}] + rows[1:]))
         is None
     )
+
+
+def test_only_exact_code_96_withholding_reasons_cross_both_status_validators():
+    base = diagnostics.native_startup_status_from_returncode(96)
+    assert diagnostics.valid_native_startup_status(base)
+    assert verifier._safe_native_startup_statuses({"reader": base}) == {"reader": base}
+    for reason in sorted(diagnostics.NATIVE_FD_OBSERVATION_WITHHELD_REASONS):
+        status = {**base, "descriptor_observation_withheld": reason}
+        assert diagnostics.valid_native_startup_status(status)
+        assert verifier._safe_native_startup_statuses({"reader": status}) == {"reader": status}
+
+    for status in (
+        {**base, "descriptor_observation_withheld": "private-path"},
+        {**base, "descriptor_observation_withheld": True},
+        {**base, "descriptor_observation_withheld": "no_frame", "path": "/private"},
+        {**base, "descriptor_observation_withheld": "no_frame", "descriptor_observation": {}},
+        {
+            **diagnostics.native_startup_status_from_returncode(95),
+            "descriptor_observation_withheld": "no_frame",
+        },
+        {"status": "clean_exit", "returncode": 0, "descriptor_observation_withheld": "no_frame"},
+    ):
+        assert not diagnostics.valid_native_startup_status(status)
+        assert verifier._safe_native_startup_statuses({"reader": status}) is None

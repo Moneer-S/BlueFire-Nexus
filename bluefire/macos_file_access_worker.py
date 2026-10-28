@@ -102,6 +102,7 @@ class MacOSFileAccessWorker:
 
     def _drain_native_diagnostic(self, descriptor: int) -> None:
         """Drain throughout launch so helper output cannot block containment."""
+        read_failed = False
         try:
             while True:
                 chunk = os.read(descriptor, 1024)
@@ -114,38 +115,38 @@ class MacOSFileAccessWorker:
                 if len(chunk) > remaining:
                     self._native_diagnostic_overflow = True
         except OSError:
-            self._native_diagnostic_overflow = True
+            read_failed = True
         finally:
             try:
                 os.close(descriptor)
             except OSError:
-                self._native_diagnostic_overflow = True
-            self._native_diagnostic_complete = True
+                read_failed = True
+            self._native_diagnostic_complete = not read_failed
 
-    def _retained_descriptor_observation(self, code: Any) -> dict[str, Any] | None:
+    def _retained_descriptor_observation(self) -> tuple[dict[str, Any] | None, str | None]:
         if self._native_diagnostic_thread is None:
-            return None
+            return None, "no_frame"
         self._native_diagnostic_thread.join(timeout=0.1)
-        if not self._native_diagnostic_complete or self._native_diagnostic_overflow:
-            return None
+        if self._native_diagnostic_overflow:
+            return None, "overflow"
+        if not self._native_diagnostic_complete:
+            return None, "eof_incomplete"
         raw = bytes(self._native_diagnostic_bytes)
         self._native_diagnostic_bytes.clear()
-        if code != 96:
-            return None
+        if not raw:
+            return None, "no_frame"
         native_rows = _setup_failure_diagnostics.native_fd_rows_from_frame(raw)
         if native_rows is None:
-            return None
+            return None, "invalid_frame"
         observation = {
             "schema_version": _setup_failure_diagnostics.NATIVE_FD_OBSERVATION_SCHEMA,
             "scope": "diagnostic_only_no_descriptor_admission",
             "launch_copy_rows": self._launch_copy_rows,
             "native_rows": native_rows,
         }
-        return (
-            observation
-            if _setup_failure_diagnostics.valid_native_fd_observation(observation)
-            else None
-        )
+        if not _setup_failure_diagnostics.valid_native_fd_observation(observation):
+            return None, "invalid_launch_rows"
+        return observation, None
 
     def _guard(self, deadline: int | None = None) -> float:
         wall, monotonic = time.time_ns() // 1_000_000, darwin_clock_ns()
@@ -549,9 +550,12 @@ class MacOSFileAccessWorker:
                 )
             code = vars(process).get("returncode")
             status = _setup_failure_diagnostics.native_startup_status_from_returncode(code)
-            observation = self._retained_descriptor_observation(code)
-            if observation is not None:
-                status["descriptor_observation"] = observation
+            if type(code) is int and code == 96 and self._native_diagnostic_thread is not None:
+                observation, withheld = self._retained_descriptor_observation()
+                if observation is not None:
+                    status["descriptor_observation"] = observation
+                elif withheld is not None:
+                    status["descriptor_observation_withheld"] = withheld
             return status
         finally:
             self._lock.release()

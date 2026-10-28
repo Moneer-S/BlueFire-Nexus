@@ -54,8 +54,7 @@ def test_settled_original_code_96_retains_only_one_finite_native_frame(monkeypat
     retained = _worker(monkeypatch, 96)
     identity = {"dev": 1, "ino": 2, "mode_type": 0o100000, "rdev": 0}
     rows = [
-        {"fd": fd, "kind": 2 if fd == 4 else 1, "identity": identity}
-        for fd in (0, 1, 2, 3, 4, 9)
+        {"fd": fd, "kind": 2 if fd == 4 else 1, "identity": identity} for fd in (0, 1, 2, 3, 4, 9)
     ]
     retained._native_diagnostic_thread = SimpleNamespace(join=lambda timeout: None)
     retained._native_diagnostic_complete = True
@@ -76,13 +75,131 @@ def test_settled_original_code_96_retains_only_one_finite_native_frame(monkeypat
     assert verifier._safe_native_startup_statuses({"reader": status}) == {"reader": status}
 
     retained._native_diagnostic_bytes = bytearray(b"arbitrary stderr\n")
-    assert "descriptor_observation" not in retained.retained_native_startup_status()
+    assert retained.retained_native_startup_status()["descriptor_observation_withheld"] == (
+        "invalid_frame"
+    )
     retained._native_diagnostic_bytes = bytearray(
         json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}).encode()
         + b"\n"
     )
     retained._process.returncode = 95
-    assert "descriptor_observation" not in retained.retained_native_startup_status()
+    status = retained.retained_native_startup_status()
+    assert "descriptor_observation" not in status
+    assert "descriptor_observation_withheld" not in status
+
+
+@pytest.mark.parametrize(
+    "reason,complete,overflow,frame,launch_rows_valid",
+    [
+        ("eof_incomplete", False, False, b"partial", True),
+        ("overflow", True, True, b"x" * 4096, True),
+        ("no_frame", True, False, b"", True),
+        ("invalid_frame", True, False, b"arbitrary stderr\n", True),
+        ("invalid_launch_rows", True, False, None, False),
+    ],
+)
+def test_only_settled_code_96_reports_finite_withheld_reason(
+    monkeypatch, reason, complete, overflow, frame, launch_rows_valid
+):
+    retained = _worker(monkeypatch, 96)
+    identity = {"dev": 1, "ino": 2, "mode_type": 0o100000, "rdev": 0}
+    rows = [
+        {"fd": fd, "kind": 2 if fd == 4 else 1, "identity": identity} for fd in (0, 1, 2, 3, 4, 9)
+    ]
+    if frame is None:
+        frame = (
+            json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}) + "\n"
+        ).encode()
+    retained._native_diagnostic_thread = SimpleNamespace(join=lambda timeout: None)
+    retained._native_diagnostic_complete = complete
+    retained._native_diagnostic_overflow = overflow
+    retained._native_diagnostic_bytes = bytearray(frame)
+    retained._launch_copy_rows = [
+        {"role": "resource", "fd": 12, "identity": identity},
+        {
+            "role": "primitive_channel" if launch_rows_valid else "unknown",
+            "fd": 13,
+            "identity": identity,
+        },
+    ]
+    status = retained.retained_native_startup_status()
+    assert status == {
+        **diagnostics.native_startup_status_from_returncode(96),
+        "descriptor_observation_withheld": reason,
+    }
+    assert diagnostics.valid_native_startup_status(status)
+    assert verifier._safe_native_startup_statuses({"reader": status}) == {"reader": status}
+
+
+def test_owned_pipe_drain_requires_eof_before_code_96_observation(monkeypatch):
+    retained = _worker(monkeypatch, 96)
+    identity = {"dev": 1, "ino": 2, "mode_type": 0o100000, "rdev": 0}
+    rows = [
+        {"fd": fd, "kind": 2 if fd == 4 else 1, "identity": identity} for fd in (0, 1, 2, 3, 4, 9)
+    ]
+    frame = (
+        json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}) + "\n"
+    ).encode()
+    retained._native_diagnostic_bytes = bytearray()
+    retained._native_diagnostic_overflow = False
+    retained._native_diagnostic_complete = False
+    retained._launch_copy_rows = [
+        {"role": "resource", "fd": 12, "identity": identity},
+        {"role": "primitive_channel", "fd": 13, "identity": identity},
+    ]
+    read_fd, write_fd = os.pipe()
+    thread = threading.Thread(
+        target=retained._drain_native_diagnostic, args=(read_fd,), daemon=True
+    )
+    retained._native_diagnostic_thread = thread
+    try:
+        thread.start()
+        os.write(write_fd, frame)
+        assert retained.retained_native_startup_status()["descriptor_observation_withheld"] == (
+            "eof_incomplete"
+        )
+    finally:
+        os.close(write_fd)
+        thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert retained._native_diagnostic_complete is True
+
+    read_fd, write_fd = os.pipe()
+    retained._native_diagnostic_bytes = bytearray()
+    retained._native_diagnostic_overflow = False
+    retained._native_diagnostic_complete = False
+    thread = threading.Thread(
+        target=retained._drain_native_diagnostic, args=(read_fd,), daemon=True
+    )
+    retained._native_diagnostic_thread = thread
+    try:
+        thread.start()
+        os.write(write_fd, frame)
+        os.close(write_fd)
+        write_fd = -1
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+        status = retained.retained_native_startup_status()
+        assert status["descriptor_observation"]["native_rows"] == rows
+        assert "descriptor_observation_withheld" not in status
+    finally:
+        if write_fd >= 0:
+            os.close(write_fd)
+        thread.join(timeout=1)
+
+
+def test_drain_io_error_is_not_reported_as_an_overflow(monkeypatch):
+    retained = _worker(monkeypatch, 96)
+    retained._native_diagnostic_bytes = bytearray()
+    retained._native_diagnostic_overflow = False
+    retained._native_diagnostic_complete = False
+    retained._drain_native_diagnostic(-1)
+    assert retained._native_diagnostic_overflow is False
+    assert retained._native_diagnostic_complete is False
+    retained._native_diagnostic_thread = SimpleNamespace(join=lambda timeout: None)
+    assert retained.retained_native_startup_status()["descriptor_observation_withheld"] == (
+        "eof_incomplete"
+    )
 
 
 @pytest.mark.parametrize("code,label", sorted(diagnostics.NATIVE_STARTUP_EXIT_LABELS.items()))
@@ -296,6 +413,28 @@ def _cli_error(monkeypatch, failure):
     with redirect_stdout(output):
         assert cli.main(["runner", "macos-file-setup", "--confirm-create-generated-workspace"]) == 2
     return json.loads(output.getvalue())["error"]
+
+
+def test_withheld_reason_crosses_only_failure_status_projections(monkeypatch):
+    failure = local.MacOSSetupFailure(
+        "namespace_creation", "The original sealed Darwin namespace is unavailable."
+    )
+    status = {
+        **diagnostics.native_startup_status_from_returncode(96),
+        "descriptor_observation_withheld": "no_frame",
+    }
+    failure.safe_native_startup_statuses = {"reader": status}
+    error = _cli_error(monkeypatch, failure)
+    assert error["native_startup_statuses"] == {"reader": status}
+    parsed = verifier._parse_child_cli_error(json.dumps({"error": error}))
+    assert parsed["native_startup_statuses"] == {"reader": status}
+    readiness = verifier._safe_readiness_diagnostics("child_exited_before_readiness", {}, parsed)
+    assert readiness["native_startup_statuses"] == {"reader": status}
+
+    failure.safe_native_startup_statuses = {
+        "reader": {**status, "descriptor_observation_withheld": "private-path"}
+    }
+    assert "native_startup_statuses" not in _cli_error(monkeypatch, failure)
 
 
 @pytest.mark.parametrize(
