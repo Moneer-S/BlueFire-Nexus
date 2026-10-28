@@ -44,6 +44,10 @@ _FIXTURE_PURPOSES = (
     "bluefire_experiment_assistance",
     "bluefire_detection_source_creation",
 )
+_COMPOSITION_PURPOSES = (
+    "bluefire_linux_file_access_composition_proposal",
+    "bluefire_macos_file_access_composition_proposal",
+)
 _FIXTURE_MODEL = "bluefire-local-graph-fixture-v1"
 _RECEIVER_PROFILE = "sandbox-endpoint-deep-lab.v1"
 _RECEIVER_SCENARIO = "scenario.receiver-defense.redaction-validation.v1"
@@ -662,6 +666,8 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
     observed_ids = execute.get("observed_evidence_ids") if isinstance(execute, dict) else None
     observed_records = execute.get("observed_records") if isinstance(execute, dict) else None
     provider_requests = value.get("provider_requests")
+    purpose_proof = value.get("model_purpose_authorizations")
+    route_counts = value.get("route_counts")
     deadline_controls = value.get("deadline_controls")
     checks = value.get("checks")
     return (
@@ -683,6 +689,35 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         in checks
         and "reviewed_fixture_detection_saved_and_evaluated_against_its_development_run" in checks
         and "saved_detection_candidate_and_development_evaluation_reopened_by_exact_ids" in checks
+        and all(
+            f"composition_purpose_{purpose}_separate_from_receiver_in_settings" in checks
+            and f"composition_purpose_{purpose}_persisted_and_revoked_without_request" in checks
+            for purpose in _COMPOSITION_PURPOSES
+        )
+        and purpose_proof
+        == {
+            "original_authorization": "revoked",
+            "selected_purposes": [
+                {"purpose": purpose, "status": "revoked", "model_requests": 0}
+                for purpose in _COMPOSITION_PURPOSES
+            ],
+            "receiver_purpose_selected": False,
+            "model_requests_before": 4,
+            "model_requests_after": 4,
+        }
+        and purpose_proof["receiver_purpose_selected"] is False
+        and type(purpose_proof["model_requests_before"]) is int
+        and type(purpose_proof["model_requests_after"]) is int
+        and all(type(row["model_requests"]) is int for row in purpose_proof["selected_purposes"])
+        and isinstance(route_counts, dict)
+        and all(
+            type(route_counts.get(name)) is int and route_counts[name] == expected
+            for name, expected in (
+                ("authorization", 1),
+                ("composition_purpose_authorization", 2),
+                ("authorization_revoke", 3),
+            )
+        )
         and isinstance(graph, dict)
         and graph.get("native_execution") is False
         and isinstance(execute, dict)
@@ -772,6 +807,7 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and isinstance(cleanup, dict)
         and cleanup.get("runner_stopped") is True
         and cleanup.get("execute_job_terminal") is True
+        and cleanup.get("model_authorizations_revoked") is True
         and isinstance(counts, dict)
         and counts
         == {
@@ -1542,6 +1578,10 @@ def main() -> int:
                 "detection_application": assistant_report.get("detection_application"),
                 "detection_reopened": assistant_report.get("detection_reopened"),
                 "deadline_controls": assistant_report.get("deadline_controls"),
+                "model_purpose_authorizations": assistant_report.get(
+                    "model_purpose_authorizations"
+                ),
+                "route_counts": assistant_report.get("route_counts"),
                 "request_counts": assistant_report.get("request_counts"),
                 "cleanup": assistant_report.get("cleanup"),
             }

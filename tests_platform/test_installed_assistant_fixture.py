@@ -8,6 +8,7 @@ from copy import deepcopy
 import pytest
 
 from tools.verify_installed_browser import (
+    _COMPOSITION_PURPOSES,
     _FIXTURE_MODEL,
     _FIXTURE_PURPOSES,
     _assistant_fixture_journey_passed,
@@ -74,6 +75,14 @@ def assistant_report() -> dict[str, object]:
             "approved_fixture_execute_run_completed_with_explicit_cleanup_and_observed_generated_fixture_metadata",
             "reviewed_fixture_detection_saved_and_evaluated_against_its_development_run",
             "saved_detection_candidate_and_development_evaluation_reopened_by_exact_ids",
+            *[
+                check
+                for purpose in _COMPOSITION_PURPOSES
+                for check in (
+                    f"composition_purpose_{purpose}_separate_from_receiver_in_settings",
+                    f"composition_purpose_{purpose}_persisted_and_revoked_without_request",
+                )
+            ],
         ],
         "graph_simulation": {"native_execution": False},
         "execute_preflight": {
@@ -129,7 +138,26 @@ def assistant_report() -> dict[str, object]:
             "purposes": list(_FIXTURE_PURPOSES),
             "request_bytes": 1024,
         },
-        "cleanup": {"runner_stopped": True, "execute_job_terminal": True},
+        "model_purpose_authorizations": {
+            "original_authorization": "revoked",
+            "selected_purposes": [
+                {"purpose": purpose, "status": "revoked", "model_requests": 0}
+                for purpose in _COMPOSITION_PURPOSES
+            ],
+            "receiver_purpose_selected": False,
+            "model_requests_before": 4,
+            "model_requests_after": 4,
+        },
+        "route_counts": {
+            "authorization": 1,
+            "composition_purpose_authorization": 2,
+            "authorization_revoke": 3,
+        },
+        "cleanup": {
+            "runner_stopped": True,
+            "execute_job_terminal": True,
+            "model_authorizations_revoked": True,
+        },
         "request_counts": counts,
     }
 
@@ -289,6 +317,22 @@ def test_assistant_journey_validator_rejects_invalid_observed_match_count(count)
         lambda report: report["generated_fixture_execute"].update(step_count=2),
         lambda report: report["deadline_controls"].update(work_deadline_enforced=False),
         lambda report: report["deadline_controls"].update(cleanup_reserve_ms=0),
+        lambda report: report["model_purpose_authorizations"].update(
+            receiver_purpose_selected=True
+        ),
+        lambda report: report["model_purpose_authorizations"].update(model_requests_after=5),
+        lambda report: report["model_purpose_authorizations"]["selected_purposes"][0].update(
+            purpose="bluefire_composition_proposal"
+        ),
+        lambda report: report["model_purpose_authorizations"]["selected_purposes"][1].update(
+            status="active"
+        ),
+        lambda report: report["route_counts"].update(composition_purpose_authorization=1),
+        lambda report: report["route_counts"].update(authorization_revoke=4),
+        lambda report: report["cleanup"].update(model_authorizations_revoked=False),
+        lambda report: report["checks"].remove(
+            "composition_purpose_bluefire_macos_file_access_composition_proposal_persisted_and_revoked_without_request"
+        ),
     ],
 )
 def test_assistant_journey_validator_rejects_unbound_results(mutation) -> None:
