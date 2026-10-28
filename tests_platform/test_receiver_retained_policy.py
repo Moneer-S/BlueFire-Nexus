@@ -31,7 +31,9 @@ def submit(service, request):
         }
     )
     owner_id = value["job"]["job_id"]
-    assert service.job_controller.wait(owner_id, timeout=10)["state"] == "completed"
+    with diagnose_job_wait("receiver_terminal"):
+        terminal = service.job_controller.wait(owner_id, timeout=10)
+    assert terminal["state"] == "completed"
     return owner_id
 
 
