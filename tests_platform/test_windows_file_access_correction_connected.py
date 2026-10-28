@@ -44,6 +44,7 @@ def connected(reviewed, paired, monkeypatch):
         value = native_fake.execution.__wrapped__(reviewed, paired, monkeypatch)
     service = object.__new__(BlueFireService)
     service.product_store = value.store
+    service.runner_lifecycle = value.control.service.runner_lifecycle
     service.job_controller = RunJobController(value.store, recover_on_start=False, max_workers=1)
     service._file_access = FileAccessControl(service, clock=lambda: value.state.wall)
     control = service.file_access
@@ -293,7 +294,8 @@ def test_expired_public_recovery_uses_only_existing_closure_and_evidence(connect
     assert terminal["state"] == "failed"
     before = records(v)
     assert before["outcome"]["state"] == "unknown" and len(before["tasks"]) == 1
-    owner = v.runtime._retest_owners[job_id]
+    owner = v.state.retest_owner
+    assert owner is not None
     owner.containment.finish_failure = False
     v.state.fault = None
     v.state.wall = before["preparation"]["expires_at_ms"] + 86400000
@@ -314,3 +316,77 @@ def test_expired_public_recovery_uses_only_existing_closure_and_evidence(connect
     assert v.service.submit_file_access_operation(request)["job"]["job_id"] == job_id
     assert len(v.state.controls) == len(v.state.launches) == 1
     assert v.state.buffers and all(not any(buffer) for buffer in v.state.buffers)
+
+
+def test_reconstructed_runtime_recovers_only_durable_original_terminal_and_cleanup(connected):
+    v = connected
+    native_fake._abort(v, "publication")
+    request, job_id, terminal = submit(v)
+    assert terminal["state"] == "failed"
+    before = records(v, job_id)
+    assert before["outcome"]["state"] == "unknown" and len(before["tasks"]) == 1
+    assert job_id not in v.runtime._control_owners
+    assert job_id not in v.runtime._retest_owners
+    with v.store._connection(write=True) as connection:
+        connection.execute("DROP TRIGGER synthetic_publication_failure")
+
+    reopened = FileAccessControl(v.service, clock=lambda: v.state.wall)
+    v.service._file_access = reopened
+    v.control = reopened
+    v.runtime = reopened.windows_correction
+    v.monkeypatch.setattr(reopened.windows, "execute", forbidden)
+    v.monkeypatch.setattr(reopened.windows, "recover", forbidden)
+    no_new_work(v)
+
+    recovery = reconciliation(v, before["outcome_digest"])
+    result = v.service.reconcile_file_access_operation(job_id, recovery)
+    assert result["reconciliation"]["state"] == "complete"
+    assert result["control"]["status"] == "hardened"
+    assert result["control"]["retest"]["non_owner"] == "data_access_denied"
+    assert result["control"]["retest"]["owner"] == "allowed"
+    assert records(v, job_id)["tasks"] == before["tasks"]
+    assert v.service.submit_file_access_operation(request)["job"]["job_id"] == job_id
+    assert len(v.state.controls) == len(v.state.launches) == 1
+
+
+def test_reconstructed_runtime_keeps_completed_terminal_unknown_without_original_cleanup(connected):
+    v = connected
+    v.state.fault = "retest_persistence"
+    native_fake._abort(v, "retest")
+    _, job_id, terminal = submit(v)
+    assert terminal["state"] == "failed"
+    before = records(v, job_id)
+    assert before["outcome"]["state"] == "unknown" and len(before["tasks"]) == 1
+    assert job_id not in v.runtime._retest_owners
+    # Model a completed public terminal whose original watchdog cleanup result
+    # was never durably published. A reconstructed runtime may not infer it.
+    v.state.remote_client.result = None
+    v.state.retest_owner = None
+    with v.store._connection(write=True) as connection:
+        connection.execute("DROP TRIGGER synthetic_retest_failure")
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM file_access_owned_process_closures " "WHERE task_id=?",
+                (before["tasks"][0]["task"]["task_id"],),
+            ).fetchone()[0]
+            == 0
+        )
+
+    reopened = FileAccessControl(v.service, clock=lambda: v.state.wall)
+    v.service._file_access = reopened
+    v.control = reopened
+    v.runtime = reopened.windows_correction
+    v.monkeypatch.setattr(reopened.windows, "execute", forbidden)
+    v.monkeypatch.setattr(reopened.windows, "recover", forbidden)
+    no_new_work(v)
+
+    result = v.service.reconcile_file_access_operation(
+        job_id, reconciliation(v, before["outcome_digest"])
+    )
+    assert result["reconciliation"]["state"] == "unknown"
+    assert (
+        result["reconciliation_receipt"]["problem"]["code"]
+        == "file_access_reconciliation_unresolved"
+    )
+    assert records(v, job_id) == before
+    assert len(v.state.controls) == len(v.state.launches) == 1

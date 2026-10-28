@@ -254,14 +254,14 @@ def _validated_history(
                             _decode_json_object(row["result_json"])
                     continue
                 with _upgrade_stage("history_documents"):
-                    manifest, profile, service_grant = (
+                    manifest, profile, service_grant, managed_descriptor = (
                         AuthenticatedRunnerServer._stored_execute_payload(row)
                     )
-                    if service_grant is not None:
-                        # This review has no independent service-obligation observer.
-                        # A stored grant must not become ordinary workspace history.
+                    if service_grant is not None or managed_descriptor is not None:
+                        # This review has no independent protected-effect observer.
+                        # A stored grant or managed session must not become ordinary history.
                         raise RunnerHistoryUpgradeError(
-                            "Runner owned-service history requires separate recovery verification."
+                            "Runner protected-effect history requires separate recovery verification."
                         )
                     workspace = validate_history_documents(
                         manifest, profile, platform=platform, sandbox=sandbox
