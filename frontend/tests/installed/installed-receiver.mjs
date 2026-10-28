@@ -18,6 +18,7 @@ import {
   receiverRunIsNotDemo,
   receiverOwnerContextMatches,
   receiverApprovalAcknowledgementName,
+  receiverCompositionCleanupState,
   sameJson as same,
 } from "./receiver-guards.mjs";
 import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
@@ -796,24 +797,43 @@ async function stopOwnerNormally() {
 async function revokeCompositionNormally() {
   if (!compositionOwnerId || !connected || !page || page.isClosed()) return;
   try {
-    const current = await appApi(`/composition/objectives/${compositionOwnerId}`);
-    if (current.grant?.status === "revoked") {
-      report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: true };
-      return;
+    const until = Date.now() + Math.min(30_000, remainingMs());
+    let revokeRequested = false;
+    while (Date.now() < until) {
+      const timeout = boundedLocalTimeout(until, Date.now(), remainingMs());
+      if (timeout <= 0) break;
+      let current;
+      try { current = await appApi(`/composition/objectives/${compositionOwnerId}`, timeout); }
+      catch {
+        await delay(Math.min(500, Math.max(1, until - Date.now())));
+        continue;
+      }
+      assert.equal(current.owner?.job_id, compositionOwnerId);
+      const cleanupState = receiverCompositionCleanupState(current);
+      if (cleanupState === "settled") {
+        report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: true };
+        return;
+      }
+      if (cleanupState === "no_grant") {
+        report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: false, composition_no_grant_issued: true };
+        return;
+      }
+      if (current.grant && current.grant.status !== "revoked" && !revokeRequested) {
+        revokeRequested = true;
+        const revoked = await page.evaluate(async ({ owner, timeout }) => {
+          const token = sessionStorage.getItem("bluefire.browser-session.v1");
+          const response = await fetch(`/api/v1/composition/objectives/${encodeURIComponent(owner)}/revoke`, {
+            method: "POST", redirect: "error", credentials: "omit",
+            headers: { "X-BlueFire-Session": token, "Content-Type": "application/json", Accept: "application/json" },
+            body: "{}", signal: AbortSignal.timeout(timeout),
+          });
+          return response.ok;
+        }, { owner: compositionOwnerId, timeout });
+        if (!revoked) throw new Error("Composition revoke was refused");
+      }
+      await delay(Math.min(500, Math.max(1, until - Date.now())));
     }
-    if (!current.grant) return;
-    const revoked = await page.evaluate(async ({ owner, timeout }) => {
-      const token = sessionStorage.getItem("bluefire.browser-session.v1");
-      const response = await fetch(`/api/v1/composition/objectives/${encodeURIComponent(owner)}/revoke`, {
-        method: "POST", redirect: "error", credentials: "omit",
-        headers: { "X-BlueFire-Session": token, "Content-Type": "application/json", Accept: "application/json" },
-        body: "{}", signal: AbortSignal.timeout(timeout),
-      });
-      return response.ok;
-    }, { owner: compositionOwnerId, timeout: remainingMs() });
-    if (!revoked) throw new Error("Composition revoke was refused");
-    const final = await appApi(`/composition/objectives/${compositionOwnerId}`);
-    report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: final.grant?.status === "revoked" };
+    report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: false };
   } catch {
     report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: false };
   }
