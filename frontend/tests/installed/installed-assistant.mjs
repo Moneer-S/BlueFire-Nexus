@@ -320,6 +320,24 @@ async function proveCompositionPurposeAuthorizations() {
   for (const item of compositionPurposes) {
     stage = `composition-purpose-${item.purpose}-settings`;
     await gotoJourney(`${origin}/#/settings`, { waitUntil: "domcontentloaded" });
+    const savedConnection = page.locator("section.provider-saved-connections article.provider-saved-connection")
+      .filter({ hasText: providerId });
+    await savedConnection.waitFor({ state: "visible" });
+    assert.equal(await savedConnection.count(), 1);
+    assert.equal((await savedConnection.locator("details code").textContent())?.trim(), providerId);
+    assert.equal((await savedConnection.locator("strong").textContent())?.trim(), `Responses API · ${model}`);
+    await savedConnection.getByText("Active", { exact: true }).waitFor();
+    await savedConnection.getByRole("button", { name: `Edit Responses API · ${model}`, exact: true }).click();
+    await page.getByRole("region", { name: "Selected connection summary", exact: true })
+      .getByRole("heading", { name: model, exact: true }).waitFor();
+    assert.equal(await page.getByRole("combobox", { name: "API style", exact: true }).inputValue(), "openai_responses");
+    assert.equal(await page.getByLabel("Model ID", { exact: false }).inputValue(), model);
+    assert.equal(await page.getByLabel("Request endpoint", { exact: false }).inputValue(), providerEndpoint);
+    assert.equal(await page.getByLabel("Secret environment reference", { exact: false }).inputValue(), "");
+    assert.equal(await page.getByLabel("Provider ID", { exact: false }).inputValue(), providerId);
+    assert.equal(await page.getByLabel("Timeout seconds", { exact: true }).inputValue(), "30");
+    assert.equal(await page.getByLabel("Output token limit", { exact: false }).inputValue(), "64");
+    assert.equal(await page.getByLabel("Transport retries", { exact: true }).inputValue(), "0");
     const linux = page.getByRole("checkbox", { name: compositionPurposes[0].label, exact: true });
     const macos = page.getByRole("checkbox", { name: compositionPurposes[1].label, exact: true });
     const receiver = page.getByRole("checkbox", { name: receiverPurposeLabel, exact: true });
@@ -329,6 +347,9 @@ async function proveCompositionPurposeAuthorizations() {
     assert.equal(await linux.count(), 1);
     assert.equal(await macos.count(), 1);
     assert.equal(await receiver.count(), 1);
+    assert.equal(await linux.isEnabled(), true);
+    assert.equal(await macos.isEnabled(), true);
+    assert.equal(await receiver.isEnabled(), true);
     assert.equal(await linux.isChecked(), false);
     assert.equal(await macos.isChecked(), false);
     assert.equal(await receiver.isChecked(), false);
