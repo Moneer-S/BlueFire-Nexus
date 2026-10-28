@@ -1,3 +1,5 @@
+import type { ReceiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
+
 export function sameJson(left: unknown, right: unknown): boolean;
 export function createReceiverSettingsReadPolicy(): (url: URL, method: string) => boolean;
 export function createReceiverReloadContextCorrelation<T extends object>(navigation: (request: T) => boolean, context: (request: T) => boolean): { request: (request: T) => boolean; response: (response: { request: () => T }) => boolean };
@@ -60,7 +62,16 @@ export function handleReceiverRoute(route: {
   expectedOrigin: string;
   allowedRead: (url: URL, method: string) => boolean;
   authorizePost: (url: URL, body: unknown) => boolean;
-  onBlocked: (entry: { method: string; path: string; reason: string }) => void;
+  describeBlockedPost?: (url: URL, reason: string) => ReceiverPostDenialDiagnostic;
+  onBlocked: (entry: {
+    method: string;
+    path: string;
+    reason: string;
+    route_family?: ReceiverPostDenialDiagnostic["route_family"];
+    denial_category?: ReceiverPostDenialDiagnostic["denial_category"];
+    budget_count?: number;
+    budget_limit?: number;
+  }) => void;
   onFailure: (kind: "request_route_failed" | "request_abort_failed") => void;
 }): Promise<void>;
 
