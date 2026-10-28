@@ -182,14 +182,14 @@ jobs:
             }
             'c-d' {
               $testFiles = @(Get-ChildItem -LiteralPath tests_platform -File |
-                Where-Object { $_.Name -cmatch '^test_[c-d].*\.py$' } |
+                Where-Object { $_.Name -cmatch '^test_[c-d].*\.py$' -or $_.Name -cmatch '^test_s3.*\.py$' } |
                 Sort-Object Name |
                 ForEach-Object { "tests_platform/$($_.Name)" })
               if ($testFiles.Count -eq 0) { throw 'Empty c-d test partition' }
               python -m pytest -vv --durations=50 @testFiles
             }
             'remainder' {
-              python -m pytest -vv --durations=50 '--ignore-glob=tests_platform/test_[a-q]*.py'
+              python -m pytest -vv --durations=50 '--ignore-glob=tests_platform/test_[a-q]*.py' '--ignore-glob=tests_platform/test_s3*.py'
             }
             default { throw "Unknown Windows test partition: $env:BLUEFIRE_TEST_PARTITION" }
           }

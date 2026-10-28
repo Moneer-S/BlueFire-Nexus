@@ -64,10 +64,11 @@ def _windows_partition_files(names, partition):
         match = re.fullmatch(r"test_(.).*\.py", name)
         first = match.group(1) if match is not None else ""
         in_middle = "a" <= first <= "q"
+        in_s3_family = re.fullmatch(r"test_s3.*\.py", name) is not None
         if partition == "remainder":
-            return not in_middle
+            return not in_middle and not in_s3_family
         start, end = ranges[partition]
-        return start <= first <= end
+        return start <= first <= end or (partition == "c-d" and in_s3_family)
 
     return {name for name in names if belongs(name)}
 
@@ -83,9 +84,12 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
     assert command.count("Get-ChildItem -LiteralPath tests_platform -File") == 3
     assert "Where-Object { $_.Name -cmatch '^test_[a-d].*\\.py$' }" not in command
     assert command.count("Where-Object { $_.Name -cmatch '^test_[a-b].*\\.py$' }") == 1
-    assert command.count("Where-Object { $_.Name -cmatch '^test_[c-d].*\\.py$' }") == 1
+    assert command.count("-cmatch '^test_[c-d].*\\.py$'") == 1
     assert command.count("Where-Object { $_.Name -cmatch '^test_[e-q].*\\.py$' }") == 1
+    assert command.count("-cmatch '^test_s3.*\\.py$'") == 1
+    assert "-or $_.Name -cmatch '^test_s3.*\\.py$'" in command
     assert "--ignore-glob=tests_platform/test_[a-q]*.py" in command
+    assert "--ignore-glob=tests_platform/test_s3*.py" in command
     expected = WINDOWS_PARTITIONS[version]
     assert all(f"'{partition}' {{" in command for partition in expected)
     assert 'default { throw "Unknown Windows test partition:' in command
@@ -106,6 +110,10 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
     for name, files in partitions.items():
         assert all(files.isdisjoint(other) for key, other in partitions.items() if key != name)
     assert set.union(*partitions.values()) == names
+    s3_family = {name for name in names if re.fullmatch(r"test_s3.*\.py", name)}
+    assert s3_family
+    assert partitions["c-d"] & s3_family == s3_family
+    assert all(not (partitions[partition] & s3_family) for partition in set(partitions) - {"c-d"})
 
     boundaries = {
         "test_a_boundary.py": "a-b",
@@ -115,6 +123,7 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
         "test_e_boundary.py": "e-q",
         "test_q_boundary.py": "e-q",
         "test_r_boundary.py": "remainder",
+        "test_s3_boundary.py": "c-d",
         "test_1_nonletter.py": "remainder",
     }
     for name, expected in boundaries.items():
