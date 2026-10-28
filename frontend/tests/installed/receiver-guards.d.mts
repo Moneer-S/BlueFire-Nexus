@@ -1,4 +1,6 @@
 export function sameJson(left: unknown, right: unknown): boolean;
+export function createReceiverSettingsReadPolicy(): (url: URL, method: string) => boolean;
+export function createReceiverReloadContextCorrelation<T extends object>(navigation: (request: T) => boolean, context: (request: T) => boolean): { request: (request: T) => boolean; response: (response: { request: () => T }) => boolean };
 export const receiverApprovalAcknowledgementName: RegExp;
 export function receiverCompositionCleanupState(objective: unknown): "settled" | "no_grant" | "unresolved";
 
@@ -46,7 +48,7 @@ export function classifyRequest(args: {
   url: URL;
   body?: unknown;
   bodyError?: boolean;
-  allowedRead: (url: URL) => boolean;
+  allowedRead: (url: URL, method: string) => boolean;
   authorizePost: (url: URL, body: unknown) => boolean;
 }): { allowed: true } | { allowed: false; reason: string };
 
@@ -56,7 +58,7 @@ export function handleReceiverRoute(route: {
   continue: () => Promise<void>;
 }, options: {
   expectedOrigin: string;
-  allowedRead: (url: URL) => boolean;
+  allowedRead: (url: URL, method: string) => boolean;
   authorizePost: (url: URL, body: unknown) => boolean;
   onBlocked: (entry: { method: string; path: string; reason: string }) => void;
   onFailure: (kind: "request_route_failed" | "request_abort_failed") => void;

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
@@ -444,6 +445,39 @@ def test_receiver_bearer_fields_are_rejected_before_receipt_projection() -> None
         _receiver_report_for_receipt(report)
     assert "secret-bearer-value" not in str(raised.value)
     assert "credential" in str(raised.value)
+
+
+def test_receiver_receipt_preserves_bounded_composition_failure_categories() -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "composition-attempt",
+            "kind": "journey_failed",
+            "error_type": "TimeoutError",
+            "message": "private exception",
+            "composition_interaction": {
+                "schema_version": "bluefire.installed-receiver-composition-interaction.v1",
+                "step": "click",
+                "button_enabled": False,
+                "pending_kind": "proposal",
+                "context_digest_matches": True,
+                "private": "private request",
+            },
+        },
+        {"stage": "composition-attempt", "kind": "page_wait_failed", "method": "waitForResponse"},
+        {"stage": ["private"], "kind": "private kind", "error_type": "private type"},
+    ]
+    errors = _receiver_report_for_receipt(report)["errors"]
+    assert isinstance(errors, list)
+    assert errors[0]["stage"] == "composition-attempt"
+    assert errors[0]["error_type"] == "TimeoutError"
+    assert errors[0]["composition_interaction"]["step"] == "click"
+    assert errors[0]["composition_interaction"]["button_enabled"] is False
+    assert errors[1]["method"] == "waitForResponse"
+    assert errors[2] == {"kind": "other", "error_type": "other"}
+    assert "private" not in json.dumps(errors)
+    report["errors"] *= 20
+    assert len(_receiver_report_for_receipt(report)["errors"]) == 32
 
 
 def test_composed_receiver_receipt_requires_false_objective_and_current_saved_comparison() -> None:

@@ -5,9 +5,47 @@ import process from "node:process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "vitest";
-import { closeReceiverWebSocket, handleReceiverRoute, observeReceiverEvent, observeReceiverWait, settleReceiverObservers } from "./receiver-guards.mjs";
+import { closeReceiverWebSocket, createReceiverReloadContextCorrelation, createReceiverSettingsReadPolicy, handleReceiverRoute, observeReceiverEvent, observeReceiverWait, settleReceiverObservers } from "./receiver-guards.mjs";
 
 const origin = "http://127.0.0.1:4317";
+
+test("reload context acknowledges only the request captured after navigation begins", () => {
+  const old = { kind: "context" };
+  const fresh = { kind: "context" };
+  const extra = { kind: "context" };
+  const correlation = createReceiverReloadContextCorrelation(request => request.kind === "navigation", request => request.kind === "context");
+  assert.equal(correlation.request(old), false);
+  assert.equal(correlation.request({ kind: "navigation" }), false);
+  assert.equal(correlation.response({ request: () => old }), false);
+  assert.equal(correlation.request(fresh), true);
+  // Same route/body and a late pre-reload response do not replace object identity.
+  assert.equal(correlation.response({ request: () => old }), false);
+  assert.equal(correlation.request(extra), false);
+  assert.equal(correlation.response({ request: () => extra }), false);
+  assert.equal(correlation.response({ request: () => fresh }), true);
+});
+
+test("settings reads require exact paths, no query and separate two-read budgets", async () => {
+  const allowedRead = createReceiverSettingsReadPolicy();
+  const head = routeFor(`${origin}/api/v1/settings`, "HEAD");
+  await handleReceiverRoute(head, options({ allowedRead }));
+  assert.deepEqual(head.calls, ["abort"]);
+  for (const suffix of ["/api/v1/settings?private=value", "/api/v1/settings/extra", "/api/v1/build-info?x=1", "/api/v1/other"]) {
+    const route = routeFor(`${origin}${suffix}`);
+    await handleReceiverRoute(route, options({ allowedRead }));
+    assert.deepEqual(route.calls, ["abort"]);
+  }
+  for (const suffix of ["/api/v1/settings", "/api/v1/build-info"]) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const route = routeFor(`${origin}${suffix}`);
+      await handleReceiverRoute(route, options({ allowedRead }));
+      assert.deepEqual(route.calls, [attempt < 2 ? "continue" : "abort"]);
+    }
+  }
+  const foreign = routeFor(`https://outside.example/api/v1/settings`);
+  await handleReceiverRoute(foreign, options({ allowedRead: createReceiverSettingsReadPolicy() }));
+  assert.deepEqual(foreign.calls, ["abort"]);
+});
 
 function routeFor(url, method = "GET", actions = {}) {
   const calls = [];

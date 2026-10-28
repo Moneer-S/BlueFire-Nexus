@@ -6,6 +6,31 @@ import { URL } from "node:url";
 export const sameJson = isDeepStrictEqual;
 export const receiverApprovalAcknowledgementName = /^I approve this exact immutable job envelope once\s*Unchecked by default and never stored in browser persistence$/;
 
+// Settings mounts these inert reads while configuring the owned fixture provider.
+export function createReceiverSettingsReadPolicy() {
+  const reads = new Map([["/api/v1/settings", 0], ["/api/v1/build-info", 0]]);
+  return (url, method) => {
+    if (method !== "GET" || url.search || !reads.has(url.pathname) || reads.get(url.pathname) >= 2) return false;
+    reads.set(url.pathname, reads.get(url.pathname) + 1);
+    return true;
+  };
+}
+
+// A late response from the retired document cannot acknowledge the reload.
+export function createReceiverReloadContextCorrelation(matchesNavigation, matchesContext) {
+  let navigationStarted = false;
+  let ownedRequest;
+  return {
+    request(candidate) {
+      if (matchesNavigation(candidate)) navigationStarted = true;
+      if (!navigationStarted || !matchesContext(candidate)) return false;
+      ownedRequest ??= candidate;
+      return candidate === ownedRequest;
+    },
+    response(candidate) { return Boolean(ownedRequest && candidate.request() === ownedRequest); },
+  };
+}
+
 const terminalCompositionStates = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 export function receiverCompositionCleanupState(objective) {
@@ -161,7 +186,7 @@ export function consumeRequestBudget(counts, limits, key) {
 export function classifyRequest({ origin, expectedOrigin, method, url, body, bodyError, allowedRead, authorizePost }) {
   if (origin !== expectedOrigin) return { allowed: false, reason: "non_loopback" };
   if (method === "GET" || method === "HEAD") {
-    return allowedRead(url)
+    return allowedRead(url, method)
       ? { allowed: true }
       : { allowed: false, reason: "read_not_allowlisted" };
   }

@@ -9,6 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import {
   handleReceiverRoute,
+  createReceiverSettingsReadPolicy,
+  createReceiverReloadContextCorrelation,
   closeReceiverWebSocket,
   observeReceiverEvent,
   observeReceiverWait,
@@ -29,6 +31,8 @@ import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.m
 import {
   receiverPreparationDiagnostic,
   receiverPrepareHttpDiagnostic,
+  readReceiverCompositionUi,
+  receiverCompositionInteractionDiagnostic,
 } from "./receiver-diagnostics.mjs";
 
 const [modulePath, output, port] = process.argv.slice(2);
@@ -174,6 +178,9 @@ let comparisonSubmitted = false;
 let phaseBindingDiagnostic;
 let prepareHttpDiagnostic;
 let pendingPreparationFailure;
+let compositionInteractionStep = "reconcile";
+let compositionInteractionUi;
+const settingsReadAllowed = createReceiverSettingsReadPolicy();
 let activeOwnerRole = "original";
 const phaseOrders = { original: ["baseline", "protected", "legitimate"], linked: ["protected", "legitimate"] };
 const phaseIndexes = { original: 0, linked: 0 };
@@ -273,6 +280,19 @@ function setPlaywrightBudget() {
   return timeout;
 }
 
+async function compositionUiSnapshot(observation) {
+  const diagnosticMs = deadlineBudget.bounded(250, Date.now());
+  if (!page || diagnosticMs <= 0) return compositionInteractionUi;
+  try {
+    return await Promise.race([
+      page.evaluate(readReceiverCompositionUi, {
+        origin: ORIGIN, owner: compositionOwnerId, control: originalOwnerId, proposal: compositionProposalJobId,
+      }).then(value => ({ ...value, observation })),
+      delay(diagnosticMs, compositionInteractionUi, { ref: false }),
+    ]);
+  } catch { return compositionInteractionUi; }
+}
+
 async function visibleControlsDiagnostic() {
   if (!page) return undefined;
   const timeoutMs = deadlineBudget.bounded(250, Date.now());
@@ -339,14 +359,14 @@ function wrapPage(target) {
       return (...args) => {
         if (property === "isClosed") return value.apply(pageTarget, args);
         const timeout = setPlaywrightBudget();
-        if (property === "goto" || property === "waitForResponse" || property === "waitForEvent") {
+        if (property === "goto" || property === "waitForResponse" || property === "waitForRequest" || property === "waitForEvent") {
           args[1] = withTimeout(args[1], timeout);
         } else if (property === "waitForFunction") {
           const optionIndex = args.length > 2 ? 2 : -1;
           if (optionIndex >= 0) args[optionIndex] = withTimeout(args[optionIndex], timeout);
         }
         const result = value.apply(pageTarget, args);
-        if (property === "waitForResponse" || property === "waitForEvent") {
+        if (property === "waitForResponse" || property === "waitForRequest" || property === "waitForEvent") {
           const waitStage = stage;
           return observeReceiverWait(result, () => {
             if (pageWaitFailureKinds.has(property)) return;
@@ -360,8 +380,9 @@ function wrapPage(target) {
   });
 }
 
-function allowedRead(url) {
+function allowedRead(url, method) {
   const path = url.pathname;
+  if (["/api/v1/settings", "/api/v1/build-info"].includes(path)) return settingsReadAllowed(url, method);
   if ([
     "/",
     "/index.html",
@@ -1629,7 +1650,23 @@ try {
   await page.locator(".composition-graph").getByText("Compiler-validated projection", { exact: true }).waitFor();
   stage = "composition-model-proposal-reopen";
   const proposalDigest = latestCompositionProposal.proposal.proposal_digest;
+  // Retire the previous document before installing correlation: even a request
+  // initiated by it during navigation must not acknowledge the saved reopening.
+  await page.goto("about:blank", { waitUntil: "domcontentloaded" });
+  const reopenedContext = createReceiverReloadContextCorrelation(
+    request => request.isNavigationRequest() && request.frame() === page.mainFrame()
+      && new URL(request.url()).origin === ORIGIN,
+    request => request.method() === "POST" && new URL(request.url()).origin === ORIGIN
+      && new URL(request.url()).pathname === `/api/v1/composition/objectives/${compositionOwnerId}/proposal-context`,
+  );
+  const reopenedRequest = page.waitForRequest(reopenedContext.request, { timeout: 20_000 });
+  const reopenedResponse = page.waitForResponse(reopenedContext.response, { timeout: 20_000 });
   await page.goto(`${ORIGIN}/#/composition?${new URLSearchParams({ control: originalOwnerId, objective: compositionOwnerId, proposal: compositionProposalJobId })}`, { waitUntil: "domcontentloaded" });
+  await reopenedRequest;
+  const freshContextResponse = await reopenedResponse;
+  assert.equal(freshContextResponse.ok(), true);
+  latestCompositionContext = await freshContextResponse.json();
+  assert.equal(latestCompositionContext?.grant_id, grantId);
   await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).waitFor();
   latestCompositionProposal = await appApi(`/composition/proposals/${compositionProposalJobId}`);
   assert.equal(latestCompositionProposal.job?.job_id, compositionProposalJobId);
@@ -1645,10 +1682,14 @@ try {
   };
   report.checks.push("single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt");
   stage = "composition-attempt";
+  compositionInteractionUi = await compositionUiSnapshot("before_click");
   const attemptResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/composition/objectives/${compositionOwnerId}/attempts`
     && response.request().method() === "POST");
+  compositionInteractionStep = "click";
   await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).click();
+  compositionInteractionStep = "response";
   latestCompositionObjective = await (await attemptResponse).json();
+  compositionInteractionStep = "settlement";
   assert.equal(latestCompositionObjective.owner?.job_id, compositionOwnerId);
   const settledComposition = await waitComposition(value => value.attempts?.some(attempt =>
     attempt.job_id === compositionAttemptJobId && attempt.progress?.settlement === "settled"
@@ -2054,6 +2095,14 @@ try {
 } catch (error) {
   const errorType = ["AssertionError", "TimeoutError", "TypeError", "Error"].includes(error?.name) ? error.name : "other";
   const failure = { stage, kind: "journey_failed", error_type: errorType };
+  if (stage === "composition-attempt" || stage === "composition-model-proposal-reopen") {
+    // A spent journey budget must not delay the cleanup reserve for diagnostics.
+    compositionInteractionUi = await compositionUiSnapshot("failure");
+    failure.composition_interaction = receiverCompositionInteractionDiagnostic(
+      compositionInteractionStep, compositionInteractionUi, latestCompositionObjective,
+      latestCompositionContext, latestCompositionProposal, Date.now(),
+    );
+  }
   if (stage.endsWith("-preparation") && currentPhase && receiverJobId) {
     failure.receiver_preparation = receiverPreparationDiagnostic(
       latestOwner,

@@ -258,6 +258,55 @@ it("does not execute a saved candidate against changed evidence", async () => {
   const start = await screen.findByRole("button", { name: "Start fresh attempt within grant" });
   expect(start).toBeDisabled(); expect(screen.getByText("Candidate no longer matches current evidence")).toBeInTheDocument();
 });
+it("reopens a saved same-context proposal and submits its exact candidate once", async () => {
+  const objective = objectiveFixture();
+  const proposal = proposalFixture();
+  vi.spyOn(compositionApi, "objective").mockResolvedValue(objective);
+  vi.spyOn(compositionApi, "proposal").mockResolvedValue(proposal);
+  const submit = vi.spyOn(compositionApi, "submit").mockRejectedValue(new Error("Response pending"));
+  const path = `/composition?control=${controlId}&objective=${ownerId}&proposal=${proposalId}`;
+  const first = mount(<CompositionPage />, path);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Start fresh attempt within grant" })).toBeEnabled());
+  first.unmount();
+  vi.mocked(compositionApi.context).mockClear();
+  mount(<CompositionPage />, path);
+  const start = await screen.findByRole("button", { name: "Start fresh attempt within grant" });
+  await waitFor(() => expect(start).toBeEnabled());
+  expect(compositionApi.context).toHaveBeenCalledWith(ownerId, null);
+  fireEvent.click(start);
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0]![0]).toMatchObject({ kind: "attempt", owner: ownerId, control: controlId, body: { proposal: proposal.proposal!.candidate, prior_attempt_id: null } });
+  expect(readCompositionPending()?.kind).toBe("attempt");
+});
+it("keeps a reopened proposal disabled until fresh context resolves", async () => {
+  vi.spyOn(compositionApi, "objective").mockResolvedValue(objectiveFixture());
+  vi.spyOn(compositionApi, "proposal").mockResolvedValue(proposalFixture());
+  let resolve!: (value: ReturnType<typeof contextFixture>) => void;
+  vi.mocked(compositionApi.context).mockReturnValue(new Promise(done => { resolve = done; }));
+  const submit = vi.spyOn(compositionApi, "submit");
+  mount(<CompositionPage />, `/composition?control=${controlId}&objective=${ownerId}&proposal=${proposalId}`);
+  const start = await screen.findByRole("button", { name: "Start fresh attempt within grant" });
+  expect(start).toBeDisabled();
+  fireEvent.click(start);
+  expect(submit).not.toHaveBeenCalled();
+  await act(async () => resolve(contextFixture()));
+  await waitFor(() => expect(start).toBeEnabled());
+});
+it("keeps an unresolved saved proposal submission from dispatching an attempt", async () => {
+  vi.spyOn(compositionApi, "objective").mockResolvedValue(objectiveFixture());
+  const proposal = proposalFixture();
+  // The loaded candidate is a different exact submission; pending must remain.
+  proposal.job.request.submitted_request = { ...(proposal.job.request.submitted_request as Record<string, unknown>), context_digest: `sha256:${"e".repeat(64)}` };
+  vi.spyOn(compositionApi, "proposal").mockResolvedValue(proposal);
+  storeCompositionPending({ kind: "proposal", owner: ownerId, control: controlId, id: proposalId, body: proposalFixture().job.request.submitted_request as Record<string, unknown> });
+  const submit = vi.spyOn(compositionApi, "submit");
+  mount(<CompositionPage />, `/composition?control=${controlId}&objective=${ownerId}&proposal=${proposalId}`);
+  const start = await screen.findByRole("button", { name: "Start fresh attempt within grant" });
+  expect(start).toBeDisabled();
+  fireEvent.click(start);
+  expect(submit).not.toHaveBeenCalled();
+  expect(readCompositionPending()?.kind).toBe("proposal");
+});
 it("never presents Continue as replay and leaves expired grants non-executable", async () => {
   const value = objectiveFixture(); value.grant.status = "paused";
   vi.spyOn(compositionApi, "objective").mockResolvedValue(value);

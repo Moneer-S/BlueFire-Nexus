@@ -1,5 +1,8 @@
 import type { PreflightDiagnostic } from "./preflight-diagnostics.mjs";
 
+export function readReceiverCompositionUi(expected: { origin: string; owner: string; control: string; proposal: string }): Record<string, unknown>;
+export function receiverCompositionInteractionDiagnostic(step: unknown, ui: unknown, objective: unknown, context: unknown, proposal: unknown, now: number): Record<string, unknown>;
+
 export interface ReceiverPrepareHttpDiagnostic {
   schema_version: "bluefire.installed-receiver-prepare-http-diagnostic.v1";
   status: number | null;
