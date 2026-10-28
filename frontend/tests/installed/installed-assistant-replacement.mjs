@@ -39,7 +39,8 @@ const apiReadPaths = new Set([
   "/api/v1/receiver-defense/jobs", "/api/v1/comparison-snapshots", "/api/v1/settings",
   "/api/v1/resources/model-providers", "/api/v1/ai/authorizations", "/api/v1/detections",
 ]);
-const commandLines = createInterface({ input: process.stdin, crlfDelay: Infinity })[Symbol.asyncIterator]();
+const capabilityInput = createInterface({ input: process.stdin, crlfDelay: Infinity });
+const commandLines = capabilityInput[Symbol.asyncIterator]();
 async function nextCapability() {
   const next = await commandLines.next();
   assert.equal(next.done, false, "Supervisor closed before the fresh CLI session");
@@ -520,6 +521,7 @@ try {
   report.errors.push({ stage, kind: "journey_failed" });
   process.exitCode = 1;
 } finally {
+  capabilityInput.close();
   report.attempted_writes = {
     first_session: firstSessionPosts, second_session: secondSessionPosts,
     run_preflight: runPreflightPosts, run: runPosts, comparison: comparisonPosts,
