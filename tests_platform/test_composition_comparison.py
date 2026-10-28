@@ -5,10 +5,15 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-from bluefire import comparison_snapshot_store, composition_comparison
+from bluefire import (
+    assistance_comparison_context,
+    comparison_snapshot_store,
+    composition_comparison,
+)
 from bluefire import service as service_module
 from bluefire.application_errors import APIError
 from bluefire.capability_grant import objective_result
@@ -93,6 +98,17 @@ def _projection(
     }
 
 
+def _assistance_change(comparison: dict[str, Any]) -> dict[str, Any]:
+    snapshot = {
+        "comparison": comparison,
+        "source_integrity": {
+            "status": "verified",
+            "runs": [{"run_id": run_id, "status": "verified"} for run_id in comparison["run_ids"]],
+        },
+    }
+    return assistance_comparison_context._summary(snapshot)["saved_comparison"]["changes"][0]
+
+
 def test_verified_composition_result_overrides_graph_completion_without_erasing_it(
     tmp_path: Path,
     state,
@@ -163,6 +179,32 @@ def test_verified_same_predicate_regression_uses_composition_result(tmp_path: Pa
     assert "objective_recovered" not in comparison["deltas"][0]["signals"]
 
 
+def test_different_capability_objective_is_a_configuration_change_not_an_outcome_change(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    baseline = _run(store, graph_reached=True)
+    candidate = _run(store, graph_reached=True)
+    comparison = compare_runs(
+        store,
+        [baseline, candidate],
+        capability_objectives={
+            baseline: _projection(baseline, 1, established=True),
+            candidate: _projection(
+                candidate, 2, established=True, objective_digest=_OTHER_PREDICATE
+            ),
+        },
+    )
+    delta = comparison["deltas"][0]
+    assert delta["objective_comparability"] == "different_objectives"
+    assert delta["objective_changed"] is False
+    assert "objective" not in delta["material_changes"]
+    assert "capability_objective" in delta["configuration_changes"]
+    assert "configuration" in delta["material_changes"]
+    assert delta["material_changed"] is True
+    assert delta["assessment"] != "no_material_change"
+
+
 @pytest.mark.parametrize("comparison_kind", ["mixed", "different_predicate", "unverified"])
 def test_noncomparable_capability_results_do_not_claim_objective_change(
     tmp_path: Path, comparison_kind: str
@@ -194,6 +236,13 @@ def test_noncomparable_capability_results_do_not_claim_objective_change(
     assert "objective_recovered" not in delta["signals"]
     assert "objective_regressed" not in delta["signals"]
     assert delta["objective_changed"] is False
+    assert _assistance_change(comparison)["objective_relation"] == (
+        "unverified_objective_proof" if comparison_kind == "unverified" else "different_objectives"
+    )
+    altered = deepcopy(comparison)
+    altered["deltas"][0]["objective_comparability"] = "comparable"
+    with pytest.raises(ProductStoreError):
+        _assistance_change(altered)
 
 
 def test_ordinary_run_objective_comparison_remains_unchanged(tmp_path: Path) -> None:

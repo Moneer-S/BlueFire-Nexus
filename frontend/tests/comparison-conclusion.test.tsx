@@ -80,6 +80,46 @@ it("describes a changed objective result without claiming prevention", () => {
   expect(result.detail).not.toMatch(/prevented|improved|retest/i);
 });
 
+it.each([false, true])("does not compare verified results from different capability objectives when the compared result is %s", comparedReached => {
+  const { comparison, labels } = fixture();
+  comparison.summaries[0]!.objective_reached = false;
+  comparison.summaries[1]!.objective_reached = comparedReached;
+  comparison.summaries[0]!.capability_objective = {
+    schema_version: "bluefire.composition-objective-projection.v1", run_id: "baseline", attempt_id: "attempt-baseline",
+    state: "verified", objective_digest: "sha256:baseline", established: false, result_digest: "sha256:baseline-result",
+  };
+  comparison.summaries[1]!.capability_objective = {
+    schema_version: "bluefire.composition-objective-projection.v1", run_id: "compared", attempt_id: "attempt-compared",
+    state: "verified", objective_digest: "sha256:compared", established: comparedReached, result_digest: "sha256:compared-result",
+  };
+  comparison.deltas[0]!.objective_comparability = "different_objectives";
+  const result = comparisonConclusion(comparison, labels);
+  expect(result.title).toBe("Different objectives");
+  expect(result.detail).toContain("their results do not establish a change in the same objective");
+  expect(result.detail).not.toMatch(/Baseline: objective|Both simulations|Neither simulation/);
+});
+
+it("does not compare a scoped capability objective against ordinary run completion", () => {
+  const { comparison, labels } = fixture();
+  comparison.summaries[0]!.capability_objective = {
+    schema_version: "bluefire.composition-objective-projection.v1", run_id: "baseline", attempt_id: "attempt-baseline",
+    state: "verified", objective_digest: "sha256:baseline", established: true, result_digest: "sha256:baseline-result",
+  };
+  comparison.deltas[0]!.objective_comparability = "different_objectives";
+  const result = comparisonConclusion(comparison, labels);
+  expect(result.title).toBe("Objective checks differ");
+  expect(result.detail).toContain("Only one run has a scoped objective check");
+});
+
+it("identifies unavailable capability proof without comparing its result", () => {
+  const { comparison, labels } = fixture();
+  comparison.summaries[1]!.objective_reached = null;
+  comparison.deltas[0]!.objective_comparability = "unverified";
+  const result = comparisonConclusion(comparison, labels);
+  expect(result.title).toBe("Objective proof unavailable");
+  expect(result.detail).toContain("lacks verified objective result proof");
+});
+
 it.each(["profile", "scope"])("does not describe an unchanged setup when recorded %s differs", field => {
   const { comparison, labels } = fixture();
   if (field === "profile") comparison.summaries[1]!.profile_id = "other-profile.v1";

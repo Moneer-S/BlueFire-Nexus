@@ -29,6 +29,7 @@ it("separates an unmet objective, missing observations, and failed cleanup witho
   expect(blockedStep).toBeVisible();
   expect(blockedStep).toHaveAttribute("title", "collection");
   expect(outcomes.queryByText(/prevented|no recorded gaps|0 observed items/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/For composed runs, the objective uses verified capability proof/)).not.toBeInTheDocument();
 });
 
 it("shows verified capability refusal separately from an unavailable proof and completed run", () => {
@@ -59,6 +60,40 @@ it("shows verified capability refusal separately from an unavailable proof and c
   expect(outcomeCell("Run-level completion", 1)).toHaveTextContent("Met");
   expect(outcomeCell("Capability proof", 0)).toHaveTextContent("Verified");
   expect(outcomeCell("Capability proof", 1)).toHaveTextContent("Unavailable");
+  expect(screen.getByText(/For composed runs, the objective uses verified capability proof/)).toBeVisible();
+});
+
+it.each(["different_objectives", "unverified"] as const)("keeps %s visible in comparison cards and change details", async comparability => {
+  const user = userEvent.setup();
+  const comparison = compareDemoRuns(demoRuns.map(run => run.run_id));
+  for (const [index, summary] of comparison.summaries.entries()) {
+    summary.mode = "execute";
+    summary.objective_reached = comparability === "unverified" && index === 1 ? null : false;
+    summary.capability_objective = {
+      schema_version: "bluefire.composition-objective-projection.v1", run_id: summary.run_id,
+      attempt_id: `attempt-${String(index + 1).padStart(32, "0")}`,
+      state: comparability === "unverified" && index === 1 ? "unverified" : "verified",
+      objective_digest: `sha256:${(index === 1 && comparability === "different_objectives" ? "b" : "a").repeat(64)}`,
+      established: comparability === "unverified" && index === 1 ? null : false,
+      result_digest: comparability === "unverified" && index === 1 ? null : `sha256:${"c".repeat(64)}`,
+    };
+  }
+  comparison.deltas = [{ from_run_id: comparison.run_ids[0]!, to_run_id: comparison.run_ids[1]!,
+    material_changed: comparability === "different_objectives", objective_changed: false,
+    objective_comparability: comparability, first_path_divergence: null }];
+
+  render(<MemoryRouter><ComparisonResult comparison={comparison} /></MemoryRouter>);
+
+  const cards = screen.getByRole("group", { name: "Comparison run order" });
+  expect(cards.querySelectorAll(".compare-run-objective")).toHaveLength(2);
+  const changes = within(screen.getByRole("region", { name: "Changes between runs" }));
+  expect(changes.getByText(comparability === "different_objectives"
+    ? "Objective checks differ across these runs; their results are not comparable."
+    : "Objective change is unknown because result proof is unavailable.")).toBeVisible();
+  expect(changes.queryByText("No meaningful recorded change.")).not.toBeInTheDocument();
+  await user.click(screen.getByText("Detailed changes in evidence, policy, and runtime"));
+  expect(within(document.querySelector(".delta-summary")!).getByText(comparability === "different_objectives"
+    ? "Different objectives" : "Proof unavailable")).toBeVisible();
 });
 
 it("keeps an explicit zero observation count and recorded gaps visible", () => {
@@ -113,14 +148,14 @@ it.each([
   expect(outcomeCell("Objective", 1)).toHaveTextContent(outcome);
 });
 
-it("also removes repeated known outcomes when the conclusion counts all three runs", () => {
+it("keeps per-run objectives when a third run has no comparable baseline delta", () => {
   const comparison = compareDemoRuns(demoRuns.map(run => run.run_id));
   for (const summary of comparison.summaries) { summary.mode = "simulate"; summary.objective_reached = true; }
   comparison.summaries.push({ ...structuredClone(comparison.summaries[1]!), run_id: "third-run" });
   comparison.run_ids.push("third-run");
   render(<MemoryRouter><ComparisonResult comparison={comparison} /></MemoryRouter>);
   expect(within(screen.getByRole("region", { name: "Comparison conclusion" })).getByText(/3 achieved, 0 not reached, 0 unreported/)).toBeVisible();
-  expect(screen.getByRole("group", { name: "Comparison run order" }).querySelectorAll(".compare-run-objective")).toHaveLength(0);
+  expect(screen.getByRole("group", { name: "Comparison run order" }).querySelectorAll(".compare-run-objective")).toHaveLength(3);
   expect(outcomeCell("Objective", 2)).toHaveTextContent("Achieved (synthetic)");
 });
 
