@@ -1447,6 +1447,20 @@ try {
     record_count_preserved: true, all_records_redacted: false, accepted: false,
     run_cleaned: true, receiver_closed: true,
   });
+  stage = "composition-finalized-run-read";
+  const finalizedComposedRun = await appApi(`/runs/${encodeURIComponent(binding.run_id)}`);
+  stage = "composition-finalized-run-binding";
+  assert.equal(finalizedComposedRun.schema_version, "bluefire.run-result.v1");
+  assert.equal(finalizedComposedRun.run_id, binding.run_id);
+  assert.equal(finalizedComposedRun.mode, "execute");
+  assert.ok(["completed", "incomplete"].includes(finalizedComposedRun.status));
+  assert.equal(receiverRunIsNotDemo(finalizedComposedRun), true);
+  assert.ok(typeof finalizedComposedRun.finalized_at === "string" && finalizedComposedRun.finalized_at.length > 0);
+  assert.equal(finalizedComposedRun.manifest?.schema_version, "1.0");
+  assert.equal(finalizedComposedRun.manifest?.run_id, binding.run_id);
+  assert.match(finalizedComposedRun.manifest?.bundle_hash ?? "", /^sha256:[0-9a-f]{64}$/);
+  assert.equal(typeof finalizedComposedRun.objective_reached, "boolean");
+  const finalizedGraphObjectiveReached = finalizedComposedRun.objective_reached;
   report.composition = {
     control_owner_job_id: originalOwnerId, objective_owner_job_id: compositionOwnerId,
     grant_id: grantId, grant_status: "active", attempt_job_id: compositionAttemptJobId,
@@ -1458,6 +1472,7 @@ try {
     retained_record_count: verified.receiver_result.retained_record_count,
     empty_record_count: verified.receiver_result.empty_record_count,
     cleanup: verified.cleanup, objective_established: verified.objective.established,
+    finalized_run_objective_reached: finalizedGraphObjectiveReached,
   };
   report.checks.push("finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false");
   stage = "composition-revoke";
@@ -1584,7 +1599,7 @@ try {
   stage = "composition-saved-comparison-effective-objective";
   assert.equal(composedSummary.objective_reached, false);
   stage = "composition-saved-comparison-graph-objective";
-  assert.equal(composedSummary.graph_objective_reached, true);
+  assert.equal(composedSummary.graph_objective_reached, finalizedGraphObjectiveReached);
   stage = "composition-saved-comparison-cleanup-success";
   assert.equal(composedSummary.cleanup_success, true);
   stage = "composition-saved-comparison-baseline-unscoped";
@@ -1639,8 +1654,12 @@ try {
   await page.getByRole("region", { name: "Compared run outcomes", exact: true })
     .getByText("Verified", { exact: true }).waitFor();
   stage = "composition-saved-comparison-render-graph";
-  await page.getByRole("region", { name: "Compared run outcomes", exact: true })
-    .getByText("Met", { exact: true }).waitFor();
+  const graphRow = page.getByRole("region", { name: "Compared run outcomes", exact: true })
+    .getByRole("row").filter({ has: page.getByRole("rowheader", { name: "Run-level completion", exact: true }) });
+  await graphRow.waitFor();
+  assert.equal(await graphRow.getByRole("cell").count(), 2);
+  assert.equal(await graphRow.getByRole("cell").nth(0).innerText(), "Not applicable");
+  assert.equal(await graphRow.getByRole("cell").nth(1).innerText(), finalizedGraphObjectiveReached ? "Met" : "Not met");
   stage = "composition-saved-comparison-reopen-page";
   await page.goto(`${ORIGIN}/#/compare`);
   const history = page.locator("details.saved-comparisons-browser");
@@ -1669,7 +1688,7 @@ try {
   stage = "composition-saved-comparison-reopen-result-digest";
   assert.equal(reopenedComparison.comparison.summaries[1].capability_objective?.result_digest, report.composition.verified_result_digest);
   stage = "composition-saved-comparison-reopen-graph";
-  assert.equal(reopenedComparison.comparison.summaries[1].graph_objective_reached, true);
+  assert.equal(reopenedComparison.comparison.summaries[1].graph_objective_reached, finalizedGraphObjectiveReached);
   stage = "composition-saved-comparison-reopen-comparability";
   assert.equal(reopenedComparison.comparison.deltas[0].objective_comparability, "different_objectives");
   stage = "composition-saved-comparison-reopen-source-integrity";
@@ -1686,7 +1705,7 @@ try {
     objective_recovered: reopenedComparison.comparison.deltas[0].signals?.includes("objective_recovered") === true,
     reopened: true,
   };
-  report.checks.push("saved_composed_comparison_reopened_with_false_objective_and_distinct_graph_completion");
+  report.checks.push("saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result");
 
   const finalOwner = await appApi(`/receiver-defense/jobs/${receiverJobId}`);
   assert.equal(finalOwner.status, "completed");
