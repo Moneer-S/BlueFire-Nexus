@@ -74,3 +74,9 @@ export function observeReceiverEvent<T extends unknown[]>(
 ): (...args: T) => void;
 
 export function settleReceiverObservers(pending: Set<Promise<void>>, timeoutMs: number): Promise<boolean>;
+
+export function observeReceiverWait<T>(
+  wait: Promise<T>,
+  onFailure: () => void,
+  pending: Set<Promise<void>>,
+): Promise<T>;

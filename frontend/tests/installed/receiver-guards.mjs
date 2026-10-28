@@ -232,6 +232,15 @@ export function observeReceiverEvent(handler, onFailure, pending) {
   };
 }
 
+// A UI action may fail before a deferred page wait is awaited. Own its rejection
+// immediately, but return the original promise so callers still receive its result/error.
+export function observeReceiverWait(wait, onFailure, pending) {
+  const settled = wait.then(() => {}, () => { onFailure(); });
+  pending.add(settled);
+  void settled.finally(() => pending.delete(settled));
+  return wait;
+}
+
 export async function settleReceiverObservers(pending, timeoutMs) {
   if (pending.size === 0) return true;
   const bounded = Number.isFinite(timeoutMs) ? Math.max(0, Math.min(timeoutMs, 1000)) : 0;
