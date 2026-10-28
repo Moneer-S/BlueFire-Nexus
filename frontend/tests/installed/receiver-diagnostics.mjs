@@ -109,6 +109,61 @@ const errorCode = (value, allowed) => typeof value === "string" && allowed.has(v
 const errorType = value => typeof value === "string" && JOB_ERROR_TYPES.has(value) ? value : "other";
 const booleanValue = value => typeof value === "boolean" ? value : null;
 
+const POST_ROUTE_FAMILIES = [
+  [/^\/api\/v1\/session$/, "session", "session"],
+  [/^\/api\/v1\/resources\/model-providers\/provider\.installed-receiver-composition\.v1$/, "provider_save", "provider_save"],
+  [/^\/api\/v1\/resources\/model-providers\/provider\.installed-receiver-composition\.v1\/activate$/, "provider_activate", "provider_activate"],
+  [/^\/api\/v1\/ai\/authorizations$/, "model_authorization_create", "model_authorization"],
+  [/^\/api\/v1\/ai\/authorizations\/ai-authorization-[0-9a-f]{32}\/revoke$/, "model_authorization_revoke", "model_authorization_revoke"],
+  [/^\/api\/v1\/runner\/bootstrap$/, "runner_bootstrap", "bootstrap"],
+  [/^\/api\/v1\/runner\/start$/, "runner_start", "start"],
+  [/^\/api\/v1\/runner\/stop$/, "runner_stop", "stop"],
+  [/^\/api\/v1\/scenario-versions$/, "scenario_version_save", "save_scenario"],
+  [/^\/api\/v1\/composition\/objective-list$/, "composition_objective_list", "composition_list"],
+  [/^\/api\/v1\/composition\/context$/, "composition_context", "composition_context"],
+  [/^\/api\/v1\/composition\/objectives$/, "composition_objective_create", "composition_grant"],
+  [/^\/api\/v1\/composition\/objectives\/job-[0-9a-f]{32}\/proposal-context$/, "composition_proposal_context", "composition_proposal_context"],
+  [/^\/api\/v1\/composition\/objectives\/job-[0-9a-f]{32}\/proposals$/, "composition_proposal", "composition_proposal"],
+  [/^\/api\/v1\/composition\/objectives\/job-[0-9a-f]{32}\/attempts$/, "composition_attempt", "composition_attempt"],
+  [/^\/api\/v1\/composition\/objectives\/job-[0-9a-f]{32}\/revoke$/, "composition_revoke", "composition_revoke"],
+  [/^\/api\/v1\/comparisons$/, "comparison_create", "comparison"],
+  [/^\/api\/v1\/receiver-defense\/context$/, "receiver_context", "context"],
+  [/^\/api\/v1\/receiver-defense\/jobs$/, "receiver_owner_create", "owner"],
+  [/^\/api\/v1\/receiver-defense\/jobs\/job-[0-9a-f]{32}\/prepare$/, "receiver_prepare", "prepare"],
+  [/^\/api\/v1\/receiver-defense\/jobs\/job-[0-9a-f]{32}\/review$/, "receiver_review", "review"],
+  [/^\/api\/v1\/jobs\/job-[0-9a-f]{32}\/approval$/, "execution_approval", "approval"],
+  [/^\/api\/v1\/jobs\/job-[0-9a-f]{32}\/cancel$/, "receiver_cancel", "cancel"],
+];
+const POST_DENIAL_CATEGORIES = [
+  "budget_exhausted", "invalid_json_body", "origin_rejected", "route_guard_rejected", "unknown_route",
+];
+
+// Project a denied POST into fixed labels and bounded counters. Never retain
+// the URL, request body, identifiers, or guard details.
+export function receiverPostDenialDiagnostic(pathname, reason, budget = null) {
+  const route = POST_ROUTE_FAMILIES.find(([pattern]) => pattern.test(pathname));
+  const routeFamily = route?.[1] ?? "other";
+  let denialCategory;
+  if (reason === "invalid_json_body") denialCategory = "invalid_json_body";
+  else if (reason === "non_loopback") denialCategory = "origin_rejected";
+  else if (routeFamily === "other") denialCategory = "unknown_route";
+  else denialCategory = "route_guard_rejected";
+
+  const result = {
+    route_family: routeFamily,
+    denial_category: enumValue(denialCategory, POST_DENIAL_CATEGORIES),
+  };
+  if (denialCategory === "route_guard_rejected" && route && isRecord(budget)
+    && budget.key === route[2] && Number.isSafeInteger(budget.count)
+    && Number.isSafeInteger(budget.limit) && budget.count >= budget.limit
+    && budget.count >= 1 && budget.count <= 100 && budget.limit >= 1 && budget.limit <= 100) {
+    result.denial_category = "budget_exhausted";
+    result.budget_count = budget.count;
+    result.budget_limit = budget.limit;
+  }
+  return result;
+}
+
 export function receiverPrepareHttpDiagnostic(status, body) {
   return {
     schema_version: "bluefire.installed-receiver-prepare-http-diagnostic.v1",

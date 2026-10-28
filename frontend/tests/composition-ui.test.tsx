@@ -98,6 +98,26 @@ it("blocks new Mac dispatch throughout deferred status refresh but preserves Sto
   await waitFor(() => expect(control).toHaveBeenCalledWith(ownerId, "revoke"));
 });
 
+it("refreshes saved objectives under the original control after Revoke", async () => {
+  const value = objectiveFixture();
+  vi.spyOn(compositionApi, "objective").mockResolvedValue(value);
+  const control = vi.spyOn(compositionApi, "control").mockResolvedValue({
+    ...value,
+    grant: { ...value.grant, status: "revoked" },
+  });
+  const list = vi.mocked(compositionApi.list);
+  mount(<CompositionPage />, `/composition?control=${controlId}&objective=${ownerId}`);
+
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
+  fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));
+  await screen.findByText("Revoked");
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+
+  expect(control).toHaveBeenCalledWith(ownerId, "revoke");
+  expect(list).toHaveBeenNthCalledWith(1, controlId);
+  expect(list).toHaveBeenNthCalledWith(2, controlId);
+});
+
 it("retains pending Mac attempts for status checks without exact-submission replay", async () => {
   macWorkspace();
   storeCompositionPending({ kind: "attempt", owner: ownerId, control: macOSOwner, id: proposalId, body: { submission_id: "cccccccc-cccc-cccc-cccc-cccccccccccc", proposal: macContextFixture().initial_proposal, prior_attempt_id: null } });

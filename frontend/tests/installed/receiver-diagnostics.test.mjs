@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { receiverPreparationDiagnostic, receiverPrepareHttpDiagnostic, readReceiverCompositionUi, receiverCompositionInteractionDiagnostic } from "./receiver-diagnostics.mjs";
+import { receiverPreparationDiagnostic, receiverPrepareHttpDiagnostic, readReceiverCompositionUi, receiverCompositionInteractionDiagnostic, receiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
+import { handleReceiverRoute } from "./receiver-guards.mjs";
 /* global document, localStorage, location, history */
 
 test("composition interaction retains finite button, pending and context facts without private data", () => {
@@ -176,4 +177,107 @@ test("preparation-stage projection accepts only fixed stage codes", () => {
   assert.equal(base("worker_ready_frame").receiver_prepare_failure_stage, "worker_ready_frame");
   assert.equal(base("/private/path").receiver_prepare_failure_stage, "other");
   assert.equal(base("private frame contents").receiver_prepare_failure_stage, "other");
+});
+
+test("blocked POST diagnostics retain fixed route and budget facts without request data", () => {
+  const known = receiverPostDenialDiagnostic(
+    "/api/v1/composition/objective-list", "write_not_allowlisted_or_budget_exceeded",
+    { key: "composition_list", count: 5, limit: 5 },
+  );
+  assert.deepEqual(known, {
+    route_family: "composition_objective_list",
+    denial_category: "budget_exhausted",
+    budget_count: 5,
+    budget_limit: 5,
+  });
+  assert.deepEqual(receiverPostDenialDiagnostic("/api/v1/session", "write_not_allowlisted_or_budget_exceeded"), {
+    route_family: "session", denial_category: "route_guard_rejected",
+  });
+  assert.deepEqual(receiverPostDenialDiagnostic("/private/secret", "write_not_allowlisted_or_budget_exceeded"), {
+    route_family: "other", denial_category: "unknown_route",
+  });
+  assert.deepEqual(receiverPostDenialDiagnostic("/api/v1/session", "invalid_json_body"), {
+    route_family: "session", denial_category: "invalid_json_body",
+  });
+  assert.deepEqual(receiverPostDenialDiagnostic("/api/v1/session", "non_loopback", {
+    key: "session", count: 1, limit: 1,
+  }), { route_family: "session", denial_category: "origin_rejected" });
+  const malformed = receiverPostDenialDiagnostic("/api/v1/session", "write_not_allowlisted_or_budget_exceeded", {
+    key: "session", count: 1000, limit: 1, private: "C:\\private\\token",
+  });
+  assert.deepEqual(malformed, { route_family: "session", denial_category: "route_guard_rejected" });
+  assert.equal(JSON.stringify([known, malformed]).includes("private"), false);
+});
+
+test("blocked POST route families cover the owned write surface with fixed labels", () => {
+  const routes = [
+    ["/api/v1/session", "session"],
+    ["/api/v1/resources/model-providers/provider.installed-receiver-composition.v1", "provider_save"],
+    ["/api/v1/resources/model-providers/provider.installed-receiver-composition.v1/activate", "provider_activate"],
+    ["/api/v1/ai/authorizations", "model_authorization_create"],
+    [`/api/v1/ai/authorizations/ai-authorization-${"a".repeat(32)}/revoke`, "model_authorization_revoke"],
+    ["/api/v1/runner/bootstrap", "runner_bootstrap"],
+    ["/api/v1/runner/start", "runner_start"],
+    ["/api/v1/runner/stop", "runner_stop"],
+    ["/api/v1/scenario-versions", "scenario_version_save"],
+    ["/api/v1/composition/objective-list", "composition_objective_list"],
+    ["/api/v1/composition/context", "composition_context"],
+    ["/api/v1/composition/objectives", "composition_objective_create"],
+    [`/api/v1/composition/objectives/job-${"b".repeat(32)}/proposal-context`, "composition_proposal_context"],
+    [`/api/v1/composition/objectives/job-${"b".repeat(32)}/proposals`, "composition_proposal"],
+    [`/api/v1/composition/objectives/job-${"b".repeat(32)}/attempts`, "composition_attempt"],
+    [`/api/v1/composition/objectives/job-${"b".repeat(32)}/revoke`, "composition_revoke"],
+    ["/api/v1/comparisons", "comparison_create"],
+    ["/api/v1/receiver-defense/context", "receiver_context"],
+    ["/api/v1/receiver-defense/jobs", "receiver_owner_create"],
+    [`/api/v1/receiver-defense/jobs/job-${"c".repeat(32)}/prepare`, "receiver_prepare"],
+    [`/api/v1/receiver-defense/jobs/job-${"c".repeat(32)}/review`, "receiver_review"],
+    [`/api/v1/jobs/job-${"d".repeat(32)}/approval`, "execution_approval"],
+    [`/api/v1/jobs/job-${"d".repeat(32)}/cancel`, "receiver_cancel"],
+  ];
+  for (const [path, expected] of routes) {
+    assert.equal(
+      receiverPostDenialDiagnostic(path, "write_not_allowlisted_or_budget_exceeded").route_family,
+      expected,
+      path,
+    );
+  }
+  assert.equal(
+    receiverPostDenialDiagnostic("/api/v1/unowned", "write_not_allowlisted_or_budget_exceeded").route_family,
+    "other",
+  );
+});
+
+test("route denial diagnostics do not alter fail-closed POST behavior", async () => {
+  let aborted = false;
+  let continued = false;
+  const blocked = [];
+  const request = {
+    url: () => "http://127.0.0.1:4312/api/v1/composition/objective-list?private=secret",
+    method: () => "POST",
+    postData: () => "{\"private\":\"secret\"}",
+    postDataJSON: () => ({ private: "secret" }),
+  };
+  await handleReceiverRoute({
+    request: () => request,
+    abort: async () => { aborted = true; },
+    continue: async () => { continued = true; },
+  }, {
+    expectedOrigin: "http://127.0.0.1:4312",
+    allowedRead: () => false,
+    authorizePost: () => false,
+    describeBlockedPost: (url, reason) => receiverPostDenialDiagnostic(url.pathname, reason, {
+      key: "composition_list", count: 5, limit: 5,
+    }),
+    onBlocked: entry => blocked.push(entry),
+    onFailure: () => assert.fail("route handling must retain its bounded diagnostic"),
+  });
+  assert.equal(aborted, true);
+  assert.equal(continued, false);
+  assert.deepEqual(blocked, [{
+    method: "POST", path: "loopback", reason: "write_not_allowlisted_or_budget_exceeded",
+    route_family: "composition_objective_list", denial_category: "budget_exhausted",
+    budget_count: 5, budget_limit: 5,
+  }]);
+  assert.equal(JSON.stringify(blocked).includes("secret"), false);
 });
