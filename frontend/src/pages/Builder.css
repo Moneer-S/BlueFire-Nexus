@@ -1,4 +1,4 @@
-.workbench-shell #main-content:has(.workbench-builder) { padding: 0; height: calc(100dvh - var(--topbar-height, 64px)); overflow: hidden; }
+.workbench-shell #main-content:has(> .workbench-builder) { padding: 0; height: calc(100dvh - var(--topbar-height, 64px)); overflow: hidden; }
 .page.workbench-builder { position: relative; display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; padding: 14px 16px; }
 .workbench-builder > .page-header { min-height: 0; margin: 0; gap: 12px; }
 .workbench-builder > .page-header > div:first-child > p:last-child { font-size: .75rem; }
@@ -180,7 +180,7 @@
 .workbench-builder.builder-focus { height: 100dvh; min-height: 0; padding: 12px; }
 .workbench-builder.builder-focus .builder-layout { height: 100%; }
 @media (max-width: 1100px) {
-  .workbench-shell #main-content:has(.workbench-builder) { height: auto; min-height: calc(100dvh - var(--topbar-height, 64px)); overflow: auto; }
+  .workbench-shell #main-content:has(> .workbench-builder) { height: auto; min-height: calc(100dvh - var(--topbar-height, 64px)); overflow: auto; }
   .workbench-builder { padding: 12px; height: auto; min-height: calc(100dvh - 68px); }
   .workbench-builder .builder-layout { min-height: 560px; }
   .workbench-builder .graph-stage { flex: 0 0 auto; height: clamp(320px, 50dvh, 560px); }
@@ -227,7 +227,7 @@
   .workbench-builder .graph-topbar { display: flex; flex-wrap: wrap; }
   .workbench-builder .graph-view-actions { width: 100%; flex-wrap: wrap; }
 }
-.workbench-shell #main-content:has(.workbench-builder) { overflow: auto; }
+.workbench-shell #main-content:has(> .workbench-builder) { overflow: auto; }
 .workbench-builder .adaptive-method-options, .workbench-builder .adaptive-outcome-options, .workbench-builder .adaptive-budget-mode { margin: 12px 0; padding: 0; border: 0; }
 .workbench-builder .adaptive-method-options legend, .workbench-builder .adaptive-outcome-options legend, .workbench-builder .adaptive-budget-mode legend { margin-bottom: 8px; font-size: .8rem; font-weight: 600; }
 .workbench-builder .adaptive-method-options .check-row, .workbench-builder .adaptive-budget-mode .check-row { align-items: flex-start; padding: 8px 0; }
