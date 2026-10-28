@@ -12,6 +12,7 @@ NATIVE_FD_OBSERVATION_WITHHELD_REASONS = frozenset(
 )
 MAX_NATIVE_FD_FRAME_BYTES = 4096
 MAX_NATIVE_FD_ROWS = 15
+NATIVE_RUN_ENTRY_FD3_PHASE = "native_run_entry_before_runtime_checks"
 PREEXEC_FD_FRAME_PREFIX = b"bluefire.macos-preexec-fd-rows.v1|slots=64|"
 PREEXEC_FD_OBSERVATION_SCHEMA = "bluefire.macos-preexec-fd-observation.v1"
 PREEXEC_FD_OBSERVATION_SCOPE = "diagnostic_only_fd_slots_0_63_no_descriptor_admission"
@@ -22,7 +23,8 @@ MAX_PREEXEC_FD_ROWS = 15
 MAX_COMBINED_FD_FRAME_BYTES = MAX_PREEXEC_FD_FRAME_BYTES + MAX_NATIVE_FD_FRAME_BYTES
 # Three roles, two native row tables plus one preexec table per role. Each closed
 # numeric row fits in 512 bytes of the CLI's indented JSON, including its keys and
-# indentation; 4096 additional bytes cover the fixed error/status metadata.
+# indentation; 4096 additional bytes cover the fixed error/status metadata and
+# optional FD3 entry observations (verified by the maximum pretty CLI test).
 MAX_STARTUP_CLI_ERROR_BYTES = 4096 + 3 * (2 * MAX_NATIVE_FD_ROWS + MAX_PREEXEC_FD_ROWS) * 512
 PREEXEC_FD_EMITTER_WITHHELD_REASONS = frozenset(
     {"query_error", "identity_invalid", "row_cap", "frame_cap"}
@@ -44,7 +46,33 @@ def _native_fd_identity(value: Any) -> bool:
     )
 
 
-def native_fd_rows_from_frame(raw: Any) -> list[dict[str, Any]] | None:
+def valid_native_run_entry_fd3(value: Any) -> bool:
+    """One diagnostic slot at native run entry, never loader entry or custody proof."""
+    base = {"phase", "fd", "status"}
+    if (
+        type(value) is not dict
+        or type(value.get("phase")) is not str
+        or value["phase"] != NATIVE_RUN_ENTRY_FD3_PHASE
+        or type(value.get("fd")) is not int
+        or value["fd"] != 3
+        or type(value.get("status")) is not str
+    ):
+        return False
+    if value["status"] in {"absent", "query_error"}:
+        return set(value) == base
+    return (
+        value["status"] == "present"
+        and set(value) == base | {"cloexec", "identity"}
+        and type(value["cloexec"]) is bool
+        and _native_fd_identity(value["identity"])
+        and value["identity"]["dev"] < 2**32
+        and value["identity"]["rdev"] < 2**32
+    )
+
+
+def native_fd_diagnostics_from_frame(
+    raw: Any,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
     """Read only one bounded native code-96 frame; never retain arbitrary stderr."""
 
     if (
@@ -53,7 +81,7 @@ def native_fd_rows_from_frame(raw: Any) -> list[dict[str, Any]] | None:
         or not raw.endswith(b"\n")
         or raw.count(b"\n") != 1
     ):
-        return None
+        return None, None
 
     def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -70,15 +98,19 @@ def native_fd_rows_from_frame(raw: Any) -> list[dict[str, Any]] | None:
             parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("nonfinite value")),
         )
     except (UnicodeError, ValueError, TypeError, RecursionError):
-        return None
+        return None, None
     if (
         type(document) is not dict
-        or set(document) != {"schema_version", "rows"}
+        or set(document) - {"native_run_entry_fd3"} != {"schema_version", "rows"}
         or document["schema_version"] != NATIVE_FD_ROWS_SCHEMA
         or type(document["rows"]) is not list
         or not 6 <= len(document["rows"]) <= MAX_NATIVE_FD_ROWS
     ):
-        return None
+        return None, None
+    if "native_run_entry_fd3" in document and not valid_native_run_entry_fd3(
+        document["native_run_entry_fd3"]
+    ):
+        return None, None
     for row in document["rows"]:
         if (
             type(row) is not dict
@@ -89,8 +121,13 @@ def native_fd_rows_from_frame(raw: Any) -> list[dict[str, Any]] | None:
             or not 0 <= row["kind"] < 2**32
             or (row["identity"] is not None and not _native_fd_identity(row["identity"]))
         ):
-            return None
-    return document["rows"]
+            return None, None
+    return document["rows"], document.get("native_run_entry_fd3")
+
+
+def native_fd_rows_from_frame(raw: Any) -> list[dict[str, Any]] | None:
+    """Keep the old row-only parser interface for old and extended frames."""
+    return native_fd_diagnostics_from_frame(raw)[0]
 
 
 def valid_native_fd_observation(value: Any) -> bool:
@@ -98,13 +135,18 @@ def valid_native_fd_observation(value: Any) -> bool:
 
     if (
         type(value) is not dict
-        or set(value) != {"schema_version", "scope", "launch_copy_rows", "native_rows"}
+        or set(value) - {"native_run_entry_fd3"}
+        != {"schema_version", "scope", "launch_copy_rows", "native_rows"}
         or value["schema_version"] != NATIVE_FD_OBSERVATION_SCHEMA
         or value["scope"] != "diagnostic_only_no_descriptor_admission"
         or type(value["launch_copy_rows"]) is not list
         or not 2 <= len(value["launch_copy_rows"]) <= MAX_NATIVE_FD_ROWS
         or type(value["native_rows"]) is not list
         or not 6 <= len(value["native_rows"]) <= MAX_NATIVE_FD_ROWS
+    ):
+        return False
+    if "native_run_entry_fd3" in value and not valid_native_run_entry_fd3(
+        value["native_run_entry_fd3"]
     ):
         return False
     roles: list[str] = []

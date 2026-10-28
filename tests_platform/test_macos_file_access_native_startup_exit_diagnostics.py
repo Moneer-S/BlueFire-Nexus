@@ -51,7 +51,8 @@ def _creator(workers):
     return value
 
 
-def test_settled_original_code_96_retains_only_one_finite_native_frame(monkeypatch):
+@pytest.mark.parametrize("entry_status", [None, "absent", "query_error", "present"])
+def test_settled_original_code_96_retains_only_one_finite_native_frame(monkeypatch, entry_status):
     retained = _worker(monkeypatch, 96)
     identity = {"dev": 1, "ino": 2, "mode_type": 0o100000, "rdev": 0}
     rows = [
@@ -60,10 +61,17 @@ def test_settled_original_code_96_retains_only_one_finite_native_frame(monkeypat
     retained._native_diagnostic_thread = SimpleNamespace(join=lambda timeout: None)
     retained._native_diagnostic_complete = True
     retained._native_diagnostic_overflow = False
-    retained._native_diagnostic_bytes = bytearray(
-        json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}).encode()
-        + b"\n"
-    )
+    document = {"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}
+    if entry_status is not None:
+        entry = {
+            "phase": diagnostics.NATIVE_RUN_ENTRY_FD3_PHASE,
+            "fd": 3,
+            "status": entry_status,
+        }
+        if entry_status == "present":
+            entry.update(cloexec=True, identity=identity)
+        document["native_run_entry_fd3"] = entry
+    retained._native_diagnostic_bytes = bytearray(json.dumps(document).encode() + b"\n")
     retained._launch_copy_rows = [
         {"role": "resource", "fd": 12, "identity": identity},
         {"role": "primitive_channel", "fd": 13, "identity": identity},
@@ -71,6 +79,10 @@ def test_settled_original_code_96_retains_only_one_finite_native_frame(monkeypat
     status = retained.retained_native_startup_status()
     assert status["returncode"] == 96
     assert status["descriptor_observation"]["native_rows"] == rows
+    if entry_status is None:
+        assert "native_run_entry_fd3" not in status["descriptor_observation"]
+    else:
+        assert status["descriptor_observation"]["native_run_entry_fd3"] == entry
     assert status["descriptor_observation"]["scope"] == "diagnostic_only_no_descriptor_admission"
     assert status["preexec_descriptor_observation_withheld"] == "no_frame"
     assert retained._native_diagnostic_bytes == b""
@@ -80,10 +92,7 @@ def test_settled_original_code_96_retains_only_one_finite_native_frame(monkeypat
     assert retained.retained_native_startup_status()["descriptor_observation_withheld"] == (
         "invalid_frame"
     )
-    retained._native_diagnostic_bytes = bytearray(
-        json.dumps({"schema_version": diagnostics.NATIVE_FD_ROWS_SCHEMA, "rows": rows}).encode()
-        + b"\n"
-    )
+    retained._native_diagnostic_bytes = bytearray(json.dumps(document).encode() + b"\n")
     retained._process.returncode = 95
     status = retained.retained_native_startup_status()
     assert "descriptor_observation" not in status
@@ -542,6 +551,13 @@ def test_actual_pretty_cli_combined_failure_survives_eof_and_readiness_projectio
         "descriptor_observation": {
             "schema_version": diagnostics.NATIVE_FD_OBSERVATION_SCHEMA,
             "scope": "diagnostic_only_no_descriptor_admission",
+            "native_run_entry_fd3": {
+                "phase": diagnostics.NATIVE_RUN_ENTRY_FD3_PHASE,
+                "fd": 3,
+                "status": "present",
+                "cloexec": False,
+                "identity": preexec_identity,
+            },
             "launch_copy_rows": [
                 {
                     "role": (
@@ -581,6 +597,7 @@ def test_actual_pretty_cli_combined_failure_survives_eof_and_readiness_projectio
         assert cli.main(["runner", "macos-file-setup", "--confirm-create-generated-workspace"]) == 2
     raw = output.getvalue()
     assert 4096 < len(raw.encode()) < diagnostics.MAX_STARTUP_CLI_ERROR_BYTES
+    assert diagnostics.MAX_STARTUP_CLI_ERROR_BYTES == 4096 + 3 * (2 * 15 + 15) * 512
     stdout_lines, child_errors = queue.Queue(maxsize=1), queue.Queue(maxsize=1)
     verifier._read_supervisor_stdout(io.StringIO(raw), stdout_lines, child_errors)
     assert stdout_lines.empty()

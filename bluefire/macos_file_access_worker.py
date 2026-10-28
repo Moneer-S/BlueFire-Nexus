@@ -149,15 +149,19 @@ class MacOSFileAccessWorker:
             )
         if not native_raw:
             return None, "no_frame", preexec_observation, preexec_withheld
-        native_rows = _setup_failure_diagnostics.native_fd_rows_from_frame(native_raw)
+        native_rows, native_entry = _setup_failure_diagnostics.native_fd_diagnostics_from_frame(
+            native_raw
+        )
         if native_rows is None:
             return None, "invalid_frame", preexec_observation, preexec_withheld
-        observation = {
+        observation: dict[str, Any] = {
             "schema_version": _setup_failure_diagnostics.NATIVE_FD_OBSERVATION_SCHEMA,
             "scope": "diagnostic_only_no_descriptor_admission",
             "launch_copy_rows": self._launch_copy_rows,
             "native_rows": native_rows,
         }
+        if native_entry is not None:
+            observation["native_run_entry_fd3"] = native_entry
         if not _setup_failure_diagnostics.valid_native_fd_observation(observation):
             return None, "invalid_launch_rows", preexec_observation, preexec_withheld
         return observation, None, preexec_observation, preexec_withheld

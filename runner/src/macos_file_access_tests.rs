@@ -107,6 +107,101 @@ fn descriptor_inventory_failure_categories_map_to_fixed_nonzero_startup_codes() 
     }
 }
 
+#[test]
+fn native_run_entry_fd3_documents_are_finite_and_fit_the_existing_frame_cap() {
+    use native::NativeRunEntryFd3;
+
+    let rows = (0..15)
+        .map(|index| {
+            serde_json::json!({
+                "fd": i32::MAX - index,
+                "kind": u32::MAX,
+                "identity": {
+                    "dev": u32::MAX,
+                    "ino": u64::MAX,
+                    "mode_type": 0o170000,
+                    "rdev": u32::MAX,
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    for entry in [
+        None,
+        Some(NativeRunEntryFd3::Absent),
+        Some(NativeRunEntryFd3::QueryError),
+        Some(NativeRunEntryFd3::Present {
+            cloexec: false,
+            dev: u32::MAX,
+            ino: u64::MAX,
+            mode_type: 0o170000,
+            rdev: u32::MAX,
+        }),
+        Some(NativeRunEntryFd3::Present {
+            cloexec: true,
+            dev: 0,
+            ino: 0,
+            mode_type: 0,
+            rdev: 0,
+        }),
+    ] {
+        let frame = native::initial_descriptor_frame(&rows, entry.as_ref()).unwrap();
+        assert!(frame.len() <= 4096);
+        assert_eq!(frame.last(), Some(&b'\n'));
+        assert_eq!(frame.iter().filter(|byte| **byte == b'\n').count(), 1);
+        let document: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(document["schema_version"], "bluefire.macos-native-fd-rows.v1");
+        assert_eq!(document["rows"], serde_json::json!(rows));
+        if let Some(entry) = entry {
+            let observed = &document["native_run_entry_fd3"];
+            assert_eq!(document.as_object().unwrap().len(), 3);
+            assert_eq!(observed["phase"], "native_run_entry_before_runtime_checks");
+            assert_eq!(observed["fd"], 3);
+            match entry {
+                NativeRunEntryFd3::Absent | NativeRunEntryFd3::QueryError => {
+                    assert_eq!(observed.as_object().unwrap().len(), 3);
+                    assert_eq!(observed, &entry.document());
+                    let expected = if entry == NativeRunEntryFd3::Absent {
+                        "absent"
+                    } else {
+                        "query_error"
+                    };
+                    assert_eq!(observed["status"], expected);
+                }
+                NativeRunEntryFd3::Present {
+                    cloexec,
+                    dev,
+                    ino,
+                    mode_type,
+                    rdev,
+                } => {
+                    assert_eq!(observed.as_object().unwrap().len(), 5);
+                    assert_eq!(observed["status"], "present");
+                    assert_eq!(observed["cloexec"], cloexec);
+                    assert_eq!(
+                        observed["identity"],
+                        serde_json::json!({
+                            "dev": dev, "ino": ino, "mode_type": mode_type, "rdev": rdev,
+                        })
+                    );
+                }
+            }
+        } else {
+            assert_eq!(document.as_object().unwrap().len(), 2);
+            assert!(document.get("native_run_entry_fd3").is_none());
+        }
+    }
+    let mut too_many = rows;
+    too_many.push(too_many[0].clone());
+    assert!(native::initial_descriptor_frame(&too_many, None).is_none());
+    assert!(
+        native::initial_descriptor_frame(
+            &[serde_json::json!({"oversized": "x".repeat(4096)})],
+            Some(&NativeRunEntryFd3::Absent),
+        )
+        .is_none()
+    );
+}
+
 fn request(operation: &str) -> Request {
     let bytes = b"{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n";
     let binding = Binding {

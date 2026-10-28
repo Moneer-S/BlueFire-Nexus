@@ -14,6 +14,68 @@ pub(super) struct Recipe {
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeRunEntryFd3 {
+    Absent,
+    QueryError,
+    Present {
+        cloexec: bool,
+        dev: u32,
+        ino: u64,
+        mode_type: u32,
+        rdev: u32,
+    },
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+impl NativeRunEntryFd3 {
+    pub(super) fn document(self) -> serde_json::Value {
+        let mut document = serde_json::json!({
+            "phase": "native_run_entry_before_runtime_checks",
+            "fd": 3,
+        });
+        match self {
+            Self::Absent => document["status"] = serde_json::json!("absent"),
+            Self::QueryError => document["status"] = serde_json::json!("query_error"),
+            Self::Present {
+                cloexec,
+                dev,
+                ino,
+                mode_type,
+                rdev,
+            } => {
+                document["status"] = serde_json::json!("present");
+                document["cloexec"] = serde_json::json!(cloexec);
+                document["identity"] = serde_json::json!({
+                    "dev": dev, "ino": ino, "mode_type": mode_type, "rdev": rdev,
+                });
+            }
+        }
+        document
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+pub(super) fn initial_descriptor_frame(
+    rows: &[serde_json::Value],
+    entry: Option<&NativeRunEntryFd3>,
+) -> Option<Vec<u8>> {
+    if rows.len() > 15 {
+        return None;
+    }
+    let mut document = serde_json::json!({
+        "schema_version": "bluefire.macos-native-fd-rows.v1",
+        "rows": rows,
+    });
+    if let Some(entry) = entry {
+        document["native_run_entry_fd3"] = entry.document();
+    }
+    let mut frame = serde_json::to_vec(&document).ok()?;
+    frame.push(b'\n');
+    (frame.len() <= 4096).then_some(frame)
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StartupFailureStage {
     RuntimeSupportedCheck,
     InitialClockOrDeadline,
@@ -709,6 +771,7 @@ mod darwin {
         channel: i32,
         read: Option<i32>,
         initial: bool,
+        entry: Option<&super::NativeRunEntryFd3>,
     ) -> Result<(), super::DescriptorInventoryFailure> {
         let mut rows = unsafe { std::mem::zeroed::<[FdInfo; 16]>() };
         let bytes = unsafe {
@@ -737,7 +800,7 @@ mod darwin {
             read,
         );
         if initial && checked == Err(super::DescriptorInventoryFailure::UnexpectedRowsPresent) {
-            emit_initial_descriptor_rows(rows);
+            emit_initial_descriptor_rows(rows, entry);
         }
         checked?;
         let mut null = unsafe { std::mem::zeroed::<libc::stat>() };
@@ -762,7 +825,7 @@ mod darwin {
     /// A failed inventory may describe itself, but never admits another handle.
     /// The diagnostic is attempted only when stderr is a FIFO. The parent
     /// accepts one bounded frame only from its settled original code-96 child.
-    fn emit_initial_descriptor_rows(rows: &[FdInfo]) {
+    fn emit_initial_descriptor_rows(rows: &[FdInfo], entry: Option<&super::NativeRunEntryFd3>) {
         let mut stderr = unsafe { std::mem::zeroed::<libc::stat>() };
         if unsafe { libc::fstat(2, &mut stderr) } != 0
             || stderr.st_mode & libc::S_IFMT != libc::S_IFIFO
@@ -786,16 +849,9 @@ mod darwin {
                 serde_json::json!({"fd": row.fd, "kind": row.kind, "identity": identity})
             })
             .collect::<Vec<_>>();
-        let Ok(mut frame) = serde_json::to_vec(&serde_json::json!({
-            "schema_version": "bluefire.macos-native-fd-rows.v1",
-            "rows": observed,
-        })) else {
+        let Some(frame) = super::initial_descriptor_frame(&observed, entry) else {
             return;
         };
-        frame.push(b'\n');
-        if frame.len() > 4096 {
-            return;
-        }
         // One write stays below PIPE_BUF. A partial frame is rejected by the
         // parent parser; this path never affects the refusal result.
         let _ = unsafe { libc::write(2, frame.as_ptr().cast(), frame.len()) };
@@ -814,7 +870,7 @@ mod darwin {
             self.held.ok_or(())
         }
         fn inventory(&self) -> Result<(), ()> {
-            descriptor_inventory(self.held()?, self.channel, self.read_fd, false).map_err(|_| ())
+            descriptor_inventory(self.held()?, self.channel, self.read_fd, false, None).map_err(|_| ())
         }
     }
 
@@ -1063,7 +1119,32 @@ mod darwin {
         remaining(deadline).map(|_| ())
     }
 
+    fn observe_native_run_entry_fd3() -> super::NativeRunEntryFd3 {
+        // Fixed slot only. This is entry to run(), after loader/Rust startup;
+        // querying it neither opens nor adopts, closes or admits a descriptor.
+        let flags = unsafe { libc::fcntl(3, libc::F_GETFD) };
+        if flags < 0 {
+            return if unsafe { *libc::__error() } == libc::EBADF {
+                super::NativeRunEntryFd3::Absent
+            } else {
+                super::NativeRunEntryFd3::QueryError
+            };
+        }
+        let mut details = unsafe { std::mem::zeroed::<libc::stat>() };
+        if unsafe { libc::fstat(3, &mut details) } != 0 {
+            return super::NativeRunEntryFd3::QueryError;
+        }
+        super::NativeRunEntryFd3::Present {
+            cloexec: flags & libc::FD_CLOEXEC != 0,
+            dev: details.st_dev as u32,
+            ino: details.st_ino as u64,
+            mode_type: (details.st_mode & libc::S_IFMT) as u32,
+            rdev: details.st_rdev as u32,
+        }
+    }
+
     pub(super) fn run(recipe: super::Recipe, entry: Entry) -> Result<i32, RunFailure> {
+        let entry_fd3 = observe_native_run_entry_fd3();
         super::startup_step(
             super::StartupFailureStage::RuntimeSupportedCheck,
             supported(),
@@ -1089,7 +1170,7 @@ mod darwin {
             cleanup_unknown: false,
         };
         let startup = (|| -> Result<(), super::StartupFailureStage> {
-            descriptor_inventory(held, channel_fd, None, true)
+            descriptor_inventory(held, channel_fd, None, true, Some(&entry_fd3))
                 .map_err(super::DescriptorInventoryFailure::startup_stage)?;
             super::startup_step(
                 super::StartupFailureStage::ReadonlyDescriptor,
