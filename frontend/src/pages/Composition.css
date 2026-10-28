@@ -34,6 +34,9 @@
 .composition-page .field { margin-block: 14px; }
 .composition-graph { margin-top: 24px; min-width: 0; }
 .composition-graph .page { padding-inline: 0; }
+.composition-selected-result { min-width: 0; }
+.composition-selected-attempt { scroll-margin-top: 80px; }
+.composition-selected-result > .composition-section { padding-top: 12px; border-top: 0; }
 .file-access-retest-open { display: inline-flex; margin-block: 8px 16px; color: var(--blue-soft); font-size: .8rem; }
 .file-access-retest-comparison { margin-block: 18px; padding: 22px; border: 1px solid var(--line-strong); border-radius: 10px; background: linear-gradient(135deg, color-mix(in srgb, var(--blue) 6%, var(--surface)), var(--surface)); }
 .file-access-retest-comparison.is-established { border-color: color-mix(in srgb, var(--teal, #25d8bb) 35%, var(--line)); }

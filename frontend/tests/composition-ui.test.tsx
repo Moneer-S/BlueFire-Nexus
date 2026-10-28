@@ -1,20 +1,23 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { CompositionSetup } from "../src/components/CompositionReview";
 import { CompositionPage } from "../src/pages/Composition";
 import { compositionApi, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, readCompositionPending, storeCompositionCancellation, storeCompositionControl, storeCompositionPending } from "../src/lib/composition";
 import { fileAccessApi } from "../src/lib/file-access";
+import { fileAccessLinkageApi } from "../src/lib/file-access-linkage";
 import { macOSControlFixture, macOSOwner, macOSStatusFixture } from "./macos-file-access-fixture";
 import { macContextFixture, macObjectiveFixture, macRequestFixture, macReviewFixture } from "./macos-composition-fixture";
 import { fileAccessObjectiveFixture } from "./file-access-fixture";
+import { linkageFixture } from "./file-access-linkage-fixture";
 import { attemptFixture, contextFixture, controlId, grantRequestFixture, objectiveFixture, ownerId, proposalFixture, proposalId, question, refusalFixture, reviewFixture, testDigest } from "./composition-fixture";
 
 vi.mock("../src/components/CompositionGraph", () => ({ CompositionGraph: () => <div>Read-only graph</div> }));
 vi.mock("../src/lib/api", () => ({ DEMO_MODE: false, request: vi.fn(), ApiError: class extends Error {}, api: { catalog: vi.fn(async () => ({ ai: { providers: [] } })) } }));
-function mount(element: React.ReactNode, path = "/composition") { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter initialEntries={[path]}>{element}</MemoryRouter></Tooltip.Provider></QueryClientProvider>), client }; }
+function CurrentLocation() { const location = useLocation(); return <output data-testid="current-location">{location.pathname}{location.search}</output>; }
+function mount(element: React.ReactNode, path = "/composition", showLocation = false) { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><Tooltip.Provider><MemoryRouter initialEntries={[path]}>{showLocation ? <CurrentLocation /> : null}{element}</MemoryRouter></Tooltip.Provider></QueryClientProvider>), client }; }
 beforeEach(() => { localStorage.clear(); vi.spyOn(compositionApi, "list").mockResolvedValue({ schema_version: "bluefire.composition-objective-list.v1", objectives: [{ owner_id: ownerId, title: question, status: "active", job_state: "completed" }] }); vi.spyOn(compositionApi, "context").mockResolvedValue(contextFixture()); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -311,6 +314,39 @@ it.each(["allowed", "permission_denied", "unknown"] as const)("keeps the %s file
   expect(screen.queryByRole("button", { name: /Request.*revision/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Start fresh attempt within grant" })).not.toBeInTheDocument();
   expect(compositionApi.context).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
+});
+it("focuses the selected later attempt after an earlier child failed", async () => {
+  const { objective, attempt, value } = linkageFixture();
+  const failed = structuredClone(attempt);
+  failed.job_id = `job-${"e".repeat(32)}`;
+  failed.request.composition_attempt.attempt_id = `attempt-${"e".repeat(32)}`;
+  failed.request.composition_attempt.run_id = "run-failed";
+  failed.state = "failed";
+  delete failed.progress.verified_result;
+  delete failed.progress.verified_result_digest;
+  objective.attempts = [failed, attempt];
+  vi.spyOn(compositionApi, "objective").mockResolvedValue(objective);
+  vi.spyOn(fileAccessLinkageApi, "read").mockResolvedValue(value);
+
+  mount(<CompositionPage />, `/composition?control=${controlId}&objective=${ownerId}&pack=${FILE_ACCESS_PACK}&attempt=${attempt.request.composition_attempt.attempt_id}`);
+
+  const selectedRow = await screen.findByRole("listitem", { name: "Selected attempt comparison" });
+  await waitFor(() => expect(document.activeElement).toBe(selectedRow));
+  expect(within(selectedRow).getByRole("heading", { name: "Attempt 2" })).toBeInTheDocument();
+  expect(within(selectedRow).queryByRole("heading", { name: "Attempt 1" })).not.toBeInTheDocument();
+});
+it("clears the old attempt selection when starting a new objective", async () => {
+  const { objective, attempt, value } = linkageFixture();
+  vi.spyOn(compositionApi, "objective").mockResolvedValue(objective);
+  vi.spyOn(fileAccessLinkageApi, "read").mockResolvedValue(value);
+
+  mount(<CompositionPage />, `/composition?control=${controlId}&objective=${ownerId}&pack=${FILE_ACCESS_PACK}&attempt=${attempt.request.composition_attempt.attempt_id}`, true);
+  await screen.findByRole("region", { name: "Baseline and fresh retest" });
+  fireEvent.click(screen.getByRole("button", { name: "New objective" }));
+  expect(await screen.findByRole("textbox", { name: "Objective question" })).toBeInTheDocument();
+  const current = new URL(screen.getByTestId("current-location").textContent!, "http://localhost");
+  expect(current.searchParams.has("objective")).toBe(false);
+  expect(current.searchParams.has("attempt")).toBe(false);
 });
 it("recovers a stale-review refusal on reload and offers a new explicit review without replay", async () => {
   vi.spyOn(compositionApi, "objective").mockResolvedValue(refusalFixture());

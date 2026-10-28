@@ -1,9 +1,10 @@
+import type { Ref } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { compositionPack, compositionRecord, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, type CompositionObjective } from "../lib/composition";
 import { Badge, Callout, DataList, sentence } from "./Primitives";
 import { FileAccessRetestComparison } from "./FileAccessRetestComparison";
 
-export function CompositionAttempts({ objective }: { objective: CompositionObjective }) {
+export function CompositionAttempts({ objective, selectedAttemptRef }: { objective: CompositionObjective; selectedAttemptRef?: Ref<HTMLLIElement> }) {
   const [params] = useSearchParams();
   const macOS = compositionPack(objective.grant.document) === MACOS_FILE_ACCESS_PACK;
   const fileAccess = macOS || compositionPack(objective.grant.document) === FILE_ACCESS_PACK;
@@ -27,7 +28,8 @@ export function CompositionAttempts({ objective }: { objective: CompositionObjec
       const access = compositionRecord(macOS ? result.macos_file_access_result : result.file_access_result);
       const cleanup = compositionRecord(result.cleanup);
       const verified = typeof progress.verified_result_digest === "string" && typeof result.run_id === "string";
-      return <li key={attempt.job_id}><header><h3>Attempt {index + 1}</h3><Badge tone={outcome.established === true && verified ? "success" : "neutral"}>{verified ? outcome.established === true ? "Objective established" : "Objective not established" : sentence(attempt.state)}</Badge></header>
+      const selected = selectedAttempt === attempt.request.composition_attempt.attempt_id;
+      return <li key={attempt.job_id} ref={selected ? selectedAttemptRef : undefined} className={selected ? "composition-selected-attempt" : undefined} tabIndex={selected ? -1 : undefined} aria-label={selected ? "Selected attempt comparison" : undefined}><header><h3>Attempt {index + 1}</h3><Badge tone={outcome.established === true && verified ? "success" : "neutral"}>{verified ? outcome.established === true ? "Objective established" : "Objective not established" : sentence(attempt.state)}</Badge></header>
         {fileAccess && !macOS ? selectedAttempt === attempt.request.composition_attempt.attempt_id
           ? <FileAccessRetestComparison objective={objective} attempt={attempt} />
           : <Link className="file-access-retest-open" to={comparePath(attempt.request.composition_attempt.attempt_id)}>Compare with the recorded baseline</Link> : null}
