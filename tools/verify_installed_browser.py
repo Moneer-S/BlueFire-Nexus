@@ -453,7 +453,7 @@ def _valid_receiver_composition(value: object) -> bool:
         and "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result"
         in checks
         and type(counts.get("composition_list")) is int
-        and 1 <= counts["composition_list"] <= 5
+        and 1 <= counts["composition_list"] <= 6
         and all(
             type(counts.get(name)) is int and counts[name] == 1
             for name in (

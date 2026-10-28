@@ -671,6 +671,28 @@ def test_receiver_requires_single_proposal_and_exact_authorization_controls(
     assert not _receiver_driver_passed(report)
 
 
+def test_receiver_composition_list_bound_matches_installed_driver_limit() -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+
+    # The driver allowlist permits six objective-list reads; that exact ceiling
+    # is exercised by the current hosted report.
+    report["request_counts"]["composition_list"] = 6
+    assert _receiver_driver_passed(report)
+
+    for invalid_count in (0, 7):
+        changed = deepcopy(report)
+        changed["request_counts"]["composition_list"] = invalid_count
+        assert not _receiver_driver_passed(changed), invalid_count
+
+
 def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
     report = receiver_report()
     for row in report["phase_evidence"]:
