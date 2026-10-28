@@ -78,6 +78,91 @@ def _contains_receiver_session_token_field(value: object) -> bool:
     return False
 
 
+def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
+    """Retain finite failure categories, never exception text or request material."""
+    if not isinstance(value, list):
+        return []
+    stages = {
+        "composition-model-settings",
+        "composition-model-save",
+        "composition-model-consent",
+        "composition-review",
+        "composition-grant",
+        "composition-model-proposal",
+        "composition-model-proposal-binding",
+        "composition-model-proposal-inspect",
+        "composition-model-proposal-reopen",
+        "composition-attempt",
+        "browser_callback",
+        "cleanup",
+    }
+    kinds = {
+        "journey_failed",
+        "page_wait_failed",
+        "console_error",
+        "page_error",
+        "browser_close",
+        "browser_context_close",
+        "request_route_failed",
+        "request_abort_failed",
+        "response_observer_failed",
+        "observer_unsettled",
+    }
+    interaction_enums = {
+        "schema_version": {"bluefire.installed-receiver-composition-interaction.v1"},
+        "step": {"reconcile", "click", "response", "settlement", "other"},
+        "observation": {"before_click", "failure", "missing", "other"},
+        "center_hit": {"self", "descendant", "other", "out_of_view", "missing"},
+        "pending_kind": {"none", "grant", "proposal", "attempt", "other", "unavailable", "missing"},
+        "grant_status": {"active", "paused", "revoked", "expired", "other", "missing"},
+        "grant_time": {"expired", "under_30_seconds", "over_30_seconds", "unknown"},
+    }
+    interaction_booleans = (
+        "route_matches",
+        "button_present",
+        "button_visible",
+        "button_enabled",
+        "dispatch_unavailable",
+        "context_fetching",
+        "candidate_mismatch",
+        "confirmation_pending",
+        "context_present",
+        "context_grant_matches",
+        "candidate_ready",
+        "context_digest_matches",
+    )
+    result: list[dict[str, object]] = []
+    for entry in value[:32]:
+        if not isinstance(entry, dict):
+            continue
+        row: dict[str, object] = {}
+        for field, allowed in (
+            ("stage", stages),
+            ("kind", kinds),
+            ("error_type", {"AssertionError", "TimeoutError", "TypeError", "Error", "other"}),
+            ("method", {"waitForResponse", "waitForRequest", "waitForEvent"}),
+        ):
+            item = entry.get(field)
+            if isinstance(item, str):
+                row[field] = item if item in allowed else "other"
+        interaction = entry.get("composition_interaction")
+        if isinstance(interaction, dict):
+            safe: dict[str, object] = {}
+            for field, allowed in interaction_enums.items():
+                item = interaction.get(field)
+                if isinstance(item, str) and item in allowed:
+                    safe[field] = item
+            for field in interaction_booleans:
+                item = interaction.get(field)
+                if type(item) is bool or item is None:
+                    safe[field] = item
+            if safe:
+                row["composition_interaction"] = safe
+        if row:
+            result.append(row)
+    return result
+
+
 def _receiver_report_for_receipt(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("Receiver driver report has an invalid shape")
@@ -108,9 +193,11 @@ def _receiver_report_for_receipt(value: object) -> dict[str, object]:
         "cleanup",
         "owner_status",
     )
-    return {
+    projected = {
         key: value.get(key, [] if key in {"checks", "blocked_requests"} else {}) for key in keys
     }
+    projected["errors"] = _receiver_errors_for_receipt(value.get("errors"))
+    return projected
 
 
 def _valid_receiver_artifact(value: object) -> bool:

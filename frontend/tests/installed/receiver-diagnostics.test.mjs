@@ -1,6 +1,50 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { receiverPreparationDiagnostic, receiverPrepareHttpDiagnostic } from "./receiver-diagnostics.mjs";
+import { receiverPreparationDiagnostic, receiverPrepareHttpDiagnostic, readReceiverCompositionUi, receiverCompositionInteractionDiagnostic } from "./receiver-diagnostics.mjs";
+/* global document, localStorage, location, history */
+
+test("composition interaction retains finite button, pending and context facts without private data", () => {
+  const previous = location.href;
+  const expected = { origin: location.origin, owner: "owned", control: "control", proposal: "proposal" };
+  history.replaceState(null, "", "/#/composition?objective=owned&control=control&proposal=proposal");
+  const container = document.createElement("div");
+  container.innerHTML = '<div class="composition-page"><button disabled>Start fresh attempt within grant</button><div class="callout"><strong>Request confirmation pending</strong><p>private body</p></div></div>';
+  document.body.append(container);
+  localStorage.setItem("bluefire.composition.pending.v1", JSON.stringify({ kind: "proposal", body: "private request", token: "private token" }));
+  try {
+    const ui = readReceiverCompositionUi(expected);
+    assert.equal(ui.button_enabled, false);
+    assert.equal(ui.confirmation_pending, true);
+    assert.equal(ui.pending_kind, "proposal");
+    assert.equal(ui.center_hit, "out_of_view");
+    const result = receiverCompositionInteractionDiagnostic("click", ui,
+      { grant: { status: "active", document: { grant_id: "g", expires_at_ms: 90_001 } } },
+      { grant_id: "g", context_digest: "c", private: "private context" },
+      { candidate_ready: true, proposal: { context_digest: "c", candidate: "private graph" } }, 1);
+    assert.equal(result.step, "click");
+    assert.equal(result.context_grant_matches, true);
+    assert.equal(result.context_digest_matches, true);
+    assert.equal(result.grant_time, "over_30_seconds");
+    assert.equal(JSON.stringify(result).includes("private"), false);
+    assert.deepEqual(readReceiverCompositionUi({ ...expected, owner: "other" }), { route_matches: false });
+  } finally {
+    container.remove();
+    localStorage.removeItem("bluefire.composition.pending.v1");
+    history.replaceState(null, "", previous);
+  }
+});
+
+test("composition diagnostics distinguish response wait and collapse unknown values", () => {
+  const result = receiverCompositionInteractionDiagnostic("response", { pending_kind: "/private/path", button_enabled: "true" },
+    { grant: { status: "private status", document: { expires_at_ms: 10 } } }, undefined, undefined, 10);
+  assert.equal(result.step, "response");
+  assert.equal(result.button_enabled, null);
+  assert.equal(result.pending_kind, "other");
+  assert.equal(result.grant_status, "other");
+  assert.equal(result.grant_time, "expired");
+  assert.equal(result.context_present, false);
+  assert.equal(JSON.stringify(result).includes("private"), false);
+});
 
 test("projects bounded owner and preparation status plus shared preflight labels", () => {
   const owner = {
