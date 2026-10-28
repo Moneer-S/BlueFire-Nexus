@@ -2725,6 +2725,28 @@ class BlueFireService(
     def composition_objective(self, owner_id: str) -> Mapping[str, Any]:
         return dict(self.composition.read(owner_id))
 
+    def file_access_composed_retest_linkage(
+        self, owner_id: str, attempt_id: str
+    ) -> Mapping[str, Any]:
+        from .capability_resources import CapabilityContractError
+        from .file_access_composed_retest import projection
+        from .file_access_contract import FileAccessContractError
+
+        try:
+            return projection(self, owner_id, attempt_id)
+        except (
+            ProductStoreError,
+            FileAccessContractError,
+            CapabilityContractError,
+            KeyError,
+            TypeError,
+        ) as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "file_access_linkage_unavailable",
+                "The selected saved file-access lineage cannot be verified.",
+            ) from exc
+
     def list_composition_objectives(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         if not isinstance(request, dict) or set(request) != {"control_owner_id"}:
             raise ProductStoreError("Objective listing requires an exact control owner.")

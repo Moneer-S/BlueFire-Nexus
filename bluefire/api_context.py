@@ -164,6 +164,9 @@ class PlatformService(Protocol):
     def composition_objective(self, owner_id: str) -> JsonResult:
         """Read the saved grant, attempts, counters and cleanup status."""
 
+    def file_access_composed_retest_linkage(self, owner_id: str, attempt_id: str) -> JsonResult:
+        """Read the exact Linux baseline/change/composed-retest history."""
+
     def composition_proposal_context(self, owner_id: str, request: JsonObject) -> JsonResult:
         """Project current authorized facts for an initial or revised graph."""
 

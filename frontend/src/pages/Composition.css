@@ -34,6 +34,38 @@
 .composition-page .field { margin-block: 14px; }
 .composition-graph { margin-top: 24px; min-width: 0; }
 .composition-graph .page { padding-inline: 0; }
+.composition-selected-result { min-width: 0; }
+.composition-selected-attempt { scroll-margin-top: 80px; }
+.composition-selected-result > .composition-section { padding-top: 12px; border-top: 0; }
+.file-access-retest-open { display: inline-flex; margin-block: 8px 16px; color: var(--blue-soft); font-size: .8rem; }
+.file-access-retest-comparison { margin-block: 18px; padding: 22px; border: 1px solid var(--line-strong); border-radius: 10px; background: linear-gradient(135deg, color-mix(in srgb, var(--blue) 6%, var(--surface)), var(--surface)); }
+.file-access-retest-comparison.is-established { border-color: color-mix(in srgb, var(--teal, #25d8bb) 35%, var(--line)); }
+.file-access-retest-heading { display: flex; gap: 14px; align-items: start; }
+.file-access-retest-heading > svg { width: 24px; height: 24px; flex: none; color: var(--blue-soft); margin-top: 3px; }
+.is-established .file-access-retest-heading > svg { color: var(--teal, #25d8bb); }
+.file-access-retest-heading > div { min-width: 0; }
+.file-access-retest-heading h3 { margin: 4px 0 8px; font-size: 1.13rem; line-height: 1.35; }
+.file-access-retest-heading p { margin: 0; color: var(--muted-strong); font-size: .8rem; }
+.file-access-retest-heading .file-access-retest-kicker { color: var(--blue-soft); font-size: .69rem; letter-spacing: .055em; text-transform: uppercase; }
+.file-access-retest-table { width: 100%; margin-block: 22px; border-collapse: collapse; table-layout: fixed; text-align: left; font-size: .8rem; }
+.file-access-retest-table caption { text-align: left; color: var(--muted-strong); font-size: .73rem; margin-bottom: 10px; }
+.file-access-retest-table th, .file-access-retest-table td { padding: 11px 10px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.file-access-retest-table th:first-child { width: 46%; padding-left: 0; }
+.file-access-retest-table thead th { color: var(--muted-strong); font-size: .71rem; font-weight: 500; }
+.file-access-retest-table tbody th { font-weight: 500; }
+.file-access-retest-table .access-denied { color: var(--teal, #25d8bb); font-weight: 600; }
+.file-access-retest-support { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 18px; }
+.file-access-retest-support > div { display: grid; gap: 6px; align-content: start; }
+.file-access-retest-support span { color: var(--muted-strong); font-size: .71rem; }
+.file-access-retest-support strong { display: flex; align-items: center; gap: 10px; font-size: .85rem; font-weight: 550; }
+.file-access-retest-support strong svg { width: 14px; height: 14px; color: var(--muted); }
+.file-access-retest-support small { font-size: .7rem; color: var(--muted-strong); line-height: 1.5; }
+.file-access-retest-comparison .file-access-retest-retention { margin: 20px 0 12px; color: var(--muted-strong); font-size: .73rem; }
+.file-access-retest-links { display: flex; flex-wrap: wrap; gap: 12px 24px; }
+.file-access-retest-links a { display: inline-flex; align-items: center; gap: 8px; color: var(--blue-soft); font-size: .78rem; }
+.file-access-retest-links svg { width: 14px; height: 14px; }
+.file-access-retest-provenance { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 12px; }
+.file-access-retest-provenance summary { cursor: pointer; color: var(--muted-strong); font-size: .74rem; }
 @media (max-width: 680px) {
   .composition-page h1 { font-size: 1.35rem; }
   .composition-provider, .composition-budget-inputs { grid-template-columns: minmax(0, 1fr); }
