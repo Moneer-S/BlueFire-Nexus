@@ -820,16 +820,19 @@ async function revokeCompositionNormally() {
       }
       if (current.grant && current.grant.status !== "revoked" && !revokeRequested) {
         revokeRequested = true;
-        const revoked = await page.evaluate(async ({ owner, timeout }) => {
-          const token = sessionStorage.getItem("bluefire.browser-session.v1");
-          const response = await fetch(`/api/v1/composition/objectives/${encodeURIComponent(owner)}/revoke`, {
-            method: "POST", redirect: "error", credentials: "omit",
-            headers: { "X-BlueFire-Session": token, "Content-Type": "application/json", Accept: "application/json" },
-            body: "{}", signal: AbortSignal.timeout(timeout),
-          });
-          return response.ok;
-        }, { owner: compositionOwnerId, timeout });
-        if (!revoked) throw new Error("Composition revoke was refused");
+        const postTimeout = boundedLocalTimeout(until, Date.now(), remainingMs());
+        if (postTimeout <= 0) break;
+        try {
+          await page.evaluate(async ({ owner, timeout }) => {
+            const token = sessionStorage.getItem("bluefire.browser-session.v1");
+            const response = await fetch(`/api/v1/composition/objectives/${encodeURIComponent(owner)}/revoke`, {
+              method: "POST", redirect: "error", credentials: "omit",
+              headers: { "X-BlueFire-Session": token, "Content-Type": "application/json", Accept: "application/json" },
+              body: "{}", signal: AbortSignal.timeout(timeout),
+            });
+            return response.ok;
+          }, { owner: compositionOwnerId, timeout: postTimeout });
+        } catch { /* A lost response is reconciled by exact saved status reads below. */ }
       }
       await delay(Math.min(500, Math.max(1, until - Date.now())));
     }
