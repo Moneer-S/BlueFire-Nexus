@@ -396,7 +396,8 @@
         "bluefire/data/restricted_persistence_canary.yaml",
         "bluefire/data/sandbox_research_chain.yaml",
         "bluefire/data/windows_endpoint_validation.yaml",
-        "bluefire/native/__init__.py"
+        "bluefire/native/__init__.py",
+        "docs/assets/screenshots/capture.json"
       ],
       "third-party-declarative-metadata-custom-license": [
         "bluefire/data/mitre_attack_t1082_v19_2.json",
