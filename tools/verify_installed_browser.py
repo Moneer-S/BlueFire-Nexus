@@ -601,6 +601,7 @@ def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
         and report.get("receiver_driver_started") is True
         and report.get("receiver_retained_redaction_driver_passed") is True
         and isinstance(fixture, dict)
+        and type(fixture.get("request_count")) is int
         and fixture.get("request_count") == 1
         and fixture.get("purposes") == [_RECEIVER_COMPOSITION_PURPOSE]
         and type(fixture.get("request_bytes")) is int

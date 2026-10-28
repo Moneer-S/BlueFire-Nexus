@@ -597,8 +597,8 @@ function ownedModelAuthorization(row) {
     && same(row.purposes, [MODEL_PURPOSE]) && row.approved_by === MODEL_REVIEWER;
 }
 
-async function readOwnedModelAuthorization() {
-  const value = await appApi("/ai/authorizations");
+async function readOwnedModelAuthorization(requestedTimeout = remainingMs()) {
+  const value = await appApi("/ai/authorizations", requestedTimeout);
   assert.ok(Array.isArray(value.authorizations));
   const owned = value.authorizations.filter(ownedModelAuthorization);
   assert.equal(owned.length, 1, "Only one exact receiver model authorization may be owned");
@@ -618,8 +618,13 @@ async function revokeModelAuthorizationNormally() {
   }
   try {
     const until = Date.now() + Math.min(15_000, remainingMs());
-    for (let attempt = 0; attempt < 2 && Date.now() < until; attempt += 1) {
-      const row = await readOwnedModelAuthorization();
+    const localTimeout = (deadline = until) => {
+      const timeout = boundedLocalTimeout(deadline, Date.now(), remainingMs());
+      if (timeout <= 0) throw new Error("Model authorization cleanup deadline exceeded");
+      return timeout;
+    };
+    for (let attempt = 0; attempt < 2 && Date.now() < until && deadlineBudget.remaining(Date.now()) > 0; attempt += 1) {
+      const row = await readOwnedModelAuthorization(localTimeout());
       if (row.status === "revoked") {
         report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: true };
         return;
@@ -627,23 +632,28 @@ async function revokeModelAuthorizationNormally() {
       assert.equal(row.status, "active");
       assert.ok(counts.model_authorization_revoke < ROUTE_LIMITS.model_authorization_revoke);
       expectedModelRevokeId = row.authorization_id;
-      await page.goto(`${ORIGIN}/#/settings`, { waitUntil: "domcontentloaded" });
+      await page.goto(`${ORIGIN}/#/settings`, { waitUntil: "domcontentloaded", timeout: localTimeout() });
       const button = page.getByRole("button", { name: `Revoke model usage for ${MODEL}`, exact: true });
-      await button.waitFor({ state: "visible" });
-      assert.equal(await button.count(), 1);
-      try { await button.click(); }
+      await button.waitFor({ state: "visible", timeout: localTimeout() });
+      assert.equal(await Promise.race([
+        button.count(),
+        delay(localTimeout(), undefined, { ref: false }).then(() => { throw new Error("Model revoke control count timed out"); }),
+      ]), 1);
+      try { await button.click({ timeout: localTimeout() }); }
       catch { /* A lost response is reconciled against this exact owned authorization. */ }
       const settleUntil = Math.min(until, Date.now() + (attempt === 0 ? 1500 : 8000));
-      while (Date.now() < settleUntil) {
+      while (Date.now() < settleUntil && deadlineBudget.remaining(Date.now()) > 0) {
         try {
-          const current = await readOwnedModelAuthorization();
+          const current = await readOwnedModelAuthorization(localTimeout(settleUntil));
           if (current.status === "revoked") {
             report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: true };
             return;
           }
           assert.equal(current.status, "active");
         } catch { /* Missing or unavailable status cannot establish revocation. */ }
-        await delay(Math.min(150, Math.max(1, settleUntil - Date.now())));
+        const pause = boundedLocalTimeout(settleUntil, Date.now(), deadlineBudget.remaining(Date.now()));
+        if (pause <= 0) break;
+        await delay(Math.min(150, pause));
       }
     }
   } catch { /* Unknown authorization status remains an incomplete cleanup. */ }

@@ -519,6 +519,7 @@ def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
     [
         ("request_count", 0),
         ("request_count", 2),
+        ("request_count", True),
         ("purposes", ["bluefire_ai_graph_draft"]),
         ("request_bytes", 0),
         ("request_bytes", True),
