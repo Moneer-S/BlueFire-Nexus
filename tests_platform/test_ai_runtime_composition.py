@@ -25,6 +25,7 @@ from bluefire.ai_runtime_composition import (
 from bluefire.ai_wire import AIProviderCancelled, AIProviderError, AIProviderTransportError
 from bluefire.capability_composition import compile_initial_graph, compile_revision
 from bluefire.capability_facts import seal_facts
+from bluefire.capability_resources import METHODS, semantic_ports
 from bluefire.job_runtime import RunJobController
 from bluefire.prepared_lab_enrollment import enroll
 from bluefire.product_store import ProductStore
@@ -49,6 +50,15 @@ def candidate(state, *, redact=False):
             **{name: values[0] for name, values in domains[step["behavior_id"]].items()},
             **step["parameters"],
         }
+    return result
+
+
+def candidate_with_selected_producer(state, selected):
+    result = candidate(state)
+    result["steps"].insert(3, {"id": "also_inspect", "behavior_id": METHODS[3], "parameters": {}})
+    result["edges"][2]["to_step"] = "also_inspect"
+    result["edges"].append({"from_step": "also_inspect", "outcome": "success", "to_step": "stage"})
+    result["steps"][4]["inputs"] = {"records": {"from_step": selected, "artifact": "records"}}
     return result
 
 
@@ -156,6 +166,95 @@ def test_exact_dialects_registered_schema_and_sanitized_model_context(provider, 
     assert result["candidate"] == candidate(state)
     assert len(access.calls) == 1 and result["provider"]["used_fallback"] is False
     assert not {"compiled", "lease", "approval", "native_envelope"}.intersection(result)
+
+
+def test_provider_schema_keeps_legacy_and_exact_explicit_input_forms():
+    variants = OUTPUT_SCHEMA["properties"]["steps"]["items"]["anyOf"]
+    assert len(variants) == 2 * len(METHODS)
+    for method in METHODS:
+        legacy, explicit = [
+            row for row in variants if row["properties"]["behavior_id"]["enum"] == [method]
+        ]
+        assert set(legacy["properties"]) == {"id", "behavior_id", "parameters"}
+        assert set(explicit["properties"]) == {"id", "behavior_id", "parameters", "inputs"}
+        ports = {port[0] for port in semantic_ports(method)[0]}
+        inputs = explicit["properties"]["inputs"]
+        assert set(inputs["properties"]) == ports
+        for port in semantic_ports(method)[0]:
+            ref = inputs["properties"][port[0]]
+            assert set(ref["properties"]) == {"from_step", "artifact"}
+            assert (
+                ref["properties"]["from_step"]["pattern"] == legacy["properties"]["id"]["pattern"]
+            )
+            compatible = {
+                output[0]
+                for source in METHODS
+                for output in semantic_ports(source)[1]
+                if output[1:] == port[1:3]
+            }
+            assert set(ref["properties"]["artifact"]["enum"]) == compatible
+
+    def check_objects(value):
+        if isinstance(value, dict):
+            if value.get("type") == "object":
+                assert value["additionalProperties"] is False
+                assert set(value["required"]) == set(value["properties"])
+            for child in value.values():
+                check_objects(child)
+        elif isinstance(value, list):
+            for child in value:
+                check_objects(child)
+
+    check_objects(OUTPUT_SCHEMA)
+
+
+@pytest.mark.parametrize("selected", ["inspect", "also_inspect"])
+def test_ai_proposal_accepts_explicit_real_producer_choice(harness, selected):
+    value = candidate_with_selected_producer(harness.state, selected)
+    harness.access.value = value
+    submitted = harness.jobs.submit(harness.owner, request(harness))
+    result = wait(harness.jobs, submitted["job"]["job_id"])
+    assert result["candidate_ready"]
+    assert result["proposal"]["candidate"] == value
+    stage = next(step for step in result["proposal"]["scenario"]["steps"] if step["id"] == "stage")
+    assert stage["inputs"]["records"] == {"from_step": selected, "artifact": "records"}
+    assert len(harness.access.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "unknown_port",
+        "extra_ref_field",
+        "missing_ref_field",
+        "source_type",
+        "artifact_type",
+        "inputs_type",
+    ],
+)
+def test_model_input_refs_require_known_ports_and_exact_ref_shape(provider, state, defect):
+    value = candidate(state)
+    stage = next(step for step in value["steps"] if step["id"] == "stage")
+    stage["inputs"] = {"records": {"from_step": "inspect", "artifact": "records"}}
+    if defect == "unknown_port":
+        stage["inputs"]["unregistered"] = stage["inputs"].pop("records")
+    elif defect == "extra_ref_field":
+        stage["inputs"]["records"]["authority"] = True
+    elif defect == "missing_ref_field":
+        del stage["inputs"]["records"]["artifact"]
+    elif defect == "source_type":
+        stage["inputs"]["records"]["from_step"] = ["inspect"]
+    elif defect == "artifact_type":
+        stage["inputs"]["records"]["artifact"] = ["records"]
+    else:
+        stage["inputs"] = []
+    with pytest.raises(AIProviderError):
+        propose(
+            config=provider,
+            access=Access(value=value),
+            context=context(state),
+            cancel=threading.Event(),
+        )
 
 
 @pytest.mark.parametrize(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Mapping
 
 from .ai import redact_for_model
 from .ai_composition_contract import OUTPUT_SCHEMA, PURPOSE
@@ -17,7 +17,7 @@ from .ai_wire import (
     structured_request,
 )
 from .application_errors import APIError
-from .capability_composition import parse_proposal
+from .capability_composition import _step_id, parse_proposal
 from .capability_grant import authority_id, digest, identifier
 from .capability_resources import CapabilityContractError, exact
 from .config import AIProviderKind, ConfigError
@@ -93,6 +93,9 @@ def format_request(config, context):
             "Choose local graph node names only; do not invent actions, implementations, target "
             "identities, paths, credentials, commands, scope or approval. Cite only supplied "
             "evidence_ref values. Each semantic input needs one dominating compatible producer. "
+            "If multiple compatible producers dominate an input, select one with that step's "
+            "inputs port using the exact from_step and artifact output names; omit inputs "
+            "when the producer is unambiguous. "
             "Use exactly one receiver handoff and one terminal cleanup; route all four handoff "
             "outcomes (success, partial, blocked, failed) to cleanup. Every business node must "
             "contribute to the handoff. The initial saved graph is source data, not a mandatory "
@@ -161,7 +164,10 @@ def validate_candidate(value, context):
     if set(candidate["evidence_refs"]) - allowed:
         raise CapabilityContractError("unavailable evidence references")
     for step in candidate["steps"]:
-        exact(step, {"id", "behavior_id", "parameters"}, "model graph step")
+        fields = {"id", "behavior_id", "parameters"}
+        if isinstance(step, Mapping) and "inputs" in step:
+            fields.add("inputs")
+        exact(step, fields, "model graph step")
         if not isinstance(step["behavior_id"], str) or step["behavior_id"] not in methods:
             raise CapabilityContractError("model graph selected an unavailable method")
         domains = methods[step["behavior_id"]]["parameter_domains"]
@@ -173,6 +179,16 @@ def validate_candidate(value, context):
             for key, values in domains.items()
         ):
             raise CapabilityContractError("model graph expanded the exact parameter domains")
+        if "inputs" in step:
+            refs = step["inputs"]
+            ports = {item["name"] for item in methods[step["behavior_id"]]["behavior"]["inputs"]}
+            if not isinstance(refs, Mapping) or set(refs) - ports:
+                raise CapabilityContractError("model graph selected an unavailable input port")
+            for ref in refs.values():
+                exact(ref, {"from_step", "artifact"}, "model graph input reference")
+                _step_id(ref["from_step"])
+                if not isinstance(ref["artifact"], str):
+                    raise CapabilityContractError("model graph artifact name is invalid")
     for edge in candidate["edges"]:
         exact(edge, {"from_step", "outcome", "to_step"}, "model graph edge")
     return candidate
