@@ -18,9 +18,9 @@ const provider = { provider_id: "chosen-provider", kind: "openai_chat_completion
 type AssistantProvider = NonNullable<CatalogResponse["ai"]["providers"]>[number];
 const unavailableProvider: AssistantProvider = { ...provider, health: { state: "degraded", credential_available: false, message: "The credential reference is unavailable." } };
 const source = { run_id: selection.runId, manifest_digest: digest, evidence_digest: digest, observed_count: 3, evidence_count: 4, excluded_provenance_counts: {}, mode: "execute", finalized_at: "2030-01-01", observed_records_digest: digest };
-const context: AssistanceContext = { schema_version: "bluefire.assistance-context.v1", context_digest: digest,
+const context = { schema_version: "bluefire.assistance-context.v1", context_digest: digest,
   selected: { run_id: selection.runId, candidate_id: selection.candidateId, candidate_resource_digest: digest, title: selection.title, definition_digest: digest, target_language: "sqlite", source_binding: source },
-  capabilities: [{ id: "detection.revise_and_evaluate", title: "Revise and evaluate the saved rule", available: true, supported_autonomy: ["assist"], reason: "Independent observations are available", native_path: "/detection-lab" }], limitations: ["Development evidence; evaluate independent benign cases separately."] };
+  capabilities: [{ id: "detection.revise_and_evaluate", title: "Revise and evaluate the saved rule", available: true, supported_autonomy: ["assist"], reason: "Independent observations are available", native_path: "/detection-lab" }], limitations: ["Development evidence; evaluate independent benign cases separately."] } satisfies AssistanceContext;
 function request(): AssistanceRequest { return { submission_id: "01234567-89ab-4def-8123-456789abcdef", context_digest: digest, run_id: selection.runId, candidate_id: selection.candidateId, candidate_resource_digest: digest, message: "Improve this rule, evaluate it, then try another method.", case_role: "attack", autonomy: "assist", provider_id: provider.provider_id }; }
 function envelope(body = request(), status: AssistanceEnvelope["turn"]["status"] = "awaiting_review"): AssistanceEnvelope {
   return { job: { schema_version: "bluefire.job.v1", kind: "assistance.turn", job_id: assistanceJobId(body.submission_id), state: "completed", request: { submitted_request: body }, progress: {} },

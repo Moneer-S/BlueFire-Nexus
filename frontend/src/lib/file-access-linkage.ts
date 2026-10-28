@@ -34,6 +34,7 @@ const digest = (value: unknown): value is string => typeof value === "string" &&
 const job = (value: unknown): value is string => typeof value === "string" && /^job-[0-9a-f]{32}$/.test(value);
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= 100;
 const nullableBoolean = (value: unknown) => value === null || typeof value === "boolean";
+const oneOf = (value: unknown, choices: readonly string[]): value is string => typeof value === "string" && choices.includes(value);
 
 export function checkedFileAccessRetestLinkage(value: unknown, objective: CompositionObjective, attempt: CompositionAttempt): FileAccessRetestLinkage {
   const record = compositionRecord(value);
@@ -58,21 +59,21 @@ export function checkedFileAccessRetestLinkage(value: unknown, objective: Compos
     || baseline.non_owner !== "allowed" || baseline.owner !== "allowed" || !count(baseline.record_count)
     || baseline.record_count !== grant.objective.predicate.record_count || baseline.sha256 !== grant.objective.predicate.sha256
     || retest.attempt_job_id !== attempt.job_id || retest.run_id !== binding.run_id
-    || !["verified", "unknown"].includes(String(retest.state))
-    || !["established", "not_established", "unknown"].includes(String(comparison.state))
-    || !["allowed_to_denied", "still_allowed", "unknown"].includes(String(comparison.non_owner_change))
+    || !oneOf(retest.state, ["verified", "unknown"])
+    || !oneOf(comparison.state, ["established", "not_established", "unknown"])
+    || !oneOf(comparison.non_owner_change, ["allowed_to_denied", "still_allowed", "unknown"])
     || ![comparison.owner_preserved, comparison.content_preserved, comparison.cleanup_verified].every(nullableBoolean)) invalid();
   if (retest.state === "unknown") {
     if (["non_owner_decision", "owner_decision", "record_count", "sha256", "run_cleanup", "request_cleanup", "objective_established", "result_digest"].some(key => retest[key] !== null)
       || comparison.state !== "unknown" || comparison.non_owner_change !== "unknown"
       || [comparison.owner_preserved, comparison.content_preserved, comparison.cleanup_verified].some(item => item !== null)) invalid();
   } else {
-    if (!["allowed", "permission_denied", "unknown"].includes(String(retest.non_owner_decision))
-      || !["allowed", "unknown"].includes(String(retest.owner_decision)) || !count(retest.record_count)
+    if (!oneOf(retest.non_owner_decision, ["allowed", "permission_denied", "unknown"])
+      || !oneOf(retest.owner_decision, ["allowed", "unknown"]) || !count(retest.record_count)
       || !digest(retest.sha256) || !digest(retest.result_digest)
       || (attempt.progress.verified_result_digest !== undefined && retest.result_digest !== attempt.progress.verified_result_digest)
       || typeof retest.objective_established !== "boolean"
-      || !["complete", "incomplete"].includes(String(retest.run_cleanup)) || retest.request_cleanup !== "verified_closed"
+      || !oneOf(retest.run_cleanup, ["complete", "incomplete"]) || retest.request_cleanup !== "verified_closed"
       || comparison.state !== (retest.objective_established ? "established" : "not_established")
       || comparison.non_owner_change !== (retest.non_owner_decision === "permission_denied" ? "allowed_to_denied" : retest.non_owner_decision === "allowed" ? "still_allowed" : "unknown")
       || comparison.owner_preserved !== (retest.owner_decision === "allowed" ? true : null)

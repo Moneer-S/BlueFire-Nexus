@@ -201,6 +201,10 @@ class StubService:
         self.calls.append(("file_access_composed_retest_linkage", owner_id, attempt_id))
         return {"saved": True}
 
+    def file_access_retest_assistance_context(self, owner_id, attempt_id):
+        self.calls.append(("file_access_retest_assistance_context", owner_id, attempt_id))
+        return {"saved": True}
+
     def composition_proposal_context(self, owner_id, request):
         self.calls.append(("composition_proposal_context", owner_id, request))
         return {"saved": True}

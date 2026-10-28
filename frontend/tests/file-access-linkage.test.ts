@@ -52,3 +52,25 @@ it("rejects a retest result digest from another saved attempt result", () => {
   value.retest.result_digest = `sha256:${"e".repeat(64)}`;
   expect(() => checkedFileAccessRetestLinkage(value, objective, attempt)).toThrow();
 });
+
+it.each(["state", "non_owner_decision", "owner_decision", "run_cleanup"])("rejects an array-coerced projection %s even with compatible false-result fields", field => {
+  const { objective, attempt, value } = linkageFixture("incomplete");
+  const retest = value.retest as unknown as Record<string, unknown>;
+  retest[field] = [retest[field]];
+  if (field === "non_owner_decision") value.comparison.non_owner_change = "unknown";
+  if (field === "owner_decision") {
+    value.comparison.owner_preserved = null;
+    value.comparison.content_preserved = null;
+  }
+  expect(() => checkedFileAccessRetestLinkage(value, objective, attempt)).toThrow();
+});
+
+it.each(["array", "object"])("rejects %s values in every projection enum position", shape => {
+  const fields = { baseline: ["mode", "non_owner", "owner"], change: ["mode"], retest: ["state", "non_owner_decision", "owner_decision", "run_cleanup", "request_cleanup"], comparison: ["state", "non_owner_change"] };
+  for (const [section, names] of Object.entries(fields)) for (const name of names) {
+    const { objective, attempt, value } = linkageFixture();
+    const row = (value as unknown as Record<string, Record<string, unknown>>)[section]!;
+    row[name] = shape === "array" ? [row[name]] : { value: row[name] };
+    expect(() => checkedFileAccessRetestLinkage(value, objective, attempt), `${section}.${name}`).toThrow();
+  }
+});

@@ -2747,6 +2747,13 @@ class BlueFireService(
                 "The selected saved file-access lineage cannot be verified.",
             ) from exc
 
+    def file_access_retest_assistance_context(
+        self, owner_id: str, attempt_id: str
+    ) -> Mapping[str, Any]:
+        from .assistance_file_access_retest_context import context
+
+        return context(self, owner_id=owner_id, attempt_id=attempt_id)
+
     def list_composition_objectives(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         if not isinstance(request, dict) or set(request) != {"control_owner_id"}:
             raise ProductStoreError("Objective listing requires an exact control owner.")

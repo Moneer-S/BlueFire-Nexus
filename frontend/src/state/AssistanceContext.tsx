@@ -6,6 +6,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { validGraphSelection, type GraphStepSelection, type GraphSelection } from "../lib/assistance";
 import { validFileAccessAssistanceSelection, type FileAccessAssistanceSelection } from "../lib/file-access-assistance";
 import { validComparisonAssistanceSelection, type ComparisonAssistanceSelection } from "../lib/comparison-assistance";
+import { validFileAccessRetestAssistanceSelection, type FileAccessRetestAssistanceSelection } from "../lib/file-access-retest-assistance";
 
 export interface AssistanceSelection {
   runId: string;
@@ -32,7 +33,8 @@ export interface ReceiverWorkspaceSelection { kind: "receiver"; selected: Receiv
 export interface AuditWorkspaceSelection { kind: "audit"; selected: AuditAssistanceSelection; title: string; manualEdits: false }
 export interface FileAccessWorkspaceSelection { kind: "file_access"; selected: FileAccessAssistanceSelection; title: string; manualEdits: false }
 export interface ComparisonWorkspaceSelection { kind: "comparison"; selected: ComparisonAssistanceSelection; title: string; manualEdits: false }
-export type WorkspaceSelection = AuditWorkspaceSelection | FileAccessWorkspaceSelection | ComparisonWorkspaceSelection | ReceiverWorkspaceSelection | AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection | RunDetectionWorkspaceSelection;
+export interface FileAccessRetestWorkspaceSelection { kind: "file_access_retest"; selected: FileAccessRetestAssistanceSelection; title: string; manualEdits: false }
+export type WorkspaceSelection = FileAccessRetestWorkspaceSelection | AuditWorkspaceSelection | FileAccessWorkspaceSelection | ComparisonWorkspaceSelection | ReceiverWorkspaceSelection | AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection | RunDetectionWorkspaceSelection;
 const selectionKey = "bluefire.assistance.selection.v1";
 function readSelection(): WorkspaceSelection | undefined {
   try {
@@ -47,6 +49,7 @@ function readSelection(): WorkspaceSelection | undefined {
     if (value.kind === "audit") return validAuditAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
     if (value.kind === "file_access") return validFileAccessAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
     if (value.kind === "comparison") return validComparisonAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
+    if (value.kind === "file_access_retest") return validFileAccessRetestAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
     if (value.kind === "graph" && (value.editUnavailable === undefined || (typeof value.editUnavailable === "string" && value.editUnavailable.length <= 1000)) && validGraphSelection({ kind: "graph", base_scenario: value.baseScenario, ...(value.editStep ? { edit_step: value.editStep } : {}) })) return value;
   } catch { /* Context is rechecked by the service before submission. */ }
 }
@@ -147,4 +150,14 @@ export function usePublishComparisonSelection(selection?: ComparisonAssistanceSe
     publish(owner, { kind: "comparison", selected: selection, title: title ?? "Saved comparison", manualEdits: false });
     return () => publish(owner);
   }, [publish, selection, title]);
+}
+
+export function usePublishFileAccessRetestSelection(selection?: FileAccessRetestAssistanceSelection) {
+  const publish = useContext(Context)?.publish;
+  useEffect(() => {
+    if (!publish || !selection || !validFileAccessRetestAssistanceSelection(selection)) return;
+    const owner = Symbol("file-access-retest-assistance");
+    publish(owner, { kind: "file_access_retest", selected: selection, title: "Baseline and fresh retest", manualEdits: false });
+    return () => publish(owner);
+  }, [publish, selection]);
 }

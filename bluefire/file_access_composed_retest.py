@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from .application_errors import APIError
 from .capability_file_access import objective_result as file_objective_result
@@ -24,7 +24,7 @@ def _require(condition: bool, message: str) -> None:
 
 
 def _revision(store: Any, owner_id: str, revision: int) -> dict[str, Any]:
-    return store.get_linux_file_access_revision_record(owner_id, revision)
+    return cast(dict[str, Any], store.get_linux_file_access_revision_record(owner_id, revision))
 
 
 def _operation(store: Any, job_id: str, *, owner_id: str, kind: str, revision: dict) -> dict:
@@ -74,7 +74,7 @@ def _operation(store: Any, job_id: str, *, owner_id: str, kind: str, revision: d
         ),
         "The original file-access operation does not verify this historical revision.",
     )
-    return records
+    return cast(dict[str, Any], records)
 
 
 def _historical_controls(store: Any, environment: Mapping[str, Any], now_ms: int):
@@ -101,6 +101,7 @@ def _historical_controls(store: Any, environment: Mapping[str, Any], now_ms: int
         and before.get("source") == changed.get("source"),
         "The reviewed hardening lacks its exact retained predecessor and baseline.",
     )
+    baseline_job_id = cast(str, baseline_job_id)
     baseline_records = store.file_access_operation_records(baseline_job_id)
     baseline_preparation = baseline_records["preparation"]
     _require(

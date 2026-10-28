@@ -1,9 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, CircleHelp, ShieldCheck } from "lucide-react";
+import { ArrowRight, CircleHelp, MessageSquareText, ShieldCheck } from "lucide-react";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { CompositionAttempt, CompositionObjective } from "../lib/composition";
 import { checkedFileAccessRetestLinkage, fileAccessLinkageApi } from "../lib/file-access-linkage";
-import { DataList, ErrorState, LoadingState } from "./Primitives";
+import { fileAccessRetestSelection } from "../lib/file-access-retest-assistance";
+import { useAssistancePanel, usePublishFileAccessRetestSelection } from "../state/AssistanceContext";
+import { Button, DataList, ErrorState, LoadingState } from "./Primitives";
 
 export function FileAccessRetestComparison({ objective, attempt }: { objective: CompositionObjective; attempt: CompositionAttempt }) {
   const binding = attempt.request.composition_attempt;
@@ -12,6 +15,10 @@ export function FileAccessRetestComparison({ objective, attempt }: { objective: 
     queryFn: async () => checkedFileAccessRetestLinkage(await fileAccessLinkageApi.read(objective.owner.job_id, binding.attempt_id), objective, attempt),
     retry: false,
   });
+  const assistance = useAssistancePanel();
+  const selection = useMemo(() => query.isSuccess && !query.isFetching
+    ? fileAccessRetestSelection(query.data, objective, attempt) : undefined, [query.isSuccess, query.isFetching, query.data, objective, attempt]);
+  usePublishFileAccessRetestSelection(selection);
   if (query.error) return <ErrorState title="Saved comparison unavailable" error={query.error} retry={() => { void query.refetch(); }} />;
   if (!query.data) return <LoadingState label="Opening baseline and retest evidence" />;
   const { baseline, change, retest, comparison, control_owner_id: control, linkage_digest: linkageDigest } = query.data;
@@ -44,6 +51,7 @@ export function FileAccessRetestComparison({ objective, attempt }: { objective: 
       <div><span>Test cleanup</span><strong>{comparison.cleanup_verified === true ? "Verified" : comparison.cleanup_verified === false ? "Needs review" : "Not verified"}</strong><small>{comparison.cleanup_verified === true ? "Run cleaned and probe request closed." : retest.request_cleanup === "verified_closed" ? "Probe request closed; run cleanup incomplete." : "Run and request closure remain unverified."}</small></div>
     </div>
     <p className="file-access-retest-retention">This comparison preserves the recorded permission change. Cleanup does not roll it back; later control changes do not rewrite these results.</p>
+    <Button variant="secondary" disabled={!selection || !assistance} onClick={() => { if (selection) assistance?.setOpen(true); }}><MessageSquareText aria-hidden="true" />Explain this comparison</Button>
     <nav className="file-access-retest-links" aria-label="Comparison source records">
       <Link to={controlLink(baseline.operation_job_id)}>Baseline reads<ArrowRight aria-hidden="true" /></Link>
       <Link to={controlLink(change.operation_job_id)}>Reviewed change<ArrowRight aria-hidden="true" /></Link>

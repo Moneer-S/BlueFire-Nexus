@@ -167,6 +167,9 @@ class PlatformService(Protocol):
     def file_access_composed_retest_linkage(self, owner_id: str, attempt_id: str) -> JsonResult:
         """Read the exact Linux baseline/change/composed-retest history."""
 
+    def file_access_retest_assistance_context(self, owner_id: str, attempt_id: str) -> JsonResult:
+        """Explain one bound historical Linux comparison without new effects."""
+
     def composition_proposal_context(self, owner_id: str, request: JsonObject) -> JsonResult:
         """Project current authorized facts for an initial or revised graph."""
 
