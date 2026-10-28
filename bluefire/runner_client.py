@@ -416,6 +416,12 @@ def _prepare_darwin_launch_resources(
 ) -> _DarwinLaunchResources:
     """Duplicate borrowed descriptors and pin executable paths for the worker."""
 
+    def native_wire_unsigned(value: Any, bits: int) -> int | None:
+        upper_bound = 1 << bits
+        if type(value) is not int or not -(upper_bound >> 1) <= value < upper_bound:
+            return None
+        return value % upper_bound
+
     prepared_argv = list(argv)
     prepared_options = dict(options)
     descriptors: list[int] = []
@@ -471,10 +477,13 @@ def _prepare_darwin_launch_resources(
                         "role": descriptor_roles[descriptor],
                         "fd": duplicate,
                         "identity": {
-                            "dev": details.st_dev,
-                            "ino": details.st_ino,
+                            # Match the native diagnostic wire widths. An
+                            # impossible host value remains invalid for later
+                            # diagnostic withholding; it never blocks launch.
+                            "dev": native_wire_unsigned(details.st_dev, 32),
+                            "ino": native_wire_unsigned(details.st_ino, 64),
                             "mode_type": stat.S_IFMT(details.st_mode),
-                            "rdev": getattr(details, "st_rdev", 0),
+                            "rdev": native_wire_unsigned(getattr(details, "st_rdev", 0), 32),
                         },
                     }
                 )

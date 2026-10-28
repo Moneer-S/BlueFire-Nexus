@@ -63,12 +63,12 @@ _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "_clone_darwin_launch_link": "sha256:8d329eb489bb3ce28e5b6d73ae24c2a4a30013263e687be360f23f356708f300",
     "_duplicate_darwin_descriptor": "sha256:d4d53bd37f3721dec052f5a74e7e1eec78806aac24737bd5f3efef9e62edac14",
     "_execute_darwin_launch_request": "sha256:a85ea1b730c2a6d478b3fc82b61ce5e867a8baf0c52f4ea23d42410775f8740d",
-    "_prepare_darwin_launch_resources": "sha256:dd23d2410fb5d306081a21c9adf5c652423fa9b42629ccc4aaed776a6a5e257f",
+    "_prepare_darwin_launch_resources": "sha256:4d26721f47c5e0d5a96b0275c1d815906c6881d6382267741ecf7c8c34911f2f",
     "_retire_darwin_launch_resources": "sha256:5cf913f0d0a01d6d257c0827dd7b61ca30758f33f4b3e34b1693f9e80a253079",
     "_run_darwin_launch_worker": "sha256:a969f6e5c14c2bc0b150be268321faf33dd00da035548706cb9eded992ac01aa",
 }
 _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256 = (
-    "sha256:31da1d9d57ce7bf0b237b5989654feaba74a9ba9b1f16a306572e20c3f030695"
+    "sha256:d35d1c48bbcd5dcc6a44394a510e0c1d52d6a57df56fbc86a3f337b718b24e60"
 )
 _REVIEWED_DARWIN_CONTAINMENT_SECTIONS = {
     "_validate_macos_launch_parent": "sha256:244beadfd89a4f2e6731109cd100042ba2a1ef8ea40e81bbd98f55211e7ebfb6",

@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from tools.provider_gate_common import TRUSTED_PROCESS_BOUNDARY_PATHS, _sha256_bytes
 
 _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
-    "bluefire/runner_client.py": "sha256:31da1d9d57ce7bf0b237b5989654feaba74a9ba9b1f16a306572e20c3f030695",
+    "bluefire/runner_client.py": "sha256:d35d1c48bbcd5dcc6a44394a510e0c1d52d6a57df56fbc86a3f337b718b24e60",
     "bluefire/runner_bootstrap.py": "sha256:3868a90688d0010b0241b460d8be90dc44b0b7b6b025a9a6a076ec04e0024883",
     "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
     "bluefire/runner_windows_containment.py": "sha256:63e749dc00fdf6bdf0d2ed6246fc050cb7dac2d665de30a65452520bc4548979",

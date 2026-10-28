@@ -5,6 +5,8 @@ import json
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from bluefire import macos_file_access_worker, runner_client
 from bluefire import macos_setup_failure_diagnostics as diagnostics
@@ -37,6 +39,44 @@ def _native_rows():
     return [
         {"fd": fd, "kind": 1 if fd != 4 else 2, "identity": identity} for fd in (0, 1, 2, 3, 4, 9)
     ]
+
+
+def _observed_launch_copy_rows(*, dev, ino, rdev):
+    resource, channel = os.pipe()
+    sink = []
+    observed = []
+    real_fstat = os.fstat
+
+    def observed_fstat(fd):
+        details = real_fstat(fd)
+        return SimpleNamespace(
+            st_dev=dev,
+            st_ino=ino,
+            st_mode=details.st_mode,
+            st_rdev=rdev,
+        )
+
+    try:
+        with patch.object(runner_client.os, "fstat", observed_fstat):
+            resources = runner_client._prepare_darwin_launch_resources(
+                ["fixed-runner"],
+                {
+                    "pass_fds": (resource, channel),
+                    "_bluefire_descriptor_roles": {
+                        resource: "resource",
+                        channel: "primitive_channel",
+                    },
+                    "_bluefire_descriptor_observation_sink": observed,
+                },
+                sink,
+            )
+        assert sink == [resources]
+        return observed
+    finally:
+        for resources in sink:
+            resources.close()
+        os.close(resource)
+        os.close(channel)
 
 
 def test_worker_failure_site_pin_covers_reviewed_start_method_exactly():
@@ -89,6 +129,35 @@ def test_worker_owned_duplicate_identity_is_recorded_without_proving_child_inher
     finally:
         os.close(resource)
         os.close(channel)
+
+
+def test_worker_owned_duplicate_identity_matches_native_unsigned_wire_widths():
+    observed = _observed_launch_copy_rows(dev=-1, ino=-2, rdev=-3)
+    assert [
+        (row["identity"]["dev"], row["identity"]["ino"], row["identity"]["rdev"])
+        for row in observed
+    ] == [(2**32 - 1, 2**64 - 2, 2**32 - 3)] * 2
+    assert diagnostics.valid_native_fd_observation(
+        {
+            "schema_version": diagnostics.NATIVE_FD_OBSERVATION_SCHEMA,
+            "scope": "diagnostic_only_no_descriptor_admission",
+            "launch_copy_rows": observed,
+            "native_rows": _native_rows(),
+        }
+    )
+
+
+def test_non_native_stat_width_withholds_observation_without_blocking_launch():
+    observed = _observed_launch_copy_rows(dev=2**32, ino=2, rdev=0)
+    assert [row["identity"]["dev"] for row in observed] == [None, None]
+    assert not diagnostics.valid_native_fd_observation(
+        {
+            "schema_version": diagnostics.NATIVE_FD_OBSERVATION_SCHEMA,
+            "scope": "diagnostic_only_no_descriptor_admission",
+            "launch_copy_rows": observed,
+            "native_rows": _native_rows(),
+        }
+    )
 
 
 def test_only_one_exact_native_frame_can_extend_code_96_diagnostic():
