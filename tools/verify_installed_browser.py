@@ -159,6 +159,7 @@ def _valid_receiver_composition(value: object) -> bool:
             "empty_record_count",
             "cleanup",
             "objective_established",
+            "finalized_run_objective_reached",
             "graph_objective_reached",
             "comparison",
         }
@@ -193,7 +194,9 @@ def _valid_receiver_composition(value: object) -> bool:
         and composition["empty_record_count"] == 0
         and result_cleanup == {"run": "complete", "receiver": "verified_closed"}
         and composition["objective_established"] is False
-        and composition["graph_objective_reached"] is True
+        and type(composition["finalized_run_objective_reached"]) is bool
+        and type(composition["graph_objective_reached"]) is bool
+        and composition["graph_objective_reached"] is composition["finalized_run_objective_reached"]
         and set(comparison)
         == {
             "baseline_run_id",
@@ -219,7 +222,7 @@ def _valid_receiver_composition(value: object) -> bool:
         and "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false"
         in checks
         and "composed_attempt_grant_revoked_after_verified_cleanup" in checks
-        and "saved_composed_comparison_reopened_with_false_objective_and_distinct_graph_completion"
+        and "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result"
         in checks
         and type(counts.get("composition_list")) is int
         and 1 <= counts["composition_list"] <= 5

@@ -37,7 +37,7 @@ def receiver_report() -> dict[str, object]:
             "linked_fresh_protected_refusal_and_legitimate_use_completed_under_retained_policy",
             "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false",
             "composed_attempt_grant_revoked_after_verified_cleanup",
-            "saved_composed_comparison_reopened_with_false_objective_and_distinct_graph_completion",
+            "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result",
         ],
         "blocked_requests": [],
         "errors": [],
@@ -107,7 +107,8 @@ def receiver_report() -> dict[str, object]:
             "empty_record_count": 0,
             "cleanup": {"run": "complete", "receiver": "verified_closed"},
             "objective_established": False,
-            "graph_objective_reached": True,
+            "finalized_run_objective_reached": False,
+            "graph_objective_reached": False,
             "comparison": {
                 "baseline_run_id": "run-20261021T120000Z-aaaaaaaaaaaaaaaa",
                 "snapshot_id": "run-comparison-" + "d" * 64,
@@ -365,6 +366,10 @@ def test_composed_receiver_receipt_requires_false_objective_and_current_saved_co
         )
     assert _receiver_driver_passed(report)
     assert _receiver_report_for_receipt(report)["composition"] == report["composition"]
+    aligned_true = deepcopy(report)
+    aligned_true["composition"]["finalized_run_objective_reached"] = True
+    aligned_true["composition"]["graph_objective_reached"] = True
+    assert _receiver_driver_passed(aligned_true)
 
     for field, value in (
         ("control_owner_job_id", "job-ffffffffffffffffffffffffffffffff"),
@@ -376,7 +381,10 @@ def test_composed_receiver_receipt_requires_false_objective_and_current_saved_co
         ("record_count", True),
         ("redacted_record_count", 8),
         ("objective_established", True),
-        ("graph_objective_reached", False),
+        ("graph_objective_reached", True),
+        ("finalized_run_objective_reached", True),
+        ("graph_objective_reached", None),
+        ("finalized_run_objective_reached", None),
     ):
         changed = deepcopy(report)
         changed["composition"][field] = value
