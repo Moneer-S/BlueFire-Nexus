@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Ban, ChevronDown, ChevronUp, GitBranch, Pause, Play, RefreshCw, X } from "lucide-react";
 import { api } from "../lib/api";
-import { checkedCompositionContext, checkedCompositionList, checkedCompositionObjective, checkedCompositionProposal, clearCompositionPending, compositionApi, compositionConfirmed, compositionJobId, compositionJobValid, compositionRecord, readCompositionPending, storeCompositionPending, type CompositionObjective, type CompositionPending, type CompositionProposal } from "../lib/composition";
+import { checkedCompositionContext, checkedCompositionList, checkedCompositionObjective, checkedCompositionProposal, clearCompositionPending, compositionApi, compositionConfirmed, compositionProposalActive, compositionJobId, compositionJobValid, compositionRecord, readCompositionPending, storeCompositionPending, type CompositionObjective, type CompositionPending, type CompositionProposal } from "../lib/composition";
 import { Badge, Button, Callout, DataList, ErrorState, Field, IconButton, LoadingState, PageHeader, sentence } from "../components/Primitives";
 import { CompositionCapabilities, CompositionSetup } from "../components/CompositionReview";
 import { CompositionAttempts } from "../components/CompositionAttempts";
@@ -75,7 +75,7 @@ export function CompositionPage() {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [macOSContext]);
-  const proposal = useQuery({ queryKey: ["composition-proposal", proposalId], queryFn: async () => checkedCompositionProposal(await compositionApi.proposal(proposalId), proposalId, id), enabled: !macOSContext && compositionJobValid(proposalId) && compositionJobValid(id) && !write.isPending, retry: false, refetchInterval: state => state.state.data && ["pending", "requesting"].includes(state.state.data.provider_outcome) ? 1200 : false });
+  const proposal = useQuery({ queryKey: ["composition-proposal", proposalId], queryFn: async () => checkedCompositionProposal(await compositionApi.proposal(proposalId), proposalId, id), enabled: !macOSContext && compositionJobValid(proposalId) && compositionJobValid(id) && !write.isPending, retry: false, refetchInterval: state => compositionProposalActive(state.state.data) ? 1200 : false });
   useEffect(() => {
     const savedControl = control || objective.data?.grant?.document.environment.control_owner_id || String(compositionRecord(compositionRecord(objective.data?.owner.progress.submitted_request).review).control_owner_id ?? "");
     if (!id || !savedControl || (params.get("objective") && params.get("control"))) return;
@@ -214,7 +214,7 @@ function CompositionPlanning({ objective, knowledge, proposal, proposalId, pendi
   const grant = objective.grant.document;
   const owner = objective.owner.job_id;
   const established = compositionEstablished(objective);
-  const proposing = Boolean(proposal && ["pending", "requesting"].includes(proposal.provider_outcome));
+  const proposing = compositionProposalActive(proposal);
   const active = !established && (!macOS || !objective.attempts.length) && objective.grant.status === "active" && grant.expires_at_ms > now && !disabled && !pending && !proposing;
   const priorValid = !objective.attempts.length ? prior === "" : objective.attempts.some(item => item.request.composition_attempt.attempt_id === prior && compositionCanRevise(item, objective));
   const capturedContext = proposal?.proposal?.schema_version === "bluefire.composition-ai-result.v2" ? proposal.job.request.context as CompositionEvidenceContext : undefined;
