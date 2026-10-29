@@ -1195,6 +1195,9 @@ def _receiver_evidence_fixture_output(supplied: object) -> dict[str, object]:
         for step in steps
     ):
         raise ValueError("receiver evidence fixture cannot expand current parameter domains")
+    # The installed journey selects only the filesystem collector. Its later
+    # artifact observation is historical support, while record semantics above
+    # come exclusively from the separately verified current receiver result.
     finding = next(
         (
             row
@@ -1202,21 +1205,15 @@ def _receiver_evidence_fixture_output(supplied: object) -> dict[str, object]:
             if row["step_id"] == "stage_records"
             and row["behavior_id"] == "sandbox.collection.stage.v1"
             and row["provenance"] == "observed"
-            and row["semantic_kind"] == "observed_collection"
-            and all(
-                row["summary"].get(key) == value
-                for key, value in {
-                    "record_count": 8,
-                    "retained_record_count": 8,
-                    "redacted_record_count": 0,
-                    "empty_record_count": 0,
-                }.items()
+            and row["semantic_kind"] == "observed_filesystem"
+            and _valid_receiver_artifact(
+                {key: row["summary"].get(key) for key in ("sha256", "size_bytes")}
             )
         ),
         None,
     )
     if finding is None:
-        raise ValueError("receiver evidence fixture requires an actual later collection finding")
+        raise ValueError("receiver evidence fixture requires an actual later artifact observation")
     choice = history["choices"][1]
     return {
         "schema_version": EVIDENCE_OUTPUT_VERSION,
@@ -1230,7 +1227,7 @@ def _receiver_evidence_fixture_output(supplied: object) -> dict[str, object]:
                 facts[kind]["evidence_ref"]
                 for kind in ("retained_policy", "receiver_result", "cleanup")
             ],
-            "rationale": "The saved collection observation retained all eight values. Reconsider the earlier transform, then review a fresh redacted attempt.",
+            "rationale": "The saved filesystem observation identifies the later staged artifact, without proving its record semantics. The current receiver result records eight retained values and a policy refusal. Reconsider the earlier transform, then review a fresh redacted attempt.",
         },
         "reconsideration": {
             "reconsidered_choices": [
@@ -1241,7 +1238,7 @@ def _receiver_evidence_fixture_output(supplied: object) -> dict[str, object]:
                     "finding_refs": [
                         {"finding_id": finding["finding_id"], "record_ref": finding["record_ref"]}
                     ],
-                    "reason": "The later collection finding retained eight values and the current result records a policy refusal. Reconsider the earlier unredacted transform without rewriting that failed attempt.",
+                    "reason": "The later filesystem finding records staged artifact metadata, not redaction semantics. The separately verified current receiver result records eight retained values and a policy refusal. Reconsider the earlier unredacted transform without rewriting that failed attempt.",
                 }
             ],
             "refresh_requirements": [

@@ -182,16 +182,13 @@ def receiver_evidence_request() -> dict[str, object]:
         "behavior_id": METHODS[4],
         "action_id": METHODS[4],
         "provenance": "observed",
-        "semantic_kind": "observed_collection",
+        "semantic_kind": "observed_filesystem",
         "observed_at": "2026-10-29T12:34:56Z",
         "content_hash": content_hash("authored content"),
         "record_hash": record_ref["record_hash"],
         "summary": {
-            "container": "jsonl",
-            "record_count": 8,
-            "retained_record_count": 8,
-            "redacted_record_count": 0,
-            "empty_record_count": 0,
+            "sha256": content_hash("authored staged artifact").removeprefix("sha256:"),
+            "size_bytes": 840,
         },
         "applicability": {"status": "historical_only", "reason": "current_state_not_verified"},
         "record_ref": record_ref,
@@ -694,7 +691,19 @@ def test_receiver_fixture_refuses_context_crossed_between_purposes(evidence: boo
             "record_ref"
         ].update(run_id="other-run"),
         lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].update(
-            retained_record_count=0
+            size_bytes=0
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].pop(
+            "sha256"
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].pop(
+            "size_bytes"
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].update(
+            size_bytes=True
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0].update(
+            semantic_kind="observed_collection"
         ),
         lambda value: value["historical_context"]["attempts"][0]["findings"][0][
             "applicability"
