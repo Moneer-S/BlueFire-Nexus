@@ -33,6 +33,7 @@ _TRACE_ERROR_PROBES = frozenset(
     {
         "dtrace:::BEGIN",
         "dtrace:::ERROR",
+        "proc:::exec",
         "proc:::exec-success",
         "proc:::exec-failure",
         "proc:::exit",
@@ -276,9 +277,11 @@ def _owned_trace_script(owner: int, native_parent: Path) -> str:
     """Use Apple's progenyof(), with no process-name or global data collection.
 
     Apple sources: dtrace/cmd/dtrace/dtrace.1 (progenyof, ustack, exit status),
-    DTTk/dtruss (descendant syscall filtering), and xnu/bsd/kern/kern_exec.c
-    (exec-success on the new thread before returning to userspace).
-    Only execve's filename is inspected, privately; argv/environment are untouched.
+    DTTk/dtruss (descendant syscall filtering), xnu/bsd/kern/kern_exec.c
+    (proc exec receives the already copied-in pathname), and
+    xnu/bsd/dev/dtrace/sdt_subr.c (proc exec args[0] is a D string).
+    Unlike copyinstr at syscall entry, this does not reread user pathname memory.
+    Only the filename is inspected, privately; argv/environment are untouched.
     """
     prefix = native_parent.as_posix() + "/.bluefire-verified-launch-"
     if type(owner) is not int or owner <= 1 or not re.fullmatch(r"/[A-Za-z0-9_./-]{1,700}", prefix):
@@ -295,8 +298,8 @@ def _owned_trace_script(owner: int, native_parent: Path) -> str:
 #pragma D option bufsize=256k
 #pragma D option dynvarsize=256k
 dtrace:::BEGIN {{ chosen = 0; printf("BFTRACE_READY\\n"); }}
-syscall::execve:entry /progenyof({owner}) && !chosen/ {{
-    this->image = copyinstr(arg0);
+proc:::exec /progenyof({owner}) && !chosen/ {{
+    this->image = args[0];
     pending[pid] = strlen(this->image) == {len(prefix) + 64} &&
         substr(this->image, 0, {len(prefix)}) == "{prefix}" && {hex_tests};
 }}

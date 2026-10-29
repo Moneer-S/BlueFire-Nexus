@@ -138,6 +138,28 @@ def test_script_scope_captures_neither_argv_environment_payload_nor_paths():
     assert all("image" not in line for line in script.splitlines() if "printf" in line)
 
 
+def test_owned_selector_uses_kernel_copied_proc_path_without_user_memory_read():
+    script = trace_support._owned_trace_script(12345, Path("/protected/bluefire/native"))
+    selector, continuation = script.split("proc:::exec-success", 1)
+    assert "proc:::exec /progenyof(12345) && !chosen/ {" in selector
+    assert "this->image = args[0];" in selector
+    assert "copyinstr(" not in script and "copyin(" not in script
+    assert "syscall::execve:entry" not in selector
+    assert "native = pid" not in selector and "BFTRACE_EXEC" not in selector
+    # A path match is only pending. Selection requires the same owned PID's
+    # actual successful exec; failed candidates are cleared separately.
+    assert continuation.startswith(" /progenyof(12345) && pending[pid] && !chosen/")
+    assert "chosen = 1; native = pid; pending[pid] = 0;" in continuation
+    assert "proc:::exec-failure /progenyof(12345) && pending[pid]/ { pending[pid] = 0; }" in script
+    assert "proc:::exit /progenyof(12345) && pending[pid]/ { pending[pid] = 0; }" in script
+    # Re-exec and any ERROR still terminate the diagnostic, without inspecting
+    # a second executable or weakening the independent native descriptor check.
+    assert (
+        'syscall::execve:entry /pid == native/ { printf("BFTRACE_REEXEC\\n"); exit(0); }' in script
+    )
+    assert script.split("dtrace:::ERROR {", 1)[1].strip().endswith("exit(0);\n}")
+
+
 def test_stream_overflow_immediately_stops_only_owned_tracer_without_retaining_more():
     read_fd, write_fd = os.pipe()
     signalled = []
@@ -289,6 +311,19 @@ def test_predicate_fault_and_unavailable_dif_offset_have_distinct_meaning():
         "dif_offset": -1,
         "probe": "syscall::execve:entry",
     }
+
+
+def test_proc_exec_runtime_fault_remains_inspectable_but_inconclusive():
+    raw = b"BFTRACE_READY\nBFTRACE_ERROR\nBFTRACE_FAULT 6 1 12\n"
+    stderr = _runtime_stderr(fault="invalid kernel access", address="", probe="proc:::exec")
+    diagnostic = trace_support._runtime_diagnostic(raw, stderr)
+    assert diagnostic["probe"] == "proc:::exec"
+    assert diagnostic["fault"] == "invalid_kernel_access"
+    result = trace_support._trace_projection(
+        raw, impaired=False, failure_codes=trace_support._stderr_failure_codes(stderr)
+    )
+    assert result["status"] == "inconclusive" and result["descriptor_authority"] == "none"
+    assert "events" not in result
 
 
 @pytest.mark.parametrize(
