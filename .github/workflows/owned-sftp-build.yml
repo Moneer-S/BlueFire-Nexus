@@ -1,0 +1,55 @@
+name: owned SFTP candidate build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: owned-sftp-candidate-build
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact dispatch commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare ordinary Ubuntu build dependencies
+        shell: bash
+        run: |
+          sudo /usr/bin/env -i PATH=/usr/bin:/bin DEBIAN_FRONTEND=noninteractive \
+            /usr/bin/apt-get update
+          sudo /usr/bin/env -i PATH=/usr/bin:/bin DEBIAN_FRONTEND=noninteractive \
+            /usr/bin/apt-get install --yes --no-install-recommends \
+            build-essential autoconf automake gawk pkg-config git \
+            libssl-dev zlib1g-dev libcrypt-dev libc6 libssl3t64 zlib1g libcrypt1 libtinfo6
+
+      - name: Build unapproved candidates without inherited credentials
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          build_root="$RUNNER_TEMP/bluefire-owned-sftp-candidate"
+          mkdir -m 700 "$build_root"
+          mkdir -m 700 "$build_root/home"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$build_root/home" \
+            LC_ALL=C TZ=UTC SFTP_BUILD_ROOT="$build_root" \
+            BLUEFIRE_SOURCE_REVISION="$GITHUB_SHA" \
+            BLUEFIRE_IMAGE_OS="$ImageOS" BLUEFIRE_IMAGE_VERSION="$ImageVersion" \
+            /usr/bin/python3 -I tools/build_owned_sftp_candidate.py
+
+      - name: Retain candidate source and review evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unapproved-owned-sftp-${{ github.sha }}
+          path: ${{ runner.temp }}/bluefire-owned-sftp-candidate/artifact/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
