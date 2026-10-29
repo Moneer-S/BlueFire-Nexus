@@ -56,6 +56,7 @@ let runPreflightPosts = 0, runPosts = 0, comparisonPosts = 0;
 let providerPosts = 0, activationPosts = 0, authorizationPosts = 0, turnPosts = 0;
 let providerConfig, runIds = [], phaseOne, firstGrant, secondGrant, firstAuthorizationContext;
 let recoveryPhaseWriteAttempts = 0;
+let replacementSubstage, replacementObserved, replacementHttpStatus;
 const setupJobIds = new Set();
 const setupRunIds = new Set();
 const turnJobIds = new Set();
@@ -329,14 +330,52 @@ async function selectAssistantProvider(panel) {
   await panel.getByRole("button", { name: "Assistant settings", exact: true }).click();
 }
 
-async function submitThroughUi(panel) {
+function replacementFailureDiagnostic(substage, observed, httpStatus, error) {
+  const stages = new Set([
+    "provider_selection", "submission_fill", "submission_click", "submission_response",
+    "submission_status", "submission_body", "submission_identity", "request_identity",
+    "terminal_poll", "terminal_job", "terminal_turn", "completion_heading",
+    "empty_plan", "empty_results", "provider_count", "retained_records",
+    "authorization_usage", "capture", "write_counts",
+  ]);
+  const jobs = new Set(["queued", "awaiting_approval", "running", "cancelling", "cancelled", "completed", "failed", "interrupted"]);
+  const turns = new Set(["planning", "working", "off", "awaiting_review", "awaiting_execute_approval", "ready_to_continue", "cancelling", "cancelled", "blocked", "completed"]);
+  const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
+  const arrayShape = value => value === undefined ? "missing"
+    : Array.isArray(value) ? value.length === 0 ? "empty" : "nonempty" : "invalid";
+  const job = object(observed) && object(observed.job) ? observed.job : null;
+  const turn = object(observed) && object(observed.turn) ? observed.turn : null;
+  return {
+    substage: stages.has(substage) ? substage : "unknown",
+    error_category: error?.name === "AssertionError" ? "assertion"
+      : error?.name === "TimeoutError" ? "timeout"
+      : error?.name === "TypeError" ? "type" : error?.name === "SyntaxError" ? "json" : "other",
+    submission_status: httpStatus === undefined ? "unobserved" : httpStatus === 202 ? "accepted"
+      : Number.isInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 499 ? "client_error"
+      : Number.isInteger(httpStatus) && httpStatus >= 500 && httpStatus <= 599 ? "server_error" : "other",
+    job_state: jobs.has(job?.state) ? job.state : "unknown",
+    turn_status: turns.has(turn?.status) ? turn.status : "unknown",
+    job_error_shape: job === null ? "missing" : job.error == null ? "absent" : object(job.error) ? "object" : "invalid",
+    result_ref_shape: job === null ? "missing" : job.result_ref == null ? "absent" : typeof job.result_ref === "string" ? "string" : "invalid",
+    plan_shape: arrayShape(turn?.plan),
+    results_shape: arrayShape(turn?.results),
+  };
+}
+
+async function submitThroughUi(panel, observe = () => {}) {
   const response = page.waitForResponse(item => new URL(item.url()).pathname === "/api/v1/assistance/turns" && item.request().method() === "POST");
+  observe("submission_fill");
   await panel.getByRole("textbox", { name: "What would you like to do?", exact: true }).fill(prompt);
+  observe("submission_click");
   await panel.getByRole("button", { name: "Start work", exact: true }).click();
+  observe("submission_response");
   const value = await response;
+  observe("submission_status", value.status());
   assert.equal(value.status(), 202);
+  observe("submission_body");
   const submitted = JSON.parse(value.request().postData());
   const envelope = await value.json();
+  observe("submission_identity", undefined, envelope);
   assert.match(envelope.job?.job_id ?? "", jobPattern);
   return { jobId: envelope.job.job_id, submitted };
 }
@@ -466,26 +505,45 @@ try {
   await replacementPanel.getByRole("button", { name: "Start another request", exact: true }).click();
   await replacementPanel.getByRole("textbox", { name: "What would you like to do?", exact: true }).waitFor();
   stage = "explicit-replacement";
+  replacementSubstage = "provider_selection";
   await selectAssistantProvider(replacementPanel);
-  const replacement = await submitThroughUi(replacementPanel);
+  const replacement = await submitThroughUi(replacementPanel, (substage, httpStatus, observed) => {
+    replacementSubstage = substage;
+    if (httpStatus !== undefined) replacementHttpStatus = httpStatus;
+    if (observed !== undefined) replacementObserved = observed;
+  });
   replacementId = replacement.jobId;
+  replacementSubstage = "request_identity";
   assert.notEqual(replacementId, originalId);
   assert.equal(replacement.submitted.context_digest, phaseOne.context_digest);
   assert.equal(replacement.submitted.message, prompt);
-  const completed = await poll(() => api(`/assistance/turns/${replacementId}`), value => ["completed", "blocked"].includes(value.turn?.status), 30000);
+  replacementSubstage = "terminal_poll";
+  const completed = await poll(async () => {
+    const value = await api(`/assistance/turns/${replacementId}`);
+    replacementObserved = value;
+    return value;
+  }, value => ["completed", "blocked"].includes(value.turn?.status), 30000);
+  replacementSubstage = "terminal_job";
   assert.equal(completed.job.state, "completed");
+  replacementSubstage = "terminal_turn";
   assert.equal(completed.turn.status, "completed");
+  replacementSubstage = "completion_heading";
   await replacementPanel.getByRole("heading", { name: "Work completed", exact: true }).waitFor();
   report.observed_states.replacement = { job: "completed", turn: "completed" };
+  replacementSubstage = "empty_plan";
   assert.deepEqual(completed.turn.plan, []);
+  replacementSubstage = "empty_results";
   assert.deepEqual(completed.turn.results, []);
+  replacementSubstage = "provider_count";
   assert.equal((await fixtureState()).request_count, 2);
+  replacementSubstage = "retained_records";
   const originalFinal = await api(`/assistance/turns/${originalId}`);
   assert.equal(originalFinal.job.state, "interrupted");
   assert.equal(originalFinal.turn.status, "blocked");
   assert.equal(sha(originalFinal.job.request.submitted_request), phaseOne.original_request_digest);
   assert.equal(sha(await api(`/comparison-snapshots/${phaseOne.snapshot_id}`)), report.saved_snapshot_hash);
   assert.deepEqual((await api("/runs")).runs?.map(item => item.run_id).sort(), [...runIds].sort());
+  replacementSubstage = "authorization_usage";
   const finalGrants = await api("/ai/authorizations");
   const secondUsed = finalGrants.authorizations.find(item => item.authorization_id === secondGrant.authorization_id);
   assert.equal(secondUsed.status, "active");
@@ -494,7 +552,9 @@ try {
   assert.equal(secondUsed.usage.reserved_output_tokens, 64);
   assert.equal(secondUsed.limits.max_requests - secondUsed.usage.requests, 0);
   assert.equal(secondUsed.limits.max_reserved_output_tokens - secondUsed.usage.reserved_output_tokens, 0);
+  replacementSubstage = "capture";
   await captureAssistantView("assistant-completed-replacement");
+  replacementSubstage = "write_counts";
   assert.equal(runPreflightPosts, 2); assert.equal(runPosts, 2); assert.equal(comparisonPosts, 1);
   assert.equal(turnPosts, 2); assert.equal(firstSessionPosts, 1); assert.equal(secondSessionPosts, 1);
   assert.equal(recoveryPhaseWriteAttempts, 0);
@@ -517,8 +577,13 @@ try {
   report.checks.push("visible_explicit_new_request_created_distinct_completed_explanation");
   report.checks.push("snapshot_run_order_and_request_context_remained_unchanged_without_effectful_writes");
   report.status = "passed";
-} catch {
+} catch (error) {
   report.errors.push({ stage, kind: "journey_failed" });
+  if (stage === "explicit-replacement") {
+    report.replacement_diagnostic = replacementFailureDiagnostic(
+      replacementSubstage, replacementObserved, replacementHttpStatus, error,
+    );
+  }
   process.exitCode = 1;
 } finally {
   capabilityInput.close();

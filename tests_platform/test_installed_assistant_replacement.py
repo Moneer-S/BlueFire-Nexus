@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import copy
+import json
+import shutil
+import subprocess
+from pathlib import Path
 from unittest.mock import Mock
+
+import pytest
 
 from tools import verify_installed_assistant_replacement as verifier
 
@@ -225,6 +231,184 @@ def test_failure_progress_retains_only_bounded_stages_counts_and_observed_states
     source["attempted_writes"]["run"] = True
     source["observed_states"]["original_before_loss"]["job"] = ["unhashable"]
     assert verifier._browser_failure_diagnostic(source) == {}
+
+
+def replacement_failure() -> dict[str, str]:
+    return {
+        "substage": "terminal_job",
+        "error_category": "assertion",
+        "submission_status": "accepted",
+        "job_state": "failed",
+        "turn_status": "blocked",
+        "job_error_shape": "object",
+        "result_ref_shape": "absent",
+        "plan_shape": "empty",
+        "results_shape": "empty",
+    }
+
+
+def test_replacement_failure_keeps_terminal_failure_distinct_from_rendering_failure() -> None:
+    diagnostic = replacement_failure()
+    report = {
+        "errors": [{"stage": "explicit-replacement", "kind": "journey_failed"}],
+        "replacement_diagnostic": diagnostic,
+    }
+    assert verifier._browser_failure_diagnostic(report) == {
+        "browser_stage": "explicit-replacement",
+        "replacement_diagnostic": diagnostic,
+    }
+    diagnostic.update(
+        substage="completion_heading",
+        error_category="timeout",
+        job_state="completed",
+        turn_status="completed",
+        job_error_shape="absent",
+    )
+    assert verifier._browser_failure_diagnostic(report)["replacement_diagnostic"] == diagnostic
+    report["errors"][0]["stage"] = "fresh-session"
+    assert verifier._browser_failure_diagnostic(report) == {"browser_stage": "fresh-session"}
+
+
+@pytest.mark.parametrize("field", list(replacement_failure()))
+@pytest.mark.parametrize("unsafe", ["unrecognized-private-detail", ["unhashable"], None, True])
+def test_replacement_failure_rejects_unexpected_diagnostic_values(field, unsafe) -> None:
+    diagnostic = replacement_failure()
+    diagnostic[field] = unsafe
+    assert verifier._browser_failure_diagnostic(
+        {
+            "errors": [{"stage": "explicit-replacement", "kind": "journey_failed"}],
+            "replacement_diagnostic": diagnostic,
+        }
+    ) == {"browser_stage": "explicit-replacement"}
+
+
+def test_replacement_failure_rejects_missing_or_extra_fields() -> None:
+    for diagnostic in (
+        {**replacement_failure(), "message": "unbounded private detail"},
+        {key: value for key, value in replacement_failure().items() if key != "plan_shape"},
+    ):
+        assert verifier._browser_failure_diagnostic(
+            {
+                "errors": [{"stage": "explicit-replacement", "kind": "journey_failed"}],
+                "replacement_diagnostic": diagnostic,
+            }
+        ) == {"browser_stage": "explicit-replacement"}
+
+
+def run_driver_contract(script: str) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the installed driver contract")
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "frontend/tests/installed/installed-assistant-replacement.mjs"
+    )
+    result = subprocess.run(
+        [node, "--input-type=module", "-", str(driver)],
+        input=script,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_driver_projection_withholds_raw_result_content_and_unexpected_states() -> None:
+    run_driver_contract(r"""
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+const source = readFileSync(process.argv[2], 'utf8').replaceAll('\r\n', '\n');
+const start = source.indexOf('function replacementFailureDiagnostic(');
+const end = source.indexOf('async function submitThroughUi(', start);
+assert.ok(start >= 0 && end > start);
+const project = runInNewContext(`${source.slice(start, end)}; replacementFailureDiagnostic`);
+const privateValue = 'PRIVATE_SENTINEL_MUST_NOT_ESCAPE';
+const observed = {
+  job: {state: 'failed', error: {message: privateValue, stack: privateValue}, result_ref: privateValue},
+  turn: {status: 'blocked', message: privateValue, plan: [privateValue], results: []},
+};
+const error = {name: 'AssertionError', message: privateValue, stack: privateValue};
+const actual = JSON.parse(JSON.stringify(project('terminal_job', observed, 202, error)));
+assert.deepEqual(actual, {
+  substage: 'terminal_job', error_category: 'assertion', submission_status: 'accepted',
+  job_state: 'failed', turn_status: 'blocked', job_error_shape: 'object',
+  result_ref_shape: 'string', plan_shape: 'nonempty', results_shape: 'empty',
+});
+for (const hostile of [privateValue, [], null, true, {job: {state: privateValue}, turn: {status: privateValue}}]) {
+  const result = project(privateValue, hostile, privateValue, {name: privateValue});
+  assert.equal(result.substage, 'unknown');
+  assert.equal(result.error_category, 'other');
+  assert.equal(result.submission_status, 'other');
+  assert.equal(result.job_state, 'unknown');
+  assert.equal(result.turn_status, 'unknown');
+  assert.equal(JSON.stringify(result).includes(privateValue), false);
+  assert.ok(JSON.stringify(result).length < 500);
+}
+const malformed = project('empty_results', {job: {error: [], result_ref: {}}, turn: {plan: null, results: {content: privateValue}}});
+assert.equal(malformed.job_error_shape, 'invalid');
+assert.equal(malformed.result_ref_shape, 'invalid');
+assert.equal(malformed.plan_shape, 'invalid');
+assert.equal(malformed.results_shape, 'invalid');
+assert.equal(project('terminal_poll', undefined).job_error_shape, 'missing');
+assert.equal(JSON.stringify(malformed).includes(privateValue), false);
+""")
+
+
+def test_submission_diagnostic_precedes_status_and_identity_assertions() -> None:
+    run_driver_contract(r"""
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+const source = readFileSync(process.argv[2], 'utf8').replaceAll('\r\n', '\n');
+const start = source.indexOf('async function submitThroughUi(');
+const end = source.indexOf('\ntry {\n  const firstCapability', start);
+assert.ok(start >= 0 && end > start);
+for (const status of [409, 202]) {
+  const calls = [];
+  const envelope = {job: {job_id: 'invalid', state: 'queued'}};
+  const response = {status: () => status, request: () => ({postData: () => '{}'}), json: async () => envelope};
+  const panel = {getByRole: () => ({fill: async () => {}, click: async () => {}})};
+  const submit = runInNewContext(`${source.slice(start, end)}; submitThroughUi`, {
+    page: {waitForResponse: () => Promise.resolve(response)}, assert, prompt: 'fixture',
+    jobPattern: /^job-[0-9a-f]{32}$/,
+  });
+  await assert.rejects(submit(panel, (...args) => calls.push(args)), {name: 'AssertionError'});
+  assert.deepEqual(calls.slice(0, 4).map(row => row[0]), ['submission_fill', 'submission_click', 'submission_response', 'submission_status']);
+  assert.equal(calls[3][1], status);
+  assert.equal(calls.at(-1)[0], status === 409 ? 'submission_status' : 'submission_identity');
+  if (status === 202) assert.equal(calls.at(-1)[2], envelope);
+}
+""")
+
+
+@pytest.mark.parametrize("failure", ["backend", "heading"])
+def test_replacement_captures_observation_before_terminal_or_heading_failure(failure) -> None:
+    run_driver_contract(r"""
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+const source = readFileSync(process.argv[2], 'utf8').replaceAll('\r\n', '\n');
+const start = source.indexOf('  replacementSubstage = "terminal_poll";');
+const end = source.indexOf('  report.observed_states.replacement =', start);
+assert.ok(start >= 0 && end > start);
+const backend = FAILURE === 'backend';
+const value = {job: {state: backend ? 'failed' : 'completed'}, turn: {status: backend ? 'blocked' : 'completed'}};
+const context = {
+  assert, replacementId: 'job-' + 'a'.repeat(32), replacementSubstage: null, replacementObserved: null,
+  api: async () => value,
+  poll: async (fn, wanted, timeout) => {assert.equal(timeout, 30000); const result = await fn(); assert.ok(wanted(result)); return result;},
+  replacementPanel: {getByRole: (role, options) => {
+    assert.equal(role, 'heading'); assert.equal(options.name, 'Work completed'); assert.equal(options.exact, true);
+    return {waitFor: async () => {throw Object.assign(new Error('private diagnostic'), {name: 'TimeoutError'});}};
+  }},
+};
+const run = runInNewContext(`(async () => {${source.slice(start, end)}})`, context);
+await assert.rejects(run(), {name: backend ? 'AssertionError' : 'TimeoutError'});
+assert.equal(context.replacementObserved, value);
+assert.equal(context.replacementSubstage, backend ? 'terminal_job' : 'completion_heading');
+""".replace("FAILURE", json.dumps(failure)))
 
 
 def test_first_process_loss_requires_sigkill_reap_and_absent_owned_group(monkeypatch) -> None:
