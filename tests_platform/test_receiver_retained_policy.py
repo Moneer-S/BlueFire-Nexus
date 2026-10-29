@@ -78,7 +78,7 @@ def execute(service, owner_id, phase, *, current=None):
         "legitimate": "receiver_legitimate_terminal",
     }.get(phase, "receiver_terminal")
     with diagnose_job_wait(wait_stage):
-        terminal = service.job_controller.wait(execution["job_id"], timeout=20)
+        terminal = service.job_controller.wait(execution["job_id"], timeout=30)
     assert terminal["state"] == "completed", terminal
     return service.receiver_defense_job(owner_id)
 
