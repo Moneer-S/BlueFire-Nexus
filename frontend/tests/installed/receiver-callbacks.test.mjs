@@ -25,7 +25,7 @@ test("reload context acknowledges only the request captured after navigation beg
   assert.equal(correlation.response({ request: () => fresh }), true);
 });
 
-test("settings reads require exact paths, no query and separate three-visit budgets", async () => {
+test("settings reads require exact paths, no query and separate four-visit budgets", async () => {
   const allowedRead = createReceiverSettingsReadPolicy();
   const head = routeFor(`${origin}/api/v1/settings`, "HEAD");
   await handleReceiverRoute(head, options({ allowedRead }));
@@ -36,10 +36,10 @@ test("settings reads require exact paths, no query and separate three-visit budg
     assert.deepEqual(route.calls, ["abort"]);
   }
   for (const suffix of ["/api/v1/settings", "/api/v1/build-info"]) {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       const route = routeFor(`${origin}${suffix}`);
       await handleReceiverRoute(route, options({ allowedRead }));
-      assert.deepEqual(route.calls, [attempt < 3 ? "continue" : "abort"]);
+      assert.deepEqual(route.calls, [attempt < 4 ? "continue" : "abort"]);
     }
   }
   const foreign = routeFor(`https://outside.example/api/v1/settings`);
@@ -47,18 +47,19 @@ test("settings reads require exact paths, no query and separate three-visit budg
   assert.deepEqual(foreign.calls, ["abort"]);
 });
 
-test("cleanup reuses Settings for both purpose grants and bounded retries", async () => {
+test("cleanup enters Settings once and reuses its document for all purposes and retries", async () => {
   let current = `${origin}/#/composition?objective=owned`;
   const navigations = [];
   const page = { url: () => current, goto: async (url, navigationOptions) => {
     navigations.push({ url, navigationOptions }); current = url;
   } };
-  for (let purpose = 0; purpose < 2; purpose += 1) {
+  for (let purpose = 0; purpose < 3; purpose += 1) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await openReceiverSettingsForCleanup(page, origin, { waitUntil: "domcontentloaded", timeout: 1000 });
     }
   }
   assert.deepEqual(navigations, [{ url: `${origin}/#/settings`, navigationOptions: { waitUntil: "domcontentloaded", timeout: 1000 } }]);
+  // A query-bearing or foreign page cannot masquerade as the owned Settings page.
   for (const other of [`${origin}/#/settings?unexpected=1`, "https://outside.example/#/settings"]) {
     current = other;
     await openReceiverSettingsForCleanup(page, origin, { timeout: 500 });

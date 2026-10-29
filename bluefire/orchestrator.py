@@ -2754,10 +2754,25 @@ class Orchestrator:
             )
             return row, (record,), decision, ()
         try:
+            retained_material = None
+            if runner_step.action_id == "sandbox.collection.materialize-retained.v1":
+                if (
+                    self.grant_execution is None
+                    or self.grant_execution.materialize_retained is None
+                ):
+                    raise RunnerAdapterError(
+                        "retained materialization requires its reviewed capability grant"
+                    )
+                retained_material = self.grant_execution.materialize_retained(step)
             adapted = self.adapter.adapt(
                 runner_step,
                 bound_inputs=bound_inputs,
                 receipt_ids=receipt_ids,
+                **(
+                    {"_retained_material": retained_material}
+                    if retained_material is not None
+                    else {}
+                ),
             )
         except RunnerAdapterError as exc:
             decision = self._adapter_refusal(step, profile, str(exc))
@@ -3201,9 +3216,32 @@ class Orchestrator:
                     runner_output=runner_result.get("output"),
                     receipt_ids=effective_receipts,
                 )
+                if retained_material is not None and outcome is StepOutcome.SUCCESS:
+                    source = retained_material["source"]
+                    workspace = logical_outputs.get("workspace", {})
+                    if (
+                        workspace.get("sha256") != source["sha256"]
+                        or workspace.get("size") != source["size_bytes"]
+                    ):
+                        raise RunnerAdapterError(
+                            "materialized output differs from the sealed source bytes"
+                        )
+                    logical_outputs["workspace"]["historical_source"] = dict(source)
             except RunnerAdapterError:
                 outcome = StepOutcome.PARTIAL
                 logical_outputs = {}
+        if (
+            outcome is StepOutcome.SUCCESS
+            and logical_outputs
+            and self.grant_execution is not None
+            and self.grant_execution.retain_output is not None
+            and runner_step.action_id == "sandbox.collection.stage.v1"
+        ):
+            retained_observation, source = self.grant_execution.retain_output(
+                step, logical_outputs.get("bundle"), observer, record
+            )
+            records.append(retained_observation)
+            logical_outputs["bundle"]["retained_source"] = source
         if provenance is EvidenceProvenance.EXECUTED and adapted.observable_paths:
             if collector_runtime_active:
                 pass

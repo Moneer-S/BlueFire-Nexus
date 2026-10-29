@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import re
+from typing import Any, Collection, Mapping
 
-from .ai_composition_contract import EVIDENCE_MODEL_SCHEMA, RECORD_REF_SCHEMA
+from .ai_composition_contract import EVIDENCE_MODEL_SCHEMA, RECORD_REF_SCHEMA, RETAINED_MODEL_SCHEMA
+from .capability_composition import _step_id, parse_proposal
 from .capability_grant import authority_id, digest, identifier, text
+from .capability_packs import RECEIVER_RETAINED_PACK
 from .capability_resources import METHODS, CapabilityContractError, exact, integer, semantic_ports
+from .retained_artifact_contract import METHOD, POLICY, source_reference
 from .util import content_hash
 
 _NODE = re.compile(r"[a-z][a-z0-9_]{0,99}\Z")
@@ -57,6 +61,10 @@ def _array(value, low, high):
 
 
 def _parameters(value, method, count):
+    if method == METHOD:
+        exact(value, {"source_ref"}, "retained method parameters")
+        digest(value["source_ref"], "retained source")
+        return
     domains = {
         METHODS[0]: {"record_count": [count]},
         METHODS[1]: {"redact_values": [False, True]},
@@ -153,25 +161,25 @@ def _finding(row, attempt_id, source_digest):
             integer(value, 0, 2**53 - 1, "historical summary count")
 
 
-def validate_model_context(value):
+def validate_model_context(value, *, retained=False):
     """Reject raw content and field expansion even with the new purpose authorized."""
-    exact(
-        value,
-        {
-            "schema_version",
-            "objective",
-            "revision",
-            "methods",
-            "facts",
-            "initial_proposal",
-            "historical_context",
-        },
-        "historical receiver model context",
-    )
+    fields = {
+        "schema_version",
+        "objective",
+        "revision",
+        "methods",
+        "facts",
+        "initial_proposal",
+        "historical_context",
+    }
+    if retained:
+        fields.add("retained_artifacts")
+    exact(value, fields, "historical receiver model context")
     if (
-        value["schema_version"] != EVIDENCE_MODEL_SCHEMA
-        or value["revision"] is not True
-        or value["initial_proposal"] is not None
+        value["schema_version"] != (RETAINED_MODEL_SCHEMA if retained else EVIDENCE_MODEL_SCHEMA)
+        or type(value["revision"]) is not bool
+        or not retained
+        and (value["revision"] is not True or value["initial_proposal"] is not None)
     ):
         raise CapabilityContractError("historical model context requires a receiver revision")
     objective = exact(value["objective"], {"question", "predicate"}, "receiver objective")
@@ -185,14 +193,40 @@ def validate_model_context(value):
     ):
         raise CapabilityContractError("historical purpose cannot expand the receiver objective")
     count = integer(predicate["record_count"], 1, 100, "receiver record count")
+    methods = (*METHODS, METHOD) if retained else METHODS
+    if retained:
+        custody = exact(
+            value["retained_artifacts"],
+            {"policy", "available_sources", "availability"},
+            "retained custody",
+        )
+        if custody["policy"] != POLICY:
+            raise CapabilityContractError("retention policy changed")
+        sources = _array(custody["available_sources"], 0, 32)
+        refs = [source_reference(row)["source_ref"] for row in sources]
+        if len(set(refs)) != len(refs) or custody["availability"] != (
+            "available" if refs else "none_available"
+        ):
+            raise CapabilityContractError("retained availability changed")
     seen = set()
-    for method in _array(value["methods"], len(METHODS), len(METHODS)):
+    for method in _array(value["methods"], len(methods), len(methods)):
         exact(method, {"behavior_id", "inputs", "outputs", "parameter_domains"}, "receiver method")
         identity = method["behavior_id"]
-        if not isinstance(identity, str) or identity not in METHODS or identity in seen:
+        if not isinstance(identity, str) or identity not in methods or identity in seen:
             raise CapabilityContractError("historical purpose selected a foreign method")
         seen.add(identity)
-        for key, ports in zip(("inputs", "outputs"), semantic_ports(identity), strict=True):
+        for key, ports in zip(
+            ("inputs", "outputs"),
+            semantic_ports(
+                identity,
+                pack=(
+                    "bluefire.receiver-composition-pack.v2"
+                    if retained
+                    else "bluefire.receiver-composition-pack.v1"
+                ),
+            ),
+            strict=True,
+        ):
             actual = _array(method[key], len(ports), len(ports))
             for port, expected in zip(actual, ports, strict=True):
                 exact(
@@ -212,6 +246,10 @@ def validate_model_context(value):
                     raise CapabilityContractError("receiver port description must be text")
                 text(port["description"] or "empty", "port description", 2000)
         domains = method["parameter_domains"]
+        if identity == METHOD:
+            if domains != {"source_ref": {"kind": "sealed_same_lineage_generated_jsonl"}}:
+                raise CapabilityContractError("retained source domain changed")
+            continue
         if not isinstance(domains, dict) or any(
             not isinstance(items, list) or not 1 <= len(items) <= 2 for items in domains.values()
         ):
@@ -221,17 +259,41 @@ def validate_model_context(value):
             raise CapabilityContractError("receiver transform domain changed")
         if identity != METHODS[1] and any(len(items) != 1 for items in domains.values()):
             raise CapabilityContractError("receiver fixed domain changed")
-    for fact in _array(value["facts"], 3, 3):
+    for fact in _array(value["facts"], 1 if retained else 3, 3):
         exact(fact, {"evidence_ref", "kind", "provenance", "value"}, "receiver fact")
         identifier(fact["evidence_ref"], "current fact reference")
         if (
             fact["provenance"] != "observed"
             or not isinstance(fact["kind"], str)
-            or fact["kind"] not in {"retained_policy", "receiver_result", "cleanup"}
+            or fact["kind"]
+            not in (
+                {"retained_policy", "receiver_result", "cleanup", "retained_artifact_result"}
+                if retained
+                else {"retained_policy", "receiver_result", "cleanup"}
+            )
         ):
             raise CapabilityContractError(
                 "historical context cannot promote historical findings to facts"
             )
+        if fact["kind"] == "retained_artifact_result":
+            result = exact(
+                fact["value"],
+                {"source", "prior_run_id", "later_failure", "receiver_decision"},
+                "retained result",
+            )
+            source_reference(result["source"])
+            if not isinstance(result["prior_run_id"], str) or not re.fullmatch(
+                r"run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}", result["prior_run_id"]
+            ):
+                raise CapabilityContractError("retained prior run is invalid")
+            failure = exact(result["later_failure"], {"step_id", "outcome"}, "later failure")
+            identifier(failure["step_id"], "failed step")
+            if (
+                failure["outcome"] not in {"blocked", "failed", "partial"}
+                or result["receiver_decision"] != "unknown"
+            ):
+                raise CapabilityContractError("retained failure cannot invent a receiver decision")
+            continue
         allowed = {
             "retained_policy": {"status", "policy_digest"},
             "receiver_result": {
@@ -262,6 +324,36 @@ def validate_model_context(value):
                 "uncertain",
             }:
                 raise CapabilityContractError("current receiver fact value is invalid")
+    if retained:
+        kinds = [row["kind"] for row in value["facts"]]
+        expected = {"retained_policy", "cleanup"} if value["revision"] else {"retained_policy"}
+        if (
+            len(set(kinds)) != len(kinds)
+            or not expected <= set(kinds)
+            or value["revision"]
+            and len(set(kinds) & {"receiver_result", "retained_artifact_result"}) != 1
+            or not value["revision"]
+            and set(kinds) != expected
+        ):
+            raise CapabilityContractError("retained current facts do not match the revision")
+        if value["initial_proposal"] is not None:
+            validate_candidate(
+                value["initial_proposal"],
+                pack=RECEIVER_RETAINED_PACK,
+                parameter_domains={
+                    row["behavior_id"]: row["parameter_domains"] for row in value["methods"]
+                },
+                input_ports={
+                    row["behavior_id"]: {port["name"] for port in row["inputs"]}
+                    for row in value["methods"]
+                },
+                evidence_refs={row["evidence_ref"] for row in value["facts"]},
+                retained_source_refs=refs,
+            )
+    if retained and value["historical_context"] is None:
+        return
+    if retained and (value["revision"] is not True or value["initial_proposal"] is not None):
+        raise CapabilityContractError("selected history requires a revision")
     history = exact(
         value["historical_context"],
         {"knowledge_digest", "attempt_ids", "attempts", "choices"},
@@ -296,7 +388,7 @@ def validate_model_context(value):
             },
             "historical choice",
         )
-        if choice["attempt_id"] not in ids or choice["behavior_id"] not in METHODS:
+        if choice["attempt_id"] not in ids or choice["behavior_id"] not in methods:
             raise CapabilityContractError(
                 "historical choice is outside the selected receiver attempts"
             )
@@ -308,7 +400,17 @@ def validate_model_context(value):
             raise CapabilityContractError("historical choice is duplicated")
         choice_ids.add(identity)
         _parameters(choice["parameters"], choice["behavior_id"], count)
-        ports = {port[0] for port in semantic_ports(choice["behavior_id"])[0]}
+        ports = {
+            port[0]
+            for port in semantic_ports(
+                choice["behavior_id"],
+                pack=(
+                    "bluefire.receiver-composition-pack.v2"
+                    if retained
+                    else "bluefire.receiver-composition-pack.v1"
+                ),
+            )[0]
+        }
         inputs = choice["inputs"]
         if not isinstance(inputs, dict) or set(inputs) - ports:
             raise CapabilityContractError("historical choice input ports are invalid")
@@ -316,3 +418,57 @@ def validate_model_context(value):
             exact(ref, {"from_step", "artifact"}, "historical producer reference")
             _node(ref["from_step"])
             identifier(ref["artifact"], "historical artifact")
+
+
+def validate_retained_model_context(value):
+    """Exact metadata-only boundary for the separate retained-result purpose."""
+    validate_model_context(value, retained=True)
+
+
+def validate_candidate(
+    value: Any,
+    *,
+    pack: str,
+    parameter_domains: Mapping[str, Mapping[str, Any]],
+    input_ports: Mapping[str, Collection[str]],
+    evidence_refs: Collection[str],
+    retained_source_refs: Collection[str] = (),
+) -> dict[str, Any]:
+    """Validate closed graph data against supplied pure capability projections."""
+    candidate = parse_proposal(value)
+    if set(candidate["evidence_refs"]) - set(evidence_refs):
+        raise CapabilityContractError("unavailable evidence references")
+    for step in candidate["steps"]:
+        fields = {"id", "behavior_id", "parameters"}
+        if isinstance(step, Mapping) and "inputs" in step:
+            fields.add("inputs")
+        exact(step, fields, "model graph step")
+        if not isinstance(step["behavior_id"], str) or step["behavior_id"] not in parameter_domains:
+            raise CapabilityContractError("model graph selected an unavailable method")
+        domains = parameter_domains[step["behavior_id"]]
+        exact(step["parameters"], set(domains), "model method parameters")
+        if step["behavior_id"] == METHOD and pack == RECEIVER_RETAINED_PACK:
+            if (
+                domains != {"source_ref": {"kind": "sealed_same_lineage_generated_jsonl"}}
+                or step["parameters"]["source_ref"] not in retained_source_refs
+            ):
+                raise CapabilityContractError("model graph selected an unavailable retained source")
+        elif any(
+            not any(content_hash(step["parameters"][key]) == content_hash(item) for item in values)
+            for key, values in domains.items()
+        ):
+            raise CapabilityContractError("model graph expanded the exact parameter domains")
+        if "inputs" in step:
+            references = step["inputs"]
+            if not isinstance(references, Mapping) or set(references) - set(
+                input_ports[step["behavior_id"]]
+            ):
+                raise CapabilityContractError("model graph selected an unavailable input port")
+            for reference in references.values():
+                exact(reference, {"from_step", "artifact"}, "model graph input reference")
+                _step_id(reference["from_step"])
+                if not isinstance(reference["artifact"], str):
+                    raise CapabilityContractError("model graph artifact name is invalid")
+    for edge in candidate["edges"]:
+        exact(edge, {"from_step", "outcome", "to_step"}, "model graph edge")
+    return candidate

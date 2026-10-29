@@ -1,10 +1,11 @@
 import { checkedCompositionContext, compositionJobId, compositionRecord, RECEIVER_PACK, type CompositionContext, type CompositionProposal } from "./composition";
 import { checkedCompositionKnowledge, type CompositionFinding, type CompositionKnowledge, type CompositionKnowledgeAttempt } from "./composition-knowledge";
+import { checkedRetainedCandidate, RECEIVER_RETAINED_PACK } from "./composition-retained";
 import { sameJson } from "./replay-review";
 
 export interface CompositionEvidenceChoice { attempt_id: string; compiled_digest: string; semantic_digest: string; step_id: string; behavior_id: string; parameters: Record<string, unknown>; inputs: Record<string, unknown> }
 export interface CompositionEvidenceContext extends Omit<CompositionContext, "schema_version"> {
-  schema_version: "bluefire.composition-evidence-proposal-context.v1";
+  schema_version: "bluefire.composition-evidence-proposal-context.v1" | "bluefire.retained-composition-evidence-context.v1";
   historical_context: { knowledge_digest: string; attempt_ids: string[]; attempts: CompositionKnowledgeAttempt[]; choices: CompositionEvidenceChoice[] };
 }
 export interface CompositionReconsideration {
@@ -18,7 +19,7 @@ const text = (value: unknown, limit = 4000): value is string => typeof value ===
 const object = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value);
 const node = (value: unknown): value is string => typeof value === "string" && /^[a-z][a-z0-9_]{0,99}$/.test(value);
 
-function checkedCandidate(value: CompositionProposal["proposal"], context: CompositionEvidenceContext) {
+export function checkedCompositionCandidate(value: NonNullable<CompositionProposal["proposal"]>, context: Pick<CompositionContext, "snapshot" | "facts">) {
   const candidate = value!.candidate;
   if (!exact(candidate, ["schema_version", "title", "start", "steps", "edges", "evidence_refs", "rationale"]) || candidate.schema_version !== "bluefire.composition-proposal.v1" || !text(candidate.title, 200) || !text(candidate.rationale, 2000) || !node(candidate.start) || !Array.isArray(candidate.steps) || !candidate.steps.length || candidate.steps.length > 64 || !Array.isArray(candidate.edges) || candidate.edges.length > 256 || !Array.isArray(candidate.evidence_refs) || !candidate.evidence_refs.length || candidate.evidence_refs.length > 64 || candidate.evidence_refs.some(ref => !text(ref, 200) || !context.facts.facts.some(fact => fact.fact_id === ref))) throw bad();
   const ids = new Set<string>();
@@ -48,8 +49,9 @@ export function compositionEvidenceKnowledge(context: CompositionEvidenceContext
 }
 
 export function checkedCompositionEvidenceContext(value: CompositionEvidenceContext, grant: string, owner: string, knowledge?: CompositionKnowledge, prior?: string): CompositionEvidenceContext {
-  if (value?.schema_version !== "bluefire.composition-evidence-proposal-context.v1" || typeof value.grant_id !== "string" || !/^grant-[0-9a-f]{32}$/.test(value.grant_id) || !object(value.objective) || !text(value.objective.question) || !object(value.objective.predicate) || prior !== undefined && value.facts?.prior_attempt_id !== prior) throw bad();
-  checkedCompositionContext({ ...value, schema_version: "bluefire.composition-proposal-context.v1" }, grant, RECEIVER_PACK);
+  const retained = value?.schema_version === "bluefire.retained-composition-evidence-context.v1";
+  if ((!retained && value?.schema_version !== "bluefire.composition-evidence-proposal-context.v1") || typeof value.grant_id !== "string" || !/^grant-[0-9a-f]{32}$/.test(value.grant_id) || !object(value.objective) || !text(value.objective.question) || !object(value.objective.predicate) || prior !== undefined && value.facts?.prior_attempt_id !== prior) throw bad();
+  checkedCompositionContext({ ...value, schema_version: retained ? "bluefire.retained-composition-proposal-context.v1" : "bluefire.composition-proposal-context.v1" }, grant, retained ? RECEIVER_RETAINED_PACK : RECEIVER_PACK);
   const saved = compositionEvidenceKnowledge(value, owner);
   if (knowledge && !sameJson(saved, knowledge)) throw bad();
   const history = value.historical_context;
@@ -68,7 +70,9 @@ export function checkedCompositionEvidenceResult(value: CompositionProposal, own
   const submitted = compositionRecord(value.job.request.submitted_request);
   const rawContext = value.job.request.context as CompositionEvidenceContext;
   const context = checkedCompositionEvidenceContext(rawContext, rawContext?.grant_id, owner);
-  checkedCandidate(result, context);
+  const retained = context.schema_version === "bluefire.retained-composition-evidence-context.v1";
+  if (result.schema_version !== (retained ? "bluefire.composition-ai-result.v3" : "bluefire.composition-ai-result.v2")) throw bad();
+  if (retained) checkedRetainedCandidate(result, context); else checkedCompositionCandidate(result, context);
   const history = context.historical_context;
   const reconsideration = result.reconsideration;
   if (!exact(result, ["schema_version", "proposal_job_id", "owner_id", "context_digest", "prior_attempt_id", "candidate", "scenario", "proposal_digest", "provider", "knowledge_digest", "model_context_digest", "reconsideration"]) || !digest(result.model_context_digest) || !exact(submitted, ["schema_version", "submission_id", "provider_id", "context_digest", "prior_attempt_id", "attempt_ids", "knowledge_digest"]) || submitted.schema_version !== "bluefire.composition-evidence-proposal-request.v1" || typeof submitted.submission_id !== "string" || compositionJobId(submitted.submission_id) !== value.job.job_id || submitted.provider_id !== result.provider.provider_id || submitted.context_digest !== context.context_digest || result.context_digest !== context.context_digest || submitted.knowledge_digest !== history.knowledge_digest || result.knowledge_digest !== history.knowledge_digest || !sameJson(submitted.attempt_ids, history.attempt_ids) || typeof submitted.prior_attempt_id !== "string" || !/^attempt-[0-9a-f]{32}$/.test(submitted.prior_attempt_id) || result.prior_attempt_id !== submitted.prior_attempt_id || context.facts.prior_attempt_id !== submitted.prior_attempt_id || !reconsideration || !exact(reconsideration, ["reconsidered_choices", "refresh_requirements"]) || !Array.isArray(reconsideration.reconsidered_choices) || !reconsideration.reconsidered_choices.length || reconsideration.reconsidered_choices.length > 8 || !Array.isArray(reconsideration.refresh_requirements) || reconsideration.refresh_requirements.length !== 3) throw bad();

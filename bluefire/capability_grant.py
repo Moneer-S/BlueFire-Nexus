@@ -11,6 +11,7 @@ from .capability_packs import (
     FILE_ACCESS_PACK,
     MACOS_FILE_ACCESS_METHODS,
     MACOS_FILE_ACCESS_PACK,
+    RECEIVER_RETAINED_PACK,
     grant_pack,
 )
 from .capability_resources import (
@@ -75,7 +76,7 @@ def validate_objective(value: Any, *, pack: str = PACK) -> dict[str, Any]:
         return capability_macos_file_access.validate_objective(value)
     if pack == FILE_ACCESS_PACK:
         return capability_file_access.validate_objective(value)
-    if pack != PACK:
+    if pack not in (PACK, RECEIVER_RETAINED_PACK):
         raise CapabilityContractError("objective pack is unsupported")
     row = exact(value, {"question", "predicate"}, "objective")
     predicate = exact(
@@ -96,7 +97,7 @@ def validate_environment(value: Any, *, pack: str = PACK) -> dict[str, Any]:
         return capability_macos_file_access.validate_environment(value)
     if pack == FILE_ACCESS_PACK:
         return capability_file_access.validate_environment(value)
-    if pack != PACK:
+    if pack not in (PACK, RECEIVER_RETAINED_PACK):
         raise CapabilityContractError("environment pack is unsupported")
     row = exact(value, _ENV_FIELDS, "composition environment")
     for key in _ENV_FIELDS - {"port"}:
@@ -121,14 +122,18 @@ def build_snapshot(
     objective, environment = validate_objective(objective, pack=pack), validate_environment(
         environment, pack=pack
     )
-    methods_ids = (
+    methods_ids: tuple[str, ...] = (
         MACOS_FILE_ACCESS_METHODS
         if pack == MACOS_FILE_ACCESS_PACK
         else FILE_ACCESS_METHODS if pack == FILE_ACCESS_PACK else METHODS
     )
+    if pack == RECEIVER_RETAINED_PACK:
+        from .retained_artifact_contract import METHOD
+
+        methods_ids = (*METHODS, METHOD)
     platform = "macos" if pack == MACOS_FILE_ACCESS_PACK else "linux"
     exact(implementation_digests, set(methods_ids), "installed implementation snapshot")
-    domains: dict[str, dict[str, list[Any]]] = (
+    domains: dict[str, dict[str, list[Any] | dict[str, str]]] = (
         {method: {} for method in MACOS_FILE_ACCESS_METHODS}
         if pack == MACOS_FILE_ACCESS_PACK
         else (
@@ -150,6 +155,10 @@ def build_snapshot(
         )
     )
     methods = []
+    if pack == RECEIVER_RETAINED_PACK:
+        # A typed late-bound reference is resolved by the trusted compiler,
+        # rather than an arbitrary scalar or model-provided payload.
+        domains[METHOD] = {"source_ref": {"kind": "sealed_same_lineage_generated_jsonl"}}
     for method_id in methods_ids:
         behavior, action = registry.get_behavior(method_id), registry.get_action(method_id)
         if (
@@ -169,6 +178,10 @@ def build_snapshot(
         if {spec.name for spec in behavior.parameters} != set(domains[method_id]):
             raise CapabilityContractError("installed method parameters changed")
         for name, values in domains[method_id].items():
+            if pack == RECEIVER_RETAINED_PACK and method_id == METHOD:
+                continue
+            if not isinstance(values, list):
+                raise CapabilityContractError("installed method parameter domain is invalid")
             for value in values:
                 behavior.validate_parameters({name: value})
         methods.append(
@@ -184,14 +197,18 @@ def build_snapshot(
                 "cost": method_cost(method_id, pack=pack),
             }
         )
-    body = {
+    body: dict[str, Any] = {
         "schema_version": (
             "bluefire.macos-file-access-capability-snapshot.v1"
             if pack == MACOS_FILE_ACCESS_PACK
             else (
                 "bluefire.file-access-capability-snapshot.v1"
                 if pack == FILE_ACCESS_PACK
-                else "bluefire.capability-snapshot.v1"
+                else (
+                    "bluefire.retained-receiver-capability-snapshot.v1"
+                    if pack == RECEIVER_RETAINED_PACK
+                    else "bluefire.capability-snapshot.v1"
+                )
             )
         ),
         "pack": pack,
@@ -205,12 +222,20 @@ def build_snapshot(
                 else (
                     "retained_resource_fresh_observations"
                     if pack == FILE_ACCESS_PACK
-                    else "fresh_attempt"
+                    else (
+                        "sealed_generated_jsonl_fresh_materialization"
+                        if pack == RECEIVER_RETAINED_PACK
+                        else "fresh_attempt"
+                    )
                 )
             ),
             "data_class": objective["predicate"]["data_class"],
         },
     }
+    if pack == RECEIVER_RETAINED_PACK:
+        from .retained_artifact_contract import POLICY
+
+        body["artifact_context"]["retention"] = dict(POLICY)
     return {**body, "snapshot_digest": content_hash(body)}
 
 
