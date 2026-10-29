@@ -6,6 +6,11 @@
 /runner/src/service_query_process.rs text eol=lf
 /runner/src/service_query_process_tests.rs text eol=lf
 /runner/src/s3_worker_process.rs text eol=lf
+/runner/src/owned_sftp.rs text eol=lf
+/runner/src/owned_sftp_process.rs text eol=lf
+/runner/src/owned_sftp_tests.rs text eol=lf
+/runner/src/owned_sftp_process_tests.rs text eol=lf
+/runner/src/actions/owned_sftp_action.rs text eol=lf
 /runner/src/s3_audit_connected_tests.rs text eol=lf
 /runner/src/s3_reservation.rs text eol=lf
 LICENSE text eol=lf

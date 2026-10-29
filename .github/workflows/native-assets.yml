@@ -90,6 +90,9 @@ jobs:
           rustup target add "$NATIVE_TARGET"
           python tools/build_native_runner.py --target "$NATIVE_TARGET"
 
+      - name: Test pinned Rust library before preparing artifacts
+        run: cargo test --locked --manifest-path runner/Cargo.toml --lib
+
       - name: Create binary and sanitized build receipt (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh

@@ -21,6 +21,7 @@ pub mod native_tool_installations;
 mod native_tool_setup;
 #[cfg(target_os = "linux")]
 mod owned_child_identity;
+pub mod owned_sftp;
 mod process;
 #[cfg(target_os = "linux")]
 mod protected_launch_channel;

@@ -52,6 +52,29 @@ def test_native_asset_workflow_is_manual_read_only_and_source_bound() -> None:
     assert upload["with"]["retention-days"] == "7"
     assert upload["with"]["if-no-files-found"] == "error"
 
+    library_tests = [
+        step
+        for step in steps
+        if step.get("run", "").strip()
+        == "cargo test --locked --manifest-path runner/Cargo.toml --lib"
+    ]
+    assert len(library_tests) == 1
+    assert "if" not in library_tests[0]
+    assert library_tests[0].get("continue-on-error", "false") == "false"
+    assert steps.index(library_tests[0]) < steps.index(upload)
+    toolchain_steps = [step for step in steps if "rustup toolchain install" in step.get("run", "")]
+    assert len(toolchain_steps) == 2
+    assert all(steps.index(step) < steps.index(library_tests[0]) for step in toolchain_steps)
+    builds = [step for step in steps if "tools/build_native_runner.py" in step.get("run", "")]
+    receipts = [
+        step
+        for step in steps
+        if step.get("name", "").startswith("Create binary and sanitized build receipt")
+    ]
+    assert len(builds) == len(receipts) == 2
+    assert all(steps.index(step) < steps.index(library_tests[0]) for step in builds)
+    assert all(steps.index(library_tests[0]) < steps.index(step) for step in receipts)
+
     commands = "\n".join(step.get("run", "") for step in steps)
     assert "tools/build_native_runner.py" in commands
     assert "tools/stage_native_runner.py" not in commands

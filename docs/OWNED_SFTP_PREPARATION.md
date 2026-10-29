@@ -1,4 +1,4 @@
-# Owned-loopback SFTP preparation
+# Owned-loopback SFTP preparation and unregistered consumer
 
 `bluefire/tool_adapters/owned_sftp.py` is a preparatory, tool-owned metadata seam.
 It is absent from the shipping registry, native setup inventory, action catalog,
@@ -38,10 +38,75 @@ and reader, isolated endpoint, generated keys and exact foreground server policy
 Generated-key preparation, if needed, requires its own reviewed setup; `ssh-keygen`
 is deliberately not an extra executable hidden in this retrieval bundle.
 
-Before enabling this method, the next Rust consumer must:
+The source also contains an unregistered Rust client consumer in
+`runner/src/owned_sftp.rs`, `owned_sftp_process.rs` and
+`actions/owned_sftp_action.rs`. Its source has been formatted, but compilation,
+Rust test execution and installed native acceptance are pending. It is not an
+available method. There is no production constructor or deserializer for
+`VerifiedSftpAdmission`, and its compiled reviewed-build table is empty. Neither a
+matching metadata request nor an `ActionContext` authenticates server preparation,
+resource generation/access, endpoint, host key or new-session facts. The existing
+runner context has no resolver for those facts. A separately reviewed compiler-owned
+resolver must obtain them from authenticated current configuration/resource evidence
+and a private generated-fixture credential channel before it can mint this type.
+The private admission also requires a distinct `ObserverReadinessLease`, with
+authenticated observer-admission and readiness references, exact bundle/scope and
+new-session binding, a readiness time and an expiry covering the whole client
+deadline. Its fields are private and it has no production constructor, wire parser
+or caller boolean. Client checks reject stale, future, differently scoped or
+short-lived leases before effects. The issuer/current observer resolver remains
+unimplemented; adding executable hashes alone cannot make this workflow ready.
+The consumer takes the non-cloneable admission by value and checks its exact
+request hash, runner profile, workspace and reviewed operation. A caller cannot
+reuse the same session capability for a second retrieval. Input-inspection
+progress is marked after pure admission gates and before protected executable
+reads; failed setup does not falsely imply that no input inspection occurred.
 
-1. Add one fixed `NativeToolBinding`/compiled SFTP action through the existing
-   action and reviewed-operation boundary, with an exact helper-bundle binding.
+The consumer implements one real OpenSSH `get` into an anonymous file, followed by
+size/digest verification and the existing durable receipt publication protocol.
+Its logical request supplies resource/generation/content references and expected
+size. The private admission, rather than a model or request path, binds the one
+canonical remote resource beneath the owned server's `/owned/` namespace. Original,
+staging-copy and unrelated report resources exercise the same method. There is no
+hardcoded fallback edge, recursive transfer, arbitrary batch, shell, proxy, custom
+configuration, agent or background transport operation.
+
+The held protected client executes by descriptor; SFTP executes the held SSH
+transport using its specifically inherited descriptor. Pinned SFTP source retains
+that descriptor and keeps SSH in its process group. SSH then closes inherited
+descriptors at startup. Its identity and exact known-host data therefore use sealed
+parent-owned anonymous files through `/proc/<runner>/fd/<held-file>`; parent handles
+remain held until the client/transport cleanup assessment ends. Actual procfs
+readability under the current UID, dumpability and security policy is an unresolved
+environment prerequisite. Failure must remain closed; do not weaken that policy.
+
+The download file is anonymous, and the child inherits an OS `RLIMIT_FSIZE` equal
+to the expected bounded size (at most 1 MiB), plus a zero core-file limit. Only the
+output and transport descriptors are additionally inherited by the client. Batch,
+identity and known-host inputs are sealed. Diagnostic pipes are nonblocking and
+counted rather than retained; cancellation and deadlines reserve time to signal
+the unreaped owned client group, reap and assess pipe/group absence. The result
+`ReapedClientGroupAbsent` describes that group only. It cannot establish absence
+of escaped descendants or settle all endpoint effects. Reviewed helper behavior,
+and later containment/observer evidence where required, remain admission gates.
+
+Partial/cancelled downloads have no disk pathname. Only verified completed bytes
+enter `SafeRoot`'s existing durable intent, synced staging, no-replace publication
+and commit path. Failures retain the execution fact; an interrupted publication
+retains its durable intent/receipt for existing recovery. Authored Rust tests cover
+changed references, helper substitution, fixed invocation, cancellation/deadline,
+diagnostic overflow, uncertain cleanup, content mismatch, no-overwrite publication
+and receipt commit/retry. Those tests have not yet been compiled or run.
+Publication errors preserve uncertainty: a `write_new` error can leave an artifact
+present, and a later commit error follows confirmed publication but may leave the
+commit marker uncertain. Such outputs retain destination/intent identity and never
+offer an available downstream artifact. Cancellation after confirmed publication
+retains the artifact/receipt facts while withholding downstream availability.
+
+Before enabling this method, integration must:
+
+1. Compile and run the unregistered consumer and its authored tests. Supply a
+   separately reviewed exact build/bundle identity to the empty compiled table.
    Independently recognize reviewed builds; inspect/recheck every protected member
    and its ancestors using `native_tool_inspection`. A reference cannot stand in
    for that inspection, library/loader review or executable TOCTOU handling.
@@ -49,10 +114,10 @@ Before enabling this method, the next Rust consumer must:
    and resource receipts. Verify the resource generation, current reader access,
    host key, loopback server binding and fresh session. Historical staging-copy
    provenance remains learning context and cannot establish current access.
-3. Generate one fixed nonrecursive `get` operation inside the compiled adapter;
-   reserve output/effect receipts, cap bytes/time/processes, and supervise all
-   helper descendants. Reuse existing bounded process/receipt code, not a shell,
-   general loader, standalone supervisor or new store.
+3. Validate the implemented fixed nonrecursive `get`, anonymous-file size bound,
+   descriptor/procfs behavior, receipt recovery and cancellation against the actual
+   admitted build. Establish complete helper behavior/containment for any broader
+   cleanup claim. Reuse existing runner supervision and receipts.
 4. Keep server preparation outside the client dispatch. Confirm forced internal
    SFTP, no forwarding/PTY/user rc or command hooks, and the absence of the compiled
    system-rc path in the owned chroot. The upstream `session.c` invokes rc handling
@@ -73,5 +138,6 @@ Primary references: [OpenSSH release](https://www.openssh.org/releasenotes.html)
 [session rc/internal SFTP path](https://raw.githubusercontent.com/openssh/openssh-portable/V_10_6_P1/session.c),
 [strace release](https://github.com/strace/strace/releases/tag/v7.2),
 [strace manual](https://raw.githubusercontent.com/strace/strace/v7.2/doc/strace.1.in).
-This independently authored Python metadata copies no upstream source code.
+The metadata and Rust adapter are independently authored and copy no upstream
+implementation. OpenSSH remains an external dependency; no executable is bundled.
 See `THIRD_PARTY_NOTICES.md` for the source/license boundary.

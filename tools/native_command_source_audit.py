@@ -36,6 +36,39 @@ _S3_CONNECTED_TEST_REGISTRATION = (
     b"mod connected_tests;"
 )
 
+# Independent source review only. Rust compilation, authored Rust tests and
+# installed native proof remain pending. This does not admit any tool binary,
+# create a private capability or populate the empty compiled SFTP build table.
+_REVIEWED_OWNED_SFTP_SOURCES = (
+    (
+        "owned_sftp.rs",
+        12_220,
+        "sha256:6e9d0aaeb0fa17271a13404148b380085f7361189b3e9b5102469b0603fb3015",
+    ),
+    (
+        "owned_sftp_process.rs",
+        17_359,
+        "sha256:58d80a725c3ab3fe65cee7d4e93dc9080d9dec6a1c4be8617e026e043b2adcd5",
+    ),
+    (
+        "actions/owned_sftp_action.rs",
+        20_495,
+        "sha256:2123b33f380b8ee5591e11e3ddb0113e18401dd385342ea122288455224f5212",
+    ),
+)
+
+
+def _reviewed_owned_sftp_sources(sources: dict[str, bytes]) -> bool:
+    """Bind exact reviewed consumer, private admission and fixed launch bytes."""
+    if set(sources) != {name for name, _size, _digest in _REVIEWED_OWNED_SFTP_SOURCES}:
+        return False
+    return all(
+        type(sources[name]) is bytes
+        and len(sources[name]) == size
+        and _sha256_bytes(sources[name]) == digest
+        for name, size, digest in _REVIEWED_OWNED_SFTP_SOURCES
+    )
+
 
 def _reviewed_service_query_sources(process: bytes, fixture: bytes) -> bool:
     """Bind the reviewed private driver and its separately gated self-ELF fixture.
@@ -176,7 +209,17 @@ def _native_command_source_inventory_is_fixed(repository: Path) -> bool:
         "service_query_process_tests.rs",
         "s3_worker_process.rs",
         "s3_audit_connected_tests.rs",
+        "owned_sftp_process.rs",
     }:
+        return False
+    try:
+        sftp_sources = {
+            name: (source_root / name).read_bytes()
+            for name, _size, _digest in _REVIEWED_OWNED_SFTP_SOURCES
+        }
+    except OSError:
+        return False
+    if not _reviewed_owned_sftp_sources(sftp_sources):
         return False
     bridge = command_sources["s3_audit_connected_tests.rs"]
     if (

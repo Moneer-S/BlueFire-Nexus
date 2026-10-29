@@ -17,6 +17,7 @@ use crate::contract::{
     Platform, RunnerProfile, SafetyTier, TaskStatus,
 };
 use crate::process::run_process_discovery;
+pub mod owned_sftp_action;
 use crate::receiver_auth::{
     authentication_value as receiver_authentication_value, opaque_hmac_handle,
     opaque_public_handle, valid_lower_hex_32,
