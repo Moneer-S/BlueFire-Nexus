@@ -686,7 +686,7 @@ class APIRoutes:
         if proposal is not None:
             return ("proposal-cancel" if proposal.group(2) else "proposal-read", proposal.group(1))
         match = re.fullmatch(
-            r"objectives/(job-[0-9a-f]{32})(?:/(proposal-context|proposals|attempts|stop|revoke|continue|recover))?",
+            r"objectives/(job-[0-9a-f]{32})(?:/(knowledge|proposal-context|proposals|attempts|stop|revoke|continue|recover))?",
             suffix,
         )
         if match is None:

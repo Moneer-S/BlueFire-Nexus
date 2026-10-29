@@ -29,6 +29,7 @@ PURPOSES = frozenset(
         "bluefire_graph_step_edit",
         "bluefire_receiver_defense_inspection",
         "bluefire_composition_proposal",
+        "bluefire_receiver_evidence_composition_proposal",
         "bluefire_linux_file_access_composition_proposal",
         "bluefire_macos_file_access_composition_proposal",
     }
@@ -277,6 +278,7 @@ def validate_authorization(
 def _schemas() -> Mapping[str, str]:
     from .ai import PROPOSAL_JSON_SCHEMA
     from .ai_assistance import OUTPUT_SCHEMA as assistance
+    from .ai_composition_contract import EVIDENCE_OUTPUT_SCHEMA as evidence_composition
     from .ai_composition_contract import (
         FILE_ACCESS_OUTPUT_SCHEMA as file_access_composition,
     )
@@ -294,6 +296,7 @@ def _schemas() -> Mapping[str, str]:
 
     return {
         "bluefire_composition_proposal": content_hash(composition),
+        "bluefire_receiver_evidence_composition_proposal": content_hash(evidence_composition),
         "bluefire_linux_file_access_composition_proposal": content_hash(file_access_composition),
         "bluefire_macos_file_access_composition_proposal": content_hash(
             macos_file_access_composition
@@ -371,6 +374,10 @@ def request_reservation(
         else:
             projected = strict_object(text.encode("utf-8"))
             _validate_data(projected)
+            if purpose == "bluefire_receiver_evidence_composition_proposal":
+                from .ai_composition_evidence_data import validate_model_context
+
+                validate_model_context(projected)
             if purpose == "bluefire_ai_graph_draft":
                 from .ai_drafts import AIGraphDraftRequest, graph_draft_json_schema
 

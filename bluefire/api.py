@@ -1127,6 +1127,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 "proposal-context": lambda: self.platform_server.service.composition_proposal_context(
                     composition[1], body
                 ),
+                "knowledge": lambda: self.platform_server.service.composition_knowledge(
+                    composition[1], body
+                ),
                 "attempts": lambda: self.platform_server.service.submit_composition_attempt(
                     composition[1], body
                 ),

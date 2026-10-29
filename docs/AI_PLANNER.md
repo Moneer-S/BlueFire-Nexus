@@ -1,6 +1,6 @@
 # AI Planner
 
-BlueFire treats model output as an untrusted proposal. The model operates inside a small allowlist derived from the deterministic graph; it is never an execution or policy authority.
+BlueFire treats model output as an untrusted proposal. The applicable authorization path supplies its options: an exact authored graph, finite reviewed method alternatives, or an installed capability snapshot. The model is never an execution or policy authority.
 
 ## Autonomy levels
 
@@ -16,7 +16,21 @@ Execute defaults to exact-plan authorization. Without an explicit `adaptive_exec
 
 An operator can instead review a finite experiment containing two to four compatible methods for selected steps. The saved v1 policy retains one retry across the run lineage. The explicit v2 option lets the operator set a 1–8 lineage cap and a 1–3 cap for each selected step, bounded by the remaining distinct methods and by the sum of those step caps. Auto may choose an untried reviewed method after an eligible actual outcome and continue only within both caps. For v2, proposals occur only at authored adaptive steps after eligible outcomes; other steps and outcomes follow the deterministic graph without invoking the generic legacy Execute proposal path. V1 and Simulate retain their existing decision behavior. The authorization binds the objective, graph, exact compiled parameters and inputs, environment, target scope, action contracts, capabilities, effects, cleanup, resource limits and exact retry policy. BlueFire rechecks the selected operation before its effects, and the sealed runner profile carries the finite operation identities. A different target, expanded effects or an unreviewed method requires a new decision. See [Adaptive execution authorization](ADAPTIVE_EXECUTION.md).
 
-Runtime AI cannot create or reorder nodes, invent an outcome edge, select an unregistered behavior or action, change a profile/scope/tier/budget, or introduce commands, paths, plugins, providers, or executable content. Finite Execute method selection does not authorize model-generated parameter changes.
+The legacy exact-plan and finite-method paths cannot create or reorder nodes or invent outcome edges. Finite Execute method selection does not authorize model-generated parameter changes. A planning proposal does not establish target ownership, credentials, privileges, permitted effects, or spending authority, and cannot add unreviewed executable content.
+
+## Capability composition and objective continuation
+
+The separate composition path accepts whole fresh graphs under a versioned capability grant. Ordinary code compiles only methods and parameter domains from the reviewed installed snapshot, resolves semantic inputs, reserves cumulative resources, and rechecks authority before dispatch. Each attempt has its own identity and evidence. Current receiver composition can revise a graph using one settled prior attempt's result and cleanup facts. Current file-access packs have fixed routes. These capabilities do not yet implement general nonlocal replanning or imported results.
+
+The versioned historical knowledge query reads bounded findings from selected attempts of the same saved objective, including finalized unsuccessful routes. It resolves the original job, grant, attempt, plan, run and evidence identities before returning small semantic summaries. The workspace keeps the recorded outcome and provenance visible; exact source references remain inspectable. These findings are historical only: a valid saved record does not establish present resource existence, access or artifact custody. This query neither dispatches work nor changes the existing proposal or execution-input contracts.
+
+Receiver graph revisions can explicitly include selected historical findings and the original compiled choices. This versioned path requires the separate `bluefire_receiver_evidence_composition_proposal` model purpose; older composition authorizations do not cover it. The request pins the latest settled attempt as its continuation frontier while allowing evidence from older selected attempts. The saved result identifies the earlier choice being reconsidered, its exact cited records, and the model's reasoning about required prerequisite checks. Captured reasoning remains inspectable after navigation. It is not proof that those checks occurred.
+
+The graph still compiles against current facts and the existing finite capability grant. Historical citations cannot become executable fact references or imported artifacts. This reasoning-context increment does not yet avoid repeating effects by reusing earlier execution outputs. The next execution contract must resolve explicit prior-result dependencies and support a different continuation without silently repeating completed mutations. Reconsidering a decision, reusing a result, refreshing an observation, repeating an action, and restoring environment state are different operations.
+
+The model may discover relevant bounded summaries and propose evidence bindings. Ordinary code must resolve exact source identities and validate semantic compatibility, authorization, custody, resource availability, and required freshness. Large artifacts stay outside model context and use bounded retrieval. Imports from earlier attempts need explicit dependencies; they must not masquerade as producers in the new plan or weaken existing producer checks. Optional outputs and joins cannot manufacture missing information.
+
+Repetition checks must consider relevant input and prerequisite changes, new observations, and an explicit fresh-test purpose. They must reject wasteful repetition under unchanged conditions without banning a method forever. New effects always receive new attempt identities; unknown mutations require reconciliation. This is a pending versioned extension, not authority added to old approvals. Its required proof is the [nonlocal replanning acceptance case](AI_FIRST_PROGRAM.md#nonlocal-replanning-acceptance).
 
 ## Runtime decision loop
 
@@ -49,7 +63,7 @@ For a finite Execute experiment, an eligible `blocked`, `failed` or `partial` ou
 
 Assist records the proposed method and pauses. Accepting it prepares a fresh approval and a full replay with that method as the selected step's primary method, so prerequisites are recreated. The replay retains the consumed retry count and original authorization lineage. Interruption recovery reconciles owned cleanup; it does not resume an uncommitted adaptive operation or reuse a consumed approval.
 
-## Proposal schema
+## Legacy runtime proposal schema
 
 A v2 proposal contains only:
 
@@ -60,7 +74,7 @@ A v2 proposal contains only:
 
 Recursive forbidden-field checks reject executable concepts such as commands, scripts, payloads, shells, interpreters, binaries, entry points, and arbitrary paths. Parameter changes are limited to booleans, bounded finite numbers/integers, and strings with a closed registered enum; nested values, free-form strings, and list parameters are not exposed. The merged parameters must still validate against the registered behavior contract. Assist proposals must set `requires_operator_review`.
 
-`select_next_node` can select only the exact edge registered for the outcome that actually occurred. The current scenario contract allows at most one edge for each `(from_step, outcome)` pair, so this records and verifies the registered transition; it does not let a model choose across outcomes or invent a branch.
+In this legacy schema, `select_next_node` can select only the exact edge registered for the outcome that actually occurred. The current scenario contract allows at most one edge for each `(from_step, outcome)` pair, so this records and verifies the registered transition; it does not let a model choose across outcomes or invent a branch.
 
 `select_registered_action` is exposed only in Execute and only for actions owned by the selected behavior and enabled, but not blocked, by the exact immutable runner profile. It changes metadata used for deterministic compilation; it does not load code dynamically. `retry_registered` is limited to the current non-cleanup node after `partial`, `blocked`, or `failed`, consumes normal step/time limits, and is capped at one adaptive retry for the entire lineage. Retry attempts keep separate result and evidence records.
 
@@ -271,10 +285,11 @@ V1 finite Execute attempts use `bluefire.ai-proposal-record.v4`. V2 uses `bluefi
 ## Current limitations
 
 - Legacy runtime mutations are limited to the deterministic successor or an eligible current-node retry. Finite Execute selection is limited to a different reviewed method for the eligible current node, with exact precompiled parameters and inputs.
-- Registered next-node selection cannot choose across outcome branches because `bluefire.scenario.v1` permits only one edge for each source-node/outcome pair.
+- Legacy registered next-node selection cannot choose across outcome branches because `bluefire.scenario.v1` permits only one edge for each source-node/outcome pair.
 - A finite method may use a different registered behavior and action only when compatible with the same declared objective and reviewed graph inputs. It never grants new runner authority or loads executable code.
 - V1 adaptive retry remains one lineage-wide retry. V2 is limited to the explicitly reviewed lineage and per-step caps; neither version is an open-ended recovery workflow.
-- Runtime AI cannot propose detections or arbitrary replay edits. The separate contextual Assistant operations use their own bounded proposal/review contracts; the legacy synchronous objective draft remains unsaved.
+- Legacy runtime AI cannot propose detections or arbitrary replay edits. Separate contextual Assistant and capability-composition operations use their own bounded proposal/review contracts; the legacy synchronous objective draft remains unsaved.
+- Historical findings can be inspected across selected attempts and supplied to the separately authorized receiver evidence-context proposal path. The legacy receiver proposal still uses one prior result and cleanup; file-access routes remain fixed. No current proposal path imports prior artifacts into execution. Complete nonlocal continuation, current applicability validation and condition-aware repetition require the versioned execution extension described above.
 - No monetary cost calculation/budget is implemented; output tokens, attempts, response bytes, and time are bounded.
 - Both structured-output dialects are tested with deterministic fake transport; a real account/network call requires operator credentials and infrastructure and is not part of offline tests.
 - No single dynamically verified product journey currently proves a real-provider Auto mutation followed by replay and comparison; those mechanisms have separate deterministic tests.

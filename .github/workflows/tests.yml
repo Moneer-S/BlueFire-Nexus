@@ -523,6 +523,8 @@ jobs:
           cp frontend/tests/installed/installed-receiver.mjs "$RUNNER_TEMP/installed-receiver.mjs"
           cp frontend/tests/installed/receiver-diagnostics.mjs "$RUNNER_TEMP/receiver-diagnostics.mjs"
           cp frontend/tests/installed/receiver-guards.mjs "$RUNNER_TEMP/receiver-guards.mjs"
+          cp frontend/tests/installed/receiver-knowledge.mjs "$RUNNER_TEMP/receiver-knowledge.mjs"
+          cp frontend/tests/installed/receiver-evidence-proposal.mjs "$RUNNER_TEMP/receiver-evidence-proposal.mjs"
           cp frontend/tests/installed/receiver-deadline.mjs "$RUNNER_TEMP/receiver-deadline.mjs"
           wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
           test "${#wheels[@]}" = 1
