@@ -406,6 +406,12 @@ function executionScope(source: RunRecord) { const explicit = source.target_scop
 function resolvedActions(source?: RunRecord, omittedStep?: string) { const steps = Array.isArray(source?.plan?.steps) ? source.plan.steps : []; return Object.fromEntries(steps.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && typeof item.step_id === "string" && typeof item.action_id === "string" && item.step_id !== omittedStep).map((item) => [String(item.step_id), String(item.action_id)])); }
 
 type ComparisonSummary = ComparisonResponse["summaries"][number];
+
+function comparedObjectiveLabel(summary: ComparisonSummary): string {
+  return summary.capability_objective?.state === "unverified"
+    ? "Unknown (proof unavailable)"
+    : objectiveLabel(summary.objective_reached, summary.mode);
+}
 type RecordedComparisonSummary = ComparisonSummary & { execution_path?: unknown; first_block?: unknown };
 
 function comparisonAttempt(value: unknown, stepId: string, stopped = false): RunStep | undefined {
@@ -522,6 +528,11 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
     && sameJson(orderedRuns.map(run => run.run_id), comparison.run_ids)
     && (baseline.mode === "simulate" || baseline.mode === "execute")
     && typeof baseline.objective_reached === "boolean"
+    && comparison.deltas.length === orderedRuns.length - 1
+    && comparison.deltas.every((delta, index) => delta.from_run_id === baseline.run_id
+      && delta.to_run_id === orderedRuns[index + 1]?.run_id
+      && (delta.objective_comparability === "comparable"
+        || delta.objective_comparability === undefined && orderedRuns.every(run => !run.capability_objective)))
     && orderedRuns.every(run => run.mode === baseline.mode && run.objective_reached === baseline.objective_reached);
   const firstDifferenceIndex = (runId: string) => conclusion.differences.find(difference => difference.comparedRunId === runId)?.index
     ?? (orderedRuns.length === 2 ? conclusion.differences.find(difference => difference.baselineRunId === runId)?.index : undefined);
@@ -555,7 +566,7 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
       <div className="compare-story">{orderedRuns.map(summary => <article className="compare-story-run" key={summary.run_id} aria-label={`${comparedRunLabel(summary.run_id)} result`}>
         <header>{sharedName ? <Link className="comparison-role-link" to={runReviewPath(summary.run_id)} aria-label={summary.run_id === baseline?.run_id ? "Review baseline run" : `Review ${comparedRunLabel(summary.run_id).toLowerCase()}`}><Badge tone={summary.run_id === baseline?.run_id ? "info" : "neutral"}>{comparedRunLabel(summary.run_id)}</Badge><ArrowUpRight aria-hidden="true"/></Link> : <Badge tone={summary.run_id === baseline?.run_id ? "info" : "neutral"}>{comparedRunLabel(summary.run_id)}</Badge>}<span>{summary.mode === "simulate" ? "Simulate · synthetic" : summary.mode ? sentence(summary.mode) : "Mode not reported"}</span></header>
         {!sharedName ? <h3><Link to={runReviewPath(summary.run_id)}>{names[summary.run_id] ?? "Run"}<ArrowUpRight aria-hidden="true"/></Link></h3> : null}{runReference(summary.run_id)}
-        {!conclusionReportsSharedObjective ? <div className="compare-run-objective"><span>Objective</span><strong data-state={typeof summary.objective_reached !== "boolean" ? "unknown" : summary.objective_reached ? "achieved" : "unmet"}>{objectiveLabel(summary.objective_reached, summary.mode)}</strong></div> : null}
+        {!conclusionReportsSharedObjective ? <div className="compare-run-objective"><span>Objective</span><strong data-state={typeof summary.objective_reached !== "boolean" ? "unknown" : summary.objective_reached ? "achieved" : "unmet"}>{comparedObjectiveLabel(summary)}</strong></div> : null}
         <footer><span><GitBranch aria-hidden="true"/>{summary.path.length} recorded {pathUnit(summary)}</span><span><Eye aria-hidden="true"/>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "observed artifact")}</span><details className="comparison-run-record"><summary>Run record</summary><code>{summary.run_id}</code></details></footer>
       </article>)}</div>
     </section>
@@ -566,7 +577,11 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
         <table><caption className="sr-only">Recorded outcomes for the selected runs. Missing values remain unreported.</caption><thead><tr><th scope="col">Result</th>{orderedRuns.map(summary => <th scope="col" key={summary.run_id}><Link to={runReviewPath(summary.run_id)} aria-label={summary.run_id === baseline?.run_id ? "Review baseline run summary" : `Review ${comparedRunLabel(summary.run_id).toLowerCase()} summary`}>{comparedRunLabel(summary.run_id)}<ArrowUpRight aria-hidden="true"/></Link></th>)}</tr></thead>
           <tbody>
             <tr><th scope="row">Mode</th>{orderedRuns.map(summary => <td key={summary.run_id}>{sentence(summary.mode ?? "not_reported")}</td>)}</tr>
-            <tr><th scope="row">Objective</th>{orderedRuns.map(summary => <td key={summary.run_id}>{objectiveLabel(summary.objective_reached, summary.mode)}</td>)}</tr>
+            <tr><th scope="row">Objective</th>{orderedRuns.map(summary => <td key={summary.run_id}>{comparedObjectiveLabel(summary)}</td>)}</tr>
+            {orderedRuns.some(summary => summary.capability_objective) ? <>
+              <tr><th scope="row">Run-level completion</th>{orderedRuns.map(summary => <td key={summary.run_id}>{summary.capability_objective ? summary.graph_objective_reached === true ? "Met" : "Not met" : "Not applicable"}</td>)}</tr>
+              <tr><th scope="row">Capability proof</th>{orderedRuns.map(summary => <td key={summary.run_id}>{summary.capability_objective ? summary.capability_objective.state === "verified" ? "Verified" : "Unavailable" : "Not applicable"}</td>)}</tr>
+            </> : null}
             <tr><th scope="row">Observed artifacts</th>{orderedRuns.map(summary => <td key={summary.run_id}>{reportedArrayCount(summary.evidence_details?.observed_artifacts, "artifact")}</td>)}</tr>
             <tr><th scope="row">Evidence gaps</th>{orderedRuns.map(summary => <td key={summary.run_id}>{reportedArrayCount(summary.evidence_details?.evidence_gaps, "gap")}</td>)}</tr>
             <tr><th scope="row">First stopped step</th>{orderedRuns.map(summary => {
@@ -576,7 +591,7 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
             <tr><th scope="row">Cleanup</th>{orderedRuns.map(summary => <td key={summary.run_id}>{comparisonCleanup(summary)}</td>)}</tr>
           </tbody>
         </table>
-      </div><p className="comparison-boundary-note">A stopped step alone does not establish target prevention.</p>
+      </div><p className="comparison-boundary-note">A stopped step alone does not establish target prevention.{orderedRuns.some(summary => summary.capability_objective) ? " For composed runs, the objective uses verified capability proof; run-level completion records the graph and observations separately." : null}</p>
     </Panel>
     <section className="comparison-paths" aria-label="Recorded run paths"><header className="comparison-section-heading"><h2>Paths taken</h2>{canSharePath ? <Button size="small" variant="ghost" aria-pressed={!showSharedPath} onClick={() => setSideBySideKey(showSharedPath ? pathViewKey : undefined)}>{showSharedPath ? "Compare paths side by side" : "Show shared path"}</Button> : <GitBranch aria-hidden="true"/>}</header>
     {showSharedPath && baseline ? <div className="compare-lanes comparison-shared-path"><article aria-label="Same recorded path">
@@ -594,7 +609,7 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
         { label: "Mode / profile", value: `${sentence(summary.mode ?? "not_reported")} / ${summary.profile_id ?? "Not reported"}` },
         { label: "Target scope", value: formatTargetScope(summary.target_scope) },
         { label: "Recorded run change", value: formatReplayLineage(summary.replay_lineage) },
-        { label: "Objective", value: objectiveLabel(summary.objective_reached, summary.mode) },
+        { label: "Objective", value: comparedObjectiveLabel(summary) },
         { label: "First block", value: stepPresentations.get(summary.run_id)?.stopped?.name ?? "None recorded" },
         { label: "First stopped step ID", value: summary.first_blocked_step ? <code>{summary.first_blocked_step}</code> : "None recorded" },
         { label: "Recorded path step IDs", value: summary.path.length ? <code>{summary.path.join(" → ")}</code> : "None recorded" },
@@ -631,7 +646,7 @@ export function ComparisonResult({ comparison, names = {}, createdAt = {}, catal
       const assessment = delta.assessment ?? (hasMaterialDelta(delta) ? "material_change" : "no_material_change");
       const noPathDivergence = delta.first_path_divergence === null || delta.first_path_divergence === undefined || delta.first_path_divergence < 0;
       return <Panel key={delta.to_run_id}><PanelHeader title={`${comparedRunLabel(delta.from_run_id)} → ${comparedRunLabel(delta.to_run_id)}`} detail={`${sentence(assessment)} · ${formatList(delta.signals, "No assessment signals")}`} actions={<Badge tone={assessmentTone(assessment)}>{sentence(assessment)}</Badge>} />
-        <div className="delta-summary"><div><span>{noPathDivergence ? <CheckCircle2/> : <ShieldAlert/>}</span><strong>Path divergence</strong><small>{noPathDivergence ? "No divergence" : `Node index ${delta.first_path_divergence! + 1}`}</small></div><div><span>{delta.objective_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>Objective</strong><small>{formatChanged(delta.objective_changed)}</small></div><div><span>{delta.first_blocked_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>First stopped step</strong><small>{formatChanged(delta.first_blocked_changed)}</small></div><div><span>{delta.cleanup_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>Cleanup</strong><small>{formatChanged(delta.cleanup_changed)}</small></div></div>
+        <div className="delta-summary"><div><span>{noPathDivergence ? <CheckCircle2/> : <ShieldAlert/>}</span><strong>Path divergence</strong><small>{noPathDivergence ? "No divergence" : `Node index ${delta.first_path_divergence! + 1}`}</small></div><div><span>{delta.objective_changed || delta.objective_comparability === "different_objectives" || delta.objective_comparability === "unverified" ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>Objective</strong><small>{comparisonObjectiveChange(delta)}</small></div><div><span>{delta.first_blocked_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>First stopped step</strong><small>{formatChanged(delta.first_blocked_changed)}</small></div><div><span>{delta.cleanup_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>Cleanup</strong><small>{formatChanged(delta.cleanup_changed)}</small></div></div>
         <div className="delta-columns">
           <div><h3>Evidence, detections & outcomes</h3><DataList items={[
             { label: "Evidence delta", value: formatDeltaMap(delta.evidence_delta) },
@@ -678,7 +693,9 @@ function comparisonChangeNotes(delta: ComparisonDeltaItem): string[] {
   if (delta.first_path_divergence !== null && delta.first_path_divergence !== undefined && delta.first_path_divergence >= 0) notes.push(`Path diverges at step ${delta.first_path_divergence + 1}.`);
   if (delta.dimensions?.implementation?.changed) notes.push("Implementation changed.");
   if (delta.material_configuration_changed) notes.push("Run configuration changed.");
-  if (delta.objective_changed) notes.push("Objective result changed.");
+  if (delta.objective_comparability === "different_objectives") notes.push("Objective checks differ across these runs; their results are not comparable.");
+  else if (delta.objective_comparability === "unverified") notes.push("Objective change is unknown because result proof is unavailable.");
+  else if (delta.objective_changed) notes.push("Objective result changed.");
   if (delta.first_blocked_changed) notes.push("First stopped step changed.");
   if (delta.cleanup_changed) notes.push("Cleanup result changed.");
   if (delta.evidence_detail_delta?.observed_artifacts_added?.length || delta.evidence_detail_delta?.observed_artifacts_removed?.length || delta.evidence_detail_delta?.observed_artifacts_changed?.length) notes.push("Observed artifacts changed.");
@@ -691,6 +708,10 @@ function assessmentTone(value: string): "neutral" | "success" | "warning" | "dan
 }
 
 function formatChanged(value?: boolean) { return value === undefined ? "Not reported" : value ? "Changed" : "Stable"; }
+function comparisonObjectiveChange(delta: ComparisonDeltaItem) {
+  return delta.objective_comparability === "different_objectives" ? "Different objectives"
+    : delta.objective_comparability === "unverified" ? "Proof unavailable" : formatChanged(delta.objective_changed);
+}
 function formatReportedCount(value?: number) { return value === undefined ? "Not reported" : new Intl.NumberFormat().format(value); }
 function formatList(values?: string[], empty = "None") { return values?.length ? values.map(sentence).join(", ") : empty; }
 function formatTargetScope(value?: ComparisonResponse["summaries"][number]["target_scope"]) {

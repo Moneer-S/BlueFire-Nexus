@@ -9,6 +9,9 @@ from urllib.parse import urlencode
 from .ai_assistance import COMPARE, REVISE
 from .ai_provider_access import AIProviderAccess
 from .application_errors import APIError
+from .assistance_ad_smb_context import KIND as AD_SMB_KIND
+from .assistance_ad_smb_context import context as ad_smb_context
+from .assistance_ad_smb_context import selection as ad_smb_selection
 from .assistance_audit_context import KIND as AUDIT_KIND
 from .assistance_audit_context import context as audit_context
 from .assistance_audit_context import selection as audit_selection
@@ -18,6 +21,9 @@ from .assistance_comparison_context import selection as comparison_selection
 from .assistance_file_access_context import KIND as FILE_ACCESS_KIND
 from .assistance_file_access_context import context as file_access_context
 from .assistance_file_access_context import selection as file_access_selection
+from .assistance_file_access_retest_context import KIND as FILE_ACCESS_RETEST_KIND
+from .assistance_file_access_retest_context import context as file_access_retest_context
+from .assistance_file_access_retest_context import selection as file_access_retest_selection
 from .assistance_receiver_context import KINDS as RECEIVER_KINDS
 from .assistance_runs import AssistanceRunJobs
 from .collection_methods import COLLECTION_METHODS
@@ -45,8 +51,10 @@ _ANALYSIS_ADAPTERS: dict[
         Callable[[AssistanceContext, Mapping[str, Any]], Mapping[str, Any]],
     ],
 ] = {
+    AD_SMB_KIND: (ad_smb_selection, ad_smb_context),
     AUDIT_KIND: (audit_selection, audit_context),
     FILE_ACCESS_KIND: (file_access_selection, file_access_context),
+    FILE_ACCESS_RETEST_KIND: (file_access_retest_selection, file_access_retest_context),
     COMPARISON_KIND: (comparison_selection, comparison_context),
 }
 ANALYSIS_KINDS = frozenset(_ANALYSIS_ADAPTERS)
@@ -63,6 +71,7 @@ class AssistanceContext(Protocol):
     assistance_receiver: Any
     receiver_defense: Any
     s3_access: Any
+    ad_smb: Any
     method_comparison: MethodComparisonJobs
     product_store: ProductStore
     registry: BehaviorRegistry
@@ -72,6 +81,10 @@ class AssistanceContext(Protocol):
     def _runtime_ai(self) -> AIConfig: ...
 
     def comparison_snapshot(self, snapshot_id: str) -> Mapping[str, Any]: ...
+
+    def file_access_composed_retest_linkage(
+        self, owner_id: str, attempt_id: str
+    ) -> Mapping[str, Any]: ...
 
     @property
     def file_access(self) -> FileAccessControl: ...
@@ -126,7 +139,7 @@ def is_audit(request):
 
 
 def is_file_access(request):
-    return request.get("selection", {}).get("kind") == FILE_ACCESS_KIND
+    return request.get("selection", {}).get("kind") in {FILE_ACCESS_KIND, FILE_ACCESS_RETEST_KIND}
 
 
 def is_analysis_only(request):

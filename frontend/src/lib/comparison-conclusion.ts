@@ -73,6 +73,13 @@ export function comparisonConclusion(comparison: ComparisonResponse, labels: Lab
   const simulated = baseline.mode === "simulate" && candidate.mode === "simulate";
   const sameMode = baseline.mode !== undefined && baseline.mode === candidate.mode;
   if (!sameMode) return result("Run modes differ or are unreported", `${change}Review each run's recorded objective and observations in its own mode.`);
+  if (delta?.objective_comparability === "different_objectives") {
+    const bothCapability = baseline.capability_objective && candidate.capability_objective;
+    return result(bothCapability ? "Different objectives" : "Objective checks differ",
+      `${change}${bothCapability ? "The verified objectives differ" : "Only one run has a scoped objective check"}, so their results do not establish a change in the same objective.`);
+  }
+  if (delta?.objective_comparability === "unverified") return result("Objective proof unavailable",
+    `${change}At least one run lacks verified objective result proof, so a change in that objective is not established.`);
   const knownObjectives = typeof baseline.objective_reached === "boolean" && typeof candidate.objective_reached === "boolean";
   if (!knownObjectives) return result(unavailableDifference ? "Recorded path or method difference" : difference?.kind === "method" ? "Different method, objective result unreported"
     : difference ? "Different paths, objective result unreported" : "Objective result not fully reported",

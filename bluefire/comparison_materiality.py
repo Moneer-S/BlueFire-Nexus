@@ -20,6 +20,8 @@ def configuration_changes(
 
     before = baseline.get("dimensions", {}).get("implementation", {})
     after = candidate.get("dimensions", {}).get("implementation", {})
+    before_objective = baseline.get("capability_objective")
+    after_objective = candidate.get("capability_objective")
     changed = {
         "catalog_authority": catalog_changed,
         "target_scope": baseline.get("target_scope") != candidate.get("target_scope"),
@@ -31,6 +33,10 @@ def configuration_changes(
         "mode": baseline.get("mode") != candidate.get("mode"),
         "autonomy": baseline.get("autonomy") != candidate.get("autonomy"),
         "ai_provider": baseline.get("ai_provider_id") != candidate.get("ai_provider_id"),
+        "capability_objective": (
+            before_objective.get("objective_digest") if before_objective is not None else None
+        )
+        != (after_objective.get("objective_digest") if after_objective is not None else None),
     }
     return [name for name, differs in changed.items() if differs]
 
@@ -52,7 +58,7 @@ def material_delta_fields(
         "path": baseline.get("execution_path") != candidate.get("execution_path"),
         "outcomes": baseline.get("outcomes") != candidate.get("outcomes"),
         "first_prevention": baseline.get("first_block") != candidate.get("first_block"),
-        "objective": baseline.get("objective_reached") != candidate.get("objective_reached"),
+        "objective": delta.get("objective_changed") is True,
         "controls": baseline.get("controls") != candidate.get("controls")
         or baseline.get("policy_states") != candidate.get("policy_states"),
         "telemetry": baseline.get("telemetry") != candidate.get("telemetry"),

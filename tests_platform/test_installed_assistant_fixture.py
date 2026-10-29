@@ -7,13 +7,19 @@ from copy import deepcopy
 
 import pytest
 
+from bluefire.ai_composition_contract import OUTPUT_SCHEMA
+from bluefire.capability_resources import METHODS
 from tools.verify_installed_browser import (
+    _COMPOSITION_PURPOSES,
     _FIXTURE_MODEL,
     _FIXTURE_PURPOSES,
+    _RECEIVER_COMPOSITION_PURPOSE,
     _assistant_fixture_journey_passed,
     _fixture_output_for_request,
     _fixture_outputs,
     _fixture_request_allowed,
+    _receiver_fixture_output_for_request,
+    _receiver_fixture_request_allowed,
 )
 
 
@@ -36,6 +42,74 @@ def request_for(purpose: str) -> dict[str, object]:
             }
         },
     }
+
+
+def receiver_request() -> dict[str, object]:
+    request = request_for(_RECEIVER_COMPOSITION_PURPOSE)
+    request["max_output_tokens"] = 1024
+    request["text"]["format"]["schema"] = deepcopy(OUTPUT_SCHEMA)
+    selected_steps = [
+        ("create_fixture", METHODS[0], {"record_count": 8}),
+        ("transform_fixture", METHODS[1], {"redact_values": False}),
+        ("inspect_fixture_metadata", METHODS[3], {}),
+        ("stage_records", METHODS[4], {"bundle_format": "jsonl"}),
+        ("handoff_to_receiver", METHODS[5], {"port": 4317}),
+        ("cleanup_workspace", METHODS[6], {"verify_removal": True}),
+    ]
+    request["input"] = json.dumps(
+        {
+            "schema_version": "bluefire.composition-model-context.v1",
+            "objective": {
+                "predicate": {
+                    "kind": "redacted_delivery_preserves_records",
+                    "record_count": 8,
+                }
+            },
+            "revision": False,
+            "methods": [{"behavior_id": method} for method in METHODS],
+            "facts": [
+                {
+                    "evidence_ref": "policy",
+                    "kind": "retained_policy",
+                    "provenance": "observed",
+                    "value": {"status": "retained"},
+                }
+            ],
+            "initial_proposal": {
+                "schema_version": "bluefire.composition-proposal.v1",
+                "title": "Installed receiver proposal",
+                "start": "seed",
+                "steps": [
+                    {"id": identity, "behavior_id": method, "parameters": parameters}
+                    for identity, method, parameters in selected_steps
+                ],
+                "edges": [],
+                "evidence_refs": "[EVIDENCE CONTENT OMITTED]",
+                "rationale": "Use the observed retained receiver policy.",
+            },
+        }
+    )
+    return request
+
+
+def receiver_allowed(
+    request: object,
+    *,
+    index: int = 0,
+    purpose: str = _RECEIVER_COMPOSITION_PURPOSE,
+    auth: str | None = None,
+    body_bytes: int = 100,
+    total_bytes: int = 0,
+) -> bool:
+    return _receiver_fixture_request_allowed(
+        request,
+        purpose=purpose,
+        model=request.get("model") if isinstance(request, dict) else None,
+        body_bytes=body_bytes,
+        authorization=auth,
+        request_index=index,
+        accumulated_bytes=total_bytes,
+    )
 
 
 def assistant_report() -> dict[str, object]:
@@ -74,6 +148,14 @@ def assistant_report() -> dict[str, object]:
             "approved_fixture_execute_run_completed_with_explicit_cleanup_and_observed_generated_fixture_metadata",
             "reviewed_fixture_detection_saved_and_evaluated_against_its_development_run",
             "saved_detection_candidate_and_development_evaluation_reopened_by_exact_ids",
+            *[
+                check
+                for purpose in _COMPOSITION_PURPOSES
+                for check in (
+                    f"composition_purpose_{purpose}_separate_from_receiver_in_settings",
+                    f"composition_purpose_{purpose}_persisted_and_revoked_without_request",
+                )
+            ],
         ],
         "graph_simulation": {"native_execution": False},
         "execute_preflight": {
@@ -129,7 +211,26 @@ def assistant_report() -> dict[str, object]:
             "purposes": list(_FIXTURE_PURPOSES),
             "request_bytes": 1024,
         },
-        "cleanup": {"runner_stopped": True, "execute_job_terminal": True},
+        "model_purpose_authorizations": {
+            "original_authorization": "revoked",
+            "selected_purposes": [
+                {"purpose": purpose, "status": "revoked", "model_requests": 0}
+                for purpose in _COMPOSITION_PURPOSES
+            ],
+            "receiver_purpose_selected": False,
+            "model_requests_before": 4,
+            "model_requests_after": 4,
+        },
+        "route_counts": {
+            "authorization": 1,
+            "composition_purpose_authorization": 2,
+            "authorization_revoke": 3,
+        },
+        "cleanup": {
+            "runner_stopped": True,
+            "execute_job_terminal": True,
+            "model_authorizations_revoked": True,
+        },
         "request_counts": counts,
     }
 
@@ -249,6 +350,118 @@ def test_fixture_rejects_per_request_byte_limit() -> None:
     assert not allowed(request, index=0, body_bytes=0)
 
 
+def test_receiver_fixture_is_one_exact_request_separate_from_four_assistant_requests() -> None:
+    request = receiver_request()
+    assert receiver_allowed(request)
+    assert not receiver_allowed(request, index=1)
+    assert not allowed(request, index=0)
+    assert allowed(request_for(_FIXTURE_PURPOSES[0]), index=0)
+    assert not receiver_allowed(request_for(_FIXTURE_PURPOSES[0]))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "index", "purpose", "auth", "body_bytes", "total_bytes"),
+    [
+        (
+            lambda request: request.update(model="other-model"),
+            0,
+            _RECEIVER_COMPOSITION_PURPOSE,
+            None,
+            100,
+            0,
+        ),
+        (
+            lambda request: request.update(max_output_tokens=64),
+            0,
+            _RECEIVER_COMPOSITION_PURPOSE,
+            None,
+            100,
+            0,
+        ),
+        (
+            lambda request: request.update(extra="field"),
+            0,
+            _RECEIVER_COMPOSITION_PURPOSE,
+            None,
+            100,
+            0,
+        ),
+        (
+            lambda request: request["text"]["format"].update(name="bluefire_ai_graph_draft"),
+            0,
+            _RECEIVER_COMPOSITION_PURPOSE,
+            None,
+            100,
+            0,
+        ),
+        (
+            lambda request: request["text"]["format"].update(schema={"type": "object"}),
+            0,
+            _RECEIVER_COMPOSITION_PURPOSE,
+            None,
+            100,
+            0,
+        ),
+        (lambda request: None, 0, "bluefire_ai_graph_draft", None, 100, 0),
+        (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, "Bearer secret", 100, 0),
+        (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, None, 0, 0),
+        (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, None, 262_145, 0),
+        (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, None, 100, 262_045),
+    ],
+)
+def test_receiver_fixture_rejects_other_purposes_schemas_and_budgets(
+    mutation, index: int, purpose: str, auth: str | None, body_bytes: int, total_bytes: int
+) -> None:
+    request = receiver_request()
+    mutation(request)
+    assert not receiver_allowed(
+        request,
+        index=index,
+        purpose=purpose,
+        auth=auth,
+        body_bytes=body_bytes,
+        total_bytes=total_bytes,
+    )
+
+
+def test_receiver_fixture_restores_only_the_supplied_retained_policy_reference() -> None:
+    request = receiver_request()
+    context = json.loads(request["input"])
+    expected = {
+        **context["initial_proposal"],
+        "evidence_refs": [context["facts"][0]["evidence_ref"]],
+    }
+    assert _receiver_fixture_output_for_request(request) == expected
+    assert json.loads(request["input"])["initial_proposal"]["evidence_refs"] == (
+        "[EVIDENCE CONTENT OMITTED]"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda context: context.update(revision=True),
+        lambda context: context["objective"]["predicate"].update(record_count=7),
+        lambda context: context["methods"].pop(),
+        lambda context: context["facts"][0].update(evidence_ref="unknown"),
+        lambda context: context["facts"][0].update(provenance="model"),
+        lambda context: context["facts"][0]["value"].update(status="unknown"),
+        lambda context: context["initial_proposal"].update(evidence_refs=["policy"]),
+        lambda context: context["initial_proposal"]["steps"].pop(),
+        lambda context: context["initial_proposal"]["steps"][1]["parameters"].update(
+            redact_values=True
+        ),
+    ],
+)
+def test_receiver_fixture_refuses_unbound_model_context(mutation) -> None:
+    request = receiver_request()
+    context = json.loads(request["input"])
+    mutation(context)
+    request["input"] = json.dumps(context)
+    with pytest.raises(ValueError):
+        _receiver_fixture_output_for_request(request)
+
+
 def test_assistant_journey_validator_accepts_observed_match_count_and_development_classification() -> (
     None
 ):
@@ -289,6 +502,22 @@ def test_assistant_journey_validator_rejects_invalid_observed_match_count(count)
         lambda report: report["generated_fixture_execute"].update(step_count=2),
         lambda report: report["deadline_controls"].update(work_deadline_enforced=False),
         lambda report: report["deadline_controls"].update(cleanup_reserve_ms=0),
+        lambda report: report["model_purpose_authorizations"].update(
+            receiver_purpose_selected=True
+        ),
+        lambda report: report["model_purpose_authorizations"].update(model_requests_after=5),
+        lambda report: report["model_purpose_authorizations"]["selected_purposes"][0].update(
+            purpose="bluefire_composition_proposal"
+        ),
+        lambda report: report["model_purpose_authorizations"]["selected_purposes"][1].update(
+            status="active"
+        ),
+        lambda report: report["route_counts"].update(composition_purpose_authorization=1),
+        lambda report: report["route_counts"].update(authorization_revoke=4),
+        lambda report: report["cleanup"].update(model_authorizations_revoked=False),
+        lambda report: report["checks"].remove(
+            "composition_purpose_bluefire_macos_file_access_composition_proposal_persisted_and_revoked_without_request"
+        ),
     ],
 )
 def test_assistant_journey_validator_rejects_unbound_results(mutation) -> None:

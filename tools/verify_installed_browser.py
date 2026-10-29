@@ -44,6 +44,11 @@ _FIXTURE_PURPOSES = (
     "bluefire_experiment_assistance",
     "bluefire_detection_source_creation",
 )
+_COMPOSITION_PURPOSES = (
+    "bluefire_linux_file_access_composition_proposal",
+    "bluefire_macos_file_access_composition_proposal",
+)
+_RECEIVER_COMPOSITION_PURPOSE = "bluefire_composition_proposal"
 _FIXTURE_MODEL = "bluefire-local-graph-fixture-v1"
 _RECEIVER_PROFILE = "sandbox-endpoint-deep-lab.v1"
 _RECEIVER_SCENARIO = "scenario.receiver-defense.redaction-validation.v1"
@@ -73,6 +78,196 @@ def _contains_receiver_session_token_field(value: object) -> bool:
     return False
 
 
+def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
+    """Retain finite failure categories, never exception text or request material."""
+    if not isinstance(value, list):
+        return []
+    stages = {
+        "composition-model-settings",
+        "composition-model-save",
+        "composition-model-consent",
+        "composition-review",
+        "composition-grant",
+        "composition-model-proposal",
+        "composition-model-proposal-binding",
+        "composition-model-proposal-inspect",
+        "composition-model-proposal-reopen",
+        "composition-attempt",
+        "browser_callback",
+        "cleanup",
+    }
+    kinds = {
+        "journey_failed",
+        "page_wait_failed",
+        "console_error",
+        "page_error",
+        "browser_close",
+        "browser_context_close",
+        "request_route_failed",
+        "request_abort_failed",
+        "response_observer_failed",
+        "observer_unsettled",
+    }
+    interaction_enums = {
+        "schema_version": {"bluefire.installed-receiver-composition-interaction.v1"},
+        "step": {"reconcile", "click", "response", "settlement", "other"},
+        "observation": {"before_click", "failure", "missing", "other"},
+        "center_hit": {"self", "descendant", "other", "out_of_view", "missing"},
+        "pending_kind": {"none", "grant", "proposal", "attempt", "other", "unavailable", "missing"},
+        "grant_status": {"active", "paused", "revoked", "expired", "other", "missing"},
+        "grant_time": {"expired", "under_30_seconds", "over_30_seconds", "unknown"},
+    }
+    interaction_booleans = (
+        "route_matches",
+        "button_present",
+        "button_visible",
+        "button_enabled",
+        "dispatch_unavailable",
+        "context_fetching",
+        "candidate_mismatch",
+        "confirmation_pending",
+        "context_present",
+        "context_grant_matches",
+        "candidate_ready",
+        "context_digest_matches",
+    )
+    result: list[dict[str, object]] = []
+    for entry in value[:32]:
+        if not isinstance(entry, dict):
+            continue
+        row: dict[str, object] = {}
+        for field, allowed in (
+            ("stage", stages),
+            ("kind", kinds),
+            ("error_type", {"AssertionError", "TimeoutError", "TypeError", "Error", "other"}),
+            ("method", {"waitForResponse", "waitForRequest", "waitForEvent"}),
+        ):
+            item = entry.get(field)
+            if isinstance(item, str):
+                row[field] = item if item in allowed else "other"
+        interaction = entry.get("composition_interaction")
+        if isinstance(interaction, dict):
+            safe: dict[str, object] = {}
+            for field, allowed in interaction_enums.items():
+                item = interaction.get(field)
+                if isinstance(item, str) and item in allowed:
+                    safe[field] = item
+            for field in interaction_booleans:
+                item = interaction.get(field)
+                if type(item) is bool or item is None:
+                    safe[field] = item
+            if safe:
+                row["composition_interaction"] = safe
+        if row:
+            result.append(row)
+    return result
+
+
+_RECEIVER_BLOCKED_METHODS = {"GET", "HEAD", "POST", "OTHER"}
+_RECEIVER_BLOCKED_PATHS = {"loopback", "non_loopback"}
+_RECEIVER_BLOCKED_REASONS = {
+    "non_loopback",
+    "read_not_allowlisted",
+    "invalid_json_body",
+    "write_not_allowlisted_or_budget_exceeded",
+    "method_not_allowlisted",
+}
+_RECEIVER_POST_ROUTE_FAMILIES = {
+    "session",
+    "provider_save",
+    "provider_activate",
+    "model_authorization_create",
+    "model_authorization_revoke",
+    "runner_bootstrap",
+    "runner_start",
+    "runner_stop",
+    "scenario_version_save",
+    "composition_objective_list",
+    "composition_context",
+    "composition_objective_create",
+    "composition_proposal_context",
+    "composition_proposal",
+    "composition_attempt",
+    "composition_revoke",
+    "comparison_create",
+    "receiver_context",
+    "receiver_owner_create",
+    "receiver_prepare",
+    "receiver_review",
+    "execution_approval",
+    "receiver_cancel",
+    "other",
+}
+_RECEIVER_POST_DENIAL_CATEGORIES = {
+    "budget_exhausted",
+    "invalid_json_body",
+    "origin_rejected",
+    "route_guard_rejected",
+    "unknown_route",
+    "other",
+}
+
+
+def _receiver_blocked_requests_for_receipt(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, object]] = []
+    for item in value[:32]:
+        if not isinstance(item, dict):
+            continue
+        if item.get("kind") == "websocket":
+            result.append({"kind": "websocket", "destination": "blocked"})
+            continue
+        row = {
+            "method": (
+                item["method"]
+                if isinstance(item.get("method"), str)
+                and item["method"] in _RECEIVER_BLOCKED_METHODS
+                else "OTHER"
+            ),
+            "path": (
+                item["path"]
+                if isinstance(item.get("path"), str) and item["path"] in _RECEIVER_BLOCKED_PATHS
+                else "non_loopback"
+            ),
+            "reason": (
+                item["reason"]
+                if isinstance(item.get("reason"), str)
+                and item["reason"] in _RECEIVER_BLOCKED_REASONS
+                else "method_not_allowlisted"
+            ),
+        }
+        if row["method"] == "POST":
+            family = item.get("route_family")
+            category = item.get("denial_category")
+            row["route_family"] = (
+                family
+                if isinstance(family, str) and family in _RECEIVER_POST_ROUTE_FAMILIES
+                else "other"
+            )
+            row["denial_category"] = (
+                category
+                if isinstance(category, str) and category in _RECEIVER_POST_DENIAL_CATEGORIES
+                else "other"
+            )
+            count = item.get("budget_count")
+            limit = item.get("budget_limit")
+            if (
+                row["denial_category"] == "budget_exhausted"
+                and type(count) is int
+                and type(limit) is int
+                and 1 <= count <= 100
+                and 1 <= limit <= 100
+                and count >= limit
+            ):
+                row["budget_count"] = count
+                row["budget_limit"] = limit
+            elif row["denial_category"] == "budget_exhausted":
+                row["denial_category"] = "other"
+        result.append(row)
+    return result
+
+
 def _receiver_report_for_receipt(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("Receiver driver report has an invalid shape")
@@ -95,6 +290,7 @@ def _receiver_report_for_receipt(value: object) -> dict[str, object]:
         "baseline",
         "original_control",
         "linked_retest",
+        "composition",
         "phase_evidence",
         "checks",
         "request_counts",
@@ -102,9 +298,14 @@ def _receiver_report_for_receipt(value: object) -> dict[str, object]:
         "cleanup",
         "owner_status",
     )
-    return {
+    projected = {
         key: value.get(key, [] if key in {"checks", "blocked_requests"} else {}) for key in keys
     }
+    projected["blocked_requests"] = _receiver_blocked_requests_for_receipt(
+        value.get("blocked_requests")
+    )
+    projected["errors"] = _receiver_errors_for_receipt(value.get("errors"))
+    return projected
 
 
 def _valid_receiver_artifact(value: object) -> bool:
@@ -115,6 +316,161 @@ def _valid_receiver_artifact(value: object) -> bool:
         and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None
         and type(value.get("size_bytes")) is int
         and value["size_bytes"] > 0
+    )
+
+
+def _valid_receiver_composition(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    composition = value.get("composition")
+    counts = value.get("request_counts")
+    checks = value.get("checks")
+    cleanup = value.get("cleanup")
+    evidence = value.get("phase_evidence")
+    if not all(isinstance(item, dict) for item in (composition, counts, cleanup)):
+        return False
+    if not isinstance(checks, list) or not isinstance(evidence, list):
+        return False
+    comparison = composition.get("comparison")
+    proposal = composition.get("model_proposal")
+    result_cleanup = composition.get("cleanup")
+    if not all(isinstance(item, dict) for item in (comparison, proposal, result_cleanup)):
+        return False
+    return (
+        set(composition)
+        == {
+            "control_owner_job_id",
+            "objective_owner_job_id",
+            "grant_id",
+            "grant_status",
+            "attempt_job_id",
+            "attempt_id",
+            "settlement",
+            "run_id",
+            "verified_result_digest",
+            "receiver_decision",
+            "receiver_authenticated",
+            "record_count",
+            "redacted_record_count",
+            "retained_record_count",
+            "empty_record_count",
+            "cleanup",
+            "objective_established",
+            "finalized_run_objective_reached",
+            "graph_objective_reached",
+            "model_proposal",
+            "comparison",
+        }
+        and composition["control_owner_job_id"] == value.get("original_owner_job_id")
+        and isinstance(composition["objective_owner_job_id"], str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", composition["objective_owner_job_id"]) is not None
+        and isinstance(composition["grant_id"], str)
+        and re.fullmatch(r"grant-[0-9a-f]{32}", composition["grant_id"]) is not None
+        and composition["grant_status"] == "revoked"
+        and isinstance(composition["attempt_job_id"], str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", composition["attempt_job_id"]) is not None
+        and composition["attempt_job_id"] != composition["objective_owner_job_id"]
+        and isinstance(composition["attempt_id"], str)
+        and re.fullmatch(r"attempt-[0-9a-f]{32}", composition["attempt_id"]) is not None
+        and composition["settlement"] == "settled"
+        and isinstance(composition["run_id"], str)
+        and re.fullmatch(r"run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}", composition["run_id"]) is not None
+        and composition["run_id"] != value.get("run_id")
+        and composition["run_id"]
+        not in {row.get("run_id") for row in evidence if isinstance(row, dict)}
+        and isinstance(composition["verified_result_digest"], str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", composition["verified_result_digest"]) is not None
+        and composition["receiver_decision"] == "policy_refused"
+        and composition["receiver_authenticated"] is True
+        and type(composition["record_count"]) is int
+        and composition["record_count"] == 8
+        and type(composition["redacted_record_count"]) is int
+        and composition["redacted_record_count"] == 0
+        and type(composition["retained_record_count"]) is int
+        and composition["retained_record_count"] == 8
+        and type(composition["empty_record_count"]) is int
+        and composition["empty_record_count"] == 0
+        and result_cleanup == {"run": "complete", "receiver": "verified_closed"}
+        and composition["objective_established"] is False
+        and type(composition["finalized_run_objective_reached"]) is bool
+        and type(composition["graph_objective_reached"]) is bool
+        and composition["graph_objective_reached"] is composition["finalized_run_objective_reached"]
+        and set(proposal)
+        == {
+            "job_id",
+            "proposal_digest",
+            "context_digest",
+            "provider_id",
+            "candidate_ready",
+            "reopened",
+            "same_initial_graph",
+            "model_authorization_requests",
+        }
+        and isinstance(proposal["job_id"], str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", proposal["job_id"]) is not None
+        and proposal["job_id"]
+        not in {composition["objective_owner_job_id"], composition["attempt_job_id"]}
+        and all(
+            isinstance(proposal[key], str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", proposal[key]) is not None
+            for key in ("proposal_digest", "context_digest")
+        )
+        and proposal["provider_id"] == "provider.installed-receiver-composition.v1"
+        and proposal["candidate_ready"] is True
+        and proposal["reopened"] is True
+        and proposal["same_initial_graph"] is True
+        and type(proposal["model_authorization_requests"]) is int
+        and proposal["model_authorization_requests"] == 1
+        and set(comparison)
+        == {
+            "baseline_run_id",
+            "snapshot_id",
+            "snapshot_digest",
+            "source_integrity",
+            "objective_comparability",
+            "objective_changed",
+            "objective_recovered",
+            "reopened",
+        }
+        and comparison["baseline_run_id"] == value.get("run_id")
+        and isinstance(comparison["snapshot_id"], str)
+        and re.fullmatch(r"run-comparison-[0-9a-f]{64}", comparison["snapshot_id"]) is not None
+        and isinstance(comparison["snapshot_digest"], str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", comparison["snapshot_digest"]) is not None
+        and comparison["source_integrity"] == "verified"
+        and comparison["objective_comparability"] == "different_objectives"
+        and comparison["objective_changed"] is False
+        and comparison["objective_recovered"] is False
+        and comparison["reopened"] is True
+        and cleanup.get("composition_grant_revoked") is True
+        and cleanup.get("model_authorization_revoked") is True
+        and "single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt"
+        in checks
+        and "receiver_composition_model_authorization_revoked_after_one_proposal" in checks
+        and "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false"
+        in checks
+        and "composed_attempt_grant_revoked_after_verified_cleanup" in checks
+        and "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result"
+        in checks
+        and type(counts.get("composition_list")) is int
+        and 1 <= counts["composition_list"] <= 6
+        and all(
+            type(counts.get(name)) is int and counts[name] == 1
+            for name in (
+                "composition_context",
+                "composition_grant",
+                "composition_proposal",
+                "composition_attempt",
+                "composition_revoke",
+                "comparison",
+                "provider_save",
+                "provider_activate",
+                "model_authorization",
+                "model_authorization_revoke",
+            )
+        )
+        and type(counts.get("composition_proposal_context")) is int
+        and 2 <= counts["composition_proposal_context"] <= 3
     )
 
 
@@ -142,6 +498,7 @@ def _receiver_driver_passed(value: object) -> bool:
         and value.get("installed_wheel_service") is True
         and value.get("native_execution_required") is True
         and value.get("workflow") == "retained_redaction_original_and_linked_retest"
+        and _valid_receiver_composition(value)
         and value.get("external_credentials") is False
         and value.get("live_model_inference") is False
         and type(generated_count) is int
@@ -360,6 +717,8 @@ _RUNTIME_PROCESS_CLEANUP_KEYS = (
     "browser_process_group_stopped",
     "assistant_process_group_stopped",
     "receiver_process_group_stopped",
+    "receiver_fixture_thread_stopped",
+    "receiver_fixture_http_server_closed",
     "fixture_thread_stopped",
     "fixture_http_server_closed",
     "service_thread_stopped",
@@ -430,11 +789,19 @@ def _runtime_cleanup_confirmed(report: dict[str, object]) -> bool:
 
 
 def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
+    fixture = report.get("receiver_model_fixture")
     return (
         report.get("browser_phase_status") == "passed"
         and report.get("receiver_phase_status") == "passed"
         and report.get("receiver_driver_started") is True
         and report.get("receiver_retained_redaction_driver_passed") is True
+        and isinstance(fixture, dict)
+        and type(fixture.get("request_count")) is int
+        and fixture.get("request_count") == 1
+        and fixture.get("purposes") == [_RECEIVER_COMPOSITION_PURPOSE]
+        and type(fixture.get("request_bytes")) is int
+        and 0 < fixture["request_bytes"] <= 262_144
+        and fixture.get("failed") is False
         and _runtime_cleanup_confirmed(report)
         and report.get("cleanup_errors") == []
     )
@@ -534,6 +901,73 @@ def _fixture_output_for_request(index: int, request: object) -> dict[str, object
     return output
 
 
+def _receiver_fixture_output_for_request(request: object) -> dict[str, object]:
+    """Return the current fixed graph, restoring only a verified fact reference."""
+    from bluefire.capability_resources import METHODS
+
+    reviewed_steps = (
+        ("create_fixture", "sandbox.fixture.create.v1"),
+        ("transform_fixture", "sandbox.fixture.transform.v1"),
+        ("inspect_fixture_metadata", "sandbox.discovery.metadata.v1"),
+        ("stage_records", "sandbox.collection.stage.v1"),
+        ("handoff_to_receiver", "sandbox.peer.handoff.v1"),
+        ("cleanup_workspace", "sandbox.cleanup.v1"),
+    )
+
+    if not isinstance(request, dict):
+        raise ValueError("receiver fixture requires a structured request")
+    try:
+        supplied = json.loads(request["input"])
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("receiver fixture requires bounded model context") from exc
+    if (
+        not isinstance(supplied, dict)
+        or set(supplied)
+        != {"schema_version", "objective", "revision", "methods", "facts", "initial_proposal"}
+        or supplied["schema_version"] != "bluefire.composition-model-context.v1"
+        or supplied["revision"] is not False
+    ):
+        raise ValueError("receiver fixture context is not an initial proposal")
+    objective, methods, facts, initial = (
+        supplied[key] for key in ("objective", "methods", "facts", "initial_proposal")
+    )
+    if (
+        not isinstance(objective, dict)
+        or not isinstance(objective.get("predicate"), dict)
+        or objective["predicate"].get("kind") != "redacted_delivery_preserves_records"
+        or objective["predicate"].get("record_count") != 8
+        or not isinstance(methods, list)
+        or [row.get("behavior_id") for row in methods if isinstance(row, dict)] != list(METHODS)
+        or len(methods) != len(METHODS)
+        or not isinstance(facts, list)
+        or len(facts) != 1
+        or not isinstance(facts[0], dict)
+        or facts[0].get("evidence_ref") != "policy"
+        or facts[0].get("kind") != "retained_policy"
+        or facts[0].get("provenance") != "observed"
+        or not isinstance(facts[0].get("value"), dict)
+        or facts[0]["value"].get("status") != "retained"
+        or not isinstance(initial, dict)
+        or initial.get("schema_version") != "bluefire.composition-proposal.v1"
+        or initial.get("evidence_refs") != "[EVIDENCE CONTENT OMITTED]"
+        or not isinstance(initial.get("steps"), list)
+        or [
+            (row.get("id"), row.get("behavior_id"))
+            for row in initial["steps"]
+            if isinstance(row, dict)
+        ]
+        != list(reviewed_steps)
+        or len(initial["steps"]) != len(reviewed_steps)
+        or initial["steps"][0].get("parameters") != {"record_count": 8}
+        or initial["steps"][1].get("parameters") != {"redact_values": False}
+        or initial["steps"][3].get("parameters") != {"bundle_format": "jsonl"}
+        or initial["steps"][4].get("parameters") != {"port": 4317}
+        or initial["steps"][5].get("parameters") != {"verify_removal": True}
+    ):
+        raise ValueError("receiver fixture graph or policy fact is out of scope")
+    return {**initial, "evidence_refs": [facts[0]["evidence_ref"]]}
+
+
 def _assistant_fixture_journey_passed(value: object) -> bool:
     if not isinstance(value, dict):
         return False
@@ -546,6 +980,8 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
     observed_ids = execute.get("observed_evidence_ids") if isinstance(execute, dict) else None
     observed_records = execute.get("observed_records") if isinstance(execute, dict) else None
     provider_requests = value.get("provider_requests")
+    purpose_proof = value.get("model_purpose_authorizations")
+    route_counts = value.get("route_counts")
     deadline_controls = value.get("deadline_controls")
     checks = value.get("checks")
     return (
@@ -567,6 +1003,35 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         in checks
         and "reviewed_fixture_detection_saved_and_evaluated_against_its_development_run" in checks
         and "saved_detection_candidate_and_development_evaluation_reopened_by_exact_ids" in checks
+        and all(
+            f"composition_purpose_{purpose}_separate_from_receiver_in_settings" in checks
+            and f"composition_purpose_{purpose}_persisted_and_revoked_without_request" in checks
+            for purpose in _COMPOSITION_PURPOSES
+        )
+        and purpose_proof
+        == {
+            "original_authorization": "revoked",
+            "selected_purposes": [
+                {"purpose": purpose, "status": "revoked", "model_requests": 0}
+                for purpose in _COMPOSITION_PURPOSES
+            ],
+            "receiver_purpose_selected": False,
+            "model_requests_before": 4,
+            "model_requests_after": 4,
+        }
+        and purpose_proof["receiver_purpose_selected"] is False
+        and type(purpose_proof["model_requests_before"]) is int
+        and type(purpose_proof["model_requests_after"]) is int
+        and all(type(row["model_requests"]) is int for row in purpose_proof["selected_purposes"])
+        and isinstance(route_counts, dict)
+        and all(
+            type(route_counts.get(name)) is int and route_counts[name] == expected
+            for name, expected in (
+                ("authorization", 1),
+                ("composition_purpose_authorization", 2),
+                ("authorization_revoke", 3),
+            )
+        )
         and isinstance(graph, dict)
         and graph.get("native_execution") is False
         and isinstance(execute, dict)
@@ -656,6 +1121,7 @@ def _assistant_fixture_journey_passed(value: object) -> bool:
         and isinstance(cleanup, dict)
         and cleanup.get("runner_stopped") is True
         and cleanup.get("execute_job_terminal") is True
+        and cleanup.get("model_authorizations_revoked") is True
         and isinstance(counts, dict)
         and counts
         == {
@@ -684,6 +1150,10 @@ def _fixture_request_allowed(
     authorization: str | None,
     request_index: int,
     accumulated_bytes: int,
+    expected_purposes: tuple[str, ...] = _FIXTURE_PURPOSES,
+    output_tokens: int = 64,
+    request_byte_limit: int = 1_048_576,
+    total_byte_limit: int = 2_097_152,
 ) -> bool:
     if not isinstance(request, dict):
         return False
@@ -711,26 +1181,42 @@ def _fixture_request_allowed(
         and isinstance(format_document.get("schema"), dict)
         and isinstance(request.get("instructions"), str)
         and isinstance(request.get("input"), str)
-        and request.get("max_output_tokens") == 64
+        and request.get("max_output_tokens") == output_tokens
         and request.get("store") is False
         and request.get("parallel_tool_calls") is False
         and request.get("tools") == []
         and request.get("tool_choice") == "none"
         and authorization is None
-        and request_index < len(_FIXTURE_PURPOSES)
-        and purpose == _FIXTURE_PURPOSES[request_index]
+        and request_index < len(expected_purposes)
+        and purpose == expected_purposes[request_index]
         and format_document.get("name") == purpose
         and model == _FIXTURE_MODEL
         and body_bytes > 0
-        and body_bytes <= 1_048_576
-        and accumulated_bytes + body_bytes <= 2_097_152
+        and body_bytes <= request_byte_limit
+        and accumulated_bytes + body_bytes <= total_byte_limit
+    )
+
+
+def _receiver_fixture_request_allowed(request: object, **kwargs: object) -> bool:
+    from bluefire.ai_composition_contract import OUTPUT_SCHEMA
+
+    return (
+        _fixture_request_allowed(
+            request,
+            expected_purposes=(_RECEIVER_COMPOSITION_PURPOSE,),
+            output_tokens=1024,
+            request_byte_limit=262_144,
+            total_byte_limit=262_144,
+            **kwargs,
+        )
+        and request["text"]["format"]["schema"] == OUTPUT_SCHEMA
     )
 
 
 class LocalGraphFixture:
-    """Strict four-request structured-output endpoint; stores no prompt or response text."""
+    """Strict phase-owned structured-output endpoint; stores no prompt or response text."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, receiver_composition: bool = False) -> None:
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -782,7 +1268,11 @@ class LocalGraphFixture:
                     return
                 length = int(raw_length)
                 with fixture.lock:
-                    if fixture.post_count >= 5 or fixture.post_bytes + length > 2_097_152:
+                    if fixture.post_count >= (
+                        1 if fixture.receiver_composition else 5
+                    ) or fixture.post_bytes + length > (
+                        262_144 if fixture.receiver_composition else 2_097_152
+                    ):
                         fixture.failed = True
                         self._send(429, {"error": "fixture_budget_exceeded"})
                         return
@@ -809,7 +1299,7 @@ class LocalGraphFixture:
                     fixture._fail()
                     self._send(400, {"error": "invalid_length"})
                     return
-                if length > 1_048_576:
+                if length > (262_144 if fixture.receiver_composition else 1_048_576):
                     fixture._fail()
                     self._send(413, {"error": "request_too_large"})
                     return
@@ -823,7 +1313,11 @@ class LocalGraphFixture:
                     return
                 with fixture.lock:
                     index = len(fixture.purposes)
-                    if not _fixture_request_allowed(
+                    allowed = (
+                        _receiver_fixture_request_allowed
+                        if fixture.receiver_composition
+                        else _fixture_request_allowed
+                    )(
                         request,
                         purpose=purpose,
                         model=model,
@@ -831,7 +1325,8 @@ class LocalGraphFixture:
                         authorization=self.headers.get("Authorization"),
                         request_index=index,
                         accumulated_bytes=fixture.request_bytes,
-                    ):
+                    )
+                    if not allowed:
                         fixture.failed = True
                         self._send(400, {"error": "request_out_of_scope"})
                         return
@@ -842,7 +1337,11 @@ class LocalGraphFixture:
                     self._send(504, {"error": "fixture_deadline"})
                     return
                 try:
-                    output = _fixture_output_for_request(index, request)
+                    output = (
+                        _receiver_fixture_output_for_request(request)
+                        if fixture.receiver_composition
+                        else _fixture_output_for_request(index, request)
+                    )
                 except ValueError:
                     fixture._fail()
                     self._send(400, {"error": "fixture_output_binding_failed"})
@@ -854,7 +1353,10 @@ class LocalGraphFixture:
                         "model": _FIXTURE_MODEL,
                         "status": "completed",
                         "output_text": json.dumps(output, separators=(",", ":")),
-                        "usage": {"input_tokens": 16, "output_tokens": 24},
+                        "usage": {
+                            "input_tokens": 16,
+                            "output_tokens": 256 if fixture.receiver_composition else 24,
+                        },
                     },
                 )
 
@@ -868,6 +1370,7 @@ class LocalGraphFixture:
             def handle_error(self, _request: object, _client_address: object) -> None:
                 return
 
+        self.receiver_composition = receiver_composition
         self.lock = threading.Lock()
         self.release = threading.Event()
         self.purposes: list[str] = []
@@ -936,6 +1439,76 @@ def stop_group(process: subprocess.Popen[bytes]) -> bool:
     return False
 
 
+def _drain_receiver_child_stderr(stream, state: dict[str, object]) -> None:
+    """Drain the child pipe while keeping at most 8 KiB in memory for classification."""
+    prefix = bytearray()
+    total = 0
+    try:
+        for chunk in iter(lambda: stream.read(4096), b""):
+            total = min(8193, total + len(chunk))
+            prefix.extend(chunk[: max(0, 8192 - len(prefix))])
+    except Exception:
+        state["read_failed"] = True
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            state["read_failed"] = True
+        state["prefix"] = bytes(prefix)
+        state["bytes_capped"] = total
+        state["drained"] = True
+
+
+def _receiver_child_exit_diagnostic(
+    returncode: int | None, stderr_state: dict[str, object]
+) -> dict[str, object]:
+    """Retain only finite child failure facts, never stderr text or a browser capability."""
+    prefix = stderr_state.get("prefix")
+    if not isinstance(prefix, bytes):
+        prefix = b""
+    count = stderr_state.get("bytes_capped")
+    count = count if type(count) is int and 0 <= count <= 8193 else 0
+    if b"ERR_MODULE_NOT_FOUND" in prefix:
+        error_class = "module_link"
+    elif b"ERR_ASSERTION" in prefix or b"AssertionError" in prefix:
+        error_class = "assertion"
+    elif b"SyntaxError" in prefix:
+        error_class = "syntax"
+    elif b"ReferenceError" in prefix:
+        error_class = "reference"
+    elif b"TypeError" in prefix:
+        error_class = "type"
+    elif b"out of memory" in prefix.lower() or b"ERR_OUT_OF_MEMORY" in prefix:
+        error_class = "memory"
+    elif b"EACCES" in prefix or b"EPERM" in prefix:
+        error_class = "access"
+    elif b"ENOENT" in prefix:
+        error_class = "missing_file"
+    else:
+        error_class = "other" if count else "none"
+    diagnostic = {
+        "returncode": returncode if type(returncode) is int and -255 <= returncode <= 255 else None,
+        "stderr_class": error_class,
+        "stderr_bytes_capped": count,
+        "stderr_truncated": count > 8192,
+        "stderr_drained": stderr_state.get("drained") is True
+        and stderr_state.get("read_failed") is not True,
+    }
+    # Only a shipped source basename and bounded line may leave the raw child pipe.
+    source = re.search(
+        rb"(?m)^[ \t]+at [^\r\n]*[/\\]"
+        rb"(installed-receiver\.mjs|receiver-(?:guards|deadline|diagnostics)\.mjs)"
+        rb":([1-9][0-9]{0,3})(?::[0-9]{1,5})?(?:[)\r\n]|$)",
+        prefix,
+    )
+    if source is not None:
+        diagnostic["stderr_source"] = {
+            "file": source.group(1).decode("ascii"),
+            "line": int(source.group(2)),
+        }
+    return diagnostic
+
+
 def _run_receiver_phase(
     *,
     report: dict[str, object],
@@ -967,6 +1540,9 @@ def _run_receiver_phase(
     receiver_server = None
     receiver_thread = None
     receiver_child = None
+    receiver_stderr_thread = None
+    receiver_stderr_state: dict[str, object] = {"drained": False}
+    receiver_fixture = None
     receiver_driver_report: dict[str, object] | None = None
     prior_environment = dict(os.environ)
     prior_cwd = Path.cwd()
@@ -975,6 +1551,8 @@ def _run_receiver_phase(
     report["receiver_http_server_closed"] = True
     report["receiver_service_thread_stopped"] = True
     report["receiver_service_closed"] = True
+    report["receiver_fixture_thread_stopped"] = True
+    report["receiver_fixture_http_server_closed"] = True
     report["receiver_driver_cleanup_confirmed"] = False
     try:
         receiver_root.mkdir(mode=0o700, exist_ok=False)
@@ -1011,6 +1589,10 @@ def _run_receiver_phase(
         receiver_thread.start()
         report["receiver_service_thread_stopped"] = False
         report["receiver_http_server_closed"] = False
+        receiver_fixture = LocalGraphFixture(receiver_composition=True)
+        receiver_fixture.start()
+        report["receiver_fixture_thread_stopped"] = False
+        report["receiver_fixture_http_server_closed"] = False
         timeout = _phase_timeout(work_deadline, 360)
         if timeout is None:
             report["receiver_phase_status"] = "not_attempted"
@@ -1028,18 +1610,52 @@ def _run_receiver_phase(
             cwd=receiver_root / "work",
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             start_new_session=True,
         )
         report["receiver_driver_started"] = True
         report["receiver_process_group_stopped"] = False
-        timeout = _phase_timeout(work_deadline, 360)
-        receiver_child.communicate(
-            json.dumps({"capability": receiver_capability}).encode(),
-            timeout=timeout if timeout is not None else 0,
+        receiver_stderr_thread = threading.Thread(
+            target=_drain_receiver_child_stderr,
+            args=(receiver_child.stderr, receiver_stderr_state),
+            daemon=True,
         )
+        try:
+            receiver_stderr_thread.start()
+        except Exception:
+            receiver_stderr_thread = None
+            raise
+        timeout = _phase_timeout(work_deadline, 360)
+        try:
+            os.write(
+                receiver_child.stdin.fileno(),
+                json.dumps(
+                    {"capability": receiver_capability, "fixture_port": receiver_fixture.port}
+                ).encode(),
+            )
+        except BrokenPipeError:
+            pass  # An early child exit is retained through its return code and finite stderr class.
+        finally:
+            try:
+                receiver_child.stdin.close()
+            except BrokenPipeError:
+                pass
+        receiver_child.wait(timeout=timeout if timeout is not None else 0)
         receiver_capability = ""
+        receiver_stderr_thread.join(timeout=min(5, max(0, work_deadline - time.monotonic())))
+        report["receiver_driver_exit"] = _receiver_child_exit_diagnostic(
+            receiver_child.returncode, receiver_stderr_state
+        )
+        report["receiver_model_fixture"] = {
+            "request_count": len(receiver_fixture.purposes),
+            "purposes": list(receiver_fixture.purposes),
+            "request_bytes": receiver_fixture.request_bytes,
+            "failed": receiver_fixture.failed,
+        }
         receiver_report_path = output / "installed-receiver-report.json"
+        report["receiver_driver_report_present"] = receiver_report_path.is_file()
+        if report["receiver_driver_exit"]["stderr_drained"] is not True:
+            raise RuntimeError("Receiver child stderr did not drain")
         receiver_driver_report = json.loads(receiver_report_path.read_text(encoding="utf-8"))
         receiver_receipt = _receiver_report_for_receipt(receiver_driver_report)
         driver_cleanup = receiver_driver_report["cleanup"]
@@ -1047,6 +1663,8 @@ def _run_receiver_phase(
             driver_cleanup.get("original_owner_completed_retained") is True
             and driver_cleanup.get("linked_owner_completed_retained") is True
             and driver_cleanup.get("runner_stopped") is True
+            and driver_cleanup.get("composition_grant_revoked") is True
+            and driver_cleanup.get("model_authorization_revoked") is True
             and receiver_driver_report.get("owner_status") == "completed"
         )
         report["receiver_retained_redaction"] = {
@@ -1057,7 +1675,12 @@ def _run_receiver_phase(
             "browser_returncode": receiver_child.returncode,
         }
         report["receiver_retained_redaction_driver_passed"] = (
-            receiver_child.returncode == 0 and _receiver_driver_passed(receiver_driver_report)
+            receiver_child.returncode == 0
+            and _receiver_driver_passed(receiver_driver_report)
+            and report["receiver_model_fixture"]["request_count"] == 1
+            and report["receiver_model_fixture"]["purposes"] == [_RECEIVER_COMPOSITION_PURPOSE]
+            and 0 < report["receiver_model_fixture"]["request_bytes"] <= 262_144
+            and report["receiver_model_fixture"]["failed"] is False
         )
         report["receiver_phase_status"] = (
             "passed" if report["receiver_retained_redaction_driver_passed"] else "failed"
@@ -1079,6 +1702,36 @@ def _run_receiver_phase(
             except (OSError, subprocess.TimeoutExpired):
                 report["receiver_process_group_stopped"] = False
                 cleanup_errors.append("receiver_browser_process_group")
+        if receiver_stderr_thread is not None:
+            receiver_stderr_thread.join(timeout=5)
+            if (
+                receiver_stderr_thread.is_alive()
+                or receiver_stderr_state.get("read_failed") is True
+            ):
+                cleanup_errors.append("receiver_child_stderr_drain")
+        elif receiver_child is not None:
+            try:
+                receiver_child.stderr.close()
+            except Exception:
+                pass
+            cleanup_errors.append("receiver_child_stderr_drain")
+        if receiver_fixture is not None:
+            try:
+                (
+                    report["receiver_fixture_thread_stopped"],
+                    report["receiver_fixture_http_server_closed"],
+                    fixture_errors,
+                ) = receiver_fixture.close()
+                cleanup_errors.extend(fixture_errors)
+                if receiver_fixture.failed or fixture_errors:
+                    report["receiver_phase_status"] = "failed"
+                    report["status"] = "failed_or_incomplete"
+            except (OSError, RuntimeError):
+                report["receiver_fixture_thread_stopped"] = False
+                report["receiver_fixture_http_server_closed"] = False
+                report["receiver_phase_status"] = "failed"
+                report["status"] = "failed_or_incomplete"
+                cleanup_errors.append("receiver_fixture_close")
         if receiver_server is not None:
             (
                 report["receiver_service_thread_stopped"],
@@ -1261,6 +1914,8 @@ def main() -> int:
         "receiver_http_server_closed": True,
         "receiver_service_closed": True,
         "receiver_service_thread_stopped": True,
+        "receiver_fixture_thread_stopped": True,
+        "receiver_fixture_http_server_closed": True,
     }
     runtime_admitted = False
     thread.start()
@@ -1426,6 +2081,10 @@ def main() -> int:
                 "detection_application": assistant_report.get("detection_application"),
                 "detection_reopened": assistant_report.get("detection_reopened"),
                 "deadline_controls": assistant_report.get("deadline_controls"),
+                "model_purpose_authorizations": assistant_report.get(
+                    "model_purpose_authorizations"
+                ),
+                "route_counts": assistant_report.get("route_counts"),
                 "request_counts": assistant_report.get("request_counts"),
                 "cleanup": assistant_report.get("cleanup"),
             }
@@ -1515,6 +2174,8 @@ def main() -> int:
                 report["receiver_http_server_closed"] = True
                 report["receiver_service_thread_stopped"] = True
                 report["receiver_service_closed"] = True
+                report["receiver_fixture_thread_stopped"] = True
+                report["receiver_fixture_http_server_closed"] = True
             else:
                 _run_receiver_phase(
                     report=report,

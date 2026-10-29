@@ -154,9 +154,13 @@ def _identity(
         or len(source_bindings) != len(run_ids)
     ):
         raise ProductStoreError("comparison source bindings are invalid")
+    summaries = comparison.get("summaries")
     bindings: list[dict[str, str]] = []
-    for run_id, binding in zip(run_ids, source_bindings, strict=True):
-        if not isinstance(binding, Mapping) or set(binding) != {"run_id", "bundle_hash"}:
+    for index, (run_id, binding) in enumerate(zip(run_ids, source_bindings, strict=True)):
+        if not isinstance(binding, Mapping) or set(binding) not in (
+            {"run_id", "bundle_hash"},
+            {"run_id", "bundle_hash", "capability_objective_digest"},
+        ):
             raise ProductStoreError("comparison source binding fields are invalid")
         bound_id, bundle_hash = binding.get("run_id"), binding.get("bundle_hash")
         if (
@@ -165,7 +169,25 @@ def _identity(
             or _DIGEST.fullmatch(bundle_hash) is None
         ):
             raise ProductStoreError("comparison source binding identity is invalid")
-        bindings.append({"run_id": bound_id, "bundle_hash": bundle_hash})
+        projection = (
+            summaries[index].get("capability_objective")
+            if isinstance(summaries, list)
+            and len(summaries) == len(run_ids)
+            and isinstance(summaries[index], Mapping)
+            and summaries[index].get("run_id") == run_id
+            else None
+        )
+        proof_digest = binding.get("capability_objective_digest")
+        if projection is None:
+            if proof_digest is not None:
+                raise ProductStoreError("comparison source has no capability objective proof")
+        elif (
+            not isinstance(proof_digest, str)
+            or _DIGEST.fullmatch(proof_digest) is None
+            or proof_digest != content_hash(projection)
+        ):
+            raise ProductStoreError("comparison capability objective binding is invalid")
+        bindings.append(dict(binding))
     if comparison.get("baseline_run_id") != run_ids[0]:
         raise ProductStoreError("comparison baseline does not match its ordered runs")
     comparison_id = comparison.get("comparison_id")

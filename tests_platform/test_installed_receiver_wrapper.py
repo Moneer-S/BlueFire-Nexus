@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from tools.verify_installed_browser import (
     _RUNTIME_PROCESS_CLEANUP_KEYS,
+    _drain_receiver_child_stderr,
+    _receiver_blocked_requests_for_receipt,
+    _receiver_child_exit_diagnostic,
     _receiver_driver_passed,
     _receiver_report_for_receipt,
     _receiver_retained_redaction_accepted,
@@ -16,6 +21,71 @@ from tools.verify_installed_browser import (
     _runtime_cleanup_confirmed,
     _runtime_process_cleanup_confirmed,
 )
+
+
+def test_receiver_child_exit_diagnostic_drains_and_sanitizes_bounded_stderr() -> None:
+    secret = b"private-capability-and-workspace-path"
+    state: dict[str, object] = {"drained": False}
+    _drain_receiver_child_stderr(BytesIO(b"Error [ERR_MODULE_NOT_FOUND]: " + secret * 400), state)
+    diagnostic = _receiver_child_exit_diagnostic(1, state)
+    assert diagnostic == {
+        "returncode": 1,
+        "stderr_class": "module_link",
+        "stderr_bytes_capped": 8193,
+        "stderr_truncated": True,
+        "stderr_drained": True,
+    }
+    assert len(state["prefix"]) == 8192
+    assert secret not in repr(diagnostic).encode()
+
+
+def test_receiver_child_exit_diagnostic_refuses_incomplete_drain() -> None:
+    assert _receiver_child_exit_diagnostic(None, {"drained": False}) == {
+        "returncode": None,
+        "stderr_class": "none",
+        "stderr_bytes_capped": 0,
+        "stderr_truncated": False,
+        "stderr_drained": False,
+    }
+
+
+def test_receiver_child_exit_diagnostic_refuses_non_oserror_read_failure() -> None:
+    class FailedStream:
+        closed = False
+
+        def read(self, _size: int) -> bytes:
+            raise ValueError("inert read failure")
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = FailedStream()
+    state: dict[str, object] = {"drained": False}
+    _drain_receiver_child_stderr(stream, state)
+    assert stream.closed
+    assert state["read_failed"] is True
+    assert _receiver_child_exit_diagnostic(1, state)["stderr_drained"] is False
+
+
+def test_receiver_child_exit_diagnostic_retains_only_allowlisted_stack_location() -> None:
+    secret = b"private-capability-and-workspace-path"
+    stderr = (
+        b"Error: " + secret + b"\n"
+        b"    at unexpected (C:\\private\\wrong-helper.mjs:88:3)\n"
+        b"    at route (C:\\private\\receiver-guards.mjs:206:13)\n"
+        b"    at file:///private/installed-receiver.mjs:1240:7\n"
+    )
+    state: dict[str, object] = {"drained": False}
+    _drain_receiver_child_stderr(BytesIO(stderr), state)
+    diagnostic = _receiver_child_exit_diagnostic(1, state)
+    assert diagnostic["stderr_source"] == {"file": "receiver-guards.mjs", "line": 206}
+    assert secret not in repr(diagnostic).encode()
+    assert b"private" not in repr(diagnostic).encode()
+
+    state["prefix"] = b"    at route (C:\\private\\unshipped-helper.mjs:999:1)\n"
+    assert "stderr_source" not in _receiver_child_exit_diagnostic(1, state)
+    state["prefix"] = b"    at route (C:\\private\\receiver-guards.mjs:10000:1)\n"
+    assert "stderr_source" not in _receiver_child_exit_diagnostic(1, state)
 
 
 def receiver_report() -> dict[str, object]:
@@ -35,6 +105,11 @@ def receiver_report() -> dict[str, object]:
             "original_baseline_protected_and_legitimate_use_completed_with_retained_policy",
             "fresh_retest_created_through_retained_control_ui_with_original_lineage",
             "linked_fresh_protected_refusal_and_legitimate_use_completed_under_retained_policy",
+            "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false",
+            "single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt",
+            "composed_attempt_grant_revoked_after_verified_cleanup",
+            "receiver_composition_model_authorization_revoked_after_one_proposal",
+            "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result",
         ],
         "blocked_requests": [],
         "errors": [],
@@ -42,6 +117,8 @@ def receiver_report() -> dict[str, object]:
             "original_owner_completed_retained": True,
             "linked_owner_completed_retained": True,
             "runner_stopped": True,
+            "composition_grant_revoked": True,
+            "model_authorization_revoked": True,
         },
         "owner_status": "completed",
         "unique_receiver_session_count": 5,
@@ -52,6 +129,18 @@ def receiver_report() -> dict[str, object]:
             "review": 5,
             "approval": 5,
             "cancel": 0,
+            "composition_list": 3,
+            "composition_context": 1,
+            "composition_grant": 1,
+            "composition_proposal_context": 2,
+            "composition_proposal": 1,
+            "composition_attempt": 1,
+            "composition_revoke": 1,
+            "comparison": 1,
+            "provider_save": 1,
+            "provider_activate": 1,
+            "model_authorization": 1,
+            "model_authorization_revoke": 1,
         },
         "source_starter_scenario_id": "scenario.receiver-defense.redaction-validation.v1",
         "saved_scenario_copy": {
@@ -78,6 +167,47 @@ def receiver_report() -> dict[str, object]:
         "run_id": "run-20261021T120000Z-aaaaaaaaaaaaaaaa",
         "receiver_job_id": "job-11111111111111111111111111111111",
         "original_owner_job_id": "job-11111111111111111111111111111111",
+        "composition": {
+            "control_owner_job_id": "job-11111111111111111111111111111111",
+            "objective_owner_job_id": "job-33333333333333333333333333333333",
+            "grant_id": "grant-33333333333333333333333333333333",
+            "grant_status": "revoked",
+            "attempt_job_id": "job-44444444444444444444444444444444",
+            "attempt_id": "attempt-44444444444444444444444444444444",
+            "settlement": "settled",
+            "run_id": "run-20261021T120007Z-2222222222222222",
+            "verified_result_digest": "sha256:" + "c" * 64,
+            "receiver_decision": "policy_refused",
+            "receiver_authenticated": True,
+            "record_count": 8,
+            "redacted_record_count": 0,
+            "retained_record_count": 8,
+            "empty_record_count": 0,
+            "cleanup": {"run": "complete", "receiver": "verified_closed"},
+            "objective_established": False,
+            "finalized_run_objective_reached": False,
+            "graph_objective_reached": False,
+            "model_proposal": {
+                "job_id": "job-55555555555555555555555555555555",
+                "proposal_digest": "sha256:" + "6" * 64,
+                "context_digest": "sha256:" + "7" * 64,
+                "provider_id": "provider.installed-receiver-composition.v1",
+                "candidate_ready": True,
+                "reopened": True,
+                "same_initial_graph": True,
+                "model_authorization_requests": 1,
+            },
+            "comparison": {
+                "baseline_run_id": "run-20261021T120000Z-aaaaaaaaaaaaaaaa",
+                "snapshot_id": "run-comparison-" + "d" * 64,
+                "snapshot_digest": "sha256:" + "e" * 64,
+                "source_integrity": "verified",
+                "objective_comparability": "different_objectives",
+                "objective_changed": False,
+                "objective_recovered": False,
+                "reopened": True,
+            },
+        },
         "linked_owner_job_id": "job-22222222222222222222222222222222",
         "original_control": {
             "status": "retained",
@@ -201,6 +331,12 @@ def receiver_report() -> dict[str, object]:
 def clean_wrapper_report() -> dict[str, object]:
     return {
         **{key: True for key in _RUNTIME_PROCESS_CLEANUP_KEYS},
+        "receiver_model_fixture": {
+            "request_count": 1,
+            "purposes": ["bluefire_composition_proposal"],
+            "request_bytes": 1024,
+            "failed": False,
+        },
         "browser_phase_status": "passed",
         "receiver_phase_status": "passed",
         "receiver_driver_started": True,
@@ -310,6 +446,289 @@ def test_receiver_bearer_fields_are_rejected_before_receipt_projection() -> None
         _receiver_report_for_receipt(report)
     assert "secret-bearer-value" not in str(raised.value)
     assert "credential" in str(raised.value)
+
+
+def test_receiver_receipt_projects_only_finite_blocked_post_diagnostics() -> None:
+    report = receiver_report()
+    report["blocked_requests"] = [
+        {
+            "method": "POST",
+            "path": "loopback",
+            "reason": "write_not_allowlisted_or_budget_exceeded",
+            "route_family": "composition_objective_list",
+            "denial_category": "budget_exhausted",
+            "budget_count": 5,
+            "budget_limit": 5,
+            "url": "http://127.0.0.1/private?token=secret",
+            "body": {"private": "request"},
+        },
+        {
+            "method": "POST",
+            "path": "loopback",
+            "reason": "write_not_allowlisted_or_budget_exceeded",
+            "route_family": ["private"],
+            "denial_category": "budget_exhausted",
+            "budget_count": True,
+            "budget_limit": 999,
+        },
+    ]
+    receipt = _receiver_report_for_receipt(report)
+    assert receipt["blocked_requests"] == [
+        {
+            "method": "POST",
+            "path": "loopback",
+            "reason": "write_not_allowlisted_or_budget_exceeded",
+            "route_family": "composition_objective_list",
+            "denial_category": "budget_exhausted",
+            "budget_count": 5,
+            "budget_limit": 5,
+        },
+        {
+            "method": "POST",
+            "path": "loopback",
+            "reason": "write_not_allowlisted_or_budget_exceeded",
+            "route_family": "other",
+            "denial_category": "other",
+        },
+    ]
+    assert "secret" not in json.dumps(receipt["blocked_requests"])
+    assert "private" not in json.dumps(receipt["blocked_requests"])
+
+
+def test_receiver_blocked_request_projection_bounds_count_and_legacy_websocket() -> None:
+    projected = _receiver_blocked_requests_for_receipt(
+        [
+            {"kind": "websocket", "destination": "blocked", "url": "/private"},
+            {
+                "method": "POST",
+                "path": "loopback",
+                "reason": "invalid_json_body",
+                "route_family": "session",
+                "denial_category": "invalid_json_body",
+            },
+        ]
+        * 40
+    )
+    assert len(projected) == 32
+    assert projected[0] == {"kind": "websocket", "destination": "blocked"}
+    assert projected[1] == {
+        "method": "POST",
+        "path": "loopback",
+        "reason": "invalid_json_body",
+        "route_family": "session",
+        "denial_category": "invalid_json_body",
+    }
+
+
+def test_receiver_receipt_preserves_bounded_composition_failure_categories() -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "composition-attempt",
+            "kind": "journey_failed",
+            "error_type": "TimeoutError",
+            "message": "private exception",
+            "composition_interaction": {
+                "schema_version": "bluefire.installed-receiver-composition-interaction.v1",
+                "step": "click",
+                "button_enabled": False,
+                "pending_kind": "proposal",
+                "context_digest_matches": True,
+                "private": "private request",
+            },
+        },
+        {"stage": "composition-attempt", "kind": "page_wait_failed", "method": "waitForResponse"},
+        {"stage": ["private"], "kind": "private kind", "error_type": "private type"},
+    ]
+    errors = _receiver_report_for_receipt(report)["errors"]
+    assert isinstance(errors, list)
+    assert errors[0]["stage"] == "composition-attempt"
+    assert errors[0]["error_type"] == "TimeoutError"
+    assert errors[0]["composition_interaction"]["step"] == "click"
+    assert errors[0]["composition_interaction"]["button_enabled"] is False
+    assert errors[1]["method"] == "waitForResponse"
+    assert errors[2] == {"kind": "other", "error_type": "other"}
+    assert "private" not in json.dumps(errors)
+    report["errors"] *= 20
+    assert len(_receiver_report_for_receipt(report)["errors"]) == 32
+
+
+def test_composed_receiver_receipt_requires_false_objective_and_current_saved_comparison() -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+    assert _receiver_driver_passed(report)
+    assert _receiver_report_for_receipt(report)["composition"] == report["composition"]
+    aligned_true = deepcopy(report)
+    aligned_true["composition"]["finalized_run_objective_reached"] = True
+    aligned_true["composition"]["graph_objective_reached"] = True
+    assert _receiver_driver_passed(aligned_true)
+
+    for field, value in (
+        ("control_owner_job_id", "job-ffffffffffffffffffffffffffffffff"),
+        ("grant_status", "active"),
+        ("settlement", "pending_cleanup"),
+        ("run_id", report["run_id"]),
+        ("receiver_decision", "accepted"),
+        ("receiver_authenticated", False),
+        ("record_count", True),
+        ("redacted_record_count", 8),
+        ("objective_established", True),
+        ("graph_objective_reached", True),
+        ("finalized_run_objective_reached", True),
+        ("graph_objective_reached", None),
+        ("finalized_run_objective_reached", None),
+    ):
+        changed = deepcopy(report)
+        changed["composition"][field] = value
+        assert not _receiver_driver_passed(changed), field
+
+    for field, value in (
+        ("baseline_run_id", "run-20261021T120007Z-2222222222222222"),
+        ("source_integrity", "changed"),
+        ("objective_comparability", "comparable"),
+        ("objective_changed", True),
+        ("objective_recovered", True),
+        ("reopened", False),
+    ):
+        changed = deepcopy(report)
+        changed["composition"]["comparison"][field] = value
+        assert not _receiver_driver_passed(changed), field
+
+    changed = deepcopy(report)
+    changed["composition"]["cleanup"]["receiver"] = "unknown"
+    assert not _receiver_driver_passed(changed)
+    changed = deepcopy(report)
+    changed["request_counts"]["composition_attempt"] = 0
+    assert not _receiver_driver_passed(changed)
+    changed = deepcopy(report)
+    changed["composition"]["receiver_session_id"] = "sensitive-bearer"
+    with pytest.raises(ValueError):
+        _receiver_report_for_receipt(changed)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("job_id", "job-invalid"),
+        ("proposal_digest", "sha256:invalid"),
+        ("context_digest", "sha256:invalid"),
+        ("provider_id", "provider.unexpected.v1"),
+        ("candidate_ready", False),
+        ("reopened", False),
+        ("same_initial_graph", False),
+        ("model_authorization_requests", 2),
+        ("model_authorization_requests", True),
+    ],
+)
+def test_receiver_requires_exact_saved_model_proposal_proof(field: str, value: object) -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+    assert _receiver_driver_passed(report)
+    report["composition"]["model_proposal"][field] = value
+    assert not _receiver_driver_passed(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("composition_proposal_context", 1),
+        ("composition_proposal_context", 4),
+        ("composition_proposal", 0),
+        ("model_authorization", 0),
+        ("model_authorization_revoke", 0),
+        ("provider_save", 2),
+        ("provider_activate", 2),
+    ],
+)
+def test_receiver_requires_single_proposal_and_exact_authorization_controls(
+    field: str, value: object
+) -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+    assert _receiver_driver_passed(report)
+    report["request_counts"][field] = value
+    assert not _receiver_driver_passed(report)
+
+
+def test_receiver_composition_list_bound_matches_installed_driver_limit() -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+
+    # The driver allowlist permits six objective-list reads; that exact ceiling
+    # is exercised by the current hosted report.
+    report["request_counts"]["composition_list"] = 6
+    assert _receiver_driver_passed(report)
+
+    for invalid_count in (0, 7):
+        changed = deepcopy(report)
+        changed["request_counts"]["composition_list"] = invalid_count
+        assert not _receiver_driver_passed(changed), invalid_count
+
+
+def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+    assert _receiver_driver_passed(report)
+    report["checks"].remove("receiver_composition_model_authorization_revoked_after_one_proposal")
+    assert not _receiver_driver_passed(report)
+    report["checks"].append("receiver_composition_model_authorization_revoked_after_one_proposal")
+    report["cleanup"]["model_authorization_revoked"] = False
+    assert not _receiver_driver_passed(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("request_count", 0),
+        ("request_count", 2),
+        ("request_count", True),
+        ("purposes", ["bluefire_ai_graph_draft"]),
+        ("request_bytes", 0),
+        ("request_bytes", True),
+        ("request_bytes", 262_145),
+        ("failed", True),
+    ],
+)
+def test_receiver_wrapper_rejects_unbound_model_fixture(field: str, value: object) -> None:
+    report = clean_wrapper_report()
+    assert _receiver_retained_redaction_accepted(report)
+    report["receiver_model_fixture"][field] = value
+    assert not _receiver_retained_redaction_accepted(report)
 
 
 def test_receiver_browser_driver_uses_authenticated_readiness_and_safe_diagnostic() -> None:

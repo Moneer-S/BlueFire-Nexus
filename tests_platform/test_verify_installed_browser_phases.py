@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ from bluefire import runner_bootstrap
 from bluefire.runner_bootstrap import managed_product_root
 from tools import verify_installed_browser as browser
 from tools.verify_installed_browser import (
-    _PRIMARY_PHASE_CLEANUP_KEYS,
+    _RUNTIME_PROCESS_CLEANUP_KEYS,
     _phase_timeout,
     _receiver_phase_block_reason,
     _receiver_retained_redaction_accepted,
@@ -25,7 +26,7 @@ from tools.verify_installed_browser import (
 
 
 def clean_primary_report() -> dict[str, object]:
-    return {key: True for key in _PRIMARY_PHASE_CLEANUP_KEYS}
+    return {key: True for key in _RUNTIME_PROCESS_CLEANUP_KEYS}
 
 
 def test_receiver_can_follow_an_assistant_failure_only_after_primary_cleanup() -> None:
@@ -123,8 +124,9 @@ def test_started_receiver_requires_its_driver_cleanup_confirmation() -> None:
     assert not _runtime_process_cleanup_confirmed(report)
 
 
+@pytest.mark.parametrize("stderr_start_fails", [False, True])
 def test_receiver_service_uses_owned_parent_environment_and_restores_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stderr_start_fails: bool
 ) -> None:
     output = tmp_path / "output"
     runtime = output / "runtime"
@@ -192,19 +194,65 @@ def test_receiver_service_uses_owned_parent_environment_and_restores_it(
         def server_close(self) -> None:
             pass
 
-    class FakeChild:
-        returncode = 0
+    class FakeFixture:
+        port = 41998
+        purposes: list[str] = []
+        request_bytes = 0
+        failed = False
 
-        def communicate(self, _input: bytes, *, timeout: float) -> None:
+        def __init__(self, *, receiver_composition: bool) -> None:
+            assert receiver_composition is True
+
+        def start(self) -> None:
+            pass
+
+        def close(self) -> tuple[bool, bool, list[str]]:
+            return True, True, []
+
+    class FakeChild:
+        def __init__(self) -> None:
+            self.read_fd, write_fd = os.pipe()
+            self.stdin = os.fdopen(write_fd, "wb", buffering=0)
+            self.stderr = BytesIO()
+            self.returncode = 0
+
+        def wait(self, *, timeout: float) -> int:
             assert timeout <= 360
+            payload = json.loads(os.read(self.read_fd, 4096))
+            assert payload["capability"] == "test-capability"
+            assert type(payload["fixture_port"]) is int and 1 <= payload["fixture_port"] <= 65535
+            os.close(self.read_fd)
+            self.read_fd = -1
             (output / "installed-receiver-report.json").write_text(
                 json.dumps({"cleanup": {}}), encoding="utf-8"
             )
+            return self.returncode
+
+    class FailedStartThread(threading.Thread):
+        def start(self) -> None:
+            raise RuntimeError("inert stderr thread start failure")
+
+    original_thread = threading.Thread
+
+    def make_thread(*args, **kwargs):
+        if stderr_start_fails and kwargs.get("target") is browser._drain_receiver_child_stderr:
+            return FailedStartThread(*args, **kwargs)
+        return original_thread(*args, **kwargs)
+
+    def stop_fake_child(process: FakeChild) -> bool:
+        if not process.stdin.closed:
+            process.stdin.close()
+        if process.read_fd >= 0:
+            os.close(process.read_fd)
+            process.read_fd = -1
+        return True
 
     server = FakeServer()
     monkeypatch.setattr(runner_bootstrap, "current_platform", lambda _value=None: "linux")
+    monkeypatch.setattr(browser, "LocalGraphFixture", FakeFixture)
+    monkeypatch.setattr(browser.threading, "Thread", make_thread)
     monkeypatch.setattr(browser.subprocess, "Popen", lambda *args, **kwargs: FakeChild())
-    monkeypatch.setattr(browser, "stop_group", lambda _process: True)
+    monkeypatch.setattr(browser, "stop_group", stop_fake_child)
 
     _run_receiver_phase(
         report=report,
@@ -249,7 +297,8 @@ def test_receiver_service_uses_owned_parent_environment_and_restores_it(
     assert worker_derived_roots[0].is_relative_to(runtime / "receiver" / "state")
     assert os.environ == primary_environment
     assert Path.cwd() == primary_cwd
-    assert cleanup_errors == []
+    assert report["receiver_driver_started"] is True, report.get("receiver_error_type")
+    assert cleanup_errors == (["receiver_child_stderr_drain"] if stderr_start_fails else [])
     assert report["receiver_phase_status"] == "failed"
 
 

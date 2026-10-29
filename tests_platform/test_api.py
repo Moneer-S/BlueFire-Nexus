@@ -133,6 +133,10 @@ class StubService:
         self.calls.append(("ad_smb_workflow", identifier))
         return {"saved": True}
 
+    def ad_smb_assistance_context(self, identifier):
+        self.calls.append(("ad_smb_assistance_context", identifier))
+        return {"saved": True}
+
     def review_ad_smb(self, identifier, request):
         self.calls.append(("review_ad_smb", identifier, request))
         return {"saved": True}
@@ -195,6 +199,14 @@ class StubService:
 
     def composition_objective(self, owner_id):
         self.calls.append(("composition_objective", owner_id))
+        return {"saved": True}
+
+    def file_access_composed_retest_linkage(self, owner_id, attempt_id):
+        self.calls.append(("file_access_composed_retest_linkage", owner_id, attempt_id))
+        return {"saved": True}
+
+    def file_access_retest_assistance_context(self, owner_id, attempt_id):
+        self.calls.append(("file_access_retest_assistance_context", owner_id, attempt_id))
         return {"saved": True}
 
     def composition_proposal_context(self, owner_id, request):

@@ -29,6 +29,8 @@ PURPOSES = frozenset(
         "bluefire_graph_step_edit",
         "bluefire_receiver_defense_inspection",
         "bluefire_composition_proposal",
+        "bluefire_linux_file_access_composition_proposal",
+        "bluefire_macos_file_access_composition_proposal",
     }
 )
 LIMITS = {
@@ -275,6 +277,12 @@ def validate_authorization(
 def _schemas() -> Mapping[str, str]:
     from .ai import PROPOSAL_JSON_SCHEMA
     from .ai_assistance import OUTPUT_SCHEMA as assistance
+    from .ai_composition_contract import (
+        FILE_ACCESS_OUTPUT_SCHEMA as file_access_composition,
+    )
+    from .ai_composition_contract import (
+        MACOS_FILE_ACCESS_OUTPUT_SCHEMA as macos_file_access_composition,
+    )
     from .ai_composition_contract import OUTPUT_SCHEMA as composition
     from .ai_detection_create import OUTPUT_SCHEMA as create
     from .ai_detection_revision import _OUTPUT_SCHEMA as revise
@@ -286,6 +294,10 @@ def _schemas() -> Mapping[str, str]:
 
     return {
         "bluefire_composition_proposal": content_hash(composition),
+        "bluefire_linux_file_access_composition_proposal": content_hash(file_access_composition),
+        "bluefire_macos_file_access_composition_proposal": content_hash(
+            macos_file_access_composition
+        ),
         "bluefire_receiver_defense_inspection": content_hash(receiver),
         "bluefire_graph_step_edit": content_hash(edit),
         **dict(

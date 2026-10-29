@@ -1,8 +1,55 @@
 import { isDeepStrictEqual } from "node:util";
+import { clearTimeout as cancelTimeout, setTimeout as scheduleTimeout } from "node:timers";
+import { URL } from "node:url";
 
 // Saved JSON objects may be canonicalized; array order and exact values still matter.
 export const sameJson = isDeepStrictEqual;
 export const receiverApprovalAcknowledgementName = /^I approve this exact immutable job envelope once\s*Unchecked by default and never stored in browser persistence$/;
+
+// Settings mounts these inert reads while configuring the owned fixture provider.
+export function createReceiverSettingsReadPolicy() {
+  const reads = new Map([["/api/v1/settings", 0], ["/api/v1/build-info", 0]]);
+  return (url, method) => {
+    if (method !== "GET" || url.search || !reads.has(url.pathname) || reads.get(url.pathname) >= 2) return false;
+    reads.set(url.pathname, reads.get(url.pathname) + 1);
+    return true;
+  };
+}
+
+// A late response from the retired document cannot acknowledge the reload.
+export function createReceiverReloadContextCorrelation(matchesNavigation, matchesContext) {
+  let navigationStarted = false;
+  let ownedRequest;
+  return {
+    request(candidate) {
+      if (matchesNavigation(candidate)) navigationStarted = true;
+      if (!navigationStarted || !matchesContext(candidate)) return false;
+      ownedRequest ??= candidate;
+      return candidate === ownedRequest;
+    },
+    response(candidate) { return Boolean(ownedRequest && candidate.request() === ownedRequest); },
+  };
+}
+
+const terminalCompositionStates = new Set(["completed", "failed", "cancelled", "interrupted"]);
+
+export function receiverCompositionCleanupState(objective) {
+  if (!objective || typeof objective !== "object" || Array.isArray(objective)
+    || !objective.owner || typeof objective.owner !== "object" || Array.isArray(objective.owner)
+    || !Array.isArray(objective.attempts)) return "unresolved";
+  if (objective.grant === null) {
+    return objective.owner.state === "completed" && objective.owner.progress?.admission?.accepted === false
+      && objective.attempts.length === 0 ? "no_grant" : "unresolved";
+  }
+  if (!objective.grant || typeof objective.grant !== "object" || Array.isArray(objective.grant)
+    || objective.grant.status !== "revoked" || objective.grant.cleanup_state !== "settled") return "unresolved";
+  return objective.attempts.every(attempt => attempt && typeof attempt === "object" && !Array.isArray(attempt)
+    && attempt.request?.composition_attempt?.parent_job_id === objective.owner.job_id
+    && terminalCompositionStates.has(attempt.state)
+    && attempt.progress && typeof attempt.progress === "object" && !Array.isArray(attempt.progress)
+    && (attempt.progress.settlement === undefined || attempt.progress.settlement === "settled"))
+    ? "settled" : "unresolved";
+}
 
 export function receiverContextRequestAllowed(body, expected) {
   const linked = expected.sourceControl !== null;
@@ -139,7 +186,7 @@ export function consumeRequestBudget(counts, limits, key) {
 export function classifyRequest({ origin, expectedOrigin, method, url, body, bodyError, allowedRead, authorizePost }) {
   if (origin !== expectedOrigin) return { allowed: false, reason: "non_loopback" };
   if (method === "GET" || method === "HEAD") {
-    return allowedRead(url)
+    return allowedRead(url, method)
       ? { allowed: true }
       : { allowed: false, reason: "read_not_allowlisted" };
   }
@@ -150,4 +197,89 @@ export function classifyRequest({ origin, expectedOrigin, method, url, body, bod
       : { allowed: false, reason: "write_not_allowlisted_or_budget_exceeded" };
   }
   return { allowed: false, reason: "method_not_allowlisted" };
+}
+
+// A failed classifier or Playwright route action must never turn into a permitted request.
+export async function handleReceiverRoute(route, { expectedOrigin, allowedRead, authorizePost, describeBlockedPost, onBlocked, onFailure }) {
+  try {
+    const request = route.request();
+    const url = new URL(request.url());
+    const method = request.method();
+    let body;
+    let bodyError = false;
+    if (url.origin === expectedOrigin && method === "POST") {
+      try { body = request.postData() ? request.postDataJSON() : null; }
+      catch { bodyError = true; }
+    }
+    const decision = classifyRequest({
+      origin: url.origin,
+      expectedOrigin,
+      method,
+      url,
+      body,
+      bodyError,
+      allowedRead,
+      authorizePost,
+    });
+    if (!decision.allowed) {
+      const entry = {
+        method: ["GET", "HEAD", "POST"].includes(method) ? method : "OTHER",
+        path: url.origin === expectedOrigin ? "loopback" : "non_loopback",
+        reason: decision.reason,
+      };
+      if (method === "POST" && typeof describeBlockedPost === "function") {
+        Object.assign(entry, describeBlockedPost(url, decision.reason));
+      }
+      onBlocked(entry);
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  } catch {
+    onFailure("request_route_failed");
+    try { await route.abort(); }
+    catch { onFailure("request_abort_failed"); }
+  }
+}
+
+export async function closeReceiverWebSocket(socket, { onBlocked, onFailure }) {
+  try { onBlocked(); }
+  catch { onFailure("websocket_record_failed"); }
+  try { await socket.close(); }
+  catch { onFailure("websocket_close_failed"); }
+}
+
+// EventEmitter does not await async listeners. Track every settled observer for the final report.
+export function observeReceiverEvent(handler, onFailure, pending) {
+  return (...args) => {
+    let observation;
+    try { observation = Promise.resolve(handler(...args)); }
+    catch { onFailure(); return; }
+    const settled = observation.catch(() => { onFailure(); });
+    pending.add(settled);
+    void settled.finally(() => pending.delete(settled));
+  };
+}
+
+// A UI action may fail before a deferred page wait is awaited. Own its rejection
+// immediately, but return the original promise so callers still receive its result/error.
+export function observeReceiverWait(wait, onFailure, pending) {
+  const settled = wait.then(() => {}, () => { onFailure(); });
+  pending.add(settled);
+  void settled.finally(() => pending.delete(settled));
+  return wait;
+}
+
+export async function settleReceiverObservers(pending, timeoutMs) {
+  if (pending.size === 0) return true;
+  const bounded = Number.isFinite(timeoutMs) ? Math.max(0, Math.min(timeoutMs, 1000)) : 0;
+  if (bounded <= 0) return false;
+  let timer;
+  try {
+    await Promise.race([
+      Promise.allSettled([...pending]),
+      new Promise((resolve) => { timer = scheduleTimeout(resolve, bounded); }),
+    ]);
+  } finally { cancelTimeout(timer); }
+  return pending.size === 0;
 }
