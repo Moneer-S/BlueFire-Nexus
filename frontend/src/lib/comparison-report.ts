@@ -41,7 +41,7 @@ export function comparisonReport(comparison: ComparisonResponse, names: Record<s
       run.run_id === comparison.baseline_run_id ? "Baseline" : "Variant",
       names[run.run_id] ?? run.run_id,
       run.mode,
-      run.objective_reached === true ? (run.mode === "simulate" ? "Achieved (synthetic)" : "Achieved") : run.objective_reached === false ? "Not achieved" : "Not established",
+      run.capability_objective?.state === "unverified" ? "Unknown (proof unavailable)" : run.objective_reached === true ? (run.mode === "simulate" ? "Achieved (synthetic)" : "Achieved") : run.objective_reached === false ? "Not achieved" : "Not established",
       Array.isArray(observed) ? observed.length : "Not reported",
       Array.isArray(gaps) ? gaps.length : "Not reported",
       run.cleanup_success === false ? "Needs attention" : run.cleanup_success === true ? (run.mode === "simulate" ? "No real effects" : "Complete") : "Not reported",
@@ -55,6 +55,9 @@ export function comparisonReport(comparison: ComparisonResponse, names: Record<s
     `Created: ${cell(createdAt[run.run_id])}`,
     "",
     `Profile: ${cell(run.profile_id)}. First stopped step: ${cell(run.first_blocked_step ?? "None recorded")}.`,
+    ...(run.capability_objective ? [
+      `Run-level completion: ${run.graph_objective_reached === true ? "met" : "not met"}. Capability proof: ${run.capability_objective.state === "verified" ? "verified" : "unavailable"}.`,
+    ] : []),
     "",
     "| Step | Reported outcome |",
     "| --- | --- |",

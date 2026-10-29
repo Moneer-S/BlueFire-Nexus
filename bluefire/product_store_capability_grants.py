@@ -849,6 +849,25 @@ def get_attempt(store, attempt_id) -> dict[str, Any]:
         }
 
 
+def get_attempt_for_run(store, run_id: str) -> dict[str, Any] | None:
+    if (
+        not isinstance(run_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id) is None
+    ):
+        raise ProductStoreError("Capability run identity is invalid.")
+    with store._connection() as connection:
+        row = connection.execute(
+            "SELECT attempt_id FROM capability_attempts WHERE run_id=?", (run_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    attempt_id = row["attempt_id"]
+    attempt = get_attempt(store, attempt_id)
+    if attempt["lease"]["run_id"] != run_id:
+        raise ProductStoreError("Capability attempt run binding changed.")
+    return {"attempt_id": attempt_id, **attempt}
+
+
 def control_usage_view(store, connection, owner_id):
     """Persisted bindings cannot establish that a receiver process is live now."""
     try:

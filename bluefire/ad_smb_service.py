@@ -46,6 +46,11 @@ class AdSmbServiceMixin:
     def ad_smb_workflow(self, identifier: str) -> Mapping[str, Any]:
         return self._ad_smb_call(lambda: self.ad_smb.read(identifier))
 
+    def ad_smb_assistance_context(self, identifier: str) -> Mapping[str, Any]:
+        from .assistance_ad_smb_context import context
+
+        return self._ad_smb_call(lambda: context(self, workflow_job_id=identifier))
+
     def review_ad_smb(self, identifier: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         def review() -> Mapping[str, Any]:
             row = document(request)

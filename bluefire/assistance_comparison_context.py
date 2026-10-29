@@ -305,6 +305,40 @@ def _divergence(before, after, delta):
     return index + 1, "unreported"
 
 
+def _objective_comparability(before, after, delta):
+    recorded = delta.get("objective_comparability")
+    require(recorded is None or recorded in {"comparable", "different_objectives", "unverified"})
+    left, right = before.get("capability_objective"), after.get("capability_objective")
+    for projection in (left, right):
+        if projection is None:
+            continue
+        projection = _mapping(projection)
+        require(
+            projection.get("state") in {"verified", "unverified"}
+            and isinstance(projection.get("objective_digest"), str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", projection["objective_digest"])
+        )
+    if left is None and right is None:
+        expected = "comparable"
+    elif left is None or right is None:
+        expected = "different_objectives"
+    else:
+        expected = (
+            "unverified"
+            if left["state"] != "verified" or right["state"] != "verified"
+            else (
+                "different_objectives"
+                if left["objective_digest"] != right["objective_digest"]
+                else "comparable"
+            )
+        )
+    if recorded is None:
+        require(left is None and right is None)
+    else:
+        require(recorded == expected)
+    return expected
+
+
 def _change(before, after, delta, position):
     _mapping(delta)
     material = delta.get("material_changes")
@@ -325,19 +359,21 @@ def _change(before, after, delta, position):
     known_objectives = (
         type(before.get("objective_reached")) is type(after.get("objective_reached")) is bool
     )
-    relation = (
-        "mixed_or_unreported_modes"
-        if not same_mode
-        else (
-            "unreported"
-            if not known_objectives
-            else (
-                "same_recorded_result"
-                if before["objective_reached"] == after["objective_reached"]
-                else "different_recorded_results"
-            )
+    comparability = _objective_comparability(before, after, delta)
+    if not same_mode:
+        relation = "mixed_or_unreported_modes"
+    elif comparability == "different_objectives":
+        relation = "different_objectives"
+    elif comparability == "unverified":
+        relation = "unverified_objective_proof"
+    elif not known_objectives:
+        relation = "unreported"
+    else:
+        relation = (
+            "same_recorded_result"
+            if before["objective_reached"] == after["objective_reached"]
+            else "different_recorded_results"
         )
-    )
     details = delta.get("evidence_detail_delta")
     if details is not None:
         _mapping(details)

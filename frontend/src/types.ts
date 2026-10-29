@@ -344,7 +344,7 @@ export interface PublicAIProviderConfig {
   max_output_tokens: number;
   redaction: { enabled: boolean; redact_keys: string[]; max_string_chars: number; include_evidence_content: boolean };
 }
-export type AIModelPurpose = "bluefire_connection_check" | "bluefire_ai_proposal" | "bluefire_experiment_assistance" | "bluefire_detection_source_creation" | "bluefire_detection_source_revision" | "bluefire_run_evidence_inspection" | "bluefire_method_comparison" | "bluefire_ai_graph_draft" | "bluefire_graph_step_edit" | "bluefire_receiver_defense_inspection" | "bluefire_composition_proposal";
+export type AIModelPurpose = "bluefire_connection_check" | "bluefire_ai_proposal" | "bluefire_experiment_assistance" | "bluefire_detection_source_creation" | "bluefire_detection_source_revision" | "bluefire_run_evidence_inspection" | "bluefire_method_comparison" | "bluefire_ai_graph_draft" | "bluefire_graph_step_edit" | "bluefire_receiver_defense_inspection" | "bluefire_composition_proposal" | "bluefire_linux_file_access_composition_proposal" | "bluefire_macos_file_access_composition_proposal";
 export interface AIUsageLimits { max_requests: number; max_request_bytes: number; max_reserved_output_tokens: number }
 export interface AILiveAuthorization {
   schema_version: "bluefire.ai-live-authorization.v1";
@@ -993,7 +993,17 @@ export interface ComparisonSummary {
   outcomes: Record<string, string>;
   outcome_counts?: Record<string, number>;
   first_blocked_step?: string | null;
-  objective_reached?: boolean;
+  objective_reached?: boolean | null;
+  graph_objective_reached?: boolean;
+  capability_objective?: {
+    schema_version: "bluefire.composition-objective-projection.v1";
+    run_id: string;
+    attempt_id: string;
+    state: "verified" | "unverified";
+    objective_digest: string;
+    established: boolean | null;
+    result_digest: string | null;
+  } | null;
   evidence_provenance?: Record<string, number>;
   evidence_details?: {
     producer_counts?: Record<string, number>;
@@ -1028,6 +1038,7 @@ export interface ComparisonDelta {
   first_path_divergence?: number | null;
   first_blocked_changed?: boolean;
   objective_changed?: boolean;
+  objective_comparability?: "comparable" | "unverified" | "different_objectives";
   cleanup_changed?: boolean;
   evidence_delta?: Record<string, number>;
   evidence_detail_delta?: {
@@ -1153,7 +1164,7 @@ export interface SavedComparisonSnapshot {
   digest: string;
   created_at: string;
   comparison: ComparisonResponse;
-  source_bindings: Array<{ run_id: string; bundle_hash: string }>;
+  source_bindings: Array<{ run_id: string; bundle_hash: string; capability_objective_digest?: string }>;
   source_integrity: {
     status: "verified" | "unavailable";
     runs: Array<{ run_id: string; status: "verified" | "missing" | "changed" | "invalid" }>;

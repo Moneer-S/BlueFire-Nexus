@@ -376,8 +376,11 @@ def test_placeholder_execute_row_is_not_accepted_as_settled_history(
     _assert_review_refused(history)
 
 
-def test_validated_service_grant_is_not_discarded_during_history_review(
-    history: _HistoryFixture, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("protected_effect", ["service_grant", "managed_session"])
+def test_validated_protected_effect_is_not_discarded_during_history_review(
+    history: _HistoryFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    protected_effect: str,
 ) -> None:
     fixture = json.loads(
         (ROOT / "tests_platform/fixtures/owned_service_admission_v1.json").read_text()
@@ -385,19 +388,24 @@ def test_validated_service_grant_is_not_discarded_during_history_review(
     grant = OwnedServiceGrant.from_mapping(fixture["admission"]["grant"])
     decode = AuthenticatedRunnerServer._stored_execute_payload
 
-    def service_payload(row):
-        manifest, profile, absent_grant = decode(row)
-        assert absent_grant is None
+    def protected_payload(row):
+        manifest, profile, absent_grant, absent_session = decode(row)
+        assert absent_grant is None and absent_session is None
         # Isolate the upgrade caller's handling of the typed decoder result.
-        # Request/grant binding validation remains the transport's contract.
-        return manifest, profile, grant
+        # Protected-effect binding validation remains the transport's contract.
+        return (
+            manifest,
+            profile,
+            grant if protected_effect == "service_grant" else None,
+            object() if protected_effect == "managed_session" else None,
+        )
 
     monkeypatch.setattr(
-        AuthenticatedRunnerServer, "_stored_execute_payload", staticmethod(service_payload)
+        AuthenticatedRunnerServer, "_stored_execute_payload", staticmethod(protected_payload)
     )
     bootstrap = history.lifecycle.bootstrap_record_path.read_bytes()
     preserved = _preserved_bytes(history)
-    with pytest.raises(RunnerLifecycleError, match="owned-service history"):
+    with pytest.raises(RunnerLifecycleError, match="protected-effect history"):
         history.review()
     assert history.lifecycle.bootstrap_record_path.read_bytes() == bootstrap
     assert _preserved_bytes(history) == preserved

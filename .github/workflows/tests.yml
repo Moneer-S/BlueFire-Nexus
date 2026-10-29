@@ -470,10 +470,29 @@ jobs:
 
       - name: Set up Node.js for installed verification
         id: installed-verification-node
-        if: matrix.platform == 'linux' || matrix.platform == 'windows'
+        if: matrix.platform == 'linux' || matrix.platform == 'windows' || (matrix.platform == 'macos' && matrix.architecture == 'x86_64')
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
+
+      - name: Verify installed Windows native result publication
+        if: always() && matrix.platform == 'windows' && steps.installed-wheel.outcome == 'success'
+        timeout-minutes: 8
+        working-directory: ${{ runner.temp }}
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'wheel-source'
+          $python = Join-Path $env:RUNNER_TEMP 'bluefire-wheel-smoke/Scripts/python.exe'
+          & $python -I -m pip install --disable-pip-version-check 'pytest>=9.0.3,<10' 'pytest-timeout>=2.4,<3'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $verifier = Join-Path $env:RUNNER_TEMP 'verify_installed_windows_result_publication.py'
+          $helper = Join-Path $env:RUNNER_TEMP 'verify_installed_windows_cancellation.py'
+          Copy-Item -LiteralPath (Join-Path $source 'tools/verify_installed_windows_result_publication.py') -Destination $verifier
+          Copy-Item -LiteralPath (Join-Path $source 'tools/verify_installed_windows_cancellation.py') -Destination $helper
+          $wheels = @(Get-ChildItem -LiteralPath (Join-Path $source 'dist') -Filter '*.whl' -File)
+          if ($wheels.Count -ne 1) { throw 'Exactly one candidate wheel is required' }
+          & $python -I -B $verifier --source $source --source-revision $env:GITHUB_SHA --forbid-root $env:GITHUB_WORKSPACE --wheel "$($wheels[0].FullName)" --helper $helper --runner-temp $env:RUNNER_TEMP --output (Join-Path $env:RUNNER_TEMP 'bluefire-installed-windows-result-publication-evidence')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify installed Windows native cancellation and cleanup
         if: always() && matrix.platform == 'windows' && steps.installed-wheel.outcome == 'success' && steps.installed-verification-node.outcome == 'success'
@@ -499,7 +518,53 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bluefire-installed-cancellation-windows-x86_64
-          path: ${{ runner.temp }}/bluefire-installed-windows-cancellation-evidence/*.json
+          path: |
+            ${{ runner.temp }}/bluefire-installed-windows-cancellation-evidence/*.json
+            ${{ runner.temp }}/bluefire-installed-windows-result-publication-evidence/*.json
+            ${{ runner.temp }}/bluefire-installed-windows-result-publication-evidence/*.xml
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Prepare installed Intel macOS browser tooling
+        id: installed-macos-browser-tooling
+        if: matrix.platform == 'macos' && matrix.architecture == 'x86_64'
+        working-directory: ./wheel-source/frontend
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/bluefire-installed-macos-browser-cache
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.19.0 --activate
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install chromium
+
+      - name: Verify installed Intel macOS native desktop journey
+        if: always() && matrix.platform == 'macos' && matrix.architecture == 'x86_64' && steps.installed-wheel.outcome == 'success' && steps.installed-macos-browser-tooling.outcome == 'success'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          cp tools/verify_installed_macos_native.py "$RUNNER_TEMP/verify_installed_macos_native.py"
+          cp frontend/tests/installed/installed-macos-native.mjs "$RUNNER_TEMP/installed-macos-native.mjs"
+          wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
+          test "${#wheels[@]}" = 1
+          node_path="$(command -v node)"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -I -B verify_installed_macos_native.py \
+            --forbid-root "$GITHUB_WORKSPACE" \
+            --node "$node_path" \
+            --playwright "$GITHUB_WORKSPACE/wheel-source/frontend/node_modules/@playwright/test/index.mjs" \
+            --browser-driver "$RUNNER_TEMP/installed-macos-native.mjs" \
+            --browser-cache "$RUNNER_TEMP/bluefire-installed-macos-browser-cache" \
+            --wheel "${wheels[0]}" \
+            --output "$RUNNER_TEMP/bluefire-installed-macos-native-evidence"
+
+      - name: Upload installed Intel macOS native desktop evidence
+        if: always() && matrix.platform == 'macos' && matrix.architecture == 'x86_64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-installed-native-desktop-macos-x86_64
+          path: |
+            ${{ runner.temp }}/bluefire-installed-macos-native-evidence/*.json
+            ${{ runner.temp }}/bluefire-installed-macos-native-evidence/*.png
           retention-days: 7
           if-no-files-found: warn
 

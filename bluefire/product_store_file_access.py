@@ -121,6 +121,29 @@ class FileAccessStoreMixin(
                 }
             return {"document": _document(row), "document_digest": row["document_digest"]}
 
+    def get_linux_file_access_revision_record(self, owner_id, revision):
+        """Read an immutable Linux revision and its original operation identity."""
+        if type(revision) is not int or revision < 1:
+            raise ProductStoreError("Select a saved Linux file-access revision.")
+        store = cast(Any, self)
+        with store._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM file_access_revisions WHERE control_owner_id=? AND revision=?",
+                (owner_id, revision),
+            ).fetchone()
+            document = _document(row)
+            if (
+                document.get("schema_version") != "bluefire.retained-file-control.v1"
+                or document.get("control_owner_id") != owner_id
+                or document.get("revision") != revision
+            ):
+                raise ProductStoreError("The saved Linux file-access revision changed identity.")
+            return {
+                "job_id": row["job_id"],
+                "document": document,
+                "document_digest": row["document_digest"],
+            }
+
     def list_file_access_controls(self):
         store = cast(Any, self)
         with store._connection() as connection:

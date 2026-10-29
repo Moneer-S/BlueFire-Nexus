@@ -4,7 +4,68 @@ import json
 
 import pytest
 
-from tests_platform.test_api import JOB_ID, request, running_server
+from bluefire.application_errors import APIError
+from tests_platform.test_api import JOB_ID, StubService, request, running_server
+
+ATTEMPT_ID = "attempt-0123456789abcdef0123456789abcdef"
+
+
+def test_linux_linkage_route_is_exact_read_only(monkeypatch):
+    def read(self, owner, attempt):
+        self.calls.append(("file_access_composed_retest_linkage", owner, attempt))
+        return {"saved": True}
+
+    monkeypatch.setattr(StubService, "file_access_composed_retest_linkage", read, raising=False)
+    path = f"/api/v1/composition/objectives/{JOB_ID}/file-access-linkage/{ATTEMPT_ID}"
+    with running_server() as (server, service):
+        status, _, body = request(server, "GET", path)
+        assert status == 200 and json.loads(body) == {"saved": True}
+        assert service.calls == [("file_access_composed_retest_linkage", JOB_ID, ATTEMPT_ID)]
+        for method, invalid, expected in (
+            ("POST", path, 405),
+            ("GET", path + "?scope=expanded", 400),
+            ("GET", path.replace(ATTEMPT_ID, "attempt-not-canonical"), 400),
+        ):
+            status, _, _ = request(server, method, invalid, body={} if method == "POST" else None)
+            assert status == expected
+        assert service.calls == [("file_access_composed_retest_linkage", JOB_ID, ATTEMPT_ID)]
+
+        def unavailable(self, owner, attempt):
+            self.calls.append(("unavailable_linkage", owner, attempt))
+            raise APIError(409, "file_access_linkage_unavailable", "Saved lineage unavailable.")
+
+        monkeypatch.setattr(StubService, "file_access_composed_retest_linkage", unavailable)
+        status, _, body = request(server, "GET", path)
+        assert status == 409
+        assert json.loads(body)["error"]["code"] == "file_access_linkage_unavailable"
+        assert service.calls[-1] == ("unavailable_linkage", JOB_ID, ATTEMPT_ID)
+
+
+def test_linux_linkage_assistance_context_route_is_exact_read_only(monkeypatch):
+    def read(self, owner, attempt):
+        self.calls.append(("file_access_retest_assistance_context", owner, attempt))
+        return {"analysis_only": True, "capabilities": []}
+
+    monkeypatch.setattr(StubService, "file_access_retest_assistance_context", read, raising=False)
+    path = (
+        f"/api/v1/composition/objectives/{JOB_ID}/file-access-linkage/"
+        f"{ATTEMPT_ID}/assistant-context"
+    )
+    with running_server() as (server, service):
+        status, _, body = request(server, "GET", path)
+        assert status == 200 and json.loads(body) == {
+            "analysis_only": True,
+            "capabilities": [],
+        }
+        assert service.calls == [("file_access_retest_assistance_context", JOB_ID, ATTEMPT_ID)]
+        for method, invalid, expected in (
+            ("POST", path, 405),
+            ("GET", path + "?scope=expanded", 400),
+            ("GET", path.replace(ATTEMPT_ID, "attempt-not-canonical"), 400),
+        ):
+            status, _, _ = request(server, method, invalid, body={} if method == "POST" else None)
+            assert status == expected
+        assert service.calls == [("file_access_retest_assistance_context", JOB_ID, ATTEMPT_ID)]
 
 
 @pytest.mark.parametrize(

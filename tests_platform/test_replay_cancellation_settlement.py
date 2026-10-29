@@ -19,6 +19,7 @@ from bluefire.orchestrator import Orchestrator
 from bluefire.product_store import ProductStoreError
 from bluefire.runner_transport_errors import RunnerTaskCancelled
 from bluefire.util import content_hash
+from tests_platform.job_wait_diagnostics import _report as job_wait_report
 from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.test_replay_jobs import awaiting, submission
 from tests_platform.test_replay_preparation import service as service
@@ -34,9 +35,25 @@ def tmp_path():
         yield Path(owned)
 
 
+def _assert_replay_execution_entry(entered, add_report_section):
+    try:
+        assert entered.wait(10)
+    except AssertionError as failure:
+        try:
+            # Entry waits have no job snapshot; reuse only the bounded process-stack projection.
+            report = json.loads(job_wait_report(failure, "replay_execution_entry"))
+            report["stage"] = "replay_execution_entry"
+            add_report_section(
+                "call", "Replay execution entry diagnostic", json.dumps(report, sort_keys=True)
+            )
+        except BaseException:
+            pass
+        raise
+
+
 @pytest.mark.parametrize("cancellation", ["runner", "provider", "checkpoint", "result_link"])
 def test_execute_replay_cancellation_finalizes_and_links_its_run_before_terminal_state(
-    service, monkeypatch, request, cancellation
+    service, monkeypatch, cancellation, request
 ):
     source = source_run(service, execute=True)
     entered = threading.Event()
@@ -68,7 +85,7 @@ def test_execute_replay_cancellation_finalizes_and_links_its_run_before_terminal
     awaiting(service, job_id)
     assert not entered.is_set()
     service.approve_job(job_id, {"approved_by": "cancellation-reviewer"})
-    assert entered.wait(10)
+    _assert_replay_execution_entry(entered, request.node.add_report_section)
     service.cancel_job(job_id)
     with diagnose_job_wait("replay_terminal", request.node.add_report_section):
         job = service.job_controller.wait(job_id, timeout=10)

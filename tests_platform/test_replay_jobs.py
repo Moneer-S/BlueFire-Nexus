@@ -110,7 +110,7 @@ def test_concurrent_duplicate_submissions_publish_one_callback_and_refuse_change
     assert len(calls) == 1
 
 
-def test_execute_replay_job_consumes_one_fresh_approval_and_claims_it_once(service):
+def test_execute_replay_job_consumes_one_fresh_approval_and_claims_it_once(service, request):
     source = source_run(service, execute=True)
     payload = submission(service, source)
     created = service.submit_replay(source["run_id"], payload)
@@ -130,7 +130,9 @@ def test_execute_replay_job_consumes_one_fresh_approval_and_claims_it_once(servi
     )
     approved = service.approve_job(job_id, {"approved_by": "replay-reviewer"})
     assert approved["approval_request"]["status"] == "consumed"
-    completed = service.job_controller.wait(job_id, timeout=10)
+    with diagnose_job_wait("replay_terminal", request.node.add_report_section):
+        # Persisted execute replay can take longer on shared CI runners.
+        completed = service.job_controller.wait(job_id, timeout=30)
     assert completed["state"] == "completed", completed
     assert runner.execute_calls > 0  # The fixture refuses every action; no native effect exists.
     count = runner.execute_calls

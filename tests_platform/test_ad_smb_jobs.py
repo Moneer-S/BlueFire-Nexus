@@ -975,14 +975,18 @@ def test_saved_deadline_refusal_recovers_local_no_dispatch(workspace, monkeypatc
     def retain_then_block(*args):
         value = retain_run(*args)
         retained.set()
-        assert release.wait(5)
+        assert release.wait(JOB_WAIT_TIMEOUT)
         return value
 
     monkeypatch.setattr(records, "retain_run", retain_then_block)
     child, _ = submit(jobs, identifier, "inspect", wait=False)
-    assert retained.wait(5)
-    clock[0] = timestamp(child["request"]["requests"][0]["deadline"]) + timedelta(microseconds=1)
-    release.set()
+    try:
+        assert retained.wait(JOB_WAIT_TIMEOUT)
+        clock[0] = timestamp(child["request"]["requests"][0]["deadline"]) + timedelta(
+            microseconds=1
+        )
+    finally:
+        release.set()
     child = wait_for_ad_job(jobs.controller, child["job_id"])
 
     assert child["state"] == "failed"

@@ -147,6 +147,8 @@ def test_both_dialects_enroll_exact_receiver_schema_and_keep_existing_purposes(p
         "bluefire_detection_source_revision",
         "bluefire_experiment_assistance",
         "bluefire_graph_step_edit",
+        "bluefire_linux_file_access_composition_proposal",
+        "bluefire_macos_file_access_composition_proposal",
         "bluefire_method_comparison",
         "bluefire_receiver_defense_inspection",
         "bluefire_run_evidence_inspection",

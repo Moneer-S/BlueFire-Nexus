@@ -54,6 +54,11 @@ const providerId = "provider.installed-fixture.v1";
 const providerEndpoint = `${fixtureOrigin}/v1/responses`;
 const purposes = ["bluefire_experiment_assistance", "bluefire_ai_graph_draft", "bluefire_experiment_assistance", "bluefire_detection_source_creation"];
 const authorizedPurposes = [...new Set(purposes)].sort();
+const compositionPurposes = [
+  { purpose: "bluefire_linux_file_access_composition_proposal", label: "Propose a Linux file-access verification graph" },
+  { purpose: "bluefire_macos_file_access_composition_proposal", label: "Propose a macOS file-access verification graph" },
+];
+const receiverPurposeLabel = "Propose a bounded composition graph";
 const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value)
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 const stableValue = value => Array.isArray(value) ? value.map(stableValue)
@@ -90,6 +95,9 @@ function browserLaunchDiagnostic(error) {
 
 let browser, context, page;
 let sessionPosts = 0, savePosts = 0, activatePosts = 0, authorizationPosts = 0, assistancePosts = 0;
+let compositionAuthorizationPosts = 0, authorizationRevokePosts = 0;
+let purposeProofStarted = false, expectedCompositionPurpose, expectedRevokeAuthorizationId;
+const revokeAttemptsById = new Map();
 let validatePosts = 0, reviewPosts = 0, continuationPosts = 0, expectedContext, parentJobId, graphJobId, proposal, validatedDigest;
 let runPreflightPosts = 0, runSubmitPosts = 0, approvalPosts = 0, runnerBootstrapPosts = 0, runnerStartPosts = 0, runnerStopPosts = 0;
 let detectionSourcePosts = 0, detectionContextPosts = 0, detectionValidatePosts = 0, detectionReviewPosts = 0;
@@ -214,6 +222,202 @@ async function cleanupApi(path) {
       return await response.json();
     } finally { clearTimeout(timer); }
   }, { path, timeoutMs });
+}
+
+function ownedModelAuthorization(row) {
+  if (!row || typeof row !== "object" || row.provider?.id !== providerId
+    || !sameStructure(row.provider, providerConfig)
+    || !Array.isArray(row.purposes)
+    || !/^ai-authorization-[0-9a-f]{32}$/.test(row.authorization_id ?? "")) return false;
+  const original = row.approved_by === "installed-fixture-reviewer"
+    && sameStructure([...row.purposes].sort(), authorizedPurposes);
+  const purposeOnly = row.approved_by === "installed-purpose-reviewer"
+    && compositionPurposes.some(item => sameStructure(row.purposes, [item.purpose]));
+  return original || purposeOnly;
+}
+
+async function revokeOwnedModelAuthorization(authorizationId, cleanup = false) {
+  const read = cleanup ? cleanupApi : api;
+  const deadline = Math.min(cleanup ? cleanupDeadline : journeyDeadline, Date.now() + 10_000);
+  const readOwned = async () => {
+    const current = (await read("/ai/authorizations")).authorizations;
+    const row = Array.isArray(current) ? current.find(item => item.authorization_id === authorizationId) : null;
+    assert.ok(ownedModelAuthorization(row), "Only the exact installed provider authorization may be revoked");
+    return row;
+  };
+  try {
+    for (let attempt = 0; attempt < 2 && Date.now() < deadline; attempt += 1) {
+      const row = await readOwned();
+      if (row.status === "revoked") return;
+      assert.equal(row.status, "active");
+      assert.ok((revokeAttemptsById.get(authorizationId) ?? 0) < 2);
+      expectedRevokeAuthorizationId = authorizationId;
+      const timeout = cleanup ? remainingCleanupMs(10_000) : remainingJourneyMs(10_000);
+      await page.goto(`${origin}/#/settings`, { waitUntil: "domcontentloaded", timeout });
+      const button = page.getByRole("button", { name: `Revoke model usage for ${model}`, exact: true });
+      await button.waitFor({ state: "visible", timeout: cleanup ? remainingCleanupMs(8_000) : remainingJourneyMs(8_000) });
+      assert.equal(await button.count(), 1, "Exactly one installed authorization may be active during revocation");
+      try {
+        await failOnBlockedWrite(button.click({ timeout: cleanup ? remainingCleanupMs(8_000) : remainingJourneyMs(8_000) }));
+      } catch { /* A lost revoke response is reconciled with the exact saved authorization. */ }
+      const settleUntil = Math.min(deadline, Date.now() + (attempt === 0 ? 1_500 : 8_000));
+      while (Date.now() < settleUntil) {
+        try {
+          const updated = await readOwned();
+          if (updated.status === "revoked") return;
+          assert.equal(updated.status, "active");
+        } catch { /* Missing or unavailable proof never establishes revocation. */ }
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+    }
+  } finally {
+    expectedRevokeAuthorizationId = undefined;
+  }
+  throw new Error("Installed model authorization revocation was not confirmed.");
+}
+
+async function cleanupOwnedModelAuthorizations() {
+  if (authorizationPosts + compositionAuthorizationPosts === 0) return;
+  if (!page || page.isClosed()) {
+    report.cleanup = { ...(report.cleanup ?? {}), model_authorizations_revoked: false };
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const current = (await cleanupApi("/ai/authorizations")).authorizations;
+    assert.ok(Array.isArray(current));
+    const active = current.filter(row => ownedModelAuthorization(row) && row.status === "active");
+    assert.ok(active.length <= 3);
+    for (const row of active) await revokeOwnedModelAuthorization(row.authorization_id, true);
+    const final = (await cleanupApi("/ai/authorizations")).authorizations;
+    assert.ok(Array.isArray(final));
+    const owned = final.filter(row => ownedModelAuthorization(row));
+    report.cleanup = { ...(report.cleanup ?? {}), model_authorizations_revoked:
+      owned.length === authorizationPosts + compositionAuthorizationPosts
+        && owned.every(row => row.status === "revoked") };
+  } catch {
+    report.cleanup = { ...(report.cleanup ?? {}), model_authorizations_revoked: false };
+  }
+  if (report.cleanup.model_authorizations_revoked !== true) process.exitCode = 1;
+}
+
+async function proveCompositionPurposeAuthorizations() {
+  stage = "composition-purpose-fixture-budget-before";
+  const before = await fixtureState();
+  assert.equal(before.request_count, 4);
+  purposeProofStarted = true;
+  const initial = (await api("/ai/authorizations")).authorizations;
+  assert.ok(Array.isArray(initial));
+  const original = initial.filter(row => ownedModelAuthorization(row)
+    && row.approved_by === "installed-fixture-reviewer");
+  assert.equal(original.length, 1);
+  assert.equal(original[0].status, "active");
+  assert.deepEqual([...original[0].purposes].sort(), authorizedPurposes);
+  stage = "composition-purpose-original-revoke";
+  await revokeOwnedModelAuthorization(original[0].authorization_id);
+
+  const recorded = [];
+  for (const item of compositionPurposes) {
+    stage = `composition-purpose-${item.purpose}-settings`;
+    await gotoJourney(`${origin}/#/settings`, { waitUntil: "domcontentloaded" });
+    const savedConnection = page.locator("section.provider-saved-connections article.provider-saved-connection")
+      .filter({ hasText: providerId });
+    await savedConnection.waitFor({ state: "visible" });
+    assert.equal(await savedConnection.count(), 1);
+    assert.equal((await savedConnection.locator("details code").textContent())?.trim(), providerId);
+    assert.equal((await savedConnection.locator("strong").textContent())?.trim(), `Responses API · ${model}`);
+    await savedConnection.getByText("Active", { exact: true }).waitFor();
+    await savedConnection.getByRole("button", { name: `Edit Responses API · ${model}`, exact: true }).click();
+    await page.getByRole("region", { name: "Selected connection summary", exact: true })
+      .getByRole("heading", { name: model, exact: true }).waitFor();
+    assert.equal(await page.getByRole("combobox", { name: "API style", exact: true }).inputValue(), "openai_responses");
+    assert.equal(await page.getByLabel("Model ID", { exact: false }).inputValue(), model);
+    assert.equal(await page.getByLabel("Request endpoint", { exact: false }).inputValue(), providerEndpoint);
+    assert.equal(await page.getByLabel("Secret environment reference", { exact: false }).inputValue(), "");
+    assert.equal(await page.getByLabel("Provider ID", { exact: false }).inputValue(), providerId);
+    assert.equal(await page.getByLabel("Timeout seconds", { exact: true }).inputValue(), "30");
+    assert.equal(await page.getByLabel("Output token limit", { exact: false }).inputValue(), "64");
+    assert.equal(await page.getByLabel("Transport retries", { exact: true }).inputValue(), "0");
+    const linux = page.getByRole("checkbox", { name: compositionPurposes[0].label, exact: true });
+    const macos = page.getByRole("checkbox", { name: compositionPurposes[1].label, exact: true });
+    const receiver = page.getByRole("checkbox", { name: receiverPurposeLabel, exact: true });
+    await linux.waitFor({ state: "visible" });
+    await macos.waitFor({ state: "visible" });
+    await receiver.waitFor({ state: "visible" });
+    assert.equal(await linux.count(), 1);
+    assert.equal(await macos.count(), 1);
+    assert.equal(await receiver.count(), 1);
+    assert.equal(await linux.isEnabled(), true);
+    assert.equal(await macos.isEnabled(), true);
+    assert.equal(await receiver.isEnabled(), true);
+    report.model_purpose_selection_resets ??= [];
+    report.model_purpose_selection_resets.push({
+      purpose: item.purpose,
+      before: { linux: await linux.isChecked(), macos: await macos.isChecked(), receiver: await receiver.isChecked() },
+    });
+    await linux.uncheck();
+    await macos.uncheck();
+    await receiver.uncheck();
+    assert.equal(await linux.isChecked(), false);
+    assert.equal(await macos.isChecked(), false);
+    assert.equal(await receiver.isChecked(), false);
+    stage = `composition-purpose-${item.purpose}-selection`;
+    await page.getByRole("checkbox", { name: item.label, exact: true }).check();
+    assert.equal(await page.getByRole("checkbox", { name: item.label, exact: true }).isChecked(), true);
+    assert.equal(await page.getByRole("checkbox", { name: compositionPurposes.find(other => other.purpose !== item.purpose).label, exact: true }).isChecked(), false);
+    assert.equal(await receiver.isChecked(), false);
+    report.checks.push(`composition_purpose_${item.purpose}_separate_from_receiver_in_settings`);
+
+    stage = `composition-purpose-${item.purpose}-authorization`;
+    await page.getByLabel("Total request attempts", { exact: false }).fill("1");
+    await page.getByLabel("Total request bytes", { exact: false }).fill("1024");
+    await page.getByLabel("Total reserved output tokens", { exact: false }).fill("64");
+    await page.getByLabel("Authorization duration in seconds", { exact: false }).fill("120");
+    await page.getByLabel("Operator identity for model usage", { exact: true }).fill("installed-purpose-reviewer");
+    await page.getByRole("checkbox", { name: "I authorize requests to this loopback endpoint.", exact: true }).check();
+    await page.getByRole("checkbox", { name: "I authorize the selected model work, reviewed lab data and these usage limits.", exact: true }).check();
+    expectedCompositionPurpose = item.purpose;
+    await page.getByRole("button", { name: "Authorize reviewed model usage", exact: true }).click();
+    await failOnBlockedWrite(page.getByText("Authorization saved. No model request was sent. Select this provider in Assistant or run setup when ready.", { exact: true }).waitFor());
+    const current = (await api("/ai/authorizations")).authorizations;
+    assert.ok(Array.isArray(current));
+    const selected = current.filter(row => ownedModelAuthorization(row)
+      && row.approved_by === "installed-purpose-reviewer"
+      && sameStructure(row.purposes, [item.purpose]));
+    assert.equal(selected.length, 1);
+    assert.equal(selected[0].status, "active");
+    assert.equal(selected[0].usage?.requests, 0);
+    const selectedCard = page.getByRole("article", { name: `Model authorization for ${model}` })
+      .filter({ hasText: item.label });
+    await selectedCard.waitFor({ state: "visible" });
+    assert.equal(await selectedCard.count(), 1);
+    stage = `composition-purpose-${item.purpose}-revoke`;
+    await revokeOwnedModelAuthorization(selected[0].authorization_id);
+    const revoked = (await api("/ai/authorizations")).authorizations;
+    const result = Array.isArray(revoked)
+      ? revoked.find(row => row.authorization_id === selected[0].authorization_id) : null;
+    assert.ok(ownedModelAuthorization(result));
+    assert.equal(result.status, "revoked");
+    assert.deepEqual(result.purposes, [item.purpose]);
+    assert.equal(result.usage?.requests, 0);
+    expectedCompositionPurpose = undefined;
+    recorded.push({ purpose: item.purpose, status: "revoked", model_requests: 0 });
+    report.checks.push(`composition_purpose_${item.purpose}_persisted_and_revoked_without_request`);
+  }
+  stage = "composition-purpose-fixture-budget-after";
+  const after = await fixtureState();
+  assert.equal(after.request_count, 4);
+  assert.deepEqual(after.purposes, purposes);
+  assert.equal(compositionAuthorizationPosts, 2);
+  assert.equal(authorizationRevokePosts, 3);
+  report.model_purpose_authorizations = {
+    original_authorization: "revoked",
+    selected_purposes: recorded,
+    receiver_purpose_selected: false,
+    model_requests_before: before.request_count,
+    model_requests_after: after.request_count,
+  };
+  report.cleanup = { ...(report.cleanup ?? {}), model_authorizations_revoked: true };
 }
 
 function waitForJourneyResponse(predicate, maximumMs = 12_000) {
@@ -783,7 +987,9 @@ try {
     else if (!["GET", "HEAD", "POST"].includes(method)) reason = "method_not_allowed";
     else if (method === "POST" && Date.now() >= journeyDeadline
       && url.pathname !== "/api/v1/runner/stop"
-      && !(runJobId && url.pathname === `/api/v1/jobs/${runJobId}/cancel`)) reason = "work_deadline_expired";
+      && !(runJobId && url.pathname === `/api/v1/jobs/${runJobId}/cancel`)
+      && !((authorizationPosts + compositionAuthorizationPosts > 0) && Date.now() < cleanupDeadline
+        && /^\/api\/v1\/ai\/authorizations\/ai-authorization-[0-9a-f]{32}\/revoke$/.test(url.pathname))) reason = "work_deadline_expired";
     else if (method === "GET" && url.pathname === "/api/v1/assistance/graph-context") {
       allowed = graphContextGets === 0 && url.search === "";
       if (allowed) graphContextGets += 1; else reason = "graph_context_get_out_of_scope";
@@ -809,7 +1015,7 @@ try {
           allowed = activatePosts === 0 && exactKeys(body, []);
           if (allowed) activatePosts += 1; else reason = "provider_activation_out_of_scope";
         } else if (path === "/api/v1/ai/authorizations") {
-          allowed = authorizationPosts === 0 && exactKeys(body, ["provider", "purposes", "data_scope", "limits", "expires_in_seconds", "approved_by", "usage_authorized", "local_endpoint_authorized"])
+          const initial = authorizationPosts === 0 && !purposeProofStarted && exactKeys(body, ["provider", "purposes", "data_scope", "limits", "expires_in_seconds", "approved_by", "usage_authorized", "local_endpoint_authorized"])
             && sameStructure(body.provider, providerConfig)
             && Array.isArray(body.purposes) && sameStructure([...body.purposes].sort(), authorizedPurposes)
             && body.data_scope === "reviewed_lab_context"
@@ -818,7 +1024,32 @@ try {
             && body.limits.max_reserved_output_tokens === 256 && body.expires_in_seconds === 300
             && body.approved_by === "installed-fixture-reviewer" && body.usage_authorized === true
             && body.local_endpoint_authorized === true;
-          if (allowed) authorizationPosts += 1; else reason = "authorization_out_of_scope";
+          const nextPurpose = compositionPurposes[compositionAuthorizationPosts]?.purpose;
+          const singlePurpose = purposeProofStarted && authorizationPosts === 1 && compositionAuthorizationPosts < 2
+            && expectedCompositionPurpose === nextPurpose
+            && exactKeys(body, ["provider", "purposes", "data_scope", "limits", "expires_in_seconds", "approved_by", "usage_authorized", "local_endpoint_authorized"])
+            && sameStructure(body.provider, providerConfig)
+            && sameStructure(body.purposes, [nextPurpose])
+            && body.data_scope === "reviewed_lab_context"
+            && exactKeys(body.limits, ["max_requests", "max_request_bytes", "max_reserved_output_tokens"])
+            && body.limits.max_requests === 1 && body.limits.max_request_bytes === 1024
+            && body.limits.max_reserved_output_tokens === 64 && body.expires_in_seconds === 120
+            && body.approved_by === "installed-purpose-reviewer" && body.usage_authorized === true
+            && body.local_endpoint_authorized === true;
+          allowed = initial || singlePurpose;
+          if (initial) authorizationPosts += 1;
+          else if (singlePurpose) compositionAuthorizationPosts += 1;
+          else reason = "authorization_out_of_scope";
+        } else if (/^\/api\/v1\/ai\/authorizations\/ai-authorization-[0-9a-f]{32}\/revoke$/.test(path)) {
+          const authorizationId = path.slice("/api/v1/ai/authorizations/".length, -"/revoke".length);
+          const priorAttempts = revokeAttemptsById.get(authorizationId) ?? 0;
+          allowed = authorizationPosts + compositionAuthorizationPosts > 0 && authorizationRevokePosts < 6
+            && authorizationId === expectedRevokeAuthorizationId
+            && priorAttempts < 2 && exactKeys(body, []);
+          if (allowed) {
+            authorizationRevokePosts += 1;
+            revokeAttemptsById.set(authorizationId, priorAttempts + 1);
+          } else reason = "authorization_revoke_out_of_scope";
         } else if (path === "/api/v1/session") {
           allowed = sessionPosts === 0 && !request.postData();
           if (allowed) sessionPosts += 1; else reason = "session_cap_or_body";
@@ -1312,6 +1543,7 @@ try {
   assert.deepEqual(fixture.purposes, purposes);
   assert.ok(fixture.request_bytes > 0 && fixture.request_bytes <= 2_097_152);
   assert.equal(fixture.failed, false);
+  await proveCompositionPurposeAuthorizations();
   report.route_counts = {
     session: sessionPosts,
     provider_save: savePosts,
@@ -1321,10 +1553,14 @@ try {
     assistance_continue: continuationPosts,
     graph_validate: validatePosts,
     graph_review: reviewPosts,
+    composition_purpose_authorization: compositionAuthorizationPosts,
+    authorization_revoke: authorizationRevokePosts,
   };
   assert.equal(savePosts, 1, "exactly one provider save must pass the browser route");
   assert.equal(activatePosts, 1, "exactly one provider activation must pass the browser route");
   assert.equal(authorizationPosts, 1, "exactly one bounded authorization must pass the browser route");
+  assert.equal(compositionAuthorizationPosts, 2, "exactly two single-purpose composition authorizations must pass the browser route");
+  assert.equal(authorizationRevokePosts, 3, "the original and two single-purpose authorizations must each be revoked once");
   assert.equal(assistancePosts, 2, "exactly the graph and detection plans must pass the browser route");
   assert.equal(continuationPosts, continuedThroughUi ? 1 : 0, "continuation count must match the UI recovery action actually used");
   assert.equal(validatePosts, 1, "the normal UI must validate the graph proposal exactly once");
@@ -1378,6 +1614,7 @@ try {
   } else if (runnerStarted && !executeTerminalConfirmed) {
     report.cleanup = { ...(report.cleanup ?? {}), runner_stopped: false, runner_stop_skipped_until_execute_terminal: true };
   }
+  await cleanupOwnedModelAuthorizations();
   if (report.cleanup?.execute_job_terminal === false || report.cleanup?.runner_stopped === false) process.exitCode = 1;
   await context?.close().catch(() => { report.errors = [{ stage: "cleanup", kind: "context-close" }]; process.exitCode = 1; });
   await browser?.close().catch(() => { report.errors = [{ stage: "cleanup", kind: "browser-close" }]; process.exitCode = 1; });

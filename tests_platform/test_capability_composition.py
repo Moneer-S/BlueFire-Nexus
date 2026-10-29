@@ -382,12 +382,88 @@ def test_renaming_nodes_does_not_create_a_new_attempted_route(state):
         compile_revision(graph, **current)
 
 
-def test_compiler_rejects_ambiguous_real_semantic_producers(state):
+def ambiguous_producer_proposal():
     graph = proposal()
     graph["steps"].insert(3, {"id": "also_inspect", "behavior_id": METHODS[3], "parameters": {}})
     graph["edges"][2]["to_step"] = "also_inspect"
     graph["edges"].append({"from_step": "also_inspect", "outcome": "success", "to_step": "stage"})
+    return graph
+
+
+def test_compiler_rejects_ambiguous_real_semantic_producers(state):
+    graph = ambiguous_producer_proposal()
     with pytest.raises(CapabilityContractError, match="unambiguous"):
+        compile_initial_graph(graph, **state)
+
+
+def test_explicit_real_producers_bind_distinct_semantics_and_renames_dedupe(state):
+    graph = ambiguous_producer_proposal()
+    stage = next(step for step in graph["steps"] if step["id"] == "stage")
+    stage["inputs"] = {"records": {"from_step": "inspect", "artifact": "records"}}
+    first = compile_initial_graph(graph, **state)
+    stage["inputs"]["records"]["from_step"] = "also_inspect"
+    second = compile_initial_graph(graph, **state)
+    assert first["scenario"]["edges"] == second["scenario"]["edges"]
+    assert first["semantic_digest"] != second["semantic_digest"]
+    assert first["compiled_digest"] != second["compiled_digest"]
+    first_stage = next(step for step in first["scenario"]["steps"] if step["id"] == "stage")
+    second_stage = next(step for step in second["scenario"]["steps"] if step["id"] == "stage")
+    assert first_stage["inputs"]["records"]["from_step"] == "inspect"
+    assert second_stage["inputs"]["records"]["from_step"] == "also_inspect"
+
+    renamed = deepcopy(graph)
+    names = {step["id"]: "new_" + step["id"] for step in renamed["steps"]}
+    for step in renamed["steps"]:
+        step["id"] = names[step["id"]]
+        for ref in step.get("inputs", {}).values():
+            ref["from_step"] = names[ref["from_step"]]
+    for edge in renamed["edges"]:
+        edge["from_step"], edge["to_step"] = names[edge["from_step"]], names[edge["to_step"]]
+    renamed["start"] = names[renamed["start"]]
+    assert compile_initial_graph(renamed, **state)["semantic_digest"] == second["semantic_digest"]
+    current = revision_state(state)
+    current["facts"]["prior_graph_digest"] = second["semantic_digest"]
+    reseal_facts(current)
+    renamed["evidence_refs"] = ["refusal", "cleanup"]
+    with pytest.raises(CapabilityContractError, match="equivalent"):
+        compile_revision(renamed, **current)
+
+
+def test_explicit_selection_preserves_unambiguous_legacy_binding(state):
+    legacy = compile_initial_graph(proposal(), **state)
+    explicit = proposal()
+    explicit["steps"][3]["inputs"] = {"records": {"from_step": "inspect", "artifact": "records"}}
+    assert compile_initial_graph(explicit, **state) == legacy
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        {"records": {"from_step": "old_attempt", "artifact": "records"}},
+        {"records": {"from_step": "stage", "artifact": "bundle"}},
+        {"records": {"from_step": "prepare", "artifact": "fixture"}},
+        {"records": {"from_step": "inspect", "artifact": "fixture"}},
+        {"records": {"from_step": "inspect", "artifact": "records", "authority": True}},
+        {"invented": {"from_step": "inspect", "artifact": "records"}},
+        {"records": {"from_step": "old-attempt", "artifact": "records"}},
+        [],
+    ],
+)
+def test_explicit_selection_rejects_foreign_wrong_type_or_malformed_refs(state, inputs):
+    graph = ambiguous_producer_proposal()
+    next(step for step in graph["steps"] if step["id"] == "stage")["inputs"] = inputs
+    with pytest.raises(CapabilityContractError):
+        compile_initial_graph(graph, **state)
+
+
+def test_explicit_selection_rejects_non_dominating_producer(state):
+    graph = ambiguous_producer_proposal()
+    graph["edges"][2]["to_step"] = "stage"
+    graph["edges"].append({"from_step": "prepare", "outcome": "partial", "to_step": "also_inspect"})
+    next(step for step in graph["steps"] if step["id"] == "stage")["inputs"] = {
+        "records": {"from_step": "inspect", "artifact": "records"}
+    }
+    with pytest.raises(CapabilityContractError, match="dominate"):
         compile_initial_graph(graph, **state)
 
 

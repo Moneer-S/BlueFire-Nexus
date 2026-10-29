@@ -1,5 +1,10 @@
+import type { ReceiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
+
 export function sameJson(left: unknown, right: unknown): boolean;
+export function createReceiverSettingsReadPolicy(): (url: URL, method: string) => boolean;
+export function createReceiverReloadContextCorrelation<T extends object>(navigation: (request: T) => boolean, context: (request: T) => boolean): { request: (request: T) => boolean; response: (response: { request: () => T }) => boolean };
 export const receiverApprovalAcknowledgementName: RegExp;
+export function receiverCompositionCleanupState(objective: unknown): "settled" | "no_grant" | "unresolved";
 
 export interface ReceiverContextExpectation {
   selection: unknown;
@@ -45,6 +50,46 @@ export function classifyRequest(args: {
   url: URL;
   body?: unknown;
   bodyError?: boolean;
-  allowedRead: (url: URL) => boolean;
+  allowedRead: (url: URL, method: string) => boolean;
   authorizePost: (url: URL, body: unknown) => boolean;
 }): { allowed: true } | { allowed: false; reason: string };
+
+export function handleReceiverRoute(route: {
+  request: () => { url: () => string; method: () => string; postData: () => string | null; postDataJSON: () => unknown };
+  abort: () => Promise<void>;
+  continue: () => Promise<void>;
+}, options: {
+  expectedOrigin: string;
+  allowedRead: (url: URL, method: string) => boolean;
+  authorizePost: (url: URL, body: unknown) => boolean;
+  describeBlockedPost?: (url: URL, reason: string) => ReceiverPostDenialDiagnostic;
+  onBlocked: (entry: {
+    method: string;
+    path: string;
+    reason: string;
+    route_family?: ReceiverPostDenialDiagnostic["route_family"];
+    denial_category?: ReceiverPostDenialDiagnostic["denial_category"];
+    budget_count?: number;
+    budget_limit?: number;
+  }) => void;
+  onFailure: (kind: "request_route_failed" | "request_abort_failed") => void;
+}): Promise<void>;
+
+export function closeReceiverWebSocket(socket: { close: () => Promise<void> }, options: {
+  onBlocked: () => void;
+  onFailure: (kind: "websocket_record_failed" | "websocket_close_failed") => void;
+}): Promise<void>;
+
+export function observeReceiverEvent<T extends unknown[]>(
+  handler: (...args: T) => void | Promise<void>,
+  onFailure: () => void,
+  pending: Set<Promise<void>>,
+): (...args: T) => void;
+
+export function settleReceiverObservers(pending: Set<Promise<void>>, timeoutMs: number): Promise<boolean>;
+
+export function observeReceiverWait<T>(
+  wait: Promise<T>,
+  onFailure: () => void,
+  pending: Set<Promise<void>>,
+): Promise<T>;

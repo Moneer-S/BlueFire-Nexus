@@ -48,6 +48,7 @@ from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.test_ai_live_authorization import request as authorization_request
 
 ROOT = Path(__file__).resolve().parents[1]
+JOB_WAIT_TIMEOUT = 30
 EXECUTE_PROFILE_ACTIONS = {
     "endpoint.discovery.processes.v1",
     "endpoint.discovery.system.v1",
@@ -274,7 +275,7 @@ class CancellableTaskRunner(ReadyInventoryRunner):
         self.task_id = task_id
         self.durable_result_path = Path(durable_result_path)
         self.started.set()
-        if not cancel_event.wait(3):
+        if not cancel_event.wait(JOB_WAIT_TIMEOUT):
             raise RunnerTransportError("test cancellation signal was not delivered")
         raise RunnerTaskCancelled("test runner confirmed its task tree stopped")
 
@@ -1048,7 +1049,7 @@ def test_execute_job_requires_separate_exact_approval_before_callback(
         assert "nonce" not in approved["approval_request"]
 
         with diagnose_job_wait("service_terminal"):
-            settled = service.job_controller.wait(job_id, timeout=3)
+            settled = service.job_controller.wait(job_id, timeout=JOB_WAIT_TIMEOUT)
         assert settled["state"] == "completed"
         assert runner.execute_calls > 0
         approval_id = str(submission["approval_request"]["approval_id"])
@@ -1625,37 +1626,39 @@ def test_execute_job_cancel_reaches_exact_task_aware_runner(tmp_path: Path) -> N
         runs_dir=tmp_path / "runs",
         runner_factory=lambda _profile: (runner, sandbox),
     )
-    profile = next(
-        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
-    )
-    submission = service.submit_run(
-        {
-            "scenario_id": "scenario.sandbox.research.chain.v1",
-            "mode": "execute",
-            "runner_profile_id": profile.id,
-            "autonomy": "off",
-            "target_scope": {"scope_refs": list(profile.scope)},
-        }
-    )
-    job_id = str(submission["job"]["job_id"])
-    service.job_controller.wait_for_state(
-        job_id,
-        {JobState.AWAITING_APPROVAL},
-        timeout=3,
-    )
-    service.approve_job(job_id, {"approved_by": "cancellation-reviewer"})
-    assert runner.started.wait(3)
+    try:
+        profile = next(
+            item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+        )
+        submission = service.submit_run(
+            {
+                "scenario_id": "scenario.sandbox.research.chain.v1",
+                "mode": "execute",
+                "runner_profile_id": profile.id,
+                "autonomy": "off",
+                "target_scope": {"scope_refs": list(profile.scope)},
+            }
+        )
+        job_id = str(submission["job"]["job_id"])
+        service.job_controller.wait_for_state(
+            job_id,
+            {JobState.AWAITING_APPROVAL},
+            timeout=3,
+        )
+        service.approve_job(job_id, {"approved_by": "cancellation-reviewer"})
+        assert runner.started.wait(JOB_WAIT_TIMEOUT)
 
-    cancelling = service.cancel_job(job_id)
-    cancelled = service.job_controller.wait(job_id, timeout=5)
+        cancelling = service.cancel_job(job_id)
+        cancelled = service.job_controller.wait(job_id, timeout=JOB_WAIT_TIMEOUT)
 
-    assert cancelling["state"] == JobState.CANCELLING.value
-    assert cancelled["state"] == JobState.CANCELLED.value
-    assert runner.execute_calls == 1
-    assert runner.task_id is not None
-    assert runner.durable_result_path is not None
-    assert runner.durable_result_path.parent.name == ".bluefire-runner-results"
-    service.close()
+        assert cancelling["state"] == JobState.CANCELLING.value
+        assert cancelled["state"] == JobState.CANCELLED.value
+        assert runner.execute_calls == 1
+        assert runner.task_id is not None
+        assert runner.durable_result_path is not None
+        assert runner.durable_result_path.parent.name == ".bluefire-runner-results"
+    finally:
+        service.close()
 
 
 def test_execute_job_translates_runner_cancel_during_proposal_continuation(

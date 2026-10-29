@@ -41,7 +41,7 @@ export interface ComparisonAssistanceSummary {
     }>;
     changes: Array<{
       compared_position: number;
-      objective_relation: "same_recorded_result" | "different_recorded_results" | "mixed_or_unreported_modes" | "unreported";
+      objective_relation: "same_recorded_result" | "different_recorded_results" | "different_objectives" | "unverified_objective_proof" | "mixed_or_unreported_modes" | "unreported";
       material_changed: boolean | null;
       material_changes: Array<"configuration" | "path" | "outcomes" | "first_prevention" | "objective" | "controls" | "telemetry" | "ai_proposals" | "counterfactual" | "planner" | "implementation" | "evidence" | "detection" | "cleanup" | "budgets"> | null;
       first_divergence_position: number | null;
@@ -193,7 +193,7 @@ function validRun(value: unknown, position: number): boolean {
 function validChange(value: unknown, position: number): boolean {
   if (!exact(value, ["compared_position", "objective_relation", "material_changed", "material_changes", "first_divergence_position", "divergence_kind", "observations"])
     || value.compared_position !== position
-    || !oneOf(value.objective_relation, ["same_recorded_result", "different_recorded_results", "mixed_or_unreported_modes", "unreported"])
+    || !oneOf(value.objective_relation, ["same_recorded_result", "different_recorded_results", "different_objectives", "unverified_objective_proof", "mixed_or_unreported_modes", "unreported"])
     || !(value.material_changes === null || Array.isArray(value.material_changes) && value.material_changes.every(item => oneOf(item, materialChanges)) && new Set(value.material_changes).size === value.material_changes.length)
     || !nullable(value.material_changed, (item): item is boolean => typeof item === "boolean")
     || !nullable(value.first_divergence_position, (item): item is number => typeof item === "number" && Number.isSafeInteger(item) && item > 0 && item <= 2_147_483_647)

@@ -41,6 +41,19 @@ it("accepts only the exact saved snapshot binding and analysis-only minimized co
   expect(() => checkedComparisonAssistanceContext({ ...response, extra: "not in contract" }, selection)).toThrow();
 });
 
+it("accepts bounded non-comparable capability objective relations", () => {
+  const response = context();
+  const summary = response.reference_summary;
+  for (const objective_relation of ["different_objectives", "unverified_objective_proof"] as const) {
+    const changed = { ...response, reference_summary: { ...summary, saved_comparison: { ...summary.saved_comparison,
+      changes: [{ ...summary.saved_comparison.changes[0]!, objective_relation }] } } };
+    expect(checkedComparisonAssistanceContext(changed, selection)).toBe(changed);
+  }
+  const unsupported = { ...response, reference_summary: { ...summary, saved_comparison: { ...summary.saved_comparison,
+    changes: [{ ...summary.saved_comparison.changes[0]!, objective_relation: "objective_recovered" }] } } };
+  expect(() => checkedComparisonAssistanceContext(unsupported, selection)).toThrow();
+});
+
 it("rejects malformed positions, unbounded counts, invalid provenance and inconsistent source integrity", () => {
   const response = context();
   const summary = response.reference_summary;

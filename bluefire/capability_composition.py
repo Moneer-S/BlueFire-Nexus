@@ -78,12 +78,25 @@ def _graph(
 ) -> tuple[ScenarioDefinition, Mapping[str, Any], str]:
     methods = {row["behavior_id"]: row for row in grant["snapshot"]["methods"]}
     steps = {}
+    selected_inputs = {}
     for raw in proposal["steps"]:
-        row = exact(raw, {"id", "behavior_id", "parameters"}, "graph step")
+        fields = {"id", "behavior_id", "parameters"}
+        if isinstance(raw, Mapping) and "inputs" in raw:
+            fields.add("inputs")
+        row = exact(raw, fields, "graph step")
         identity = _step_id(row["id"])
         method = methods.get(row["behavior_id"]) if isinstance(row["behavior_id"], str) else None
         if identity in steps or method is None or not isinstance(row["parameters"], Mapping):
             raise CapabilityContractError("graph step is duplicate, unavailable or malformed")
+        input_specs = {spec.name: spec for spec in registry.get_behavior(row["behavior_id"]).inputs}
+        selected = row.get("inputs", {})
+        if not isinstance(selected, Mapping) or set(selected) - set(input_specs):
+            raise CapabilityContractError("graph step selects an unknown input port")
+        for port, ref in selected.items():
+            exact(ref, {"from_step", "artifact"}, f"graph input {port}")
+            _step_id(ref["from_step"])
+            if not isinstance(ref["artifact"], str):
+                raise CapabilityContractError("graph input artifact is invalid")
         domains = method["parameter_domains"]
         if set(row["parameters"]) - set(domains):
             raise CapabilityContractError("graph parameters expand the capability domain")
@@ -103,6 +116,7 @@ def _graph(
             "behavior_id": row["behavior_id"],
             "parameters": parameters,
         }
+        selected_inputs[identity] = dict(selected)
     start = _step_id(proposal["start"])
     if start not in steps:
         raise CapabilityContractError("graph start is unavailable")
@@ -137,6 +151,27 @@ def _graph(
         row = steps[identity]
         inputs = {}
         for input_spec in registry.get_behavior(row["behavior_id"]).inputs:
+            selected = selected_inputs[identity].get(input_spec.name)
+            if selected is not None:
+                source = selected["from_step"]
+                if source not in steps or source == identity or source not in dominators[identity]:
+                    raise CapabilityContractError(
+                        "selected input producer does not dominate this step"
+                    )
+                outputs = {
+                    output.name: output
+                    for output in registry.get_behavior(steps[source]["behavior_id"]).outputs
+                }
+                output = outputs.get(selected["artifact"])
+                if output is None or (output.type, output.multiple) != (
+                    input_spec.type,
+                    input_spec.multiple,
+                ):
+                    raise CapabilityContractError(
+                        "selected input is not an exact semantic producer"
+                    )
+                inputs[input_spec.name] = dict(selected)
+                continue
             candidates = [
                 {"from_step": source, "artifact": output.name}
                 for source in order

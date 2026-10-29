@@ -11,15 +11,15 @@ from collections.abc import Mapping
 from tools.provider_gate_common import TRUSTED_PROCESS_BOUNDARY_PATHS, _sha256_bytes
 
 _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
-    "bluefire/runner_client.py": "sha256:d35d1c48bbcd5dcc6a44394a510e0c1d52d6a57df56fbc86a3f337b718b24e60",
+    "bluefire/runner_client.py": "sha256:aacdc000f47f32855b4319e0e590d7a5968422e1af7f6a56935430daabb48fff",
     "bluefire/runner_bootstrap.py": "sha256:3868a90688d0010b0241b460d8be90dc44b0b7b6b025a9a6a076ec04e0024883",
     "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
     "bluefire/runner_windows_containment.py": "sha256:63e749dc00fdf6bdf0d2ed6246fc050cb7dac2d665de30a65452520bc4548979",
     "bluefire/runner_linux_containment.py": "sha256:7b0f3cf3cd36304ba3c400439586efba98f682d34aa4053a12f478ef02eaea3a",
-    "bluefire/runner_lifecycle.py": "sha256:69c3f77db8ab720365888c46f2344f5754957e41e30fbaadadbe7efedd455045",
+    "bluefire/runner_lifecycle.py": "sha256:9ff37378a75f679980c434d11835236481733e9b8a994adba703fbb00653d961",
     "bluefire/runner_parent_death.py": "sha256:d4f39998e423396d75596b40659e0e8d82526533c2dddd26aded973b7274c4c0",
     "bluefire/runner_trust.py": "sha256:d8f422bdc47425a2bf655f723848dc44cbb04c1a5aba85851743e5a1321a2d4d",
-    "bluefire/runner_watchdog.py": "sha256:e2a416f14814d1c93bc5b9ab5e213b08068d27dc8e37a663d2281f8d449384e3",
+    "bluefire/runner_watchdog.py": "sha256:61b6f82ed8980076c1ebdc92d7ed48a40aa62dd4e44595af39067d08d8f94f49",
     "bluefire/receiver_session.py": "sha256:168e4e2765d0a5031d1ee238faba29f531966d29c2da10e9c62f40d9aa6e1f0e",
     "bluefire/receiver_session_worker.py": "sha256:a90d4d9e67ac580b79c242bbeea93d580cf915a0b650f8e2804d354c8dcc9a81",
     "bluefire/ai_transport.py": "sha256:b806740e5ab11b6d10d771b57a08230d666483115782b30ced443f5cec0be507",

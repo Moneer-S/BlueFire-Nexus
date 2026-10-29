@@ -29,13 +29,15 @@ export function CompositionPage() {
   const [now, setNow] = useState(Date.now());
   const locked = useRef(false);
   const stoppedOwners = useRef(new Set<string>());
+  const comparisonSection = useRef<HTMLLIElement>(null);
+  const focusedComparison = useRef("");
   const id = params.get("objective") ?? pending?.owner ?? "";
   const stopped = Boolean(pendingControls[id]) || stoppedOwners.current.has(id);
   const control = params.get("control") ?? pending?.control ?? "";
   const requestedPack = params.get("pack");
   const invalidPack = requestedPack !== null && requestedPack !== FILE_ACCESS_PACK && requestedPack !== MACOS_FILE_ACCESS_PACK && requestedPack !== RECEIVER_PACK;
   const proposalId = cancellations[id] ?? params.get("proposal") ?? (pending?.kind === "proposal" && pending.owner === id ? pending.id : "");
-  const navigate = (owner: string, proposal = "") => setParams(next => { const value = new URLSearchParams(next); value.set("control", control); if (owner) value.set("objective", owner); else value.delete("objective"); if (proposal) value.set("proposal", proposal); else value.delete("proposal"); return value; });
+  const navigate = (owner: string, proposal = "") => setParams(next => { const value = new URLSearchParams(next); value.set("control", control); if (owner !== id) value.delete("attempt"); if (owner) value.set("objective", owner); else value.delete("objective"); if (proposal) value.set("proposal", proposal); else value.delete("proposal"); return value; });
   const list = useQuery({ queryKey: ["composition-list", control], queryFn: async () => checkedCompositionList(await compositionApi.list(control)), enabled: compositionControlValid(control), retry: false });
   const write = useMutation({ mutationFn: async (operation: CompositionPending): Promise<CompositionProposal | CompositionObjectiveState> => {
     if (!currentMutationReady() || (macOSContext && (operation.kind === "proposal" || (operation.kind === "attempt" && Boolean(objective.data?.attempts.length))))) throw new Error("Current original workspace authority is required; saved requests are read-only.");
@@ -121,12 +123,24 @@ export function CompositionPage() {
   const pack = envelope ? compositionPack(envelope.grant.document) : requestedPack === RECEIVER_PACK ? RECEIVER_PACK : requestedPack === FILE_ACCESS_PACK ? FILE_ACCESS_PACK : macOSContext ? MACOS_FILE_ACCESS_PACK : compositionRecord(pending?.body.review).pack === FILE_ACCESS_PACK || compositionRecord(compositionRecord(refusal?.owner.progress.submitted_request).review).pack === FILE_ACCESS_PACK ? FILE_ACCESS_PACK : RECEIVER_PACK;
   const fileAccess = pack === FILE_ACCESS_PACK || pack === MACOS_FILE_ACCESS_PACK;
   const packQuery: Record<string, string> = fileAccess ? { pack } : {};
+  const selectedAttempt = params.get("attempt");
+  const selectedComparison = pack === FILE_ACCESS_PACK && selectedAttempt && envelope?.attempts.some(attempt => attempt.request.composition_attempt.attempt_id === selectedAttempt)
+    ? `${id}:${selectedAttempt}` : "";
+  const comparisonFirst = Boolean(selectedComparison && !pending && !pendingControls[id] && !cancellations[id]);
+  useEffect(() => {
+    if (!selectedAttempt) focusedComparison.current = "";
+    if (!comparisonFirst || !comparisonSection.current || focusedComparison.current === selectedComparison) return;
+    focusedComparison.current = selectedComparison;
+    comparisonSection.current.focus({ preventScroll: true });
+    comparisonSection.current.scrollIntoView?.({ block: "start", behavior: "instant" });
+  }, [comparisonFirst, selectedAttempt, selectedComparison]);
   return <div className={`page composition-page${expandedObjective === id && id ? " composition-objective-expanded" : ""}`}>
     <Link to={fileAccess ? `/file-access${compositionControlValid(control, pack) ? `?control=${encodeURIComponent(control)}` : ""}` : compositionJobValid(control) ? `/compare?receiver_job=${encodeURIComponent(control)}` : "/compare"}>{fileAccess ? "Retained file-access control" : "Retained receiver control"}</Link>
     <PageHeader title={envelope?.grant.document.objective.question ?? "Composition workspace"} actions={compositionJobValid(id) && !refusal ? <div className="composition-actions">{envelope ? <IconButton label={expandedObjective === id ? "Collapse objective question" : "Show full objective question"} aria-expanded={expandedObjective === id} onClick={() => setExpandedObjective(expandedObjective === id ? "" : id)}>{expandedObjective === id ? <ChevronUp /> : <ChevronDown />}</IconButton> : null}<Button variant="danger" disabled={safety.isPending || (macOSContext && !envelope)} onClick={() => controlObjective("stop")}><Pause />Stop</Button><Button variant="danger" disabled={safety.isPending || (macOSContext && !envelope)} onClick={() => controlObjective("revoke")}><Ban />Revoke</Button></div> : undefined} />
     {localError ? <ErrorState title="Saved request needs attention" error={localError} /> : null}
     {macOSContext && !mutationReady ? <Callout title="Original macOS workspace is read-only">Saved objectives and evidence remain available. New operations require the current original hardened control and settled custody.</Callout> : null}
     {invalidPack ? <ErrorState error={new Error("This capability pack is not supported.")} /> : !compositionControlValid(control, pack) ? <Callout title="Select the original retained control"><Link to="/compare">Receiver control</Link> or <Link to="/file-access">effective file access</Link></Callout> : <>
+      {comparisonFirst && envelope ? <div className="composition-selected-result"><CompositionAttempts objective={envelope} selectedAttemptRef={comparisonSection} /></div> : null}
       <section className="composition-section" aria-label="Saved objectives"><div className="composition-heading"><h2>Saved objectives</h2><Button size="small" disabled={list.isFetching || (macOSContext && workspaceStatus.isFetching)} onClick={() => { void list.refetch(); if (macOSContext) { void workspaceStatus.refetch(); void workspaceControl.refetch(); } }}><RefreshCw />Refresh</Button></div>
         {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved objectives" /> : <div className="composition-objective-list">{list.data?.objectives.map(item => <Link aria-label={`Open objective: ${item.title}, ${sentence(item.status)}`} aria-current={item.owner_id === id ? "page" : undefined} key={item.owner_id} to={`/composition?${new URLSearchParams({ control, objective: item.owner_id, ...packQuery, ...(recentProposals[item.owner_id] ? { proposal: recentProposals[item.owner_id]! } : {}) })}`}><strong>{item.title}</strong><span>{sentence(item.status)}</span></Link>)}{!list.data?.objectives.length ? <p>No saved objectives for this control.</p> : null}</div>}
         {id ? <Button disabled={!mutationReady || Boolean(pending) || write.isPending} onClick={() => { setReviewSeed(undefined); navigate(""); }}>New objective</Button> : null}
@@ -149,7 +163,7 @@ export function CompositionPage() {
             <details><summary>Reviewed capabilities and cumulative limits</summary><CompositionCapabilities review={envelope.grant.document} /></details>
             {envelope.grant.status === "paused" ? <><p>Continue preserves spent budgets and the original expiry. It does not replay an interrupted attempt.</p><Button disabled={!mutationReady || safety.isPending || Boolean(pending) || Boolean(pendingControls[id]) || Boolean(objective.error)} onClick={() => controlObjective("continue")}><Play />Continue objective</Button></> : null}
           </section>
-          <CompositionAttempts objective={envelope} />
+          {!comparisonFirst ? <CompositionAttempts objective={envelope} /> : null}
           {macOSContext ? envelope.attempts.filter(attempt => attempt.progress.settlement === "pending_cleanup").map(attempt => {
             const recoveryState = compositionRecord(attempt.progress.macos_recovery);
             const state = String(recoveryState.state ?? "");

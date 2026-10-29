@@ -21,7 +21,8 @@ def dispatch_ad_smb(handler: Any, path: str, body: Mapping[str, Any] | None = No
         return True
     suffix = path[len(prefix) :]
     match = re.fullmatch(
-        r"workflows/(job-[0-9a-f]{32})(?:/(review|operations|stop|recover))?", suffix
+        r"workflows/(job-[0-9a-f]{32})(?:/(review|operations|stop|recover|assistance-context))?",
+        suffix,
     )
     if suffix not in {"environments", "workflows"} and match is None:
         handler._error(
@@ -34,6 +35,7 @@ def dispatch_ad_smb(handler: Any, path: str, body: Mapping[str, Any] | None = No
         "environments": service.ad_smb_environments,
         "workflows": service.ad_smb_workflows,
         "read": lambda: service.ad_smb_workflow(identifier),
+        "assistance-context": lambda: service.ad_smb_assistance_context(identifier),
     }
     writes = {
         "workflows": lambda: service.create_ad_smb(body),

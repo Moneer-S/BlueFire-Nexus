@@ -6,16 +6,25 @@ baseline joins, dispatch, Ready consumption, wire checks and publication are rea
 
 from __future__ import annotations
 
+import io
+import shutil
 import threading
 from dataclasses import replace
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
+from bluefire import runner_lifecycle as lifecycle_module
 from bluefire import windows_file_access_correction_execution as module
 from bluefire import windows_file_access_correction_observation as observation
 from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ProductStoreError
+from bluefire.runner_lifecycle import (
+    ManagedRunnerLifecycle,
+    RunnerLifecycleError,
+    RunnerProfileBudgetError,
+)
 from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform import test_windows_file_access_correction_wire as wire_fake
 from tests_platform import test_windows_file_access_process as process_fake
@@ -70,6 +79,8 @@ def execution(reviewed, paired, monkeypatch):
         buffers=[],
         control_owner=None,
         retest_owner=None,
+        checked_postimage=None,
+        remote_client=None,
         phases=[],
     )
     control = SimpleNamespace(
@@ -146,6 +157,7 @@ def execution(reviewed, paired, monkeypatch):
         for key, item in fields.items():
             object.__setattr__(checked, key, item)
         observation.checked_provenance(checked)
+        state.checked_postimage = checked
         return checked
 
     class Begin:
@@ -249,8 +261,161 @@ def execution(reviewed, paired, monkeypatch):
     monkeypatch.setattr(observation, "observe_correction_preimage", preimage)
     monkeypatch.setattr(module.control_process, "run_correction_control_process", run_control)
     monkeypatch.setattr(observation, "observe_correction_postimage", postimage)
-    monkeypatch.setattr(module, "CorrectionBeginProducer", Begin)
-    monkeypatch.setattr(module, "launch_correction_retest", launch)
+    monkeypatch.setattr(
+        module.managed_session,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: state.mono,
+            time_ns=lambda: state.wall * 1_000_000,
+        ),
+    )
+
+    class ManagedClient:
+        def __init__(self):
+            self.descriptor = None
+            self.ready = None
+            self.terminal = None
+            self.returncode = None
+            self.consume_receipt = None
+            self.result = None
+
+        def transport_identity(self):
+            return module.wire._document(checked_setup._receipt)["source"]["transport"]
+
+        def _close_result(self):
+            owner = state.retest_owner
+            if owner is None or not owner.retry_cleanup():
+                return None
+            process = owner.outcome(True).process
+            if (
+                process is None
+                or process.cleanup_receipt is None
+                or self.ready is None
+                or self.terminal is None
+                or self.returncode is None
+                or self.consume_receipt is None
+                or self.descriptor is None
+            ):
+                return None
+            managed = module.managed_result.build_managed_result(
+                self.descriptor,
+                ready=self.ready,
+                terminal=self.terminal,
+                actual_returncode=self.returncode,
+                persisted_consume_receipt=self.consume_receipt,
+                cleanup_receipt=process.cleanup_receipt._raw,
+            )
+            self.result = module.managed_result.build_runner_result(
+                self.descriptor,
+                managed,
+                started_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(timezone.utc),
+            )
+            return self.result
+
+        def execute_windows_correction_session(
+            self, manifest, profile, descriptor_value, *, cancel_event, ready_consumer
+        ):
+            self.descriptor = module.managed_session.validate_descriptor(
+                descriptor_value, manifest, profile
+            )
+            _observation_input, original, packet = module.managed_session.correction_inputs(
+                self.descriptor
+            )
+            acknowledged = False
+
+            def require_ready():
+                assert acknowledged
+
+            def evidence(stage, raw, returncode, _clock):
+                nonlocal acknowledged
+                if stage == "packet":
+                    assert raw == self.descriptor.packet and returncode is None
+                elif stage == "ready":
+                    ack_nonce = "a" * 64
+                    identity = {
+                        "task_id": self.descriptor.value["task_id"],
+                        "transport_request_hash": self.descriptor.value["transport_request_hash"],
+                        "session_nonce": self.descriptor.value["session_nonce"],
+                        "packet_digest": self.descriptor.packet_digest,
+                        "ready_digest": content_hash(module.wire._document(raw)),
+                        "ack_nonce": ack_nonce,
+                    }
+                    persisted = ready_consumer(self.descriptor.packet, raw, identity)
+                    consume_receipt = module.managed_session.callback_consume_receipt(
+                        persisted,
+                        self.descriptor,
+                        ready_digest=identity["ready_digest"],
+                        ack_nonce=ack_nonce,
+                    )
+                    self.consume_receipt = consume_receipt
+                    self.ready = raw
+                    if state.fault == "after_ready":
+                        raise ProductStoreError("synthetic failure after durable Ready consumption")
+                    acknowledged = True
+                elif stage == "terminal":
+                    assert acknowledged
+                    self.terminal, self.returncode = raw, returncode
+                else:
+                    raise AssertionError("unexpected correction evidence stage")
+
+            checked = state.checked_postimage
+            assert checked is not None
+            producer = Begin(
+                checked,
+                original,
+                packet,
+                revalidate_original=lambda: module.managed_session.validate_descriptor(
+                    self.descriptor.value, manifest, profile
+                ),
+                require_ready_allowance=require_ready,
+                cancellation_event=cancel_event,
+            )
+            launched = launch(
+                checked,
+                original,
+                packet,
+                producer,
+                revalidate_original=lambda: module.managed_session.validate_descriptor(
+                    self.descriptor.value, manifest, profile
+                ),
+                evidence_sink=evidence,
+                cancellation_event=cancel_event,
+                retain_launch_owner=lambda _owner: None,
+            )
+            if launched.cleanup != "verified" or self._close_result() is None:
+                raise ProductStoreError("synthetic managed correction remains active")
+            return self.result
+
+        def recover(self, task_id, request_hash):
+            if (
+                self.descriptor is None
+                or task_id != self.descriptor.value["task_id"]
+                or request_hash != self.descriptor.value["transport_request_hash"]
+            ):
+                return {"state": "not_found", "result": None}
+            result = self.result or self._close_result()
+            return {
+                "state": "completed" if result is not None else "indeterminate",
+                "result": result,
+            }
+
+    client = ManagedClient()
+    state.remote_client = client
+    source = module.wire._document(checked_setup._receipt)["source"]
+    control.service.runner_lifecycle = SimpleNamespace(
+        client_for_profile=lambda profile_id: (
+            (
+                client,
+                None,
+            )
+            if profile_id == source["source_profile_id"]
+            else pytest.fail("unexpected correction profile")
+        )
+    )
+    control.service.runner_lifecycle.recovery_client_for_profile = (
+        control.service.runner_lifecycle.client_for_profile
+    )
     ctx = SimpleNamespace(
         job_id=job_id, cancellation_event=threading.Event(), checkpoint=state.phases.append
     )
@@ -259,6 +424,7 @@ def execution(reviewed, paired, monkeypatch):
         value=value,
         store=store,
         job=job_id,
+        control=control,
         runtime=runtime,
         state=state,
         ctx=ctx,
@@ -297,9 +463,157 @@ def _forbid_new_work(value):
     value.monkeypatch.setattr(observation, "observe_correction_preimage", forbidden)
     value.monkeypatch.setattr(observation, "observe_correction_postimage", forbidden)
     value.monkeypatch.setattr(module.control_process, "run_correction_control_process", forbidden)
-    value.monkeypatch.setattr(module, "CorrectionBeginProducer", forbidden)
-    value.monkeypatch.setattr(module, "launch_correction_retest", forbidden)
     value.monkeypatch.setattr(module.wire, "prepare_correction_packet", forbidden)
+
+
+def _capacity_full_lifecycle(value, tmp_path):
+    client = value.state.remote_client
+    transport = dict(client.transport_identity())
+    profile = value.value.saved["imported"]["setup_receipt"]["source"]["source_profile_id"]
+    enrollment = SimpleNamespace(
+        root=tmp_path / "enrollment",
+        allowed_profile_ids=(profile,),
+        metadata={
+            "server_fingerprint": transport["server_fingerprint"],
+            "client_fingerprint": transport["client_fingerprint"],
+        },
+    )
+    bootstrap = SimpleNamespace(
+        binary_digest=transport["runner_binary_digest"], sandbox_path=tmp_path / "sandbox"
+    )
+    record = {"port": 43123, "server_instance_id": "a" * 32}
+    health = {
+        **transport,
+        "schema_version": "bluefire.runner-health.v1",
+        "status": "ready",
+        "profile_id": profile,
+        "server_instance_id": record["server_instance_id"],
+        "ledger": {"accepting_execute": False},
+    }
+    timeouts = []
+
+    def factory(*_args, **kwargs):
+        assert kwargs["profile_id"] == profile and kwargs["port"] == record["port"]
+        timeouts.append(kwargs["socket_timeout_seconds"])
+        return client
+
+    manager = ManagedRunnerLifecycle(
+        tmp_path / "managed", client_factory=factory, start_timeout_seconds=2
+    )
+    value.monkeypatch.setattr(manager, "_load_active_enrollment", lambda: enrollment)
+    value.monkeypatch.setattr(manager, "_load_bootstrap", lambda _enrollment: bootstrap)
+    value.monkeypatch.setattr(lifecycle_module, "read_process_record", lambda *a, **k: record)
+    value.monkeypatch.setattr(client, "health", lambda: health, raising=False)
+    value.control.service.runner_lifecycle = manager
+    return manager, health, profile, timeouts
+
+
+def test_managed_recovery_uses_reserved_control_when_execute_capacity_is_full(execution, tmp_path):
+    v = execution
+    v.state.fault = "retest_persistence"
+    _abort(v, "retest")
+    with pytest.raises(ProductStoreError):
+        v.runtime.execute(v.ctx, v.request)
+    before = _records(v)
+    with v.store._connection(write=True) as connection:
+        connection.execute("DROP TRIGGER synthetic_retest_failure")
+    manager, _health, profile, timeouts = _capacity_full_lifecycle(v, tmp_path)
+    with pytest.raises(RunnerLifecycleError, match="cannot accept execution"):
+        manager.client_for_profile(profile)
+    _forbid_new_work(v)
+    v.runtime.recover(v.job, expected_outcome_digest=before["outcome_digest"])
+    assert _records(v)["outcome"]["state"] == "complete" and _revision_count(v) == 1
+    assert _records(v)["tasks"] == before["tasks"]
+    assert len(v.state.controls) == len(v.state.launches) == 1
+    assert timeouts == [2.0, 2.0]
+    receipt = v.value.saved["imported"]["setup_receipt"]
+    with pytest.raises(ProductStoreError, match="transport is unavailable"):
+        v.runtime._runner_client(receipt)
+
+
+@pytest.mark.parametrize("field", ["enrollment_generation", "runner_binary_digest"])
+def test_capacity_full_recovery_refuses_another_original_transport(execution, tmp_path, field):
+    v = execution
+    v.state.fault = "retest_persistence"
+    _abort(v, "retest")
+    with pytest.raises(ProductStoreError):
+        v.runtime.execute(v.ctx, v.request)
+    before = _records(v)
+    _capacity_full_lifecycle(v, tmp_path)
+    client = v.state.remote_client
+    identity = {**client.transport_identity(), field: "sha256:" + "f" * 64}
+    v.monkeypatch.setattr(client, "transport_identity", lambda: identity)
+    v.monkeypatch.setattr(
+        client,
+        "recover",
+        lambda *args: pytest.fail("Foreign transport must fail before result recovery"),
+    )
+    _forbid_new_work(v)
+    with pytest.raises(ProductStoreError, match="transport is unavailable"):
+        v.runtime._recover_managed_result(v.job)
+    assert _records(v) == before and _revision_count(v) == 0
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("server_instance_id", "b" * 32),
+        ("server_fingerprint", "sha256:" + "f" * 64),
+        ("profile_id", "foreign-profile"),
+        ("runner_binary_digest", "sha256:" + "f" * 64),
+    ],
+)
+def test_capacity_full_recovery_keeps_authenticated_health_identity(
+    execution, tmp_path, field, value
+):
+    manager, health, profile, _timeouts = _capacity_full_lifecycle(execution, tmp_path)
+    health[field] = value
+    with pytest.raises(RunnerLifecycleError, match="health identity does not match"):
+        manager.recovery_client_for_profile(profile)
+
+
+@pytest.mark.parametrize("ledger", [None, False, [], 0, "missing"])
+def test_recovery_acquisition_requires_ledger_health_mapping(execution, tmp_path, ledger):
+    manager, health, profile, _timeouts = _capacity_full_lifecycle(execution, tmp_path)
+    if ledger == "missing":
+        health.pop("ledger")
+    else:
+        health["ledger"] = ledger
+    with pytest.raises(RunnerLifecycleError, match="cannot accept execution"):
+        manager.recovery_client_for_profile(profile)
+    with pytest.raises(RunnerLifecycleError, match="cannot accept execution"):
+        manager.client_for_profile(profile)
+
+
+@pytest.mark.parametrize("accepting", [None, 0, 1, "false", [], {}, "missing"])
+def test_recovery_acquisition_requires_exact_boolean_capacity_health(
+    execution, tmp_path, accepting
+):
+    manager, health, profile, _timeouts = _capacity_full_lifecycle(execution, tmp_path)
+    if accepting == "missing":
+        health["ledger"].pop("accepting_execute")
+    else:
+        health["ledger"]["accepting_execute"] = accepting
+    with pytest.raises(RunnerLifecycleError, match="cannot accept execution"):
+        manager.recovery_client_for_profile(profile)
+    with pytest.raises(RunnerLifecycleError, match="cannot accept execution"):
+        manager.client_for_profile(profile)
+
+
+def test_recovery_acquisition_preserves_profile_budget_and_closed_operation_mode(
+    execution, tmp_path
+):
+    manager, health, profile, _timeouts = _capacity_full_lifecycle(execution, tmp_path)
+    with pytest.raises(RunnerLifecycleError):
+        manager.recovery_client_for_profile("foreign-profile")
+    health["execution_timeout_seconds"] = 30.0
+    with pytest.raises(RunnerProfileBudgetError, match="deadline cannot cover"):
+        manager._profile_client(profile, operation="recover", profile_budget_seconds=70)
+    health["ledger"]["accepting_execute"] = True
+    with pytest.raises(RunnerProfileBudgetError, match="deadline cannot cover"):
+        manager.client_for_profile(profile, profile_budget_seconds=70)
+    with pytest.raises(RunnerLifecycleError, match="operation is invalid"):
+        manager._profile_client(profile, operation="unknown")
 
 
 def test_private_runtime_publishes_one_hardened_revision_from_both_closed_phases(execution):
@@ -388,19 +702,306 @@ def test_nonpositive_effect_or_postimage_never_authorizes_a_retest(execution, fa
     assert set(module.journal.control_evidence(v.store, v.job)) == {"dispatch", "closure"}
 
 
-def test_original_deadline_and_expiry_are_passed_through_both_phases_without_renewal(execution):
+def test_original_expiry_and_bounded_local_deadline_pass_without_renewal(execution):
     v = execution
     v.runtime.execute(v.ctx, v.request)
     prepared = _records(v)["preparation"]
     deadline = 100.0 + (prepared["expires_at_ms"] - prepared["issued_at_ms"]) / 1000
     assert v.state.controls[0]["original_monotonic_deadline"] == pytest.approx(deadline)
     assert v.state.postimages[0]["deadline"] == pytest.approx(deadline)
-    assert v.state.launches[0]._original_deadline == pytest.approx(deadline)
-    assert v.state.launches[0]._deadline <= deadline
+    launch = v.state.launches[0]
+    assert 100.0 < launch._deadline == launch._original_deadline <= deadline
+    descriptor = v.state.remote_client.descriptor
+    assert descriptor is not None
+    assert "packet_deadline" not in descriptor.value
+    assert "original_monotonic_deadline" not in descriptor.value
+    packet = module.wire._document(descriptor.packet)
+    assert launch._deadline == pytest.approx(descriptor.packet_deadline)
+    assert deadline - 0.01 <= launch._deadline <= deadline
+    assert 0 < packet["remaining_ms"] <= 5_000
     manifest = _records(v)["tasks"][0]["task"]["manifest"]
     assert module.wire._time(manifest["expires_at"]) <= at_ms(prepared["expires_at_ms"])
     assert prepared["expires_at_ms"] == v.value.original["review"]["expires_at_ms"]
     assert prepared["expires_at_ms"] <= v.value.saved["imported"]["enrollment"]["expires_at_ms"]
+
+
+def test_ready_consume_is_one_durable_row_and_cannot_be_rebound(execution):
+    v = execution
+    v.state.fault = "after_ready"
+    with pytest.raises(ProductStoreError):
+        v.runtime.execute(v.ctx, v.request)
+
+    descriptor = v.state.remote_client.descriptor
+    ready = v.state.remote_client.ready
+    receipt = v.state.remote_client.consume_receipt
+    assert descriptor is not None and ready is not None and receipt is not None
+    with v.store._connection() as connection:
+        rows = connection.execute(
+            "SELECT stage,document_json FROM file_access_task_evidence WHERE task_id=? "
+            "ORDER BY stage",
+            (descriptor.value["task_id"],),
+        ).fetchall()
+    assert [row["stage"] for row in rows] == ["managed_ready_consume", "packet", "ready"]
+
+    identity = {
+        "store": v.store,
+        "task_id": descriptor.value["task_id"],
+        "transport_hash": descriptor.value["transport_request_hash"],
+        "expected_binding": descriptor.value["expected_binding"],
+        "session_nonce": descriptor.value["session_nonce"],
+        "ack_nonce": receipt["ack_nonce"],
+        "packet": descriptor.packet,
+        "ready": ready,
+        "clock": v.runtime._clock(),
+    }
+    repeated = module.managed_ready_store.persisted_managed_correction_ready(**identity)
+    assert repeated.document() == receipt
+    checked = module.managed_ready_store.validate_persisted_managed_correction_ready(
+        v.store,
+        identity["task_id"],
+        identity["transport_hash"],
+        identity["expected_binding"],
+        receipt,
+        packet=identity["packet"],
+        ready=identity["ready"],
+        clock=identity["clock"],
+    )
+    assert checked.document() == receipt
+    loaded = module.managed_ready_store.load_persisted_managed_correction_ready(
+        v.store,
+        identity["task_id"],
+        identity["transport_hash"],
+        identity["expected_binding"],
+        packet=identity["packet"],
+        ready=identity["ready"],
+        clock=identity["clock"],
+    )
+    assert loaded.document() == receipt
+
+    for mutation in (
+        {"session_nonce": "b" * 64},
+        {"ack_nonce": "c" * 64},
+    ):
+        with pytest.raises(ProductStoreError):
+            module.managed_ready_store.persisted_managed_correction_ready(
+                **{**identity, **mutation}
+            )
+    with v.store._connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM file_access_task_evidence "
+                "WHERE task_id=? AND stage='managed_ready_consume'",
+                (identity["task_id"],),
+            ).fetchone()[0]
+            == 1
+        )
+
+    missing_path = v.store.path.with_name("missing-managed-ready-consume.sqlite3")
+    shutil.copy2(v.store.path, missing_path)
+    missing = ProductStore(missing_path)
+    with missing._connection(write=True) as connection:
+        connection.execute("DROP TRIGGER file_access_task_evidence_no_delete")
+        connection.execute(
+            "DELETE FROM file_access_task_evidence "
+            "WHERE task_id=? AND stage='managed_ready_consume'",
+            (identity["task_id"],),
+        )
+    with pytest.raises(ProductStoreError):
+        module.managed_ready_store.validate_persisted_managed_correction_ready(
+            missing,
+            identity["task_id"],
+            identity["transport_hash"],
+            identity["expected_binding"],
+            receipt,
+            packet=identity["packet"],
+            ready=identity["ready"],
+            clock=identity["clock"],
+        )
+    with pytest.raises(ProductStoreError):
+        module.managed_ready_store.load_persisted_managed_correction_ready(
+            missing,
+            identity["task_id"],
+            identity["transport_hash"],
+            identity["expected_binding"],
+            packet=identity["packet"],
+            ready=identity["ready"],
+            clock=identity["clock"],
+        )
+    with missing._connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM file_access_task_evidence "
+                "WHERE task_id=? AND stage='managed_ready_consume'",
+                (identity["task_id"],),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_recovery_rejects_foreign_session_before_result_persistence(execution):
+    v = execution
+    v.state.fault = "retest_persistence"
+    _abort(v, "retest")
+    with pytest.raises(ProductStoreError):
+        v.runtime.execute(v.ctx, v.request)
+    with v.store._connection(write=True) as connection:
+        connection.execute("DROP TRIGGER synthetic_retest_failure")
+
+    client = v.state.remote_client
+    descriptor = client.descriptor
+    assert client.result is not None and descriptor is not None
+    foreign_nonce = "f" * 64
+    managed = dict(client.result["output"]["windows_correction"])
+    consume = {**managed["persisted_consume_receipt"], "session_nonce": foreign_nonce}
+    managed.update(
+        session_nonce=foreign_nonce,
+        persisted_consume_receipt=consume,
+        persisted_consume_digest=module.managed_session.persisted_consume_digest(consume),
+    )
+    client.result = {**client.result, "output": {"windows_correction": managed}}
+    packet = module.wire._document(descriptor.packet)
+    module.managed_result.validate_runner_result(
+        client.result,
+        packet["manifest"],
+        packet["profile"],
+        expected_packet=descriptor.packet,
+    )
+    v.monkeypatch.setattr(
+        v.runtime,
+        "_persist_managed_result",
+        lambda *args, **kwargs: pytest.fail(
+            "A foreign managed session must be rejected before result persistence"
+        ),
+    )
+
+    with pytest.raises(ProductStoreError, match="original managed correction outcome"):
+        v.runtime._recover_managed_result(v.job)
+
+
+def test_noop_ready_consumer_cannot_ack_or_release_begin(execution):
+    v = execution
+    v.monkeypatch.setattr(
+        module.managed_ready_store,
+        "persisted_managed_correction_ready",
+        lambda *args, **kwargs: SimpleNamespace(
+            document=lambda: {"schema_version": "synthetic-no-op"}
+        ),
+    )
+
+    with pytest.raises(ProductStoreError):
+        v.runtime.execute(v.ctx, v.request)
+
+    assert len(v.state.producers) == 1
+    assert not v.state.producers[0].consumed
+    assert v.state.remote_client.consume_receipt is None
+    descriptor = v.state.remote_client.descriptor
+    assert descriptor is not None
+    with v.store._connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM file_access_task_evidence "
+                "WHERE task_id=? AND stage='managed_ready_consume'",
+                (descriptor.value["task_id"],),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_failed_after_ready_status_and_duplicate_handoffs_are_refused(execution):
+    v = execution
+    v.runtime.execute(v.ctx, v.request)
+    descriptor = v.state.remote_client.descriptor
+    ready = v.state.remote_client.ready
+    receipt = v.state.remote_client.consume_receipt
+    assert descriptor is not None and ready is not None and receipt is not None
+
+    failed = module.managed_session.ManagedCorrectionControl(
+        descriptor, enrollment_binding={"binding": "one"}
+    )
+    fixed_deadline = failed.deadline
+    failed.publish_ready(ready, receipt["ack_nonce"])
+    with pytest.raises(module.managed_session.ManagedCorrectionSessionError):
+        failed.publish_ready(ready, receipt["ack_nonce"])
+    failed.fail("watchdog_handoff_failed")
+    failed_status = module.managed_session.validate_status(failed.status(), descriptor)
+    assert failed_status["state"] == "failed"
+    assert not {"ready_b64", "ready_digest", "ack_nonce"} & set(failed_status)
+    assert failed.deadline == fixed_deadline
+
+    control = module.managed_session.ManagedCorrectionControl(
+        descriptor, enrollment_binding={"binding": "two"}
+    )
+    control.publish_ready(ready, receipt["ack_nonce"])
+    ready_payload = module.managed_session.watchdog_ready_payload(
+        descriptor, ready, receipt["ack_nonce"]
+    )
+    acknowledgement = {
+        "schema_version": module.managed_session.ACK_SCHEMA,
+        "original_task_id": descriptor.value["task_id"],
+        "original_request_hash": descriptor.value["transport_request_hash"],
+        "session_nonce": descriptor.value["session_nonce"],
+        "packet_digest": descriptor.packet_digest,
+        "ready_digest": ready_payload["ready_digest"],
+        "ack_nonce": receipt["ack_nonce"],
+        "persisted_consume_receipt": receipt,
+        "persisted_consume_digest": module.managed_session.persisted_consume_digest(receipt),
+    }
+    assert control.register_ack(acknowledgement) == acknowledgement
+    with pytest.raises(module.managed_session.ManagedCorrectionSessionError):
+        control.register_ack(acknowledgement)
+    assert control.deadline == descriptor.packet_deadline
+
+
+def test_watchdog_frames_reject_mutation_and_wrong_authentication_key():
+    key = bytearray(range(32))
+    frame = module.managed_session.encode_frame("ready", {"sequence": 1}, key)
+    assert module.managed_session.read_frame(io.BytesIO(frame), expected_kind="ready", key=key) == {
+        "sequence": 1
+    }
+
+    with pytest.raises(module.managed_session.ManagedCorrectionSessionError):
+        module.managed_session.read_frame(
+            io.BytesIO(frame), expected_kind="ready", key=bytearray(reversed(key))
+        )
+    changed = bytearray(frame)
+    changed[-1] ^= 1
+    with pytest.raises(module.managed_session.ManagedCorrectionSessionError):
+        module.managed_session.read_frame(io.BytesIO(changed), expected_kind="ready", key=key)
+
+
+def test_descriptor_uses_endpoint_local_epoch_without_renewing_live_session(execution):
+    v = execution
+    v.runtime.execute(v.ctx, v.request)
+    descriptor = v.state.remote_client.descriptor
+    assert descriptor is not None
+    issued = descriptor.value["packet_issued_at_ms"]
+    packet = module.wire._document(descriptor.packet)
+    manifest = _records(v)["tasks"][0]["task"]["manifest"]
+    profile = _records(v)["tasks"][0]["task"]["runner_profile"]
+
+    v.state.wall = issued + 100
+    v.state.mono = 10.0
+    epoch_one = module.managed_session.validate_descriptor(descriptor.value, manifest, profile)
+    first_remaining = epoch_one.packet_deadline - v.state.mono
+    v.state.mono = 1_000_000.0
+    epoch_two = module.managed_session.validate_descriptor(descriptor.value, manifest, profile)
+    assert epoch_two.packet_deadline - v.state.mono == pytest.approx(first_remaining)
+
+    original_deadline = epoch_two.packet_deadline
+    v.state.wall += 200
+    v.state.mono += 0.2
+    repeated = module.managed_session.validate_descriptor(descriptor.value, manifest, profile)
+    assert repeated.packet_deadline == pytest.approx(original_deadline)
+    assert epoch_two.packet_deadline == original_deadline
+
+    v.state.wall = issued - 1
+    with pytest.raises(module.managed_session.ManagedCorrectionSessionError):
+        module.managed_session.validate_descriptor(descriptor.value, manifest, profile)
+    expires = module.managed_session._milliseconds(module.wire._time(manifest["expires_at"]))
+    v.state.wall = expires
+    with pytest.raises(module.managed_session.ManagedCorrectionSessionError):
+        module.managed_session.validate_descriptor(descriptor.value, manifest, profile)
+    assert 0 < packet["remaining_ms"] <= 5_000
 
 
 @pytest.mark.parametrize(
@@ -445,8 +1046,9 @@ def test_recovery_only_closes_retained_owner_and_publishes_existing_evidence(exe
     before = _records(v)
     assert before["outcome"]["state"] == "unknown" and len(before["tasks"]) == 1
     assert _revision_count(v) == 0
+    assert v.job not in v.runtime._retest_owners
     if fault != "publication_persistence":
-        assert v.runtime._retest_owners[v.job] is v.state.retest_owner
+        assert v.state.remote_client.descriptor is not None
     if fault == "retest_persistence":
         with v.store._connection(write=True) as connection:
             connection.execute("DROP TRIGGER synthetic_retest_failure")
