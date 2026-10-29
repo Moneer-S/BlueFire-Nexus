@@ -10,6 +10,7 @@ import pytest
 
 from bluefire import composition_context
 from bluefire.ai_broker_contract import BrokerEnrollment, schema_identity
+from bluefire.ai_broker_live_authorization import BrokerLiveAuthorizations
 from bluefire.ai_composition_contract import (
     EVIDENCE_PURPOSE,
     PURPOSE,
@@ -102,7 +103,7 @@ def test_available_custody_and_failed_route_are_separate_from_actual_use(provide
     current = retained_context(history.harness.state, history.context, [source()])
     value = envelope(history)
     value["schema_version"] = RETAINED_OUTPUT_VERSION
-    # The new producer feeds the normal handoff and cleanup route.
+    # The new producer feeds the existing redaction, discovery, staging and cleanup route.
     graph = value["candidate"]
     graph["start"] = "reuse"
     graph["steps"] = [
@@ -111,11 +112,14 @@ def test_available_custody_and_failed_route_are_separate_from_actual_use(provide
             "behavior_id": METHOD,
             "parameters": {"source_ref": source()["source_ref"]},
         },
-        *[row for row in graph["steps"] if row["id"] in {"send", "clean"}],
+        *[row for row in graph["steps"] if row["id"] != "seed"],
     ]
+    next(row for row in graph["steps"] if row["id"] == "prepare")["parameters"][
+        "redact_values"
+    ] = True
     graph["edges"] = [
-        {"from_step": "reuse", "outcome": "success", "to_step": "send"},
-        *[row for row in graph["edges"] if row["from_step"] == "send"],
+        {"from_step": "reuse", "outcome": "success", "to_step": "prepare"},
+        *[row for row in graph["edges"] if row["from_step"] != "seed"],
     ]
     body, model = format_request(history.harness.provider, current)
     validate_retained_model_context(model)
@@ -128,6 +132,13 @@ def test_available_custody_and_failed_route_are_separate_from_actual_use(provide
         cancel=threading.Event(),
     )
     assert result["candidate"]["steps"][0]["parameters"] == {"source_ref": source()["source_ref"]}
+    assert all(step["behavior_id"] != METHODS[0] for step in result["candidate"]["steps"])
+    assert next(step for step in result["candidate"]["steps"] if step["id"] == "prepare")[
+        "parameters"
+    ] == {"redact_values": True}
+    assert any(step["behavior_id"] == METHODS[4] for step in result["candidate"]["steps"])
+    materialize = next(method for method in model["methods"] if method["behavior_id"] == METHOD)
+    assert [port["name"] for port in materialize["outputs"]] == ["workspace"]
     value["candidate"]["steps"][0]["parameters"]["source_ref"] = content_hash("invented")
     with pytest.raises(CapabilityContractError, match="unavailable retained source"):
         validate_candidate(value["candidate"], current)
@@ -155,7 +166,10 @@ def test_model_data_boundary_refuses_raw_or_expanded_context(provider, state, de
 
 
 @pytest.mark.parametrize("old_purpose", [PURPOSE, EVIDENCE_PURPOSE])
-def test_existing_authorizations_do_not_enable_retained_purpose(provider, state, old_purpose):
+@pytest.mark.parametrize("transport", ["direct", "broker"])
+def test_existing_authorizations_do_not_enable_retained_purpose(
+    provider, state, old_purpose, transport
+):
     body, model = format_request(provider, retained_context(state))
     enrollment = BrokerEnrollment.create(
         provider,
@@ -165,7 +179,7 @@ def test_existing_authorizations_do_not_enable_retained_purpose(provider, state,
         destination_policy="explicit_endpoint",
     )
     authority = {
-        "kind": "direct",
+        "kind": transport,
         "binding_digest": enrollment.digest,
         "provider": provider.to_dict(),
         "expires_at_ms": enrollment.expires_at_ms,
@@ -177,10 +191,18 @@ def test_existing_authorizations_do_not_enable_retained_purpose(provider, state,
             authority,
         )
 
+    broker = BrokerLiveAuthorizations(enrollment)
+
+    def reserve(payload, authorization):
+        if transport == "broker":
+            broker.authorize(authorization)
+            return broker.reserve(payload)
+        return request_reservation(provider, payload, authorization)
+
     with pytest.raises(AIProviderTransportError):
-        request_reservation(provider, body, authorize(old_purpose))
+        reserve(body, authorize(old_purpose))
     authorization = authorize(RETAINED_PURPOSE)
-    request_reservation(provider, body, authorization)
+    reserve(body, authorization)
     model["retained_artifacts"]["payload_hex"] = "abcd"
     wire = json.loads(body)
     if provider.kind.value == "openai_responses":
@@ -188,7 +210,7 @@ def test_existing_authorizations_do_not_enable_retained_purpose(provider, state,
     else:
         wire["messages"][1]["content"] = json.dumps(model)
     with pytest.raises(AIProviderTransportError):
-        request_reservation(provider, canonical_json_bytes(wire), authorization)
+        reserve(canonical_json_bytes(wire), authorization)
 
 
 def test_review_exposes_retention_and_native_availability_only_for_new_pack(state, monkeypatch):
@@ -346,3 +368,38 @@ def test_retained_review_refuses_profile_without_explicit_native_method():
     )
     with pytest.raises(ProductStoreError, match="ready retained-result materialization"):
         composition_context.resolve(service, "job-owner", pack=RECEIVER_RETAINED_PACK)
+
+
+def test_selected_retained_source_projection_enforces_256k_bound(provider, state):
+    from bluefire.retained_artifacts import FIELDS, MAX_BYTES
+
+    assert MAX_BYTES == 256 * 1024
+    row = source()
+    row["size_bytes"] = MAX_BYTES + 1
+    row["source_ref"] = content_hash({key: row[key] for key in FIELDS})
+    with pytest.raises(CapabilityContractError):
+        format_request(provider, retained_context(state, sources=[row]))
+
+
+def test_missing_source_allows_explicit_fresh_generation_with_same_prior_findings(
+    provider, history
+):
+    current = retained_context(history.harness.state, history.context, [])
+    response = envelope(history)
+    response["schema_version"] = RETAINED_OUTPUT_VERSION
+    body, model = format_request(history.harness.provider, current)
+    assert model["revision"] is True
+    assert (
+        model["historical_context"]["attempt_ids"] == current["historical_context"]["attempt_ids"]
+    )
+    assert model["retained_artifacts"]["availability"] == "none_available"
+    assert "explicit fresh-generation proposal" in body.decode()
+    result = propose(
+        config=history.harness.provider,
+        access=Access(value=response),
+        context=current,
+        cancel=threading.Event(),
+    )
+    assert any(step["behavior_id"] == METHODS[0] for step in result["candidate"]["steps"])
+    assert all(step["behavior_id"] != METHOD for step in result["candidate"]["steps"])
+    assert result["knowledge_digest"] == current["historical_context"]["knowledge_digest"]

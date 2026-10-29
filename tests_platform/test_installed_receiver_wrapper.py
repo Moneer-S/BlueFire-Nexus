@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -96,6 +98,92 @@ def test_history_helper_failure_keeps_only_its_shipped_basename_and_line(name: s
     assert "private" not in repr(value)
 
 
+def retained_execution_report() -> dict[str, object]:
+    source = {
+        "run_id": "run-20261029T120008Z-8888888888888888",
+        "attempt_id": "attempt-" + "8" * 32,
+        "lineage_id": "lineage-" + "c" * 64,
+        "step_id": "stage_records",
+        "artifact": "bundle",
+        "artifact_type": "artifact.sandbox.bundle.v1",
+        "sha256": "d" * 64,
+        "size_bytes": 1024,
+    }
+    source["source_ref"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(source, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        ).hexdigest()
+    )
+    return {
+        "schema_version": "bluefire.installed-retained-execution.v1",
+        "pack": "bluefire.receiver-composition-pack.v2",
+        "owner_id": "job-" + "7" * 32,
+        "control_owner_id": "job-" + "1" * 32,
+        "grant_id": "grant-" + "7" * 32,
+        "grant_status": "revoked",
+        "policy_digest": "sha256:" + "7" * 64,
+        "source": source,
+        "original": {
+            "job_id": "job-" + "8" * 32,
+            "attempt_id": source["attempt_id"],
+            "run_id": source["run_id"],
+            "objective_established": False,
+            "receiver_decision": "policy_refused",
+            "record_count": 8,
+            "redacted_record_count": 0,
+            "cleanup": {"run": "complete", "receiver": "verified_closed"},
+            "capture_digest": "sha256:" + "8" * 64,
+            "producer_record_hash": "sha256:" + "d" * 64,
+            "observation_record_hash": "sha256:" + "e" * 64,
+            "receipt_id": "8" * 64,
+        },
+        "continuation": {
+            "job_id": "job-" + "9" * 32,
+            "attempt_id": "attempt-" + "9" * 32,
+            "run_id": "run-20261029T120009Z-9999999999999999",
+            "objective_established": True,
+            "receiver_decision": "accepted",
+            "record_count": 8,
+            "redacted_record_count": 8,
+            "cleanup": {"run": "complete", "receiver": "verified_closed"},
+            "materialize_step_id": "reuse_retained_bundle",
+            "source_ref": source["source_ref"],
+            "materialized_sha256": source["sha256"],
+            "materialized_size_bytes": source["size_bytes"],
+            "receipt_id": "9" * 64,
+            "independent_observation": True,
+            "workspace_lineage_match": True,
+            "no_fixture_create": True,
+        },
+        "model": {
+            "purpose": "bluefire_receiver_retained_composition_proposal",
+            "requests": 2,
+            "authorization_max_requests": 2,
+            "initial_job_id": "job-" + "0a" * 16,
+            "revised_job_id": "job-" + "0b" * 16,
+            "metadata_only": True,
+            "reopened": True,
+            "reasoning_rendered": True,
+            "current_sources_rechecked": True,
+        },
+        "capture_before_cleanup": True,
+        "original_failure_preserved": True,
+        "source_metadata_preserved_after_cleanup": True,
+        "source_disposition": "sealed_until_run_bundle_deleted",
+        "comparison": {
+            "snapshot_id": "run-comparison-" + "f" * 64,
+            "snapshot_digest": "sha256:" + "f" * 64,
+            "run_ids": [source["run_id"], "run-20261029T120009Z-9999999999999999"],
+            "source_integrity": "verified",
+            "objective_comparability": "comparable",
+            "objective_changed": True,
+            "objective_recovered": True,
+            "reopened": True,
+        },
+    }
+
+
 def receiver_report() -> dict[str, object]:
     return {
         "schema_version": "bluefire.installed-receiver-retained-redaction.v1",
@@ -116,10 +204,11 @@ def receiver_report() -> dict[str, object]:
             "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false",
             "single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt",
             "composed_attempt_grant_revoked_after_verified_cleanup",
-            "receiver_distinct_model_authorizations_revoked_after_one_proposal_each",
+            "receiver_composition_and_history_authorizations_revoked_after_one_proposal_each",
             "history_proposal_reopened_with_original_records_and_no_additional_execution",
             "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result",
             "failed_objective_findings_opened_from_verified_run_without_new_attempt",
+            "retained_result_reused_in_fresh_successful_attempt_without_prefix_replay",
         ],
         "blocked_requests": [],
         "errors": [],
@@ -129,6 +218,7 @@ def receiver_report() -> dict[str, object]:
             "runner_stopped": True,
             "composition_grant_revoked": True,
             "model_authorization_revoked": True,
+            "retained_grant_revoked": True,
         },
         "owner_status": "completed",
         "unique_receiver_session_count": 5,
@@ -152,9 +242,20 @@ def receiver_report() -> dict[str, object]:
             "comparison": 1,
             "provider_save": 1,
             "provider_activate": 1,
-            "model_authorization": 2,
-            "model_authorization_revoke": 2,
+            "model_authorization": 3,
+            "model_authorization_revoke": 3,
+            "retained_list": 3,
+            "retained_review": 1,
+            "retained_grant": 1,
+            "retained_initial_context": 1,
+            "retained_history_context": 2,
+            "retained_proposal": 2,
+            "retained_attempt": 2,
+            "retained_knowledge": 1,
+            "retained_revoke": 1,
+            "retained_comparison": 1,
         },
+        "retained_execution": retained_execution_report(),
         "source_starter_scenario_id": "scenario.receiver-defense.redaction-validation.v1",
         "saved_scenario_copy": {
             "scenario_id": "scenario.receiver-defense.redaction-validation.copy.12345678-1234-4234-8234-123456789abc.v1",
@@ -387,20 +488,49 @@ def receiver_report() -> dict[str, object]:
     }
 
 
+def custody_receipt(proof: dict) -> dict[str, object]:
+    source = proof["source"]
+    return {
+        "schema_version": "bluefire.installed-retained-source-custody.v1",
+        "status": "verified",
+        "owner_id": proof["owner_id"],
+        "grant_id": proof["grant_id"],
+        "source_ref": source["source_ref"],
+        "run_id": source["run_id"],
+        "attempt_id": source["attempt_id"],
+        "job_id": proof["original"]["job_id"],
+        "compiled_digest": "sha256:" + "c" * 64,
+        "continuation_job_id": proof["continuation"]["job_id"],
+        "continuation_run_id": proof["continuation"]["run_id"],
+        "sha256": source["sha256"],
+        "size_bytes": source["size_bytes"],
+        "payload_reads": 1,
+        "verified_after_driver_cleanup": True,
+        "original_objective_established": False,
+        "continuation_objective_established": True,
+    }
+
+
 def clean_wrapper_report() -> dict[str, object]:
+    retained = retained_execution_report()
     return {
         **{key: True for key in _RUNTIME_PROCESS_CLEANUP_KEYS},
+        "receiver_retained_redaction": {"retained_execution": retained},
+        "receiver_retained_source_custody": custody_receipt(retained),
         "receiver_model_fixture": {
-            "request_count": 2,
+            "request_count": 4,
             "purposes": [
                 "bluefire_composition_proposal",
                 "bluefire_receiver_evidence_composition_proposal",
+                "bluefire_receiver_retained_composition_proposal",
+                "bluefire_receiver_retained_composition_proposal",
             ],
             "request_bytes": 1024,
             "failed": False,
         },
         "browser_phase_status": "passed",
         "receiver_phase_status": "passed",
+        "receiver_phase_elapsed_seconds": 535.25,
         "receiver_driver_started": True,
         "receiver_driver_cleanup_confirmed": True,
         "temporary_state_removed": True,
@@ -836,8 +966,8 @@ def test_history_proposal_requires_distinct_finite_request_counts() -> None:
 
     for name, expected in {
         "composition_evidence_proposal": 1,
-        "model_authorization": 2,
-        "model_authorization_revoke": 2,
+        "model_authorization": 3,
+        "model_authorization_revoke": 3,
     }.items():
         for count in (0, expected + 1, True):
             report = receiver_report()
@@ -856,6 +986,360 @@ def test_history_proposal_requires_distinct_finite_request_counts() -> None:
     assert not _valid_receiver_composition(report)
 
 
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("pack",), "bluefire.receiver-composition-pack.v1"),
+        (("owner_id",), "job-" + "3" * 32),
+        (("control_owner_id",), "job-" + "2" * 32),
+        (("grant_status",), "active"),
+        (("policy_digest",), "not-a-digest"),
+        (("source", "run_id"), "run-20261021T120000Z-aaaaaaaaaaaaaaaa"),
+        (("source", "attempt_id"), "attempt-" + "9" * 32),
+        (("source", "lineage_id"), "lineage-other"),
+        (("source", "step_id"), "create_fixture"),
+        (("source", "artifact"), "other"),
+        (("source", "artifact_type"), "artifact.other.v1"),
+        (("source", "sha256"), "a" * 64),
+        (("source", "size_bytes"), 0),
+        (("source", "size_bytes"), True),
+        (("source", "size_bytes"), 262_145),
+        (("source", "source_ref"), "sha256:" + "0" * 64),
+        (("original", "objective_established"), True),
+        (("original", "receiver_decision"), "accepted"),
+        (("original", "record_count"), 7),
+        (("original", "redacted_record_count"), 8),
+        (("original", "cleanup"), {"run": "pending", "receiver": "verified_closed"}),
+        (("original", "producer_record_hash"), "sha256:" + "e" * 64),
+        (("original", "observation_record_hash"), "invalid"),
+        (("continuation", "job_id"), "job-" + "8" * 32),
+        (("continuation", "attempt_id"), "attempt-" + "8" * 32),
+        (("continuation", "run_id"), "run-20261029T120008Z-8888888888888888"),
+        (("continuation", "objective_established"), False),
+        (("continuation", "receiver_decision"), "policy_refused"),
+        (("continuation", "record_count"), True),
+        (("continuation", "redacted_record_count"), 0),
+        (("continuation", "cleanup"), {"run": "complete", "receiver": "unknown"}),
+        (("continuation", "source_ref"), "sha256:" + "0" * 64),
+        (("continuation", "materialized_sha256"), "a" * 64),
+        (("continuation", "materialized_size_bytes"), 1023),
+        (("continuation", "receipt_id"), "8" * 64),
+        (("continuation", "independent_observation"), False),
+        (("continuation", "workspace_lineage_match"), False),
+        (("continuation", "no_fixture_create"), False),
+        (("model", "purpose"), "bluefire_receiver_evidence_composition_proposal"),
+        (("model", "requests"), 1),
+        (("model", "requests"), True),
+        (("model", "authorization_max_requests"), 3),
+        (("model", "authorization_max_requests"), True),
+        (("model", "initial_job_id"), "job-" + "a" * 32),
+        (("model", "revised_job_id"), "job-" + "0a" * 16),
+        (("model", "metadata_only"), False),
+        (("model", "reopened"), False),
+        (("model", "reasoning_rendered"), False),
+        (("model", "current_sources_rechecked"), False),
+        (("capture_before_cleanup",), False),
+        (("original_failure_preserved",), False),
+        (("source_metadata_preserved_after_cleanup",), False),
+        (("source_disposition",), "discarded"),
+        (
+            ("comparison", "run_ids"),
+            ["run-20261029T120009Z-9999999999999999", "run-20261029T120008Z-8888888888888888"],
+        ),
+        (("comparison", "source_integrity"), "unverified"),
+        (("comparison", "objective_comparability"), "different_objectives"),
+        (("comparison", "objective_changed"), False),
+        (("comparison", "objective_recovered"), False),
+        (("comparison", "reopened"), False),
+    ],
+)
+def test_retained_execution_requires_exact_failed_source_and_fresh_success(
+    path, replacement
+) -> None:
+    from tools.verify_installed_browser import _valid_retained_execution
+
+    report = receiver_report()
+    assert _valid_retained_execution(report)
+    selected = report["retained_execution"]
+    for key in path[:-1]:
+        selected = selected[key]
+    selected[path[-1]] = replacement
+    assert not _valid_retained_execution(report)
+
+
+def test_retained_execution_requires_cleanup_finite_counts_and_explicit_check() -> None:
+    from tools.verify_installed_browser import _valid_retained_execution
+
+    limits = {
+        "retained_list": (1, 8),
+        "retained_review": (1, 1),
+        "retained_grant": (1, 1),
+        "retained_initial_context": (1, 2),
+        "retained_history_context": (2, 4),
+        "retained_proposal": (2, 2),
+        "retained_attempt": (2, 2),
+        "retained_knowledge": (1, 1),
+        "retained_revoke": (1, 1),
+        "retained_comparison": (1, 1),
+    }
+    for key, (minimum, maximum) in limits.items():
+        for count in (minimum, maximum):
+            report = receiver_report()
+            report["request_counts"][key] = count
+            assert _valid_retained_execution(report), (key, count)
+        for count in (minimum - 1, maximum + 1, True):
+            report = receiver_report()
+            report["request_counts"][key] = count
+            assert not _valid_retained_execution(report), (key, count)
+    report = receiver_report()
+    report["cleanup"]["retained_grant_revoked"] = False
+    assert not _valid_retained_execution(report)
+    report = receiver_report()
+    report["checks"].remove(
+        "retained_result_reused_in_fresh_successful_attempt_without_prefix_replay"
+    )
+    assert not _valid_retained_execution(report)
+    for field in ("retained_execution", "composition"):
+        report = receiver_report()
+        del report[field]
+        assert not _valid_retained_execution(report)
+
+
+def test_retained_execution_receipt_preserves_failed_history_without_passing_it() -> None:
+    report = receiver_report()
+    report["status"] = "failed_or_incomplete"
+    receipt = _receiver_report_for_receipt(report)
+    assert receipt["status"] == "failed_or_incomplete"
+    assert receipt["retained_execution"] == report["retained_execution"]
+    assert receipt["composition"] == report["composition"]
+    assert not _receiver_driver_passed(report)
+
+
+def custody_state(monkeypatch):
+    """Owned in-memory contracts only; this fixture never starts a product service."""
+    from bluefire import retained_artifacts
+    from bluefire.util import content_hash
+
+    report = receiver_report()
+    proof = report["retained_execution"]
+    payload = b'{"generated":true}\n'
+    source = proof["source"]
+    source["sha256"], source["size_bytes"] = hashlib.sha256(payload).hexdigest(), len(payload)
+    source["source_ref"] = content_hash(
+        {key: item for key, item in source.items() if key != "source_ref"}
+    )
+    proof["continuation"].update(
+        source_ref=source["source_ref"],
+        materialized_sha256=source["sha256"],
+        materialized_size_bytes=len(payload),
+    )
+    grant = {
+        "grant_id": proof["grant_id"],
+        "grant_digest": content_hash("grant"),
+        "pack": proof["pack"],
+        "environment": {"control_owner_id": proof["control_owner_id"]},
+    }
+    owner = {
+        "job_id": proof["owner_id"],
+        "kind": "composition.objective",
+        "state": "completed",
+        "request": {"grant_id": grant["grant_id"], "grant_digest": grant["grant_digest"]},
+        "progress": {"admission": {"accepted": True, "problem": None}},
+    }
+    job_rows = {owner["job_id"]: owner}
+    attempts = {}
+    for role, established in (("original", False), ("continuation", True)):
+        expected = proof[role]
+        compiled = {
+            "scenario": {},
+            **(
+                {"retained_sources": {"reuse_retained_bundle": deepcopy(source)}}
+                if established
+                else {}
+            ),
+        }
+        compiled["compiled_digest"] = content_hash(compiled)
+        marker = {
+            "parent_job_id": owner["job_id"],
+            "grant_id": grant["grant_id"],
+            "grant_digest": grant["grant_digest"],
+            "attempt_id": expected["attempt_id"],
+            "run_id": expected["run_id"],
+            "compiled_digest": compiled["compiled_digest"],
+        }
+        result = {
+            "objective": {"established": established},
+            "cleanup": expected["cleanup"],
+            "receiver_result": {"decision": expected["receiver_decision"]},
+        }
+        child = {
+            "job_id": expected["job_id"],
+            "kind": "composition.attempt",
+            "request": {"composition_attempt": marker},
+            "progress": {
+                "settlement": "settled",
+                "verified_result": result,
+                "verified_result_digest": content_hash(result),
+            },
+        }
+        if not established:
+            child["progress"]["retained_artifact_capture"] = {"source": deepcopy(source)}
+        job_rows[child["job_id"]] = child
+        attempts[expected["attempt_id"]] = {
+            "state": "settled",
+            "compiled": compiled,
+            "lease": {
+                **{key: item for key, item in marker.items() if key != "parent_job_id"},
+                "job_id": child["job_id"],
+            },
+        }
+    view = {"document": grant, "status": "revoked", "lineage_id": source["lineage_id"]}
+    store = SimpleNamespace(
+        get_job=lambda job_id: job_rows[job_id],
+        get_capability_grant=lambda _grant, **_: view,
+        get_capability_attempt=lambda attempt_id: attempts[attempt_id],
+    )
+    jobs = SimpleNamespace(
+        store=store,
+        clock=lambda: 1,
+        _verified_result=lambda attempt: deepcopy(
+            job_rows[attempt["lease"]["job_id"]]["progress"]["verified_result"]
+        ),
+    )
+    run_store = object()
+    service = SimpleNamespace(composition=jobs, detection_lab=SimpleNamespace(run_store=run_store))
+    reads = []
+    history = [deepcopy(source)]
+
+    def historical(actual_jobs, actual_grant, *, owner_id):
+        assert actual_jobs is jobs and actual_grant is grant and owner_id == owner["job_id"]
+        return history
+
+    def resolve(actual_store, actual_source):
+        assert actual_store is run_store and actual_source == source
+        reads.append(actual_source["source_ref"])
+        return payload
+
+    monkeypatch.setattr(retained_artifacts, "historical_sources", historical)
+    monkeypatch.setattr(retained_artifacts, "resolve", resolve)
+    return report, service, job_rows, attempts, view, history, reads, payload
+
+
+def test_post_driver_custody_resolves_one_exact_saved_source_without_recording_payload(
+    monkeypatch,
+) -> None:
+    from tools.verify_installed_browser import (
+        _valid_receiver_retained_custody,
+        _verify_receiver_retained_custody,
+    )
+
+    report, service, _, _, _, _, reads, payload = custody_state(monkeypatch)
+    receipt = _verify_receiver_retained_custody(service, report)
+    assert _valid_receiver_retained_custody(receipt, report["retained_execution"])
+    assert reads == [report["retained_execution"]["source"]["source_ref"]]
+    assert payload.decode().strip() not in json.dumps(receipt)
+    assert receipt["original_objective_established"] is False
+    assert receipt["continuation_objective_established"] is True
+
+
+@pytest.mark.parametrize("mutation", ["owner", "compiled", "objective", "history", "active_grant"])
+def test_post_driver_custody_refuses_saved_binding_changes_before_payload_read(
+    monkeypatch, mutation
+) -> None:
+    from tools.verify_installed_browser import _verify_receiver_retained_custody
+
+    report, service, jobs, attempts, view, history, reads, _ = custody_state(monkeypatch)
+    proof = report["retained_execution"]
+    if mutation == "owner":
+        jobs[proof["original"]["job_id"]]["request"]["composition_attempt"][
+            "parent_job_id"
+        ] = "job-other"
+    elif mutation == "compiled":
+        attempts[proof["original"]["attempt_id"]]["compiled"]["scenario"] = {"changed": True}
+    elif mutation == "objective":
+        jobs[proof["continuation"]["job_id"]]["progress"]["verified_result"]["objective"][
+            "established"
+        ] = False
+    elif mutation == "history":
+        history.append({**history[0], "attempt_id": "attempt-other"})
+    else:
+        view["status"] = "active"
+    receipt = _verify_receiver_retained_custody(service, report)
+    assert receipt["status"] == "unknown"
+    assert receipt["reason"] in {
+        "saved_owner_binding_unverified",
+        "saved_attempt_binding_unverified",
+        "captured_source_binding_unverified",
+    }
+    assert reads == []
+
+
+def test_post_driver_custody_retains_unknown_when_saved_run_verification_raises_api_error(
+    monkeypatch,
+) -> None:
+    from bluefire.application_errors import APIError
+    from tools.verify_installed_browser import _verify_receiver_retained_custody
+
+    report, service, _, _, _, _, reads, _ = custody_state(monkeypatch)
+
+    def unavailable(_attempt):
+        raise APIError(422, "invalid_evidence", "private saved run details")
+
+    service.composition._verified_result = unavailable
+    receipt = _verify_receiver_retained_custody(service, report)
+    assert receipt == {
+        "schema_version": "bluefire.installed-retained-source-custody.v1",
+        "status": "unknown",
+        "reason": "saved_attempt_binding_unverified",
+    }
+    assert reads == []
+
+
+def test_post_driver_custody_keeps_missing_payload_unknown_with_historical_metadata(
+    monkeypatch,
+) -> None:
+    from bluefire import retained_artifacts
+    from tools.verify_installed_browser import _verify_receiver_retained_custody
+
+    report, service, _, _, _, _, _, _ = custody_state(monkeypatch)
+
+    def unavailable(_store, _source):
+        raise retained_artifacts.PayloadUnavailable("private storage location must not be recorded")
+
+    monkeypatch.setattr(retained_artifacts, "resolve", unavailable)
+    receipt = _verify_receiver_retained_custody(service, report)
+    assert receipt == {
+        "schema_version": "bluefire.installed-retained-source-custody.v1",
+        "status": "unknown",
+        "reason": "retained_payload_unavailable_or_invalid",
+    }
+    assert report["retained_execution"]["source_metadata_preserved_after_cleanup"] is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "unknown"),
+        ("owner_id", "job-other"),
+        ("source_ref", "sha256:" + "0" * 64),
+        ("compiled_digest", "unverified"),
+        ("continuation_job_id", "job-other"),
+        ("sha256", "0" * 64),
+        ("size_bytes", True),
+        ("payload_reads", True),
+        ("payload_reads", 2),
+        ("verified_after_driver_cleanup", False),
+        ("original_objective_established", True),
+        ("continuation_objective_established", False),
+    ],
+)
+def test_outer_acceptance_requires_actual_post_driver_custody(field, value) -> None:
+    report = clean_wrapper_report()
+    assert _receiver_retained_redaction_accepted(report)
+    report["receiver_retained_source_custody"][field] = value
+    assert not _receiver_retained_redaction_accepted(report)
+
+
 def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
     report = receiver_report()
     for row in report["phase_evidence"]:
@@ -868,11 +1352,11 @@ def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
         )
     assert _receiver_driver_passed(report)
     report["checks"].remove(
-        "receiver_distinct_model_authorizations_revoked_after_one_proposal_each"
+        "receiver_composition_and_history_authorizations_revoked_after_one_proposal_each"
     )
     assert not _receiver_driver_passed(report)
     report["checks"].append(
-        "receiver_distinct_model_authorizations_revoked_after_one_proposal_each"
+        "receiver_composition_and_history_authorizations_revoked_after_one_proposal_each"
     )
     report["cleanup"]["model_authorization_revoked"] = False
     assert not _receiver_driver_passed(report)
@@ -884,6 +1368,8 @@ def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
         ("request_count", 0),
         ("request_count", 1),
         ("request_count", 3),
+        ("request_count", 2),
+        ("request_count", 5),
         ("request_count", True),
         ("purposes", ["bluefire_ai_graph_draft"]),
         ("purposes", ["bluefire_composition_proposal", "bluefire_composition_proposal"]),
@@ -893,7 +1379,7 @@ def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
         ),
         ("request_bytes", 0),
         ("request_bytes", True),
-        ("request_bytes", 524_289),
+        ("request_bytes", 1_048_577),
         ("failed", True),
     ],
 )
@@ -939,11 +1425,15 @@ def test_receiver_driver_paths_require_copied_driver_and_adjacent_modules(
     deadline = copied / "receiver-deadline.mjs"
     knowledge = copied / "receiver-knowledge.mjs"
     evidence = copied / "receiver-evidence-proposal.mjs"
+    retained = copied / "receiver-retained.mjs"
+    retained_proof = copied / "receiver-retained-proof.mjs"
     driver.write_text("// pinned browser driver\n", encoding="utf-8")
     guard.write_text("// pinned request contract\n", encoding="utf-8")
     deadline.write_text("// pinned driver deadline\n", encoding="utf-8")
     knowledge.write_text("// historical findings proof\n", encoding="utf-8")
     evidence.write_text("// historical proposal proof\n", encoding="utf-8")
+    retained.write_text("// retained result journey\n", encoding="utf-8")
+    retained_proof.write_text("// retained result proof\n", encoding="utf-8")
     assert _resolve_receiver_driver(driver, checkout) == (
         driver.resolve(),
         guard.resolve(),
@@ -956,6 +1446,8 @@ def test_receiver_driver_paths_require_copied_driver_and_adjacent_modules(
     (checkout / deadline.name).write_text("// deadline\n", encoding="utf-8")
     (checkout / knowledge.name).write_text("// knowledge\n", encoding="utf-8")
     (checkout / evidence.name).write_text("// evidence\n", encoding="utf-8")
+    (checkout / retained.name).write_text("// retained\n", encoding="utf-8")
+    (checkout / retained_proof.name).write_text("// retained proof\n", encoding="utf-8")
     with pytest.raises(RuntimeError):
         _resolve_receiver_driver(in_checkout_driver, checkout)
 
@@ -992,6 +1484,77 @@ def test_missing_receiver_evidence_helper_fails_before_launch(tmp_path: Path) ->
         (tmp_path / name).write_text("// helper\n", encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         _resolve_receiver_driver(driver, tmp_path / "checkout")
+
+
+@pytest.mark.parametrize("missing", ["receiver-retained.mjs", "receiver-retained-proof.mjs"])
+def test_missing_retained_helpers_fail_before_launch(tmp_path: Path, missing: str) -> None:
+    driver = tmp_path / "installed-receiver.mjs"
+    driver.write_text("// driver\n", encoding="utf-8")
+    for name in (
+        "receiver-guards.mjs",
+        "receiver-deadline.mjs",
+        "receiver-knowledge.mjs",
+        "receiver-evidence-proposal.mjs",
+        "receiver-retained.mjs",
+        "receiver-retained-proof.mjs",
+    ):
+        if name != missing:
+            (tmp_path / name).write_text("// helper\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        _resolve_receiver_driver(driver, tmp_path / "checkout")
+
+
+@pytest.mark.parametrize("elapsed", [-1, True, "535", None, float("inf"), float("nan"), 1015.01])
+def test_receiver_elapsed_receipt_refuses_unbounded_or_invalid_values(elapsed) -> None:
+    report = clean_wrapper_report()
+    report["receiver_phase_elapsed_seconds"] = elapsed
+    assert not _receiver_retained_redaction_accepted(report)
+
+
+def test_receiver_elapsed_receipt_allows_teardown_after_child_budget() -> None:
+    for elapsed in (0, 540.25, 600, 1015):
+        report = clean_wrapper_report()
+        report["receiver_phase_elapsed_seconds"] = elapsed
+        assert _receiver_retained_redaction_accepted(report)
+
+
+def test_receiver_phase_records_elapsed_when_outer_deadline_prevents_start(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tools import verify_installed_browser as verifier
+
+    clock = iter([10.0, 10.25])
+    observed_caps = []
+    monkeypatch.setattr(verifier.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        verifier, "_phase_timeout", lambda _deadline, cap: observed_caps.append(cap)
+    )
+    report = {}
+    verifier._run_receiver_phase(
+        report=report,
+        driver=tmp_path / "driver",
+        guards=tmp_path / "guard",
+        deadline_file=tmp_path / "deadline",
+        node=tmp_path / "node",
+        playwright=tmp_path / "playwright",
+        output=tmp_path / "out",
+        runtime=tmp_path / "runtime",
+        environment={},
+        work_deadline=9,
+        service_type=None,
+        runner_lifecycle_type=None,
+        create_server=None,
+        generate_capability=None,
+        cleanup_errors=[],
+    )
+    assert report == {
+        "receiver_phase_status": "not_attempted",
+        "receiver_phase_reason": "outer_work_deadline_reached",
+        "receiver_phase_elapsed_seconds": 0.25,
+    }
+    assert observed_caps == [540]
+    assert verifier._OVERALL_WORK_BUDGET_SECONDS == 16 * 60
+    assert not (tmp_path / "runtime").exists()
 
 
 def test_each_unconfirmed_cleanup_state_blocks_runtime_removal_and_acceptance() -> None:

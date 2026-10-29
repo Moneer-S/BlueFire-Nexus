@@ -13,9 +13,13 @@ from bluefire.ai_composition_contract import (
     EVIDENCE_OUTPUT_SCHEMA,
     OUTPUT_SCHEMA,
     REFRESH_PREREQUISITES,
+    RETAINED_OUTPUT_SCHEMA,
 )
 from bluefire.capability_resources import METHODS, semantic_ports
 from bluefire.contracts import load_scenario
+from bluefire.retained_artifacts import METHOD as RETAINED_METHOD
+from bluefire.retained_artifacts import PACK as RETAINED_PACK
+from bluefire.retained_artifacts import POLICY as RETAINED_POLICY
 from bluefire.util import content_hash
 from tools.verify_installed_browser import (
     _COMPOSITION_PURPOSES,
@@ -23,6 +27,7 @@ from tools.verify_installed_browser import (
     _FIXTURE_PURPOSES,
     _RECEIVER_COMPOSITION_PURPOSE,
     _RECEIVER_EVIDENCE_PURPOSE,
+    _RECEIVER_RETAINED_PURPOSE,
     _assistant_fixture_journey_passed,
     _fixture_output_for_request,
     _fixture_outputs,
@@ -182,16 +187,13 @@ def receiver_evidence_request() -> dict[str, object]:
         "behavior_id": METHODS[4],
         "action_id": METHODS[4],
         "provenance": "observed",
-        "semantic_kind": "observed_collection",
+        "semantic_kind": "observed_filesystem",
         "observed_at": "2026-10-29T12:34:56Z",
         "content_hash": content_hash("authored content"),
         "record_hash": record_ref["record_hash"],
         "summary": {
-            "container": "jsonl",
-            "record_count": 8,
-            "retained_record_count": 8,
-            "redacted_record_count": 0,
-            "empty_record_count": 0,
+            "sha256": content_hash("authored staged artifact").removeprefix("sha256:"),
+            "size_bytes": 840,
         },
         "applicability": {"status": "historical_only", "reason": "current_state_not_verified"},
         "record_ref": record_ref,
@@ -220,6 +222,64 @@ def receiver_evidence_request() -> dict[str, object]:
         ],
     }
     request["input"] = json.dumps(supplied)
+    return request
+
+
+def receiver_retained_request(*, revision: bool = False) -> dict[str, object]:
+    """Pure authored metadata for the separate bounded retained-result purpose."""
+    request = receiver_evidence_request()
+    value = json.loads(request["input"])
+    request["text"]["format"].update(
+        name=_RECEIVER_RETAINED_PURPOSE, schema=deepcopy(RETAINED_OUTPUT_SCHEMA)
+    )
+    value.update(schema_version="bluefire.retained-composition-model-context.v1", revision=revision)
+    ports = semantic_ports(RETAINED_METHOD, pack=RETAINED_PACK)
+    value["methods"].append(
+        {
+            "behavior_id": RETAINED_METHOD,
+            **{
+                kind: [
+                    {
+                        "name": row[0],
+                        "type": row[1],
+                        "multiple": row[2],
+                        "required": row[3] if kind == "inputs" else True,
+                        "description": "Reviewed retained result port",
+                    }
+                    for row in ports[index]
+                ]
+                for index, kind in enumerate(("inputs", "outputs"))
+            },
+            "parameter_domains": {"source_ref": {"kind": "sealed_same_lineage_generated_jsonl"}},
+        }
+    )
+    value["retained_artifacts"] = {
+        "policy": deepcopy(RETAINED_POLICY),
+        "available_sources": [],
+        "availability": "none_available",
+    }
+    if revision:
+        finding = value["historical_context"]["attempts"][0]["findings"][0]
+        finding["semantic_kind"] = "observed_filesystem"
+        finding["summary"] = {"sha256": "a" * 64, "size_bytes": 672}
+        source = {
+            "run_id": finding["record_ref"]["run_id"],
+            "attempt_id": finding["record_ref"]["attempt_id"],
+            "lineage_id": "lineage-authored",
+            "step_id": finding["step_id"],
+            "artifact": "bundle",
+            "artifact_type": "artifact.sandbox.bundle.v1",
+            "sha256": "a" * 64,
+            "size_bytes": 672,
+        }
+        source["source_ref"] = content_hash(source)
+        value["retained_artifacts"].update(available_sources=[source], availability="available")
+    else:
+        value["facts"] = value["facts"][:1]
+        value["historical_context"] = None
+        value["initial_proposal"] = json.loads(receiver_request()["input"])["initial_proposal"]
+        value["initial_proposal"]["evidence_refs"] = ["policy"]
+    request["input"] = json.dumps(value)
     return request
 
 
@@ -481,7 +541,7 @@ def test_fixture_rejects_per_request_byte_limit() -> None:
     assert not allowed(request, index=0, body_bytes=0)
 
 
-def test_receiver_fixture_is_an_ordered_pair_separate_from_four_assistant_requests() -> None:
+def test_receiver_fixture_is_four_ordered_requests_separate_from_assistant_requests() -> None:
     request = receiver_request()
     evidence = receiver_evidence_request()
     assert receiver_allowed(request)
@@ -499,6 +559,19 @@ def test_receiver_fixture_is_an_ordered_pair_separate_from_four_assistant_reques
     assert not allowed(request, index=0)
     assert allowed(request_for(_FIXTURE_PURPOSES[0]), index=0)
     assert not receiver_allowed(request_for(_FIXTURE_PURPOSES[0]))
+    for index, revision in ((2, False), (3, True)):
+        retained = receiver_retained_request(revision=revision)
+        assert receiver_allowed(
+            retained,
+            index=index,
+            purpose=_RECEIVER_RETAINED_PURPOSE,
+            body_bytes=262_144,
+            total_bytes=262_144 * index,
+        )
+        assert not receiver_allowed(retained, index=5 - index, purpose=_RECEIVER_RETAINED_PURPOSE)
+        assert not receiver_allowed(retained, index=4, purpose=_RECEIVER_RETAINED_PURPOSE)
+        assert not receiver_allowed(retained, index=1, purpose=_RECEIVER_RETAINED_PURPOSE)
+        assert not allowed(retained, index=index)
 
 
 @pytest.mark.parametrize(
@@ -548,7 +621,7 @@ def test_receiver_fixture_is_an_ordered_pair_separate_from_four_assistant_reques
         (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, "Bearer secret", 100, 0),
         (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, None, 0, 0),
         (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, None, 262_145, 0),
-        (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, None, 100, 524_189),
+        (lambda request: None, 0, _RECEIVER_COMPOSITION_PURPOSE, None, 100, 1_048_477),
     ],
 )
 def test_receiver_fixture_rejects_other_purposes_schemas_and_budgets(
@@ -694,7 +767,19 @@ def test_receiver_fixture_refuses_context_crossed_between_purposes(evidence: boo
             "record_ref"
         ].update(run_id="other-run"),
         lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].update(
-            retained_record_count=0
+            size_bytes=0
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].pop(
+            "sha256"
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].pop(
+            "size_bytes"
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].update(
+            size_bytes=True
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0].update(
+            semantic_kind="observed_collection"
         ),
         lambda value: value["historical_context"]["attempts"][0]["findings"][0][
             "applicability"
@@ -718,6 +803,203 @@ def test_receiver_evidence_fixture_uses_supplied_current_fact_names() -> None:
     request["input"] = json.dumps(context)
     actual = _receiver_fixture_output_for_request(request)
     assert actual["candidate"]["evidence_refs"] == ["fresh-0", "fresh-1", "fresh-2"]
+
+
+def test_retained_fixture_initial_keeps_real_unredacted_graph_and_no_history() -> None:
+    request = receiver_retained_request()
+    before = deepcopy(request)
+    value = json.loads(request["input"])
+    result = _receiver_fixture_output_for_request(request)
+    assert request == before
+    assert result == {
+        "schema_version": "bluefire.retained-composition-proposal.v1",
+        "candidate": value["initial_proposal"],
+        "reconsideration": None,
+    }
+    assert result["candidate"]["steps"][1]["parameters"] == {"redact_values": False}
+    assert all(row["behavior_id"] != RETAINED_METHOD for row in result["candidate"]["steps"])
+
+
+def test_retained_fixture_continuation_materializes_exact_bundle_without_recreating_source() -> (
+    None
+):
+    request = receiver_retained_request(revision=True)
+    before = deepcopy(request)
+    value = json.loads(request["input"])
+    source = value["retained_artifacts"]["available_sources"][0]
+    result = _receiver_fixture_output_for_request(request)
+    assert request == before
+    assert result["schema_version"] == "bluefire.retained-composition-proposal.v1"
+    candidate = result["candidate"]
+    original = _receiver_fixture_output_for_request(receiver_request())
+    assert candidate["start"] == "reuse_retained_bundle"
+    assert candidate["steps"][0] == {
+        "id": "reuse_retained_bundle",
+        "behavior_id": RETAINED_METHOD,
+        "parameters": {"source_ref": source["source_ref"]},
+    }
+    expected_steps = deepcopy(original["steps"][1:])
+    expected_steps[0]["parameters"] = {"redact_values": True}
+    assert candidate["steps"][1:] == expected_steps
+    assert all(row["behavior_id"] != METHODS[0] for row in candidate["steps"])
+    expected_edges = deepcopy(original["edges"])
+    expected_edges[0]["from_step"] = "reuse_retained_bundle"
+    assert candidate["edges"] == expected_edges
+    assert candidate["evidence_refs"] == ["policy", "result", "cleanup"]
+    chosen = result["reconsideration"]["reconsidered_choices"][0]
+    finding = value["historical_context"]["attempts"][0]["findings"][0]
+    assert finding["semantic_kind"] == "observed_filesystem"
+    assert set(finding["summary"]) == {"sha256", "size_bytes"}
+    assert value["facts"][1]["kind"] == "receiver_result"
+    assert value["facts"][1]["value"]["decision"] == "policy_refused"
+    assert value["facts"][1]["value"]["retained_record_count"] == 8
+    assert chosen["step_id"] == "transform_fixture"
+    assert chosen["attempt_id"] == source["attempt_id"]
+    assert chosen["finding_refs"] == [
+        {"finding_id": finding["finding_id"], "record_ref": finding["record_ref"]}
+    ]
+    assert source["source_ref"] not in candidate["evidence_refs"]
+    assert finding["finding_id"] not in candidate["evidence_refs"]
+    assert "payload_hex" not in json.dumps(result)
+    assert [
+        row["prerequisite"] for row in result["reconsideration"]["refresh_requirements"]
+    ] == list(REFRESH_PREREQUISITES)
+
+
+@pytest.mark.parametrize("index,revision", [(2, False), (3, True)])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda request: request["text"]["format"].update(schema=OUTPUT_SCHEMA),
+        lambda request: request["text"]["format"].update(schema=EVIDENCE_OUTPUT_SCHEMA),
+        lambda request: request["text"]["format"].update(name=_RECEIVER_COMPOSITION_PURPOSE),
+        lambda request: request.update(max_output_tokens=1025),
+        lambda request: request.update(input="not-json"),
+    ],
+)
+def test_retained_fixture_request_rejects_wrong_schema_phase_or_output_limit(
+    index, revision, mutation
+) -> None:
+    request = receiver_retained_request(revision=revision)
+    mutation(request)
+    assert not receiver_allowed(request, index=index, purpose=_RECEIVER_RETAINED_PURPOSE)
+
+
+def test_retained_fixture_request_rejects_byte_overflow_and_credentials() -> None:
+    request = receiver_retained_request(revision=True)
+    assert not receiver_allowed(
+        request, index=3, purpose=_RECEIVER_RETAINED_PURPOSE, body_bytes=262_145
+    )
+    assert not receiver_allowed(
+        request, index=3, purpose=_RECEIVER_RETAINED_PURPOSE, body_bytes=100, total_bytes=1_048_477
+    )
+    assert not receiver_allowed(
+        request, index=3, purpose=_RECEIVER_RETAINED_PURPOSE, auth="Bearer unexpected"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value["retained_artifacts"].update(availability="available"),
+        lambda value: value["retained_artifacts"]["policy"].update(max_bytes_per_artifact=1),
+        lambda value: value.update(historical_context={}),
+        lambda value: value["initial_proposal"]["steps"][1]["parameters"].update(
+            redact_values=True
+        ),
+        lambda value: value["initial_proposal"]["edges"].pop(),
+        lambda value: value["initial_proposal"].update(evidence_refs=["made-up"]),
+        lambda value: value["initial_proposal"].update(evidence_refs="[EVIDENCE CONTENT OMITTED]"),
+        lambda value: value.update(payload_hex="00"),
+    ],
+)
+def test_retained_fixture_initial_refuses_changes_to_scope_or_metadata(mutation) -> None:
+    request = receiver_retained_request()
+    value = json.loads(request["input"])
+    mutation(value)
+    request["input"] = json.dumps(value)
+    with pytest.raises(ValueError):
+        _receiver_fixture_output_for_request(request)
+
+
+def _change_retained_source(value, **changes) -> None:
+    source = value["retained_artifacts"]["available_sources"][0]
+    source.update(changes)
+    source["source_ref"] = content_hash(
+        {key: item for key, item in source.items() if key != "source_ref"}
+    )
+
+
+def test_known_refusal_fixture_does_not_invent_a_receiver_decision_from_an_unknown_result() -> None:
+    from bluefire.ai_composition_evidence_data import validate_retained_model_context
+
+    request = receiver_retained_request(revision=True)
+    value = json.loads(request["input"])
+    source = value["retained_artifacts"]["available_sources"][0]
+    value["facts"][1].update(
+        kind="retained_artifact_result",
+        value={
+            "source": deepcopy(source),
+            "prior_run_id": source["run_id"],
+            "later_failure": {"step_id": "handoff_to_receiver", "outcome": "failed"},
+            "receiver_decision": "unknown",
+        },
+    )
+    validate_retained_model_context(value)
+    request["input"] = json.dumps(value)
+    with pytest.raises(ValueError):
+        _receiver_fixture_output_for_request(request)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value["retained_artifacts"].update(
+            available_sources=[], availability="none_available"
+        ),
+        lambda value: value["retained_artifacts"].update(availability="none_available"),
+        lambda value: value["retained_artifacts"]["available_sources"].append(
+            deepcopy(value["retained_artifacts"]["available_sources"][0])
+        ),
+        lambda value: _change_retained_source(
+            value, run_id="run-20261029T123457Z-1123456789abcdef"
+        ),
+        lambda value: _change_retained_source(value, attempt_id="attempt-" + "d" * 32),
+        lambda value: _change_retained_source(value, step_id="transform_fixture"),
+        lambda value: _change_retained_source(value, sha256="b" * 64),
+        lambda value: _change_retained_source(value, size_bytes=673),
+        lambda value: _change_retained_source(value, size_bytes=0),
+        lambda value: _change_retained_source(value, size_bytes=262_145),
+        lambda value: _change_retained_source(value, artifact_type="artifact.sandbox.workspace.v1"),
+        lambda value: value["retained_artifacts"]["available_sources"][0].update(
+            source_ref="sha256:" + "0" * 64
+        ),
+        lambda value: value["retained_artifacts"]["available_sources"][0].update(payload_hex="00"),
+        lambda value: value["facts"][1]["value"].update(decision="unknown"),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].pop(
+            "sha256"
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].pop(
+            "size_bytes"
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0]["summary"].update(
+            size_bytes=0
+        ),
+        lambda value: value["historical_context"]["attempts"][0]["findings"][0].update(
+            semantic_kind="observed_collection"
+        ),
+        lambda value: value.update(historical_context=None),
+    ],
+)
+def test_retained_fixture_continuation_refuses_unavailable_or_mismatched_original_bytes(
+    mutation,
+) -> None:
+    request = receiver_retained_request(revision=True)
+    value = json.loads(request["input"])
+    mutation(value)
+    request["input"] = json.dumps(value)
+    with pytest.raises(ValueError):
+        _receiver_fixture_output_for_request(request)
 
 
 def test_assistant_journey_validator_accepts_observed_match_count_and_development_classification() -> (

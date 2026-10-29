@@ -11,7 +11,7 @@ from .capability_packs import (
     RECEIVER_RETAINED_PACK,
 )
 from .capability_resources import METHODS, CapabilityContractError, semantic_ports
-from .retained_artifacts import METHOD as RETAINED_METHOD
+from .retained_artifact_contract import METHOD as RETAINED_METHOD
 
 PURPOSE = "bluefire_composition_proposal"
 # Distinct purposes keep an existing receiver-only usage grant from widening to either file pack.

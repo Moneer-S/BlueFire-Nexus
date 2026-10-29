@@ -78,3 +78,9 @@
 .composition-reconsideration > ul { padding-left: 1.25rem; }
 .composition-reconsideration li { margin-block: .75rem; }
 .composition-reconsideration code { overflow-wrap: anywhere; }
+.composition-retention-choice, .composition-retention-policy, .composition-retained-sources { margin-block: 16px; }
+.composition-retention-policy p, .composition-retained-sources > p { color: var(--muted-strong); font-size: .85rem; }
+.composition-retained-sources { border-top: 1px solid var(--line); padding-top: 16px; }
+.composition-retained-sources > ul { padding-left: 20px; }
+.composition-retained-sources li { margin-block: 12px; }
+.composition-retained-sources details > a { display: inline-block; margin-block: 8px; }

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .retained_artifact_contract import MAX_BYTES as MAX_RETAINED_PAYLOAD_BYTES
 from .util import canonical_json_bytes, content_hash, file_hash, json_clone
 from .windows_owner_acl import _windows_extended_path
 
@@ -29,8 +30,11 @@ SAFE_BUNDLE_NAMES = frozenset(
         "detections.json",
         "comparison.json",
         "manifest.json",
+        "artifacts.json",
     }
 )
+RETAINED_PAYLOAD_DIRECTORY = "retained"
+RETAINED_PAYLOAD_NAME = "bundle.jsonl"
 _ACCEPTANCE_BINDING_ENV = {
     "acceptance_id": "BLUEFIRE_ACCEPTANCE_ID",
     "gate_id": "BLUEFIRE_ACCEPTANCE_GATE_ID",
@@ -264,17 +268,58 @@ class RunStore:
                 mismatches.append(name)
         return {"valid": not mismatches, "mismatches": mismatches, "manifest": manifest}
 
-    def read_json(self, run_id: str, name: str) -> Mapping[str, Any]:
+    def read_json(
+        self, run_id: str, name: str, *, _max_bytes: int | None = None
+    ) -> Mapping[str, Any]:
         if name not in SAFE_BUNDLE_NAMES:
             raise RunStoreError(f"unsupported bundle file name: {name!r}")
         path = self._contained_child(self._run_path(run_id, must_exist=True), name)
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            if _max_bytes is None:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            else:
+                if type(_max_bytes) is not int or _max_bytes < 1:
+                    raise RunStoreError("bundle JSON byte bound is invalid")
+                with path.open("rb") as stream:
+                    payload = stream.read(_max_bytes + 1)
+                if len(payload) > _max_bytes:
+                    raise RunStoreError("bundle JSON exceeds its reviewed byte bound")
+                value = json.loads(payload.decode("utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RunStoreError(f"cannot read {name}: {exc}") from exc
         if not isinstance(value, dict):
             raise RunStoreError(f"{name} must contain a JSON object")
         return value
+
+    def write_retained_payload(self, run_id: str, payload: bytes) -> None:
+        """Publish one private immutable payload, separately from sealed history."""
+        if not isinstance(payload, bytes) or not 1 <= len(payload) <= MAX_RETAINED_PAYLOAD_BYTES:
+            raise RunStoreError("retained payload exceeds its reviewed byte bound")
+        run_path = self._run_path(run_id, must_exist=True)
+        directory = self._contained_child(run_path, RETAINED_PAYLOAD_DIRECTORY)
+        with self._lock(run_id):
+            directory.mkdir(mode=0o700, exist_ok=False)
+            target = self._contained_child(directory, RETAINED_PAYLOAD_NAME)
+            self._atomic_write(target, payload)
+
+    def read_retained_payload(self, run_id: str) -> bytes:
+        """Read only the fixed private payload through the pinned observer."""
+        from .evidence import SandboxObserver
+
+        run_path = self._run_path(run_id, must_exist=True)
+        captured: list[bytes] = []
+        observer = SandboxObserver(run_path, max_file_bytes=MAX_RETAINED_PAYLOAD_BYTES)
+        observer.observe_file(
+            relative_path=f"{RETAINED_PAYLOAD_DIRECTORY}/{RETAINED_PAYLOAD_NAME}",
+            run_id=run_id,
+            step_id="retained_payload",
+            behavior_id="bluefire.retained-payload-read.v1",
+            action_id="bluefire.retained-payload-read.v1",
+            runner_profile_id="bluefire.run-store.v1",
+            _validated_content_sink=captured.append,
+            _max_content_bytes=MAX_RETAINED_PAYLOAD_BYTES,
+        )
+        return captured[0]
 
     def read_events(
         self,

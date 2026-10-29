@@ -50,6 +50,7 @@ _COMPOSITION_PURPOSES = (
 )
 _RECEIVER_COMPOSITION_PURPOSE = "bluefire_composition_proposal"
 _RECEIVER_EVIDENCE_PURPOSE = "bluefire_receiver_evidence_composition_proposal"
+_RECEIVER_RETAINED_PURPOSE = "bluefire_receiver_retained_composition_proposal"
 _FIXTURE_MODEL = "bluefire-local-graph-fixture-v1"
 _RECEIVER_PROFILE = "sandbox-endpoint-deep-lab.v1"
 _RECEIVER_SCENARIO = "scenario.receiver-defense.redaction-validation.v1"
@@ -292,6 +293,7 @@ def _receiver_report_for_receipt(value: object) -> dict[str, object]:
         "original_control",
         "linked_retest",
         "composition",
+        "retained_execution",
         "phase_evidence",
         "checks",
         "request_counts",
@@ -584,7 +586,8 @@ def _valid_receiver_composition(value: object) -> bool:
         and cleanup.get("model_authorization_revoked") is True
         and "single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt"
         in checks
-        and "receiver_distinct_model_authorizations_revoked_after_one_proposal_each" in checks
+        and "receiver_composition_and_history_authorizations_revoked_after_one_proposal_each"
+        in checks
         and "history_proposal_reopened_with_original_records_and_no_additional_execution" in checks
         and "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false"
         in checks
@@ -610,16 +613,498 @@ def _valid_receiver_composition(value: object) -> bool:
         )
         and all(
             type(counts.get(name)) is int and counts[name] == 2
-            for name in (
-                "composition_knowledge",
-                "model_authorization",
-                "model_authorization_revoke",
-            )
+            for name in ("composition_knowledge",)
+        )
+        and all(
+            type(counts.get(name)) is int and counts[name] == 3
+            for name in ("model_authorization", "model_authorization_revoke")
         )
         and type(counts.get("composition_evidence_context")) is int
         and 2 <= counts["composition_evidence_context"] <= 3
         and type(counts.get("composition_proposal_context")) is int
         and 2 <= counts["composition_proposal_context"] <= 3
+    )
+
+
+def _receiver_text_matches(value: object, pattern: str) -> bool:
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
+def _valid_retained_execution(report: dict) -> bool:
+    value = report.get("retained_execution")
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version",
+        "pack",
+        "owner_id",
+        "control_owner_id",
+        "grant_id",
+        "grant_status",
+        "policy_digest",
+        "source",
+        "original",
+        "continuation",
+        "model",
+        "capture_before_cleanup",
+        "original_failure_preserved",
+        "source_metadata_preserved_after_cleanup",
+        "source_disposition",
+        "comparison",
+    }:
+        return False
+    source, original, continuation = value["source"], value["original"], value["continuation"]
+    model, comparison = value["model"], value["comparison"]
+    if not all(
+        isinstance(item, dict) for item in (source, original, continuation, model, comparison)
+    ):
+        return False
+    if (
+        set(source)
+        != {
+            "run_id",
+            "attempt_id",
+            "lineage_id",
+            "step_id",
+            "artifact",
+            "artifact_type",
+            "sha256",
+            "size_bytes",
+            "source_ref",
+        }
+        or set(original)
+        != {
+            "job_id",
+            "attempt_id",
+            "run_id",
+            "objective_established",
+            "receiver_decision",
+            "record_count",
+            "redacted_record_count",
+            "cleanup",
+            "capture_digest",
+            "producer_record_hash",
+            "observation_record_hash",
+            "receipt_id",
+        }
+        or set(continuation)
+        != {
+            "job_id",
+            "attempt_id",
+            "run_id",
+            "objective_established",
+            "receiver_decision",
+            "record_count",
+            "redacted_record_count",
+            "cleanup",
+            "materialize_step_id",
+            "source_ref",
+            "materialized_sha256",
+            "materialized_size_bytes",
+            "receipt_id",
+            "independent_observation",
+            "workspace_lineage_match",
+            "no_fixture_create",
+        }
+        or set(model)
+        != {
+            "purpose",
+            "requests",
+            "authorization_max_requests",
+            "initial_job_id",
+            "revised_job_id",
+            "metadata_only",
+            "reopened",
+            "reasoning_rendered",
+            "current_sources_rechecked",
+        }
+        or set(comparison)
+        != {
+            "snapshot_id",
+            "snapshot_digest",
+            "run_ids",
+            "source_integrity",
+            "objective_comparability",
+            "objective_changed",
+            "objective_recovered",
+            "reopened",
+        }
+    ):
+        return False
+    composition = report.get("composition")
+    counts, cleanup, evidence = (
+        report.get("request_counts"),
+        report.get("cleanup"),
+        report.get("phase_evidence"),
+    )
+    if (
+        not isinstance(composition, dict)
+        or not isinstance(counts, dict)
+        or not isinstance(cleanup, dict)
+        or not isinstance(evidence, list)
+    ):
+        return False
+    old_models = [composition.get("model_proposal"), composition.get("evidence_proposal")]
+    if not all(isinstance(item, dict) for item in old_models):
+        return False
+    jobs = [
+        value["owner_id"],
+        original["job_id"],
+        continuation["job_id"],
+        model["initial_job_id"],
+        model["revised_job_id"],
+    ]
+    attempts, runs = [original["attempt_id"], continuation["attempt_id"]], [
+        original["run_id"],
+        continuation["run_id"],
+    ]
+    if not (
+        all(_receiver_text_matches(item, r"job-[0-9a-f]{32}") for item in jobs)
+        and all(_receiver_text_matches(item, r"attempt-[0-9a-f]{32}") for item in attempts)
+        and all(
+            _receiver_text_matches(item, r"run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}") for item in runs
+        )
+    ):
+        return False
+    old_jobs = [
+        report.get("original_owner_job_id"),
+        report.get("linked_owner_job_id"),
+        composition.get("objective_owner_job_id"),
+        composition.get("attempt_job_id"),
+        *(item.get("job_id") for item in old_models),
+        *(row.get("execution_job_id") for row in evidence if isinstance(row, dict)),
+    ]
+    old_runs = [
+        report.get("run_id"),
+        composition.get("run_id"),
+        *(row.get("run_id") for row in evidence if isinstance(row, dict)),
+    ]
+    if not all(isinstance(item, str) for item in [*old_jobs, *old_runs]):
+        return False
+    if not (
+        source["run_id"] == original["run_id"]
+        and source["attempt_id"] == original["attempt_id"]
+        and _receiver_text_matches(source["lineage_id"], r"lineage-[0-9a-f]{64}")
+        and source["step_id"] == "stage_records"
+        and source["artifact"] == "bundle"
+        and source["artifact_type"] == "artifact.sandbox.bundle.v1"
+        and _receiver_text_matches(source["sha256"], r"[0-9a-f]{64}")
+        and type(source["size_bytes"]) is int
+        and 1 <= source["size_bytes"] <= 262_144
+    ):
+        return False
+    source_body = {key: source[key] for key in source if key != "source_ref"}
+    try:
+        source_digest = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    source_body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode()
+            ).hexdigest()
+        )
+    except (TypeError, ValueError):
+        return False
+    return (
+        value["schema_version"] == "bluefire.installed-retained-execution.v1"
+        and value["pack"] == "bluefire.receiver-composition-pack.v2"
+        and value["control_owner_id"] == report.get("original_owner_job_id")
+        and len(set(jobs)) == 5
+        and not set(jobs).intersection(old_jobs)
+        and len(set(attempts)) == 2
+        and composition.get("attempt_id") not in attempts
+        and len(set(runs)) == 2
+        and not set(runs).intersection(old_runs)
+        and _receiver_text_matches(value["grant_id"], r"grant-[0-9a-f]{32}")
+        and value["grant_id"] != composition.get("grant_id")
+        and value["grant_status"] == "revoked"
+        and _receiver_text_matches(value["policy_digest"], r"sha256:[0-9a-f]{64}")
+        and source["run_id"] == original["run_id"]
+        and source["attempt_id"] == original["attempt_id"]
+        and _receiver_text_matches(source["lineage_id"], r"lineage-[0-9a-f]{64}")
+        and source["step_id"] == "stage_records"
+        and source["artifact"] == "bundle"
+        and source["artifact_type"] == "artifact.sandbox.bundle.v1"
+        and _receiver_text_matches(source["sha256"], r"[0-9a-f]{64}")
+        and type(source["size_bytes"]) is int
+        and 1 <= source["size_bytes"] <= 262_144
+        and source["source_ref"] == source_digest
+        and original["objective_established"] is False
+        and original["receiver_decision"] == "policy_refused"
+        and type(original["record_count"]) is int
+        and original["record_count"] == 8
+        and type(original["redacted_record_count"]) is int
+        and original["redacted_record_count"] == 0
+        and original["cleanup"] == {"run": "complete", "receiver": "verified_closed"}
+        and all(
+            _receiver_text_matches(original[key], r"sha256:[0-9a-f]{64}")
+            for key in ("capture_digest", "producer_record_hash", "observation_record_hash")
+        )
+        and original["producer_record_hash"] != original["observation_record_hash"]
+        and _receiver_text_matches(original["receipt_id"], r"[0-9a-f]{64}")
+        and continuation["objective_established"] is True
+        and continuation["receiver_decision"] == "accepted"
+        and type(continuation["record_count"]) is int
+        and continuation["record_count"] == 8
+        and type(continuation["redacted_record_count"]) is int
+        and continuation["redacted_record_count"] == 8
+        and continuation["cleanup"] == {"run": "complete", "receiver": "verified_closed"}
+        and continuation["materialize_step_id"] == "reuse_retained_bundle"
+        and continuation["source_ref"] == source["source_ref"]
+        and continuation["materialized_sha256"] == source["sha256"]
+        and type(continuation["materialized_size_bytes"]) is int
+        and continuation["materialized_size_bytes"] == source["size_bytes"]
+        and _receiver_text_matches(continuation["receipt_id"], r"[0-9a-f]{64}")
+        and continuation["receipt_id"] != original["receipt_id"]
+        and all(
+            continuation[key] is True
+            for key in ("independent_observation", "workspace_lineage_match", "no_fixture_create")
+        )
+        and model["purpose"] == _RECEIVER_RETAINED_PURPOSE
+        and type(model["requests"]) is int
+        and model["requests"] == 2
+        and type(model["authorization_max_requests"]) is int
+        and model["authorization_max_requests"] == 2
+        and all(
+            model[key] is True
+            for key in (
+                "metadata_only",
+                "reopened",
+                "reasoning_rendered",
+                "current_sources_rechecked",
+            )
+        )
+        and all(
+            value[key] is True
+            for key in (
+                "capture_before_cleanup",
+                "original_failure_preserved",
+                "source_metadata_preserved_after_cleanup",
+            )
+        )
+        and value["source_disposition"] == "sealed_until_run_bundle_deleted"
+        and _receiver_text_matches(comparison["snapshot_id"], r"run-comparison-[0-9a-f]{64}")
+        and comparison["snapshot_id"] != composition.get("comparison", {}).get("snapshot_id")
+        and _receiver_text_matches(comparison["snapshot_digest"], r"sha256:[0-9a-f]{64}")
+        and comparison["run_ids"] == runs
+        and comparison["source_integrity"] == "verified"
+        and comparison["objective_comparability"] == "comparable"
+        and all(
+            comparison[key] is True
+            for key in ("objective_changed", "objective_recovered", "reopened")
+        )
+        and cleanup.get("retained_grant_revoked") is True
+        and isinstance(report.get("checks"), list)
+        and "retained_result_reused_in_fresh_successful_attempt_without_prefix_replay"
+        in report["checks"]
+        and all(
+            type(counts.get(name)) is int and counts[name] == 1
+            for name in (
+                "retained_review",
+                "retained_grant",
+                "retained_knowledge",
+                "retained_revoke",
+                "retained_comparison",
+            )
+        )
+        and all(
+            type(counts.get(name)) is int and counts[name] == 2
+            for name in ("retained_proposal", "retained_attempt")
+        )
+        and type(counts.get("retained_list")) is int
+        and 1 <= counts["retained_list"] <= 8
+        and type(counts.get("retained_initial_context")) is int
+        and 1 <= counts["retained_initial_context"] <= 2
+        and type(counts.get("retained_history_context")) is int
+        and 2 <= counts["retained_history_context"] <= 4
+    )
+
+
+def _verify_receiver_retained_custody(service, driver_report: dict) -> dict[str, object]:
+    """Read the exact saved source after driver cleanup; never restore authority or emit bytes."""
+    from bluefire import retained_artifacts
+    from bluefire.application_errors import APIError
+    from bluefire.util import content_hash
+
+    schema = "bluefire.installed-retained-source-custody.v1"
+    problem = "driver_proof_not_qualified"
+    try:
+        if not _valid_retained_execution(driver_report):
+            raise ValueError("Retained driver evidence is incomplete")
+        proof = driver_report["retained_execution"]
+        jobs = service.composition
+        problem = "saved_owner_binding_unverified"
+        owner = jobs.store.get_job(proof["owner_id"])
+        grant_view = jobs.store.get_capability_grant(
+            owner["request"]["grant_id"], now_ms=jobs.clock()
+        )
+        grant = grant_view["document"]
+        if (
+            owner["kind"] != "composition.objective"
+            or owner["state"] != "completed"
+            or owner["progress"].get("admission") != {"accepted": True, "problem": None}
+            or grant_view["status"] != "revoked"
+            or grant["pack"] != retained_artifacts.PACK
+            or grant["grant_id"] != proof["grant_id"]
+            or grant["grant_digest"] != owner["request"]["grant_digest"]
+            or grant["environment"]["control_owner_id"] != proof["control_owner_id"]
+        ):
+            raise ValueError("Saved objective binding changed")
+        problem = "saved_attempt_binding_unverified"
+        saved = []
+        for role, objective in (("original", False), ("continuation", True)):
+            expected = proof[role]
+            child = jobs.store.get_job(expected["job_id"])
+            marker = child["request"]["composition_attempt"]
+            attempt = jobs.store.get_capability_attempt(marker["attempt_id"])
+            lease, compiled = attempt["lease"], attempt["compiled"]
+            if (
+                child["kind"] != "composition.attempt"
+                or marker["parent_job_id"] != owner["job_id"]
+                or child["progress"]["settlement"] != "settled"
+                or attempt["state"] != "settled"
+                or marker["attempt_id"] != expected["attempt_id"]
+                or marker["run_id"] != expected["run_id"]
+                or lease["job_id"] != child["job_id"]
+                or lease["grant_id"] != grant["grant_id"]
+                or lease["grant_digest"] != grant["grant_digest"]
+                or any(
+                    marker[key] != lease[key]
+                    for key in (
+                        "attempt_id",
+                        "run_id",
+                        "grant_id",
+                        "grant_digest",
+                        "compiled_digest",
+                    )
+                )
+                or compiled["compiled_digest"] != lease["compiled_digest"]
+                or content_hash(
+                    {key: item for key, item in compiled.items() if key != "compiled_digest"}
+                )
+                != lease["compiled_digest"]
+            ):
+                raise ValueError("Saved attempt differs from its compiled lease")
+            result = jobs._verified_result(attempt)
+            if (
+                result != child["progress"]["verified_result"]
+                or content_hash(result) != child["progress"]["verified_result_digest"]
+                or result["objective"]["established"] is not objective
+                or result["cleanup"] != {"run": "complete", "receiver": "verified_closed"}
+                or result["receiver_result"]["decision"] != expected["receiver_decision"]
+            ):
+                raise ValueError("Saved result no longer verifies against its owned run")
+            saved.append((child, attempt))
+        problem = "captured_source_binding_unverified"
+        source = retained_artifacts.source_reference(
+            saved[0][0]["progress"]["retained_artifact_capture"]["source"]
+        )
+        if (
+            source != proof["source"]
+            or source["run_id"] != saved[0][1]["lease"]["run_id"]
+            or source["attempt_id"] != saved[0][1]["lease"]["attempt_id"]
+            or source["lineage_id"] != grant_view["lineage_id"]
+            or saved[1][1]["compiled"].get("retained_sources") != {"reuse_retained_bundle": source}
+        ):
+            raise ValueError("Source does not bind the saved producer and continuation")
+        # This routine validates custody metadata, task identities and source claims;
+        # unlike available_sources it does not read every retained payload.
+        historical = retained_artifacts.historical_sources(jobs, grant, owner_id=owner["job_id"])
+        known_attempts = {attempt["lease"]["attempt_id"] for _, attempt in saved}
+        if (
+            len(historical) > 2
+            or any(item["attempt_id"] not in known_attempts for item in historical)
+            or [item for item in historical if item["source_ref"] == source["source_ref"]]
+            != [source]
+        ):
+            raise ValueError("Saved source history differs from the two owned attempts")
+        problem = "retained_payload_resolution_unverified"
+        payload = retained_artifacts.resolve(service.detection_lab.run_store, source)
+        actual_hash, actual_size = hashlib.sha256(payload).hexdigest(), len(payload)
+        del payload
+        if actual_hash != source["sha256"] or actual_size != source["size_bytes"]:
+            raise ValueError("Resolved payload does not match its exact source")
+        return {
+            "schema_version": schema,
+            "status": "verified",
+            "owner_id": owner["job_id"],
+            "grant_id": grant["grant_id"],
+            "source_ref": source["source_ref"],
+            "run_id": source["run_id"],
+            "attempt_id": source["attempt_id"],
+            "job_id": saved[0][0]["job_id"],
+            "compiled_digest": saved[0][1]["compiled"]["compiled_digest"],
+            "continuation_job_id": saved[1][0]["job_id"],
+            "continuation_run_id": saved[1][1]["lease"]["run_id"],
+            "sha256": actual_hash,
+            "size_bytes": actual_size,
+            "payload_reads": 1,
+            "verified_after_driver_cleanup": True,
+            "original_objective_established": False,
+            "continuation_objective_established": True,
+        }
+    except retained_artifacts.PayloadUnavailable:
+        return {
+            "schema_version": schema,
+            "status": "unknown",
+            "reason": "retained_payload_unavailable_or_invalid",
+        }
+    except (APIError, AttributeError, KeyError, OSError, TypeError, ValueError):
+        return {"schema_version": schema, "status": "unknown", "reason": problem}
+
+
+def _valid_receiver_retained_custody(value: object, proof: object) -> bool:
+    if (
+        not isinstance(value, dict)
+        or not isinstance(proof, dict)
+        or set(value)
+        != {
+            "schema_version",
+            "status",
+            "owner_id",
+            "grant_id",
+            "source_ref",
+            "run_id",
+            "attempt_id",
+            "job_id",
+            "compiled_digest",
+            "continuation_job_id",
+            "continuation_run_id",
+            "sha256",
+            "size_bytes",
+            "payload_reads",
+            "verified_after_driver_cleanup",
+            "original_objective_established",
+            "continuation_objective_established",
+        }
+    ):
+        return False
+    source, original, continuation = (
+        proof.get("source"),
+        proof.get("original"),
+        proof.get("continuation"),
+    )
+    if not all(isinstance(item, dict) for item in (source, original, continuation)):
+        return False
+    return (
+        value["schema_version"] == "bluefire.installed-retained-source-custody.v1"
+        and value["status"] == "verified"
+        and value["owner_id"] == proof.get("owner_id")
+        and value["grant_id"] == proof.get("grant_id")
+        and all(
+            value[key] == source.get(key)
+            for key in ("source_ref", "run_id", "attempt_id", "sha256", "size_bytes")
+        )
+        and value["job_id"] == original.get("job_id")
+        and value["continuation_job_id"] == continuation.get("job_id")
+        and value["continuation_run_id"] == continuation.get("run_id")
+        and _receiver_text_matches(value["compiled_digest"], r"sha256:[0-9a-f]{64}")
+        and _receiver_text_matches(value["sha256"], r"[0-9a-f]{64}")
+        and type(value["size_bytes"]) is int
+        and 1 <= value["size_bytes"] <= 262_144
+        and type(value["payload_reads"]) is int
+        and value["payload_reads"] == 1
+        and value["verified_after_driver_cleanup"] is True
+        and value["original_objective_established"] is False
+        and value["continuation_objective_established"] is True
     )
 
 
@@ -648,6 +1133,7 @@ def _receiver_driver_passed(value: object) -> bool:
         and value.get("native_execution_required") is True
         and value.get("workflow") == "retained_redaction_original_and_linked_retest"
         and _valid_receiver_composition(value)
+        and _valid_retained_execution(value)
         and value.get("external_credentials") is False
         and value.get("live_model_inference") is False
         and type(generated_count) is int
@@ -820,24 +1306,32 @@ def _resolve_receiver_driver(
     deadline = driver.with_name("receiver-deadline.mjs").resolve(strict=True)
     knowledge = driver.with_name("receiver-knowledge.mjs").resolve(strict=True)
     evidence = driver.with_name("receiver-evidence-proposal.mjs").resolve(strict=True)
+    retained = driver.with_name("receiver-retained.mjs").resolve(strict=True)
+    retained_proof = driver.with_name("receiver-retained-proof.mjs").resolve(strict=True)
     if (
         not driver.is_file()
         or not guards.is_file()
         or not deadline.is_file()
         or not knowledge.is_file()
         or not evidence.is_file()
+        or not retained.is_file()
+        or not retained_proof.is_file()
         or driver.is_relative_to(forbidden)
         or guards.is_relative_to(forbidden)
         or deadline.is_relative_to(forbidden)
         or knowledge.is_relative_to(forbidden)
         or evidence.is_relative_to(forbidden)
+        or retained.is_relative_to(forbidden)
+        or retained_proof.is_relative_to(forbidden)
         or guards.parent != driver.parent
         or deadline.parent != driver.parent
         or knowledge.parent != driver.parent
         or evidence.parent != driver.parent
+        or retained.parent != driver.parent
+        or retained_proof.parent != driver.parent
     ):
         raise RuntimeError(
-            "Copy the receiver driver and its adjacent guard, deadline, knowledge and evidence modules outside checkout"
+            "Copy the receiver driver and its adjacent guard, deadline, knowledge, evidence and retained-result modules outside checkout"
         )
     return driver, guards, deadline
 
@@ -947,19 +1441,33 @@ def _runtime_cleanup_confirmed(report: dict[str, object]) -> bool:
 
 def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
     fixture = report.get("receiver_model_fixture")
+    receiver = report.get("receiver_retained_redaction")
+    retained = receiver.get("retained_execution") if isinstance(receiver, dict) else None
     return (
         report.get("browser_phase_status") == "passed"
         and report.get("receiver_phase_status") == "passed"
         and report.get("receiver_driver_started") is True
         and report.get("receiver_retained_redaction_driver_passed") is True
+        and _valid_receiver_retained_custody(
+            report.get("receiver_retained_source_custody"), retained
+        )
         and isinstance(fixture, dict)
         and type(fixture.get("request_count")) is int
-        and fixture.get("request_count") == 2
+        and fixture.get("request_count") == 4
         and fixture.get("purposes")
-        == [_RECEIVER_COMPOSITION_PURPOSE, "bluefire_receiver_evidence_composition_proposal"]
+        == [
+            _RECEIVER_COMPOSITION_PURPOSE,
+            _RECEIVER_EVIDENCE_PURPOSE,
+            _RECEIVER_RETAINED_PURPOSE,
+            _RECEIVER_RETAINED_PURPOSE,
+        ]
         and type(fixture.get("request_bytes")) is int
-        and 0 < fixture["request_bytes"] <= 524_288
+        and 0 < fixture["request_bytes"] <= 1_048_576
         and fixture.get("failed") is False
+        and type(report.get("receiver_phase_elapsed_seconds")) in (int, float)
+        and 0
+        <= report["receiver_phase_elapsed_seconds"]
+        <= (_OVERALL_WORK_BUDGET_SECONDS + _OVERALL_CLEANUP_RESERVE_SECONDS)
         and _runtime_cleanup_confirmed(report)
         and report.get("cleanup_errors") == []
     )
@@ -1083,6 +1591,8 @@ def _receiver_fixture_output_for_request(request: object) -> dict[str, object]:
     purpose = format_document.get("name") if isinstance(format_document, dict) else None
     if purpose == _RECEIVER_EVIDENCE_PURPOSE:
         return _receiver_evidence_fixture_output(supplied)
+    if purpose == _RECEIVER_RETAINED_PURPOSE:
+        return _receiver_retained_fixture_output(supplied)
     if (
         purpose != _RECEIVER_COMPOSITION_PURPOSE
         or not isinstance(supplied, dict)
@@ -1195,6 +1705,9 @@ def _receiver_evidence_fixture_output(supplied: object) -> dict[str, object]:
         for step in steps
     ):
         raise ValueError("receiver evidence fixture cannot expand current parameter domains")
+    # The installed journey selects only the filesystem collector. Its later
+    # artifact observation is historical support, while record semantics above
+    # come exclusively from the separately verified current receiver result.
     finding = next(
         (
             row
@@ -1202,21 +1715,15 @@ def _receiver_evidence_fixture_output(supplied: object) -> dict[str, object]:
             if row["step_id"] == "stage_records"
             and row["behavior_id"] == "sandbox.collection.stage.v1"
             and row["provenance"] == "observed"
-            and row["semantic_kind"] == "observed_collection"
-            and all(
-                row["summary"].get(key) == value
-                for key, value in {
-                    "record_count": 8,
-                    "retained_record_count": 8,
-                    "redacted_record_count": 0,
-                    "empty_record_count": 0,
-                }.items()
+            and row["semantic_kind"] == "observed_filesystem"
+            and _valid_receiver_artifact(
+                {key: row["summary"].get(key) for key in ("sha256", "size_bytes")}
             )
         ),
         None,
     )
     if finding is None:
-        raise ValueError("receiver evidence fixture requires an actual later collection finding")
+        raise ValueError("receiver evidence fixture requires an actual later artifact observation")
     choice = history["choices"][1]
     return {
         "schema_version": EVIDENCE_OUTPUT_VERSION,
@@ -1230,7 +1737,7 @@ def _receiver_evidence_fixture_output(supplied: object) -> dict[str, object]:
                 facts[kind]["evidence_ref"]
                 for kind in ("retained_policy", "receiver_result", "cleanup")
             ],
-            "rationale": "The saved collection observation retained all eight values. Reconsider the earlier transform, then review a fresh redacted attempt.",
+            "rationale": "The saved filesystem observation identifies the later staged artifact, without proving its record semantics. The current receiver result records eight retained values and a policy refusal. Reconsider the earlier transform, then review a fresh redacted attempt.",
         },
         "reconsideration": {
             "reconsidered_choices": [
@@ -1241,7 +1748,7 @@ def _receiver_evidence_fixture_output(supplied: object) -> dict[str, object]:
                     "finding_refs": [
                         {"finding_id": finding["finding_id"], "record_ref": finding["record_ref"]}
                     ],
-                    "reason": "The later collection finding retained eight values and the current result records a policy refusal. Reconsider the earlier unredacted transform without rewriting that failed attempt.",
+                    "reason": "The later filesystem finding records staged artifact metadata, not redaction semantics. The separately verified current receiver result records eight retained values and a policy refusal. Reconsider the earlier unredacted transform without rewriting that failed attempt.",
                 }
             ],
             "refresh_requirements": [
@@ -1252,6 +1759,108 @@ def _receiver_evidence_fixture_output(supplied: object) -> dict[str, object]:
                 for prerequisite in REFRESH_PREREQUISITES
             ],
         },
+    }
+
+
+def _receiver_retained_fixture_output(supplied: object) -> dict[str, object]:
+    """Use metadata-bound retained bytes through the reviewed materialization method."""
+    import bluefire
+    from bluefire.ai_composition_contract import EVIDENCE_MODEL_SCHEMA, RETAINED_OUTPUT_VERSION
+    from bluefire.ai_composition_evidence_data import validate_retained_model_context
+    from bluefire.contracts import load_scenario
+    from bluefire.retained_artifacts import METHOD
+    from bluefire.util import json_clone
+
+    if not isinstance(supplied, dict):
+        raise ValueError("retained receiver fixture requires a structured context")
+    validate_retained_model_context(supplied)
+    custody = supplied["retained_artifacts"]
+    projected = {
+        key: json_clone(value) for key, value in supplied.items() if key != "retained_artifacts"
+    }
+    projected["methods"] = [row for row in projected["methods"] if row["behavior_id"] != METHOD]
+    if supplied["revision"] is False:
+        if (
+            supplied["historical_context"] is not None
+            or custody["available_sources"]
+            or supplied["initial_proposal"] is None
+        ):
+            raise ValueError("initial retained fixture requires no prior source or history")
+        projected.pop("historical_context")
+        projected["schema_version"] = "bluefire.composition-model-context.v1"
+        projected["initial_proposal"]["evidence_refs"] = "[EVIDENCE CONTENT OMITTED]"
+        candidate = _receiver_fixture_output_for_request(
+            {
+                "input": json.dumps(projected),
+                "text": {"format": {"name": _RECEIVER_COMPOSITION_PURPOSE}},
+            }
+        )
+        source = load_scenario(
+            Path(bluefire.__file__).parent / "data" / "receiver_defense_validation.yaml"
+        ).to_dict()
+        if (
+            candidate["start"] != source["start"]
+            or candidate["edges"] != source["edges"]
+            or candidate["steps"]
+            != [
+                {key: row[key] for key in ("id", "behavior_id", "parameters")}
+                for row in source["steps"]
+            ]
+        ):
+            raise ValueError("initial retained fixture requires the unchanged packaged graph")
+        return {
+            "schema_version": RETAINED_OUTPUT_VERSION,
+            "candidate": candidate,
+            "reconsideration": None,
+        }
+    if (
+        supplied["initial_proposal"] is not None
+        or supplied["historical_context"] is None
+        or len(custody["available_sources"]) != 1
+    ):
+        raise ValueError("retained continuation requires one available source and selected history")
+    projected["schema_version"] = EVIDENCE_MODEL_SCHEMA
+    result = _receiver_evidence_fixture_output(projected)
+    source = custody["available_sources"][0]
+    selected = result["reconsideration"]["reconsidered_choices"][0]
+    citation = selected["finding_refs"][0]
+    finding = next(
+        row
+        for row in supplied["historical_context"]["attempts"][0]["findings"]
+        if row["finding_id"] == citation["finding_id"]
+    )
+    if (
+        source["attempt_id"] != selected["attempt_id"]
+        or source["attempt_id"] != citation["record_ref"]["attempt_id"]
+        or source["run_id"] != citation["record_ref"]["run_id"]
+        or source["step_id"] != finding["step_id"]
+        or finding["provenance"] != "observed"
+        or finding["semantic_kind"] != "observed_filesystem"
+        or finding["summary"].get("sha256", "").removeprefix("sha256:") != source["sha256"]
+        or finding["summary"].get("size_bytes") != source["size_bytes"]
+        or type(finding["summary"].get("size_bytes")) is not int
+        or finding["summary"]["size_bytes"] <= 0
+    ):
+        raise ValueError("retained source differs from the cited later filesystem finding")
+    candidate = result["candidate"]
+    old_start = candidate["start"]
+    candidate["start"] = "reuse_retained_bundle"
+    candidate["steps"][0] = {
+        "id": "reuse_retained_bundle",
+        "behavior_id": METHOD,
+        "parameters": {"source_ref": source["source_ref"]},
+    }
+    for edge in candidate["edges"]:
+        if edge["from_step"] == old_start:
+            edge["from_step"] = "reuse_retained_bundle"
+    candidate["title"] = "Reuse and redact the retained collection"
+    candidate["rationale"] = (
+        "Materialize the exact retained collection in a fresh workspace, then apply ordinary redaction before a newly reviewed handoff. Historical custody does not prove current source access."
+    )
+    return {
+        "schema_version": RETAINED_OUTPUT_VERSION,
+        "candidate": candidate,
+        "reconsideration": result["reconsideration"],
     }
 
 
@@ -1485,22 +2094,60 @@ def _fixture_request_allowed(
 
 
 def _receiver_fixture_request_allowed(request: object, **kwargs: object) -> bool:
-    from bluefire.ai_composition_contract import EVIDENCE_OUTPUT_SCHEMA, OUTPUT_SCHEMA
+    from bluefire.ai_composition_contract import (
+        EVIDENCE_OUTPUT_SCHEMA,
+        OUTPUT_SCHEMA,
+        RETAINED_OUTPUT_SCHEMA,
+    )
 
     index = kwargs.get("request_index")
     return (
         type(index) is int
-        and 0 <= index < 2
+        and 0 <= index < 4
         and _fixture_request_allowed(
             request,
-            expected_purposes=(_RECEIVER_COMPOSITION_PURPOSE, _RECEIVER_EVIDENCE_PURPOSE),
+            expected_purposes=(
+                _RECEIVER_COMPOSITION_PURPOSE,
+                _RECEIVER_EVIDENCE_PURPOSE,
+                _RECEIVER_RETAINED_PURPOSE,
+                _RECEIVER_RETAINED_PURPOSE,
+            ),
             output_tokens=1024,
             request_byte_limit=262_144,
-            total_byte_limit=524_288,
+            total_byte_limit=1_048_576,
             **kwargs,
         )
         and request["text"]["format"]["schema"]
-        == (OUTPUT_SCHEMA if index == 0 else EVIDENCE_OUTPUT_SCHEMA)
+        == (
+            OUTPUT_SCHEMA
+            if index == 0
+            else EVIDENCE_OUTPUT_SCHEMA if index == 1 else RETAINED_OUTPUT_SCHEMA
+        )
+        and (index < 2 or _receiver_retained_fixture_phase(request, revision=index == 3))
+    )
+
+
+def _receiver_retained_fixture_phase(request: object, *, revision: bool) -> bool:
+    from bluefire.ai_composition_contract import RETAINED_MODEL_SCHEMA
+
+    try:
+        supplied = json.loads(request["input"])
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(supplied, dict)
+        and supplied.get("schema_version") == RETAINED_MODEL_SCHEMA
+        and supplied.get("revision") is revision
+        and (
+            isinstance(supplied.get("historical_context"), dict)
+            if revision
+            else supplied.get("historical_context") is None
+        )
+        and (
+            supplied.get("initial_proposal") is None
+            if revision
+            else isinstance(supplied.get("initial_proposal"), dict)
+        )
     )
 
 
@@ -1560,9 +2207,9 @@ class LocalGraphFixture:
                 length = int(raw_length)
                 with fixture.lock:
                     if fixture.post_count >= (
-                        2 if fixture.receiver_composition else 5
+                        4 if fixture.receiver_composition else 5
                     ) or fixture.post_bytes + length > (
-                        524_288 if fixture.receiver_composition else 2_097_152
+                        1_048_576 if fixture.receiver_composition else 2_097_152
                     ):
                         fixture.failed = True
                         self._send(429, {"error": "fixture_budget_exceeded"})
@@ -1788,7 +2435,7 @@ def _receiver_child_exit_diagnostic(
     # Only a shipped source basename and bounded line may leave the raw child pipe.
     source = re.search(
         rb"(?m)^[ \t]+at [^\r\n]*[/\\]"
-        rb"(installed-receiver\.mjs|receiver-(?:guards|deadline|diagnostics|knowledge|evidence-proposal)\.mjs)"
+        rb"(installed-receiver\.mjs|receiver-(?:guards|deadline|diagnostics|knowledge|evidence-proposal|retained|retained-proof)\.mjs)"
         rb":([1-9][0-9]{0,3})(?::[0-9]{1,5})?(?:[)\r\n]|$)",
         prefix,
     )
@@ -1819,10 +2466,12 @@ def _run_receiver_phase(
     cleanup_errors: list[str],
 ) -> None:
     """Run the independent receiver driver with phase-owned state and limits."""
-    timeout = _phase_timeout(work_deadline, 360)
+    phase_started = time.monotonic()
+    timeout = _phase_timeout(work_deadline, 540)
     if timeout is None:
         report["receiver_phase_status"] = "not_attempted"
         report["receiver_phase_reason"] = "outer_work_deadline_reached"
+        report["receiver_phase_elapsed_seconds"] = round(time.monotonic() - phase_started, 3)
         return
 
     receiver_root = runtime / "receiver"
@@ -1884,7 +2533,7 @@ def _run_receiver_phase(
         receiver_fixture.start()
         report["receiver_fixture_thread_stopped"] = False
         report["receiver_fixture_http_server_closed"] = False
-        timeout = _phase_timeout(work_deadline, 360)
+        timeout = _phase_timeout(work_deadline, 540)
         if timeout is None:
             report["receiver_phase_status"] = "not_attempted"
             report["receiver_phase_reason"] = "outer_work_deadline_reached"
@@ -1916,7 +2565,7 @@ def _run_receiver_phase(
         except Exception:
             receiver_stderr_thread = None
             raise
-        timeout = _phase_timeout(work_deadline, 360)
+        timeout = _phase_timeout(work_deadline, 540)
         try:
             os.write(
                 receiver_child.stdin.fileno(),
@@ -1955,6 +2604,7 @@ def _run_receiver_phase(
             and driver_cleanup.get("linked_owner_completed_retained") is True
             and driver_cleanup.get("runner_stopped") is True
             and driver_cleanup.get("composition_grant_revoked") is True
+            and driver_cleanup.get("retained_grant_revoked") is True
             and driver_cleanup.get("model_authorization_revoked") is True
             and receiver_driver_report.get("owner_status") == "completed"
         )
@@ -1967,15 +2617,37 @@ def _run_receiver_phase(
             "evidence_proposal_helper_sha256": digest(
                 driver.with_name("receiver-evidence-proposal.mjs")
             ),
+            "retained_helper_sha256": digest(driver.with_name("receiver-retained.mjs")),
+            "retained_proof_helper_sha256": digest(driver.with_name("receiver-retained-proof.mjs")),
             "browser_returncode": receiver_child.returncode,
         }
+        driver_passed = receiver_child.returncode == 0 and _receiver_driver_passed(
+            receiver_driver_report
+        )
+        report["receiver_retained_source_custody"] = (
+            _verify_receiver_retained_custody(receiver_service, receiver_driver_report)
+            if driver_passed
+            else {
+                "schema_version": "bluefire.installed-retained-source-custody.v1",
+                "status": "unknown",
+                "reason": "driver_proof_not_qualified",
+            }
+        )
         report["receiver_retained_redaction_driver_passed"] = (
-            receiver_child.returncode == 0
-            and _receiver_driver_passed(receiver_driver_report)
-            and report["receiver_model_fixture"]["request_count"] == 2
+            driver_passed
+            and _valid_receiver_retained_custody(
+                report["receiver_retained_source_custody"],
+                receiver_driver_report.get("retained_execution"),
+            )
+            and report["receiver_model_fixture"]["request_count"] == 4
             and report["receiver_model_fixture"]["purposes"]
-            == [_RECEIVER_COMPOSITION_PURPOSE, "bluefire_receiver_evidence_composition_proposal"]
-            and 0 < report["receiver_model_fixture"]["request_bytes"] <= 524_288
+            == [
+                _RECEIVER_COMPOSITION_PURPOSE,
+                _RECEIVER_EVIDENCE_PURPOSE,
+                _RECEIVER_RETAINED_PURPOSE,
+                _RECEIVER_RETAINED_PURPOSE,
+            ]
+            and 0 < report["receiver_model_fixture"]["request_bytes"] <= 1_048_576
             and report["receiver_model_fixture"]["failed"] is False
         )
         report["receiver_phase_status"] = (
@@ -2055,6 +2727,7 @@ def _run_receiver_phase(
             os.environ.update(prior_environment)
         except Exception:
             cleanup_errors.append("receiver_environment_restore")
+        report["receiver_phase_elapsed_seconds"] = round(time.monotonic() - phase_started, 3)
 
 
 def main() -> int:
@@ -2172,6 +2845,16 @@ def main() -> int:
             "receiver_evidence_proposal_sha256": (
                 digest(receiver_driver.with_name("receiver-evidence-proposal.mjs"))
                 if receiver_driver is not None
+                else None
+            ),
+            "receiver_retained_sha256": (
+                digest(receiver_driver.with_name("receiver-retained.mjs"))
+                if receiver_driver
+                else None
+            ),
+            "receiver_retained_proof_sha256": (
+                digest(receiver_driver.with_name("receiver-retained-proof.mjs"))
+                if receiver_driver
                 else None
             ),
             "environment_names": sorted(environment),

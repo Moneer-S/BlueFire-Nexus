@@ -18,6 +18,7 @@ from .ai_composition_contract import (
 )
 from .ai_composition_contract import OUTPUT_SCHEMA as OUTPUT_SCHEMA
 from .ai_composition_contract import PURPOSE as PURPOSE
+from .ai_composition_evidence_data import validate_candidate as validate_candidate_contract
 from .ai_composition_evidence_data import validate_model_context as validate_evidence_model_context
 from .ai_composition_evidence_data import validate_retained_model_context
 from .ai_wire import (
@@ -30,7 +31,6 @@ from .ai_wire import (
     structured_request,
 )
 from .application_errors import APIError
-from .capability_composition import _step_id, parse_proposal
 from .capability_grant import authority_id, digest, identifier
 from .capability_packs import (
     FILE_ACCESS_PACK,
@@ -112,8 +112,14 @@ _RETAINED_INSTRUCTIONS = _RECEIVER_INSTRUCTIONS.replace(
     " This pack may reuse a validated sealed generated JSONL result through the supplied "
     "materialize-retained method with exactly one available source_ref. A source summary proves "
     "sealed byte custody only; it does not establish current producer access or receiver acceptance. "
-    "Materialization produces a fresh owned bundle and receipt usable by normal downstream nodes. "
+    "Materialization writes exact retained JSONL to the fixed reviewed input fixture with a fresh "
+    "workspace receipt. Use the existing transform, discovery and staging methods before handoff; "
+    "the materialization node cannot directly feed receiver handoff. The source may contain retained "
+    "values: do not assume it is already redacted or that any receiver previously accepted it. "
     "An initial proposal with no available sources is legitimate and must use normal generation. "
+    "When a later context has no available source bytes, an explicit fresh-generation proposal may "
+    "continue the same objective from its supplied prior attempt and findings. Do not reuse an "
+    "unavailable source_ref or silently retry or replace an invalid import. "
     "Never invent a source_ref, payload, path, source availability or receiver decision. "
     "Citing a historical finding to explain a failed route is distinct from using actual retained "
     "bytes: byte reuse requires a materialize-retained node with an available exact source_ref. "
@@ -309,52 +315,24 @@ def propose(*, config, access, context, cancel):
 
 
 def validate_candidate(value, context):
-    candidate = parse_proposal(value)
-    methods = {row["behavior_id"]: row for row in context["snapshot"]["methods"]}
-    allowed = {row["fact_id"] for row in context["facts"]["facts"]}
-    if set(candidate["evidence_refs"]) - allowed:
-        raise CapabilityContractError("unavailable evidence references")
-    for step in candidate["steps"]:
-        fields = {"id", "behavior_id", "parameters"}
-        if isinstance(step, Mapping) and "inputs" in step:
-            fields.add("inputs")
-        exact(step, fields, "model graph step")
-        if not isinstance(step["behavior_id"], str) or step["behavior_id"] not in methods:
-            raise CapabilityContractError("model graph selected an unavailable method")
-        domains = methods[step["behavior_id"]]["parameter_domains"]
-        exact(step["parameters"], set(domains), "model method parameters")
-        from .retained_artifacts import METHOD
-
-        if (
-            step["behavior_id"] == METHOD
-            and context["snapshot"].get("pack") == RECEIVER_RETAINED_PACK
-        ):
-            refs = {row["source_ref"] for row in context["retained_artifacts"]["available_sources"]}
-            if (
-                domains != {"source_ref": {"kind": "sealed_same_lineage_generated_jsonl"}}
-                or step["parameters"]["source_ref"] not in refs
-            ):
-                raise CapabilityContractError("model graph selected an unavailable retained source")
-        elif any(
-            not any(
-                content_hash(step["parameters"][key]) == content_hash(value) for value in values
-            )
-            for key, values in domains.items()
-        ):
-            raise CapabilityContractError("model graph expanded the exact parameter domains")
-        if "inputs" in step:
-            refs = step["inputs"]
-            ports = {item["name"] for item in methods[step["behavior_id"]]["behavior"]["inputs"]}
-            if not isinstance(refs, Mapping) or set(refs) - ports:
-                raise CapabilityContractError("model graph selected an unavailable input port")
-            for ref in refs.values():
-                exact(ref, {"from_step", "artifact"}, "model graph input reference")
-                _step_id(ref["from_step"])
-                if not isinstance(ref["artifact"], str):
-                    raise CapabilityContractError("model graph artifact name is invalid")
-    for edge in candidate["edges"]:
-        exact(edge, {"from_step", "outcome", "to_step"}, "model graph edge")
-    return candidate
+    snapshot = context["snapshot"]
+    return validate_candidate_contract(
+        value,
+        pack=snapshot["pack"],
+        parameter_domains={
+            row["behavior_id"]: row["parameter_domains"] for row in snapshot["methods"]
+        },
+        input_ports={
+            row["behavior_id"]: {port["name"] for port in row["behavior"]["inputs"]}
+            for row in snapshot["methods"]
+        },
+        evidence_refs={row["fact_id"] for row in context["facts"]["facts"]},
+        retained_source_refs=(
+            [row["source_ref"] for row in context["retained_artifacts"]["available_sources"]]
+            if snapshot["pack"] == RECEIVER_RETAINED_PACK
+            else ()
+        ),
+    )
 
 
 class CompositionAIJobs:
@@ -401,7 +379,7 @@ class CompositionAIJobs:
             )
         return {**current, "context_digest": context_digest(current)}
 
-    def requested_context(self, owner_id, request, *, submission=False):
+    def requested_context(self, owner_id, request, *, submission=False) -> dict[str, Any]:
         selected = None
         if isinstance(request, Mapping) and "schema_version" in request:
             selected = evidence_context.selection(request, submission=submission)

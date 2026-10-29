@@ -645,3 +645,22 @@ items:
     mutates: false
     cleanup_action_id: null
     provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.collection.materialize-retained.v1
+    title: Reuse a retained generated collection
+    purpose: Publish exact sealed generated JSONL as input for ordinary reviewed transformations in a fresh receipt-owned attempt.
+    safety_tier: controlled
+    capabilities: [sandbox.collection, filesystem.write]
+    platforms: [linux]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    parameters:
+      - name: source_ref
+        type: string
+        description: Exact sealed same-objective source reference resolved by the server.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored

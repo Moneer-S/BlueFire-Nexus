@@ -25,6 +25,7 @@ BUILTIN_RUNNER_ACTION_VERSIONS: Mapping[str, str] = MappingProxyType(
         "file_access.verify.owner.v1": "1.0.0",
         "sandbox.archive.tar.v1": "1.0.0",
         "sandbox.cleanup.v1": "1.1.0",
+        "sandbox.collection.materialize-retained.v1": "1.0.0",
         "sandbox.collection.stage.v1": "2.0.0",
         "sandbox.collection.records.v1": "1.0.0",
         "sandbox.collection.archive.v1": "1.0.0",
