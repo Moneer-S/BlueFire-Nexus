@@ -319,6 +319,58 @@ def _valid_receiver_artifact(value: object) -> bool:
     )
 
 
+def _valid_receiver_knowledge(value: object, composition: dict) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version",
+        "owner_id",
+        "attempt_id",
+        "job_id",
+        "run_id",
+        "knowledge_digest",
+        "source_binding_digest",
+        "manifest_digest",
+        "evidence_digest",
+        "findings_count",
+        "observed_findings_count",
+        "source_status",
+        "historical_only",
+        "source_matches_run",
+        "objective_established",
+        "opened_through_ui",
+        "rendered_findings",
+        "unchanged_attempts",
+    }:
+        return False
+    return (
+        value["schema_version"] == "bluefire.installed-composition-knowledge.v1"
+        and value["owner_id"] == composition.get("objective_owner_job_id")
+        and value["attempt_id"] == composition.get("attempt_id")
+        and value["job_id"] == composition.get("attempt_job_id")
+        and value["run_id"] == composition.get("run_id")
+        and all(
+            isinstance(value[name], str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", value[name]) is not None
+            for name in (
+                "knowledge_digest",
+                "source_binding_digest",
+                "manifest_digest",
+                "evidence_digest",
+            )
+        )
+        and type(value["findings_count"]) is int
+        and 1 <= value["findings_count"] <= 32
+        and type(value["observed_findings_count"]) is int
+        and 1 <= value["observed_findings_count"] <= value["findings_count"]
+        and value["source_status"] == "verified"
+        and value["historical_only"] is True
+        and value["source_matches_run"] is True
+        and value["objective_established"] is False
+        and value["opened_through_ui"] is True
+        and value["rendered_findings"] is True
+        and value["unchanged_attempts"] is True
+    )
+
+
 def _valid_receiver_composition(value: object) -> bool:
     if not isinstance(value, dict):
         return False
@@ -327,14 +379,22 @@ def _valid_receiver_composition(value: object) -> bool:
     checks = value.get("checks")
     cleanup = value.get("cleanup")
     evidence = value.get("phase_evidence")
-    if not all(isinstance(item, dict) for item in (composition, counts, cleanup)):
+    if (
+        not isinstance(composition, dict)
+        or not isinstance(counts, dict)
+        or not isinstance(cleanup, dict)
+    ):
         return False
     if not isinstance(checks, list) or not isinstance(evidence, list):
         return False
     comparison = composition.get("comparison")
     proposal = composition.get("model_proposal")
     result_cleanup = composition.get("cleanup")
-    if not all(isinstance(item, dict) for item in (comparison, proposal, result_cleanup)):
+    if (
+        not isinstance(comparison, dict)
+        or not isinstance(proposal, dict)
+        or not isinstance(result_cleanup, dict)
+    ):
         return False
     return (
         set(composition)
@@ -360,8 +420,10 @@ def _valid_receiver_composition(value: object) -> bool:
             "graph_objective_reached",
             "model_proposal",
             "comparison",
+            "knowledge",
         }
         and composition["control_owner_job_id"] == value.get("original_owner_job_id")
+        and _valid_receiver_knowledge(composition["knowledge"], composition)
         and isinstance(composition["objective_owner_job_id"], str)
         and re.fullmatch(r"job-[0-9a-f]{32}", composition["objective_owner_job_id"]) is not None
         and isinstance(composition["grant_id"], str)
@@ -452,6 +514,7 @@ def _valid_receiver_composition(value: object) -> bool:
         and "composed_attempt_grant_revoked_after_verified_cleanup" in checks
         and "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result"
         in checks
+        and "failed_objective_findings_opened_from_verified_run_without_new_attempt" in checks
         and type(counts.get("composition_list")) is int
         and 1 <= counts["composition_list"] <= 6
         and all(
@@ -461,6 +524,7 @@ def _valid_receiver_composition(value: object) -> bool:
                 "composition_grant",
                 "composition_proposal",
                 "composition_attempt",
+                "composition_knowledge",
                 "composition_revoke",
                 "comparison",
                 "provider_save",
@@ -669,18 +733,22 @@ def _resolve_receiver_driver(
     driver = driver_argument.resolve(strict=True)
     guards = driver.with_name("receiver-guards.mjs").resolve(strict=True)
     deadline = driver.with_name("receiver-deadline.mjs").resolve(strict=True)
+    knowledge = driver.with_name("receiver-knowledge.mjs").resolve(strict=True)
     if (
         not driver.is_file()
         or not guards.is_file()
         or not deadline.is_file()
+        or not knowledge.is_file()
         or driver.is_relative_to(forbidden)
         or guards.is_relative_to(forbidden)
         or deadline.is_relative_to(forbidden)
+        or knowledge.is_relative_to(forbidden)
         or guards.parent != driver.parent
         or deadline.parent != driver.parent
+        or knowledge.parent != driver.parent
     ):
         raise RuntimeError(
-            "Copy the receiver driver and its adjacent guard and deadline modules outside checkout"
+            "Copy the receiver driver and its adjacent guard, deadline and knowledge modules outside checkout"
         )
     return driver, guards, deadline
 
@@ -1672,6 +1740,7 @@ def _run_receiver_phase(
             "driver_sha256": digest(driver),
             "guard_sha256": digest(guards),
             "deadline_sha256": digest(deadline_file),
+            "knowledge_helper_sha256": digest(driver.with_name("receiver-knowledge.mjs")),
             "browser_returncode": receiver_child.returncode,
         }
         report["receiver_retained_redaction_driver_passed"] = (
@@ -1868,6 +1937,11 @@ def main() -> int:
             "assistant_driver_sha256": digest(assistant_driver) if assistant_driver else None,
             "receiver_driver_sha256": digest(receiver_driver) if receiver_driver else None,
             "receiver_guard_sha256": digest(receiver_guards) if receiver_guards else None,
+            "receiver_knowledge_sha256": (
+                digest(receiver_driver.with_name("receiver-knowledge.mjs"))
+                if receiver_driver
+                else None
+            ),
             "environment_names": sorted(environment),
             "not_proven": [
                 "CLI launch",

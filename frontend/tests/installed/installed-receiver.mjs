@@ -28,6 +28,7 @@ import {
   sameJson as same,
 } from "./receiver-guards.mjs";
 import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
+import { inspectReceiverKnowledge, receiverKnowledgeRequestAllowed } from "./receiver-knowledge.mjs";
 import { receiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
 import {
   receiverPreparationDiagnostic,
@@ -89,6 +90,7 @@ const ROUTE_LIMITS = {
   composition_proposal_context: 3,
   composition_proposal: 1,
   composition_attempt: 1,
+  composition_knowledge: 1,
   composition_revoke: 2,
   comparison: 1,
   provider_save: 1,
@@ -568,6 +570,11 @@ function authorizePost(url, body) {
   }
   if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/revoke`) {
     return count("composition_revoke") && exactKeys(body, []);
+  }
+  if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/knowledge`) {
+    return receiverKnowledgeRequestAllowed(url, body, { origin: ORIGIN, ownerId: compositionOwnerId,
+      attemptId: report.composition?.attempt_id, settlement: report.composition?.settlement,
+      objectiveEstablished: report.composition?.objective_established }) && count("composition_knowledge");
   }
   if (path === "/api/v1/comparisons") {
     const ok = count("comparison") && compositionAttemptJobId && exactKeys(body, ["run_ids"])
@@ -1765,6 +1772,24 @@ try {
     model_proposal: modelProposalProof,
   };
   report.checks.push("finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false");
+  stage = "composition-historical-findings";
+  report.composition.knowledge = await inspectReceiverKnowledge(page, {
+    origin: ORIGIN, ownerId: compositionOwnerId, attempt: composedAttempt,
+    run: finalizedComposedRun, sourceBinding: verified.source_binding,
+    readObjective: () => appApi(`/composition/objectives/${compositionOwnerId}`),
+    capture: async panel => {
+      assert.ok(connected, "Never capture connection credentials");
+      const viewport = { width: 1440, height: 900 };
+      await page.setViewportSize(viewport);
+      await panel.getByRole("heading", { name: "Findings across attempts", exact: true }).scrollIntoViewIfNeeded();
+      await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+      const image = await page.screenshot({ fullPage: false, animations: "disabled", mask: [page.locator('input[type="password"]')] });
+      const name = "receiver-historical-findings-1440x900";
+      writeFileSync(join(output, `${name}.png`), image, { flag: "wx", mode: 0o600 });
+      report.screenshots.push({ name, sha256: createHash("sha256").update(image).digest("hex"), viewport, layout_verified: false });
+    },
+  });
+  report.checks.push("failed_objective_findings_opened_from_verified_run_without_new_attempt");
   stage = "composition-revoke";
   const revokeResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/composition/objectives/${compositionOwnerId}/revoke`
     && response.request().method() === "POST");
@@ -2092,7 +2117,7 @@ try {
   assert.equal(counts.approval, 5);
   assert.equal(counts.cancel, 0);
   assert.ok(counts.composition_list >= 1 && counts.composition_list <= ROUTE_LIMITS.composition_list);
-  for (const name of ["composition_context", "composition_grant", "composition_proposal", "composition_attempt", "composition_revoke", "comparison", "provider_save", "provider_activate", "model_authorization", "model_authorization_revoke"]) {
+  for (const name of ["composition_context", "composition_grant", "composition_proposal", "composition_attempt", "composition_knowledge", "composition_revoke", "comparison", "provider_save", "provider_activate", "model_authorization", "model_authorization_revoke"]) {
     assert.equal(counts[name], 1);
   }
   assert.ok(counts.composition_proposal_context >= 2 && counts.composition_proposal_context <= ROUTE_LIMITS.composition_proposal_context);

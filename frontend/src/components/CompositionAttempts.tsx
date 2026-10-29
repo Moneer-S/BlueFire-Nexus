@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { compositionPack, compositionRecord, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, type CompositionObjective } from "../lib/composition";
 import { Badge, Callout, DataList, sentence } from "./Primitives";
 import { FileAccessRetestComparison } from "./FileAccessRetestComparison";
+import { CompositionKnowledge } from "./CompositionKnowledge";
 
 export function CompositionAttempts({ objective, selectedAttemptRef }: { objective: CompositionObjective; selectedAttemptRef?: Ref<HTMLLIElement> }) {
   const [params] = useSearchParams();
@@ -18,6 +19,7 @@ export function CompositionAttempts({ objective, selectedAttemptRef }: { objecti
     return `/composition?${next}`;
   };
   return <section className="composition-section" aria-label="Attempt evidence"><h2>Attempts</h2>
+    {objective.attempts.length ? <CompositionKnowledge objective={objective} /> : null}
     {fileAccess && !macOS && selectedAttempt && !objective.attempts.some(attempt => attempt.request.composition_attempt.attempt_id === selectedAttempt)
       ? <Callout title="This attempt is not part of the selected objective">Choose a recorded attempt below to open its comparison.</Callout> : null}
     {!objective.attempts.length ? <p>No attempt has been dispatched.</p> : <ol className="composition-attempts">{objective.attempts.map((attempt, index) => {

@@ -110,6 +110,7 @@ def receiver_report() -> dict[str, object]:
             "composed_attempt_grant_revoked_after_verified_cleanup",
             "receiver_composition_model_authorization_revoked_after_one_proposal",
             "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result",
+            "failed_objective_findings_opened_from_verified_run_without_new_attempt",
         ],
         "blocked_requests": [],
         "errors": [],
@@ -135,6 +136,7 @@ def receiver_report() -> dict[str, object]:
             "composition_proposal_context": 2,
             "composition_proposal": 1,
             "composition_attempt": 1,
+            "composition_knowledge": 1,
             "composition_revoke": 1,
             "comparison": 1,
             "provider_save": 1,
@@ -187,6 +189,26 @@ def receiver_report() -> dict[str, object]:
             "objective_established": False,
             "finalized_run_objective_reached": False,
             "graph_objective_reached": False,
+            "knowledge": {
+                "schema_version": "bluefire.installed-composition-knowledge.v1",
+                "owner_id": "job-33333333333333333333333333333333",
+                "attempt_id": "attempt-44444444444444444444444444444444",
+                "job_id": "job-44444444444444444444444444444444",
+                "run_id": "run-20261021T120007Z-2222222222222222",
+                "knowledge_digest": "sha256:" + "d" * 64,
+                "source_binding_digest": "sha256:" + "e" * 64,
+                "manifest_digest": "sha256:" + "f" * 64,
+                "evidence_digest": "sha256:" + "a" * 64,
+                "findings_count": 12,
+                "observed_findings_count": 3,
+                "source_status": "verified",
+                "historical_only": True,
+                "source_matches_run": True,
+                "objective_established": False,
+                "opened_through_ui": True,
+                "rendered_findings": True,
+                "unchanged_attempts": True,
+            },
             "model_proposal": {
                 "job_id": "job-55555555555555555555555555555555",
                 "proposal_digest": "sha256:" + "6" * 64,
@@ -693,6 +715,49 @@ def test_receiver_composition_list_bound_matches_installed_driver_limit() -> Non
         assert not _receiver_driver_passed(changed), invalid_count
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("owner_id", "job-" + "f" * 32),
+        ("attempt_id", "attempt-" + "f" * 32),
+        ("job_id", "job-" + "f" * 32),
+        ("run_id", "run-other"),
+        ("source_status", "unavailable"),
+        ("historical_only", False),
+        ("source_matches_run", False),
+        ("objective_established", True),
+        ("opened_through_ui", False),
+        ("rendered_findings", False),
+        ("unchanged_attempts", False),
+        ("findings_count", 0),
+        ("findings_count", 33),
+        ("findings_count", True),
+        ("observed_findings_count", 0),
+        ("observed_findings_count", 13),
+        ("knowledge_digest", "sha256:invalid"),
+    ],
+)
+def test_receiver_knowledge_proof_requires_actual_historical_source(field, value) -> None:
+    from tools.verify_installed_browser import _valid_receiver_composition
+
+    report = receiver_report()
+    assert _valid_receiver_composition(report)
+    report["composition"]["knowledge"][field] = value
+    assert not _valid_receiver_composition(report)
+
+
+def test_receiver_requires_exactly_one_explicit_knowledge_inspection() -> None:
+    from tools.verify_installed_browser import _valid_receiver_composition
+
+    for count in (0, 2, True):
+        report = receiver_report()
+        report["request_counts"]["composition_knowledge"] = count
+        assert not _valid_receiver_composition(report)
+    report = receiver_report()
+    del report["composition"]["knowledge"]
+    assert not _valid_receiver_composition(report)
+
+
 def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
     report = receiver_report()
     for row in report["phase_evidence"]:
@@ -764,9 +829,11 @@ def test_receiver_driver_paths_require_copied_driver_and_adjacent_modules(
     driver = copied / "installed-receiver.mjs"
     guard = copied / "receiver-guards.mjs"
     deadline = copied / "receiver-deadline.mjs"
+    knowledge = copied / "receiver-knowledge.mjs"
     driver.write_text("// pinned browser driver\n", encoding="utf-8")
     guard.write_text("// pinned request contract\n", encoding="utf-8")
     deadline.write_text("// pinned driver deadline\n", encoding="utf-8")
+    knowledge.write_text("// historical findings proof\n", encoding="utf-8")
     assert _resolve_receiver_driver(driver, checkout) == (
         driver.resolve(),
         guard.resolve(),
@@ -777,6 +844,7 @@ def test_receiver_driver_paths_require_copied_driver_and_adjacent_modules(
     in_checkout_driver.write_text("// not an external copy\n", encoding="utf-8")
     (checkout / guard.name).write_text("// guard\n", encoding="utf-8")
     (checkout / deadline.name).write_text("// deadline\n", encoding="utf-8")
+    (checkout / knowledge.name).write_text("// knowledge\n", encoding="utf-8")
     with pytest.raises(RuntimeError):
         _resolve_receiver_driver(in_checkout_driver, checkout)
 
@@ -793,6 +861,15 @@ def test_missing_receiver_deadline_fails_before_launch(tmp_path: Path) -> None:
     driver = tmp_path / "installed-receiver.mjs"
     driver.write_text("// driver\n", encoding="utf-8")
     (tmp_path / "receiver-guards.mjs").write_text("// guard\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        _resolve_receiver_driver(driver, tmp_path / "checkout")
+
+
+def test_missing_receiver_knowledge_helper_fails_before_launch(tmp_path: Path) -> None:
+    driver = tmp_path / "installed-receiver.mjs"
+    driver.write_text("// driver\n", encoding="utf-8")
+    (tmp_path / "receiver-guards.mjs").write_text("// guard\n", encoding="utf-8")
+    (tmp_path / "receiver-deadline.mjs").write_text("// deadline\n", encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         _resolve_receiver_driver(driver, tmp_path / "checkout")
 

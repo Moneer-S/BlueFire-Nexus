@@ -2725,6 +2725,13 @@ class BlueFireService(
     def composition_objective(self, owner_id: str) -> Mapping[str, Any]:
         return dict(self.composition.read(owner_id))
 
+    def composition_knowledge(
+        self, owner_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        from .composition_knowledge import build_knowledge
+
+        return build_knowledge(self.composition, owner_id, request)
+
     def file_access_composed_retest_linkage(
         self, owner_id: str, attempt_id: str
     ) -> Mapping[str, Any]:
