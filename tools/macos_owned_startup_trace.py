@@ -409,6 +409,7 @@ def _trace_projection(
         return result
     events: list[dict[str, Any]] = []
     frames: list[dict[str, str]] = []
+    stack_shape: dict[str, Any] = {}
     markers = []
     in_stack = False
     for line in lines:
@@ -417,20 +418,57 @@ def _trace_projection(
                 break
             in_stack = True
             frames = []
+            stack_shape = {
+                "scope": "first_8_nonblank_lines_not_unwind_completeness",
+                "nonblank_lines": 0,
+                "count_capped": False,
+                "classes": {
+                    "allowlisted_symbol": 0,
+                    "nonallowlisted_symbol": 0,
+                    "module_address": 0,
+                    "bare_address": 0,
+                    "unrecognized": 0,
+                },
+            }
         elif line == "BFTRACE_STACK_END":
             if not in_stack:
                 break
             in_stack = False
+            events[-1]["stack_shape"] = stack_shape
             events[-1]["system_caller_frames"] = frames
             events[-1]["caller_stack_status"] = (
                 "symbolized_system_frames_observed" if frames else "unproven"
             )
         elif in_stack:
+            if line.startswith("BFTRACE_"):
+                # Protocol records cannot be silently consumed as frame text.
+                break
             # Never export addresses, image paths, generated pin names, or
             # arbitrary native symbols. Unknown frames only lower usefulness.
             match = re.fullmatch(
                 r"\s*([^`\s]+)`([A-Za-z_][A-Za-z0-9_.$:<>-]{0,120})(?:\+0x[0-9a-fA-F]+)?\s*", line
             )
+            if line.strip():
+                # Apple dt_print_ustack also prints module`0x... and 0x...
+                # fallbacks. Count formats, never addresses or unknown names.
+                # A closed text block does not prove a complete user unwind.
+                if stack_shape["nonblank_lines"] == 8:
+                    stack_shape["count_capped"] = True
+                else:
+                    if match:
+                        kind = (
+                            "allowlisted_symbol"
+                            if match[1] in _TRACE_SYSTEM_IMAGES
+                            else "nonallowlisted_symbol"
+                        )
+                    elif re.fullmatch(r"\s*[^`\s]+`0x[0-9a-fA-F]{1,16}\s*", line):
+                        kind = "module_address"
+                    elif re.fullmatch(r"\s*0x[0-9a-fA-F]{1,16}\s*", line):
+                        kind = "bare_address"
+                    else:
+                        kind = "unrecognized"
+                    stack_shape["nonblank_lines"] += 1
+                    stack_shape["classes"][kind] += 1
             if match and match[1] in _TRACE_SYSTEM_IMAGES:
                 frame = {"image": match[1], "symbol": match[2]}
                 if frame not in frames and len(frames) < 16:

@@ -60,9 +60,153 @@ def test_positive_owned_activity_retains_only_allowlisted_frames_per_socket():
         {"image": "libsystem_kernel.dylib", "symbol": "__socket"},
         {"image": "dyld", "symbol": "socket_syslogv"},
     ]
+    assert projected["events"][0]["stack_shape"] == {
+        "scope": "first_8_nonblank_lines_not_unwind_completeness",
+        "nonblank_lines": 5,
+        "count_capped": False,
+        "classes": {
+            "allowlisted_symbol": 2,
+            "nonallowlisted_symbol": 2,
+            "module_address": 0,
+            "bare_address": 1,
+            "unrecognized": 0,
+        },
+    }
     serialized = json.dumps(projected)
     for forbidden in ("/private", "credential", "abcdef", "private_symbol", "0x"):
         assert forbidden not in serialized
+
+
+@pytest.mark.parametrize(
+    "stack,kind",
+    [
+        ("", None),
+        ("\n  \t\n", None),
+        ("  libsystem_kernel.dylib`__socket+0x8\n", "allowlisted_symbol"),
+        ("  dyld`socket_syslogv\n", "allowlisted_symbol"),
+        ("  libsystem_kernel.dylib`0x123456789abcdef0\n", "module_address"),
+        ("  /private/withheld.dylib`0x123456789abcdef0\n", "module_address"),
+        ("  0x123456789abcdef0\n", "bare_address"),
+        ("  other.dylib`withheld_symbol+0x10\n", "nonallowlisted_symbol"),
+        ("  dyld`withheld symbol outside grammar+0x10\n", "unrecognized"),
+        ("  0x123456789abcdef01\n", "unrecognized"),
+        ("  private diagnostic text\n", "unrecognized"),
+    ],
+    ids=[
+        "empty",
+        "blank-formatting",
+        "symbol-offset",
+        "symbol-no-offset",
+        "module-address",
+        "withheld-module-address",
+        "bare-address",
+        "unapproved-image",
+        "unsupported-symbol",
+        "oversized-address",
+        "unknown-text",
+    ],
+)
+def test_stack_formats_are_counted_without_claiming_caller_or_complete_unwind(stack, kind):
+    result = trace_support._trace_projection(_complete_trace(stack), impaired=False)
+    event = result["events"][0]
+    shape = event["stack_shape"]
+    assert shape["nonblank_lines"] == (0 if kind is None else 1)
+    assert shape["count_capped"] is False
+    assert shape["scope"] == "first_8_nonblank_lines_not_unwind_completeness"
+    assert sum(shape["classes"].values()) == shape["nonblank_lines"]
+    if kind is not None:
+        assert shape["classes"][kind] == 1
+    if kind != "allowlisted_symbol":
+        assert event["system_caller_frames"] == []
+        assert event["caller_stack_status"] == "unproven"
+    assert result["creator_attribution"] == "inconclusive"
+    assert result["absence_interpretation"] == "none"
+    assert result["descriptor_authority"] == "none"
+    for forbidden in ("withheld", "/private", "other.dylib", "0x", "diagnostic text"):
+        assert forbidden not in json.dumps(result)
+
+
+def test_stack_shape_counts_duplicate_frames_before_existing_symbol_deduplication():
+    result = trace_support._trace_projection(
+        _complete_trace("  dyld`socket_syslogv\n" * 2), impaired=False
+    )
+    event = result["events"][0]
+    assert event["stack_shape"]["nonblank_lines"] == 2
+    assert event["stack_shape"]["classes"]["allowlisted_symbol"] == 2
+    assert event["system_caller_frames"] == [{"image": "dyld", "symbol": "socket_syslogv"}]
+    assert result["creator_attribution"] == "inconclusive"
+
+
+@pytest.mark.parametrize("extra_lines", [0, 2, 100])
+def test_stack_shape_counts_only_first_eight_nonblank_lines_and_signals_projection_cap(
+    extra_lines,
+):
+    stack = ("\n  0x123456789abcdef0\n" * 8) + ("private.dylib`withheld_symbol\n" * extra_lines)
+    result = trace_support._trace_projection(_complete_trace(stack), impaired=False)
+    event = result["events"][0]
+    shape = event["stack_shape"]
+    assert shape["nonblank_lines"] == 8
+    assert shape["count_capped"] is (extra_lines > 0)
+    assert shape["classes"]["bare_address"] == 8
+    assert shape["classes"]["nonallowlisted_symbol"] == 0
+    assert sum(shape["classes"].values()) == 8
+    assert event["caller_stack_status"] == "unproven"
+    assert result["creator_attribution"] == "inconclusive"
+    assert "withheld" not in json.dumps(result)
+    assert "0x" not in json.dumps(result)
+
+
+def test_stack_shape_counts_are_scoped_to_their_own_socket_event():
+    raw = _complete_trace("  0x123456789abcdef0\n")
+    second = b"BFTRACE_EVENT 1 1 2 0 4 0\nBFTRACE_STACK\nBFTRACE_STACK_END\n"
+    raw = raw.replace(b"BFTRACE_EVENT 2 3 2 1 0 0\n", second + b"BFTRACE_EVENT 2 3 2 1 0 0\n")
+    result = trace_support._trace_projection(raw, impaired=False)
+    first, next_event = result["events"][:2]
+    assert first["stack_shape"]["nonblank_lines"] == 1
+    assert first["stack_shape"]["classes"]["bare_address"] == 1
+    assert next_event["stack_shape"]["nonblank_lines"] == 0
+    assert sum(next_event["stack_shape"]["classes"].values()) == 0
+    assert next_event["caller_stack_status"] == "unproven"
+
+
+@pytest.mark.parametrize("failure", ["missing-close", "truncated", "nested", "error", "loss"])
+def test_stack_shapes_are_withheld_when_trace_or_stack_block_is_incomplete(failure):
+    raw = _complete_trace("  0x123456789abcdef0\n")
+    if failure == "missing-close":
+        raw = raw.replace(b"BFTRACE_STACK_END\n", b"")
+    elif failure == "truncated":
+        raw = raw.split(b"BFTRACE_STACK_END", 1)[0]
+    elif failure == "nested":
+        raw = raw.replace(b"BFTRACE_STACK_END", b"BFTRACE_STACK\nBFTRACE_STACK_END")
+    elif failure == "error":
+        raw = raw.replace(b"BFTRACE_EXIT", b"BFTRACE_ERROR")
+    result = trace_support._trace_projection(raw, impaired=failure == "loss")
+    assert result["status"] == "inconclusive"
+    assert "events" not in result
+    assert "stack_shape" not in json.dumps(result)
+    assert result["creator_attribution"] == "inconclusive"
+    assert result["descriptor_authority"] == "none"
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "BFTRACE_EVENT 1 1 2 0 4 0",
+        "BFTRACE_READY",
+        "BFTRACE_EXEC",
+        "BFTRACE_EXIT",
+        "BFTRACE_FAULT 1 1 12",
+        "BFTRACE_UNKNOWN",
+    ],
+)
+def test_interleaved_protocol_records_are_not_accepted_as_unrecognized_stack_text(record):
+    raw = _complete_trace("  0x1234\n" + record + "\n")
+    result = trace_support._trace_projection(raw, impaired=False)
+    assert result["status"] == "inconclusive"
+    assert result["reason"] == "incomplete_or_unrecognized_trace"
+    assert "events" not in result
+    assert result["creator_attribution"] == "inconclusive"
+    assert result["descriptor_authority"] == "none"
 
 
 @pytest.mark.parametrize(
