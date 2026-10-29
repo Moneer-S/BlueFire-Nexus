@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import {
   handleReceiverRoute,
   createReceiverSettingsReadPolicy,
+  openReceiverSettingsForCleanup,
   createReceiverReloadContextCorrelation,
   closeReceiverWebSocket,
   observeReceiverEvent,
@@ -710,7 +711,7 @@ async function revokeModelPurposeNormally(purpose) {
       assert.equal(row.status, "active");
       assert.ok(counts.model_authorization_revoke < ROUTE_LIMITS.model_authorization_revoke);
       expectedModelRevokeId = row.authorization_id;
-      await page.goto(`${ORIGIN}/#/settings`, { waitUntil: "domcontentloaded", timeout: localTimeout() });
+      await openReceiverSettingsForCleanup(page, ORIGIN, { waitUntil: "domcontentloaded", timeout: localTimeout() });
       const label = purpose === MODEL_PURPOSE ? MODEL_PURPOSE_LABEL : EVIDENCE_PURPOSE_LABEL;
       const button = page.locator("article.provider-authorization-record").filter({ has: page.getByText(label, { exact: true }) })
         .getByRole("button", { name: `Revoke model usage for ${MODEL}`, exact: true });
@@ -1830,6 +1831,9 @@ try {
   assert.equal(historyAuthorization.status, "active");
   assert.equal(historyAuthorization.usage?.requests, 0);
   assert.notEqual(historyAuthorization.authorization_id, modelAuthorizationIds.get(MODEL_PURPOSE));
+  const supersededAuthorization = await readOwnedModelAuthorization();
+  assert.equal(supersededAuthorization.status, "revoked");
+  assert.equal(supersededAuthorization.usage.requests, 1);
   stage = "composition-history-proposal";
   report.composition.evidence_proposal = await inspectReceiverEvidenceProposal(page, {
     origin: ORIGIN, ownerId: compositionOwnerId, controlId: originalOwnerId,
@@ -2156,7 +2160,13 @@ try {
   stage = "composition-model-authorization-revoke";
   await revokeModelAuthorizationNormally();
   assert.equal(report.cleanup.model_authorization_revoked, true);
-  assert.equal(counts.model_authorization_revoke, 2);
+  assert.equal(counts.model_authorization_revoke, 1);
+  for (const purpose of [MODEL_PURPOSE, EVIDENCE_PURPOSE]) {
+    const terminal = await readOwnedModelAuthorization(remainingMs(), purpose);
+    assert.equal(terminal.status, "revoked");
+    assert.equal(terminal.usage.requests, 1);
+  }
+  report.checks.push("receiver_superseded_model_authorization_remained_revoked");
   report.checks.push("receiver_distinct_model_authorizations_revoked_after_one_proposal_each");
 
   report.request_counts = counts;
@@ -2172,7 +2182,8 @@ try {
   for (const name of ["composition_context", "composition_grant", "composition_proposal", "composition_evidence_proposal", "composition_attempt", "composition_revoke", "comparison", "provider_save", "provider_activate"]) {
     assert.equal(counts[name], 1);
   }
-  for (const name of ["composition_knowledge", "model_authorization", "model_authorization_revoke"]) assert.equal(counts[name], 2);
+  for (const name of ["composition_knowledge", "model_authorization"]) assert.equal(counts[name], 2);
+  assert.equal(counts.model_authorization_revoke, 1);
   assert.ok(counts.composition_evidence_context >= 2 && counts.composition_evidence_context <= ROUTE_LIMITS.composition_evidence_context);
   assert.ok(counts.composition_proposal_context >= 2 && counts.composition_proposal_context <= ROUTE_LIMITS.composition_proposal_context);
   assert.equal(report.cleanup.composition_grant_revoked, true);

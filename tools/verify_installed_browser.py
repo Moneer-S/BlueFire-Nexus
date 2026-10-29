@@ -585,6 +585,7 @@ def _valid_receiver_composition(value: object) -> bool:
         and "single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt"
         in checks
         and "receiver_distinct_model_authorizations_revoked_after_one_proposal_each" in checks
+        and "receiver_superseded_model_authorization_remained_revoked" in checks
         and "history_proposal_reopened_with_original_records_and_no_additional_execution" in checks
         and "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false"
         in checks
@@ -606,6 +607,7 @@ def _valid_receiver_composition(value: object) -> bool:
                 "comparison",
                 "provider_save",
                 "provider_activate",
+                "model_authorization_revoke",
             )
         )
         and all(
@@ -613,7 +615,6 @@ def _valid_receiver_composition(value: object) -> bool:
             for name in (
                 "composition_knowledge",
                 "model_authorization",
-                "model_authorization_revoke",
             )
         )
         and type(counts.get("composition_evidence_context")) is int
