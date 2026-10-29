@@ -8,14 +8,19 @@ from .capability_packs import (
     MACOS_FILE_ACCESS_METHODS,
     MACOS_FILE_ACCESS_PACK,
     RECEIVER_PACK,
+    RECEIVER_RETAINED_PACK,
 )
 from .capability_resources import METHODS, CapabilityContractError, semantic_ports
+from .retained_artifacts import METHOD as RETAINED_METHOD
 
 PURPOSE = "bluefire_composition_proposal"
 # Distinct purposes keep an existing receiver-only usage grant from widening to either file pack.
 FILE_ACCESS_PURPOSE = "bluefire_linux_file_access_composition_proposal"
 MACOS_FILE_ACCESS_PURPOSE = "bluefire_macos_file_access_composition_proposal"
 EVIDENCE_PURPOSE = "bluefire_receiver_evidence_composition_proposal"
+RETAINED_PURPOSE = "bluefire_receiver_retained_composition_proposal"
+RETAINED_MODEL_SCHEMA = "bluefire.retained-composition-model-context.v1"
+RETAINED_OUTPUT_VERSION = "bluefire.retained-composition-proposal.v1"
 EVIDENCE_MODEL_SCHEMA = "bluefire.composition-evidence-model-context.v1"
 EVIDENCE_OUTPUT_VERSION = "bluefire.composition-evidence-proposal.v1"
 REFRESH_PREREQUISITES = (
@@ -181,7 +186,22 @@ MACOS_FILE_ACCESS_OUTPUT_SCHEMA: Mapping[str, Any] = _output_schema(
     MACOS_FILE_ACCESS_METHODS, _MACOS_FILE_ACCESS_PARAMETERS, MACOS_FILE_ACCESS_PACK
 )
 
+
+RETAINED_CANDIDATE_SCHEMA = _output_schema(
+    (*METHODS, RETAINED_METHOD),
+    (*_RECEIVER_PARAMETERS, {"source_ref": _DIGEST}),
+    RECEIVER_RETAINED_PACK,
+)
+RETAINED_OUTPUT_SCHEMA = _object(
+    {
+        "schema_version": {"type": "string", "enum": [RETAINED_OUTPUT_VERSION]},
+        "candidate": RETAINED_CANDIDATE_SCHEMA,
+        "reconsideration": {"anyOf": [{"type": "null"}, RECONSIDERATION_SCHEMA]},
+    }
+)
+
 _PACK_CONTRACTS = {
+    RECEIVER_RETAINED_PACK: (RETAINED_PURPOSE, RETAINED_OUTPUT_SCHEMA),
     RECEIVER_PACK: (PURPOSE, OUTPUT_SCHEMA),
     FILE_ACCESS_PACK: (FILE_ACCESS_PURPOSE, FILE_ACCESS_OUTPUT_SCHEMA),
     MACOS_FILE_ACCESS_PACK: (MACOS_FILE_ACCESS_PURPOSE, MACOS_FILE_ACCESS_OUTPUT_SCHEMA),

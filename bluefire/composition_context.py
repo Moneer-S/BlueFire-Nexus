@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from .capability_grant import build_snapshot, validate_objective
-from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, RECEIVER_PACK
+from .capability_packs import (
+    FILE_ACCESS_PACK,
+    MACOS_FILE_ACCESS_PACK,
+    RECEIVER_PACK,
+    RECEIVER_RETAINED_PACK,
+)
 from .capability_resources import METHODS, MIB, validate_limits
 from .contracts import ExecutionMode
 from .product_store_errors import ProductStoreError
@@ -37,7 +42,7 @@ def resolve(service, owner_id: str, *, pack: str = RECEIVER_PACK) -> dict[str, A
     if pack == FILE_ACCESS_PACK:
         context: dict[str, Any] = service.file_access.composition_context(owner_id)
         return context
-    if pack != RECEIVER_PACK:
+    if pack not in (RECEIVER_PACK, RECEIVER_RETAINED_PACK):
         raise ProductStoreError("The composition pack is unavailable.")
     owner = service.receiver_defense._job(owner_id)
     current = service.receiver_defense._fresh(owner)
@@ -72,8 +77,15 @@ def resolve(service, owner_id: str, *, pack: str = RECEIVER_PACK) -> dict[str, A
     catalog = service._catalog_snapshot
     native = {row["action_id"]: row for row in readiness["enabled_actions"]}
     implementation_digests = {}
-    for method in METHODS:
+    from .retained_artifacts import METHOD
+
+    methods = (*METHODS, METHOD) if pack == RECEIVER_RETAINED_PACK else METHODS
+    for method in methods:
         if method not in native or native[method].get("readiness") != "ready":
+            if pack == RECEIVER_RETAINED_PACK and method == METHOD:
+                raise ProductStoreError(
+                    "The enrolled profile lacks the ready retained-result materialization method."
+                )
             raise ProductStoreError("The enrolled profile lacks a required composition method.")
         implementation_digests[method] = content_hash(
             {
@@ -151,9 +163,11 @@ def review(service, owner_id, *, question, limits=None, pack=RECEIVER_PACK):
     environment = current["current_environment"]
     body = {
         "schema_version": (
-            "bluefire.composition-review.v2" if file_access else "bluefire.composition-review.v1"
+            "bluefire.composition-review.v2"
+            if file_access or pack == RECEIVER_RETAINED_PACK
+            else "bluefire.composition-review.v1"
         ),
-        **({"pack": pack} if file_access else {}),
+        **({"pack": pack} if file_access or pack == RECEIVER_RETAINED_PACK else {}),
         "objective": objective,
         "environment": environment,
         "limits": validate_limits(DEFAULT_LIMITS if limits is None else limits),
@@ -207,4 +221,47 @@ def review(service, owner_id, *, question, limits=None, pack=RECEIVER_PACK):
             )
         ),
     }
+    if pack == RECEIVER_RETAINED_PACK:
+        from .retained_artifacts import METHOD, POLICY
+        from .util import json_clone
+
+        body["retention"] = json_clone(POLICY)
+        body["native_materialization"] = {
+            "method": METHOD,
+            "readiness": "ready",
+            "implementation_digest": current["implementation_digests"][METHOD],
+        }
+        body["limitations"] = [
+            "Delegates fresh graphs within the reviewed same-objective and exact-environment lineage.",
+            "At most one generated public JSONL staging output of at most 1 MiB is sealed per attempt until its run bundle is deleted.",
+            "Workspace cleanup removes owned workspace artifacts; it does not delete the sealed run-bundle output.",
+            "Materialization also retains payload copies in the existing task and transport stores until those stores are deleted; two copies are included in the reservation.",
+            "Later-produced sources are validated when selected and again before dispatch; source summaries contain no payload bytes.",
+            "Materialization creates a fresh owned workspace artifact and receipt. Historical findings remain reasoning context and do not authorize source reuse.",
+            "No source availability or successful receiver delivery is promised by this review.",
+            "The retained-storage allowance is an admission reservation, not an enforced total-storage quota.",
+            "Runtime AI requests require a separate provider/data/usage authorization for retained-result proposals.",
+        ]
     return {**body, "review_digest": content_hash(body)}
+
+
+RETAINED_CONTEXT_SCHEMA = "bluefire.retained-composition-proposal-context.v1"
+
+
+def retained_proposal_context(jobs, grant, body, *, owner_id):
+    """Expose validated sealed custody metadata separately from current execution facts."""
+    from .retained_artifacts import POLICY, available_sources
+    from .util import json_clone
+
+    if grant.get("pack") != RECEIVER_RETAINED_PACK:
+        return body
+    sources = available_sources(jobs, grant, owner_id=owner_id)
+    return {
+        **body,
+        "schema_version": RETAINED_CONTEXT_SCHEMA,
+        "retained_artifacts": {
+            "policy": json_clone(POLICY),
+            "available_sources": sources,
+            "availability": "available" if sources else "none_available",
+        },
+    }
