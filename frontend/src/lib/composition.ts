@@ -243,6 +243,12 @@ export function checkedCompositionContext(value: CompositionContext, grant: stri
   if (value.initial_scenario) parseScenarioDocument(value.initial_scenario);
   return value;
 }
+// Candidate publication can precede the durable job's terminal transition.
+export function compositionProposalActive(value: CompositionProposal | undefined): boolean {
+  if (!value || ["completed", "failed", "cancelled", "interrupted"].includes(value.job.state)) return false;
+  return ["queued", "planning", "awaiting_approval", "running", "paused", "cancelling"].includes(value.job.state)
+    || ["pending", "requesting"].includes(value.provider_outcome);
+}
 export function checkedCompositionProposal(value: CompositionProposal, id: string, owner: string): CompositionProposal {
   if (value?.job?.job_id !== id || value.job.kind !== "composition.proposal" || value.job.request.owner_id !== owner || typeof value.candidate_ready !== "boolean") throw bad();
   if (value.proposal) {

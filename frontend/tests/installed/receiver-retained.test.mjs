@@ -1,8 +1,9 @@
 /* global structuredClone */
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { URL } from "node:url";
-import { retainedState, retainedPostAllowed } from "./receiver-retained.mjs";
+import { retainedState, retainedPostAllowed, submitRetainedAttempt } from "./receiver-retained.mjs";
+import { createDeadlineBudget } from "./receiver-deadline.mjs";
 import { retainedHash, assertRetainedSource, assertMetadataOnly, verifyRetainedOriginal, verifyRetainedContinuation, RETAINED_PACK, RETAINED_QUESTION, RETAINED_REVIEWER, RETAINED_METHOD } from "./receiver-retained-proof.mjs";
 
 const origin = "http://127.0.0.1:12345";
@@ -12,6 +13,153 @@ const attemptId = `attempt-${"c".repeat(32)}`;
 const runId = "run-20261029T003000Z-1234567890abcdef";
 const receiptA = "d".repeat(64), receiptB = "e".repeat(64);
 const digest = letter => `sha256:${letter.repeat(64)}`;
+
+function submissionFixture() {
+  const events = [], diagnostics = [];
+  const ui = { route_matches: true, button_present: true, button_visible: true, button_enabled: true };
+  const response = { ok: () => true };
+  const page = {
+    evaluate: async () => { events.push("observe"); return ui; },
+    waitForResponse: (predicate, options) => {
+      events.push("arm");
+      assert.ok(options.timeout > 0 && options.timeout <= 20000);
+      const request = (method, url) => ({ request: () => ({ method: () => method }), url: () => url });
+      const url = `${origin}/api/v1/composition/objectives/${ownerId}/attempts`;
+      assert.equal(predicate(request("POST", url)), true);
+      assert.equal(predicate(request("GET", url)), false);
+      assert.equal(predicate(request("POST", `${url}?unowned=1`)), false);
+      assert.equal(predicate(request("POST", url.replace(ownerId, controlId))), false);
+      return Promise.resolve(response);
+    },
+    getByRole: (role, options) => {
+      assert.equal(role, "button");
+      assert.deepEqual(options, { name: "Start fresh attempt within grant", exact: true });
+      return { click: async options => {
+        events.push("click");
+        assert.ok(options.timeout > 0 && options.timeout <= 20000);
+      } };
+    },
+  };
+  const options = { origin, ownerId, controlId, proposalId: "job-proposal", prefix: "retained-original",
+    candidatePresent: true, remainingMs: () => 475000, setStage: stage => events.push(stage),
+    onDiagnostic: value => diagnostics.push(value) };
+  return { events, diagnostics, ui, response, page, options };
+}
+
+test("retained submission observes visible enabled action before arming and clicks exactly once", async () => {
+  const fixture = submissionFixture();
+  assert.equal(await submitRetainedAttempt(fixture.page, fixture.options), fixture.response);
+  assert.ok(fixture.events.indexOf("observe") < fixture.events.indexOf("arm"));
+  assert.ok(fixture.events.indexOf("arm") < fixture.events.indexOf("click"));
+  assert.equal(fixture.events.filter(event => event === "click").length, 1);
+  assert.equal(fixture.events.at(-1), "retained-original-settlement");
+  assert.deepEqual(fixture.diagnostics.at(-1), {
+    schema_version: "bluefire.installed-retained-interaction.v1", step: "settlement",
+    recorded_candidate_present: true, route_matches: true, button_present: true,
+    button_visible: true, button_enabled: true, readiness_error: "none",
+    click_completed: true, response_received: true,
+  });
+});
+
+test.each(["action_disabled", "action_hidden", "route_mismatch"])("retained %s readiness failure submits nothing and preserves cleanup", async reason => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(0);
+  try {
+    const fixture = submissionFixture();
+    const budget = createDeadlineBudget(0, 475000, 60000);
+    fixture.options.remainingMs = () => budget.remaining(Date.now());
+    fixture.options.captureFailure = async (name, timeout) => {
+      assert.equal(name, "retained-original-readiness-failed-1440x900");
+      assert.equal(timeout, 1000);
+      fixture.events.push("capture");
+      throw new Error("Image failure must not replace the readiness error");
+    };
+    fixture.ui[reason === "action_disabled" ? "button_enabled" : reason === "action_hidden" ? "button_visible" : "route_matches"] = false;
+    fixture.page.evaluate = async () => { vi.setSystemTime(20000); return fixture.ui; };
+    let cleanupRan = false;
+    try {
+      await assert.rejects(submitRetainedAttempt(fixture.page, fixture.options), /local deadline exceeded/);
+    } finally {
+      budget.beginCleanup(Date.now());
+      cleanupRan = true;
+    }
+    assert.equal(cleanupRan, true);
+    assert.equal(budget.remaining(Date.now()), 60000);
+    assert.equal(Date.now(), 20000);
+    assert.ok(!fixture.events.includes("arm"));
+    assert.ok(!fixture.events.includes("click"));
+    assert.equal(fixture.events.filter(event => event === "capture").length, 1);
+    assert.equal(fixture.diagnostics.at(-1).readiness_error, reason);
+    assert.equal(fixture.diagnostics.at(-1).click_completed, false);
+  } finally { vi.useRealTimers(); }
+});
+
+test("retained ready state arriving after the local deadline cannot submit", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(0);
+  try {
+    const fixture = submissionFixture();
+    fixture.options.remainingMs = () => Math.max(0, 5000 - Date.now());
+    fixture.page.evaluate = async () => { vi.setSystemTime(5000); return fixture.ui; };
+    await assert.rejects(submitRetainedAttempt(fixture.page, fixture.options), /local deadline exceeded/);
+    assert.ok(!fixture.events.includes("arm"));
+    assert.ok(!fixture.events.includes("click"));
+  } finally { vi.useRealTimers(); }
+});
+
+test("retained readiness never passes zero timeout or borrows from a spent work budget", async () => {
+  const fixture = submissionFixture();
+  fixture.options.remainingMs = () => 0;
+  fixture.options.captureFailure = async () => { throw new Error("Capture must not consume cleanup time"); };
+  await assert.rejects(submitRetainedAttempt(fixture.page, fixture.options), /local deadline exceeded/);
+  assert.ok(!fixture.events.includes("observe"));
+  assert.ok(!fixture.events.includes("arm"));
+  assert.ok(!fixture.events.includes("click"));
+});
+
+test("retained failed readiness preserves its error when capture budget lookup throws", async () => {
+  const fixture = submissionFixture();
+  const originalError = new Error("rendered readiness observation failed");
+  fixture.page.evaluate = async () => { throw originalError; };
+  let budgetReads = 0;
+  fixture.options.remainingMs = () => {
+    if (++budgetReads === 3) throw new Error("work deadline spent");
+    return 5000;
+  };
+  fixture.options.captureFailure = async () => { throw new Error("Capture must not run after deadline"); };
+  await assert.rejects(submitRetainedAttempt(fixture.page, fixture.options), error => error === originalError);
+  assert.equal(budgetReads, 3);
+  assert.ok(!fixture.events.includes("arm"));
+  assert.ok(!fixture.events.includes("click"));
+});
+
+test("retained click failure drains its bounded response and preserves click-stage diagnosis", async () => {
+  const fixture = submissionFixture();
+  fixture.page.waitForResponse = (_predicate, options) => {
+    assert.ok(options.timeout <= 20000);
+    return Promise.reject(new Error("bounded response timeout"));
+  };
+  fixture.page.getByRole = () => ({ click: async options => {
+    assert.ok(options.timeout <= 20000);
+    throw new Error("action no longer available");
+  } });
+  await assert.rejects(submitRetainedAttempt(fixture.page, fixture.options), /action no longer available/);
+  assert.equal(fixture.diagnostics.at(-1).step, "click");
+  assert.equal(fixture.diagnostics.at(-1).response_received, false);
+});
+
+test("retained response failure stays distinct after one successful click", async () => {
+  const fixture = submissionFixture();
+  fixture.page.waitForResponse = (_predicate, options) => {
+    assert.ok(options.timeout > 0 && options.timeout <= 20000);
+    return Promise.reject(new Error("bounded response timeout"));
+  };
+  await assert.rejects(submitRetainedAttempt(fixture.page, fixture.options), /bounded response timeout/);
+  assert.equal(fixture.events.filter(event => event === "click").length, 1);
+  assert.equal(fixture.diagnostics.at(-1).step, "response");
+  assert.equal(fixture.diagnostics.at(-1).click_completed, true);
+  assert.equal(fixture.diagnostics.at(-1).response_received, false);
+});
 
 test("retained routes preserve distinct v2 review and exact owned attempts", () => {
   const state = retainedState();

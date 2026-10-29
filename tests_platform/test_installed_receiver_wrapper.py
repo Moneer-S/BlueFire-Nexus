@@ -755,10 +755,18 @@ def test_receiver_receipt_preserves_bounded_composition_failure_categories() -> 
         "retained-review-binding",
         "retained-original-proposal",
         "retained-original-execute",
+        "retained-original-readiness",
+        "retained-original-click",
+        "retained-original-response",
+        "retained-original-settlement",
         "retained-history-selection",
         "retained-continuation-proposal",
         "retained-proposal-reopen",
         "retained-continuation-execute",
+        "retained-continuation-readiness",
+        "retained-continuation-click",
+        "retained-continuation-response",
+        "retained-continuation-settlement",
         "retained-grant-revoke",
         "retained-result-comparison",
     ],
@@ -789,6 +797,81 @@ def test_receiver_receipt_maps_unknown_retained_failure_stage_to_other() -> None
     assert _receiver_report_for_receipt(report)["errors"] == [
         {"stage": "other", "kind": "journey_failed"},
         {"kind": "console_error"},
+    ]
+
+
+def test_retained_interaction_projection_keeps_only_known_categories_and_booleans() -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-original-readiness",
+            "kind": "journey_failed",
+            "retained_interaction": {
+                "schema_version": "bluefire.installed-retained-interaction.v1",
+                "step": "readiness",
+                "readiness_error": "action_disabled",
+                "recorded_candidate_present": True,
+                "route_matches": True,
+                "button_present": True,
+                "button_visible": True,
+                "button_enabled": False,
+                "click_completed": False,
+                "response_received": False,
+                "body": {"detail": "private response"},
+                "url": "private route",
+                "text": "private text",
+            },
+        }
+    ]
+    safe = _receiver_report_for_receipt(report)["errors"][0]["retained_interaction"]
+    assert safe == {
+        "schema_version": "bluefire.installed-retained-interaction.v1",
+        "step": "readiness",
+        "readiness_error": "action_disabled",
+        "recorded_candidate_present": True,
+        "route_matches": True,
+        "button_present": True,
+        "button_visible": True,
+        "button_enabled": False,
+        "click_completed": False,
+        "response_received": False,
+    }
+    assert "private" not in json.dumps(safe)
+
+
+@pytest.mark.parametrize("invalid", [None, 1, "private text", [], {"detail": "private response"}])
+def test_retained_interaction_projection_rejects_untyped_state_and_unknown_categories(
+    invalid,
+) -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-continuation-response",
+            "kind": "journey_failed",
+            "retained_interaction": {
+                "schema_version": "private schema",
+                "step": "private step",
+                "readiness_error": "private reason",
+                **{
+                    field: invalid
+                    for field in (
+                        "recorded_candidate_present",
+                        "route_matches",
+                        "button_present",
+                        "button_visible",
+                        "button_enabled",
+                        "click_completed",
+                        "response_received",
+                    )
+                },
+            },
+        }
+    ]
+    assert _receiver_report_for_receipt(report)["errors"] == [
+        {
+            "stage": "retained-continuation-response",
+            "kind": "journey_failed",
+        }
     ]
 
 

@@ -212,6 +212,7 @@ let prepareHttpDiagnostic;
 let pendingPreparationFailure;
 let compositionInteractionStep = "reconcile";
 let compositionInteractionUi;
+let retainedInteraction;
 const settingsReadAllowed = createReceiverSettingsReadPolicy();
 let activeOwnerRole = "original";
 const phaseOrders = { original: ["baseline", "protected", "legitimate"], linked: ["protected", "legitimate"] };
@@ -1900,13 +1901,16 @@ try {
   report.retained_execution = await runRetainedJourney(page, retained, {
     origin: ORIGIN, controlId: originalOwnerId, controlDigest: originalControlDigest, profileId: PROFILE, providerId: PROVIDER_ID, model: MODEL,
     read: path => appApi(path), remainingMs, setStage: value => { stage = value; },
+    onInteraction: value => { retainedInteraction = value; },
     onRevoked: () => { report.cleanup = { ...(report.cleanup ?? {}), retained_grant_revoked: true }; },
-    capture: async name => {
+    capture: async (name, options = {}) => {
       assert.ok(connected);
       const viewport = { width: 1440, height: 900 };
-      await page.setViewportSize(viewport);
-      await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
-      const bytes = await page.screenshot({ fullPage: false, animations: "disabled", mask: [page.locator('input[type="password"]')] });
+      if (!options.failure) {
+        await page.setViewportSize(viewport);
+        await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+      }
+      const bytes = await page.screenshot({ fullPage: false, animations: "disabled", mask: [page.locator('input[type="password"]')], ...(options.timeout ? { timeout: options.timeout } : {}) });
       writeFileSync(join(output, `${name}.png`), bytes, { flag: "wx", mode: 0o600 });
       report.screenshots.push({ name, sha256: createHash("sha256").update(bytes).digest("hex"), viewport, layout_verified: false });
     },
@@ -2258,6 +2262,9 @@ try {
 } catch (error) {
   const errorType = ["AssertionError", "TimeoutError", "TypeError", "Error"].includes(error?.name) ? error.name : "other";
   const failure = { stage, kind: "journey_failed", error_type: errorType };
+  if (/^retained-(original|continuation)-(readiness|click|response|settlement)$/.test(stage) && retainedInteraction) {
+    failure.retained_interaction = retainedInteraction;
+  }
   if (stage === "composition-attempt" || stage === "composition-model-proposal-reopen") {
     // A spent journey budget must not delay the cleanup reserve for diagnostics.
     compositionInteractionUi = await compositionUiSnapshot("failure");

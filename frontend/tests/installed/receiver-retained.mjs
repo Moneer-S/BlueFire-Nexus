@@ -3,6 +3,7 @@ import { isDeepStrictEqual as same } from "node:util";
 import { URL, URLSearchParams } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { createReceiverReloadContextCorrelation } from "./receiver-guards.mjs";
+import { readReceiverCompositionUi } from "./receiver-diagnostics.mjs";
 import { verifyReceiverKnowledge } from "./receiver-knowledge.mjs";
 import { RETAINED_PACK, RETAINED_METHOD, RETAINED_PURPOSE_LABEL, RETAINED_QUESTION, RETAINED_REVIEWER,
   exact, assertMetadataOnly, assertRetainedSource, verifyRetainedOriginal, verifyRetainedContinuation } from "./receiver-retained-proof.mjs";
@@ -14,6 +15,85 @@ const reviewBody = controlId => ({ schema_version: "bluefire.composition-review-
 export const retainedState = () => ({ active: false, ownerId: undefined, proposals: [], attempts: [],
   initialContext: undefined, historyContext: undefined, review: undefined, first: undefined, source: undefined,
   knowledge: undefined, candidate: undefined, comparisonSubmitted: false, snapshotId: undefined });
+
+// The rendered action must become ready before a response observer is armed.
+// Both local windows are inside the existing work budget, never its cleanup reserve.
+export async function submitRetainedAttempt(page, options) {
+  const { origin, ownerId, controlId, proposalId, prefix, remainingMs, setStage, onDiagnostic } = options;
+  assert.ok(["retained-original", "retained-continuation"].includes(prefix));
+  const diagnostic = {
+    schema_version: "bluefire.installed-retained-interaction.v1", step: "readiness",
+    recorded_candidate_present: options.candidatePresent === true,
+    route_matches: false, button_present: false, button_visible: false, button_enabled: false,
+    readiness_error: "unavailable", click_completed: false, response_received: false,
+  };
+  const update = step => {
+    diagnostic.step = step;
+    setStage(`${prefix}-${step}`);
+    onDiagnostic?.({ ...diagnostic });
+  };
+  const deadline = Date.now() + Math.min(20000, remainingMs());
+  const localBudget = until => {
+    const value = Math.min(until - Date.now(), remainingMs());
+    if (value <= 0) throw new Error("Retained attempt local deadline exceeded");
+    return value;
+  };
+  update("readiness");
+  try {
+    while (true) {
+      const timeout = localBudget(deadline);
+      const snapshot = await Promise.race([
+        page.evaluate(readReceiverCompositionUi, { origin, owner: ownerId, control: controlId, proposal: proposalId }),
+        delay(timeout, null, { ref: false }),
+      ]);
+      if (!snapshot) throw new Error("Retained attempt readiness observation timed out");
+      for (const key of ["route_matches", "button_present", "button_visible", "button_enabled"]) diagnostic[key] = snapshot[key] === true;
+      diagnostic.readiness_error = !diagnostic.route_matches ? "route_mismatch"
+        : snapshot.dispatch_unavailable ? "dispatch_unavailable"
+        : snapshot.context_fetching ? "context_fetching"
+        : snapshot.candidate_mismatch ? "candidate_mismatch"
+        : snapshot.confirmation_pending ? "confirmation_pending"
+        : !diagnostic.button_present ? "action_missing"
+        : !diagnostic.button_visible ? "action_hidden"
+        : !diagnostic.button_enabled ? "action_disabled" : "none";
+      onDiagnostic?.({ ...diagnostic });
+      localBudget(deadline);
+      if (diagnostic.route_matches && diagnostic.button_visible && diagnostic.button_enabled) break;
+      await delay(Math.min(200, localBudget(deadline)));
+    }
+  } catch (error) {
+    // Optional image capture gets at most one further second of work time.
+    // It cannot borrow from the cleanup reserve or replace the original failure.
+    try {
+      const timeout = Math.min(1000, remainingMs());
+      if (timeout > 0 && options.captureFailure) await options.captureFailure(`${prefix}-readiness-failed-1440x900`, timeout);
+    } catch { /* Preserve the readiness failure, including when work time is spent. */ }
+    throw error;
+  }
+  // Keep the response observer ahead of the one normal click, but after readiness.
+  // Its rejection is observed immediately even if the click fails.
+  const responseDeadline = Date.now() + Math.min(20000, remainingMs());
+  update("response");
+  const pending = page.waitForResponse(response => response.request().method() === "POST"
+    && response.url() === `${origin}/api/v1/composition/objectives/${ownerId}/attempts`,
+  { timeout: localBudget(responseDeadline) }).then(value => ({ value }), error => ({ error }));
+  update("click");
+  try {
+    await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).click({ timeout: localBudget(responseDeadline) });
+    diagnostic.click_completed = true;
+  } catch (error) {
+    await pending;
+    throw error;
+  }
+  update("response");
+  const submitted = await pending;
+  if (submitted.error) throw submitted.error;
+  diagnostic.response_received = true;
+  onDiagnostic?.({ ...diagnostic });
+  assert.ok(submitted.value.ok());
+  update("settlement");
+  return submitted.value;
+}
 
 export function retainedReadAllowed(state, url) {
   return !url.search && ((state.ownerId && url.pathname === `/api/v1/composition/objectives/${state.ownerId}`)
@@ -189,10 +269,11 @@ export async function runRetainedJourney(page, state, options) {
   assert.equal(firstProposal.proposal.reconsideration, null);
   assert.deepEqual(firstProposal.job.request.context.retained_artifacts.available_sources, []);
   const execute = async index => {
-    const pending = postResponse(`/composition/objectives/${state.ownerId}/attempts`);
-    await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).click();
-    const submitted = await pending;
-    assert.ok(submitted.ok());
+    await submitRetainedAttempt(page, { origin, ownerId: state.ownerId, controlId,
+      proposalId: state.proposals[index], candidatePresent: Boolean(state.candidate),
+      prefix: index === 0 ? "retained-original" : "retained-continuation",
+      remainingMs, setStage, onDiagnostic: options.onInteraction,
+      captureFailure: capture ? (name, timeout) => capture(name, { failure: true, timeout }) : undefined });
     const id = state.attempts[index];
     const current = await wait(() => read(`/composition/objectives/${state.ownerId}`), value => value.attempts.some(attempt =>
       attempt.job_id === id && attempt.state === "completed" && attempt.progress.settlement === "settled" && attempt.progress.verified_result), 110000);
@@ -201,7 +282,6 @@ export async function runRetainedJourney(page, state, options) {
     assert.equal(run.profile.profile_id, options.profileId);
     return { current, attempt, run };
   };
-  setStage("retained-original-execute");
   const first = await execute(0);
   const originalProof = verifyRetainedOriginal(first.attempt, first.run, { ownerId: state.ownerId, grant });
   state.first = originalProof.original;
@@ -276,7 +356,6 @@ export async function runRetainedJourney(page, state, options) {
   assert.ok(refreshedResponse.ok());
   assert.deepEqual((await refreshedResponse.json()).retained_artifacts.available_sources, [state.source]);
   if (capture) await capture("receiver-retained-source-1440x900");
-  setStage("retained-continuation-execute");
   const second = await execute(1);
   state.second = verifyRetainedContinuation(second.attempt, second.run, { ownerId: state.ownerId, grant,
     source: state.source, original: state.first });

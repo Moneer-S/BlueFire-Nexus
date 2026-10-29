@@ -101,10 +101,18 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
         "retained-review-binding",
         "retained-original-proposal",
         "retained-original-execute",
+        "retained-original-readiness",
+        "retained-original-click",
+        "retained-original-response",
+        "retained-original-settlement",
         "retained-history-selection",
         "retained-continuation-proposal",
         "retained-proposal-reopen",
         "retained-continuation-execute",
+        "retained-continuation-readiness",
+        "retained-continuation-click",
+        "retained-continuation-response",
+        "retained-continuation-settlement",
         "retained-grant-revoke",
         "retained-result-comparison",
         "browser_callback",
@@ -172,6 +180,42 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                     safe[field] = item
             if safe:
                 row["composition_interaction"] = safe
+        retained = entry.get("retained_interaction")
+        if isinstance(retained, dict):
+            safe_retained: dict[str, object] = {}
+            for field, allowed in {
+                "schema_version": {"bluefire.installed-retained-interaction.v1"},
+                "step": {"readiness", "click", "response", "settlement"},
+                "readiness_error": {
+                    "unavailable",
+                    "route_mismatch",
+                    "dispatch_unavailable",
+                    "context_fetching",
+                    "candidate_mismatch",
+                    "confirmation_pending",
+                    "action_missing",
+                    "action_hidden",
+                    "action_disabled",
+                    "none",
+                },
+            }.items():
+                item = retained.get(field)
+                if isinstance(item, str) and item in allowed:
+                    safe_retained[field] = item
+            for field in (
+                "recorded_candidate_present",
+                "route_matches",
+                "button_present",
+                "button_visible",
+                "button_enabled",
+                "click_completed",
+                "response_received",
+            ):
+                item = retained.get(field)
+                if type(item) is bool:
+                    safe_retained[field] = item
+            if safe_retained:
+                row["retained_interaction"] = safe_retained
         if row:
             result.append(row)
     return result
