@@ -439,6 +439,71 @@ def _browser_failure_diagnostic(value: dict[str, object]) -> dict[str, object]:
         stage = errors[0].get("stage")
         if isinstance(stage, str) and stage in allowed_stages:
             result["browser_stage"] = stage
+    replacement = value.get("replacement_diagnostic")
+    replacement_fields = {
+        "substage": {
+            "provider_selection",
+            "submission_fill",
+            "submission_click",
+            "submission_response",
+            "submission_status",
+            "submission_body",
+            "submission_identity",
+            "request_identity",
+            "terminal_poll",
+            "terminal_job",
+            "terminal_turn",
+            "completion_heading",
+            "empty_plan",
+            "empty_results",
+            "provider_count",
+            "retained_records",
+            "authorization_usage",
+            "capture",
+            "write_counts",
+            "unknown",
+        },
+        "error_category": {"assertion", "timeout", "type", "json", "other"},
+        "submission_status": {"unobserved", "accepted", "client_error", "server_error", "other"},
+        "job_state": {
+            "queued",
+            "awaiting_approval",
+            "running",
+            "cancelling",
+            "cancelled",
+            "completed",
+            "failed",
+            "interrupted",
+            "unknown",
+        },
+        "turn_status": {
+            "planning",
+            "working",
+            "off",
+            "awaiting_review",
+            "awaiting_execute_approval",
+            "ready_to_continue",
+            "cancelling",
+            "cancelled",
+            "blocked",
+            "completed",
+            "unknown",
+        },
+        "job_error_shape": {"missing", "absent", "object", "invalid"},
+        "result_ref_shape": {"missing", "absent", "string", "invalid"},
+        "plan_shape": {"missing", "empty", "nonempty", "invalid"},
+        "results_shape": {"missing", "empty", "nonempty", "invalid"},
+    }
+    if (
+        result.get("browser_stage") == "explicit-replacement"
+        and isinstance(replacement, dict)
+        and set(replacement) == set(replacement_fields)
+        and all(
+            isinstance(replacement[key], str) and replacement[key] in allowed_values
+            for key, allowed_values in replacement_fields.items()
+        )
+    ):
+        result["replacement_diagnostic"] = {key: replacement[key] for key in replacement_fields}
     keys = {
         "first_session",
         "second_session",

@@ -20,6 +20,7 @@ from bluefire.product_store import ProductStoreError
 from bluefire.runner_transport_errors import RunnerTaskCancelled
 from bluefire.util import content_hash
 from tests_platform.job_wait_diagnostics import _report as job_wait_report
+from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.test_replay_jobs import awaiting, submission
 from tests_platform.test_replay_preparation import service as service
 from tests_platform.test_replay_preparation import source_run
@@ -86,7 +87,8 @@ def test_execute_replay_cancellation_finalizes_and_links_its_run_before_terminal
     service.approve_job(job_id, {"approved_by": "cancellation-reviewer"})
     _assert_replay_execution_entry(entered, request.node.add_report_section)
     service.cancel_job(job_id)
-    job = service.job_controller.wait(job_id, timeout=10)
+    with diagnose_job_wait("replay_terminal", request.node.add_report_section):
+        job = service.job_controller.wait(job_id, timeout=10)
     if cancellation == "result_link":
         assert job["state"] == "failed", job
         assert job["result_ref"] is None

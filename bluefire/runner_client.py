@@ -447,10 +447,17 @@ def _prepare_darwin_launch_resources(
 ) -> _DarwinLaunchResources:
     """Duplicate borrowed descriptors and pin executable paths for the worker."""
 
+    def native_wire_unsigned(value: Any, bits: int) -> int | None:
+        upper_bound = 1 << bits
+        if type(value) is not int or not -(upper_bound >> 1) <= value < upper_bound:
+            return None
+        return value % upper_bound
+
     prepared_argv = list(argv)
     prepared_options = dict(options)
     descriptors: list[int] = []
     links: list[tuple[int, str, tuple[int, int]]] = []
+    descriptor_observation: list[dict[str, Any]] = []
     resources = _DarwinLaunchResources(
         argv=prepared_argv,
         options=prepared_options,
@@ -459,6 +466,15 @@ def _prepare_darwin_launch_resources(
     )
     sink.append(resources)
     try:
+        descriptor_roles = prepared_options.pop("_bluefire_descriptor_roles", None)
+        descriptor_observation_sink = prepared_options.pop(
+            "_bluefire_descriptor_observation_sink", None
+        )
+        if (descriptor_roles is None) != (descriptor_observation_sink is None) or (
+            descriptor_observation_sink is not None
+            and (type(descriptor_observation_sink) is not list or descriptor_observation_sink)
+        ):
+            raise OSError("Darwin descriptor observation is invalid")
         single_descriptor_indexes = tuple(
             prepared_options.pop("_bluefire_descriptor_argument_indexes", ())
         )
@@ -467,10 +483,41 @@ def _prepare_darwin_launch_resources(
         )
         descriptor_map: dict[int, int] = {}
         inherited = tuple(int(value) for value in prepared_options.get("pass_fds", ()))
+        if descriptor_roles is not None and (
+            type(descriptor_roles) is not dict
+            or set(descriptor_roles) != set(inherited)
+            or len(inherited) != len(set(inherited))
+            or any(
+                type(fd) is not int
+                or type(role) is not str
+                or role not in {"resource", "primitive_channel", "launch_auxiliary"}
+                for fd, role in descriptor_roles.items()
+            )
+            or list(descriptor_roles.values()).count("resource") != 1
+            or list(descriptor_roles.values()).count("primitive_channel") != 1
+        ):
+            raise OSError("Darwin descriptor observation roles are invalid")
         for descriptor in inherited:
             duplicate = _duplicate_darwin_descriptor(descriptor)
             descriptors.append(duplicate)
             descriptor_map[descriptor] = duplicate
+            if descriptor_roles is not None:
+                details = os.fstat(duplicate)
+                descriptor_observation.append(
+                    {
+                        "role": descriptor_roles[descriptor],
+                        "fd": duplicate,
+                        "identity": {
+                            # Match the native diagnostic wire widths. An
+                            # impossible host value remains invalid for later
+                            # diagnostic withholding; it never blocks launch.
+                            "dev": native_wire_unsigned(details.st_dev, 32),
+                            "ino": native_wire_unsigned(details.st_ino, 64),
+                            "mode_type": stat.S_IFMT(details.st_mode),
+                            "rdev": native_wire_unsigned(getattr(details, "st_rdev", 0), 32),
+                        },
+                    }
+                )
         if inherited:
             prepared_options["pass_fds"] = tuple(
                 descriptor_map[descriptor] for descriptor in inherited
@@ -515,6 +562,8 @@ def _prepare_darwin_launch_resources(
             candidate = Path(argument)
             if candidate.is_absolute() and candidate.name.startswith(".bluefire-verified-launch-"):
                 prepared_argv[index] = _clone_darwin_launch_link(argument, links)
+        if descriptor_observation_sink is not None:
+            descriptor_observation_sink.extend(descriptor_observation)
         return resources
     except BaseException:
         resources.close()

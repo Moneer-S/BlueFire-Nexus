@@ -17,6 +17,7 @@ import time
 from _thread import LockType
 from typing import Any, Callable, Protocol, cast
 
+from . import macos_setup_failure_diagnostics as _setup_failure_diagnostics
 from . import runner_client as runner
 from .macos_file_access_contract import (
     MAX_MESSAGE,
@@ -165,6 +166,7 @@ class MacOSFileAccessCreator:
     _orphan_close_attempted: set[tuple[int, int]]
     _custody_digest: str
     _namespace: SealedMacOSNamespace
+    _retired_workers_closed: bool
 
     def __new__(cls, *_args, **_kwargs):
         raise TypeError("Explicit original privileged setup is required.")
@@ -201,6 +203,7 @@ class MacOSFileAccessCreator:
         value._last_clock = (0, 0)
         value._last_binding = None
         value._local_cleanup_unknown = False
+        value._retired_workers_closed = False
         value._orphan_close_attempted = set()
         value._custody_digest = content_hash(
             {
@@ -645,6 +648,7 @@ class MacOSFileAccessCreator:
         try:
             _require(self._state != "creating")
             self._state = "retired"
+            self._retired_workers_closed = False
             workers_closed = True
             for worker in self._workers.values():
                 try:
@@ -668,6 +672,7 @@ class MacOSFileAccessCreator:
                         handles_closed = namespace.close_handles() and handles_closed
                     except BaseException:
                         handles_closed = False
+            self._retired_workers_closed = workers_closed
             return {
                 "scope": "original_component_retirement_only",
                 "workers_closed": workers_closed,
@@ -676,6 +681,77 @@ class MacOSFileAccessCreator:
                 "settled": False,
                 "live_ready": False,
             }
+        finally:
+            self._lock.release()
+
+    def retained_native_startup_exits(self) -> dict[str, str] | None:
+        """Project fixed startup labels after the existing retirement reaped workers."""
+        if os.getpid() != self._creator_pid:
+            return None
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if (
+                self._state != "retired"
+                or self._retired_workers_closed is not True
+                or type(self._workers) is not dict
+                or len(self._workers) > len(_setup_failure_diagnostics.NATIVE_STARTUP_EXIT_ROLES)
+                or any(
+                    role not in _setup_failure_diagnostics.NATIVE_STARTUP_EXIT_ROLES
+                    for role in self._workers
+                )
+            ):
+                return None
+            exits = {}
+            for role in _setup_failure_diagnostics.NATIVE_STARTUP_EXIT_ROLES:
+                worker = self._workers.get(role)
+                if worker is None:
+                    continue
+                if type(worker) is not MacOSFileAccessWorker:
+                    return None
+                code = worker.retained_native_startup_exit_code()
+                if code is None and worker._creation_started is True:  # noqa: SLF001
+                    return None
+                label = _setup_failure_diagnostics.native_startup_exit_label(code)
+                if label is not None:
+                    exits[role] = label
+            return exits or None
+        finally:
+            self._lock.release()
+
+    def retained_native_startup_statuses(
+        self, *, workers_closed: bool
+    ) -> dict[str, dict[str, Any]] | None:
+        """Project bounded status or an explicit unavailable state for each owned worker."""
+        if os.getpid() != self._creator_pid or type(workers_closed) is not bool:
+            return None
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if (
+                self._state != "retired"
+                or type(self._workers) is not dict
+                or len(self._workers) > len(_setup_failure_diagnostics.NATIVE_STARTUP_EXIT_ROLES)
+                or any(
+                    role not in _setup_failure_diagnostics.NATIVE_STARTUP_EXIT_ROLES
+                    for role in self._workers
+                )
+            ):
+                return None
+            statuses: dict[str, dict[str, Any]] = {}
+            for role in _setup_failure_diagnostics.NATIVE_STARTUP_EXIT_ROLES:
+                worker = self._workers.get(role)
+                if worker is None:
+                    continue
+                if type(worker) is not MacOSFileAccessWorker:
+                    return None
+                if workers_closed is not True or self._retired_workers_closed is not True:
+                    statuses[role] = _setup_failure_diagnostics.unavailable_native_startup_status(
+                        "workers_not_closed"
+                    )
+                else:
+                    statuses[role] = worker.retained_native_startup_status()
+            return statuses or None
         finally:
             self._lock.release()
 

@@ -1,5 +1,6 @@
 """Exact retained-launch plumbing with fake I/O, never a Darwin process."""
 
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,6 +86,28 @@ class Channel:
 class Process:
     pid = 103
     returncode = None
+
+
+def test_startup_observation_capture_records_only_finite_first_last_sites():
+    owner = object.__new__(worker.MacOSFileAccessWorker)
+    owner._startup_observation_summary = (0, None, None, False)
+
+    first = MacOSFileAccessContractError("private first failure detail")
+    first._safe_startup_observation_site = "peer_child_exited_before_query"
+    owner._remember_startup_observation_failure(first)
+
+    untagged = MacOSFileAccessContractError("private token-like value")
+    untagged._safe_startup_observation_site = "private-token-like-value"
+    owner._remember_startup_observation_failure(untagged)
+
+    assert owner._startup_observation_summary == (
+        2,
+        "peer_child_exited_before_query",
+        "unknown",
+        False,
+    )
+    assert "private" not in repr(owner._startup_observation_summary)
+    assert "token-like" not in repr(owner._startup_observation_summary)
 
 
 @pytest.fixture
@@ -173,6 +196,10 @@ def fake(monkeypatch):
 
     def observe(process, *, expected_ids, expected_start):
         state["observed"] += 1
+        if state["mode"] == "observation_refusal":
+            error = MacOSFileAccessContractError("private observation detail")
+            error._safe_startup_observation_site = "peer_child_exited_before_query"
+            raise error
         start = (100, 1) if not state["wrong_start"] else (100, 2)
         if expected_start is not None and expected_start != start:
             raise MacOSFileAccessContractError("fake changed child")
@@ -181,7 +208,17 @@ def fake(monkeypatch):
         )
 
     monkeypatch.setattr(worker, "sys", SimpleNamespace(platform="darwin"))
-    monkeypatch.setattr(worker, "os", SimpleNamespace(getuid=lambda: 0, geteuid=lambda: 0))
+    monkeypatch.setattr(
+        worker,
+        "os",
+        SimpleNamespace(
+            getuid=lambda: 0,
+            geteuid=lambda: 0,
+            pipe=os.pipe,
+            read=os.read,
+            close=os.close,
+        ),
+    )
     monkeypatch.setattr(
         worker,
         "socket",
@@ -247,17 +284,45 @@ def test_fixed_recipe_registered_remapping_and_original_nofork_owner(fake):
     assert state["launch_options"]["environment"] == dict(
         PATH="/usr/bin:/bin", LANG="C", LC_ALL="C"
     )
-    assert (
-        state["launch_options"]["stdout"]
-        == state["launch_options"]["stderr"]
-        == worker.subprocess.DEVNULL
-    )
+    assert state["launch_options"]["stdout"] == worker.subprocess.DEVNULL
+    assert type(state["launch_options"]["stderr"]) is int
+    assert state["launch_options"]["stderr"] >= 3
+    assert state["options"]["_bluefire_descriptor_roles"] == {
+        9: "resource",
+        11: "primitive_channel",
+        100: "launch_auxiliary",
+        101: "launch_auxiliary",
+    }
     assert active[owner._process] is runtime
     assert owner._process in runtime._darwin_no_fork_proven
     assert owner._child_channel.closed
+    owner._native_diagnostic_thread.join(timeout=0.5)
+    assert owner._native_diagnostic_complete
+    assert owner._native_diagnostic_bytes == b""
     result = owner.exchange(request())
     assert result["outcome"] == "allowed" and result["prevention_proven"] is False
     assert state["observed"] == 3
+
+
+def test_startup_observation_refusals_remain_retried_and_summarized(fake):
+    build, state, runtime, active, quarantined = fake
+    state["mode"] = "observation_refusal"
+    owner = build()
+
+    with pytest.raises(MacOSFileAccessContractError) as caught:
+        owner.start()
+
+    assert state["observed"] > 1
+    assert owner._child_channel.closed
+    assert owner._process in quarantined
+    assert active[owner._process] is runtime
+    summary = caught.value._safe_startup_observation_summary
+    assert summary[0] == state["observed"]
+    assert summary[1:3] == (
+        "peer_child_exited_before_query",
+        "peer_child_exited_before_query",
+    )
+    assert "/private/" not in repr(summary)
 
 
 @pytest.mark.parametrize(

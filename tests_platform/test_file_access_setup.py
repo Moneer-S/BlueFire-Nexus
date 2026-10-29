@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import stat
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from bluefire import prepared_lab
 from bluefire import prepared_lab_file_access as setup
 from bluefire import prepared_lab_guest as guest
+from bluefire import prepared_lab_runtime as runtime
 from bluefire.file_access_contract import FileAccessContractError
 from bluefire.file_access_enrollment import _root_owned, canonical_enrollment
 from tests_platform.file_access_fixtures import binding
@@ -71,14 +73,63 @@ def test_owner_editable_or_linked_enrollment_cannot_self_attest(uid, mode, links
 
 
 def test_nonlinux_setup_is_refused_before_effects(monkeypatch):
+    writes = []
     monkeypatch.setattr(setup.sys, "platform", "win32")
+    monkeypatch.setattr(
+        runtime.os, "write", lambda descriptor, value: writes.append((descriptor, value))
+    )
     monkeypatch.setattr(
         setup.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("must not launch")
     )
-    with pytest.raises(FileAccessContractError):
+    with pytest.raises(FileAccessContractError, match="fresh isolated namespace init"):
         setup.enroll_fixed_reader()
+    assert writes == [(2, runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS[1])]
     with pytest.raises(FileAccessContractError):
         setup.assert_probe_identity_unused()
+
+
+def test_enrollment_entry_is_observed_before_its_dynamic_import(monkeypatch):
+    writes = []
+    monkeypatch.setattr(
+        runtime.os, "write", lambda descriptor, value: writes.append((descriptor, value))
+    )
+    monkeypatch.setitem(sys.modules, "bluefire.ai_broker_bootstrap", None)
+
+    with pytest.raises(ModuleNotFoundError):
+        setup.enroll_fixed_reader()
+
+    assert writes == [(2, runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS[1])]
+
+
+def test_enrollment_observation_failure_preserves_the_original_guard(monkeypatch):
+    def unavailable(_descriptor, _value):
+        raise OSError("diagnostic sink unavailable")
+
+    monkeypatch.setattr(runtime.os, "write", unavailable)
+    monkeypatch.setattr(setup.sys, "platform", "win32")
+
+    with pytest.raises(FileAccessContractError, match="fresh isolated namespace init"):
+        setup.enroll_fixed_reader()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_inner_entry_observation_precedes_isolation_facts(monkeypatch, enabled):
+    stages = []
+    monkeypatch.setattr(
+        guest,
+        "observe_file_access_launch_stage",
+        lambda marker: stages.append(marker),
+    )
+
+    def unavailable():
+        raise ValueError("isolation facts unavailable")
+
+    monkeypatch.setattr(guest, "isolation_facts", unavailable)
+
+    with pytest.raises(ValueError, match="isolation facts unavailable"):
+        guest.inner(8767, file_access=enabled)
+
+    assert stages == ([runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS[3]] if enabled else [])
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -102,7 +153,36 @@ def test_enrollment_runs_after_isolation_before_owner_drop(monkeypatch, enabled)
     monkeypatch.setattr(guest, "namespaces", lambda: {kind: kind + ":[2]" for kind in guest.KINDS})
     monkeypatch.setattr(guest, "isolate_mounts", lambda: calls.append("isolate"))
     monkeypatch.setattr(guest.subprocess, "run", lambda *_args, **_kwargs: calls.append("loopback"))
-    monkeypatch.setattr(setup, "enroll_fixed_reader", lambda: calls.append("enroll"))
+    monkeypatch.setattr(
+        guest,
+        "observe_file_access_launch_stage",
+        lambda marker: calls.append(("stage", marker)),
+    )
+    monkeypatch.setattr(
+        setup,
+        "observe_file_access_launch_stage",
+        lambda marker: calls.append(("stage", marker)),
+    )
+
+    def enroll():
+        setup.observe_file_access_launch_stage(runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS[1])
+        calls.append("enroll")
+
+    monkeypatch.setattr(setup, "enroll_fixed_reader", enroll)
     monkeypatch.setattr(guest.os, "execve", lambda *_args: calls.append("drop"))
     guest.enter(8767, json.dumps(parent), file_access=enabled)
-    assert calls == ["isolate", "loopback", *(["enroll"] if enabled else []), "drop"]
+    assert calls == [
+        *([("stage", runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS[0])] if enabled else []),
+        "isolate",
+        "loopback",
+        *(
+            [
+                ("stage", runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS[1]),
+                "enroll",
+                ("stage", runtime.FILE_ACCESS_LAUNCH_STAGE_MARKERS[2]),
+            ]
+            if enabled
+            else []
+        ),
+        "drop",
+    ]

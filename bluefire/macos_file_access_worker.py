@@ -8,8 +8,9 @@ import subprocess  # nosec B404
 import sys
 import threading
 import time
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
+from . import macos_setup_failure_diagnostics as _setup_failure_diagnostics
 from . import runner_client as runner
 from .macos_file_access_channel import MacOSPrimitiveChannel
 from .macos_file_access_contract import (
@@ -86,7 +87,84 @@ class MacOSFileAccessWorker:
         self._local_cleanup_unknown = False
         self._child_close_attempted = False
         self._last_clock = (0, 0)
+        self._startup_observation_summary: tuple[int, str | None, str | None, bool] = (
+            0,
+            None,
+            None,
+            False,
+        )
+        self._launch_copy_rows: list[dict[str, Any]] = []
+        self._native_diagnostic_bytes = bytearray()
+        self._native_diagnostic_overflow = False
+        self._native_diagnostic_complete = False
+        self._native_diagnostic_thread: threading.Thread | None = None
         self._lock = threading.Lock()
+
+    def _drain_native_diagnostic(self, descriptor: int) -> None:
+        """Drain throughout launch so helper output cannot block containment."""
+        read_failed = False
+        try:
+            while True:
+                chunk = os.read(descriptor, 1024)
+                if not chunk:
+                    break
+                remaining = _setup_failure_diagnostics.MAX_COMBINED_FD_FRAME_BYTES - len(
+                    self._native_diagnostic_bytes
+                )
+                self._native_diagnostic_bytes.extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    self._native_diagnostic_overflow = True
+        except OSError:
+            read_failed = True
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError:
+                read_failed = True
+            self._native_diagnostic_complete = not read_failed
+
+    def _retained_descriptor_observation(
+        self,
+    ) -> tuple[dict[str, Any] | None, str | None, dict[str, Any] | None, str | None]:
+        if self._native_diagnostic_thread is None:
+            return None, "no_frame", None, "no_frame"
+        self._native_diagnostic_thread.join(timeout=0.1)
+        if self._native_diagnostic_overflow:
+            return None, "overflow", None, "overflow"
+        if not self._native_diagnostic_complete:
+            return None, "eof_incomplete", None, "eof_incomplete"
+        raw = bytes(self._native_diagnostic_bytes)
+        self._native_diagnostic_bytes.clear()
+        if not raw:
+            return None, "no_frame", None, "no_frame"
+        preexec_observation: dict[str, Any] | None = None
+        preexec_withheld: str | None = "no_frame"
+        native_raw = raw
+        if raw.startswith(_setup_failure_diagnostics.PREEXEC_FD_FRAME_PREFIX):
+            frame_end = raw.find(b"\n")
+            helper_frame = raw if frame_end < 0 else raw[: frame_end + 1]
+            native_raw = b"" if frame_end < 0 else raw[frame_end + 1 :]
+            preexec_observation, preexec_withheld = (
+                _setup_failure_diagnostics.preexec_fd_observation_from_frame(helper_frame)
+            )
+        if not native_raw:
+            return None, "no_frame", preexec_observation, preexec_withheld
+        native_rows, native_entry = _setup_failure_diagnostics.native_fd_diagnostics_from_frame(
+            native_raw
+        )
+        if native_rows is None:
+            return None, "invalid_frame", preexec_observation, preexec_withheld
+        observation: dict[str, Any] = {
+            "schema_version": _setup_failure_diagnostics.NATIVE_FD_OBSERVATION_SCHEMA,
+            "scope": "diagnostic_only_no_descriptor_admission",
+            "launch_copy_rows": self._launch_copy_rows,
+            "native_rows": native_rows,
+        }
+        if native_entry is not None:
+            observation["native_run_entry_fd3"] = native_entry
+        if not _setup_failure_diagnostics.valid_native_fd_observation(observation):
+            return None, "invalid_launch_rows", preexec_observation, preexec_withheld
+        return observation, None, preexec_observation, preexec_withheld
 
     def _guard(self, deadline: int | None = None) -> float:
         wall, monotonic = time.time_ns() // 1_000_000, darwin_clock_ns()
@@ -95,12 +173,13 @@ class MacOSFileAccessWorker:
             if deadline is not None
             else cast(int, self._binding["original_deadline_ns"])
         )
-        if (
-            not self._binding["issued_at_ms"] <= wall < self._binding["expires_at_ms"]
-            or monotonic >= limit
-            or wall < self._last_clock[0]
-            or monotonic < self._last_clock[1]
-        ):
+        if not self._binding["issued_at_ms"] <= wall < self._binding["expires_at_ms"]:
+            raise _refuse()
+        if monotonic >= limit:
+            raise _refuse()
+        if wall < self._last_clock[0]:
+            raise _refuse()
+        if monotonic < self._last_clock[1]:
             raise _refuse()
         self._last_clock = wall, monotonic
         return min(
@@ -110,12 +189,28 @@ class MacOSFileAccessWorker:
 
     def _registered(self, process: subprocess.Popen[bytes]) -> None:
         with runner._DARWIN_INDETERMINATE_LOCK:  # noqa: SLF001
-            if (
-                runner._DARWIN_ACTIVE_PROCESSES.get(process) is not self._runtime  # noqa: SLF001
-                or self._runtime._darwin_process_is_indeterminate(process)  # noqa: SLF001
-                or not self._runtime._refresh_darwin_no_fork_proof(process)
-            ):  # noqa: SLF001
-                raise _refuse()
+            if runner._DARWIN_ACTIVE_PROCESSES.get(process) is not self._runtime:  # noqa: SLF001
+                self._refuse_observation("worker_active_process_missing")
+            if self._runtime._darwin_process_is_indeterminate(process):  # noqa: SLF001
+                self._refuse_observation("worker_process_indeterminate")
+            if not self._runtime._refresh_darwin_no_fork_proof(process):  # noqa: SLF001
+                self._refuse_observation("worker_nofork_proof_refresh_failed")
+
+    @staticmethod
+    def _refuse_observation(site: str) -> NoReturn:
+        error = _refuse()
+        setattr(error, "_safe_startup_observation_site", site)  # noqa: B010
+        raise error from None
+
+    def _remember_startup_observation_failure(self, error: MacOSFileAccessContractError) -> None:
+        site = _setup_failure_diagnostics.normalize_startup_observation_site(
+            getattr(error, "_safe_startup_observation_site", None)
+        )
+        self._startup_observation_summary = (
+            _setup_failure_diagnostics.record_startup_observation_failure(
+                self._startup_observation_summary, site
+            )
+        )
 
     def _request_guard(self, request: dict[str, Any]) -> None:
         self._guard(request["deadline_ns"])
@@ -123,8 +218,10 @@ class MacOSFileAccessWorker:
 
     def _observe(self, *, startup: bool = False) -> None:
         process = self._process
-        if process is None or not any(original is process for original in self._processes):
-            raise _refuse()
+        if process is None:
+            self._refuse_observation("worker_process_missing")
+        if not any(original is process for original in self._processes):
+            self._refuse_observation("worker_process_not_retained")
         self._registered(process)
         credentials = self._binding["reader" if self._role == "reader" else "owner"]
         observed = observe_owned_child(
@@ -135,7 +232,7 @@ class MacOSFileAccessWorker:
             ),
         )
         if self._consistency is not None and observed != self._consistency:
-            raise _refuse()
+            self._refuse_observation("worker_consistency_changed")
         self._consistency = observed
         self._registered(process)
 
@@ -173,6 +270,7 @@ class MacOSFileAccessWorker:
         if not self._lock.acquire(blocking=False):
             raise _refuse()
         reserved = False
+        diagnostic_write = -1
         try:
             if self._started or self._settled:
                 raise _refuse()
@@ -196,6 +294,18 @@ class MacOSFileAccessWorker:
             )
             resource_flag = "--leaf-fd" if self._role == "control" else "--directory-fd"
             child_fd = self._child_channel.fileno()
+            diagnostic_read, diagnostic_write = os.pipe()
+            self._native_diagnostic_thread = threading.Thread(
+                target=self._drain_native_diagnostic,
+                args=(diagnostic_read,),
+                name="bluefire-macos-fd-diagnostic",
+                daemon=True,
+            )
+            try:
+                self._native_diagnostic_thread.start()
+            except BaseException:
+                os.close(diagnostic_read)
+                raise
             with runner._pinned_launch_file(
                 self._runtime.runner_binary, self._runtime.runner_binary_digest
             ) as launch:  # noqa: SLF001
@@ -231,6 +341,11 @@ class MacOSFileAccessWorker:
                     self._guard(startup_deadline)
                     self._factory_entered = True
                     options["_bluefire_descriptor_argument_indexes"] = (7, 12, 13, 19, 21)
+                    roles = {fd: "launch_auxiliary" for fd in options["pass_fds"]}
+                    roles[self._resource_fd] = "resource"
+                    roles[child_fd] = "primitive_channel"
+                    options["_bluefire_descriptor_roles"] = roles
+                    options["_bluefire_descriptor_observation_sink"] = self._launch_copy_rows
                     return self._runtime._spawn_registered_darwin_popen(  # noqa: SLF001
                         self._slot, self._processes, arguments, **options
                     )
@@ -247,26 +362,35 @@ class MacOSFileAccessWorker:
                     self._guard(startup_deadline)
 
                 self._creation_started = True
-                self._process = spawn_no_fork_exec(
-                    target,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    environment=dict(_ENVIRONMENT),
-                    inherited_descriptors=(self._resource_fd, child_fd),
-                    options={"start_new_session": True, "close_fds": True, "umask": 0o077},
-                    runner_binary=self._runtime.runner_binary,
-                    runner_binary_digest=self._runtime.runner_binary_digest,
-                    work_root=self._runtime.work_root,
-                    watchdog_interpreter=self._runtime._watchdog_interpreter,  # noqa: SLF001
-                    watchdog_interpreter_digest=self._runtime._watchdog_interpreter_digest,  # noqa: SLF001
-                    parent_death_script=self._runtime.parent_death_script,
-                    parent_death_script_digest=self._runtime.parent_death_script_digest,
-                    pinned_launch_file=runner._pinned_launch_file,  # noqa: SLF001
-                    start_grace_seconds=self._guard(startup_deadline),
-                    popen_factory=registered,
-                    proof_sink=self._proven,
-                    proof_callback=before_go,
-                )
+                try:
+                    self._process = spawn_no_fork_exec(
+                        target,
+                        stdout=subprocess.DEVNULL,
+                        stderr=diagnostic_write,
+                        environment=dict(_ENVIRONMENT),
+                        inherited_descriptors=(self._resource_fd, child_fd),
+                        options={"start_new_session": True, "close_fds": True, "umask": 0o077},
+                        runner_binary=self._runtime.runner_binary,
+                        runner_binary_digest=self._runtime.runner_binary_digest,
+                        work_root=self._runtime.work_root,
+                        watchdog_interpreter=self._runtime._watchdog_interpreter,  # noqa: SLF001
+                        watchdog_interpreter_digest=self._runtime._watchdog_interpreter_digest,  # noqa: SLF001
+                        parent_death_script=self._runtime.parent_death_script,
+                        parent_death_script_digest=self._runtime.parent_death_script_digest,
+                        pinned_launch_file=runner._pinned_launch_file,  # noqa: SLF001
+                        start_grace_seconds=self._guard(startup_deadline),
+                        popen_factory=registered,
+                        proof_sink=self._proven,
+                        proof_callback=before_go,
+                    )
+                finally:
+                    closing = diagnostic_write
+                    diagnostic_write = -1
+                    try:
+                        os.close(closing)
+                    except OSError:
+                        self._local_cleanup_unknown = True
+                        raise
             if not any(original is self._process for original in self._processes):
                 raise _refuse()
             self._close_child_channel()
@@ -275,16 +399,34 @@ class MacOSFileAccessWorker:
                 try:
                     self._observe(startup=True)
                     break
-                except MacOSFileAccessContractError:
+                except MacOSFileAccessContractError as exc:
+                    try:
+                        self._remember_startup_observation_failure(exc)
+                    except BaseException:
+                        pass
                     time.sleep(min(_POLL_SECONDS, self._guard(startup_deadline)))
             self._guard(startup_deadline)
-        except BaseException:
+        except BaseException as exc:
             self._poisoned = True
             self._quarantine()
             self._close_channel()
+            if type(exc) is MacOSFileAccessContractError:
+                summary = self._startup_observation_summary
+                if summary[0] > 0:
+                    try:
+                        setattr(exc, "_safe_startup_observation_summary", summary)  # noqa: B010
+                    except Exception:
+                        pass
             raise
         finally:
             try:
+                if diagnostic_write >= 0:
+                    closing = diagnostic_write
+                    diagnostic_write = -1
+                    try:
+                        os.close(closing)
+                    except OSError:
+                        self._local_cleanup_unknown = True
                 for process in self._proven:
                     self._runtime._darwin_no_fork_proven.add(process)  # noqa: SLF001
                 if reserved:
@@ -363,3 +505,81 @@ class MacOSFileAccessWorker:
                     self._runtime._quarantine_interrupted_darwin_launch(process)  # noqa: SLF001
             self._settled = released
             return released
+
+    def retained_native_startup_exit_code(self) -> int | None:
+        """Read one original cached Popen status only after physical settlement."""
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if (
+                self._settled is not True
+                or self._local_cleanup_unknown is not False
+                or self._creation_started is not True
+                or self._factory_entered is not True
+                or len(self._processes) != 1
+                or len(self._proven) != 1
+            ):
+                return None
+            process = self._processes[0]
+            if (
+                type(process) is not subprocess.Popen
+                or self._proven[0] is not process
+                or (self._process is not None and self._process is not process)
+            ):
+                return None
+            code = vars(process).get("returncode")
+            return code if type(code) is int else None
+        finally:
+            self._lock.release()
+
+    def retained_native_startup_status(self) -> dict[str, Any]:
+        """Describe cached startup status, or the exact fixed gate that withheld it."""
+        if not self._lock.acquire(blocking=False):
+            return _setup_failure_diagnostics.unavailable_native_startup_status("worker_lock_busy")
+        try:
+            if self._settled is not True:
+                return _setup_failure_diagnostics.unavailable_native_startup_status("not_settled")
+            if self._local_cleanup_unknown is not False:
+                return _setup_failure_diagnostics.unavailable_native_startup_status(
+                    "cleanup_unknown"
+                )
+            if self._creation_started is not True:
+                return _setup_failure_diagnostics.unavailable_native_startup_status("not_started")
+            if self._factory_entered is not True:
+                return _setup_failure_diagnostics.unavailable_native_startup_status(
+                    "factory_not_entered"
+                )
+            if len(self._processes) != 1:
+                return _setup_failure_diagnostics.unavailable_native_startup_status(
+                    "process_count_mismatch"
+                )
+            if len(self._proven) != 1:
+                return _setup_failure_diagnostics.unavailable_native_startup_status(
+                    "proof_count_mismatch"
+                )
+            process = self._processes[0]
+            if (
+                type(process) is not subprocess.Popen
+                or self._proven[0] is not process
+                or (self._process is not None and self._process is not process)
+            ):
+                return _setup_failure_diagnostics.unavailable_native_startup_status(
+                    "process_identity_mismatch"
+                )
+            code = vars(process).get("returncode")
+            status = _setup_failure_diagnostics.native_startup_status_from_returncode(code)
+            if type(code) is int and code == 96 and self._native_diagnostic_thread is not None:
+                observation, withheld, preexec_observation, preexec_withheld = (
+                    self._retained_descriptor_observation()
+                )
+                if observation is not None:
+                    status["descriptor_observation"] = observation
+                elif withheld is not None:
+                    status["descriptor_observation_withheld"] = withheld
+                if preexec_observation is not None:
+                    status["preexec_descriptor_observation"] = preexec_observation
+                elif preexec_withheld is not None:
+                    status["preexec_descriptor_observation_withheld"] = preexec_withheld
+            return status
+        finally:
+            self._lock.release()

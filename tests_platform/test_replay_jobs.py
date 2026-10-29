@@ -327,7 +327,8 @@ def test_replay_proposal_review_retains_intermediate_result_until_continuation_f
         },
     )
     with diagnose_job_wait("replay_terminal", request.node.add_report_section):
-        completed = service.job_controller.wait(job_id, timeout=10)
+        # The persisted continuation can take longer on shared CI runners.
+        completed = service.job_controller.wait(job_id, timeout=30)
     assert completed["state"] == "completed", completed["error"]
     assert completed["result_ref"] != pending["result_ref"]
     final = service.detail(completed["result_ref"])

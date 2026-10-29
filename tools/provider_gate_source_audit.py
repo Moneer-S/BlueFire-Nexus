@@ -63,12 +63,12 @@ _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "_clone_darwin_launch_link": "sha256:8d329eb489bb3ce28e5b6d73ae24c2a4a30013263e687be360f23f356708f300",
     "_duplicate_darwin_descriptor": "sha256:d4d53bd37f3721dec052f5a74e7e1eec78806aac24737bd5f3efef9e62edac14",
     "_execute_darwin_launch_request": "sha256:a85ea1b730c2a6d478b3fc82b61ce5e867a8baf0c52f4ea23d42410775f8740d",
-    "_prepare_darwin_launch_resources": "sha256:5277cfbecd9579a79aa4bb481a243fd759175135872f1ae064a26db8831fcef0",
+    "_prepare_darwin_launch_resources": "sha256:4d26721f47c5e0d5a96b0275c1d815906c6881d6382267741ecf7c8c34911f2f",
     "_retire_darwin_launch_resources": "sha256:5cf913f0d0a01d6d257c0827dd7b61ca30758f33f4b3e34b1693f9e80a253079",
     "_run_darwin_launch_worker": "sha256:a969f6e5c14c2bc0b150be268321faf33dd00da035548706cb9eded992ac01aa",
 }
 _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256 = (
-    "sha256:62ce17bfab8b7c8e1f5809de19fbb9e8a260db97f903d9d7850a8392f7d8f69b"
+    "sha256:aacdc000f47f32855b4319e0e590d7a5968422e1af7f6a56935430daabb48fff"
 )
 _REVIEWED_DARWIN_CONTAINMENT_SECTIONS = {
     "_validate_macos_launch_parent": "sha256:244beadfd89a4f2e6731109cd100042ba2a1ef8ea40e81bbd98f55211e7ebfb6",
@@ -77,7 +77,7 @@ _REVIEWED_DARWIN_CONTAINMENT_SOURCE_SHA256 = (
     "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c"
 )
 _REVIEWED_PARENT_DEATH_SOURCE_SHA256 = (
-    "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df"
+    "sha256:d4f39998e423396d75596b40659e0e8d82526533c2dddd26aded973b7274c4c0"
 )
 
 
@@ -489,17 +489,17 @@ def _runner_client_managed_duplex_contract(
     calls: dict[str, ast.Call] = {}
     for reference in references:
         call = parents.get(reference)
-        function = _enclosing_function(reference, parents)
+        enclosing_function = _enclosing_function(reference, parents)
         if (
             not isinstance(call, ast.Call)
             or call.func is not reference
             or len(call.args) != 1
-            or function is None
-            or function is not by_name.get(function.name)
-            or function.name in calls
+            or enclosing_function is None
+            or enclosing_function is not by_name.get(enclosing_function.name)
+            or enclosing_function.name in calls
         ):
             return False
-        calls[function.name] = call
+        calls[enclosing_function.name] = call
     if set(calls) != {"_spawn_watchdog", "_invoke", "_invoke_task"}:
         return False
 
@@ -510,6 +510,7 @@ def _runner_client_managed_duplex_contract(
     for name, call in calls.items():
         stdin = [keyword.value for keyword in call.keywords if keyword.arg == "stdin"]
         expansions = [keyword.value for keyword in call.keywords if keyword.arg is None]
+        expected_expansions: tuple[str, ...]
         if name == "_spawn_watchdog":
             stdout = [keyword.value for keyword in call.keywords if keyword.arg == "stdout"]
             if (

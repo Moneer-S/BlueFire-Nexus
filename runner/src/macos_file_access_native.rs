@@ -12,6 +12,219 @@ pub(super) struct Recipe {
     pub(super) groups: Vec<u32>,
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeRunEntryFd3 {
+    Absent,
+    QueryError,
+    Present {
+        cloexec: bool,
+        dev: u32,
+        ino: u64,
+        mode_type: u32,
+        rdev: u32,
+    },
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+impl NativeRunEntryFd3 {
+    pub(super) fn document(self) -> serde_json::Value {
+        let mut document = serde_json::json!({
+            "phase": "native_run_entry_before_runtime_checks",
+            "fd": 3,
+        });
+        match self {
+            Self::Absent => document["status"] = serde_json::json!("absent"),
+            Self::QueryError => document["status"] = serde_json::json!("query_error"),
+            Self::Present {
+                cloexec,
+                dev,
+                ino,
+                mode_type,
+                rdev,
+            } => {
+                document["status"] = serde_json::json!("present");
+                document["cloexec"] = serde_json::json!(cloexec);
+                document["identity"] = serde_json::json!({
+                    "dev": dev, "ino": ino, "mode_type": mode_type, "rdev": rdev,
+                });
+            }
+        }
+        document
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+pub(super) fn initial_descriptor_frame(
+    rows: &[serde_json::Value],
+    entry: Option<&NativeRunEntryFd3>,
+) -> Option<Vec<u8>> {
+    if rows.len() > 15 {
+        return None;
+    }
+    let mut document = serde_json::json!({
+        "schema_version": "bluefire.macos-native-fd-rows.v1",
+        "rows": rows,
+    });
+    if let Some(entry) = entry {
+        document["native_run_entry_fd3"] = entry.document();
+    }
+    let mut frame = serde_json::to_vec(&document).ok()?;
+    frame.push(b'\n');
+    (frame.len() <= 4096).then_some(frame)
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StartupFailureStage {
+    RuntimeSupportedCheck,
+    InitialClockOrDeadline,
+    #[cfg(test)]
+    InitialDescriptorInventory,
+    ReadonlyDescriptor,
+    CredentialSelection,
+    PostDropDescriptorInventory,
+    InitialResourceValidation,
+    ChannelInitialization,
+    InitialDescriptorInventoryQuery,
+    InitialDescriptorInventoryRows,
+    InitialDescriptorInventoryStandardStreams,
+    InventoryMissingStdin,
+    InventoryMissingStdout,
+    InventoryMissingStderr,
+    InventoryMissingResource,
+    InventoryMissingControlChannel,
+    InventoryUnexpectedRows,
+    InventoryMixedRowsMissingStdin,
+    InventoryMixedRowsMissingStdout,
+    InventoryMixedRowsMissingStderr,
+    InventoryMixedRowsMissingResource,
+    InventoryMixedRowsMissingControlChannel,
+    InventoryTypeMismatchStdin,
+    InventoryTypeMismatchStdout,
+    InventoryTypeMismatchStderr,
+    InventoryTypeMismatchResource,
+    InventoryTypeMismatchControlChannel,
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+impl StartupFailureStage {
+    pub(super) const fn exit_code(self) -> i32 {
+        match self {
+            Self::RuntimeSupportedCheck => 80,
+            Self::InitialClockOrDeadline => 81,
+            #[cfg(test)]
+            Self::InitialDescriptorInventory => 82,
+            Self::ReadonlyDescriptor => 83,
+            Self::CredentialSelection => 84,
+            Self::PostDropDescriptorInventory => 85,
+            Self::InitialResourceValidation => 86,
+            Self::ChannelInitialization => 87,
+            Self::InitialDescriptorInventoryQuery => 88,
+            Self::InitialDescriptorInventoryRows => 89,
+            Self::InitialDescriptorInventoryStandardStreams => 90,
+            Self::InventoryMissingStdin => 91,
+            Self::InventoryMissingStdout => 92,
+            Self::InventoryMissingStderr => 93,
+            Self::InventoryMissingResource => 94,
+            Self::InventoryMissingControlChannel => 95,
+            Self::InventoryUnexpectedRows => 96,
+            Self::InventoryMixedRowsMissingStdin => 97,
+            Self::InventoryMixedRowsMissingStdout => 98,
+            Self::InventoryMixedRowsMissingStderr => 99,
+            Self::InventoryMixedRowsMissingResource => 100,
+            Self::InventoryMixedRowsMissingControlChannel => 101,
+            Self::InventoryTypeMismatchStdin => 102,
+            Self::InventoryTypeMismatchStdout => 103,
+            Self::InventoryTypeMismatchStderr => 104,
+            Self::InventoryTypeMismatchResource => 105,
+            Self::InventoryTypeMismatchControlChannel => 106,
+        }
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DescriptorInventoryFailure {
+    QueryResultShape,
+    ExpectedRowsAndTypes,
+    MissingExpectedRole(DescriptorRole),
+    UnexpectedRowsPresent,
+    MixedRowsMissingRole(DescriptorRole),
+    TypeMismatch(DescriptorRole),
+    StandardStreams,
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+impl DescriptorInventoryFailure {
+    pub(super) const fn startup_stage(self) -> StartupFailureStage {
+        match self {
+            Self::QueryResultShape => StartupFailureStage::InitialDescriptorInventoryQuery,
+            Self::ExpectedRowsAndTypes => StartupFailureStage::InitialDescriptorInventoryRows,
+            Self::MissingExpectedRole(role) => role.missing_stage(),
+            Self::UnexpectedRowsPresent => StartupFailureStage::InventoryUnexpectedRows,
+            Self::MixedRowsMissingRole(role) => role.mixed_stage(),
+            Self::TypeMismatch(role) => role.type_mismatch_stage(),
+            Self::StandardStreams => StartupFailureStage::InitialDescriptorInventoryStandardStreams,
+        }
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DescriptorRole {
+    Stdin,
+    Stdout,
+    Stderr,
+    Resource,
+    ControlChannel,
+    ReadHandle,
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+impl DescriptorRole {
+    pub(super) const fn missing_stage(self) -> StartupFailureStage {
+        match self {
+            Self::Stdin => StartupFailureStage::InventoryMissingStdin,
+            Self::Stdout => StartupFailureStage::InventoryMissingStdout,
+            Self::Stderr => StartupFailureStage::InventoryMissingStderr,
+            Self::Resource => StartupFailureStage::InventoryMissingResource,
+            Self::ControlChannel => StartupFailureStage::InventoryMissingControlChannel,
+            Self::ReadHandle => StartupFailureStage::InitialDescriptorInventoryRows,
+        }
+    }
+
+    pub(super) const fn mixed_stage(self) -> StartupFailureStage {
+        match self {
+            Self::Stdin => StartupFailureStage::InventoryMixedRowsMissingStdin,
+            Self::Stdout => StartupFailureStage::InventoryMixedRowsMissingStdout,
+            Self::Stderr => StartupFailureStage::InventoryMixedRowsMissingStderr,
+            Self::Resource => StartupFailureStage::InventoryMixedRowsMissingResource,
+            Self::ControlChannel => StartupFailureStage::InventoryMixedRowsMissingControlChannel,
+            Self::ReadHandle => StartupFailureStage::InitialDescriptorInventoryRows,
+        }
+    }
+
+    pub(super) const fn type_mismatch_stage(self) -> StartupFailureStage {
+        match self {
+            Self::Stdin => StartupFailureStage::InventoryTypeMismatchStdin,
+            Self::Stdout => StartupFailureStage::InventoryTypeMismatchStdout,
+            Self::Stderr => StartupFailureStage::InventoryTypeMismatchStderr,
+            Self::Resource => StartupFailureStage::InventoryTypeMismatchResource,
+            Self::ControlChannel => StartupFailureStage::InventoryTypeMismatchControlChannel,
+            Self::ReadHandle => StartupFailureStage::InitialDescriptorInventoryRows,
+        }
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+pub(super) fn startup_step<T>(
+    stage: StartupFailureStage,
+    result: Result<T, ()>,
+) -> Result<T, StartupFailureStage> {
+    result.map_err(|_| stage)
+}
+
 fn decimal(value: &str) -> Result<u64, String> {
     if value.is_empty()
         || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -113,35 +326,90 @@ pub(super) fn inventory(
     held: i32,
     channel: i32,
     read: Option<i32>,
-) -> Result<(), ()> {
+) -> Result<(), DescriptorInventoryFailure> {
     let mut expected = vec![
-        (0, None),
-        (1, None),
-        (2, None),
-        (held, Some(1)),
-        (channel, Some(2)),
+        ExpectedDescriptor {
+            fd: 0,
+            required_kind: None,
+            role: DescriptorRole::Stdin,
+        },
+        ExpectedDescriptor {
+            fd: 1,
+            required_kind: None,
+            role: DescriptorRole::Stdout,
+        },
+        ExpectedDescriptor {
+            fd: 2,
+            required_kind: None,
+            role: DescriptorRole::Stderr,
+        },
+        ExpectedDescriptor {
+            fd: held,
+            required_kind: Some(1),
+            role: DescriptorRole::Resource,
+        },
+        ExpectedDescriptor {
+            fd: channel,
+            required_kind: Some(2),
+            role: DescriptorRole::ControlChannel,
+        },
     ];
     if let Some(fd) = read {
         if fd < 3 || fd == held || fd == channel {
-            return Err(());
+            return Err(DescriptorInventoryFailure::ExpectedRowsAndTypes);
         }
-        expected.push((fd, Some(1)));
+        expected.push(ExpectedDescriptor {
+            fd,
+            required_kind: Some(1),
+            role: DescriptorRole::ReadHandle,
+        });
     }
     if rows.len() != expected.len() {
-        return Err(());
+        return Err(classify_row_set_mismatch(rows, &expected));
     }
     let mut actual = rows.to_vec();
-    actual.sort_unstable();
-    expected.sort_unstable();
-    for ((fd, kind), (wanted, required)) in actual.iter().zip(&expected) {
-        if fd != wanted
-            || required.is_some_and(|value| *kind != value)
-            || (required.is_none() && !matches!(*kind, 1 | 6))
+    actual.sort_unstable_by_key(|row| (row.0, row.1));
+    expected.sort_unstable_by_key(|row| row.fd);
+    for ((fd, kind), wanted) in actual.iter().zip(&expected) {
+        if fd != &wanted.fd {
+            return Err(classify_row_set_mismatch(rows, &expected));
+        }
+        if wanted.required_kind.is_some_and(|value| *kind != value)
+            || (wanted.required_kind.is_none() && !matches!(*kind, 1 | 6))
         {
-            return Err(());
+            return Err(DescriptorInventoryFailure::TypeMismatch(wanted.role));
         }
     }
     Ok(())
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[derive(Debug, Clone, Copy)]
+struct ExpectedDescriptor {
+    fd: i32,
+    required_kind: Option<u32>,
+    role: DescriptorRole,
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn classify_row_set_mismatch(
+    rows: &[(i32, u32)],
+    expected: &[ExpectedDescriptor],
+) -> DescriptorInventoryFailure {
+    let missing = expected
+        .iter()
+        .find(|wanted| !rows.iter().any(|(fd, _)| *fd == wanted.fd))
+        .map(|wanted| wanted.role);
+    let unexpected_or_duplicate = rows.iter().enumerate().any(|(index, (fd, _))| {
+        !expected.iter().any(|wanted| wanted.fd == *fd)
+            || rows[..index].iter().any(|(previous, _)| previous == fd)
+    });
+    match (missing, unexpected_or_duplicate) {
+        (Some(role), false) => DescriptorInventoryFailure::MissingExpectedRole(role),
+        (None, true) => DescriptorInventoryFailure::UnexpectedRowsPresent,
+        (Some(role), true) => DescriptorInventoryFailure::MixedRowsMissingRole(role),
+        (None, false) => DescriptorInventoryFailure::ExpectedRowsAndTypes,
+    }
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
@@ -218,7 +486,11 @@ pub(super) fn run(args: &[String], entry: Entry) -> Result<i32, String> {
     let recipe = recipe(args, entry)?;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        darwin::run(recipe, entry).map_err(|_| REFUSAL.into())
+        match darwin::run(recipe, entry) {
+            Ok(code) => Ok(code),
+            Err(darwin::RunFailure::Startup(stage)) => Ok(stage.exit_code()),
+            Err(darwin::RunFailure::Generic) => Err(REFUSAL.into()),
+        }
     }
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
@@ -242,6 +514,12 @@ mod darwin {
         Backend, Clock, Credentials, Directory, Entry, Facts, OpenFailure, Session, LEAF,
         MAX_MESSAGE, MAX_REQUESTS,
     };
+
+    #[derive(Debug)]
+    pub(super) enum RunFailure {
+        Startup(super::StartupFailureStage),
+        Generic,
+    }
 
     // Pinned public headers: apple-oss-distributions/xnu@ac9718fb1af618d5ce8678d0dc6e8a58f252216f
     // bsd/sys/{proc_info,mount,fcntl}.h and osfmk/mach/mach_time.h.
@@ -488,7 +766,13 @@ mod darwin {
         Ok(())
     }
 
-    fn descriptor_inventory(held: i32, channel: i32, read: Option<i32>) -> Result<(), ()> {
+    fn descriptor_inventory(
+        held: i32,
+        channel: i32,
+        read: Option<i32>,
+        initial: bool,
+        entry: Option<&super::NativeRunEntryFd3>,
+    ) -> Result<(), super::DescriptorInventoryFailure> {
         let mut rows = unsafe { std::mem::zeroed::<[FdInfo; 16]>() };
         let bytes = unsafe {
             proc_pidinfo(
@@ -503,10 +787,10 @@ mod darwin {
             || bytes as usize >= size_of::<[FdInfo; 16]>()
             || !(bytes as usize).is_multiple_of(size_of::<FdInfo>())
         {
-            return Err(());
+            return Err(super::DescriptorInventoryFailure::QueryResultShape);
         }
         let rows = &rows[..bytes as usize / size_of::<FdInfo>()];
-        super::inventory(
+        let checked = super::inventory(
             &rows
                 .iter()
                 .map(|row| (row.fd, row.kind))
@@ -514,23 +798,63 @@ mod darwin {
             held,
             channel,
             read,
-        )?;
+        );
+        if initial && checked == Err(super::DescriptorInventoryFailure::UnexpectedRowsPresent) {
+            emit_initial_descriptor_rows(rows, entry);
+        }
+        checked?;
         let mut null = unsafe { std::mem::zeroed::<libc::stat>() };
         if unsafe { libc::lstat(c"/dev/null".as_ptr(), &mut null) } != 0
             || null.st_mode & libc::S_IFMT != libc::S_IFCHR
         {
-            return Err(());
+            return Err(super::DescriptorInventoryFailure::StandardStreams);
         }
         for fd in 0..=2 {
-            let meta = metadata(fd)?;
+            let meta =
+                metadata(fd).map_err(|_| super::DescriptorInventoryFailure::StandardStreams)?;
             let kind = meta.mode() & libc::S_IFMT as u32;
             if kind != libc::S_IFIFO as u32
                 && (kind != libc::S_IFCHR as u32 || meta.rdev() != null.st_rdev as u64)
             {
-                return Err(());
+                return Err(super::DescriptorInventoryFailure::StandardStreams);
             }
         }
         Ok(())
+    }
+
+    /// A failed inventory may describe itself, but never admits another handle.
+    /// The diagnostic is attempted only when stderr is a FIFO. The parent
+    /// accepts one bounded frame only from its settled original code-96 child.
+    fn emit_initial_descriptor_rows(rows: &[FdInfo], entry: Option<&super::NativeRunEntryFd3>) {
+        let mut stderr = unsafe { std::mem::zeroed::<libc::stat>() };
+        if unsafe { libc::fstat(2, &mut stderr) } != 0
+            || stderr.st_mode & libc::S_IFMT != libc::S_IFIFO
+        {
+            return;
+        }
+        let observed = rows
+            .iter()
+            .map(|row| {
+                let mut details = unsafe { std::mem::zeroed::<libc::stat>() };
+                let identity = if unsafe { libc::fstat(row.fd, &mut details) } == 0 {
+                    Some(serde_json::json!({
+                        "dev": details.st_dev as u32,
+                        "ino": details.st_ino as u64,
+                        "mode_type": (details.st_mode & libc::S_IFMT) as u32,
+                        "rdev": details.st_rdev as u32,
+                    }))
+                } else {
+                    None
+                };
+                serde_json::json!({"fd": row.fd, "kind": row.kind, "identity": identity})
+            })
+            .collect::<Vec<_>>();
+        let Some(frame) = super::initial_descriptor_frame(&observed, entry) else {
+            return;
+        };
+        // One write stays below PIPE_BUF. A partial frame is rejected by the
+        // parent parser; this path never affects the refusal result.
+        let _ = unsafe { libc::write(2, frame.as_ptr().cast(), frame.len()) };
     }
 
     struct Native {
@@ -546,7 +870,8 @@ mod darwin {
             self.held.ok_or(())
         }
         fn inventory(&self) -> Result<(), ()> {
-            descriptor_inventory(self.held()?, self.channel, self.read_fd)
+            descriptor_inventory(self.held()?, self.channel, self.read_fd, false, None)
+                .map_err(|_| ())
         }
     }
 
@@ -795,12 +1120,49 @@ mod darwin {
         remaining(deadline).map(|_| ())
     }
 
-    pub(super) fn run(recipe: super::Recipe, entry: Entry) -> Result<i32, ()> {
-        supported()?;
+    fn observe_native_run_entry_fd3() -> super::NativeRunEntryFd3 {
+        // Fixed slot only. This is entry to run(), after loader/Rust startup;
+        // querying it neither opens nor adopts, closes or admits a descriptor.
+        let flags = unsafe { libc::fcntl(3, libc::F_GETFD) };
+        if flags < 0 {
+            return if unsafe { *libc::__error() } == libc::EBADF {
+                super::NativeRunEntryFd3::Absent
+            } else {
+                super::NativeRunEntryFd3::QueryError
+            };
+        }
+        let mut details = unsafe { std::mem::zeroed::<libc::stat>() };
+        if unsafe { libc::fstat(3, &mut details) } != 0 {
+            return super::NativeRunEntryFd3::QueryError;
+        }
+        super::NativeRunEntryFd3::Present {
+            cloexec: flags & libc::FD_CLOEXEC != 0,
+            dev: details.st_dev as u32,
+            ino: details.st_ino as u64,
+            mode_type: (details.st_mode & libc::S_IFMT) as u32,
+            rdev: details.st_rdev as u32,
+        }
+    }
+
+    pub(super) fn run(recipe: super::Recipe, entry: Entry) -> Result<i32, RunFailure> {
+        let entry_fd3 = observe_native_run_entry_fd3();
+        super::startup_step(
+            super::StartupFailureStage::RuntimeSupportedCheck,
+            supported(),
+        )
+        .map_err(RunFailure::Startup)?;
         let held = recipe.held;
         let channel_fd = recipe.channel;
-        let now = clock()?.monotonic_ns;
-        super::original_deadline(now, recipe.original_deadline_ns)?;
+        let now = super::startup_step(
+            super::StartupFailureStage::InitialClockOrDeadline,
+            clock().map(|value| value.monotonic_ns),
+        )
+        .map_err(RunFailure::Startup)?;
+        super::startup_step(
+            super::StartupFailureStage::InitialClockOrDeadline,
+            super::original_deadline(now, recipe.original_deadline_ns),
+        )
+        .map_err(RunFailure::Startup)?;
         let mut backend = Native {
             held: Some(held),
             channel: channel_fd,
@@ -808,19 +1170,48 @@ mod darwin {
             entry,
             cleanup_unknown: false,
         };
-        backend.inventory()?;
-        readonly(held)?;
-        super::select_principal(&mut DropCredentials, &recipe)?;
-        backend.inventory()?;
-        if entry == Entry::Reader {
-            backend.directory()?;
-        } else {
-            let facts = backend.facts(held)?;
-            if facts.owner_uid != principal()?.effective_uid {
-                return Err(());
-            }
+        let startup = (|| -> Result<(), super::StartupFailureStage> {
+            descriptor_inventory(held, channel_fd, None, true, Some(&entry_fd3))
+                .map_err(super::DescriptorInventoryFailure::startup_stage)?;
+            super::startup_step(
+                super::StartupFailureStage::ReadonlyDescriptor,
+                readonly(held),
+            )?;
+            super::startup_step(
+                super::StartupFailureStage::CredentialSelection,
+                super::select_principal(&mut DropCredentials, &recipe),
+            )?;
+            super::startup_step(
+                super::StartupFailureStage::PostDropDescriptorInventory,
+                backend.inventory(),
+            )?;
+            super::startup_step(
+                super::StartupFailureStage::InitialResourceValidation,
+                if entry == Entry::Reader {
+                    backend.directory().map(|_| ())
+                } else {
+                    (|| {
+                        let facts = backend.facts(held)?;
+                        if facts.owner_uid != principal()?.effective_uid {
+                            return Err(());
+                        }
+                        Ok(())
+                    })()
+                },
+            )?;
+            Ok(())
+        })();
+        if let Err(stage) = startup {
+            return Err(RunFailure::Startup(stage));
         }
-        let mut stream = channel(channel_fd)?;
+        let mut stream = match channel(channel_fd) {
+            Ok(stream) => stream,
+            Err(()) => {
+                return Err(RunFailure::Startup(
+                    super::StartupFailureStage::ChannelInitialization,
+                ));
+            }
+        };
         let result = (|| {
             let mut session = Session::new();
             for _ in 0..MAX_REQUESTS {
@@ -865,8 +1256,8 @@ mod darwin {
         let fd = stream.into_raw_fd();
         let channel_closed = unsafe { libc::close(fd) } == 0;
         if !held_closed || !channel_closed {
-            return Err(());
+            return Err(RunFailure::Generic);
         }
-        result
+        result.map_err(|_| RunFailure::Generic)
     }
 }

@@ -170,6 +170,15 @@ def _parser() -> argparse.ArgumentParser:
     windows_pair_setup.add_argument(
         "--confirm-create-local-reader", action="store_true", required=True
     )
+    macos_file_setup = runner_commands.add_parser(
+        "macos-file-setup",
+        help="Start the explicit root-owned macOS generated-file workspace",
+    )
+    macos_file_setup.add_argument(
+        "--confirm-create-generated-workspace", action="store_true", required=True
+    )
+    macos_file_setup.add_argument("--port", type=int, default=0)
+    macos_file_setup.add_argument("--no-browser", action="store_true")
     runner_commands.add_parser("revoke", help="Revoke stopped runner trust")
     runner_remove = runner_commands.add_parser(
         "remove", help="Remove revoked trust and reconciled runner state"
@@ -571,6 +580,18 @@ def _execute(
             else setup_windows_file_baseline_local
         )
         return setup(args.profile)
+    if args.command == "runner" and args.runner_command == "macos-file-setup":
+        if args.confirm_create_generated_workspace is not True:
+            raise ValueError(
+                "macOS local setup requires explicit generated-workspace confirmation."
+            )
+        if any(
+            value is not None for value in (args.config, args.runs_dir, config, ai_provider_access)
+        ):
+            raise ValueError("macOS local setup uses only the fixed protected product state.")
+        from .macos_file_access_local import run_local_supervisor
+
+        return run_local_supervisor(port=args.port, no_browser=args.no_browser)
     if args.command == "s3":
         from .s3_access_setup_cli import execute as execute_s3_setup
 
@@ -1032,7 +1053,94 @@ def main(
         )
         return 2
     except (OSError, RuntimeError, ValueError) as exc:
-        _json({"error": {"code": "command_failed", "message": str(exc)}})
+        error: dict[str, Any] = {"code": "command_failed", "message": str(exc)}
+        if args.command == "runner" and args.runner_command == "macos-file-setup":
+            module = sys.modules.get(f"{__package__}.macos_file_access_local")
+            failure_type = getattr(module, "MacOSSetupFailure", None)
+            stage = getattr(exc, "safe_setup_stage", None)
+            allowed_stages = getattr(module, "MACOS_SETUP_DIAGNOSTIC_STAGES", ())
+            setup_site = getattr(exc, "safe_setup_site", None)
+            setup_offset = getattr(exc, "safe_setup_offset", None)
+            allowed_site_offsets = getattr(module, "MACOS_SETUP_DIAGNOSTIC_SITE_OFFSETS", {})
+            if (
+                isinstance(failure_type, type)
+                and isinstance(exc, failure_type)
+                and type(stage) is str
+                and stage in allowed_stages
+            ):
+                error["setup_stage"] = stage
+                if (
+                    stage in allowed_site_offsets
+                    and type(setup_site) is str
+                    and type(setup_offset) is int
+                    and setup_offset in allowed_site_offsets.get(stage, {}).get(setup_site, ())
+                ):
+                    error["setup_site"] = setup_site
+                    error["setup_offset"] = setup_offset
+                observation = getattr(exc, "safe_setup_observation", None)
+                diagnostics = getattr(module, "_setup_failure_diagnostics", None)
+                valid_observation = getattr(diagnostics, "valid_startup_observation_payload", None)
+                if (
+                    type(observation) is dict
+                    and callable(valid_observation)
+                    and valid_observation(observation)
+                ):
+                    error["startup_observation"] = dict(observation)
+                native_exits = getattr(exc, "safe_native_startup_exits", None)
+                allowed_native_exits = {
+                    "runtime_supported_check",
+                    "initial_clock_or_deadline",
+                    "initial_descriptor_inventory",
+                    "initial_descriptor_inventory_query",
+                    "initial_descriptor_inventory_rows",
+                    "initial_descriptor_inventory_standard_streams",
+                    "initial_descriptor_inventory_missing_stdin",
+                    "initial_descriptor_inventory_missing_stdout",
+                    "initial_descriptor_inventory_missing_stderr",
+                    "initial_descriptor_inventory_missing_resource",
+                    "initial_descriptor_inventory_missing_control_channel",
+                    "initial_descriptor_inventory_unexpected_rows",
+                    "initial_descriptor_inventory_mixed_missing_stdin",
+                    "initial_descriptor_inventory_mixed_missing_stdout",
+                    "initial_descriptor_inventory_mixed_missing_stderr",
+                    "initial_descriptor_inventory_mixed_missing_resource",
+                    "initial_descriptor_inventory_mixed_missing_control_channel",
+                    "initial_descriptor_inventory_type_mismatch_stdin",
+                    "initial_descriptor_inventory_type_mismatch_stdout",
+                    "initial_descriptor_inventory_type_mismatch_stderr",
+                    "initial_descriptor_inventory_type_mismatch_resource",
+                    "initial_descriptor_inventory_type_mismatch_control_channel",
+                    "readonly_descriptor",
+                    "credential_selection",
+                    "post_drop_descriptor_inventory",
+                    "initial_resource_validation",
+                    "channel_initialization",
+                }
+                if (
+                    stage == "namespace_creation"
+                    and type(native_exits) is dict
+                    and 0 < len(native_exits) <= 3
+                    and all(
+                        type(role) is str
+                        and role in ("reader", "owner", "control")
+                        and type(label) is str
+                        and label in allowed_native_exits
+                        for role, label in native_exits.items()
+                    )
+                ):
+                    error["native_startup_exits"] = dict(native_exits)
+                native_statuses = getattr(exc, "safe_native_startup_statuses", None)
+                valid_native_statuses = getattr(diagnostics, "valid_native_startup_statuses", None)
+                if (
+                    stage == "namespace_creation"
+                    and type(native_statuses) is dict
+                    and callable(valid_native_statuses)
+                    and valid_native_statuses(native_statuses)
+                ):
+                    error["native_startup_statuses"] = {
+                        role: dict(status) for role, status in native_statuses.items()
+                    }
+        _json({"error": error})
         return 2
     except KeyboardInterrupt:
         return 130
@@ -1043,6 +1151,8 @@ def main(
         "windows-file-baseline-setup",
     ):
         return 0 if isinstance(result, Mapping) and result.get("publication") == "complete" else 4
+    if args.command == "runner" and args.runner_command == "macos-file-setup":
+        return 0 if isinstance(result, Mapping) and result.get("status") == "stopped_cleanly" else 4
     return 0
 
 

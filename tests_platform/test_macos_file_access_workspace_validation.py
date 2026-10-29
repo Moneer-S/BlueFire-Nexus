@@ -127,6 +127,24 @@ def test_endpoint_socket_constant_keeps_the_bootstrap_integer_compatibility_chec
     )
 
 
+def test_parent_child_and_supervisor_have_the_same_two_exact_runtime_targets():
+    expected = ((3, 10, 16), (3, 11, 18))
+    targets = (
+        ("macos_file_access_workspace", "_root"),
+        ("macos_file_access_workspace_bootstrap", "_handshake"),
+        ("macos_file_access_local", "_platform_gate"),
+    )
+    for module_name, function_name in targets:
+        function = _definitions(_module(module_name))[function_name]
+        comparisons = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Compare) and ast.unparse(node.left) == "sys.version_info[:3]"
+        ]
+        assert len(comparisons) == 1
+        assert ast.literal_eval(comparisons[0].comparators[0]) == expected
+
+
 def test_endpoint_import_stays_after_both_verified_inventories_and_canonical_alias():
     handshake = _definitions(_module(_BOOTSTRAP))["_handshake"]
     assert isinstance(handshake, ast.FunctionDef)

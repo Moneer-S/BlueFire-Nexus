@@ -14,6 +14,195 @@ fn credentials(uid: u32) -> Credentials {
     }
 }
 
+#[test]
+fn native_startup_failure_codes_are_reserved_and_stage_propagation_is_closed() {
+    use native::StartupFailureStage as Stage;
+
+    let stages = [
+        (Stage::RuntimeSupportedCheck, 80),
+        (Stage::InitialClockOrDeadline, 81),
+        (Stage::InitialDescriptorInventory, 82),
+        (Stage::ReadonlyDescriptor, 83),
+        (Stage::CredentialSelection, 84),
+        (Stage::PostDropDescriptorInventory, 85),
+        (Stage::InitialResourceValidation, 86),
+        (Stage::ChannelInitialization, 87),
+        (Stage::InitialDescriptorInventoryQuery, 88),
+        (Stage::InitialDescriptorInventoryRows, 89),
+        (Stage::InitialDescriptorInventoryStandardStreams, 90),
+        (Stage::InventoryMissingStdin, 91),
+        (Stage::InventoryMissingStdout, 92),
+        (Stage::InventoryMissingStderr, 93),
+        (Stage::InventoryMissingResource, 94),
+        (Stage::InventoryMissingControlChannel, 95),
+        (Stage::InventoryUnexpectedRows, 96),
+        (Stage::InventoryMixedRowsMissingStdin, 97),
+        (Stage::InventoryMixedRowsMissingStdout, 98),
+        (Stage::InventoryMixedRowsMissingStderr, 99),
+        (Stage::InventoryMixedRowsMissingResource, 100),
+        (Stage::InventoryMixedRowsMissingControlChannel, 101),
+        (Stage::InventoryTypeMismatchStdin, 102),
+        (Stage::InventoryTypeMismatchStdout, 103),
+        (Stage::InventoryTypeMismatchStderr, 104),
+        (Stage::InventoryTypeMismatchResource, 105),
+        (Stage::InventoryTypeMismatchControlChannel, 106),
+    ];
+    let mut codes = Vec::new();
+    for (stage, code) in stages {
+        assert_eq!(stage.exit_code(), code);
+        assert!((80..=106).contains(&code));
+        assert!(![0, 2, 3, 4].contains(&code));
+        assert_eq!(native::startup_step(stage, Ok(7)), Ok(7));
+        assert_eq!(native::startup_step(stage, Err::<(), ()>(())), Err(stage));
+        codes.push(code);
+    }
+    codes.sort_unstable();
+    codes.dedup();
+    assert_eq!(codes, (80..=106).collect::<Vec<_>>());
+}
+
+#[test]
+fn descriptor_inventory_failure_categories_map_to_fixed_nonzero_startup_codes() {
+    use native::DescriptorInventoryFailure as Failure;
+
+    let categories = [
+        (Failure::QueryResultShape, 88),
+        (Failure::ExpectedRowsAndTypes, 89),
+        (Failure::StandardStreams, 90),
+        (Failure::UnexpectedRowsPresent, 96),
+    ];
+    for (category, code) in categories {
+        let stage = category.startup_stage();
+        assert_eq!(stage.exit_code(), code);
+        assert_ne!(stage.exit_code(), 0);
+        assert_eq!(native::startup_step(stage, Err::<(), ()>(())), Err(stage));
+    }
+    assert_eq!(
+        native::StartupFailureStage::InitialDescriptorInventory.exit_code(),
+        82
+    );
+    for (role, missing, mixed, wrong_type) in [
+        (native::DescriptorRole::Stdin, 91, 97, 102),
+        (native::DescriptorRole::Stdout, 92, 98, 103),
+        (native::DescriptorRole::Stderr, 93, 99, 104),
+        (native::DescriptorRole::Resource, 94, 100, 105),
+        (native::DescriptorRole::ControlChannel, 95, 101, 106),
+    ] {
+        assert_eq!(
+            Failure::MissingExpectedRole(role)
+                .startup_stage()
+                .exit_code(),
+            missing
+        );
+        assert_eq!(
+            Failure::MixedRowsMissingRole(role)
+                .startup_stage()
+                .exit_code(),
+            mixed
+        );
+        assert_eq!(
+            Failure::TypeMismatch(role).startup_stage().exit_code(),
+            wrong_type
+        );
+    }
+}
+
+#[test]
+fn native_run_entry_fd3_documents_are_finite_and_fit_the_existing_frame_cap() {
+    use native::NativeRunEntryFd3;
+
+    let rows = (0..15)
+        .map(|index| {
+            serde_json::json!({
+                "fd": i32::MAX - index,
+                "kind": u32::MAX,
+                "identity": {
+                    "dev": u32::MAX,
+                    "ino": u64::MAX,
+                    "mode_type": 0o170000,
+                    "rdev": u32::MAX,
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    for entry in [
+        None,
+        Some(NativeRunEntryFd3::Absent),
+        Some(NativeRunEntryFd3::QueryError),
+        Some(NativeRunEntryFd3::Present {
+            cloexec: false,
+            dev: u32::MAX,
+            ino: u64::MAX,
+            mode_type: 0o170000,
+            rdev: u32::MAX,
+        }),
+        Some(NativeRunEntryFd3::Present {
+            cloexec: true,
+            dev: 0,
+            ino: 0,
+            mode_type: 0,
+            rdev: 0,
+        }),
+    ] {
+        let frame = native::initial_descriptor_frame(&rows, entry.as_ref()).unwrap();
+        assert!(frame.len() <= 4096);
+        assert_eq!(frame.last(), Some(&b'\n'));
+        assert_eq!(frame.iter().filter(|byte| **byte == b'\n').count(), 1);
+        let document: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(
+            document["schema_version"],
+            "bluefire.macos-native-fd-rows.v1"
+        );
+        assert_eq!(document["rows"], serde_json::json!(rows));
+        if let Some(entry) = entry {
+            let observed = &document["native_run_entry_fd3"];
+            assert_eq!(document.as_object().unwrap().len(), 3);
+            assert_eq!(observed["phase"], "native_run_entry_before_runtime_checks");
+            assert_eq!(observed["fd"], 3);
+            match entry {
+                NativeRunEntryFd3::Absent | NativeRunEntryFd3::QueryError => {
+                    assert_eq!(observed.as_object().unwrap().len(), 3);
+                    assert_eq!(observed, &entry.document());
+                    let expected = if entry == NativeRunEntryFd3::Absent {
+                        "absent"
+                    } else {
+                        "query_error"
+                    };
+                    assert_eq!(observed["status"], expected);
+                }
+                NativeRunEntryFd3::Present {
+                    cloexec,
+                    dev,
+                    ino,
+                    mode_type,
+                    rdev,
+                } => {
+                    assert_eq!(observed.as_object().unwrap().len(), 5);
+                    assert_eq!(observed["status"], "present");
+                    assert_eq!(observed["cloexec"], cloexec);
+                    assert_eq!(
+                        observed["identity"],
+                        serde_json::json!({
+                            "dev": dev, "ino": ino, "mode_type": mode_type, "rdev": rdev,
+                        })
+                    );
+                }
+            }
+        } else {
+            assert_eq!(document.as_object().unwrap().len(), 2);
+            assert!(document.get("native_run_entry_fd3").is_none());
+        }
+    }
+    let mut too_many = rows;
+    too_many.push(too_many[0].clone());
+    assert!(native::initial_descriptor_frame(&too_many, None).is_none());
+    assert!(native::initial_descriptor_frame(
+        &[serde_json::json!({"oversized": "x".repeat(4096)})],
+        Some(&NativeRunEntryFd3::Absent),
+    )
+    .is_none());
+}
+
 fn request(operation: &str) -> Request {
     let bytes = b"{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n";
     let binding = Binding {
@@ -425,18 +614,60 @@ fn fixed_commands_accept_only_distinct_inherited_numeric_handles() {
 
 #[test]
 fn self_inventory_rejects_smuggled_duplicate_missing_or_wrong_type_descriptors() {
+    use native::{DescriptorInventoryFailure as Failure, DescriptorRole as Role};
+
     let rows = [(0, 1), (1, 6), (2, 6), (3, 1), (4, 2)];
     assert!(native::inventory(&rows, 3, 4, None).is_ok());
-    assert!(native::inventory(&rows[..4], 3, 4, None).is_err());
+    let roles = [
+        Role::Stdin,
+        Role::Stdout,
+        Role::Stderr,
+        Role::Resource,
+        Role::ControlChannel,
+    ];
+    for (index, role) in roles.into_iter().enumerate() {
+        let missing = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(row, value)| (row != index).then_some(*value))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native::inventory(&missing, 3, 4, None),
+            Err(Failure::MissingExpectedRole(role))
+        );
+
+        let mut mixed = rows;
+        mixed[index] = (9, 1);
+        assert_eq!(
+            native::inventory(&mixed, 3, 4, None),
+            Err(Failure::MixedRowsMissingRole(role))
+        );
+
+        let mut wrong_type = rows;
+        wrong_type[index].1 = if role == Role::ControlChannel { 1 } else { 2 };
+        assert_eq!(
+            native::inventory(&wrong_type, 3, 4, None),
+            Err(Failure::TypeMismatch(role))
+        );
+    }
     let mut extra = rows.to_vec();
     extra.push((9, 1));
-    assert!(native::inventory(&extra, 3, 4, None).is_err());
+    assert_eq!(
+        native::inventory(&extra, 3, 4, None),
+        Err(Failure::UnexpectedRowsPresent)
+    );
     assert!(native::inventory(&extra, 3, 4, Some(9)).is_ok());
+    let mut duplicate = rows.to_vec();
+    duplicate.push((0, 1));
+    assert_eq!(
+        native::inventory(&duplicate, 3, 4, None),
+        Err(Failure::UnexpectedRowsPresent)
+    );
     extra[0] = (1, 1);
-    assert!(native::inventory(&extra, 3, 4, Some(9)).is_err());
-    let mut wrong = rows;
-    wrong[0].1 = 2;
-    assert!(native::inventory(&wrong, 3, 4, None).is_err());
+    assert_eq!(
+        native::inventory(&extra, 3, 4, Some(9)),
+        Err(Failure::MixedRowsMissingRole(Role::Stdin))
+    );
 }
 
 #[test]
