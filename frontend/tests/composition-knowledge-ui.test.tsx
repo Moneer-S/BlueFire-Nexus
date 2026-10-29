@@ -21,6 +21,7 @@ it("opens explicitly, keeps failed-route findings, and distinguishes observed re
   expect(failed).toHaveTextContent("Failed");
   expect(failed).toHaveTextContent("Observed");
   expect(failed).toHaveTextContent("0640");
+  expect(failed).toHaveTextContent("Permissions (octal)");
   expect(screen.getByRole("region", { name: "Findings from attempt 2" })).toHaveTextContent("Runner-reported");
   expect(screen.getByText("Recorded history")).toBeInTheDocument();
   expect(within(failed).getByRole("link", { name: "Open source run" })).toHaveAttribute("href", "/runs/run-knowledge-1");

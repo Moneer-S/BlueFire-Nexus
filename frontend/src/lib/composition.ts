@@ -2,6 +2,9 @@ import type { ActionDefinition, Behavior, Scenario } from "../types";
 import { request, DEMO_MODE } from "./api";
 import { sameJson } from "./replay-review";
 import { parseScenarioDocument } from "./scenario";
+import { checkedCompositionEvidenceResult, type CompositionReconsideration } from "./composition-evidence";
+import type { CompositionKnowledge } from "./composition-knowledge";
+import type { CompositionEvidenceContext } from "./composition-evidence";
 
 export const FILE_ACCESS_PACK = "bluefire.linux-file-access-pack.v1";
 export const MACOS_FILE_ACCESS_PACK = "bluefire.macos-file-access-pack.v1";
@@ -28,7 +31,7 @@ export interface CompositionRefusal { schema_version: "bluefire.composition-obje
 export type CompositionObjectiveState = CompositionObjective | CompositionRefusal;
 export interface CompositionCandidate { schema_version: "bluefire.composition-proposal.v1"; title: string; start: string; steps: Array<{ id: string; behavior_id: string; parameters: Record<string, unknown> }>; edges: Array<{ from_step: string; outcome: string; to_step: string }>; evidence_refs: string[]; rationale: string }
 export interface CompositionContext { schema_version: "bluefire.composition-proposal-context.v1"; grant_id: string; context_digest: string; objective: CompositionReview["objective"]; snapshot: CompositionReview["snapshot"]; facts: { facts: Array<{ fact_id: string; kind: string; value: unknown; [key: string]: unknown }>; [key: string]: unknown }; initial_proposal: CompositionCandidate | null; initial_scenario: Scenario | null }
-export interface CompositionProposal { job: CompositionJob; candidate_ready: boolean; provider_outcome: string; proposal: null | { schema_version: string; proposal_job_id: string; owner_id: string; context_digest: string; prior_attempt_id: string | null; candidate: CompositionCandidate; scenario: Scenario; proposal_digest: string; provider: { provider_id: string; kind: string; model: string; used_fallback: false; attempts: number } } }
+export interface CompositionProposal { job: CompositionJob; candidate_ready: boolean; provider_outcome: string; proposal: null | { schema_version: string; knowledge_digest?: string; model_context_digest?: string; reconsideration?: CompositionReconsideration; proposal_job_id: string; owner_id: string; context_digest: string; prior_attempt_id: string | null; candidate: CompositionCandidate; scenario: Scenario; proposal_digest: string; provider: { provider_id: string; kind: string; model: string; used_fallback: false; attempts: number } } }
 export interface CompositionList { schema_version: "bluefire.composition-objective-list.v1"; objectives: Array<{ owner_id: string; title: string; status: string; job_state: string }> }
 
 export const compositionJobValid = (value: unknown): value is string => typeof value === "string" && /^job-[0-9a-f]{32}$/.test(value);
@@ -224,7 +227,9 @@ export function checkedCompositionProposal(value: CompositionProposal, id: strin
   if (value?.job?.job_id !== id || value.job.kind !== "composition.proposal" || value.job.request.owner_id !== owner || typeof value.candidate_ready !== "boolean") throw bad();
   if (value.proposal) {
     const proposal = value.proposal;
-    if (proposal.schema_version !== "bluefire.composition-ai-result.v1" || proposal.proposal_job_id !== id || proposal.owner_id !== owner || !digest(proposal.context_digest) || !digest(proposal.proposal_digest) || proposal.provider?.used_fallback !== false || proposal.candidate?.schema_version !== "bluefire.composition-proposal.v1") throw bad();
+    if (!["bluefire.composition-ai-result.v1", "bluefire.composition-ai-result.v2"].includes(proposal.schema_version) || proposal.proposal_job_id !== id || proposal.owner_id !== owner || !digest(proposal.context_digest) || !digest(proposal.proposal_digest) || proposal.provider?.used_fallback !== false || proposal.candidate?.schema_version !== "bluefire.composition-proposal.v1") throw bad();
+    if (proposal.schema_version === "bluefire.composition-ai-result.v2") checkedCompositionEvidenceResult(value, owner);
+    else if (compositionRecord(value.job.request.submitted_request).schema_version === "bluefire.composition-evidence-proposal-request.v1" || proposal.knowledge_digest !== undefined || proposal.reconsideration !== undefined) throw bad();
     parseScenarioDocument(proposal.scenario);
   }
   return value;
@@ -376,6 +381,7 @@ export const compositionApi = {
   list: (control_owner_id: string) => post<CompositionList>("objective-list", { control_owner_id }),
   objective: (id: string) => request<CompositionObjectiveState>(`/composition/objectives/${encodeURIComponent(id)}`),
   context: (id: string, prior_attempt_id: string | null) => post<CompositionContext>(`objectives/${encodeURIComponent(id)}/proposal-context`, { prior_attempt_id }),
+  evidenceContext: (id: string, prior_attempt_id: string, knowledge: CompositionKnowledge) => post<CompositionEvidenceContext>(`objectives/${encodeURIComponent(id)}/proposal-context`, { schema_version: "bluefire.composition-evidence-context-query.v1", prior_attempt_id, attempt_ids: knowledge.attempts.map(attempt => attempt.attempt_id), knowledge_digest: knowledge.knowledge_digest }),
   proposal: (id: string) => request<CompositionProposal>(`/composition/proposals/${encodeURIComponent(id)}`),
   submit: (value: CompositionPending) => post<CompositionObjectiveState | CompositionProposal>(value.kind === "grant" ? "objectives" : `objectives/${encodeURIComponent(value.owner)}/${value.kind === "attempt" ? "attempts" : "proposals"}`, value.body),
   control: (id: string, operation: "stop" | "revoke" | "continue") => post<CompositionObjectiveState>(`objectives/${encodeURIComponent(id)}/${operation}`, {}),

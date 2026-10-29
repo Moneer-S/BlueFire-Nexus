@@ -29,6 +29,7 @@ import {
 } from "./receiver-guards.mjs";
 import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
 import { inspectReceiverKnowledge, receiverKnowledgeRequestAllowed } from "./receiver-knowledge.mjs";
+import { EVIDENCE_PURPOSE, EVIDENCE_PURPOSE_LABEL, authorizeReceiverEvidence, inspectReceiverEvidenceProposal, receiverEvidenceRequestAllowed } from "./receiver-evidence-proposal.mjs";
 import { receiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
 import {
   receiverPreparationDiagnostic,
@@ -84,19 +85,21 @@ const ROUTE_LIMITS = {
   review: 5,
   approval: 5,
   cancel: 1,
-  composition_list: 6, // Initial open/reopen plus grant, proposal, attempt, and revoke refreshes.
+  composition_list: 9, // Original opens/refreshes plus history Settings return, proposal and saved reopening.
   composition_context: 1,
   composition_grant: 1,
   composition_proposal_context: 3,
   composition_proposal: 1,
   composition_attempt: 1,
-  composition_knowledge: 1,
+  composition_knowledge: 2, // Inspect the attempt, then load its same findings after Settings.
+  composition_evidence_context: 3, // Selection, optional stale completion refresh, fresh-document reopening.
+  composition_evidence_proposal: 1,
   composition_revoke: 2,
   comparison: 1,
   provider_save: 1,
   provider_activate: 1,
-  model_authorization: 1,
-  model_authorization_revoke: 2,
+  model_authorization: 2, // One request each under two distinct purposes.
+  model_authorization_revoke: 4, // At most two bounded reconciliation attempts per grant.
 };
 const counts = Object.fromEntries(Object.keys(ROUTE_LIMITS).map((key) => [key, 0]));
 const report = {
@@ -178,7 +181,10 @@ let compositionSnapshotId;
 let compositionProposalJobId;
 let latestCompositionProposal;
 let providerConfig;
-let modelAuthorizationId;
+const modelAuthorizationIds = new Map();
+const revokedModelPurposes = new Set();
+let evidenceProposalJobId;
+let latestEvidenceContext;
 let expectedModelRevokeId;
 let proposalReadCount = 0;
 let modelAuthorizationReadCount = 0;
@@ -429,9 +435,9 @@ function allowedRead(url, method) {
     return /^\?after_sequence=\d+&limit=\d+$/.test(url.search);
   }
   if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}`) return !url.search;
-  if (compositionProposalJobId && path === `/api/v1/composition/proposals/${compositionProposalJobId}`) {
+  if ([compositionProposalJobId, evidenceProposalJobId].filter(Boolean).some(id => path === `/api/v1/composition/proposals/${id}`)) {
     proposalReadCount += 1;
-    return !url.search && proposalReadCount <= 64;
+    return !url.search && proposalReadCount <= 96;
   }
   if (comparisonSubmitted && /^\/api\/v1\/comparison-snapshots\/run-comparison-[0-9a-f]{64}$/.test(path)) {
     return !url.search && (!compositionSnapshotId || path.endsWith(`/${compositionSnapshotId}`));
@@ -501,7 +507,7 @@ function authorizePost(url, body) {
   }
   if (path === "/api/v1/ai/authorizations") {
     return count("model_authorization") && providerConfig && exactKeys(body, ["provider", "purposes", "data_scope", "limits", "expires_in_seconds", "approved_by", "usage_authorized", "local_endpoint_authorized"])
-      && same(body.provider, providerConfig) && same(body.purposes, [MODEL_PURPOSE])
+      && same(body.provider, providerConfig) && same(body.purposes, [counts.model_authorization === 1 ? MODEL_PURPOSE : EVIDENCE_PURPOSE])
       && body.data_scope === "reviewed_lab_context"
       && exactKeys(body.limits, ["max_requests", "max_request_bytes", "max_reserved_output_tokens"])
       && body.limits.max_requests === 1 && body.limits.max_request_bytes === 262_144
@@ -547,10 +553,18 @@ function authorizePost(url, body) {
     return ok;
   }
   if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/proposal-context`) {
+    if (body?.schema_version === "bluefire.composition-evidence-context-query.v1") {
+      return receiverEvidenceRequestAllowed(url, body, evidenceExpectation()) && count("composition_evidence_context");
+    }
     return count("composition_proposal_context") && exactKeys(body, ["prior_attempt_id"])
       && body.prior_attempt_id === null;
   }
   if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/proposals`) {
+    if (body?.schema_version === "bluefire.composition-evidence-proposal-request.v1") {
+      const ok = receiverEvidenceRequestAllowed(url, body, evidenceExpectation(), true) && count("composition_evidence_proposal");
+      if (ok) evidenceProposalJobId = `job-${body.submission_id.replaceAll("-", "")}`;
+      return Boolean(ok);
+    }
     const ok = count("composition_proposal") && exactKeys(body, ["submission_id", "provider_id", "context_digest", "prior_attempt_id"])
       && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.submission_id)
       && body.provider_id === PROVIDER_ID && body.context_digest === latestCompositionContext?.context_digest
@@ -648,23 +662,30 @@ async function appApi(path, requestedTimeout = remainingMs()) {
   }, { apiPath: path, timeout });
 }
 
-function ownedModelAuthorization(row) {
-  return row && typeof row === "object" && /^ai-authorization-[0-9a-f]{32}$/.test(row.authorization_id ?? "")
-    && row.provider?.id === PROVIDER_ID && same(row.provider, providerConfig)
-    && same(row.purposes, [MODEL_PURPOSE]) && row.approved_by === MODEL_REVIEWER;
+function evidenceExpectation() {
+  return { origin: ORIGIN, ownerId: compositionOwnerId, attemptId: report.composition?.attempt_id,
+    settlement: report.composition?.settlement, objectiveEstablished: report.composition?.objective_established,
+    authorizations: counts.model_authorization, providerId: PROVIDER_ID,
+    knowledgeDigest: report.composition?.knowledge?.knowledge_digest, contextDigest: latestEvidenceContext?.context_digest };
 }
 
-async function readOwnedModelAuthorization(requestedTimeout = remainingMs()) {
+function ownedModelAuthorization(row, purpose = MODEL_PURPOSE) {
+  return row && typeof row === "object" && /^ai-authorization-[0-9a-f]{32}$/.test(row.authorization_id ?? "")
+    && row.provider?.id === PROVIDER_ID && same(row.provider, providerConfig)
+    && same(row.purposes, [purpose]) && row.approved_by === MODEL_REVIEWER;
+}
+
+async function readOwnedModelAuthorization(requestedTimeout = remainingMs(), purpose = MODEL_PURPOSE) {
   const value = await appApi("/ai/authorizations", requestedTimeout);
   assert.ok(Array.isArray(value.authorizations));
-  const owned = value.authorizations.filter(ownedModelAuthorization);
-  assert.equal(owned.length, 1, "Only one exact receiver model authorization may be owned");
-  if (modelAuthorizationId) assert.equal(owned[0].authorization_id, modelAuthorizationId);
-  modelAuthorizationId = owned[0].authorization_id;
+  const owned = value.authorizations.filter(row => ownedModelAuthorization(row, purpose));
+  assert.equal(owned.length, 1, "Only one exact receiver model authorization per purpose may be owned");
+  if (modelAuthorizationIds.has(purpose)) assert.equal(owned[0].authorization_id, modelAuthorizationIds.get(purpose));
+  modelAuthorizationIds.set(purpose, owned[0].authorization_id);
   return owned[0];
 }
 
-async function revokeModelAuthorizationNormally() {
+async function revokeModelPurposeNormally(purpose) {
   if (counts.model_authorization === 0) {
     report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: false, model_authorization_not_issued: true };
     return;
@@ -681,16 +702,18 @@ async function revokeModelAuthorizationNormally() {
       return timeout;
     };
     for (let attempt = 0; attempt < 2 && Date.now() < until && deadlineBudget.remaining(Date.now()) > 0; attempt += 1) {
-      const row = await readOwnedModelAuthorization(localTimeout());
+      const row = await readOwnedModelAuthorization(localTimeout(), purpose);
       if (row.status === "revoked") {
-        report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: true };
+        revokedModelPurposes.add(purpose);
         return;
       }
       assert.equal(row.status, "active");
       assert.ok(counts.model_authorization_revoke < ROUTE_LIMITS.model_authorization_revoke);
       expectedModelRevokeId = row.authorization_id;
       await page.goto(`${ORIGIN}/#/settings`, { waitUntil: "domcontentloaded", timeout: localTimeout() });
-      const button = page.getByRole("button", { name: `Revoke model usage for ${MODEL}`, exact: true });
+      const label = purpose === MODEL_PURPOSE ? MODEL_PURPOSE_LABEL : EVIDENCE_PURPOSE_LABEL;
+      const button = page.locator("article.provider-authorization-record").filter({ has: page.getByText(label, { exact: true }) })
+        .getByRole("button", { name: `Revoke model usage for ${MODEL}`, exact: true });
       await button.waitFor({ state: "visible", timeout: localTimeout() });
       assert.equal(await Promise.race([
         button.count(),
@@ -701,9 +724,9 @@ async function revokeModelAuthorizationNormally() {
       const settleUntil = Math.min(until, Date.now() + (attempt === 0 ? 1500 : 8000));
       while (Date.now() < settleUntil && deadlineBudget.remaining(Date.now()) > 0) {
         try {
-          const current = await readOwnedModelAuthorization(localTimeout(settleUntil));
+          const current = await readOwnedModelAuthorization(localTimeout(settleUntil), purpose);
           if (current.status === "revoked") {
-            report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: true };
+            revokedModelPurposes.add(purpose);
             return;
           }
           assert.equal(current.status, "active");
@@ -716,6 +739,13 @@ async function revokeModelAuthorizationNormally() {
   } catch { /* Unknown authorization status remains an incomplete cleanup. */ }
   finally { expectedModelRevokeId = undefined; }
   report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: false };
+}
+
+async function revokeModelAuthorizationNormally() {
+  const purposes = [MODEL_PURPOSE, EVIDENCE_PURPOSE].slice(0, Math.min(2, counts.model_authorization));
+  for (const purpose of purposes) await revokeModelPurposeNormally(purpose);
+  report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: purposes.length > 0
+    && purposes.every(purpose => revokedModelPurposes.has(purpose)) };
 }
 
 const ACTIVE_WORK_KEY = "bluefire.local.active-defensive-work.v1";
@@ -1242,7 +1272,10 @@ try {
         && receiverContextResponseMatchesRequest(contextRequestBody, latestFinalContextRequest, data)) latestContext = data;
       else if (path === "/api/v1/composition/context" && response.ok()) latestCompositionReview = data;
       else if (path === "/api/v1/composition/objectives" && response.ok()) latestCompositionObjective = data;
-      else if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/proposal-context` && response.ok()) latestCompositionContext = data;
+      else if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/proposal-context` && response.ok()) {
+        if (data.schema_version === "bluefire.composition-evidence-proposal-context.v1") latestEvidenceContext = data;
+        else latestCompositionContext = data;
+      }
       else if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/attempts` && response.ok()) latestCompositionObjective = data;
       else if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}/revoke` && response.ok()) latestCompositionObjective = data;
       else if (path === "/api/v1/comparisons" && response.ok()) compositionSnapshotId = data.saved_snapshot?.snapshot_id;
@@ -1790,6 +1823,25 @@ try {
     },
   });
   report.checks.push("failed_objective_findings_opened_from_verified_run_without_new_attempt");
+  stage = "composition-history-model-authorization";
+  await authorizeReceiverEvidence(page, { origin: ORIGIN, model: MODEL, reviewer: MODEL_REVIEWER });
+  assert.equal(counts.model_authorization, 2);
+  const historyAuthorization = await readOwnedModelAuthorization(remainingMs(), EVIDENCE_PURPOSE);
+  assert.equal(historyAuthorization.status, "active");
+  assert.equal(historyAuthorization.usage?.requests, 0);
+  assert.notEqual(historyAuthorization.authorization_id, modelAuthorizationIds.get(MODEL_PURPOSE));
+  stage = "composition-history-proposal";
+  report.composition.evidence_proposal = await inspectReceiverEvidenceProposal(page, {
+    origin: ORIGIN, ownerId: compositionOwnerId, controlId: originalOwnerId,
+    attempt: composedAttempt, run: finalizedComposedRun, sourceBinding: verified.source_binding,
+    initial, providerId: PROVIDER_ID, model: MODEL, remainingMs,
+    readProposal: id => appApi(`/composition/proposals/${id}`),
+    readObjective: () => appApi(`/composition/objectives/${compositionOwnerId}`),
+  });
+  assert.equal((await readOwnedModelAuthorization(remainingMs(), EVIDENCE_PURPOSE)).usage?.requests, 1);
+  assert.equal((await readOwnedModelAuthorization()).usage?.requests, 1);
+  assert.equal(counts.composition_attempt, 1);
+  report.checks.push("history_proposal_reopened_with_original_records_and_no_additional_execution");
   stage = "composition-revoke";
   const revokeResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/composition/objectives/${compositionOwnerId}/revoke`
     && response.request().method() === "POST");
@@ -2104,8 +2156,8 @@ try {
   stage = "composition-model-authorization-revoke";
   await revokeModelAuthorizationNormally();
   assert.equal(report.cleanup.model_authorization_revoked, true);
-  assert.equal(counts.model_authorization_revoke, 1);
-  report.checks.push("receiver_composition_model_authorization_revoked_after_one_proposal");
+  assert.equal(counts.model_authorization_revoke, 2);
+  report.checks.push("receiver_distinct_model_authorizations_revoked_after_one_proposal_each");
 
   report.request_counts = counts;
   assert.equal(report.blocked_requests.length, 0);
@@ -2117,9 +2169,11 @@ try {
   assert.equal(counts.approval, 5);
   assert.equal(counts.cancel, 0);
   assert.ok(counts.composition_list >= 1 && counts.composition_list <= ROUTE_LIMITS.composition_list);
-  for (const name of ["composition_context", "composition_grant", "composition_proposal", "composition_attempt", "composition_knowledge", "composition_revoke", "comparison", "provider_save", "provider_activate", "model_authorization", "model_authorization_revoke"]) {
+  for (const name of ["composition_context", "composition_grant", "composition_proposal", "composition_evidence_proposal", "composition_attempt", "composition_revoke", "comparison", "provider_save", "provider_activate"]) {
     assert.equal(counts[name], 1);
   }
+  for (const name of ["composition_knowledge", "model_authorization", "model_authorization_revoke"]) assert.equal(counts[name], 2);
+  assert.ok(counts.composition_evidence_context >= 2 && counts.composition_evidence_context <= ROUTE_LIMITS.composition_evidence_context);
   assert.ok(counts.composition_proposal_context >= 2 && counts.composition_proposal_context <= ROUTE_LIMITS.composition_proposal_context);
   assert.equal(report.cleanup.composition_grant_revoked, true);
   assert.equal(report.cleanup.model_authorization_revoked, true);

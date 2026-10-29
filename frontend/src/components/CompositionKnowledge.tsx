@@ -19,7 +19,9 @@ const sourceLabels: Record<CompositionFinding["provenance"], string> = {
   observed: "Observed", executed: "Runner-reported", synthetic: "Simulation",
   control_blocked: "Product refusal", counterfactual: "Counterfactual", unknown: "Unclassified source",
 };
-const displayValue = (value: string | number | boolean) => typeof value === "boolean" ? value ? "Yes" : "No" : String(value);
+const readableValues = new Set(["success", "partial", "failed", "refused", "control_blocked", "cancelled", "available", "unavailable_windows", "unsupported_platform", "not_evaluated", "allowed", "permission_denied"]);
+const displayValue = (value: string | number | boolean) => typeof value === "boolean" ? value ? "Yes" : "No" : typeof value === "string" && readableValues.has(value) ? sentence(value) : String(value);
+const fieldLabel = (key: string) => ({ permission_mode_octal: "Permissions (octal)", size_bytes: "Size (bytes)" } as Record<string, string>)[key] ?? sentence(key);
 const summaryPriority = ["runner_status", "reported_outcome", "reported_reader", "permission_mode_octal", "reported_mode", "mode", "record_count", "reported_record_count", "size_bytes", "bytes_received", "container", "effective_access", "permission_status", "process_id", "parent_process_id", "platform", "receiver_process_id"];
 const fieldPriority = (key: string) => { const priority = summaryPriority.indexOf(key); return priority < 0 ? summaryPriority.length : priority; };
 
@@ -27,12 +29,13 @@ function Finding({ finding }: { finding: CompositionFinding }) {
   const fields = Object.entries(finding.summary).sort(([left], [right]) => fieldPriority(left) - fieldPriority(right));
   return <li className="composition-finding">
     <div className="composition-finding-heading"><h5>{findingTitles[finding.semantic_kind]}</h5><span>{sourceLabels[finding.provenance]}</span></div>
-    <p className="composition-finding-time">Step {finding.step_id} · {formatDate(finding.observed_at)}</p>
-    {fields.length ? <DataList items={fields.slice(0, 4).map(([label, value]) => ({ label: sentence(label), value: displayValue(value) }))} />
+    <p className="composition-finding-time">{sentence(finding.step_id)} · {formatDate(finding.observed_at)}</p>
+    {fields.length ? <DataList items={fields.slice(0, 4).map(([label, value]) => ({ label: fieldLabel(label), value: displayValue(value) }))} />
       : <p className="composition-knowledge-muted">The source record has no summary fields.</p>}
     <details className="composition-finding-source"><summary>{fields.length > 4 ? `Source details and ${fields.length - 4} more fields` : "Source details"}</summary>
-      {fields.length > 4 ? <DataList items={fields.slice(4).map(([label, value]) => ({ label: sentence(label), value: displayValue(value) }))} /> : null}
+      {fields.length > 4 ? <DataList items={fields.slice(4).map(([label, value]) => ({ label: fieldLabel(label), value: displayValue(value) }))} /> : null}
       <DataList items={[
+        { label: "Step identity", value: <code>{finding.step_id}</code> },
         { label: "Method", value: <code>{finding.behavior_id}</code> },
         ...(finding.action_id ? [{ label: "Action", value: <code>{finding.action_id}</code> }] : []),
         { label: "Finding", value: <code>{finding.finding_id}</code> },
@@ -52,7 +55,7 @@ function Finding({ finding }: { finding: CompositionFinding }) {
 
 type ReadState = { status: "idle" } | { status: "loading" } | { status: "error"; error: unknown } | { status: "ready"; data: CompositionKnowledge; binding: string };
 
-function KnowledgeWorkspace({ objective }: { objective: CompositionObjective }) {
+function KnowledgeWorkspace({ objective, onKnowledgeChange }: { objective: CompositionObjective; onKnowledgeChange?: (knowledge: CompositionKnowledge | null) => void }) {
   const contentId = useId();
   const requestGeneration = useRef(0);
   const [open, setOpen] = useState(false);
@@ -67,22 +70,24 @@ function KnowledgeWorkspace({ objective }: { objective: CompositionObjective }) 
     if (!selected.length || selected.length > 8) return;
     const generation = ++requestGeneration.current;
     const binding = currentBinding;
+    onKnowledgeChange?.(null);
     setRead({ status: "loading" });
     try {
       const data = await compositionKnowledgeApi.read(objective, selected);
-      if (requestGeneration.current === generation) setRead({ status: "ready", data, binding });
+      if (requestGeneration.current === generation) { setRead({ status: "ready", data, binding }); onKnowledgeChange?.(data); }
     } catch (error) {
       if (requestGeneration.current === generation) setRead({ status: "error", error });
     }
   };
   const toggle = () => {
-    if (open) { requestGeneration.current += 1; setRead({ status: "idle" }); }
+    if (open) { requestGeneration.current += 1; setRead({ status: "idle" }); onKnowledgeChange?.(null); }
     else void load();
     setOpen(!open);
   };
   const changeSelection = (id: string, checked: boolean) => {
     requestGeneration.current += 1;
     setRead({ status: "idle" });
+    onKnowledgeChange?.(null);
     setSelection(previous => checked ? [...previous.filter(item => available.has(item)), id] : previous.filter(item => item !== id));
   };
   return <div className={`composition-knowledge${open ? " is-open" : ""}`}>
@@ -114,6 +119,6 @@ function KnowledgeWorkspace({ objective }: { objective: CompositionObjective }) 
   </div>;
 }
 
-export function CompositionKnowledge({ objective }: { objective: CompositionObjective }) {
-  return <KnowledgeWorkspace key={objective.owner.job_id} objective={objective} />;
+export function CompositionKnowledge({ objective, onKnowledgeChange }: { objective: CompositionObjective; onKnowledgeChange?: (knowledge: CompositionKnowledge | null) => void }) {
+  return <KnowledgeWorkspace key={objective.owner.job_id} objective={objective} onKnowledgeChange={onKnowledgeChange} />;
 }

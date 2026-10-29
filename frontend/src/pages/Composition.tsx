@@ -9,6 +9,9 @@ import { CompositionCapabilities, CompositionSetup } from "../components/Composi
 import { CompositionAttempts } from "../components/CompositionAttempts";
 import { CompositionGraph } from "../components/CompositionGraph";
 import "./Composition.css";
+import { checkedCompositionEvidenceContext, compositionEvidenceKnowledge, type CompositionEvidenceContext } from "../lib/composition-evidence";
+import type { CompositionKnowledge } from "../lib/composition-knowledge";
+import { CompositionReconsiderationReview } from "../components/CompositionReconsiderationReview";
 import { clearCompositionControl, compositionControlConfirmed, readCompositionControls, readCompositionProposals, rememberCompositionProposal, storeCompositionControl, type CompositionControl } from "../lib/composition";
 import { clearCompositionCancellation, compositionCanRevise, compositionCancellationConfirmed, compositionEstablished, readCompositionCancellations, storeCompositionCancellation } from "../lib/composition";
 import type { CompositionObjectiveState, CompositionReviewRequest } from "../lib/composition";
@@ -24,6 +27,7 @@ export function CompositionPage() {
   const [recentProposals, setRecentProposals] = useState<Record<string, string>>(restored.proposals);
   const [cancellations, setCancellations] = useState<Record<string, string>>(restored.cancellations);
   const [localError, setLocalError] = useState<unknown>(restored.error);
+  const [knowledgeSelections, setKnowledgeSelections] = useState<Record<string, CompositionKnowledge | null>>({});
   const [reviewSeed, setReviewSeed] = useState<CompositionReviewRequest>();
   const [expandedObjective, setExpandedObjective] = useState("");
   const [now, setNow] = useState(Date.now());
@@ -95,6 +99,10 @@ export function CompositionPage() {
     try { clearCompositionCancellation(id, job); setCancellations(readCompositionCancellations()); }
     catch (error) { setLocalError(error); }
   }, [id, cancellations, proposal.data]);
+  useEffect(() => {
+    if (!proposal.data || proposal.data.job.request.owner_id !== id || recentProposals[id] === proposal.data.job.job_id) return;
+    try { rememberCompositionProposal(id, proposal.data.job.job_id); setRecentProposals(readCompositionProposals()); } catch (error) { setLocalError(error); }
+  }, [id, proposal.data, recentProposals]);
   const send = (operation: CompositionPending) => {
     if (!currentMutationReady() || (macOSContext && (operation.kind === "proposal" || (operation.kind === "attempt" && Boolean(objective.data?.attempts.length)))) || pending || locked.current || localError || (stoppedOwners.current.has(operation.owner) && operation.kind !== "grant")) return;
     locked.current = true; setPending(operation); setLocalError(undefined); navigate(operation.owner, operation.kind === "proposal" ? operation.id : ""); write.mutate(operation);
@@ -104,9 +112,10 @@ export function CompositionPage() {
     storeCompositionControl(owner, operation); setPendingControls(readCompositionControls());
     if (operation !== "continue") stoppedOwners.current.add(owner);
     await client.cancelQueries({ queryKey: ["composition-context", owner] });
+    await client.cancelQueries({ queryKey: ["composition-evidence-context", owner] });
     await client.cancelQueries({ queryKey: ["composition-objective", owner], exact: true });
     return checkedCompositionObjective(await compositionApi.control(owner, operation), owner, retainedControl || undefined, macOSFileAccessControlIdValid(retainedControl) ? MACOS_FILE_ACCESS_PACK : undefined);
-  }, onSuccess: (value, target) => { client.setQueryData(["composition-objective", target.owner], value); if (target.operation === "continue") stoppedOwners.current.delete(target.owner); void client.invalidateQueries({ queryKey: ["composition-list", target.control] }); void client.invalidateQueries({ queryKey: ["composition-context", target.owner], refetchType: "none" }); void client.invalidateQueries({ queryKey: ["composition-proposal"] }); } });
+  }, onSuccess: (value, target) => { client.setQueryData(["composition-objective", target.owner], value); if (target.operation === "continue") stoppedOwners.current.delete(target.owner); void client.invalidateQueries({ queryKey: ["composition-list", target.control] }); void client.invalidateQueries({ queryKey: ["composition-context", target.owner], refetchType: "none" }); void client.invalidateQueries({ queryKey: ["composition-evidence-context", target.owner], refetchType: "none" }); void client.invalidateQueries({ queryKey: ["composition-proposal"] }); } });
   const recovery = useMutation({ mutationFn: async ({ owner, attempt, control: retainedControl }: { owner: string; attempt: string; control: string }) => { await client.cancelQueries({ queryKey: ["composition-objective", owner], exact: true }); return checkedCompositionObjective(await compositionApi.recover(owner, attempt), owner, retainedControl || undefined, MACOS_FILE_ACCESS_PACK); }, onSuccess: (value, target) => { client.setQueryData(["composition-objective", target.owner], value); void client.invalidateQueries({ queryKey: ["composition-list", target.control] }); } });
   const controlObjective = (operation: CompositionControl) => { if ((operation !== "continue" || currentMutationReady()) && (!macOSContext || envelope)) safety.mutate({ owner: id, control, operation }); };
   const cancel = useMutation({ mutationFn: async ({ owner, job }: { owner: string; job: string }) => {
@@ -140,7 +149,7 @@ export function CompositionPage() {
     {localError ? <ErrorState title="Saved request needs attention" error={localError} /> : null}
     {macOSContext && !mutationReady ? <Callout title="Original macOS workspace is read-only">Saved objectives and evidence remain available. New operations require the current original hardened control and settled custody.</Callout> : null}
     {invalidPack ? <ErrorState error={new Error("This capability pack is not supported.")} /> : !compositionControlValid(control, pack) ? <Callout title="Select the original retained control"><Link to="/compare">Receiver control</Link> or <Link to="/file-access">effective file access</Link></Callout> : <>
-      {comparisonFirst && envelope ? <div className="composition-selected-result"><CompositionAttempts objective={envelope} selectedAttemptRef={comparisonSection} /></div> : null}
+      {comparisonFirst && envelope ? <div className="composition-selected-result"><CompositionAttempts objective={envelope} selectedAttemptRef={comparisonSection} onKnowledgeChange={knowledge => setKnowledgeSelections(previous => ({ ...previous, [envelope.owner.job_id]: knowledge }))} /></div> : null}
       <section className="composition-section" aria-label="Saved objectives"><div className="composition-heading"><h2>Saved objectives</h2><Button size="small" disabled={list.isFetching || (macOSContext && workspaceStatus.isFetching)} onClick={() => { void list.refetch(); if (macOSContext) { void workspaceStatus.refetch(); void workspaceControl.refetch(); } }}><RefreshCw />Refresh</Button></div>
         {list.error ? <ErrorState error={list.error} /> : list.isPending ? <LoadingState label="Opening saved objectives" /> : <div className="composition-objective-list">{list.data?.objectives.map(item => <Link aria-label={`Open objective: ${item.title}, ${sentence(item.status)}`} aria-current={item.owner_id === id ? "page" : undefined} key={item.owner_id} to={`/composition?${new URLSearchParams({ control, objective: item.owner_id, ...packQuery, ...(recentProposals[item.owner_id] ? { proposal: recentProposals[item.owner_id]! } : {}) })}`}><strong>{item.title}</strong><span>{sentence(item.status)}</span></Link>)}{!list.data?.objectives.length ? <p>No saved objectives for this control.</p> : null}</div>}
         {id ? <Button disabled={!mutationReady || Boolean(pending) || write.isPending} onClick={() => { setReviewSeed(undefined); navigate(""); }}>New objective</Button> : null}
@@ -163,7 +172,7 @@ export function CompositionPage() {
             <details><summary>Reviewed capabilities and cumulative limits</summary><CompositionCapabilities review={envelope.grant.document} /></details>
             {envelope.grant.status === "paused" ? <><p>Continue preserves spent budgets and the original expiry. It does not replay an interrupted attempt.</p><Button disabled={!mutationReady || safety.isPending || Boolean(pending) || Boolean(pendingControls[id]) || Boolean(objective.error)} onClick={() => controlObjective("continue")}><Play />Continue objective</Button></> : null}
           </section>
-          {!comparisonFirst ? <CompositionAttempts objective={envelope} /> : null}
+          {!comparisonFirst ? <CompositionAttempts objective={envelope} onKnowledgeChange={knowledge => setKnowledgeSelections(previous => ({ ...previous, [envelope.owner.job_id]: knowledge }))} /> : null}
           {macOSContext ? envelope.attempts.filter(attempt => attempt.progress.settlement === "pending_cleanup").map(attempt => {
             const recoveryState = compositionRecord(attempt.progress.macos_recovery);
             const state = String(recoveryState.state ?? "");
@@ -171,7 +180,7 @@ export function CompositionPage() {
               {state === "unavailable" ? <p>The original process authority is unavailable. No workspace was re-adopted and no new attempt was started.</p> : state === "unresolved" ? <p>The original close could not be verified. Review retained evidence before taking any further action.</p> : <><p>This action can only close the exact original attempt when its live workspace guard remains and no dispatch was recorded. It does not replay the graph.</p><Button disabled={recovery.isPending} onClick={() => recovery.mutate({ owner: id, control, attempt: attempt.request.composition_attempt.attempt_id })}>{recovery.isPending ? "Checking original close…" : "Close undispatched attempt"}</Button></>}
             </Callout>;
           }) : null}
-          <CompositionPlanning key={id} objective={envelope} proposal={proposal.data} proposalId={proposalId} pending={Boolean(pending)} disabled={!mutationReady || Boolean(objective.error) || Boolean(proposal.error) || proposal.isFetching || cancel.isPending || Boolean(cancellations[id]) || stopped || safety.isPending || write.isPending || Boolean(localError)} onSubmit={send} onProposal={(next) => navigate(id, next)} />
+          <CompositionPlanning key={id} knowledge={knowledgeSelections[id]} objective={envelope} proposal={proposal.data} proposalId={proposalId} pending={Boolean(pending)} disabled={!mutationReady || Boolean(objective.error) || Boolean(proposal.error) || proposal.isFetching || cancel.isPending || Boolean(cancellations[id]) || stopped || safety.isPending || write.isPending || Boolean(localError)} onSubmit={send} onProposal={(next) => navigate(id, next)} />
         </> : null}
         {proposal.error ? <ErrorState title="Proposal status unavailable" error={proposal.error} retry={() => { void proposal.refetch(); }} /> : null}
         {cancellations[id] ? <Callout title="Proposal cancellation pending">New dispatch remains disabled until the saved proposal is confirmed stopped.</Callout> : null}
@@ -182,12 +191,19 @@ export function CompositionPage() {
   </div>;
 }
 
-function CompositionPlanning({ objective, proposal, proposalId, pending, disabled, onSubmit, onProposal }: { objective: CompositionObjective; proposal?: CompositionProposal; proposalId: string; pending: boolean; disabled: boolean; onSubmit: (value: CompositionPending) => void; onProposal: (id: string) => void }) {
+function CompositionPlanning({ objective, knowledge, proposal, proposalId, pending, disabled, onSubmit, onProposal }: { knowledge?: CompositionKnowledge | null; objective: CompositionObjective; proposal?: CompositionProposal; proposalId: string; pending: boolean; disabled: boolean; onSubmit: (value: CompositionPending) => void; onProposal: (id: string) => void }) {
   const pack = compositionPack(objective.grant.document);
   const macOS = pack === MACOS_FILE_ACCESS_PACK;
   const [prior, setPrior] = useState("");
   const [provider, setProvider] = useState("");
   const [useInitial, setUseInitial] = useState(false);
+  const [useHistory, setUseHistory] = useState(false);
+  const historyChoiceMade = useRef(false);
+  useEffect(() => {
+    if (!historyChoiceMade.current && compositionRecord(proposal?.job.request.submitted_request).schema_version === "bluefire.composition-evidence-proposal-request.v1") {
+      setUseHistory(true); historyChoiceMade.current = true;
+    }
+  }, [proposal]);
   const [showGraph, setShowGraph] = useState(false);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -201,26 +217,39 @@ function CompositionPlanning({ objective, proposal, proposalId, pending, disable
   const proposing = Boolean(proposal && ["pending", "requesting"].includes(proposal.provider_outcome));
   const active = !established && (!macOS || !objective.attempts.length) && objective.grant.status === "active" && grant.expires_at_ms > now && !disabled && !pending && !proposing;
   const priorValid = !objective.attempts.length ? prior === "" : objective.attempts.some(item => item.request.composition_attempt.attempt_id === prior && compositionCanRevise(item, objective));
-  const context = useQuery({ queryKey: ["composition-context", owner, prior, objective.attempts.map(item => `${item.job_id}:${item.state}:${item.progress.settlement}`).join("|")], queryFn: async () => checkedCompositionContext(await compositionApi.context(owner, prior || null), grant.grant_id, pack), enabled: active && priorValid, retry: false });
+  const capturedContext = proposal?.proposal?.schema_version === "bluefire.composition-ai-result.v2" ? proposal.job.request.context as CompositionEvidenceContext : undefined;
+  const capturedKnowledge = capturedContext ? compositionEvidenceKnowledge(capturedContext, owner) : undefined;
+  const selectedKnowledge = knowledge === undefined ? capturedKnowledge : knowledge;
+  const validKnowledge = selectedKnowledge?.owner_id === owner && selectedKnowledge.attempts.every(saved => objective.attempts.some(attempt => attempt.job_id === saved.job_id && attempt.request.composition_attempt.attempt_id === saved.attempt_id && attempt.request.composition_attempt.run_id === saved.run_id)) ? selectedKnowledge : undefined;
+  const frontier = [...objective.attempts].reverse().find(attempt => attempt.progress.settlement === "settled");
+  useEffect(() => {
+    if (useHistory && frontier && compositionCanRevise(frontier, objective) && prior !== frontier.request.composition_attempt.attempt_id) setPrior(frontier.request.composition_attempt.attempt_id);
+  }, [frontier, objective, prior, useHistory]);
+  const historyValid = pack === RECEIVER_PACK && Boolean(frontier && compositionCanRevise(frontier, objective) && prior === frontier.request.composition_attempt.attempt_id && validKnowledge);
+  const context = useQuery({ queryKey: ["composition-context", owner, prior, objective.attempts.map(item => `${item.job_id}:${item.state}:${item.progress.settlement}`).join("|")], queryFn: async () => checkedCompositionContext(await compositionApi.context(owner, prior || null), grant.grant_id, pack), enabled: active && priorValid && !useHistory, retry: false });
+  const evidenceContext = useQuery({ queryKey: ["composition-evidence-context", owner, prior, validKnowledge?.knowledge_digest, validKnowledge?.attempts.map(attempt => attempt.attempt_id).join("|"), objective.attempts.map(item => `${item.job_id}:${item.state}:${item.progress.settlement}`).join("|")], queryFn: async () => checkedCompositionEvidenceContext(await compositionApi.evidenceContext(owner, prior, validKnowledge!), grant.grant_id, owner, validKnowledge!, prior), enabled: active && useHistory && historyValid, retry: false });
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, enabled: !macOS, retry: false });
   const providers = (catalog.data?.ai.providers ?? []).filter(item => item.kind !== "deterministic");
-  const current = context.data;
+  const planningContext = useHistory ? evidenceContext : context;
+  const current = planningContext.data;
   const viewSnapshot = current?.snapshot ?? grant.snapshot;
   const candidate = useInitial ? current?.initial_proposal : macOS ? undefined : proposal?.proposal?.candidate;
   const scenario = useInitial ? current?.initial_scenario : macOS ? undefined : proposal?.proposal?.scenario;
-  const matches = Boolean(current && (useInitial ? !objective.attempts.length && candidate : proposal?.candidate_ready && proposal.proposal?.context_digest === current.context_digest && proposal.proposal.prior_attempt_id === (prior || null)));
-  const ready = active && priorValid && !context.isFetching && !context.error && matches && candidate && scenario;
+  const matches = Boolean(current && (useInitial ? !objective.attempts.length && candidate : proposal?.candidate_ready && proposal.proposal?.context_digest === current.context_digest && proposal.proposal.prior_attempt_id === (prior || null) && (useHistory ? proposal.proposal.schema_version === "bluefire.composition-ai-result.v2" && proposal.proposal.knowledge_digest === validKnowledge?.knowledge_digest : proposal.proposal.schema_version === "bluefire.composition-ai-result.v1")));
+  const ready = active && priorValid && (!useHistory || historyValid) && !planningContext.isFetching && !planningContext.error && matches && candidate && scenario;
   const newRequest = (kind: "proposal" | "attempt", body: Record<string, unknown>) => { if (!active || (macOS && (kind !== "attempt" || objective.attempts.length || !useInitial))) return; const submission_id = crypto.randomUUID(); onSubmit({ kind, owner, control: grant.environment.control_owner_id, id: compositionJobId(submission_id), body: { submission_id, ...body } }); };
   if ((pack === FILE_ACCESS_PACK || macOS) && objective.attempts.length) return <section className="composition-section" aria-label="Graph planning"><h2>{established ? "Objective established" : "Control review"}</h2><p>{macOS ? established ? "A settled verified attempt meets the reviewed access and request-closure conditions. The original workers and resource remain retained." : "The fixed macOS graph has no alternate read path. The original attempt and its closure state remain recorded; no further attempt is available." : established ? "A settled verified attempt meets every reviewed access and cleanup condition." : "The fixed file-access pack has no different permitted read path. The current attempt and its cleanup remain recorded."}</p><Link to={`/file-access?control=${encodeURIComponent(grant.environment.control_owner_id)}`}>Review retained file-access control</Link></section>;
   return <section className="composition-section" aria-label="Graph planning"><h2>{objective.attempts.length ? "Evidence-driven revision" : "Initial graph"}</h2>
-    {objective.attempts.length ? <Field label="Verified prior attempt"><select value={prior} disabled={pending} onChange={event => { setPrior(event.target.value); setUseInitial(false); onProposal(""); }}><option value="">Select settled refusal evidence</option>{objective.attempts.map((item, index) => <option key={item.job_id} value={item.request.composition_attempt.attempt_id} disabled={!compositionCanRevise(item, objective)}>Attempt {index + 1}: {String(compositionRecord(compositionRecord(item.progress.verified_result).objective).established === true ? "established" : item.state)}{item.progress.settlement !== "settled" ? " / cleanup pending" : ""}</option>)}</select></Field> : null}
+    {objective.attempts.length ? <Field label="Verified prior attempt"><select value={prior} disabled={pending || useHistory} onChange={event => { setPrior(event.target.value); setUseInitial(false); onProposal(""); }}><option value="">Select settled refusal evidence</option>{objective.attempts.map((item, index) => <option key={item.job_id} value={item.request.composition_attempt.attempt_id} disabled={!compositionCanRevise(item, objective)}>Attempt {index + 1}: {String(compositionRecord(compositionRecord(item.progress.verified_result).objective).established === true ? "established" : item.state)}{item.progress.settlement !== "settled" ? " / cleanup pending" : ""}</option>)}</select></Field> : null}
+    {pack === RECEIVER_PACK && objective.attempts.length ? <div className="composition-history-option"><label className="check-row"><input type="checkbox" checked={useHistory} disabled={pending || proposing} onChange={event => { historyChoiceMade.current = true; setUseHistory(event.target.checked); setUseInitial(false); if (event.target.checked && frontier && compositionCanRevise(frontier, objective)) setPrior(frontier.request.composition_attempt.attempt_id); }} /><span>Use selected historical findings to reconsider earlier choices</span></label><p>{validKnowledge ? `${validKnowledge.attempts.length} loaded attempt${validKnowledge.attempts.length === 1 ? "" : "s"} selected. Historical findings are model context; current facts are verified separately.` : "Load selected findings in Attempts to include recorded history."}</p>{useHistory ? <p>This receiver revision continues from the latest settled attempt. It requires the separate model purpose “Reconsider receiver graph choices using selected historical findings”.</p> : null}</div> : null}
     {established ? <Callout title="Objective established">A settled verified attempt meets every reviewed success condition. No new graph or attempt is available for this objective.</Callout> : !active ? <Callout title="New dispatch unavailable">{grant.expires_at_ms <= now ? "The original grant has expired." : proposing ? "The selected provider request is still active. Its saved result or confirmed cancellation remains pending." : "A current active grant, reconciled submissions and verified cleanup are required."}</Callout> : null}
-    {active && priorValid ? context.isFetching ? <LoadingState label="Verifying current facts and capabilities" /> : context.error ? <ErrorState error={context.error} retry={() => { void context.refetch(); }} /> : null : null}
+    {active && priorValid && (!useHistory || historyValid) ? planningContext.isFetching ? <LoadingState label="Verifying current facts and capabilities" /> : planningContext.error ? <ErrorState error={planningContext.error} retry={() => { void planningContext.refetch(); }} /> : null : null}
     {!macOS ? <div className="composition-provider"><Field label="Configured model provider"><select value={provider} disabled={!active} onChange={event => setProvider(event.target.value)}><option value="">Select a provider</option>{providers.map(item => <option value={item.provider_id} key={item.provider_id}>{item.model} / {item.provider_id}</option>)}</select></Field><Link to="/settings#model-connection">Provider and model usage authorization</Link></div> : null}
     {!macOS && catalog.error ? <ErrorState error={catalog.error} /> : null}
-    <div className="composition-actions">{!macOS ? <Button disabled={!active || !priorValid || !current || context.isFetching || Boolean(context.error) || !providers.some(item => item.provider_id === provider)} onClick={() => { setUseInitial(false); newRequest("proposal", { provider_id: provider, context_digest: current!.context_digest, prior_attempt_id: prior || null }); }}>{objective.attempts.length ? <RefreshCw aria-hidden="true" /> : <GitBranch aria-hidden="true" />}{objective.attempts.length ? "Request evidence-based revision" : "Request AI graph"}</Button> : null}{!objective.attempts.length && current?.initial_proposal ? <Button disabled={!active} aria-pressed={useInitial} onClick={() => { setUseInitial(true); onProposal(""); }}>Review established graph</Button> : null}</div>
+    <div className="composition-actions">{!macOS ? <Button disabled={!active || !priorValid || !current || (useHistory && !historyValid) || planningContext.isFetching || Boolean(planningContext.error) || !providers.some(item => item.provider_id === provider)} onClick={() => { setUseInitial(false); newRequest("proposal", { ...(useHistory ? { schema_version: "bluefire.composition-evidence-proposal-request.v1", attempt_ids: validKnowledge!.attempts.map(attempt => attempt.attempt_id), knowledge_digest: validKnowledge!.knowledge_digest } : {}), provider_id: provider, context_digest: current!.context_digest, prior_attempt_id: prior || null }); }}>{objective.attempts.length ? <RefreshCw aria-hidden="true" /> : <GitBranch aria-hidden="true" />}{useHistory ? "Request history-aware revision" : objective.attempts.length ? "Request evidence-based revision" : "Request AI graph"}</Button> : null}{!objective.attempts.length && current?.initial_proposal ? <Button disabled={!active} aria-pressed={useInitial} onClick={() => { setUseInitial(true); onProposal(""); }}>Review established graph</Button> : null}</div>
     {!macOS ? <p>Only the selected provider is used, with no fallback. Model usage and data authorization are separate from execution authority.</p> : null}
     {!macOS && proposalId && proposal ? <Callout title={`Proposal: ${sentence(proposal.provider_outcome)}`}>{String(proposal.job.progress.operation_error ?? (proposal.candidate_ready ? "The candidate passed current compiler checks." : "No currently admissible candidate is available."))}</Callout> : null}
+    {capturedContext && proposal?.proposal ? <CompositionReconsiderationReview context={capturedContext} proposal={proposal.proposal} objective={objective} /> : null}
     {candidate && scenario ? <>
       <h3>{candidate.title}</h3><p>{candidate.rationale}</p>
       <div className="composition-table" role="region" aria-label="Proposed graph steps" tabIndex={0}><table><thead><tr><th>Step</th><th>Method</th><th>Parameters</th></tr></thead><tbody>{candidate.steps.map(step => <tr key={step.id}><th scope="row">{step.id}</th><td>{viewSnapshot.methods.find(item => item.behavior_id === step.behavior_id)?.behavior.title ?? step.behavior_id}</td><td>{Object.entries(step.parameters).map(([key, value]) => <div key={key}>{key}: {JSON.stringify(value)}</div>)}</td></tr>)}</tbody></table></div>
