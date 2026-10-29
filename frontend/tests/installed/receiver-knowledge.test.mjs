@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import test from "node:test";
+import { test } from "vitest";
 import { URL } from "node:url";
 import { receiverKnowledgeRequestAllowed, verifyReceiverKnowledge } from "./receiver-knowledge.mjs";
 
