@@ -335,7 +335,7 @@ class CompositionAIJobs:
             )
         return {**current, "context_digest": context_digest(current)}
 
-    def requested_context(self, owner_id, request, *, submission=False):
+    def requested_context(self, owner_id, request, *, submission=False) -> dict[str, Any]:
         selected = None
         if isinstance(request, Mapping) and "schema_version" in request:
             selected = evidence_context.selection(request, submission=submission)
