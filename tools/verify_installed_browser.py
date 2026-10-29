@@ -49,6 +49,7 @@ _COMPOSITION_PURPOSES = (
     "bluefire_macos_file_access_composition_proposal",
 )
 _RECEIVER_COMPOSITION_PURPOSE = "bluefire_composition_proposal"
+_RECEIVER_EVIDENCE_PURPOSE = "bluefire_receiver_evidence_composition_proposal"
 _FIXTURE_MODEL = "bluefire-local-graph-fixture-v1"
 _RECEIVER_PROFILE = "sandbox-endpoint-deep-lab.v1"
 _RECEIVER_SCENARIO = "scenario.receiver-defense.redaction-validation.v1"
@@ -371,6 +372,79 @@ def _valid_receiver_knowledge(value: object, composition: dict) -> bool:
     )
 
 
+def _valid_receiver_evidence_proposal(value: object, composition: dict) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version",
+        "owner_id",
+        "attempt_id",
+        "source_run_id",
+        "job_id",
+        "proposal_digest",
+        "context_digest",
+        "knowledge_digest",
+        "purpose",
+        "provider_id",
+        "model_authorization_requests",
+        "reconsidered_step_id",
+        "supporting_findings",
+        "later_finding_reused",
+        "original_redact_values",
+        "proposed_redact_values",
+        "original_objective_established",
+        "candidate_ready",
+        "source_matches_run",
+        "historical_only",
+        "reopened",
+        "rendered_reasoning",
+        "unchanged_attempts",
+        "additional_executions",
+    }:
+        return False
+    return (
+        value["schema_version"] == "bluefire.installed-evidence-proposal.v1"
+        and value["owner_id"] == composition.get("objective_owner_job_id")
+        and value["attempt_id"] == composition.get("attempt_id")
+        and value["source_run_id"] == composition.get("run_id")
+        and isinstance(value["job_id"], str)
+        and re.fullmatch(r"job-[0-9a-f]{32}", value["job_id"]) is not None
+        and value["job_id"]
+        not in {
+            composition.get("objective_owner_job_id"),
+            composition.get("attempt_job_id"),
+            composition.get("model_proposal", {}).get("job_id"),
+        }
+        and all(
+            isinstance(value[key], str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value[key])
+            for key in ("proposal_digest", "context_digest", "knowledge_digest")
+        )
+        and value["knowledge_digest"] == composition.get("knowledge", {}).get("knowledge_digest")
+        and value["purpose"] == "bluefire_receiver_evidence_composition_proposal"
+        and value["provider_id"] == "provider.installed-receiver-composition.v1"
+        and type(value["model_authorization_requests"]) is int
+        and value["model_authorization_requests"] == 1
+        and value["reconsidered_step_id"] == "transform_fixture"
+        and type(value["supporting_findings"]) is int
+        and 1 <= value["supporting_findings"] <= 16
+        and all(
+            value[key] is True
+            for key in (
+                "later_finding_reused",
+                "proposed_redact_values",
+                "candidate_ready",
+                "source_matches_run",
+                "historical_only",
+                "reopened",
+                "rendered_reasoning",
+                "unchanged_attempts",
+            )
+        )
+        and value["original_redact_values"] is False
+        and value["original_objective_established"] is False
+        and type(value["additional_executions"]) is int
+        and value["additional_executions"] == 0
+    )
+
+
 def _valid_receiver_composition(value: object) -> bool:
     if not isinstance(value, dict):
         return False
@@ -421,9 +495,11 @@ def _valid_receiver_composition(value: object) -> bool:
             "model_proposal",
             "comparison",
             "knowledge",
+            "evidence_proposal",
         }
         and composition["control_owner_job_id"] == value.get("original_owner_job_id")
         and _valid_receiver_knowledge(composition["knowledge"], composition)
+        and _valid_receiver_evidence_proposal(composition["evidence_proposal"], composition)
         and isinstance(composition["objective_owner_job_id"], str)
         and re.fullmatch(r"job-[0-9a-f]{32}", composition["objective_owner_job_id"]) is not None
         and isinstance(composition["grant_id"], str)
@@ -508,7 +584,8 @@ def _valid_receiver_composition(value: object) -> bool:
         and cleanup.get("model_authorization_revoked") is True
         and "single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt"
         in checks
-        and "receiver_composition_model_authorization_revoked_after_one_proposal" in checks
+        and "receiver_distinct_model_authorizations_revoked_after_one_proposal_each" in checks
+        and "history_proposal_reopened_with_original_records_and_no_additional_execution" in checks
         and "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false"
         in checks
         and "composed_attempt_grant_revoked_after_verified_cleanup" in checks
@@ -516,23 +593,31 @@ def _valid_receiver_composition(value: object) -> bool:
         in checks
         and "failed_objective_findings_opened_from_verified_run_without_new_attempt" in checks
         and type(counts.get("composition_list")) is int
-        and 1 <= counts["composition_list"] <= 6
+        and 1 <= counts["composition_list"] <= 9
         and all(
             type(counts.get(name)) is int and counts[name] == 1
             for name in (
                 "composition_context",
                 "composition_grant",
                 "composition_proposal",
+                "composition_evidence_proposal",
                 "composition_attempt",
-                "composition_knowledge",
                 "composition_revoke",
                 "comparison",
                 "provider_save",
                 "provider_activate",
+            )
+        )
+        and all(
+            type(counts.get(name)) is int and counts[name] == 2
+            for name in (
+                "composition_knowledge",
                 "model_authorization",
                 "model_authorization_revoke",
             )
         )
+        and type(counts.get("composition_evidence_context")) is int
+        and 2 <= counts["composition_evidence_context"] <= 3
         and type(counts.get("composition_proposal_context")) is int
         and 2 <= counts["composition_proposal_context"] <= 3
     )
@@ -734,21 +819,25 @@ def _resolve_receiver_driver(
     guards = driver.with_name("receiver-guards.mjs").resolve(strict=True)
     deadline = driver.with_name("receiver-deadline.mjs").resolve(strict=True)
     knowledge = driver.with_name("receiver-knowledge.mjs").resolve(strict=True)
+    evidence = driver.with_name("receiver-evidence-proposal.mjs").resolve(strict=True)
     if (
         not driver.is_file()
         or not guards.is_file()
         or not deadline.is_file()
         or not knowledge.is_file()
+        or not evidence.is_file()
         or driver.is_relative_to(forbidden)
         or guards.is_relative_to(forbidden)
         or deadline.is_relative_to(forbidden)
         or knowledge.is_relative_to(forbidden)
+        or evidence.is_relative_to(forbidden)
         or guards.parent != driver.parent
         or deadline.parent != driver.parent
         or knowledge.parent != driver.parent
+        or evidence.parent != driver.parent
     ):
         raise RuntimeError(
-            "Copy the receiver driver and its adjacent guard, deadline and knowledge modules outside checkout"
+            "Copy the receiver driver and its adjacent guard, deadline, knowledge and evidence modules outside checkout"
         )
     return driver, guards, deadline
 
@@ -865,10 +954,11 @@ def _receiver_retained_redaction_accepted(report: dict[str, object]) -> bool:
         and report.get("receiver_retained_redaction_driver_passed") is True
         and isinstance(fixture, dict)
         and type(fixture.get("request_count")) is int
-        and fixture.get("request_count") == 1
-        and fixture.get("purposes") == [_RECEIVER_COMPOSITION_PURPOSE]
+        and fixture.get("request_count") == 2
+        and fixture.get("purposes")
+        == [_RECEIVER_COMPOSITION_PURPOSE, "bluefire_receiver_evidence_composition_proposal"]
         and type(fixture.get("request_bytes")) is int
-        and 0 < fixture["request_bytes"] <= 262_144
+        and 0 < fixture["request_bytes"] <= 524_288
         and fixture.get("failed") is False
         and _runtime_cleanup_confirmed(report)
         and report.get("cleanup_errors") == []
@@ -988,8 +1078,14 @@ def _receiver_fixture_output_for_request(request: object) -> dict[str, object]:
         supplied = json.loads(request["input"])
     except (KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError("receiver fixture requires bounded model context") from exc
+    text = request.get("text")
+    format_document = text.get("format") if isinstance(text, dict) else None
+    purpose = format_document.get("name") if isinstance(format_document, dict) else None
+    if purpose == _RECEIVER_EVIDENCE_PURPOSE:
+        return _receiver_evidence_fixture_output(supplied)
     if (
-        not isinstance(supplied, dict)
+        purpose != _RECEIVER_COMPOSITION_PURPOSE
+        or not isinstance(supplied, dict)
         or set(supplied)
         != {"schema_version", "objective", "revision", "methods", "facts", "initial_proposal"}
         or supplied["schema_version"] != "bluefire.composition-model-context.v1"
@@ -1034,6 +1130,129 @@ def _receiver_fixture_output_for_request(request: object) -> dict[str, object]:
     ):
         raise ValueError("receiver fixture graph or policy fact is out of scope")
     return {**initial, "evidence_refs": [facts[0]["evidence_ref"]]}
+
+
+def _receiver_evidence_fixture_output(supplied: object) -> dict[str, object]:
+    """Propose one fixed redaction change from bound history, without executing it."""
+    import bluefire
+    from bluefire.ai_composition_contract import EVIDENCE_OUTPUT_VERSION, REFRESH_PREREQUISITES
+    from bluefire.ai_composition_evidence_data import validate_model_context
+    from bluefire.contracts import load_scenario
+    from bluefire.util import content_hash
+
+    if not isinstance(supplied, dict):
+        raise ValueError("receiver evidence fixture requires a structured context")
+    validate_model_context(supplied)
+    source = load_scenario(
+        Path(bluefire.__file__).parent / "data" / "receiver_defense_validation.yaml"
+    ).to_dict()
+    steps = [
+        {key: step[key] for key in ("id", "behavior_id", "parameters")} for step in source["steps"]
+    ]
+    history = supplied["historical_context"]
+    facts = {fact["kind"]: fact for fact in supplied["facts"]}
+    if (
+        supplied["objective"]["predicate"]["record_count"] != 8
+        or set(facts) != {"retained_policy", "receiver_result", "cleanup"}
+        or len({fact["evidence_ref"] for fact in facts.values()}) != 3
+        or facts["retained_policy"]["value"]["status"] != "retained"
+        or facts["receiver_result"]["value"]
+        != {
+            "decision": "policy_refused",
+            "policy_digest": facts["retained_policy"]["value"]["policy_digest"],
+            "record_count": 8,
+            "redacted_record_count": 0,
+            "retained_record_count": 8,
+            "empty_record_count": 0,
+        }
+        or facts["cleanup"]["value"] != {"run": "complete", "receiver": "verified_closed"}
+        or len(history["attempt_ids"]) != 1
+        or len(history["choices"]) != len(steps)
+        or [
+            {
+                "id": choice["step_id"],
+                "behavior_id": choice["behavior_id"],
+                "parameters": choice["parameters"],
+            }
+            for choice in history["choices"]
+        ]
+        != steps
+        or len({choice["compiled_digest"] for choice in history["choices"]}) != 1
+        or len({choice["semantic_digest"] for choice in history["choices"]}) != 1
+    ):
+        raise ValueError(
+            "receiver evidence fixture requires the original refused eight-record attempt"
+        )
+    domains = {method["behavior_id"]: method["parameter_domains"] for method in supplied["methods"]}
+    steps[1]["parameters"] = {"redact_values": True}
+    if any(
+        set(step["parameters"]) != set(domains[step["behavior_id"]])
+        or any(
+            content_hash(value)
+            not in {content_hash(item) for item in domains[step["behavior_id"]][key]}
+            for key, value in step["parameters"].items()
+        )
+        for step in steps
+    ):
+        raise ValueError("receiver evidence fixture cannot expand current parameter domains")
+    finding = next(
+        (
+            row
+            for row in history["attempts"][0]["findings"]
+            if row["step_id"] == "stage_records"
+            and row["behavior_id"] == "sandbox.collection.stage.v1"
+            and row["provenance"] == "observed"
+            and row["semantic_kind"] == "observed_collection"
+            and all(
+                row["summary"].get(key) == value
+                for key, value in {
+                    "record_count": 8,
+                    "retained_record_count": 8,
+                    "redacted_record_count": 0,
+                    "empty_record_count": 0,
+                }.items()
+            )
+        ),
+        None,
+    )
+    if finding is None:
+        raise ValueError("receiver evidence fixture requires an actual later collection finding")
+    choice = history["choices"][1]
+    return {
+        "schema_version": EVIDENCE_OUTPUT_VERSION,
+        "candidate": {
+            "schema_version": "bluefire.composition-proposal.v1",
+            "title": "Redact records before the receiver handoff",
+            "start": source["start"],
+            "steps": steps,
+            "edges": source["edges"],
+            "evidence_refs": [
+                facts[kind]["evidence_ref"]
+                for kind in ("retained_policy", "receiver_result", "cleanup")
+            ],
+            "rationale": "The saved collection observation retained all eight values. Reconsider the earlier transform, then review a fresh redacted attempt.",
+        },
+        "reconsideration": {
+            "reconsidered_choices": [
+                {
+                    "attempt_id": choice["attempt_id"],
+                    "compiled_digest": choice["compiled_digest"],
+                    "step_id": choice["step_id"],
+                    "finding_refs": [
+                        {"finding_id": finding["finding_id"], "record_ref": finding["record_ref"]}
+                    ],
+                    "reason": "The later collection finding retained eight values and the current result records a policy refusal. Reconsider the earlier unredacted transform without rewriting that failed attempt.",
+                }
+            ],
+            "refresh_requirements": [
+                {
+                    "prerequisite": prerequisite,
+                    "explanation": "Recheck this mutable prerequisite before any fresh attempt; historical findings do not establish current availability.",
+                }
+                for prerequisite in REFRESH_PREREQUISITES
+            ],
+        },
+    }
 
 
 def _assistant_fixture_journey_passed(value: object) -> bool:
@@ -1266,18 +1485,22 @@ def _fixture_request_allowed(
 
 
 def _receiver_fixture_request_allowed(request: object, **kwargs: object) -> bool:
-    from bluefire.ai_composition_contract import OUTPUT_SCHEMA
+    from bluefire.ai_composition_contract import EVIDENCE_OUTPUT_SCHEMA, OUTPUT_SCHEMA
 
+    index = kwargs.get("request_index")
     return (
-        _fixture_request_allowed(
+        type(index) is int
+        and 0 <= index < 2
+        and _fixture_request_allowed(
             request,
-            expected_purposes=(_RECEIVER_COMPOSITION_PURPOSE,),
+            expected_purposes=(_RECEIVER_COMPOSITION_PURPOSE, _RECEIVER_EVIDENCE_PURPOSE),
             output_tokens=1024,
             request_byte_limit=262_144,
-            total_byte_limit=262_144,
+            total_byte_limit=524_288,
             **kwargs,
         )
-        and request["text"]["format"]["schema"] == OUTPUT_SCHEMA
+        and request["text"]["format"]["schema"]
+        == (OUTPUT_SCHEMA if index == 0 else EVIDENCE_OUTPUT_SCHEMA)
     )
 
 
@@ -1337,9 +1560,9 @@ class LocalGraphFixture:
                 length = int(raw_length)
                 with fixture.lock:
                     if fixture.post_count >= (
-                        1 if fixture.receiver_composition else 5
+                        2 if fixture.receiver_composition else 5
                     ) or fixture.post_bytes + length > (
-                        262_144 if fixture.receiver_composition else 2_097_152
+                        524_288 if fixture.receiver_composition else 2_097_152
                     ):
                         fixture.failed = True
                         self._send(429, {"error": "fixture_budget_exceeded"})
@@ -1565,7 +1788,7 @@ def _receiver_child_exit_diagnostic(
     # Only a shipped source basename and bounded line may leave the raw child pipe.
     source = re.search(
         rb"(?m)^[ \t]+at [^\r\n]*[/\\]"
-        rb"(installed-receiver\.mjs|receiver-(?:guards|deadline|diagnostics)\.mjs)"
+        rb"(installed-receiver\.mjs|receiver-(?:guards|deadline|diagnostics|knowledge|evidence-proposal)\.mjs)"
         rb":([1-9][0-9]{0,3})(?::[0-9]{1,5})?(?:[)\r\n]|$)",
         prefix,
     )
@@ -1741,14 +1964,18 @@ def _run_receiver_phase(
             "guard_sha256": digest(guards),
             "deadline_sha256": digest(deadline_file),
             "knowledge_helper_sha256": digest(driver.with_name("receiver-knowledge.mjs")),
+            "evidence_proposal_helper_sha256": digest(
+                driver.with_name("receiver-evidence-proposal.mjs")
+            ),
             "browser_returncode": receiver_child.returncode,
         }
         report["receiver_retained_redaction_driver_passed"] = (
             receiver_child.returncode == 0
             and _receiver_driver_passed(receiver_driver_report)
-            and report["receiver_model_fixture"]["request_count"] == 1
-            and report["receiver_model_fixture"]["purposes"] == [_RECEIVER_COMPOSITION_PURPOSE]
-            and 0 < report["receiver_model_fixture"]["request_bytes"] <= 262_144
+            and report["receiver_model_fixture"]["request_count"] == 2
+            and report["receiver_model_fixture"]["purposes"]
+            == [_RECEIVER_COMPOSITION_PURPOSE, "bluefire_receiver_evidence_composition_proposal"]
+            and 0 < report["receiver_model_fixture"]["request_bytes"] <= 524_288
             and report["receiver_model_fixture"]["failed"] is False
         )
         report["receiver_phase_status"] = (
@@ -1940,6 +2167,11 @@ def main() -> int:
             "receiver_knowledge_sha256": (
                 digest(receiver_driver.with_name("receiver-knowledge.mjs"))
                 if receiver_driver
+                else None
+            ),
+            "receiver_evidence_proposal_sha256": (
+                digest(receiver_driver.with_name("receiver-evidence-proposal.mjs"))
+                if receiver_driver is not None
                 else None
             ),
             "environment_names": sorted(environment),

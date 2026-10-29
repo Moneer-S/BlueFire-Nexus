@@ -15,6 +15,14 @@ PURPOSE = "bluefire_composition_proposal"
 # Distinct purposes keep an existing receiver-only usage grant from widening to either file pack.
 FILE_ACCESS_PURPOSE = "bluefire_linux_file_access_composition_proposal"
 MACOS_FILE_ACCESS_PURPOSE = "bluefire_macos_file_access_composition_proposal"
+EVIDENCE_PURPOSE = "bluefire_receiver_evidence_composition_proposal"
+EVIDENCE_MODEL_SCHEMA = "bluefire.composition-evidence-model-context.v1"
+EVIDENCE_OUTPUT_VERSION = "bluefire.composition-evidence-proposal.v1"
+REFRESH_PREREQUISITES = (
+    "retained_receiver_control",
+    "runner_environment",
+    "attempt_cleanup",
+)
 _NODE = {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,99}$"}
 
 
@@ -110,6 +118,62 @@ def _output_schema(methods, parameters_by_method, pack) -> Mapping[str, Any]:
 
 
 OUTPUT_SCHEMA: Mapping[str, Any] = _output_schema(METHODS, _RECEIVER_PARAMETERS, RECEIVER_PACK)
+_IDENTITY = {"type": "string", "minLength": 1, "maxLength": 200}
+_DIGEST = {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+RECORD_REF_SCHEMA = _object(
+    {
+        "owner_id": _IDENTITY,
+        "attempt_id": _IDENTITY,
+        "job_id": _IDENTITY,
+        "run_id": _IDENTITY,
+        "evidence_id": _IDENTITY,
+        "record_hash": _DIGEST,
+        "source_binding_digest": _DIGEST,
+    }
+)
+RECONSIDERATION_SCHEMA = _object(
+    {
+        "reconsidered_choices": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": _object(
+                {
+                    "attempt_id": _IDENTITY,
+                    "compiled_digest": _DIGEST,
+                    "step_id": _NODE,
+                    "finding_refs": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "items": _object(
+                            {"finding_id": _IDENTITY, "record_ref": RECORD_REF_SCHEMA}
+                        ),
+                    },
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+                }
+            ),
+        },
+        "refresh_requirements": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": _object(
+                {
+                    "prerequisite": {"type": "string", "enum": list(REFRESH_PREREQUISITES)},
+                    "explanation": {"type": "string", "minLength": 1, "maxLength": 1000},
+                }
+            ),
+        },
+    }
+)
+EVIDENCE_OUTPUT_SCHEMA = _object(
+    {
+        "schema_version": {"type": "string", "enum": [EVIDENCE_OUTPUT_VERSION]},
+        "candidate": OUTPUT_SCHEMA,
+        "reconsideration": RECONSIDERATION_SCHEMA,
+    }
+)
 FILE_ACCESS_OUTPUT_SCHEMA: Mapping[str, Any] = _output_schema(
     FILE_ACCESS_METHODS, _FILE_ACCESS_PARAMETERS, FILE_ACCESS_PACK
 )

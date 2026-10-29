@@ -53,7 +53,7 @@ const attemptId = (value: unknown): value is string => typeof value === "string"
 const kinds = new Set(["observed_filesystem", "observed_collection", "observed_process_snapshot", "observed_receiver_binding", "runner_result", "evidence_gap", "record_metadata"]);
 const provenances = new Set(["synthetic", "executed", "observed", "control_blocked", "counterfactual", "unknown"]);
 
-export function checkedCompositionKnowledge(value: unknown, objective: CompositionObjective, selected: string[]): CompositionKnowledge {
+export function checkedCompositionKnowledge(value: unknown, objective: { owner: { job_id: string }; attempts: Array<{ job_id: string; request: { composition_attempt: { attempt_id: string; run_id: string } } }> }, selected: string[]): CompositionKnowledge {
   if (!compositionJobValid(objective.owner.job_id) || selected.length < 1 || selected.length > 8 || new Set(selected).size !== selected.length || !selected.every(attemptId)) throw invalid();
   const root = object(value);
   if (!exact(root, ["schema_version", "owner_id", "attempts", "knowledge_digest"]) || root.schema_version !== "bluefire.composition-knowledge.v1" || root.owner_id !== objective.owner.job_id || !digest(root.knowledge_digest) || !Array.isArray(root.attempts) || root.attempts.length !== selected.length || JSON.stringify(value).length > 1_048_576) throw invalid();
