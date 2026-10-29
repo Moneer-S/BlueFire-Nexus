@@ -121,6 +121,9 @@ def test_script_scope_captures_neither_argv_environment_payload_nor_paths():
     assert "pending[pid]" in script and "proc:::exec-success" in script
     assert "ustack(8)" in script and "events < 128" in script
     assert 'printf("BFTRACE_EXIT' in script and "ticks++ >= 30" in script
+    assert "BFTRACE_FAULT %d %d %d" in script
+    assert "(int)arg4, (int)arg2, (int)arg3" in script
+    assert "arg5" not in script
     for forbidden in (
         "execname",
         "pr_psargs",
@@ -243,6 +246,140 @@ def test_unknown_compiler_tags_and_outside_script_lines_are_withheld(tag, line):
     ).encode("ascii")
     assert trace_support._compiler_diagnostic(raw, line_count=54) is None
     assert trace_support._compiler_diagnostic(raw, line_count=54, truncated=True) is None
+
+
+def _runtime_stderr(
+    fault="invalid address",
+    action="action #1",
+    offset=" at DIF offset 12",
+    probe="syscall::execve:entry",
+    address=" (0x123456789abcdef)",
+):
+    return (
+        f"dtrace: error on enabled probe ID 6 (ID 180: {probe}): "
+        f"{fault}{address} in {action}{offset}\n"
+    ).encode("ascii")
+
+
+@pytest.mark.parametrize("fault", range(10))
+def test_runtime_error_exports_known_faults_and_bounded_location_without_addresses(fault):
+    text = trace_support._TRACE_FAULTS[fault]
+    address = " (0x123456789abcdef)" if fault in {1, 2, 9} else ""
+    stderr = _runtime_stderr(fault=text, address=address)
+    raw = f"BFTRACE_READY\nBFTRACE_ERROR\nBFTRACE_FAULT {fault} 1 12\n".encode("ascii")
+    result = trace_support._runtime_diagnostic(raw, stderr)
+    assert result == {
+        "fault": text.replace("-", "_").replace(" ", "_"),
+        "action": 1,
+        "dif_offset": 12,
+        "probe": "syscall::execve:entry",
+    }
+    assert trace_support._stderr_failure_codes(stderr) == {"dtrace_runtime_error"}
+    assert "0x" not in json.dumps(result) and "123456789abcdef" not in json.dumps(result)
+
+
+def test_predicate_fault_and_unavailable_dif_offset_have_distinct_meaning():
+    result = trace_support._runtime_diagnostic(
+        b"BFTRACE_ERROR\nBFTRACE_FAULT 1 0 -1\n",
+        _runtime_stderr(action="predicate", offset=""),
+    )
+    assert result == {
+        "fault": "invalid_address",
+        "action": 0,
+        "dif_offset": -1,
+        "probe": "syscall::execve:entry",
+    }
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        b"",
+        _runtime_stderr(probe="private:credential:name:entry"),
+        _runtime_stderr(action="action #2"),
+        _runtime_stderr(offset=" at DIF offset 13"),
+        _runtime_stderr(fault="invalid alignment"),
+        _runtime_stderr() + _runtime_stderr(),
+        _runtime_stderr() + b"dtrace: error on private unknown probe\n",
+        b"private credentials and 0x123456789abcdef\n",
+    ],
+    ids=[
+        "missing",
+        "unknown-probe",
+        "action-disagrees",
+        "offset-disagrees",
+        "fault-disagrees",
+        "ambiguous",
+        "ambiguous-unknown",
+        "unrecognized",
+    ],
+)
+def test_runtime_probe_requires_one_matching_allowlisted_report(stderr):
+    result = trace_support._runtime_diagnostic(b"BFTRACE_ERROR\nBFTRACE_FAULT 1 1 12\n", stderr)
+    assert result["probe"] == "unknown"
+    assert result["fault"] == "invalid_address"
+    for forbidden in ("private", "credential", "123456789abcdef"):
+        assert forbidden not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        b"BFTRACE_FAULT 10 1 12",
+        b"BFTRACE_FAULT 1 129 12",
+        b"BFTRACE_FAULT 1 1 65536",
+        b"BFTRACE_FAULT 1 1 -2",
+        b"BFTRACE_FAULT -1 1 12",
+        b"BFTRACE_FAULT 1 1 0x1234",
+        b"BFTRACE_FAULT 1 1 12 private",
+        b"BFTRACE_FAULT 1 1 12\nBFTRACE_FAULT 1 1 12",
+    ],
+)
+def test_unknown_invalid_or_ambiguous_fault_records_are_withheld(record):
+    assert trace_support._runtime_diagnostic(b"BFTRACE_ERROR\n" + record, _runtime_stderr()) is None
+
+
+def test_missing_marker_or_truncated_streams_withhold_runtime_detail():
+    raw = b"BFTRACE_ERROR\nBFTRACE_FAULT 1 1 12\n"
+    assert trace_support._runtime_diagnostic(raw.replace(b"BFTRACE_ERROR\n", b""), b"") is None
+    assert trace_support._runtime_diagnostic(raw, _runtime_stderr(), truncated=True) is None
+    assert trace_support._runtime_diagnostic(raw + b"x" * trace_support._TRACE_BYTES, b"") is None
+    assert (
+        trace_support._runtime_diagnostic(raw, b"x" * (trace_support._TRACE_STDERR_BYTES + 1))
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        _runtime_stderr(fault="private unknown fault"),
+        _runtime_stderr(action="action #129"),
+        _runtime_stderr(offset=" at DIF offset 65536"),
+        _runtime_stderr(address=" (0xprivate)"),
+        _runtime_stderr(fault="invalid user access"),
+    ],
+)
+def test_unrecognized_runtime_stderr_retains_unknown_failure(stderr):
+    assert trace_support._runtime_error_line(stderr.rstrip(b"\n")) is None
+    assert trace_support._stderr_failure_codes(stderr) == {"unknown_stderr"}
+
+
+def test_runtime_detail_stays_inconclusive_and_survives_only_as_safe_projection():
+    process = SimpleNamespace(
+        stdout=io.BytesIO(), stderr=io.BytesIO(), returncode=0, wait=lambda **_: 0
+    )
+    trace = _trace_double(process)
+    trace.raw = bytearray(_complete_trace() + b"BFTRACE_ERROR\nBFTRACE_FAULT 1 1 12\n")
+    trace.stderr_raw = bytearray(_runtime_stderr())
+    result = trace.stop()
+    assert result["status"] == "inconclusive"
+    assert "events" not in result and result["descriptor_authority"] == "none"
+    assert "dtrace_runtime_error" in result["failure_codes"]
+    assert result["runtime_error"]["probe"] == "syscall::execve:entry"
+    assert not trace.raw and not trace.stderr_raw
+    assert trace.stop() == result
+    assert "123456789abcdef" not in json.dumps(result)
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,46 @@ _TRACE_BYTES = 65536
 _TRACE_EVENTS = 128
 _TRACE_SECONDS = 30
 _TRACE_STDERR_BYTES = 8192
+# Apple's xnu/bsd/sys/dtrace.h DTRACEFLT values; dt_error.c supplies the
+# corresponding text. Do not retain arg5: several faults use it for an address.
+_TRACE_FAULTS = (
+    "unknown fault",
+    "invalid address",
+    "invalid alignment",
+    "illegal operation",
+    "divide-by-zero",
+    "out of scratch space",
+    "invalid kernel access",
+    "invalid user access",
+    "tuple stack overflow",
+    "bad stack",
+)
+_TRACE_ERROR_PROBES = frozenset(
+    {
+        "dtrace:::BEGIN",
+        "dtrace:::ERROR",
+        "proc:::exec-success",
+        "proc:::exec-failure",
+        "proc:::exit",
+        "profile:::tick-1sec",
+        "syscall::execve:entry",
+    }
+    | {
+        f"syscall::{call}:{phase}"
+        for call in (
+            "socket",
+            "fcntl",
+            "fcntl_nocancel",
+            "fstat",
+            "fstat64",
+            "connect",
+            "connect_nocancel",
+            "close",
+            "close_nocancel",
+        )
+        for phase in ("entry", "return")
+    }
+)
 _TRACE_COMPILER_TAGS = frozenset(
     {"D_IDENT_UNDEF", "D_VAR_UNDEF", "D_OP_INCOMPAT", "D_FUNC_UNDEF", "D_SYNTAX"}
 )
@@ -82,6 +122,69 @@ _TRACE_SYSTEM_IMAGES = frozenset(
 )
 
 
+def _runtime_error_line(line: bytes) -> dict[str, Any] | None:
+    """Recognize Apple's dt_handle.c format, withholding addresses and IDs."""
+    match = re.fullmatch(
+        rb"dtrace: error on enabled probe ID [0-9]{1,10} "
+        rb"\(ID [0-9]{1,10}: ([A-Za-z0-9_:-]{1,96})\): "
+        rb"([a-z -]{1,40})( \(0x[0-9a-fA-F]{1,16}\))? "
+        rb"in (predicate|action #[0-9]{1,3})(?: at DIF offset ([0-9]{1,5}))?",
+        line,
+    )
+    if not match:
+        return None
+    fault = match[2].decode("ascii")
+    if fault not in _TRACE_FAULTS or (
+        match[3] is not None and fault not in {"invalid address", "invalid alignment", "bad stack"}
+    ):
+        return None
+    action = 0 if match[4] == b"predicate" else int(match[4][8:])
+    offset = -1 if match[5] is None else int(match[5])
+    if not 0 <= action <= 128 or not -1 <= offset <= 65535:
+        return None
+    probe = match[1].decode("ascii")
+    return {
+        "fault": fault.replace("-", "_").replace(" ", "_"),
+        "action": action,
+        "dif_offset": offset,
+        "probe": probe if probe in _TRACE_ERROR_PROBES else "unknown",
+    }
+
+
+def _runtime_diagnostic(
+    raw: bytes, stderr: bytes, *, truncated: bool = False
+) -> dict[str, Any] | None:
+    """Project one ERROR arg4/arg2/arg3 record; never export arg1 or arg5.
+
+    Probe identity is used only when one fixed-form stderr report agrees with
+    all three numeric fields. Missing, ambiguous or unknown probes stay unknown.
+    Apple's ERROR test and xnu fault definitions document the argument mapping.
+    """
+    if truncated or len(raw) > _TRACE_BYTES or len(stderr) > _TRACE_STDERR_BYTES:
+        return None
+    lines = raw.splitlines()
+    records = [line for line in lines if line.startswith(b"BFTRACE_FAULT")]
+    if b"BFTRACE_ERROR" not in lines or len(records) != 1:
+        return None
+    match = re.fullmatch(rb"BFTRACE_FAULT ([0-9]{1,2}) ([0-9]{1,3}) (-1|[0-9]{1,5})", records[0])
+    if not match:
+        return None
+    fault, action, offset = map(int, match.groups())
+    if fault >= len(_TRACE_FAULTS) or action > 128 or offset > 65535:
+        return None
+    result = {
+        "fault": _TRACE_FAULTS[fault].replace("-", "_").replace(" ", "_"),
+        "action": action,
+        "dif_offset": offset,
+        "probe": "unknown",
+    }
+    reports = [line for line in stderr.splitlines() if line.startswith(b"dtrace: error on ")]
+    report = _runtime_error_line(reports[0]) if len(reports) == 1 else None
+    if report is not None and all(report[key] == result[key] for key in result if key != "probe"):
+        result["probe"] = report["probe"]
+    return result
+
+
 def _stderr_failure_codes(raw: bytes, *, truncated: bool = False) -> set[str]:
     """Recognize fixed DTrace diagnostic forms without returning their text.
 
@@ -119,6 +222,8 @@ def _stderr_failure_codes(raw: bytes, *, truncated: bool = False) -> set[str]:
             )
         }:
             codes.add("dtrace_permission_error")
+        elif _runtime_error_line(line) is not None:
+            codes.add("dtrace_runtime_error")
         else:
             codes.add("unknown_stderr")
     return codes or ({"unknown_stderr"} if raw else set())
@@ -238,7 +343,10 @@ syscall:::return /pid == native && events >= {_TRACE_EVENTS}/ {{
 }}
 proc:::exit /pid == native/ {{ printf("BFTRACE_EXIT\\n"); native = 0; exit(0); }}
 profile:::tick-1sec /ticks++ >= {_TRACE_SECONDS}/ {{ printf("BFTRACE_TIMEOUT\\n"); exit(0); }}
-dtrace:::ERROR {{ printf("BFTRACE_ERROR\\n"); exit(0); }}
+dtrace:::ERROR {{
+    printf("BFTRACE_ERROR\\nBFTRACE_FAULT %d %d %d\\n", (int)arg4, (int)arg2, (int)arg3);
+    exit(0);
+}}
 """
 
 
@@ -483,6 +591,13 @@ class _OwnedStartupTrace:
         )
         if compiler is not None:
             result["compiler"] = compiler
+        runtime = _runtime_diagnostic(
+            bytes(self.raw),
+            bytes(self.stderr_raw),
+            truncated=self.stdout_bytes > _TRACE_BYTES or self.stderr_bytes > _TRACE_STDERR_BYTES,
+        )
+        if runtime is not None:
+            result["runtime_error"] = runtime
         result["tracer"] = {
             "process_created": self.process is not None,
             "returncode": self.process.returncode if self.process is not None else None,
