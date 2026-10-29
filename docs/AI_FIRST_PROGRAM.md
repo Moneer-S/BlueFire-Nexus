@@ -39,12 +39,14 @@ does not establish accessibility or current authority. Add these semantics first
 for the selected operations; avoid a speculative environment ontology.
 
 The existing [adaptive execution](ADAPTIVE_EXECUTION.md) policy binds exact
-authored method alternatives. Runtime construction of new steps needs a distinct
-versioned grant over a reviewed capability snapshot, objective, environment,
-identities, effects, data, budgets, and lifetime. Existing exact-plan and adaptive
-approvals keep their original meaning. Ordinary code validates each composition
-and dispatch, reserves cumulative effects durably, and enforces expiry,
-revocation, and recovery independently of the model.
+authored method alternatives. The separate capability-composition path admits
+whole fresh graphs under versioned grants over reviewed installed methods,
+objective, environment, identities, effects, data, budgets, and lifetime.
+Existing exact-plan and adaptive approvals keep their original meaning.
+Ordinary code validates each composition and dispatch, reserves cumulative
+effects durably, and enforces expiry, revocation, and recovery independently of
+the model. Current receiver facts and fixed file-access routes are starting
+points, not the boundary of the planned objective-level investigation.
 
 ## Delivery phases
 
@@ -126,6 +128,12 @@ operations with visible limits, while recording attempted and unexecuted work
 separately. Demonstrate adding one comparable reviewed method without a new
 coordinator. Preserve direct graph editing of the same saved work.
 
+Bring the selected native telemetry integration into this endpoint milestone.
+Preserve the source fields needed by the declared evaluation and distinguish
+local rule matches from deployed alerts. A process snapshot is not an execution
+event stream; discovery, access validation, and active effects establish different
+claims. SIEM and EDR vendor connectors are outside this milestone.
+
 **Evidence and exclusions:** Prove two materially different objectives, real
 producer/consumer combinations, useful evidence-driven replanning, and refusal of
 incompatible, stale, revoked, or excessive requests. Include restart and
@@ -133,6 +141,30 @@ interruption recovery without repeated effects. The existing
 [chmod method](ATOMIC_CHMOD.md) establishes permission bits, not effective access;
 it cannot substitute for this proof. Neither a reserved attempt nor an action's
 exit status establishes the security objective.
+
+#### Nonlocal replanning acceptance
+
+An experiment must follow an approach through several meaningful operations,
+learn useful information, and encounter a dead end that invalidates an earlier
+choice. The planner must propose a different continuation using information
+learned after that choice. The operator can inspect the changed assumption,
+original failed attempt, reused findings, refreshed prerequisites, and actual
+subsequent effects.
+
+The continuation must avoid repeating unrelated completed effects and use
+explicit validated dependencies for imported findings or artifacts. A contrasting
+case changes a resource or defense so an earlier observation remains historical
+evidence but cannot satisfy a current prerequisite. Only required observations
+are refreshed; restoration or recreation requires its own reviewed operation.
+Changed inputs, prerequisites, a deliberate fresh test, or meaningful new
+evidence can justify another attempt within the grant. Unchanged wasteful
+repetition cannot.
+
+This acceptance is pending. Controlled provider responses can establish the
+application mechanics; a separate authorized live-model evaluation must show
+that a real model makes a useful evidence-dependent decision. Neither proof
+substitutes for native effects and observations or for the second materially
+different objective.
 
 ### 4. Endpoint, AD, and cloud expansion
 
@@ -179,9 +211,9 @@ selected real telemetry/detection integration.
 
 **Implementation boundary:** Complete guided provisioning on supported paths;
 bring setup, environment facts, graph, Assistant, observations, changes, rules,
-and comparisons into one navigable experiment context. Integrate one real native
-telemetry source with a supported detection backend, chosen after environment
-review. Reuse [detection authoring](DETECTION_LAB.md) and evaluation lineage.
+and comparisons into one navigable experiment context. Extend the native
+telemetry and supported detection evaluation established in the endpoint
+milestone. Reuse [detection authoring](DETECTION_LAB.md) and evaluation lineage.
 Evaluate model configurations on useful plans, compositions, decisions, recovery,
 and measured cost. Update installation instructions, capability declarations,
 screenshots, and recordings to match the delivered product.
@@ -204,7 +236,9 @@ Track each outcome and environment with separate evidence fields:
 | Implemented | Code and focused software checks exist for the declared contract. |
 | Integrated | The reviewed capability works with the main product interfaces. |
 | Installed-verified | A matching installed build completed the normal operator journey. |
-| Live-verified | Actual effects, independent observations, live-model decisions, or backend results were demonstrated in their explicitly named environment. |
+| Native-verified | The declared native effects and observations ran on the identified OS, architecture, and environment. |
+| External-live-verified | The declared domain, cloud, or other external integration ran against its explicitly authorized environment. |
+| Live-model-verified | An authorized real provider made a useful evidence-dependent decision; controlled responses do not establish this status. |
 
 Live model, native endpoint, domain, cloud, and deployed detection evidence are
 separate categories. Historical results retain their original source/build and
