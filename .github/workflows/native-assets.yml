@@ -2,6 +2,14 @@ name: native asset preparation
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Build native runners or unapproved owned SFTP candidates
+        type: choice
+        default: runner
+        options:
+          - runner
+          - owned-sftp-candidate
 
 permissions:
   contents: read
@@ -12,6 +20,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ inputs.target == '' || inputs.target == 'runner' }}
     name: ${{ matrix.platform }} native runner
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -230,3 +239,7 @@ jobs:
           path: native-assets/
           retention-days: 7
           if-no-files-found: error
+
+  owned-sftp-candidate:
+    if: ${{ inputs.target == 'owned-sftp-candidate' }}
+    uses: ./.github/workflows/owned-sftp-build.yml

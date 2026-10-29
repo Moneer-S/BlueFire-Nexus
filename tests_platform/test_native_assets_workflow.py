@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "native-assets.yml"
@@ -15,12 +17,24 @@ UPLOAD_ARTIFACT_SHA = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"  # pragma: allo
 def test_native_asset_workflow_is_manual_read_only_and_source_bound() -> None:
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
-    assert workflow["on"] == {"workflow_dispatch": ""}
+    assert workflow["on"] == {
+        "workflow_dispatch": {
+            "inputs": {
+                "target": {
+                    "description": "Build native runners or unapproved owned SFTP candidates",
+                    "type": "choice",
+                    "default": "runner",
+                    "options": ["runner", "owned-sftp-candidate"],
+                }
+            }
+        }
+    }
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"]["cancel-in-progress"] == "false"
-    assert set(workflow["jobs"]) == {"build"}
+    assert set(workflow["jobs"]) == {"build", "owned-sftp-candidate"}
 
     job = workflow["jobs"]["build"]
+    assert job["if"] == "${{ inputs.target == '' || inputs.target == 'runner' }}"
     assert job["timeout-minutes"] == "30"
     matrix = job["strategy"]["matrix"]["include"]
     platforms = {(item["platform"], item["os"], item["target"]) for item in matrix}
@@ -80,6 +94,44 @@ def test_native_asset_workflow_is_manual_read_only_and_source_bound() -> None:
     assert "tools/stage_native_runner.py" not in commands
     assert "pip install" not in commands
     assert "github.event.inputs" not in commands
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("", {"build": 2}),
+        ("runner", {"build": 2}),
+        ("owned-sftp-candidate", {"owned-sftp-candidate": 1}),
+        ("unrecognized", {}),
+    ],
+)
+def test_native_dispatch_selects_only_one_fixed_build_family(target: str, expected: dict) -> None:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    caller = workflow["jobs"]["owned-sftp-candidate"]
+    assert caller == {
+        "if": "${{ inputs.target == 'owned-sftp-candidate' }}",
+        "uses": "./.github/workflows/owned-sftp-build.yml",
+    }
+    callee = yaml.load(
+        (WORKFLOW.parent / "owned-sftp-build.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert callee["on"]["workflow_call"] == ""
+    assert callee["permissions"] == workflow["permissions"] == {"contents": "read"}
+    assert set(callee["jobs"]) == {"candidate"}
+    assert callee["jobs"]["candidate"]["runs-on"] == "ubuntu-24.04"
+    # The exact disjunction/equality guards above define the accepted values;
+    # read their literals to exercise empty/default/candidate/unknown selection.
+    selected = {}
+    for name, job in workflow["jobs"].items():
+        accepted = re.findall(r"inputs\.target == '([^']*)'", job["if"])
+        if target in accepted:
+            selected[name] = (
+                len(job["strategy"]["matrix"]["include"])
+                if "strategy" in job
+                else len(callee["jobs"])
+            )
+    assert selected == expected
 
 
 def test_native_asset_receipt_is_versioned_and_allowlisted() -> None:

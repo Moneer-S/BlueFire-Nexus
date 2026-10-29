@@ -106,7 +106,7 @@ def test_workflow_is_manual_fixed_single_job_and_starts_builder_with_empty_envir
     workflow = yaml.load(
         (ROOT / ".github/workflows/owned-sftp-build.yml").read_text(), Loader=yaml.BaseLoader
     )
-    assert workflow["on"] == {"workflow_dispatch": ""}
+    assert workflow["on"] == {"workflow_dispatch": "", "workflow_call": ""}
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"] == {
         "group": "owned-sftp-candidate-build",
