@@ -1,5 +1,21 @@
 # Third-party notices and source intake
 
+## Preparatory OpenSSH/strace metadata
+
+`bluefire/tool_adapters/owned_sftp.py` contains independently authored, unregistered
+preparatory metadata for external OpenSSH portable 10.6p1, tag `V_10_6_P1`, commit
+`a8c72b842423f0774f542d3c2197247c3dd28d74`, and strace 7.2, tag `v7.2`, commit
+`195ac8ddbf6fad16ff1ff125b0feb725b6c46dcf`. No upstream source, executable,
+installer or approved binary/build hash is supplied by this preparation.
+OpenSSH has composite BSD and more-permissive component notices; preserve the
+complete [pinned LICENCE](https://raw.githubusercontent.com/openssh/openssh-portable/V_10_6_P1/LICENCE)
+if it is later redistributed. strace's runtime is LGPL-2.1-or-later; its test suite
+and bundled Linux UAPI headers have separate terms described in the
+[pinned COPYING](https://raw.githubusercontent.com/strace/strace/v7.2/COPYING).
+External dependency/packaging notices need independent review for an actual build.
+BlueFire's MIT license is unchanged and does not replace these external terms.
+See [the preparation boundary](docs/OWNED_SFTP_PREPARATION.md).
+
 ## Inter web font
 
 The packaged interface includes `InterVariable.woff2` from Inter 4.1, released by

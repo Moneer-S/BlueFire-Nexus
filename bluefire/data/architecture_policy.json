@@ -678,6 +678,7 @@
         "bluefire.tool_adapters.contracts",
         "bluefire.tool_adapters.chmod",
         "bluefire.tool_adapters.gzip",
+        "bluefire.tool_adapters.owned_sftp",
         "bluefire.tool_adapters.registry",
         "bluefire.tool_adapters.parameters",
         "bluefire.tool_adapters.service_lifecycle",
