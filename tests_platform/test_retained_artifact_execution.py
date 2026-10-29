@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import zipfile
 from contextlib import contextmanager
 from copy import deepcopy
@@ -738,7 +739,9 @@ def test_real_execution_path_dispatches_only_new_materialization_and_records_bot
                     },
                 ),
             ]:
-                parent = _windows_extended_path(root / ".bluefire" / directory)
+                parent = root / ".bluefire" / directory
+                if os.name == "nt":
+                    parent = _windows_extended_path(parent)
                 parent.mkdir(parents=True)
                 (parent / (receipt_id + ".json")).write_bytes(canonical_json_bytes(value))
             return {

@@ -133,8 +133,10 @@ export async function runRetainedJourney(page, state, options) {
   const reviewResponse = postResponse("/composition/context");
   await page.getByRole("button", { name: "Review finite delegation", exact: true }).click();
   const reviewed = await reviewResponse;
+  setStage("retained-review-response");
   assert.ok(reviewed.ok());
   state.review = await reviewed.json();
+  setStage("retained-review-binding");
   assert.equal(state.review.pack, RETAINED_PACK);
   assert.equal(state.review.environment.control_owner_id, controlId);
   assert.equal(state.review.limits.per_attempt_wall_ms, 90000);
@@ -196,6 +198,7 @@ export async function runRetainedJourney(page, state, options) {
       attempt.job_id === id && attempt.state === "completed" && attempt.progress.settlement === "settled" && attempt.progress.verified_result), 110000);
     const attempt = current.attempts.find(item => item.job_id === id);
     const run = await read(`/runs/${attempt.request.composition_attempt.run_id}`);
+    assert.equal(run.profile.profile_id, options.profileId);
     return { current, attempt, run };
   };
   setStage("retained-original-execute");

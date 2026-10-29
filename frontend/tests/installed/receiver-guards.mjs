@@ -6,14 +6,20 @@ import { URL } from "node:url";
 export const sameJson = isDeepStrictEqual;
 export const receiverApprovalAcknowledgementName = /^I approve this exact immutable job envelope once\s*Unchecked by default and never stored in browser persistence$/;
 
-// Settings mounts these inert reads while configuring the owned fixture provider.
+// Three separately reviewed purposes and one cleanup visit mount these inert reads.
+// Cleanup reuses its Settings document for the other purposes and bounded retries.
 export function createReceiverSettingsReadPolicy() {
   const reads = new Map([["/api/v1/settings", 0], ["/api/v1/build-info", 0]]);
   return (url, method) => {
-    if (method !== "GET" || url.search || !reads.has(url.pathname) || reads.get(url.pathname) >= 2) return false;
+    if (method !== "GET" || url.search || !reads.has(url.pathname) || reads.get(url.pathname) >= 4) return false;
     reads.set(url.pathname, reads.get(url.pathname) + 1);
     return true;
   };
+}
+
+export async function openReceiverSettingsForCleanup(page, origin, navigationOptions) {
+  const destination = `${origin}/#/settings`;
+  if (page.url() !== destination) await page.goto(destination, navigationOptions);
 }
 
 // A late response from the retired document cannot acknowledge the reload.

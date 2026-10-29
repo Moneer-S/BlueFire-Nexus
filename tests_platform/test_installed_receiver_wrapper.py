@@ -194,7 +194,7 @@ def receiver_report() -> dict[str, object]:
         "external_credentials": False,
         "live_model_inference": False,
         "generated_record_count": 8,
-        "runner_profile": "sandbox-endpoint-deep-lab.v1",
+        "runner_profile": "sandbox-endpoint-deep-lab.v2",
         "target_scope": ["sandbox.workspace", "network.loopback"],
         "checks": [
             "packaged_starter_duplicated_and_saved_through_ui",
@@ -205,6 +205,7 @@ def receiver_report() -> dict[str, object]:
             "single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt",
             "composed_attempt_grant_revoked_after_verified_cleanup",
             "receiver_composition_and_history_authorizations_revoked_after_one_proposal_each",
+            "receiver_superseded_model_authorization_remained_revoked",
             "history_proposal_reopened_with_original_records_and_no_additional_execution",
             "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result",
             "failed_objective_findings_opened_from_verified_run_without_new_attempt",
@@ -243,7 +244,7 @@ def receiver_report() -> dict[str, object]:
             "provider_save": 1,
             "provider_activate": 1,
             "model_authorization": 3,
-            "model_authorization_revoke": 3,
+            "model_authorization_revoke": 1,
             "retained_list": 3,
             "retained_review": 1,
             "retained_grant": 1,
@@ -267,7 +268,7 @@ def receiver_report() -> dict[str, object]:
             "execution_state": "completed",
             "mode": "execute",
             "scenario_id": "scenario.receiver-defense.redaction-validation.copy.12345678-1234-4234-8234-123456789abc.v1",
-            "run_profile": "sandbox-endpoint-deep-lab.v1",
+            "run_profile": "sandbox-endpoint-deep-lab.v2",
             "receiver_decision": "accepted",
             "observation_state": "verified",
             "receiver_terminal": {
@@ -745,6 +746,76 @@ def test_receiver_receipt_preserves_bounded_composition_failure_categories() -> 
     assert len(_receiver_report_for_receipt(report)["errors"]) == 32
 
 
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "retained-model-authorization",
+        "retained-objective-review",
+        "retained-review-response",
+        "retained-review-binding",
+        "retained-original-proposal",
+        "retained-original-execute",
+        "retained-history-selection",
+        "retained-continuation-proposal",
+        "retained-proposal-reopen",
+        "retained-continuation-execute",
+        "retained-grant-revoke",
+        "retained-result-comparison",
+    ],
+)
+def test_receiver_receipt_preserves_retained_failure_stage_without_private_material(stage) -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": stage,
+            "kind": "journey_failed",
+            "error_type": "AssertionError",
+            "message": "private exception",
+            "body": {"detail": "private response"},
+            "owner_id": "private identity",
+        }
+    ]
+    assert _receiver_report_for_receipt(report)["errors"] == [
+        {"stage": stage, "kind": "journey_failed", "error_type": "AssertionError"}
+    ]
+
+
+def test_receiver_receipt_maps_unknown_retained_failure_stage_to_other() -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {"stage": "retained-private-owner-id", "kind": "journey_failed"},
+        {"stage": {"private": "response"}, "kind": "console_error"},
+    ]
+    assert _receiver_report_for_receipt(report)["errors"] == [
+        {"stage": "other", "kind": "journey_failed"},
+        {"kind": "console_error"},
+    ]
+
+
+@pytest.mark.parametrize("legacy_fields", ["runner", "baseline", "both"])
+def test_receiver_current_candidate_rejects_legacy_profile_without_relabeling(
+    legacy_fields,
+) -> None:
+    report = receiver_report()
+    for row in report["phase_evidence"]:
+        redacted = 8 if row["phase"] == "legitimate" else 0
+        row.update(
+            terminal_authenticated=True,
+            terminal_record_count=8,
+            terminal_redacted_record_count=redacted,
+            terminal_retained_record_count=8 - redacted,
+        )
+    assert _receiver_driver_passed(report)
+    if legacy_fields in {"runner", "both"}:
+        report["runner_profile"] = "sandbox-endpoint-deep-lab.v1"
+    if legacy_fields in {"baseline", "both"}:
+        report["baseline"]["run_profile"] = "sandbox-endpoint-deep-lab.v1"
+    historical_report = deepcopy(report)
+    assert not _receiver_driver_passed(report)
+    assert report == historical_report
+    assert _receiver_report_for_receipt(report)["runner_profile"] == report["runner_profile"]
+
+
 def test_composed_receiver_receipt_requires_false_objective_and_current_saved_comparison() -> None:
     report = receiver_report()
     for row in report["phase_evidence"]:
@@ -842,6 +913,8 @@ def test_receiver_requires_exact_saved_model_proposal_proof(field: str, value: o
         ("composition_proposal", 0),
         ("model_authorization", 0),
         ("model_authorization_revoke", 0),
+        ("model_authorization_revoke", 2),
+        ("model_authorization_revoke", 3),
         ("provider_save", 2),
         ("provider_activate", 2),
     ],
@@ -967,7 +1040,7 @@ def test_history_proposal_requires_distinct_finite_request_counts() -> None:
     for name, expected in {
         "composition_evidence_proposal": 1,
         "model_authorization": 3,
-        "model_authorization_revoke": 3,
+        "model_authorization_revoke": 1,
     }.items():
         for count in (0, expected + 1, True):
             report = receiver_report()
@@ -1340,6 +1413,90 @@ def test_outer_acceptance_requires_actual_post_driver_custody(field, value) -> N
     assert not _receiver_retained_redaction_accepted(report)
 
 
+def test_receiver_authorization_persistence_supersedes_same_provider_with_one_final_revoke(
+    tmp_path: Path,
+) -> None:
+    from bluefire import product_store_ai_authorizations as authorization_store
+    from bluefire.ai_live_authorization import create_authorization
+    from bluefire.ai_wire import AIProviderTransportError
+    from bluefire.config import AIProviderConfig
+    from bluefire.product_store import ProductStore
+
+    provider = AIProviderConfig.from_mapping(
+        {
+            "id": "provider.installed-receiver-composition.v1",
+            "kind": "openai_responses",
+            "model": "bluefire-local-graph-fixture-v1",
+            "endpoint": "http://127.0.0.1:8080/v1/responses",
+            "api_key": None,
+            "timeout_seconds": 20,
+            "max_retries": 0,
+            "max_output_tokens": 1024,
+        }
+    )
+    context = {"kind": "direct", "binding_digest": "sha256:" + "a" * 64}
+    store = ProductStore(tmp_path / "authorizations.db")
+    purposes = [
+        ("bluefire_composition_proposal", 1),
+        ("bluefire_receiver_evidence_composition_proposal", 1),
+        ("bluefire_receiver_retained_composition_proposal", 2),
+    ]
+    grants = []
+    reservation = {"requests": 1, "request_bytes": 128, "reserved_output_tokens": 64}
+    for purpose, requests in purposes:
+        grant = create_authorization(
+            {
+                "provider": provider.to_dict(),
+                "purposes": [purpose],
+                "data_scope": "reviewed_lab_context",
+                "limits": {
+                    "max_requests": requests,
+                    "max_request_bytes": requests * 262144,
+                    "max_reserved_output_tokens": requests * 1024,
+                },
+                "expires_in_seconds": 300,
+                "approved_by": "installed-receiver-persistence-test",
+                "usage_authorized": True,
+                "local_endpoint_authorized": True,
+            },
+            context,
+        )
+        authorization_store.save_authorization(store, grant)
+        rows = authorization_store.list_authorizations(store, context["binding_digest"])
+        assert {row["authorization_id"]: row["status"] for row in rows} == {
+            **{prior["authorization_id"]: "revoked" for prior in grants},
+            grant["authorization_id"]: "active",
+        }
+        for prior in grants:
+            with pytest.raises(AIProviderTransportError):
+                authorization_store.reserve(
+                    store, prior["authorization_id"], context["binding_digest"], reservation
+                )
+        for _ in range(requests):
+            authorization_store.reserve(
+                store, grant["authorization_id"], context["binding_digest"], reservation
+            )
+        grants.append(grant)
+
+    # Supersession already closed every older grant; only the latest needs a revoke.
+    authorization_store.revoke_authorization(
+        store, grants[-1]["authorization_id"], context["binding_digest"]
+    )
+    reopened = ProductStore(tmp_path / "authorizations.db")
+    rows = authorization_store.list_authorizations(reopened, context["binding_digest"])
+    assert len(rows) == len(grants)
+    for row, grant, (purpose, requests) in zip(reversed(rows), grants, purposes, strict=True):
+        assert row["authorization_id"] == grant["authorization_id"]
+        assert row["authorization_digest"] == grant["authorization_digest"]
+        assert row["purposes"] == [purpose]
+        assert row["status"] == "revoked"
+        assert row["usage"] == {
+            "requests": requests,
+            "request_bytes": requests * 128,
+            "reserved_output_tokens": requests * 64,
+        }
+
+
 def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
     report = receiver_report()
     for row in report["phase_evidence"]:
@@ -1358,6 +1515,9 @@ def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
     report["checks"].append(
         "receiver_composition_and_history_authorizations_revoked_after_one_proposal_each"
     )
+    report["checks"].remove("receiver_superseded_model_authorization_remained_revoked")
+    assert not _receiver_driver_passed(report)
+    report["checks"].append("receiver_superseded_model_authorization_remained_revoked")
     report["cleanup"]["model_authorization_revoked"] = False
     assert not _receiver_driver_passed(report)
 

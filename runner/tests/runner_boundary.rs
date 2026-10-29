@@ -3246,7 +3246,42 @@ fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
         "bluefire.runner-receipt-wal.v2"
     );
     let actions = inventory_json["actions"].as_array().unwrap();
-    assert_eq!(actions.len(), 27);
+    assert_eq!(actions.len(), 28);
+    let retained = actions
+        .iter()
+        .find(|action| action["action_id"] == "sandbox.collection.materialize-retained.v1")
+        .expect("the reviewed retained materialization must be present in the static inventory");
+    assert_eq!(retained["action_version"], "1.0.0");
+    assert_eq!(retained["platforms"], json!(["linux"]));
+    assert_eq!(retained["readiness"], "ready");
+    assert_eq!(retained["capabilities"], json!(["filesystem_write"]));
+    assert_eq!(retained["filesystem_effect"], true);
+    assert_eq!(retained["process_effect"], false);
+    assert_eq!(retained["network_effect"], false);
+    assert_eq!(retained["cleanup_action_id"], "sandbox.cleanup.v1");
+    assert_eq!(retained["cleanup_receipt"], true);
+    assert!(retained.get("native_tool_binding").is_none());
+    assert_eq!(
+        retained["parameter_schema"]["required"],
+        json!([
+            "source_ref",
+            "payload_hex_chunks",
+            "expected_sha256",
+            "expected_size"
+        ])
+    );
+    assert_eq!(
+        retained["parameter_schema"]["properties"]["payload_hex_chunks"]["maxItems"],
+        32
+    );
+    assert_eq!(
+        retained["parameter_schema"]["properties"]["payload_hex_chunks"]["items"]["maxLength"],
+        16384
+    );
+    assert_eq!(
+        retained["parameter_schema"]["properties"]["expected_size"]["maximum"],
+        262144
+    );
     let s3 = actions
         .iter()
         .find(|action| action["action_id"] == "owned.aws.s3_access.v1")

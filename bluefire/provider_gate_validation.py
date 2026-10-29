@@ -18,9 +18,9 @@ from .version import __version__, native_runner_version
 
 # Pinned, not imported: this release-layer module may not depend on the domain-layer
 # runner registry (GATE-10 dependency direction). tests_platform/test_provider_gate.py
-# pins the 26 ordinary actions plus one reserved, structural S3 descriptor.
+# pins the 27 ordinary actions plus one reserved, structural S3 descriptor.
 # The historical evidence field counts advertised descriptors, not dispatch authority.
-_CORE_ACTION_COUNT = 27
+_CORE_ACTION_COUNT = 28
 
 
 def _validate_structural(report: Mapping[str, Any]) -> Mapping[str, Any]:
