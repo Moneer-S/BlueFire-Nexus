@@ -52,7 +52,7 @@ _RECEIVER_COMPOSITION_PURPOSE = "bluefire_composition_proposal"
 _RECEIVER_EVIDENCE_PURPOSE = "bluefire_receiver_evidence_composition_proposal"
 _RECEIVER_RETAINED_PURPOSE = "bluefire_receiver_retained_composition_proposal"
 _FIXTURE_MODEL = "bluefire-local-graph-fixture-v1"
-_RECEIVER_PROFILE = "sandbox-endpoint-deep-lab.v1"
+_RECEIVER_PROFILE = "sandbox-endpoint-deep-lab.v2"
 _RECEIVER_SCENARIO = "scenario.receiver-defense.redaction-validation.v1"
 _RECEIVER_COPY_SCENARIO = re.compile(
     r"scenario\.receiver-defense\.redaction-validation\.copy\."
@@ -95,6 +95,18 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
         "composition-model-proposal-inspect",
         "composition-model-proposal-reopen",
         "composition-attempt",
+        "retained-model-authorization",
+        "retained-objective-review",
+        "retained-review-response",
+        "retained-review-binding",
+        "retained-original-proposal",
+        "retained-original-execute",
+        "retained-history-selection",
+        "retained-continuation-proposal",
+        "retained-proposal-reopen",
+        "retained-continuation-execute",
+        "retained-grant-revoke",
+        "retained-result-comparison",
         "browser_callback",
         "cleanup",
     }
@@ -588,6 +600,7 @@ def _valid_receiver_composition(value: object) -> bool:
         in checks
         and "receiver_composition_and_history_authorizations_revoked_after_one_proposal_each"
         in checks
+        and "receiver_superseded_model_authorization_remained_revoked" in checks
         and "history_proposal_reopened_with_original_records_and_no_additional_execution" in checks
         and "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false"
         in checks
@@ -609,6 +622,7 @@ def _valid_receiver_composition(value: object) -> bool:
                 "comparison",
                 "provider_save",
                 "provider_activate",
+                "model_authorization_revoke",
             )
         )
         and all(
@@ -616,8 +630,7 @@ def _valid_receiver_composition(value: object) -> bool:
             for name in ("composition_knowledge",)
         )
         and all(
-            type(counts.get(name)) is int and counts[name] == 3
-            for name in ("model_authorization", "model_authorization_revoke")
+            type(counts.get(name)) is int and counts[name] == 3 for name in ("model_authorization",)
         )
         and type(counts.get("composition_evidence_context")) is int
         and 2 <= counts["composition_evidence_context"] <= 3

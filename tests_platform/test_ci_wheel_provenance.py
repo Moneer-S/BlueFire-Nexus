@@ -168,6 +168,84 @@ def test_windows_test_partitions_cover_flat_discovered_suite(version):
         _windows_partition_files(names, "a-c")
 
 
+@pytest.mark.parametrize("missing_retained_method", [False, True])
+def test_windows_replay_stages_current_execute_binary_with_strict_inventory(
+    tmp_path, monkeypatch, missing_retained_method
+):
+    from tests_platform.test_runner_bootstrap import _fake_pe, _inventory
+    from tools import stage_native_runner as staging
+
+    workflow = yaml.safe_load(
+        (REPOSITORY / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["python"]["steps"]
+    names = [step["name"] for step in steps]
+    selected = next(
+        step
+        for step in steps
+        if step["name"] == "Stage current runner package for Windows replay tests"
+    )
+    assert selected["if"] == "runner.os == 'Windows' && matrix.partition == 'r'"
+    assert selected["shell"] == "pwsh"
+    assert (
+        names.index("Build bounded Rust runner for Python Execute tests")
+        < names.index("Stage single-link runner for Python Execute tests")
+        < names.index(selected["name"])
+        < names.index("Test Windows partition")
+    )
+
+    runner_temp, workspace = tmp_path / "runner-temp", tmp_path / "checkout"
+    test_step = next(step for step in steps if step["name"] == "Test Windows partition")
+    source = Path(
+        test_step["env"]["BLUEFIRE_E2E_RUNNER"].replace(
+            "${{ runner.temp }}", runner_temp.as_posix()
+        )
+    )
+    source.parent.mkdir(parents=True)
+    current_bytes = _fake_pe() + b"current-source-build"
+    source.write_bytes(current_bytes)
+    destination = workspace / "bluefire/native"
+    destination.mkdir(parents=True)
+    old_binary = destination / "bluefire-runner.exe"
+    old_bytes = _fake_pe() + b"historical-packaged-build"
+    old_binary.write_bytes(old_bytes)
+    (destination / "__init__.py").write_bytes(b"# preserved package marker\n")
+
+    inventory = _inventory()
+    if missing_retained_method:
+        inventory["actions"] = [
+            row
+            for row in inventory["actions"]
+            if row["action_id"] != "sandbox.collection.materialize-retained.v1"
+        ]
+
+    def probe(path):
+        assert path.read_bytes() == current_bytes
+        return inventory
+
+    monkeypatch.setattr(staging, "_probe_inventory", probe)
+    command = (
+        selected["run"]
+        .replace("${{ runner.temp }}", runner_temp.as_posix())
+        .replace("${{ github.workspace }}", workspace.as_posix())
+    )
+    arguments = shlex.split(command)
+    assert arguments[:2] == ["python", "tools/stage_native_runner.py"]
+    result = staging.main(arguments[2:])
+    assert (destination / "__init__.py").read_bytes() == b"# preserved package marker\n"
+    if missing_retained_method:
+        assert result == 2
+        assert old_binary.read_bytes() == old_bytes
+        assert not (destination / "runner-manifest.json").exists()
+    else:
+        assert result == 0
+        assert old_binary.read_bytes() == current_bytes
+        manifest = json.loads((destination / "runner-manifest.json").read_text(encoding="utf-8"))
+        assert manifest["artifact"]["platform"] == "windows"
+        assert manifest["artifact"]["architecture"] == "x86_64"
+        assert manifest["artifact"]["sha256"] == hashlib.sha256(current_bytes).hexdigest()
+
+
 def test_native_wheel_build_and_verification_use_the_exact_archive():
     job = _package_job()
     assert job["defaults"]["run"]["working-directory"] == "./wheel-source"

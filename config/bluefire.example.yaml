@@ -207,6 +207,52 @@ runner_profiles:
       max_artifacts: 100
       max_bytes: 5242880
 
+  # Explicit retained-result profile revision for a new v2 capability review.
+  # Existing v1 profiles and their saved approvals do not gain this method.
+  - <<: *execute_profile
+    id: sandbox-endpoint-deep-lab.v2
+    scope: [sandbox.workspace, network.loopback]
+    network_allowlist: [127.0.0.1/32]
+    capabilities:
+      - sandbox.fixture
+      - sandbox.discovery
+      - sandbox.collection
+      - sandbox.cleanup
+      - sandbox.restricted
+      - native.execution
+      - sandbox.peer
+      - sandbox.observability.variant
+      - endpoint.discovery
+      - system.discovery
+      - process.discovery
+      - filesystem.read
+      - filesystem.write
+      - process.spawn
+      - network.loopback
+      - cleanup
+    safety_tiers: [safe, controlled, restricted]
+    enabled_actions:
+      - sandbox.execution.native-canary.v1
+      - endpoint.discovery.system.v1
+      - endpoint.discovery.processes.v1
+      - sandbox.restricted.persistence-marker.v1
+      - sandbox.fixture.create.v1
+      - sandbox.fixture.transform.v1
+      - sandbox.discovery.list.v1
+      - sandbox.discovery.metadata.v1
+      - sandbox.collection.stage.v1
+      - sandbox.collection.materialize-retained.v1
+      - sandbox.observability.variant.v1
+      - sandbox.peer.handoff.v1
+      - sandbox.cleanup.v1
+    blocked_actions: []
+    secrets: {}
+    budgets:
+      max_steps: 16
+      max_seconds: 120
+      max_artifacts: 100
+      max_bytes: 5242880
+
   - <<: *execute_profile
     id: gate11-windows-cancellation-witness.v1
     platforms: [windows]

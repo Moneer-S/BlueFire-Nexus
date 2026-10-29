@@ -5,6 +5,11 @@ result per attempt and use it in a later attempt of the same saved objective.
 This is an explicit choice when reviewing a new objective. Existing objectives
 and approvals keep their original meaning.
 
+For a new configured lab, select `sandbox-endpoint-deep-lab.v2` before running
+the baseline and defensive checks that establish the control. Existing controls
+keep their captured profile; selecting retention does not upgrade a v1 control
+or its approval. A compatible new control requires fresh reviewed checks.
+
 The reviewed scope permits at most 256 KiB of generated JSONL per attempt,
 within the grant's cumulative attempt and storage limits. It does not permit
 arbitrary file collection. The review describes retained source data and the

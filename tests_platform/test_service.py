@@ -500,7 +500,13 @@ def test_service_seeds_durable_product_state_and_indexes_completed_runs(
 
     assert service.product_store.path == database.resolve()
     assert service.seed_counts["scenario"] == 14
-    assert service.seed_counts["action"] == 29
+    assert service.seed_counts["action"] == 30
+    assert (
+        service.product_store.get_resource("action", "sandbox.collection.materialize-retained.v1")[
+            "document"
+        ]["id"]
+        == "sandbox.collection.materialize-retained.v1"
+    )
     assert len(service.product_store.list_resources("collector")) == 11
 
     result = service.run(

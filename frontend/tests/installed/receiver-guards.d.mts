@@ -2,6 +2,11 @@ import type { ReceiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
 
 export function sameJson(left: unknown, right: unknown): boolean;
 export function createReceiverSettingsReadPolicy(): (url: URL, method: string) => boolean;
+export function openReceiverSettingsForCleanup(
+  page: { url: () => string; goto: (url: string, options?: { waitUntil?: "commit" | "domcontentloaded" | "load" | "networkidle"; timeout?: number }) => Promise<unknown> },
+  origin: string,
+  navigationOptions?: { waitUntil?: "commit" | "domcontentloaded" | "load" | "networkidle"; timeout?: number },
+): Promise<void>;
 export function createReceiverReloadContextCorrelation<T extends object>(navigation: (request: T) => boolean, context: (request: T) => boolean): { request: (request: T) => boolean; response: (response: { request: () => T }) => boolean };
 export const receiverApprovalAcknowledgementName: RegExp;
 export function receiverCompositionCleanupState(objective: unknown): "settled" | "no_grant" | "unresolved";

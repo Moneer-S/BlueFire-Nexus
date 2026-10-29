@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import {
   handleReceiverRoute,
   createReceiverSettingsReadPolicy,
+  openReceiverSettingsForCleanup,
   createReceiverReloadContextCorrelation,
   closeReceiverWebSocket,
   observeReceiverEvent,
@@ -60,7 +61,8 @@ const JOURNEY_BUDGET_MS = 475_000;
 const CLEANUP_BUDGET_MS = 60_000;
 const deadlineBudget = createDeadlineBudget(Date.now(), JOURNEY_BUDGET_MS, CLEANUP_BUDGET_MS);
 
-const PROFILE = "sandbox-endpoint-deep-lab.v1";
+// Select this new profile for the whole fresh journey; saved v1 controls are not changed.
+const PROFILE = "sandbox-endpoint-deep-lab.v2";
 const STARTER = "scenario.receiver-defense.redaction-validation.v1";
 const STARTER_TITLE = "Validate receiver redaction and legitimate use";
 const FILESYSTEM_COLLECTOR = "collector.filesystem.sandbox.v1";
@@ -732,7 +734,7 @@ async function revokeModelPurposeNormally(purpose) {
       assert.equal(row.status, "active");
       assert.ok(counts.model_authorization_revoke < ROUTE_LIMITS.model_authorization_revoke);
       expectedModelRevokeId = row.authorization_id;
-      await page.goto(`${ORIGIN}/#/settings`, { waitUntil: "domcontentloaded", timeout: localTimeout() });
+      await openReceiverSettingsForCleanup(page, ORIGIN, { waitUntil: "domcontentloaded", timeout: localTimeout() });
       const label = purpose === MODEL_PURPOSE ? MODEL_PURPOSE_LABEL : purpose === EVIDENCE_PURPOSE ? EVIDENCE_PURPOSE_LABEL : RETAINED_PURPOSE_LABEL;
       const button = page.locator("article.provider-authorization-record").filter({ has: page.getByText(label, { exact: true }) })
         .getByRole("button", { name: `Revoke model usage for ${MODEL}`, exact: true });
@@ -1675,6 +1677,8 @@ try {
   assert.equal(latestCompositionObjective.grant?.status, "active");
   assert.equal(latestCompositionObjective.grant?.document?.environment?.control_owner_id, originalOwnerId);
   assert.equal(latestCompositionObjective.grant?.document?.objective?.predicate?.record_count, 8);
+  assert.equal(latestCompositionObjective.grant.document.schema_version, "bluefire.capability-grant.v1");
+  assert.deepEqual(latestCompositionObjective.grant.document.snapshot.methods, latestCompositionReview.snapshot.methods);
   assert.equal(latestCompositionObjective.attempts?.length, 0);
   const grantId = latestCompositionObjective.grant.document.grant_id;
   assert.match(grantId ?? "", /^grant-[0-9a-f]{32}$/);
@@ -1853,6 +1857,9 @@ try {
   assert.equal(historyAuthorization.status, "active");
   assert.equal(historyAuthorization.usage?.requests, 0);
   assert.notEqual(historyAuthorization.authorization_id, modelAuthorizationIds.get(MODEL_PURPOSE));
+  const supersededAuthorization = await readOwnedModelAuthorization();
+  assert.equal(supersededAuthorization.status, "revoked");
+  assert.equal(supersededAuthorization.usage.requests, 1);
   stage = "composition-history-proposal";
   report.composition.evidence_proposal = await inspectReceiverEvidenceProposal(page, {
     origin: ORIGIN, ownerId: compositionOwnerId, controlId: originalOwnerId,
@@ -1885,8 +1892,13 @@ try {
   assert.equal(retainedAuthorization.limits.max_requests, 2);
   assert.equal(retainedAuthorization.limits.max_request_bytes, 524288);
   assert.equal(retainedAuthorization.limits.max_reserved_output_tokens, 2048);
+  for (const purpose of [MODEL_PURPOSE, EVIDENCE_PURPOSE]) {
+    const superseded = await readOwnedModelAuthorization(remainingMs(), purpose);
+    assert.equal(superseded.status, "revoked");
+    assert.equal(superseded.usage.requests, 1);
+  }
   report.retained_execution = await runRetainedJourney(page, retained, {
-    origin: ORIGIN, controlId: originalOwnerId, controlDigest: originalControlDigest, providerId: PROVIDER_ID, model: MODEL,
+    origin: ORIGIN, controlId: originalOwnerId, controlDigest: originalControlDigest, profileId: PROFILE, providerId: PROVIDER_ID, model: MODEL,
     read: path => appApi(path), remainingMs, setStage: value => { stage = value; },
     onRevoked: () => { report.cleanup = { ...(report.cleanup ?? {}), retained_grant_revoked: true }; },
     capture: async name => {
@@ -2204,7 +2216,13 @@ try {
   stage = "composition-model-authorization-revoke";
   await revokeModelAuthorizationNormally();
   assert.equal(report.cleanup.model_authorization_revoked, true);
-  assert.equal(counts.model_authorization_revoke, 3);
+  assert.equal(counts.model_authorization_revoke, 1);
+  for (const purpose of [MODEL_PURPOSE, EVIDENCE_PURPOSE, RETAINED_PURPOSE]) {
+    const terminal = await readOwnedModelAuthorization(remainingMs(), purpose);
+    assert.equal(terminal.status, "revoked");
+    assert.equal(terminal.usage.requests, purpose === RETAINED_PURPOSE ? 2 : 1);
+  }
+  report.checks.push("receiver_superseded_model_authorization_remained_revoked");
   report.checks.push("receiver_composition_and_history_authorizations_revoked_after_one_proposal_each");
 
   report.request_counts = counts;
@@ -2221,7 +2239,8 @@ try {
     assert.equal(counts[name], 1);
   }
   assert.equal(counts.composition_knowledge, 2);
-  for (const name of ["model_authorization", "model_authorization_revoke"]) assert.equal(counts[name], 3);
+  assert.equal(counts.model_authorization, 3);
+  assert.equal(counts.model_authorization_revoke, 1);
   for (const name of ["retained_review", "retained_grant", "retained_knowledge", "retained_revoke", "retained_comparison"]) assert.equal(counts[name], 1);
   for (const name of ["retained_proposal", "retained_attempt"]) assert.equal(counts[name], 2);
   assert.ok(counts.retained_list >= 1 && counts.retained_list <= 8);
