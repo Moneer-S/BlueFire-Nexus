@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from tools.controlled_strix_provider import (
+from bluefire.controlled_strix_provider import (
     ControlledProviderError,
     ControlledProviderManifest,
     ControlledProviderState,
@@ -188,7 +188,10 @@ def test_state_emits_manifest_calls_and_pairs_exact_tool_result(tmp_path: Path) 
     assert second_call["function"]["name"] == "finish_scan"
     assert second_call["id"] != first_call["id"]
 
-    audit_text = audit.read_text(encoding="utf-8")
+    audit_bytes = audit.read_bytes()
+    assert b"\r\n" not in audit_bytes
+    assert audit_bytes.endswith(b"\n")
+    audit_text = audit_bytes.decode("utf-8")
     assert len(audit_text.splitlines()) == 2
     assert TOKEN not in audit_text
     assert "untrusted prompt secret" not in audit_text
@@ -486,7 +489,9 @@ def test_ready_file_is_exclusive_and_atomically_published(tmp_path: Path) -> Non
 
 def test_write_all_rejects_a_short_write(monkeypatch: pytest.MonkeyPatch) -> None:
     writes = iter((2, 0))
-    monkeypatch.setattr("tools.controlled_strix_provider.os.write", lambda _fd, _data: next(writes))
+    monkeypatch.setattr(
+        "bluefire.controlled_strix_provider.os.write", lambda _fd, _data: next(writes)
+    )
     with pytest.raises(OSError, match="short write"):
         _write_all(123, b"abcd")
 
@@ -498,3 +503,12 @@ def test_handler_applies_socket_deadline_before_request_parsing() -> None:
     handler_type = build_handler(state)
     assert handler_type.request_deadline_seconds == 5.0
     assert "setup" in handler_type.__dict__
+
+
+def test_package_module_is_the_entrypoint_and_tool_is_only_a_wrapper() -> None:
+    import bluefire.controlled_strix_provider as installed_provider
+    import tools.controlled_strix_provider as compatibility_wrapper
+
+    assert installed_provider.__file__ is not None
+    assert Path(installed_provider.__file__).parent.name == "bluefire"
+    assert compatibility_wrapper.main is installed_provider.main
