@@ -3,24 +3,26 @@ import { engineAssistanceLabel, engineExperimentSelection, engineExperimentSelec
 import type { EngineExperiment } from "../src/lib/engine-experiment";
 
 const attemptId = `engine-attempt-${"4".repeat(32)}`;
+const checkId = `controller-check-${"5".repeat(32)}`;
 const experiment = {
   experiment_id: `experiment-${"1".repeat(32)}`,
   workspace_digest: `sha256:${"2".repeat(64)}`,
   objective: { title: "Controlled tenant-record defense fixture", summary: "Fixture only." },
-  projection: { attempts: [{ attempt_id: attemptId, role: "baseline" }] },
+  projection: { attempts: [{ attempt_id: attemptId, role: "baseline" }], checks: [{ check_id: checkId, role: "retained_reproducer" }] },
 } as unknown as EngineExperiment;
 
 it("captures an exact immutable experiment and selected attempt context", () => {
   const selection = engineExperimentSelection(experiment, attemptId);
-  expect(selection).toEqual({ kind: "engine_experiment", experiment_id: experiment.experiment_id, workspace_digest: experiment.workspace_digest, attempt_id: attemptId });
+  expect(selection).toEqual({ kind: "engine_experiment", experiment_id: experiment.experiment_id, workspace_digest: experiment.workspace_digest, attempt_id: attemptId, check_id: null });
   expect(validEngineExperimentSelection(selection)).toBe(true);
   expect(engineExperimentSelectionMatches(selection, experiment)).toBe(true);
 });
 
 it("refuses unknown or extra selection fields", () => {
-  expect(validEngineExperimentSelection({ kind: "engine_experiment", experiment_id: experiment.experiment_id, workspace_digest: experiment.workspace_digest, attempt_id: null, current: true })).toBe(false);
-  expect(validEngineExperimentSelection({ kind: "engine_experiment", experiment_id: "engine-experiment-wrong", workspace_digest: experiment.workspace_digest, attempt_id: null })).toBe(false);
-  expect(validEngineExperimentSelection({ kind: "engine_experiment", experiment_id: experiment.experiment_id, result_digest: experiment.workspace_digest, attempt_id: null })).toBe(false);
+  expect(validEngineExperimentSelection({ kind: "engine_experiment", experiment_id: experiment.experiment_id, workspace_digest: experiment.workspace_digest, attempt_id: null, check_id: null, current: true })).toBe(false);
+  expect(validEngineExperimentSelection({ kind: "engine_experiment", experiment_id: "engine-experiment-wrong", workspace_digest: experiment.workspace_digest, attempt_id: null, check_id: null })).toBe(false);
+  expect(validEngineExperimentSelection({ kind: "engine_experiment", experiment_id: experiment.experiment_id, result_digest: experiment.workspace_digest, attempt_id: null, check_id: null })).toBe(false);
+  expect(validEngineExperimentSelection({ kind: "engine_experiment", experiment_id: experiment.experiment_id, workspace_digest: experiment.workspace_digest, attempt_id: attemptId, check_id: checkId })).toBe(false);
 });
 
 it("refuses a missing attempt instead of silently changing captured context", () => {
@@ -35,4 +37,10 @@ it("does not match a newer mutable experiment digest", () => {
 
 it("uses the same purpose-first attempt language as the workspace", () => {
   expect(engineAssistanceLabel(engineExperimentSelection(experiment, attemptId), experiment)).toBe("Controlled tenant-record defense fixture: Baseline exploration");
+});
+
+it("captures an exact trusted-controller check separately from an engine attempt", () => {
+  const selection = engineExperimentSelection(experiment, null, checkId);
+  expect(selection).toEqual({ kind: "engine_experiment", experiment_id: experiment.experiment_id, workspace_digest: experiment.workspace_digest, attempt_id: null, check_id: checkId });
+  expect(engineAssistanceLabel(selection, experiment)).toBe("Controlled tenant-record defense fixture: Original mechanism retest");
 });

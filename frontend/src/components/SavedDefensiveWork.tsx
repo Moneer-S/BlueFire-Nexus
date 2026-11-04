@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, Cloud, FileLock2, Network, RefreshCw, Send } from "lucide-react";
+import { ArrowRight, Cloud, FileLock2, FlaskConical, Network, RefreshCw, Send } from "lucide-react";
 import { useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { DEMO_MODE } from "../lib/api";
@@ -8,7 +8,7 @@ import { loadSavedWork, workFamilies, type WorkFamily } from "../lib/saved-defen
 import { Badge, Button, ErrorState, LoadingState, sentence } from "./Primitives";
 import "./SavedDefensiveWork.css";
 
-const icons = { handoff: Send, file: FileLock2, domain: Network, cloud: Cloud };
+const icons = { engine: FlaskConical, handoff: Send, file: FileLock2, domain: Network, cloud: Cloud };
 
 export function SavedDefensiveWork() {
   const [params, setParams] = useSearchParams();
