@@ -820,6 +820,101 @@ class EngineExperimentJobStoreMixin:
             )
             return _append_experiment_at(connection, experiment, updated)
 
+    def compare_and_swap_engine_attempt_observation(
+        self: EngineJobProductStore,
+        *,
+        experiment_id: str,
+        observation: Mapping[str, Any],
+        expected_revision: int,
+        expected_experiment_digest: str,
+        timestamp: str,
+    ) -> Mapping[str, Any]:
+        """Atomically append one preverified controller observation.
+
+        The trusted service must first reopen the immutable finalized RunStore
+        bundle and verify that it contains this byte-identical EvidenceRecord.
+        ProductStore cannot make that cross-filesystem check part of this
+        SQLite transaction; it atomically enforces the canonical experiment,
+        attempt, job, run, target-snapshot, and evidence identity bindings.
+        """
+
+        parsed = _controller_observation(observation)
+        if parsed.attempt_id is None or parsed.check_id is not None:
+            raise ProductStoreError("engine attempt observation belongs to another workflow owner")
+        with self._connection(write=True) as connection:
+            experiment = _active_experiment_at(
+                connection,
+                experiment_id,
+                expected_revision=expected_revision,
+                expected_digest=expected_experiment_digest,
+            )
+            try:
+                _index, entry = experiment._attempt(parsed.attempt_id)
+            except EngineExperimentError as exc:
+                raise ProductStoreError("engine observation attempt was not found") from exc
+            binding = entry.record.binding
+            if (
+                binding.experiment_id != experiment.experiment_id
+                or binding.run_id != parsed.evidence.run_id
+                or binding.target_snapshot_ref != parsed.target_snapshot_ref
+                or entry.settled_at is None
+                or entry.record.state.value
+                not in {
+                    "completed",
+                    "partial",
+                    "failed",
+                    "cancelled",
+                    "budget_exhausted",
+                    "unknown",
+                }
+            ):
+                raise ProductStoreError(
+                    "engine observation differs from its settled attempt binding"
+                )
+            job = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (entry.job_id,)
+            ).fetchone()
+            if (
+                job is None
+                or job["kind"] != _ENGINE_JOB_KIND
+                or job["state"] not in {"completed", "failed", "cancelled", "interrupted"}
+            ):
+                raise ProductStoreError("engine observation lacks its terminal bound job")
+            request, _submission = _saved_job_request(self, job)
+            if (
+                request.get("schema_version") != "bluefire.engine-attempt-job.v1"
+                or request.get("experiment_id") != experiment.experiment_id
+                or request.get("attempt_id") != binding.attempt_id
+                or request.get("binding_digest") != binding.binding_digest
+                or request.get("delegation_digest") != entry.delegation_digest
+                or request.get("execution_approval_digest") != entry.execution_approval_digest
+                or request.get("execution_approval_id") != entry.execution_approval_id
+                or entry.job_id != job["job_id"]
+            ):
+                raise ProductStoreError("engine observation job differs from its exact attempt")
+            existing = next(
+                (
+                    item
+                    for item in experiment.independent_observations
+                    if item.evidence_id == parsed.evidence_id
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing.to_dict() != parsed.to_dict():
+                    raise ProductStoreError(
+                        "engine observation identity is already bound to different evidence"
+                    )
+                return cast(Mapping[str, Any], experiment.to_dict())
+            updated = experiment.record_independent_observation(
+                parsed,
+                timestamp=timestamp,
+            )
+            return cast(
+                Mapping[str, Any],
+                _append_experiment_at(connection, experiment, updated),
+            )
+
     def reconcile_engine_attempt_cleanup(
         self: EngineJobProductStore,
         *,

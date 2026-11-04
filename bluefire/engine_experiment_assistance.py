@@ -650,6 +650,12 @@ def _selection(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(cast(dict[str, Any], json_clone(row)))
 
 
+def engine_experiment_assistance_selection(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and detach the exact saved engine-experiment selection."""
+
+    return _selection(value)
+
+
 def _validate_workspace(
     experiment: EngineExperiment,
     value: Mapping[str, Any],
@@ -1064,4 +1070,5 @@ def engine_experiment_assistance_context(
 __all__ = [
     "EngineExperimentAssistanceError",
     "engine_experiment_assistance_context",
+    "engine_experiment_assistance_selection",
 ]

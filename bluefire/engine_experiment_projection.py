@@ -30,6 +30,49 @@ class EngineRunSource(Protocol):
     def get_run(self, run_id: str, *, require_finalized: bool = False) -> Mapping[str, Any]: ...
 
 
+def verify_finalized_independent_observation(
+    observation: IndependentObservationRecord,
+    run_source: EngineRunSource,
+) -> None:
+    """Require one exact observation in its immutable finalized run bundle."""
+
+    if not isinstance(observation, IndependentObservationRecord):
+        raise EngineExperimentError("independent observation is not controller-attested")
+    observation.validate()
+    run_id = observation.evidence.run_id
+    run = run_source.get_run(run_id, require_finalized=True)
+    if run.get("run_id") != run_id:
+        raise EngineExperimentError("run identity changed")
+    envelope = run.get("evidence")
+    if (
+        not isinstance(envelope, Mapping)
+        or set(envelope) != {"schema_version", "records"}
+        or envelope.get("schema_version") != "1.0"
+    ):
+        raise EngineExperimentError("run evidence envelope schema is unavailable")
+    rows = envelope.get("records")
+    if not isinstance(rows, list):
+        raise EngineExperimentError("run evidence envelope is unavailable")
+    matched = False
+    identities: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise EngineExperimentError("run evidence row is invalid")
+        try:
+            record = EvidenceRecord.from_mapping(row)
+        except (TypeError, ValueError) as exc:
+            raise EngineExperimentError("run evidence row is invalid") from exc
+        if record.evidence_id in identities:
+            raise EngineExperimentError("run repeats an evidence identity")
+        identities.add(record.evidence_id)
+        if record.evidence_id == observation.evidence_id:
+            if record.to_dict() != observation.evidence.to_dict():
+                raise EngineExperimentError("saved observation differs from its exact run record")
+            matched = True
+    if not matched:
+        raise EngineExperimentError("saved observation is absent from its finalized run")
+
+
 _TERMINAL_ATTEMPT_STATES = frozenset(
     {
         AttemptState.COMPLETED,

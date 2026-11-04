@@ -25,6 +25,7 @@ from bluefire.tenant_record_experiment_controller import (
     TenantTargetOperationUnknown,
     TenantTargetReadback,
     generate_held_out_variation,
+    tenant_target_snapshot_ref,
 )
 from bluefire.tenant_record_lab import (
     TenantDefenseConfig,
@@ -355,6 +356,18 @@ def test_baseline_observation_captures_exact_fixed_failure_mechanism() -> None:
         "identity_input",
         "request_digest",
     }
+    admitted = observation.independent_observation()
+    assert admitted.attempt_id == BASELINE_ATTEMPT
+    assert admitted.check_id is None
+    assert admitted.target_snapshot_ref == observation.target_snapshot_ref
+    assert admitted.target_snapshot_ref == tenant_target_snapshot_ref(
+        fixture_digest=target.config.fixture_digest,
+        target_snapshot_id=target.config.target_snapshot_id,
+        service_generation=target.config.service_generation,
+    )
+    assert admitted.mechanism_ref == content_hash(mechanism.to_dict())
+    assert admitted.evidence == observation.evidence
+    assert admitted.assessment == "unauthorized_disclosure"
 
 
 def test_defense_exact_reproducer_adaptive_observation_and_legitimate_use() -> None:
@@ -376,6 +389,10 @@ def test_defense_exact_reproducer_adaptive_observation_and_legitimate_use() -> N
     assert reproducer.passed is True
     assert adaptive.assessment == "authorization_denied"
     assert adaptive.failure_mechanism is None
+    adaptive_admitted = adaptive.independent_observation()
+    assert adaptive_admitted.attempt_id == ADAPTIVE_ATTEMPT
+    assert adaptive_admitted.mechanism_ref == adaptive.mechanism_ref
+    assert adaptive_admitted.mechanism_ref != content_hash(baseline.failure_mechanism.to_dict())
     assert legitimate.role is ControllerCheckRole.LEGITIMATE_USE
     assert legitimate.assessment == "legitimate_use_succeeded"
     assert legitimate.passed is True

@@ -98,6 +98,16 @@ from .contracts import (
 from .detection_ai_jobs import DetectionAIJobs
 from .detection_create_jobs import DetectionCreateJobs
 from .detection_lab import DetectionLabService
+from .engine_experiment_jobs import EngineAttemptRuntime, EngineExperimentJobs
+from .engine_experiment_service import (
+    EngineControllerJobs as EngineControllerJobsAdapter,
+)
+from .engine_experiment_service import (
+    EngineExperimentService,
+    EngineExperimentServiceError,
+    TrustedEngineController,
+)
+from .engine_experiment_workspace import EngineExperimentPresentationSource
 from .execution_progress import ExecutionRecordFailure
 from .graph_ai_jobs import GraphAIJobs
 from .job_runtime import (
@@ -222,6 +232,16 @@ def _default_collector_registry_factory(sandbox: Path) -> CollectorRegistry:
     return CollectorRegistry((FilesystemCollector(sandbox), CollectionSemanticsCollector(sandbox)))
 
 
+def _engine_service_clock() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+EngineControllerJobsFactory = Callable[
+    [ProductStore, RunStore, RunJobController],
+    EngineControllerJobsAdapter,
+]
+
+
 class BlueFireService(
     RunnerManagementServiceMixin,
     ReceiverDefenseServiceMixin,
@@ -246,7 +266,16 @@ class BlueFireService(
         ai_draft_provider_factory: AIDraftProviderFactory | None = None,
         ai_provider_access: AIProviderAccess | None = None,
         s3_access_executor: S3AccessExecutor | None = None,
+        engine_attempt_runtime: EngineAttemptRuntime | None = None,
+        engine_controller: TrustedEngineController | None = None,
+        engine_controller_jobs: EngineControllerJobsAdapter | None = None,
+        engine_controller_jobs_factory: EngineControllerJobsFactory | None = None,
+        engine_experiment_presentation_source: EngineExperimentPresentationSource | None = None,
     ) -> None:
+        if engine_controller_jobs is not None and engine_controller_jobs_factory is not None:
+            raise ValueError(
+                "Configure either engine controller jobs or its service-owned factory, not both."
+            )
         root = (
             Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
         )
@@ -299,6 +328,37 @@ class BlueFireService(
             max_pending_jobs=8,
             recover_on_start=False,
         )
+        engine_presentation = (
+            engine_experiment_presentation_source
+            if engine_experiment_presentation_source is not None
+            else self.product_store
+        )
+        configured_engine_controller_jobs = (
+            engine_controller_jobs_factory(
+                self.product_store,
+                self.store,
+                self.job_controller,
+            )
+            if engine_controller_jobs_factory is not None
+            else engine_controller_jobs
+        )
+        self.engine_attempt_jobs = EngineExperimentJobs(
+            controller=self.job_controller,
+            repository=self.product_store,
+            runtime=engine_attempt_runtime,
+            clock=_engine_service_clock,
+        )
+        self._engine_experiment_service = EngineExperimentService(
+            history=self.product_store,
+            run_source=self.store,
+            jobs=self.engine_attempt_jobs,
+            job_lifecycle=self.job_controller,
+            controller=engine_controller,
+            clock=_engine_service_clock,
+            presentation_source=engine_presentation,
+            controller_jobs=configured_engine_controller_jobs,
+        )
+        self.engine_experiment_service = self._engine_experiment_service
         self.detection_ai = DetectionAIJobs(
             lab=self.detection_lab,
             controller=self.job_controller,
@@ -2833,6 +2893,45 @@ class BlueFireService(
             job = self.product_store.get_job(job_id)
         except ProductStoreError:
             return self._signal_job(job_id, "cancel")
+        if job.get("kind") == EngineExperimentJobs.JOB_KIND:
+            request = job.get("request")
+            experiment_id = request.get("experiment_id") if isinstance(request, Mapping) else None
+            attempt_id = request.get("attempt_id") if isinstance(request, Mapping) else None
+            if not isinstance(experiment_id, str) or not isinstance(attempt_id, str):
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "job_signal_refused",
+                    "The engine job could not be bound to its saved attempt.",
+                )
+            try:
+                cancellation = self._engine_experiment_service.cancel_attempt(
+                    experiment_id=experiment_id,
+                    attempt_id=attempt_id,
+                    job_id=job_id,
+                )
+            except EngineExperimentServiceError as exc:
+                try:
+                    durable_job = self.product_store.get_job(job_id)
+                except ProductStoreError:
+                    durable_job = None
+                if isinstance(durable_job, Mapping) and durable_job.get("state") in {
+                    "cancelling",
+                    "cancelled",
+                }:
+                    return dict(durable_job)
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "job_signal_refused",
+                    "The engine job could not be cancelled from its current state.",
+                ) from exc
+            cancelled_job = cancellation.get("job")
+            if not isinstance(cancelled_job, Mapping):
+                raise APIError(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "invalid_service_response",
+                    "The engine cancellation returned an invalid job response.",
+                )
+            return dict(cancelled_job)
         if job["kind"] == "receiver.defense.inspect":
             self.assistance.cancel(self.assistance_receiver.cancellation_parent(job))
             return self.product_store.get_job(job_id)

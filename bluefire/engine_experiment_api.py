@@ -66,6 +66,9 @@ _CONTROLLER_JOB_FIELDS = frozenset(
         "intent_digest",
     }
 )
+_ASSISTANCE_SELECTION_FIELDS = frozenset(
+    {"kind", "experiment_id", "workspace_digest", "attempt_id", "check_id"}
+)
 
 _DEFENSE_ROUTES = {
     "review": ("transition", "review_defense"),
@@ -92,6 +95,7 @@ _SERVICE_STATUS = {
     "engine_evidence_unavailable": HTTPStatus.CONFLICT,
     "engine_job_unavailable": HTTPStatus.CONFLICT,
     "engine_experiment_unavailable": HTTPStatus.CONFLICT,
+    "engine_assistance_context_unavailable": HTTPStatus.CONFLICT,
 }
 
 
@@ -108,6 +112,12 @@ class EngineExperimentAPIService(Protocol):
         *,
         selected_attempt_id: str | None = None,
         selected_check_id: str | None = None,
+    ) -> Mapping[str, Any]: ...
+
+    def assistance_context_request(
+        self,
+        experiment_id: str,
+        selection: Mapping[str, Any],
     ) -> Mapping[str, Any]: ...
 
     def create_request(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
@@ -273,6 +283,30 @@ def _valid_controller_job_request(value: Mapping[str, Any]) -> bool:
     )
 
 
+def _valid_assistance_selection(value: Mapping[str, Any]) -> bool:
+    attempt_id = value.get("attempt_id")
+    check_id = value.get("check_id")
+    return (
+        set(value) == _ASSISTANCE_SELECTION_FIELDS
+        and value.get("kind") == "engine_experiment"
+        and isinstance(value.get("experiment_id"), str)
+        and _EXPERIMENT_ID.fullmatch(value["experiment_id"]) is not None
+        and isinstance(value.get("workspace_digest"), str)
+        and _DIGEST.fullmatch(value["workspace_digest"]) is not None
+        and (
+            attempt_id is None
+            or isinstance(attempt_id, str)
+            and _ATTEMPT_ID.fullmatch(attempt_id) is not None
+        )
+        and (
+            check_id is None
+            or isinstance(check_id, str)
+            and _CHECK_ID.fullmatch(check_id) is not None
+        )
+        and not (attempt_id is not None and check_id is not None)
+    )
+
+
 def _parse_suffix(suffix: str) -> tuple[str, tuple[str, ...]] | None:
     if suffix == "":
         return "collection", ()
@@ -284,6 +318,8 @@ def _parse_suffix(suffix: str) -> tuple[str, tuple[str, ...]] | None:
         return "read", (experiment_id,)
     if parts[1:] == ["workspace"]:
         return "workspace", (experiment_id,)
+    if parts[1:] == ["assistant-context"]:
+        return "assistant-context", (experiment_id,)
     if parts[1:] == ["attempts"]:
         return "submit-attempt", (experiment_id,)
     if (
@@ -369,6 +405,16 @@ def dispatch_engine_experiments(
             _request_error(handler, "Engine experiment creation request is invalid.")
         else:
             handler._dispatch(lambda: _service_call(lambda: service.create_request(body)))
+        return True
+    if operation == "assistant-context":
+        if not _valid_assistance_selection(body) or body["experiment_id"] != arguments[0]:
+            _request_error(handler, "Engine Assistant selection is invalid.")
+        else:
+            handler._dispatch(
+                lambda: _service_call(
+                    lambda: service.assistance_context_request(arguments[0], body)
+                )
+            )
         return True
     if operation == "submit-attempt":
         if not _valid_attempt_request(body) or body["experiment_id"] != arguments[0]:

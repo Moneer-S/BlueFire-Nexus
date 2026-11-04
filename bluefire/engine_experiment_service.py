@@ -19,9 +19,21 @@ from .engine_delegation import (
     EngineDelegationError,
     EngineExecutionApprovalBinding,
 )
-from .engine_experiment import DefenseState, EngineExperiment, EngineExperimentError
+from .engine_experiment import (
+    DefenseState,
+    EngineExperiment,
+    EngineExperimentError,
+    IndependentObservationRecord,
+)
+from .engine_experiment_assistance import (
+    EngineExperimentAssistanceError,
+    engine_experiment_assistance_context,
+)
 from .engine_experiment_jobs import EngineExperimentJobError, EngineExperimentJobs
-from .engine_experiment_projection import EngineRunSource
+from .engine_experiment_projection import (
+    EngineRunSource,
+    verify_finalized_independent_observation,
+)
 from .engine_experiment_workspace import (
     EngineExperimentPresentationSource,
     EngineExperimentSelectionNotFound,
@@ -92,6 +104,19 @@ class EngineExperimentHistory(Protocol):
     ) -> Mapping[str, Any]: ...
 
     def list_engine_experiments(self, *, limit: int = 100) -> list[Mapping[str, Any]]: ...
+
+    def compare_and_swap_engine_attempt_observation(
+        self,
+        *,
+        experiment_id: str,
+        observation: Mapping[str, Any],
+        expected_revision: int,
+        expected_experiment_digest: str,
+        timestamp: str,
+    ) -> Mapping[str, Any]:
+        """Atomically append one preverified controller observation."""
+
+        ...
 
 
 class TrustedEngineController(Protocol):
@@ -220,6 +245,7 @@ class EngineExperimentService:
                 target_snapshot_ref=target_snapshot_ref,
                 created_at=self._now(),
             )
+            self._presentation_source.assert_engine_experiment_presentation_create_ready(experiment)
             try:
                 record = self._history.create_engine_experiment(
                     experiment.experiment_id,
@@ -313,6 +339,57 @@ class EngineExperimentService:
             )
         )
 
+    def assistance_context_request(
+        self,
+        experiment_id: str,
+        selection: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Capture immutable analysis context from one exact saved workspace."""
+
+        fields = {"kind", "experiment_id", "workspace_digest", "attempt_id", "check_id"}
+        if (
+            not isinstance(selection, Mapping)
+            or set(selection) != fields
+            or selection.get("kind") != "engine_experiment"
+            or selection.get("experiment_id") != experiment_id
+            or (selection.get("attempt_id") is not None and selection.get("check_id") is not None)
+        ):
+            raise EngineExperimentServiceError(
+                "engine_request_invalid",
+                "The engine Assistant selection does not match the supported contract.",
+            )
+
+        def operation() -> Mapping[str, Any]:
+            record = self._record(self._history.get_engine_experiment(experiment_id))
+            experiment = cast(EngineExperiment, record["experiment"])
+            selected_attempt_id = selection.get("attempt_id")
+            selected_check_id = selection.get("check_id")
+            if selected_attempt_id is not None and not isinstance(selected_attempt_id, str):
+                raise EngineExperimentAssistanceError("engine Assistant selection is invalid")
+            if selected_check_id is not None and not isinstance(selected_check_id, str):
+                raise EngineExperimentAssistanceError("engine Assistant selection is invalid")
+            workspace = present_engine_experiment_workspace(
+                experiment,
+                self._run_source,
+                self._presentation_source,
+                selected_attempt_id=selected_attempt_id,
+                selected_check_id=selected_check_id,
+            )
+            presentation = self._assistance_presentation(
+                experiment,
+                selected_attempt_id=selected_attempt_id,
+                selected_check_id=selected_check_id,
+            )
+            return engine_experiment_assistance_context(
+                experiment,
+                workspace,
+                selection,
+                run_source=self._run_source,
+                presentation=presentation,
+            )
+
+        return self._mapped(operation)
+
     def submit_attempt(
         self,
         *,
@@ -401,6 +478,108 @@ class EngineExperimentService:
             expected_digest=request["expected_digest"],
         )
 
+    def record_engine_attempt_observation(
+        self,
+        *,
+        experiment_id: str,
+        expected_revision: int,
+        expected_digest: str,
+        observation: IndependentObservationRecord,
+    ) -> Mapping[str, Any]:
+        """Persist one trusted target observation for a settled engine attempt.
+
+        This is an internal controller seam, not an HTTP operation.  The
+        controller-attested record is checked against the exact attempt and a
+        finalized, byte-identical RunStore evidence record before the existing
+        ProductStore performs the revision/digest compare-and-swap.  RunStore
+        and ProductStore are separate durable stores, so the finalized-run
+        check is an explicit immutable precondition rather than a false claim
+        of one cross-filesystem transaction.
+        """
+
+        def operation() -> Mapping[str, Any]:
+            if not isinstance(observation, IndependentObservationRecord):
+                raise EngineExperimentError(
+                    "engine observation requires controller-attested evidence"
+                )
+            observation.validate()
+            if observation.attempt_id is None or observation.check_id is not None:
+                raise EngineExperimentError(
+                    "engine observation must belong to an external-engine attempt"
+                )
+            current = self._active(experiment_id)
+            self._expect(
+                current,
+                expected_revision=expected_revision,
+                expected_digest=expected_digest,
+            )
+            matching = [
+                entry
+                for entry in current.attempts
+                if entry.record.binding.attempt_id == observation.attempt_id
+            ]
+            if len(matching) != 1:
+                raise EngineExperimentError("engine observation attempt is unavailable")
+            binding = matching[0].record.binding
+            if (
+                binding.experiment_id != experiment_id
+                or binding.run_id != observation.evidence.run_id
+                or binding.target_snapshot_ref != observation.target_snapshot_ref
+            ):
+                raise EngineExperimentError(
+                    "engine observation differs from its exact attempt binding"
+                )
+            existing = next(
+                (
+                    item
+                    for item in current.independent_observations
+                    if item.evidence_id == observation.evidence_id
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing.to_dict() != observation.to_dict():
+                    raise EngineExperimentError(
+                        "engine observation identity is already bound to different evidence"
+                    )
+                candidate = current
+            else:
+                candidate = current.record_independent_observation(
+                    observation,
+                    timestamp=self._now(),
+                )
+            verify_finalized_independent_observation(observation, self._run_source)
+            if existing is None:
+                self._presentation_source.assert_engine_experiment_presentation_transition_ready(
+                    current,
+                    candidate,
+                )
+            saved = self._history.compare_and_swap_engine_attempt_observation(
+                experiment_id=current.experiment_id,
+                observation=observation.to_dict(),
+                expected_revision=current.revision,
+                expected_experiment_digest=current.digest,
+                timestamp=candidate.updated_at,
+            )
+            saved_experiment = EngineExperiment._from_controller_mapping(
+                self._validate_document(saved)
+            )
+            if (
+                saved_experiment.experiment_id != current.experiment_id
+                or saved_experiment.digest != candidate.digest
+                or saved_experiment.revision != candidate.revision
+            ):
+                raise EngineExperimentError(
+                    "saved engine observation differs from its verified candidate"
+                )
+            record = self._history.get_engine_experiment(
+                current.experiment_id,
+                revision=saved_experiment.revision,
+            )
+            return self._workspace_from_record(record)
+
+        return self._mapped(operation)
+
     def perform_controller_transition(
         self,
         *,
@@ -433,6 +612,10 @@ class EngineExperimentService:
             )
             self._validate_successor(current, successor)
             self._validate_action_successor(action, current, successor)
+            self._presentation_source.assert_engine_experiment_presentation_transition_ready(
+                current,
+                successor,
+            )
             record = self._history.save_engine_experiment(
                 current.experiment_id,
                 successor.to_dict(),
@@ -648,6 +831,47 @@ class EngineExperimentService:
             return self._workspace_from_record(self._history.get_engine_experiment(experiment_id))
 
         return self._mapped(operation)
+
+    def _assistance_presentation(
+        self,
+        experiment: EngineExperiment,
+        *,
+        selected_attempt_id: str | None,
+        selected_check_id: str | None,
+    ) -> Mapping[str, Any]:
+        supplied = self._presentation_source.get_engine_experiment_presentation(
+            experiment.experiment_id,
+            revision=experiment.revision,
+            experiment_digest=experiment.digest,
+        )
+        clone = json_clone(supplied)
+        if not isinstance(clone, dict) or clone.get("selection") is not None:
+            raise EngineExperimentWorkspaceError(
+                "trusted presentation source cannot choose a workspace context"
+            )
+        if selected_attempt_id is not None:
+            _index, entry = experiment._attempt(selected_attempt_id)
+            binding = entry.record.binding
+            clone["selection"] = {
+                "kind": "engine_attempt",
+                "id": binding.attempt_id,
+                "role": binding.role.value,
+                "job_id": entry.job_id,
+                "run_id": binding.run_id,
+            }
+        elif selected_check_id is not None:
+            matches = [check for check in experiment.checks if check.check_id == selected_check_id]
+            if len(matches) != 1:
+                raise EngineExperimentSelectionNotFound("selected controller check is unavailable")
+            check = matches[0]
+            clone["selection"] = {
+                "kind": "controller_check",
+                "id": check.check_id,
+                "role": check.role.value,
+                "job_id": check.job_id,
+                "run_id": check.run_id,
+            }
+        return clone
 
     def _active(self, experiment_id: str) -> EngineExperiment:
         record = self._record(self._history.get_engine_experiment(experiment_id))
@@ -930,6 +1154,11 @@ class EngineExperimentService:
             raise EngineExperimentServiceError(
                 "engine_selection_not_found",
                 "The selected work is not in this saved experiment.",
+            ) from exc
+        except EngineExperimentAssistanceError as exc:
+            raise EngineExperimentServiceError(
+                "engine_assistance_context_unavailable",
+                "The saved Assistant context is unavailable or changed.",
             ) from exc
         except EngineExperimentWorkspaceError as exc:
             raise EngineExperimentServiceError(

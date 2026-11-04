@@ -41,6 +41,14 @@ class _Service:
         self.calls.append(("workspace", experiment_id, selected_attempt_id, selected_check_id))
         return {"workspace": True}
 
+    def assistance_context_request(
+        self,
+        experiment_id: str,
+        selection: Mapping[str, Any],
+    ):
+        self.calls.append(("assistance_context_request", experiment_id, selection))
+        return {"analysis_only": True}
+
     def create_request(self, request: Mapping[str, Any]):
         self.calls.append(("create_request", request))
         return {"created": True}
@@ -146,6 +154,16 @@ def _controller_job_request(action: str) -> dict[str, Any]:
     }
 
 
+def _assistance_selection() -> dict[str, Any]:
+    return {
+        "kind": "engine_experiment",
+        "experiment_id": EXPERIMENT,
+        "workspace_digest": DIGEST,
+        "attempt_id": None,
+        "check_id": None,
+    }
+
+
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
@@ -175,6 +193,49 @@ def test_engine_creation_and_attempt_submission_keep_exact_envelopes() -> None:
     handler = _Handler(path)
     assert dispatch_engine_experiments(handler, path, attempt)
     assert handler.service.calls == [("submit_attempt_request", attempt)]
+
+
+def test_assistant_context_posts_one_exact_captured_selection() -> None:
+    selection = _assistance_selection()
+    path = f"{ROOT}/{EXPERIMENT}/assistant-context"
+    handler = _Handler(path)
+
+    assert dispatch_engine_experiments(handler, path, selection)
+    assert handler.service.calls == [("assistance_context_request", EXPERIMENT, selection)]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda selection: selection.update(extra=True),
+        lambda selection: selection.update(experiment_id="experiment-" + "2" * 32),
+        lambda selection: selection.update(workspace_digest="not-a-digest"),
+        lambda selection: selection.update(attempt_id="engine-attempt-invalid"),
+        lambda selection: selection.update(check_id="controller-check-invalid"),
+        lambda selection: selection.update(
+            attempt_id=ATTEMPT,
+            check_id=CHECK,
+        ),
+    ],
+)
+def test_assistant_context_rejects_stale_or_ambiguous_selection_shapes(mutation) -> None:
+    selection = _assistance_selection()
+    mutation(selection)
+    path = f"{ROOT}/{EXPERIMENT}/assistant-context"
+    handler = _Handler(path)
+
+    assert dispatch_engine_experiments(handler, path, selection)
+    assert handler.service.calls == []
+    assert handler.errors[0][1] == "engine_experiment_invalid"
+
+
+def test_assistant_context_is_post_only() -> None:
+    path = f"{ROOT}/{EXPERIMENT}/assistant-context"
+    handler = _Handler(path)
+
+    assert dispatch_engine_experiments(handler, path)
+    assert handler.service.calls == []
+    assert handler.allowed == ["POST"]
 
 
 @pytest.mark.parametrize(
@@ -340,7 +401,6 @@ def test_attempt_recovery_is_empty_and_cannot_replace_state() -> None:
         f"/{EXPERIMENT}/defense/execute",
         f"/{EXPERIMENT}/checks/retained-reproducer/publish-evidence",
         f"/{EXPERIMENT}/checks/retained-reproducer/settle",
-        f"/{EXPERIMENT}/assistant-context",
         "/",
     ],
 )

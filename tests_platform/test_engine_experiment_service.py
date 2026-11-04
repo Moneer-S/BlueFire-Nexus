@@ -14,6 +14,7 @@ from bluefire.engine_experiment import (
     ENGINE_CAPABILITY_SCOPE_VERSION,
     CleanupState,
     EngineExperiment,
+    _controller_observation_record,
 )
 from bluefire.engine_experiment_service import (
     EngineControllerAction,
@@ -21,7 +22,8 @@ from bluefire.engine_experiment_service import (
     EngineExperimentService,
     EngineExperimentServiceError,
 )
-from bluefire.product_store_errors import ResourceConflictError
+from bluefire.evidence import EvidenceRecord
+from bluefire.product_store_errors import ProductStoreError, ResourceConflictError
 from bluefire.run_store import RunStoreError
 from bluefire.util import content_hash
 
@@ -93,6 +95,50 @@ class _History:
             }
         ]
 
+    def compare_and_swap_engine_attempt_observation(
+        self,
+        *,
+        experiment_id,
+        observation,
+        expected_revision,
+        expected_experiment_digest,
+        timestamp,
+    ):
+        assert self.experiment is not None
+        if (
+            experiment_id != self.experiment.experiment_id
+            or expected_revision != self.experiment.revision
+            or expected_experiment_digest != self.experiment.digest
+        ):
+            raise ResourceConflictError("stale")
+        admitted = _controller_observation_record(
+            target_snapshot_ref=observation["target_snapshot_ref"],
+            mechanism_ref=observation["mechanism_ref"],
+            attempt_id=observation["attempt_id"],
+            check_id=observation["check_id"],
+            check_input_digest=observation["check_input_digest"],
+            evidence=EvidenceRecord.from_mapping(observation["evidence"]),
+        )
+        existing = next(
+            (
+                item
+                for item in self.experiment.independent_observations
+                if item.evidence_id == admitted.evidence_id
+            ),
+            None,
+        )
+        if existing is not None:
+            if existing.to_dict() != admitted.to_dict():
+                raise ProductStoreError("different evidence")
+            return self.experiment.to_dict()
+        candidate = self.experiment.record_independent_observation(
+            admitted,
+            timestamp=timestamp,
+        )
+        self.experiment = candidate
+        self.versions[candidate.revision] = candidate
+        return candidate.to_dict()
+
     def _record(self, selected=None):
         assert self.experiment is not None
         candidate = self.experiment if selected is None else selected
@@ -113,6 +159,20 @@ class _RunSource:
     def get_run(self, run_id, *, require_finalized=False):
         del run_id, require_finalized
         raise RunStoreError("run is not finalized")
+
+
+class _FinalizedRunSource:
+    def __init__(self, run_id: str, records: list[Mapping[str, Any]]) -> None:
+        self.run_id = run_id
+        self.records = records
+        self.requests: list[tuple[str, bool]] = []
+
+    def get_run(self, run_id, *, require_finalized=False):
+        self.requests.append((run_id, require_finalized))
+        return {
+            "run_id": self.run_id,
+            "evidence": {"schema_version": "1.0", "records": self.records},
+        }
 
 
 class _Jobs:
@@ -145,6 +205,14 @@ class _Lifecycle:
 class _PresentationSource:
     def __init__(self, history: _History) -> None:
         self.history = history
+        self.create_preflights: list[EngineExperiment] = []
+        self.transition_preflights: list[tuple[EngineExperiment, EngineExperiment]] = []
+
+    def assert_engine_experiment_presentation_create_ready(self, experiment):
+        self.create_preflights.append(experiment)
+
+    def assert_engine_experiment_presentation_transition_ready(self, current, successor):
+        self.transition_preflights.append((current, successor))
 
     def get_engine_experiment_presentation(self, experiment_id, *, revision, experiment_digest):
         experiment = self.history.versions[revision]
@@ -353,17 +421,19 @@ def _service(
     controller=None,
     controller_jobs=None,
     clock=None,
+    presentation_source=None,
+    run_source=None,
 ) -> tuple[EngineExperimentService, _Jobs]:
     jobs = _Jobs(history)
     return (
         EngineExperimentService(
             history=history,
-            run_source=_RunSource(),
+            run_source=run_source or _RunSource(),
             jobs=jobs,  # type: ignore[arg-type]
             job_lifecycle=_Lifecycle(),
             controller=controller,
             clock=(lambda: CREATED_AT) if clock is None else clock,
-            presentation_source=_PresentationSource(history),
+            presentation_source=presentation_source or _PresentationSource(history),
             controller_jobs=controller_jobs,
         ),
         jobs,
@@ -400,6 +470,54 @@ def test_create_read_list_and_workspace_share_one_canonical_head() -> None:
             "updated_at": CREATED_AT,
         }
     ]
+
+
+def test_create_preflights_exact_presentation_before_persisting() -> None:
+    history = _History()
+    presentation = _PresentationSource(history)
+    service, _jobs = _service(history, presentation_source=presentation)
+
+    service.create(
+        experiment_id=EXPERIMENT_ID,
+        objective_ref=_digest("1"),
+        environment_ref=_digest("2"),
+        scope_ref=_digest("3"),
+        scope_version=ENGINE_CAPABILITY_SCOPE_VERSION,
+        target_snapshot_ref=_digest("4"),
+    )
+
+    assert len(presentation.create_preflights) == 1
+    candidate = presentation.create_preflights[0]
+    assert candidate.revision == 1
+    assert candidate.created_at == CREATED_AT
+    assert history.experiment == candidate
+
+
+def test_unprovisioned_presentation_refuses_create_without_history() -> None:
+    history = _History()
+
+    class _Unprovisioned(_PresentationSource):
+        def assert_engine_experiment_presentation_create_ready(self, experiment):
+            del experiment
+            raise ProductStoreError("presentation is not provisioned")
+
+    service, _jobs = _service(
+        history,
+        presentation_source=_Unprovisioned(history),
+    )
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.create(
+            experiment_id=EXPERIMENT_ID,
+            objective_ref=_digest("1"),
+            environment_ref=_digest("2"),
+            scope_ref=_digest("3"),
+            scope_version=ENGINE_CAPABILITY_SCOPE_VERSION,
+            target_snapshot_ref=_digest("4"),
+        )
+
+    assert caught.value.code == "engine_experiment_unavailable"
+    assert history.experiment is None
 
 
 def test_json_create_uses_trusted_clock_and_rejects_caller_time() -> None:
@@ -480,6 +598,75 @@ def test_record_integrity_and_stale_controller_transition_fail_closed() -> None:
     assert caught.value.code == "engine_experiment_unavailable"
 
 
+def test_unprovisioned_successor_presentation_refuses_transition_without_history() -> None:
+    from bluefire.engine_experiment import _controller_observation_record
+    from tests_platform.test_engine_experiment import (
+        BASELINE_ATTEMPT,
+        BASELINE_RUN,
+        INITIAL_SNAPSHOT,
+        MECHANISM_REF,
+        _defense,
+        _settle_latest_attempt,
+        _tenant_observation,
+    )
+
+    current = _settle_latest_attempt(
+        _reserve_baseline(_new_experiment()),
+        started_at="2026-11-04T12:02:00Z",
+        ended_at="2026-11-04T12:04:00Z",
+    )
+    observation = _controller_observation_record(
+        target_snapshot_ref=INITIAL_SNAPSHOT,
+        mechanism_ref=MECHANISM_REF,
+        attempt_id=BASELINE_ATTEMPT,
+        evidence=_tenant_observation(
+            owner_id=BASELINE_ATTEMPT,
+            run_id=BASELINE_RUN,
+            timestamp="2026-11-04T12:03:00Z",
+            hardened=False,
+        ),
+    )
+    current = current.record_independent_observation(
+        observation,
+        timestamp="2026-11-04T12:05:00Z",
+    )
+    successor = current.review_defense(
+        _defense(),
+        timestamp="2026-11-04T12:06:00Z",
+    )
+    history = _History(current)
+
+    class _ReviewController:
+        def perform(self, *, action, experiment, request_ref):
+            del action, request_ref
+            assert experiment == current
+            return successor
+
+    class _UnprovisionedSuccessor(_PresentationSource):
+        def assert_engine_experiment_presentation_transition_ready(self, current, successor):
+            del current, successor
+            raise ProductStoreError("successor presentation is not provisioned")
+
+    service, _jobs = _service(
+        history,
+        controller=_ReviewController(),
+        presentation_source=_UnprovisionedSuccessor(history),
+    )
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.perform_controller_transition(
+            experiment_id=EXPERIMENT_ID,
+            expected_revision=current.revision,
+            expected_digest=current.digest,
+            action=EngineControllerAction.REVIEW_DEFENSE,
+            request_ref=_digest("5"),
+        )
+
+    assert caught.value.code == "engine_experiment_unavailable"
+    assert history.experiment == current
+    assert history.versions == {current.revision: current}
+
+
 def test_json_transition_contract_rejects_extras_and_never_accepts_evidence() -> None:
     history = _History(_new_experiment())
     service, _jobs = _service(history)
@@ -506,6 +693,98 @@ def test_json_transition_contract_rejects_extras_and_never_accepts_evidence() ->
             }
         )
     assert caught.value.code == "engine_request_invalid"
+
+
+def test_internal_attempt_observation_requires_exact_finalized_run_and_is_idempotent() -> None:
+    from tests_platform.test_engine_experiment import (
+        BASELINE_ATTEMPT,
+        BASELINE_RUN,
+        INITIAL_SNAPSHOT,
+        MECHANISM_REF,
+        _settle_latest_attempt,
+        _tenant_observation,
+    )
+
+    current = _settle_latest_attempt(
+        _reserve_baseline(_new_experiment()),
+        started_at="2026-11-04T12:02:00Z",
+        ended_at="2026-11-04T12:04:00Z",
+    )
+    observation = _controller_observation_record(
+        target_snapshot_ref=INITIAL_SNAPSHOT,
+        mechanism_ref=MECHANISM_REF,
+        attempt_id=BASELINE_ATTEMPT,
+        evidence=_tenant_observation(
+            owner_id=BASELINE_ATTEMPT,
+            run_id=BASELINE_RUN,
+            timestamp="2026-11-04T12:03:00Z",
+            hardened=False,
+        ),
+    )
+    history = _History(current)
+    runs = _FinalizedRunSource(BASELINE_RUN, [observation.evidence.to_dict()])
+    presentation = _PresentationSource(history)
+    service, _jobs = _service(
+        history,
+        run_source=runs,
+        presentation_source=presentation,
+        clock=lambda: "2026-11-04T12:05:00Z",
+    )
+
+    workspace = service.record_engine_attempt_observation(
+        experiment_id=EXPERIMENT_ID,
+        expected_revision=current.revision,
+        expected_digest=current.digest,
+        observation=observation,
+    )
+
+    assert workspace["revision"] == current.revision + 1
+    assert history.experiment is not None
+    assert history.experiment.independent_observations == (observation,)
+    assert runs.requests
+    assert all(request == (BASELINE_RUN, True) for request in runs.requests)
+    assert presentation.transition_preflights == [(current, history.experiment)]
+
+    replay = service.record_engine_attempt_observation(
+        experiment_id=EXPERIMENT_ID,
+        expected_revision=history.experiment.revision,
+        expected_digest=history.experiment.digest,
+        observation=observation,
+    )
+    assert replay["revision"] == workspace["revision"]
+    assert history.experiment.revision == workspace["revision"]
+    assert presentation.transition_preflights == [(current, history.experiment)]
+
+    unavailable_history = _History(current)
+    unavailable, _jobs = _service(
+        unavailable_history,
+        clock=lambda: "2026-11-04T12:05:00Z",
+    )
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        unavailable.record_engine_attempt_observation(
+            experiment_id=EXPERIMENT_ID,
+            expected_revision=current.revision,
+            expected_digest=current.digest,
+            observation=observation,
+        )
+    assert caught.value.code == "engine_evidence_unavailable"
+    assert unavailable_history.experiment == current
+
+    absent_history = _History(current)
+    absent, _jobs = _service(
+        absent_history,
+        run_source=_FinalizedRunSource(BASELINE_RUN, []),
+        clock=lambda: "2026-11-04T12:05:00Z",
+    )
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        absent.record_engine_attempt_observation(
+            experiment_id=EXPERIMENT_ID,
+            expected_revision=current.revision,
+            expected_digest=current.digest,
+            observation=observation,
+        )
+    assert caught.value.code == "engine_experiment_refused"
+    assert absent_history.experiment == current
 
 
 def test_controller_effect_is_a_visible_job_and_does_not_mutate_inline() -> None:
@@ -654,6 +933,85 @@ def test_workspace_projection_is_digest_bound() -> None:
     workspace = service.workspace(EXPERIMENT_ID)
 
     assert workspace["projection"]["experiment_digest"] == workspace["experiment_digest"]
+
+
+def test_assistant_context_is_bound_to_the_exact_canonical_workspace() -> None:
+    history = _History(_new_experiment())
+    service, _jobs = _service(history)
+    workspace = service.workspace(EXPERIMENT_ID)
+    selection = {
+        "kind": "engine_experiment",
+        "experiment_id": EXPERIMENT_ID,
+        "workspace_digest": workspace["workspace_digest"],
+        "attempt_id": None,
+        "check_id": None,
+    }
+
+    context = service.assistance_context_request(EXPERIMENT_ID, selection)
+
+    assert context["schema_version"] == "bluefire.assistance-context.v1"
+    assert context["selected"] == selection
+    assert context["analysis_only"] is True
+    assert context["capabilities"] == []
+    assert context["reference_summary"]["workspace_digest"] == workspace["workspace_digest"]
+
+
+def test_assistant_context_rebuilds_one_exact_selected_attempt() -> None:
+    experiment = _reserve_baseline(_new_experiment())
+    history = _History(experiment)
+    service, _jobs = _service(history)
+    attempt_id = experiment.attempts[0].record.binding.attempt_id
+    workspace = service.workspace(EXPERIMENT_ID, selected_attempt_id=attempt_id)
+    selection = {
+        "kind": "engine_experiment",
+        "experiment_id": EXPERIMENT_ID,
+        "workspace_digest": workspace["workspace_digest"],
+        "attempt_id": attempt_id,
+        "check_id": None,
+    }
+
+    context = service.assistance_context_request(EXPERIMENT_ID, selection)
+
+    assert context["selected"] == selection
+    assert context["reference_summary"]["selected_record"]["kind"] == "engine_attempt"
+    assert context["reference_summary"]["selected_record"]["id"] == attempt_id
+
+
+def test_assistant_context_refuses_stale_digest_without_provider_or_effect_work() -> None:
+    history = _History(_new_experiment())
+    service, _jobs = _service(history)
+    workspace = service.workspace(EXPERIMENT_ID)
+    selection = {
+        "kind": "engine_experiment",
+        "experiment_id": EXPERIMENT_ID,
+        "workspace_digest": _digest("f"),
+        "attempt_id": None,
+        "check_id": None,
+    }
+    assert selection["workspace_digest"] != workspace["workspace_digest"]
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.assistance_context_request(EXPERIMENT_ID, selection)
+
+    assert caught.value.code == "engine_assistance_context_unavailable"
+
+
+def test_assistant_context_refuses_path_and_selection_identity_drift() -> None:
+    history = _History(_new_experiment())
+    service, _jobs = _service(history)
+    workspace = service.workspace(EXPERIMENT_ID)
+    selection = {
+        "kind": "engine_experiment",
+        "experiment_id": "experiment-" + "2" * 32,
+        "workspace_digest": workspace["workspace_digest"],
+        "attempt_id": None,
+        "check_id": None,
+    }
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.assistance_context_request(EXPERIMENT_ID, selection)
+
+    assert caught.value.code == "engine_request_invalid"
 
 
 def test_workspace_deep_link_binds_exactly_one_saved_selection() -> None:

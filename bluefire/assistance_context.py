@@ -33,6 +33,11 @@ from .detection_ai_jobs import DetectionAIJobs
 from .detection_create_jobs import DetectionCreateJobs
 from .detection_evaluations import _source, _source_binding
 from .detection_lab import DetectionLabService
+from .engine_experiment_assistance import (
+    EngineExperimentAssistanceError,
+    engine_experiment_assistance_selection,
+)
+from .engine_experiment_service import EngineExperimentServiceError
 from .graph_ai_jobs import GraphAIJobs
 from .job_runtime import RunJobController
 from .method_comparison_jobs import MethodComparisonJobs
@@ -56,6 +61,10 @@ _ANALYSIS_ADAPTERS: dict[
     FILE_ACCESS_KIND: (file_access_selection, file_access_context),
     FILE_ACCESS_RETEST_KIND: (file_access_retest_selection, file_access_retest_context),
     COMPARISON_KIND: (comparison_selection, comparison_context),
+    "engine_experiment": (
+        lambda chosen: _engine_experiment_selection(chosen),
+        lambda service, chosen: _engine_experiment_context(service, chosen),
+    ),
 }
 ANALYSIS_KINDS = frozenset(_ANALYSIS_ADAPTERS)
 
@@ -73,6 +82,7 @@ class AssistanceContext(Protocol):
     s3_access: Any
     ad_smb: Any
     method_comparison: MethodComparisonJobs
+    engine_experiment_service: Any
     product_store: ProductStore
     registry: BehaviorRegistry
     job_controller: RunJobController
@@ -88,6 +98,55 @@ class AssistanceContext(Protocol):
 
     @property
     def file_access(self) -> FileAccessControl: ...
+
+
+def _engine_experiment_context(
+    service: AssistanceContext, chosen: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """Re-enter the canonical engine service for every saved explanation turn."""
+
+    try:
+        result = service.engine_experiment_service.assistance_context_request(
+            chosen["experiment_id"], chosen
+        )
+        fields = {
+            "schema_version",
+            "selected",
+            "analysis_only",
+            "capabilities",
+            "reference_summary",
+            "limitations",
+            "context_digest",
+        }
+        if (
+            not isinstance(result, Mapping)
+            or set(result) != fields
+            or result.get("schema_version") != "bluefire.assistance-context.v1"
+            or result.get("selected") != chosen
+            or result.get("analysis_only") is not True
+            or result.get("capabilities") != []
+            or not isinstance(result.get("reference_summary"), Mapping)
+            or not isinstance(result.get("limitations"), list)
+            or result.get("context_digest")
+            != content_hash(
+                {key: value for key, value in result.items() if key != "context_digest"}
+            )
+        ):
+            raise ProductStoreError(
+                "The saved engine-experiment Assistant context is unavailable or changed."
+            )
+        return result
+    except EngineExperimentServiceError as exc:
+        raise ProductStoreError(
+            "The saved engine-experiment Assistant context is unavailable or changed."
+        ) from exc
+
+
+def _engine_experiment_selection(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    try:
+        return engine_experiment_assistance_selection(value)
+    except EngineExperimentAssistanceError as exc:
+        raise ProductStoreError("Select one exact saved engine-experiment context.") from exc
 
 
 LIMITATIONS = [

@@ -186,6 +186,13 @@ def suggest_plan(
             "Repeated step identities have no individual attempt outcomes; observed, fixture and benign "
             "populations may overlap and are not coverage denominators. Legitimate use requires explicit "
             "saved read-result rows. Never recompute, rerun or infer defensive effectiveness. "
+            "An engine_experiment is also analysis-only with empty steps: explain only the exact "
+            "saved experiment revision and selected attempt or controller check. Distinguish "
+            "engine-reported assertions from independent observations, and historical observations "
+            "from current target state. Explain the saved defense, retained reproducer, adaptive "
+            "search, legitimate-use result, cleanup state, and unknowns without claiming that a "
+            "test provider is live inference. Do not execute an engine, mutate a plan or defense, "
+            "inspect artifacts or raw output, or claim authority beyond this bounded summary. "
             "Return no code, approvals, invented results or unsupported actions. Explain a supported "
             "next step or return no steps if this request is outside these capabilities."
         ),

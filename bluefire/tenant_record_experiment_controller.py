@@ -20,7 +20,12 @@ from enum import Enum
 from typing import Any, Mapping, Protocol, cast
 
 from .engine_attempt_contract import AttemptRole as EngineAttemptRole
-from .engine_experiment import CleanupState, EngineAttemptEntry
+from .engine_experiment import (
+    CleanupState,
+    EngineAttemptEntry,
+    IndependentObservationRecord,
+    _controller_observation_record,
+)
 from .evidence import EvidenceRecord
 from .tenant_record_lab import (
     TenantDefenseConfig,
@@ -140,6 +145,34 @@ def _checked_config(value: TenantDefenseConfig) -> TenantDefenseConfig:
     if checked.to_dict() != json_clone(raw):
         raise TenantRecordControllerError("target configuration is not canonical")
     return checked
+
+
+def tenant_target_snapshot_ref(
+    *,
+    fixture_digest: str,
+    target_snapshot_id: str,
+    service_generation: str,
+) -> str:
+    """Build the exact digest used by an engine attempt before it is launched."""
+
+    if (
+        not isinstance(target_snapshot_id, str)
+        or _LAB_ID.fullmatch(target_snapshot_id) is None
+        or not isinstance(service_generation, str)
+        or _LAB_ID.fullmatch(service_generation) is None
+    ):
+        raise TenantRecordControllerError("target snapshot identity is invalid")
+    return cast(
+        str,
+        content_hash(
+            {
+                "schema_version": "bluefire.tenant-record-target-snapshot-ref.v1",
+                "fixture_digest": _digest(fixture_digest, "target snapshot fixture"),
+                "target_snapshot_id": target_snapshot_id,
+                "service_generation": service_generation,
+            }
+        ),
+    )
 
 
 def _defense_review_binding(
@@ -522,6 +555,56 @@ class TenantEngineObservation:
     @property
     def digest(self) -> str:
         return content_hash(self.to_dict())
+
+    @property
+    def mechanism_ref(self) -> str:
+        """Return the exact controller-observed mechanism, not an engine claim."""
+
+        if self.failure_mechanism is not None:
+            return cast(str, content_hash(self.failure_mechanism.to_dict()))
+        content = checked_observation_content(self.evidence)
+        return cast(
+            str,
+            content_hash(
+                {
+                    "schema_version": "bluefire.tenant-record-observed-mechanism.v1",
+                    "target_snapshot_id": self.target_snapshot_id,
+                    "route": content["route"],
+                    "source_identity": content["source_identity"],
+                    "requested_tenant": content["requested_tenant"],
+                    "authenticated_tenant": content["authenticated_tenant"],
+                    "audit_row_digest": content["audit_row_digest"],
+                }
+            ),
+        )
+
+    @property
+    def target_snapshot_ref(self) -> str:
+        """Return the digest reference used by the engine-attempt binding."""
+
+        content = checked_observation_content(self.evidence)
+        environment = json_clone(self.evidence.environment)
+        return tenant_target_snapshot_ref(
+            fixture_digest=environment["fixture_digest"],
+            target_snapshot_id=self.target_snapshot_id,
+            service_generation=content["service_generation"],
+        )
+
+    def independent_observation(self) -> IndependentObservationRecord:
+        """Admit this protected target observation to canonical experiment state.
+
+        The returned value carries the controller-only attestation used by the
+        experiment state machine.  It is still the caller's responsibility to
+        verify that the byte-identical evidence record is present in the
+        finalized RunStore bundle before persistence.
+        """
+
+        return _controller_observation_record(
+            target_snapshot_ref=self.target_snapshot_ref,
+            mechanism_ref=self.mechanism_ref,
+            attempt_id=self.attempt_id,
+            evidence=self.evidence,
+        )
 
 
 @dataclass(frozen=True, slots=True)

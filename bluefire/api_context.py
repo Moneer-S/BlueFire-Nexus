@@ -5,7 +5,10 @@ The service Protocol is independent of concrete orchestration or HTTP handlers.
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, Sequence, runtime_checkable
+
+if TYPE_CHECKING:
+    from .engine_experiment_api import EngineExperimentAPIService
 
 API_PREFIX = "/api/v1"
 JsonObject = Mapping[str, Any]
@@ -23,6 +26,10 @@ class PlatformService(Protocol):
 
     def build_info(self) -> JsonResult:
         """Return recorded artifact identity and current packaged asset digests."""
+
+    @property
+    def engine_experiment_service(self) -> EngineExperimentAPIService:
+        """Return the controller-owned external-engine experiment boundary."""
 
     def s3_access_environments(self) -> JsonResult: ...
     def s3_access_setup_profiles(self) -> JsonResult: ...

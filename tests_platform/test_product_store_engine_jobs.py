@@ -481,6 +481,170 @@ def test_lifecycle_settlement_cleanup_and_stale_cas_are_durable(tmp_path: Path) 
     assert reconciled.attempts[0].cleanup_state is CleanupState.VERIFIED_ABSENT
 
 
+def test_controller_observation_admission_is_atomic_idempotent_and_restart_safe(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bluefire.db"
+    store, values, binding, _delegation, _approval = _prepared_store(path)
+    store.reserve_engine_attempt_submission(**values)
+    store.transition_job(JOB_ID, "planning")
+    store.transition_job(JOB_ID, "running")
+    experiment = EngineExperiment._from_controller_mapping(
+        store.get_engine_experiment_document(EXPERIMENT_ID)
+    )
+    preflight = experiment.attempts[0].record.transition(AttemptState.PREFLIGHT)
+    experiment = EngineExperiment._from_controller_mapping(
+        store.compare_and_swap_engine_attempt_record(
+            experiment_id=EXPERIMENT_ID,
+            record=preflight.to_dict(),
+            expected_revision=experiment.revision,
+            expected_experiment_digest=experiment.digest,
+            timestamp=values["reserved_at"],
+        )
+    )
+    observed_at = _iso(datetime.now(timezone.utc))
+    running = experiment.attempts[0].record.transition(
+        AttemptState.RUNNING,
+        upstream_session_id="strix-session-observation",
+        timestamp=observed_at,
+    )
+    experiment = EngineExperiment._from_controller_mapping(
+        store.compare_and_swap_engine_attempt_record(
+            experiment_id=EXPERIMENT_ID,
+            record=running.to_dict(),
+            expected_revision=experiment.revision,
+            expected_experiment_digest=experiment.digest,
+            timestamp=observed_at,
+        )
+    )
+    observation = _controller_observation_record(
+        target_snapshot_ref=INITIAL_SNAPSHOT,
+        mechanism_ref=MECHANISM_REF,
+        attempt_id=binding.attempt_id,
+        evidence=_tenant_observation(
+            owner_id=binding.attempt_id,
+            run_id=binding.run_id,
+            timestamp=observed_at,
+            hardened=False,
+        ),
+    )
+    with pytest.raises(ProductStoreError, match="settled attempt binding"):
+        store.compare_and_swap_engine_attempt_observation(
+            experiment_id=EXPERIMENT_ID,
+            observation=observation.to_dict(),
+            expected_revision=experiment.revision,
+            expected_experiment_digest=experiment.digest,
+            timestamp=observed_at,
+        )
+    settled_at = _iso(datetime.now(timezone.utc) + timedelta(seconds=2))
+    completed = running.transition(
+        AttemptState.COMPLETED,
+        timestamp=settled_at,
+        exit_code=0,
+        completeness=AttemptCompleteness.COMPLETE,
+        exit_reason="completed",
+    )
+    experiment = EngineExperiment._from_controller_mapping(
+        store.compare_and_swap_engine_attempt_settlement(
+            experiment_id=EXPERIMENT_ID,
+            record=completed.to_dict(),
+            engine_evidence=(),
+            artifact_manifest_ref=_digest("7"),
+            cleanup_state=CleanupState.VERIFIED_ABSENT.value,
+            cleanup_evidence_ref=_digest("8"),
+            settled_at=settled_at,
+            expected_revision=experiment.revision,
+            expected_experiment_digest=experiment.digest,
+        )
+    )
+    with pytest.raises(ProductStoreError, match="terminal bound job"):
+        store.compare_and_swap_engine_attempt_observation(
+            experiment_id=EXPERIMENT_ID,
+            observation=observation.to_dict(),
+            expected_revision=experiment.revision,
+            expected_experiment_digest=experiment.digest,
+            timestamp=settled_at,
+        )
+    store.transition_job(JOB_ID, "completed")
+    saved = EngineExperiment._from_controller_mapping(
+        store.compare_and_swap_engine_attempt_observation(
+            experiment_id=EXPERIMENT_ID,
+            observation=observation.to_dict(),
+            expected_revision=experiment.revision,
+            expected_experiment_digest=experiment.digest,
+            timestamp=settled_at,
+        )
+    )
+    assert saved.independent_observations == (observation,)
+
+    reopened = ProductStore(path)
+    identical = EngineExperiment._from_controller_mapping(
+        reopened.compare_and_swap_engine_attempt_observation(
+            experiment_id=EXPERIMENT_ID,
+            observation=observation.to_dict(),
+            expected_revision=saved.revision,
+            expected_experiment_digest=saved.digest,
+            timestamp=settled_at,
+        )
+    )
+    assert identical.revision == saved.revision
+    assert identical.digest == saved.digest
+
+    conflicting = _controller_observation_record(
+        target_snapshot_ref=INITIAL_SNAPSHOT,
+        mechanism_ref=_digest("9"),
+        attempt_id=binding.attempt_id,
+        evidence=observation.evidence,
+    )
+    with pytest.raises(ProductStoreError, match="different evidence"):
+        reopened.compare_and_swap_engine_attempt_observation(
+            experiment_id=EXPERIMENT_ID,
+            observation=conflicting.to_dict(),
+            expected_revision=saved.revision,
+            expected_experiment_digest=saved.digest,
+            timestamp=settled_at,
+        )
+
+    wrong_target = _controller_observation_record(
+        target_snapshot_ref=AFTER_SNAPSHOT,
+        mechanism_ref=MECHANISM_REF,
+        attempt_id=binding.attempt_id,
+        evidence=_tenant_observation(
+            owner_id=binding.attempt_id,
+            run_id=binding.run_id,
+            timestamp=observed_at,
+            hardened=True,
+        ),
+    )
+    with pytest.raises(ProductStoreError, match="settled attempt binding"):
+        reopened.compare_and_swap_engine_attempt_observation(
+            experiment_id=EXPERIMENT_ID,
+            observation=wrong_target.to_dict(),
+            expected_revision=saved.revision,
+            expected_experiment_digest=saved.digest,
+            timestamp=settled_at,
+        )
+
+    with reopened._connection(write=True) as connection:
+        row = connection.execute(
+            "SELECT request_json FROM jobs WHERE job_id = ?", (JOB_ID,)
+        ).fetchone()
+        tampered_request = json.loads(str(row["request_json"]))
+        tampered_request["delegation_digest"] = _digest("e")
+        connection.execute(
+            "UPDATE jobs SET request_json = ? WHERE job_id = ?",
+            (json.dumps(tampered_request, sort_keys=True, separators=(",", ":")), JOB_ID),
+        )
+    with pytest.raises(ProductStoreError, match="submission changed"):
+        reopened.compare_and_swap_engine_attempt_observation(
+            experiment_id=EXPERIMENT_ID,
+            observation=observation.to_dict(),
+            expected_revision=saved.revision,
+            expected_experiment_digest=saved.digest,
+            timestamp=settled_at,
+        )
+
+
 def test_cancel_and_callback_cas_have_exactly_one_winner(tmp_path: Path) -> None:
     path = tmp_path / "bluefire.db"
     store, values, binding, _delegation, _approval = _prepared_store(path)
