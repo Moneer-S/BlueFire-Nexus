@@ -4,7 +4,6 @@ import base64
 import hashlib
 import json
 import os
-import re
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -963,107 +962,25 @@ def test_fixed_wrapper_hides_management_sockets_and_drops_privilege(tmp_path: Pa
     assert wrapper.stat().st_mode & 0o222 == 0
 
 
-def test_workflow_is_manual_exact_and_unexecuted_by_repository_events() -> None:
+def test_workflow_refuses_before_processing_until_private_transport_is_reviewed() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     dispatch = workflow[True]["workflow_dispatch"]
     assert dispatch["inputs"]["threat_review_ref"]["required"] is True
-    assert set(workflow["jobs"]) == {"prepare", "admit"}
     assert workflow["permissions"] == {"contents": "read"}
-    assert workflow["jobs"]["prepare"]["runs-on"] == "ubuntu-24.04"
-    assert workflow["jobs"]["admit"]["runs-on"] == "ubuntu-24.04"
-    assert workflow["jobs"]["admit"]["needs"] == "prepare"
-    assert workflow["jobs"]["prepare"]["timeout-minutes"] <= 60
-    assert workflow["jobs"]["admit"]["timeout-minutes"] <= 30
-    source = WORKFLOW.read_text(encoding="utf-8")
-    assert "persist-credentials: false" in source
-    assert "sudo -n /usr/bin/unshare --net --fork -- /usr/bin/env -i" in source
-    assert "qualify_strix_runtime_admission" in source
-    assert "secrets." not in source
-    assert "id-token:" not in source
-    assert "docker run" not in source
-    assert "--target" not in source
-    assert source.count("retention-days: 3") == 2
-    action_steps = [
-        step for job in workflow["jobs"].values() for step in job["steps"] if "uses" in step
-    ]
-    assert action_steps
-    assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", step["uses"]) for step in action_steps)
-    checkouts = [step for step in action_steps if step["uses"].startswith("actions/checkout@")]
-    assert len(checkouts) == 2
-    assert all(step["with"]["ref"] == "${{ github.sha }}" for step in checkouts)
-    assert all(step["with"]["persist-credentials"] is False for step in checkouts)
-    pythons = [step for step in action_steps if step["uses"].startswith("actions/setup-python@")]
-    assert len(pythons) == 2
-    assert all(
-        step["with"] == {"python-version": "3.12.14", "check-latest": False} for step in pythons
-    )
-    go = next(step for step in action_steps if step["uses"].startswith("actions/setup-go@"))
-    assert go["with"] == {"go-version": "1.24.10", "cache": False}
-    uv_steps = [step for step in action_steps if step["uses"].startswith("astral-sh/setup-uv@")]
-    assert len(uv_steps) == 2
-    assert all(step["with"] == {"version": "0.13.6", "enable-cache": False} for step in uv_steps)
-    download = next(
-        step for step in action_steps if step["uses"].startswith("actions/download-artifact@")
-    )
-    assert download["with"] == {
-        "artifact-ids": "${{ needs.prepare.outputs.artifact_id }}",
-        "path": (
-            "${{ runner.temp }}/bluefire-strix-preparation-stage/bluefire-strix-admission-download"
-        ),
-        "skip-decompress": True,
-        "digest-mismatch": "error",
-    }
-    prepare = workflow["jobs"]["prepare"]
-    assert set(prepare["outputs"]) == {"artifact_id", "artifact_digest", "bundle_ref"}
-    transfer_upload = next(step for step in prepare["steps"] if step.get("id") == "upload")
-    assert transfer_upload["with"]["archive"] is False
-    boundary_step = next(step for step in prepare["steps"] if step.get("id") == "bundle")
-    boundary_run = boundary_step["run"]
-    assert (
-        "/usr/bin/unshare --mount --ipc --uts --pid --fork --kill-child=KILL --mount-proc"
-        in boundary_run
-    )
-    assert "strix_runtime_preparation_boundary.sh" in boundary_run
-    admit_steps = workflow["jobs"]["admit"]["steps"]
-    source_index = next(
-        index
-        for index, step in enumerate(admit_steps)
-        if "reconstruct_strix_runtime_admission_source" in step.get("run", "")
-    )
-    download_index = next(
-        index
-        for index, step in enumerate(admit_steps)
-        if str(step.get("uses", "")).startswith("actions/download-artifact@")
-    )
-    assert source_index < download_index
-    requirements_index = next(
-        index
-        for index, step in enumerate(admit_steps)
-        if "derive_strix_runtime_admission_requirements" in step.get("run", "")
-    )
-    assert source_index < requirements_index < download_index
-    qualifier_step = next(
-        step for step in admit_steps if "qualify_strix_runtime_admission" in step.get("run", "")
-    )
-    assert admit_steps.index(qualifier_step) > download_index
-    assert qualifier_step["run"].startswith(
-        "sudo -n /usr/bin/unshare --net --fork -- /usr/bin/env -i"
-    )
-    admit_run = "\n".join(str(step.get("run", "")) for step in admit_steps)
-    assert "build_strix_engine_candidate" not in admit_run
-    assert "BLUEFIRE_IMAGE_OS" in admit_run
-    assert "--expected-bundle-ref" in admit_run
-    assert "--controller-requirements" in admit_run
-    assert admit_run.count("bluefire-strix-preparation-stage") >= 7
-    assert "STRIX_RUNTIME_ADMISSION_THREAT_REVIEW_REF" in source
-    assert "STRIX_RUNTIME_ADMISSION_PREPARE_BACKENDS_REVIEW_REF" in source
-    assert "STRIX_RUNTIME_ADMISSION_SOURCE_REVISION" in source
-    assert "requested == approved" in source
-    assert "requested == backends" in source
-    assert "revision == approved_revision" in source
-    cleanup = workflow["jobs"]["admit"]["steps"][-1]
-    assert cleanup["if"] == "always()"
-    assert 'sudo -n rm -rf -- "$stage"' in cleanup["run"]
+    assert set(workflow["jobs"]) == {"publication_boundary"}
+    job = workflow["jobs"]["publication_boundary"]
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert job["timeout-minutes"] == 5
+    assert len(job["steps"]) == 1
+    refusal = job["steps"][0]
+    assert "uses" not in refusal
+    assert "if" not in refusal and "continue-on-error" not in refusal
+    assert refusal["shell"] == "bash"
+    assert refusal["run"].rstrip().endswith("exit 2")
+    assert "redistribution review is incomplete" in refusal["run"]
+    assert "reviewed private transport preserving fresh-runner isolation" in refusal["run"]
+    assert "upload-artifact" not in WORKFLOW.read_text(encoding="utf-8")
+    assert "download-artifact" not in WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_preparation_boundary_kills_descendants_and_protects_controller_checkout() -> None:

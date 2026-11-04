@@ -1104,7 +1104,6 @@ def build_candidate(
             "setup_python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
             "setup_go": "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
             "setup_uv": "68559e99cc807c1eb7e9238fd43a15bba460eec2",
-            "upload_artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
         },
         "build_backend": {
             **build_constraints,

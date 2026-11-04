@@ -326,9 +326,7 @@ def test_workflow_is_manual_read_only_bounded_and_commit_pinned() -> None:
     assert go == {"go-version": "1.24.10", "cache": "false"}
     uv = uses["astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2"]["with"]
     assert uv == {"version": "0.13.6", "enable-cache": "false"}
-    upload = uses["actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"]["with"]
-    assert upload["if-no-files-found"] == "error"
-    assert upload["retention-days"] == "7"
+    assert not any("upload-artifact" in action for action in uses)
 
 
 def test_workflow_builds_only_the_candidate_and_never_publishes_or_executes_strix() -> None:

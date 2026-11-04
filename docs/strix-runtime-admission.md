@@ -1,27 +1,27 @@
 # Strix installed CLI startup qualification
 
-This is a narrowly scoped follow-up to the non-executed
-[runtime preparation](strix-runtime-qualification.md). It can establish
-`runtime_qualified: true` for one exact Linux x86-64 installed CLI startup only.
-It does not qualify a security assessment, sandbox container, target, model,
-network path, containment control, lifecycle, evidence result, effectiveness, or
-release asset.
+The GitHub workflow currently fails closed before checkout, preparation, transfer, or execution.
+Its former cross-job transfer was configured to publish an unreviewed candidate and dependency bundle through
+public-repository Actions artifacts. Repository readers can retrieve those artifacts, and short
+retention does not provide access control. The component redistribution review remains blocked;
+no reviewed public sanitized-receipt contract or private cross-job transport is available.
 
-The workflow is manual. Adding it to the repository does not dispatch it. A
-refreshed threat-review clearance for the exact candidate is an owner-controlled
-gate. Before dispatch, the owner must set repository variables
-`STRIX_RUNTIME_ADMISSION_THREAT_REVIEW_REF` and
-`STRIX_RUNTIME_ADMISSION_PREPARE_BACKENDS_REVIEW_REF` to the same approved
-review SHA-256 ref, and set `STRIX_RUNTIME_ADMISSION_SOURCE_REVISION` to the
-exact approved BlueFire commit. The job refuses an absent or different
-variable, source revision, or dispatch input. The ref is retained in the
-transfer and admission receipts. This establishes continuity with
-owner-controlled workflow state; it does not cryptographically establish the
-review document's authorship.
+The retained tooling below describes the requirements for a future reviewed private qualification
+path. It can establish `runtime_qualified: true` for one exact Linux x86-64
+installed CLI startup only. It does not qualify an assessment, sandbox, target, model,
+containment, effectiveness, or
+release. Its Strix input is a package-declared `1.7.0` modified-source candidate, not an official
+Strix release. BlueFire remains MIT, and the pinned Strix source remains Apache-2.0 with the
+reviewed modification notice; that attribution does not clear bundled third-party components.
+
+The workflow is manual. Dispatch always fails while this transport boundary remains unresolved.
+A threat-review ref, source pin, hash, successful probe, or operator variable cannot authorize
+redistribution. Future restoration requires both a separately reviewed transport preserving the
+fresh-runner isolation and the exact-candidate threat review; neither clearance is supplied here.
 
 ## Exact inputs
 
-The workflow uses two separate standard hosted jobs. The first prepares the
+The retained qualification design requires two separate standard hosted jobs. The first prepares the
 existing pinned inputs without executing Strix. The second starts on a fresh
 hosted VM and performs the admission probe. Both jobs use the identical fixed
 `$RUNNER_TEMP/bluefire-strix-preparation-stage` layout. This is required because
@@ -50,14 +50,15 @@ Every preparation file is bound by `SHA256SUMS`. A deterministic bounded tar
 contains the validated candidate and preparation artifacts, offline wheelhouse,
 and exact pinned pip wheel. It deliberately does not contain job 1's installed
 runtime or any symbolic link. The first job still builds and validates an
-installed runtime to produce the comparison receipt. It exposes the bundle's
-inner SHA-256 and immutable artifact ID. Before downloading that artifact, the
-fresh job independently exports hash-bound requirements from the reconstructed
+installed runtime to produce the comparison receipt. A future reviewed private
+transport must bind the bundle's
+inner SHA-256 to trusted controller state. Before receiving any bundle, the
+fresh job must independently export hash-bound requirements from the reconstructed
 exact `uv.lock` using the pinned uv version. The transferred requirements must
-match those controller-held bytes exactly. The job then uses the artifact
-service's digest check, compares the service digest to the inner ref, manually
-extracts the same open descriptor, and repeats candidate, source, preparation,
-and OCI validation. It creates a new virtual environment offline from the
+match those controller-held bytes exactly. The controller must verify the private
+transport and inner bundle digests, manually extract the same open descriptor,
+and repeat candidate, source, preparation, and OCI validation. It creates a new
+virtual environment offline from the
 revalidated wheel bytes and hash-required requirements. The new interpreter,
 installed distribution metadata, entry point, package `RECORD`, patched prompt,
 and CLI must exactly match the first job's receipt before and after the probe.
@@ -231,55 +232,20 @@ cancellation, artifact, independent-observation, and cleanup journey passes.
 
 ## Workflow and outputs
 
-`.github/workflows/strix-runtime-admission.yml` is manual, exact-SHA, read-only,
-and uses the standard `ubuntu-24.04` hosted image. The checkout and artifact
-actions use their normal short-lived GitHub token, but checkout does not retain
-it and the sanitized admission controller and probe receive no repository or
-provider credential. OIDC is not granted.
-Job 1 builds and validates the candidate, offline closure, installed runtime,
-and non-executed OCI inventory, then uploads one immutable tar with three-day
-retention. Its build, preparation, and packaging commands run as uid/gid 65534
-inside one root-created PID and mount namespace. The checkout is bind-mounted
-read-only as part of a read-only `/home`; `/opt` and the hosted tool cache are
-also read-only. The host runner temporary tree, including GitHub file-command
-paths, is read-only except for one fixed preparation stage owned by that dropped
-identity. Host management sockets are masked, capabilities are dropped, and no
-GitHub command-file path is passed inside. The namespace PID 1 cannot exit
-without the kernel killing every remaining process in that namespace. Before
-masking `/run`, the root controller validates and holds open the bounded,
-root-owned resolver file, then recreates that exact content as a private
-read-only file at the existing `/etc/resolv.conf` resolution path. This keeps
-the shared-network fetch phase operational without exposing host `/run`.
-After the namespace exits, trusted controller code
-reopens the source tar and ref without following links, copies the exact bytes
-into a new non-stage file, rehashes that copy, removes the entire stage, and only
-then writes the verified ref to `GITHUB_OUTPUT`. The token-bearing upload action
-can access only that immutable copy. The installed runtime is not transferred.
-Job 2 checks out the same
-BlueFire SHA, reconstructs the exact reviewed Strix source, and derives its
-frozen requirements before downloading that tar. After download, controller and
-probe work is forced into a fresh network namespace with no host interfaces. It
-validates the artifact ID, service digest, inner
-bundle ref, BlueFire revision, and all inner receipts, constructs a new
-root-owned runtime from the validated offline wheels, runs the fixed probe, and
-removes the bundle, download directory, controller requirements, reconstructed
-source, extracted preparation, runtime, and probe state. Only the final
-admission receipt is uploaded from job 2, also for three days.
+`.github/workflows/strix-runtime-admission.yml` is manual and read-only. Its single bounded
+`ubuntu-24.04` job reports the unresolved publication boundary and exits with status 2.
+It has no checkout, setup, build, upload, download, cache, package, or release step, and
+produces no admission receipt. Candidate and preparation CI may process their pinned inputs
+only in ephemeral runner-temp and also publish no artifact. Strix payloads remain excluded
+from normal BlueFire wheels and releases.
 
-The admission output contains only:
+The admission tooling's potential output is limited to `strix-runtime-admission.json` and
+`SHA256SUMS`; even those files have no reviewed public publication contract here. The fresh
+runner design, safe archive validation, controller-held hashes, offline requirements,
+descendant-killing preparation boundary, fixed namespace probe, and required cleanup remain
+requirements for any future private admission process. Same-job execution is not substituted
+for the fresh-runner isolation. Restoring the workflow requires a new reviewed implementation
+and matching tests; repository variables or dispatch input cannot lift the current refusal.
 
-- `strix-runtime-admission.json`; and
-- `SHA256SUMS` for that canonical manifest.
-
-The workflow has not been dispatched by this implementation. No release,
-package publication, container launch, target contact, or model call is part of
-this qualification.
-
-The process boundary prevents a daemonized build descendant from surviving into
-the later artifact action. It is not a claim that the reviewed build code is
-safe against kernel exploits, hosted-runner compromise, or every same-job
-channel. The separately required
-`STRIX_RUNTIME_ADMISSION_PREPARE_BACKENDS_REVIEW_REF` confirms that the refreshed
-threat review covers the exact pinned PEP 517, Go, uv, pip, and package build
-inputs as well as this process-custody boundary. If that review cannot make that
-finding, the workflow remains fail-closed and must not be dispatched.
+No workflow has been dispatched by this implementation. No release, package publication,
+container launch, target contact, or model call is part of this change.

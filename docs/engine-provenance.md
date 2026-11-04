@@ -1,6 +1,7 @@
 # Strix engine candidate provenance
 
-BlueFire prepares Strix as a separately attributed engine candidate. The candidate build is a
+BlueFire prepares Strix as a separately attributed package-declared `1.7.0` modified-source
+candidate, not an official Strix release. The candidate build is a
 supply-chain step only. It does not run Strix, its TUI sidecar, a sandbox, a security tool, a
 target, or a model, and it does not qualify runtime containment or effectiveness.
 
@@ -75,8 +76,9 @@ Successful output contains:
 - a canonical candidate manifest with SHA-256 and size for every payload; and
 - `SHA256SUMS`, which covers the payloads and manifest but intentionally does not hash itself.
 
-The workflow has read-only repository permission, does not retain checkout credentials, uploads a
-short-lived build artifact only after success, and has no package or release publication step.
+The workflow has read-only repository permission and does not retain checkout credentials. All
+candidate payloads remain ephemeral under runner-temp; no Actions artifact, cache, package, or
+release is published. Successful CI processing does not grant publication or redistribution rights.
 
 The wheel is not a standalone installation artifact. Its broad upstream dependency metadata must
 not be resolved later against a moving package index. Runtime installation remains refused until
@@ -107,6 +109,14 @@ incomplete: third-party Go TUI dependencies, bundled frontend/viewer assets, the
 platform Python runtime wheel closure (including nested libraries and notices), and the OCI
 image. Their license expressions, notice completeness, and confirmed redistribution rights
 remain `null` (unknown), rather than inheriting either project's root license.
+
+Public-repository Actions artifacts are retrievable by repository readers; short retention is
+not access control. The candidate and preparation workflows therefore publish no artifact, including
+raw manifests, SBOMs, source archives, wheels, wheelhouses, or OCI inventory. No reviewed sanitized
+public evidence-receipt contract exists, so this change does not invent one. Admission is blocked
+until a separately reviewed private cross-job transport can preserve the fresh-runner boundary
+without publishing its input bundle. A threat-review ref does not clear redistribution. Strix
+payloads remain excluded from normal BlueFire wheels and releases.
 
 Downstream validation rejects an omitted or altered blocked review, including a root-license-only
 claim. Existing receipts without this gate must be rebuilt; checksum consistency, an SBOM, and

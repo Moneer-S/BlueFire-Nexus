@@ -59,13 +59,5 @@ jobs:
           --output-root "$RUNNER_TEMP/bluefire-strix-qualification-output"
           --bluefire-source-revision "${{ github.sha }}"
 
-      - name: Upload short-lived candidate and preparation artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: strix-runtime-qualification-preparation-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/bluefire-strix-candidate-output
-            ${{ runner.temp }}/bluefire-strix-qualification-output
-          if-no-files-found: error
-          include-hidden-files: false
-          retention-days: 3
+      # No Actions artifacts: the component redistribution review remains blocked.
+      # Wheel, modified source, dependencies, and OCI inventory stay in runner-temp.

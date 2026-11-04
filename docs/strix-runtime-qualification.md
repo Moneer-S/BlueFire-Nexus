@@ -1,6 +1,7 @@
 # Strix runtime qualification preparation
 
-This step prepares reviewable runtime inputs for the separately built Strix engine candidate. It
+This step prepares ephemeral runtime inputs for the separately built Strix package-declared
+`1.7.0` modified-source candidate, not an official Strix release. It
 does not qualify Strix for use. It does not import or launch Strix, execute its TUI sidecar, start
 the sandbox image, contact a target or model, publish a package, or change BlueFire's execution
 authority.
@@ -80,12 +81,15 @@ sources and exact scope. Hash-bound inventory or installation does not complete 
 ## Workflow and outputs
 
 `.github/workflows/strix-runtime-qualification.yml` uses a standard `ubuntu-24.04` hosted runner,
-read-only repository permission, exact commit-pinned setup and artifact actions, a 60-minute job
-limit, no retained checkout credential, and three-day artifact retention. It has no scheduled,
+read-only repository permission, exact commit-pinned setup actions, a 60-minute job
+limit, and no retained checkout credential. It has no scheduled,
 push, package, release, container, target, or model step.
 
-Successful preparation uploads both the rebuilt candidate and a bounded preparation directory. The
-preparation directory contains:
+Successful preparation keeps the rebuilt candidate and bounded preparation directory only in
+ephemeral runner-temp. It publishes no Actions artifact or cache. Public-repository Actions
+artifacts are retrievable by repository readers; short retention does not restrict access. No
+reviewed public evidence-receipt contract exists, so raw inventory or receipts are not uploaded
+either. The preparation directory contains:
 
 - the frozen hashed requirements and offline dependency wheelhouse;
 - a Python runtime installation receipt;
@@ -100,7 +104,10 @@ runner, action, Python, uv, pip, Syft, candidate, wheel, prompt, and image ident
 
 ## Remaining gates
 
-These artifacts must receive independent provenance and security review. A second clean build must
+These ephemeral inputs must receive independent provenance and security review through a separately
+reviewed private process before any publication. The blocked redistribution review applies to
+wheels, modified source, dependency closures, bundled assets, and OCI data. Normal BlueFire wheels
+and releases exclude these payloads. A second clean build must
 be compared before making a reproducibility claim. Separate controlled work must establish outer
 network containment, admission, lifecycle stop, cancellation, evidence capture, cleanup, and owned
 target binding before any Strix launch can be considered. Image notices, license terms, and

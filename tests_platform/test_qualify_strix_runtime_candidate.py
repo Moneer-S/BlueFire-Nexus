@@ -688,7 +688,7 @@ def test_workflow_is_manual_read_only_pinned_and_non_executing() -> None:
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["jobs"]["prepare"]["runs-on"] == "ubuntu-24.04"
     assert workflow["jobs"]["prepare"]["timeout-minutes"] == 60
-    assert "retention-days: 3" in raw
+    assert "upload-artifact" not in raw
     assert "persist-credentials: false" in raw
     for identity in qualification.ACTION_IDENTITIES.values():
         assert f"@{identity}" in raw
@@ -701,10 +701,7 @@ def test_workflow_is_manual_read_only_pinned_and_non_executing() -> None:
         encoding="utf-8"
     )
     for identity in qualification.ACTION_IDENTITIES.values():
-        assert (
-            f"@{identity}" in candidate_workflow
-            or identity == qualification.ACTION_IDENTITIES["upload_artifact"]
-        )
+        assert f"@{identity}" in candidate_workflow
 
 
 def test_documentation_does_not_claim_runtime_qualification() -> None:
