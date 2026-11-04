@@ -23,6 +23,7 @@ from bluefire.engine_relay import (
     ProtectedModelResult,
     ProtectedRevocationResult,
     ProtectedTargetResult,
+    ProtectedUpstreamUnknown,
     RelayAuditRecord,
     TargetOperation,
     TargetRelayPolicy,
@@ -338,6 +339,122 @@ def _gateway(
         model_forwarder,
         audit_log,
     )
+
+
+def _controlled_stream_request_body(**overrides: Any) -> bytes:
+    value: dict[str, Any] = {
+        "model": "bluefire-controlled-v1",
+        "messages": [{"role": "user", "content": "inspect the admitted lab"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "observe_fixture",
+                    "description": "Observe the generated fixture.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"observation": {"type": "string"}},
+                        "required": ["observation"],
+                        "additionalProperties": False,
+                    },
+                    "strict": True,
+                },
+            }
+        ],
+        "stream": True,
+        "parallel_tool_calls": False,
+        "stream_options": {"include_usage": True},
+        "max_tokens": 64,
+    }
+    value.update(overrides)
+    return json.dumps(value, separators=(",", ":")).encode()
+
+
+def _controlled_stream_documents(
+    *, arguments: str = '{"observation":"fixture"}'
+) -> list[dict[str, Any]]:
+    base: dict[str, Any] = {
+        "id": f"chatcmpl-{ATTEMPT_ID[-12:]}-0001",
+        "object": "chat.completion.chunk",
+        "created": 1_762_272_001,
+        "model": "bluefire-controlled-v1",
+        "system_fingerprint": "bluefire-test-provider-fixture-estimate",
+    }
+    return [
+        {
+            **base,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_0001_0123456789abcdef",
+                                "type": "function",
+                                "function": {
+                                    "name": "observe_fixture",
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            **base,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+        },
+        {
+            **base,
+            "choices": [],
+            "usage": {"prompt_tokens": 23, "completion_tokens": 17, "total_tokens": 40},
+        },
+    ]
+
+
+def _controlled_stream_body(documents: list[dict[str, Any]] | None = None) -> bytes:
+    values = _controlled_stream_documents() if documents is None else documents
+    lines = [f"data: {json.dumps(value, separators=(',', ':'))}\n\n" for value in values]
+    lines.append("data: [DONE]\n\n")
+    return "".join(lines).encode()
+
+
+def _controlled_stream_headers(body: bytes, **overrides: str) -> dict[str, str]:
+    values = {
+        "content-type": "text/event-stream",
+        "content-length": str(len(body)),
+        "cache-control": "no-store",
+        "x-bluefire-provider": "Test provider",
+    }
+    values.update(overrides)
+    return values
+
+
+def _controlled_stream_result(
+    body: bytes | None = None,
+    *,
+    headers: dict[str, str] | None = None,
+    **overrides: Any,
+) -> ProtectedModelResult:
+    payload = _controlled_stream_body() if body is None else body
+    values: dict[str, Any] = {
+        "status": 200,
+        "headers": _controlled_stream_headers(payload) if headers is None else headers,
+        "body": payload,
+        "input_tokens": 23,
+        "output_tokens": 17,
+        "cost_microunits": 0,
+        "provider_request_ref": _digest("controlled-provider-request"),
+        "protected_secret_absent": True,
+        "fixture_usage_estimate": True,
+        "live_model_proof": False,
+    }
+    values.update(overrides)
+    return ProtectedModelResult(**values)
 
 
 def test_target_policy_is_exactly_bound_to_network_plan_and_limits() -> None:
@@ -1559,3 +1676,389 @@ def test_gateway_receipts_are_deterministic_and_public_objects_contain_no_secret
     assert "inspect the admitted lab" not in public
     assert first_response.receipt.receipt_digest == content_hash(first_response.receipt.to_dict())
     assert second_forwarder.calls[0] == first_forwarder.calls[0]
+
+
+def test_controlled_sse_policy_is_explicit_and_policy_digested() -> None:
+    ordinary = _model_policy()
+    controlled = _model_policy(allow_controlled_test_sse=True)
+
+    assert ordinary.allow_controlled_test_sse is False
+    assert controlled.allow_controlled_test_sse is True
+    assert ordinary.policy_digest != controlled.policy_digest
+    assert controlled.to_dict()["allow_controlled_test_sse"] is True
+    with pytest.raises(ValueError):
+        replace(controlled, allow_controlled_test_sse=1)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["not_admitted", "usage_missing", "parallel", "unknown_field", "duplicate_tool"],
+)
+def test_controlled_sse_request_requires_exact_policy_and_shape(case: str) -> None:
+    clock = FakeClock()
+    policy = _model_policy(allow_controlled_test_sse=case != "not_admitted")
+    body_value = json.loads(_controlled_stream_request_body())
+    if case == "usage_missing":
+        body_value.pop("stream_options")
+    elif case == "parallel":
+        body_value["parallel_tool_calls"] = True
+    elif case == "unknown_field":
+        body_value["unreviewed"] = True
+    elif case == "duplicate_tool":
+        body_value["tools"].append(body_value["tools"][0])
+    body = json.dumps(body_value, separators=(",", ":")).encode()
+    gateway, forwarder, _audit = _gateway(clock, policy=policy)
+
+    with pytest.raises(EngineRelayError) as error:
+        gateway.handle(_model_request(body=body))
+
+    assert error.value.code in {"invalid_request", "scope_refused"}
+    assert forwarder.calls == []
+
+
+def test_controlled_sse_exact_fixture_succeeds_and_preserves_nonlive_truth() -> None:
+    clock = FakeClock()
+    forwarder = FakeModelForwarder(clock)
+    forwarder.result = _controlled_stream_result()
+    gateway, _forwarder, audit = _gateway(
+        clock,
+        policy=_model_policy(allow_controlled_test_sse=True),
+        forwarder=forwarder,
+    )
+    request = _model_request(body=_controlled_stream_request_body())
+
+    response = gateway.handle(request)
+
+    assert response.status == 200
+    assert dict(response.headers)["x-bluefire-provider"] == "Test provider"
+    assert response.receipt.input_tokens == 23
+    assert response.receipt.output_tokens == 17
+    assert response.receipt.cost_microunits == 0
+    assert response.receipt.fixture_usage_estimate is True
+    assert response.receipt.live_model_proof is False
+    record = audit.records()[0]
+    assert record.status == "succeeded"
+    assert record.fixture_usage_estimate is True
+    assert record.live_model_proof is False
+    assert record.response_digest == _byte_digest(response.body.decode("utf-8"))
+    forwarded = forwarder.calls[0]
+    assert forwarded.max_response_bytes == _model_policy().max_response_bytes
+    public = json.dumps(response.receipt.to_dict()) + json.dumps(record.to_dict())
+    assert "observe_fixture" not in public
+    assert "observation" not in public
+    assert TOKEN not in public
+    assert PROTECTED_SECRET not in public
+
+
+@pytest.mark.parametrize(
+    ("case", "header", "value"),
+    [
+        ("missing_provider", "x-bluefire-provider", None),
+        ("wrong_provider", "x-bluefire-provider", "test provider"),
+        ("wrong_cache", "cache-control", "public"),
+        ("wrong_type", "content-type", "application/json"),
+        ("wrong_length", "content-length", "1"),
+        ("extra_header", "location", "https://evil.invalid"),
+    ],
+)
+def test_controlled_sse_rejects_noncanonical_response_headers(
+    case: str, header: str, value: str | None
+) -> None:
+    del case
+    clock = FakeClock()
+    body = _controlled_stream_body()
+    headers = _controlled_stream_headers(body)
+    if value is None:
+        headers.pop(header)
+    else:
+        headers[header] = value
+    forwarder = FakeModelForwarder(clock)
+    forwarder.result = _controlled_stream_result(body, headers=headers)
+    gateway, _forwarder, audit = _gateway(
+        clock,
+        policy=_model_policy(allow_controlled_test_sse=True),
+        forwarder=forwarder,
+    )
+
+    with pytest.raises(EngineRelayError) as error:
+        gateway.handle(_model_request(body=_controlled_stream_request_body()))
+
+    assert error.value.code == "invalid_upstream"
+    assert audit.records()[0].status == "invalid_upstream"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"",
+        _controlled_stream_body().replace(b"\n", b"\r\n"),
+        _controlled_stream_body()[:-2],
+        _controlled_stream_body().replace(b"data: [DONE]\n\n", b""),
+        _controlled_stream_body() + b"data: [DONE]\n\n",
+        b": comment\n\n" + _controlled_stream_body(),
+        b"event: message\ndata: {}\n\n" + _controlled_stream_body(),
+        b"\xef\xbb\xbf" + _controlled_stream_body(),
+        b"\xff\xfe\n\n",
+        _controlled_stream_body() + b"\n\n",
+    ],
+)
+def test_controlled_sse_rejects_malformed_truncated_or_ambiguous_framing(body: bytes) -> None:
+    clock = FakeClock()
+    forwarder = FakeModelForwarder(clock)
+    forwarder.result = _controlled_stream_result(body)
+    gateway, _forwarder, audit = _gateway(
+        clock,
+        policy=_model_policy(
+            allow_controlled_test_sse=True,
+            max_response_bytes=4_096,
+            max_total_response_bytes=4_096,
+        ),
+        forwarder=forwarder,
+    )
+
+    with pytest.raises(EngineRelayError) as error:
+        gateway.handle(_model_request(body=_controlled_stream_request_body()))
+
+    assert error.value.code == "invalid_upstream"
+    assert audit.records()[0].status == "invalid_upstream"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "model_drift",
+        "unknown_tool",
+        "array_arguments",
+        "duplicate_arguments",
+        "finish_drift",
+        "usage_total",
+        "usage_mismatch",
+        "zero_usage",
+        "duplicate_member",
+        "nonfinite",
+    ],
+)
+def test_controlled_sse_rejects_semantically_invalid_frames(case: str) -> None:
+    documents = json.loads(json.dumps(_controlled_stream_documents()))
+    overrides: dict[str, Any] = {}
+    if case == "model_drift":
+        documents[1]["model"] = "other-model"
+    elif case == "unknown_tool":
+        documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] = "other"
+    elif case == "array_arguments":
+        documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] = "[]"
+    elif case == "duplicate_arguments":
+        documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] = (
+            '{"observation":"a","observation":"b"}'
+        )
+    elif case == "finish_drift":
+        documents[1]["choices"][0]["finish_reason"] = "stop"
+    elif case == "usage_total":
+        documents[2]["usage"]["total_tokens"] = 41
+    elif case == "usage_mismatch":
+        overrides["input_tokens"] = 24
+    elif case == "zero_usage":
+        documents[2]["usage"] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+        overrides.update(input_tokens=0, output_tokens=0)
+    body = _controlled_stream_body(documents)
+    if case == "duplicate_member":
+        body = body.replace(b'"created":1762272001', b'"created":1762272001,"created":1', 1)
+    elif case == "nonfinite":
+        body = body.replace(b'"created":1762272001', b'"created":1e9999', 1)
+    clock = FakeClock()
+    forwarder = FakeModelForwarder(clock)
+    forwarder.result = _controlled_stream_result(body, **overrides)
+    gateway, _forwarder, audit = _gateway(
+        clock,
+        policy=_model_policy(allow_controlled_test_sse=True),
+        forwarder=forwarder,
+    )
+
+    with pytest.raises(EngineRelayError) as error:
+        gateway.handle(_model_request(body=_controlled_stream_request_body()))
+
+    assert error.value.code == "invalid_upstream"
+    assert audit.records()[0].status == "invalid_upstream"
+
+
+@pytest.mark.parametrize("kind", ["raw", "unicode", "double_unicode", "deep_unicode"])
+def test_controlled_sse_scans_whole_decoded_and_nested_content_for_bearer(kind: str) -> None:
+    if kind == "raw":
+        arguments = json.dumps({"hidden": TOKEN}, separators=(",", ":"))
+    elif kind == "unicode":
+        arguments = f'{{"hidden":"{_json_unicode_escape(TOKEN)}"}}'
+    elif kind == "double_unicode":
+        arguments = json.dumps({"nested": _json_unicode_escape(TOKEN)}, separators=(",", ":"))
+    else:
+        encoded = _json_unicode_escape(TOKEN)
+        for _ in range(4):
+            encoded = encoded.replace("\\", "\\u005c")
+        arguments = json.dumps({"nested": encoded}, separators=(",", ":"))
+    body = _controlled_stream_body(_controlled_stream_documents(arguments=arguments))
+    clock = FakeClock()
+    forwarder = FakeModelForwarder(clock)
+    forwarder.result = _controlled_stream_result(body)
+    gateway, _forwarder, audit = _gateway(
+        clock,
+        policy=_model_policy(
+            allow_controlled_test_sse=True,
+            max_response_bytes=4_096,
+            max_total_response_bytes=4_096,
+        ),
+        forwarder=forwarder,
+    )
+
+    with pytest.raises(EngineRelayError) as error:
+        gateway.handle(_model_request(body=_controlled_stream_request_body()))
+
+    assert error.value.code == "invalid_upstream"
+    assert TOKEN not in str(error.value)
+    assert audit.records()[0].status == "secret_leak"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"fixture_usage_estimate": False},
+        {"fixture_usage_estimate": 1},
+        {"live_model_proof": True},
+        {"live_model_proof": "false"},
+        {"cost_microunits": 1},
+    ],
+)
+def test_controlled_sse_rejects_untrusted_fixture_or_live_proof_claims(
+    overrides: dict[str, Any],
+) -> None:
+    clock = FakeClock()
+    forwarder = FakeModelForwarder(clock)
+    forwarder.result = _controlled_stream_result(**overrides)
+    gateway, _forwarder, audit = _gateway(
+        clock,
+        policy=_model_policy(allow_controlled_test_sse=True),
+        forwarder=forwarder,
+    )
+
+    with pytest.raises(EngineRelayError):
+        gateway.handle(_model_request(body=_controlled_stream_request_body()))
+
+    assert audit.records()[0].status == "invalid_upstream"
+
+
+def test_controlled_stream_json_refusal_is_known_nonlive_provider_result() -> None:
+    clock = FakeClock()
+    body = json.dumps(
+        {
+            "error": {
+                "message": "required tool is unavailable",
+                "type": "invalid_request_error",
+                "code": "missing_required_tool",
+            }
+        },
+        separators=(",", ":"),
+    ).encode()
+    forwarder = FakeModelForwarder(clock)
+    forwarder.result = ProtectedModelResult(
+        status=422,
+        headers={
+            "content-type": "application/json",
+            "content-length": str(len(body)),
+            "cache-control": "no-store",
+        },
+        body=body,
+        input_tokens=0,
+        output_tokens=0,
+        cost_microunits=0,
+        provider_request_ref=_digest("controlled-provider-refusal"),
+        protected_secret_absent=True,
+        fixture_usage_estimate=False,
+        live_model_proof=False,
+    )
+    gateway, _forwarder, audit = _gateway(
+        clock,
+        policy=_model_policy(allow_controlled_test_sse=True),
+        forwarder=forwarder,
+    )
+
+    response = gateway.handle(_model_request(body=_controlled_stream_request_body()))
+
+    assert response.status == 422
+    assert response.receipt.fixture_usage_estimate is False
+    assert response.receipt.live_model_proof is False
+    assert audit.records()[0].status == "succeeded"
+    assert audit.records()[0].result_status == 422
+
+
+def test_protected_upstream_unknown_is_typed_audited_consumed_and_sanitized() -> None:
+    clock = FakeClock()
+    forwarder = FakeModelForwarder(clock)
+    outcome_ref = _digest("ambiguous-provider-outcome")
+    forwarder.error = ProtectedUpstreamUnknown(outcome_ref)
+    gateway, _forwarder, audit = _gateway(
+        clock, policy=_model_policy(allow_controlled_test_sse=True), forwarder=forwarder
+    )
+    request = _model_request(body=_controlled_stream_request_body())
+
+    with pytest.raises(EngineRelayError) as unknown:
+        gateway.handle(request)
+
+    assert unknown.value.code == "upstream_unknown"
+    assert unknown.value.__cause__ is None
+    assert "target" not in str(unknown.value).lower()
+    record = audit.records()[0]
+    assert record.status == "upstream_unknown"
+    assert record.evidence_ref == outcome_ref
+    assert record.result_status is None
+    with pytest.raises(EngineRelayError) as replay:
+        gateway.handle(request)
+    assert replay.value.code == "replay_refused"
+    assert len(forwarder.calls) == 1
+
+
+def test_malformed_protected_upstream_unknown_is_sanitized_without_wedging() -> None:
+    clock = FakeClock()
+    forwarder = FakeModelForwarder(clock)
+    malformed = ProtectedUpstreamUnknown.__new__(ProtectedUpstreamUnknown)
+    RuntimeError.__init__(malformed, f"ambiguous with {PROTECTED_SECRET}")
+    forwarder.error = malformed
+    gateway, _forwarder, audit = _gateway(clock, forwarder=forwarder)
+
+    with pytest.raises(EngineRelayError) as unknown:
+        gateway.handle(_model_request())
+
+    assert unknown.value.code == "upstream_unknown"
+    assert PROTECTED_SECRET not in str(unknown.value)
+    assert unknown.value.__cause__ is None
+    assert audit.records()[0].status == "upstream_unknown"
+    assert audit.records()[0].evidence_ref is None
+    forwarder.error = None
+    response = gateway.handle(
+        _model_request(request_id="gateway-request-00000000000000000000000000000002")
+    )
+    assert response.status == 200
+
+
+def test_upstream_unknown_cannot_be_projected_as_target_outcome() -> None:
+    clock = FakeClock()
+    relay, _forwarder, audit = _target_relay(clock)
+    relay.handle(_target_request())
+
+    with pytest.raises(ValueError):
+        replace(audit.records()[0], status="upstream_unknown")
+
+
+def test_controlled_sse_admission_does_not_change_ordinary_json_path() -> None:
+    clock = FakeClock()
+    gateway, _forwarder, audit = _gateway(
+        clock, policy=_model_policy(allow_controlled_test_sse=True)
+    )
+
+    response = gateway.handle(_model_request())
+
+    assert response.status == 200
+    assert response.receipt.fixture_usage_estimate is False
+    assert response.receipt.live_model_proof is False
+    assert audit.records()[0].status == "succeeded"

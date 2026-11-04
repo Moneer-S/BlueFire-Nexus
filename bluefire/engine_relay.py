@@ -42,7 +42,9 @@ _TARGET_RESPONSE_HEADERS = frozenset(
         "x-content-type-options",
     }
 )
-_MODEL_RESPONSE_HEADERS = frozenset({"cache-control", "content-length", "content-type"})
+_MODEL_RESPONSE_HEADERS = frozenset(
+    {"cache-control", "content-length", "content-type", "x-bluefire-provider"}
+)
 _FORBIDDEN_HEADERS = frozenset(
     {
         "authorization",
@@ -67,6 +69,29 @@ _FORBIDDEN_HEADERS = frozenset(
 )
 _MAX_HEADER_VALUE = 8_192
 _MAX_JSON_DEPTH = 64
+_CONTROLLED_PROVIDER_LABEL = "Test provider"
+_CONTROLLED_SYSTEM_FINGERPRINT = "bluefire-test-provider-fixture-estimate"
+_TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,127}$")
+_SSE_RESPONSE_ID = re.compile(r"^chatcmpl-[0-9a-f]{12}-[0-9]{4}$")
+_SSE_CALL_ID = re.compile(r"^call_[0-9]{4}_[0-9a-f]{16}$")
+_JSON_UNICODE_ESCAPE = re.compile(r"\\u([0-9A-Fa-f]{4})")
+_CONTROLLED_STREAM_REQUEST_FIELDS = frozenset(
+    {
+        "model",
+        "messages",
+        "tools",
+        "stream",
+        "parallel_tool_calls",
+        "tool_choice",
+        "stream_options",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "max_completion_tokens",
+        "stop",
+        "seed",
+    }
+)
 
 
 class EngineRelayError(RuntimeError):
@@ -75,6 +100,14 @@ class EngineRelayError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class ProtectedUpstreamUnknown(RuntimeError):
+    """Protected forwarder signal that provider acceptance cannot be established."""
+
+    def __init__(self, outcome_ref: str) -> None:
+        self.outcome_ref = _require_digest(outcome_ref, "protected upstream outcome")
+        super().__init__("protected model provider outcome is unknown")
 
 
 def _digest_bytes(value: bytes) -> str:
@@ -89,7 +122,17 @@ def _secret_in_bytes(secret: str, payload: bytes) -> bool:
 
 def _json_contains_secret(value: Any, secret: str) -> bool:
     if isinstance(value, str):
-        return secret in value
+        decoded = value
+        for _ in range(_MAX_JSON_DEPTH):
+            if secret in decoded:
+                return True
+            expanded = _JSON_UNICODE_ESCAPE.sub(lambda match: chr(int(match.group(1), 16)), decoded)
+            if expanded == decoded:
+                return False
+            decoded = expanded
+        # Continued semantic expansion at the JSON-depth limit is ambiguous;
+        # fail closed instead of forwarding a potentially concealed bearer.
+        return True
     if isinstance(value, Mapping):
         return any(
             _json_contains_secret(key, secret) or _json_contains_secret(item, secret)
@@ -219,6 +262,282 @@ def _json_depth(value: Any, depth: int) -> None:
             _json_depth(item, depth + 1)
     elif isinstance(value, float) and not math.isfinite(value):
         raise EngineRelayError("invalid_json", "JSON number is outside its reviewed bound")
+
+
+def _controlled_stream_tool_names(request: Mapping[str, Any]) -> frozenset[str]:
+    stream_options = request.get("stream_options")
+    if (
+        set(request) - _CONTROLLED_STREAM_REQUEST_FIELDS
+        or not {"model", "messages", "tools", "stream", "stream_options"} <= set(request)
+        or request.get("stream") is not True
+        or request.get("parallel_tool_calls", False) is not False
+        or not isinstance(stream_options, Mapping)
+        or set(stream_options) != {"include_usage"}
+        or stream_options.get("include_usage") is not True
+        or not isinstance(request.get("messages"), list)
+        or not request["messages"]
+    ):
+        raise EngineRelayError("invalid_request", "controlled streaming request is invalid")
+    tools = request.get("tools")
+    if not isinstance(tools, list) or not 1 <= len(tools) <= 128:
+        raise EngineRelayError("invalid_request", "controlled streaming tools are invalid")
+    names: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, Mapping) or set(tool) != {"type", "function"}:
+            raise EngineRelayError("invalid_request", "controlled streaming tools are invalid")
+        function = tool.get("function")
+        if (
+            tool.get("type") != "function"
+            or not isinstance(function, Mapping)
+            or set(function) - {"name", "description", "parameters", "strict"}
+            or not {"name", "parameters"} <= set(function)
+            or not isinstance(function.get("name"), str)
+            or _TOOL_NAME.fullmatch(function["name"]) is None
+            or function["name"] in names
+            or not isinstance(function.get("parameters"), Mapping)
+            or ("description" in function and not isinstance(function.get("description"), str))
+            or ("strict" in function and not isinstance(function.get("strict"), bool))
+        ):
+            raise EngineRelayError("invalid_request", "controlled streaming tools are invalid")
+        names.add(function["name"])
+    choice = request.get("tool_choice")
+    if choice is None or (isinstance(choice, str) and choice in {"auto", "required"}):
+        return frozenset(names)
+    if (
+        not isinstance(choice, Mapping)
+        or set(choice) != {"type", "function"}
+        or choice.get("type") != "function"
+        or not isinstance(choice.get("function"), Mapping)
+        or set(choice["function"]) != {"name"}
+        or choice["function"].get("name") not in names
+    ):
+        raise EngineRelayError("invalid_request", "controlled streaming tool choice is invalid")
+    return frozenset({choice["function"]["name"]})
+
+
+def _exact_mapping(value: Any, keys: set[str], label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != keys:
+        raise EngineRelayError("invalid_upstream", f"{label} is invalid")
+    return value
+
+
+def _controlled_sse_base(
+    value: Mapping[str, Any], *, attempt_id: str, model_id: str
+) -> tuple[str, int, str, str, str]:
+    response_id = value.get("id")
+    created = value.get("created")
+    if (
+        not isinstance(response_id, str)
+        or _SSE_RESPONSE_ID.fullmatch(response_id) is None
+        or not response_id.startswith(f"chatcmpl-{attempt_id[-12:]}-")
+        or isinstance(created, bool)
+        or not isinstance(created, int)
+        or not 0 <= created <= 4_294_967_295
+        or value.get("object") != "chat.completion.chunk"
+        or value.get("model") != model_id
+        or value.get("system_fingerprint") != _CONTROLLED_SYSTEM_FINGERPRINT
+    ):
+        raise EngineRelayError("invalid_upstream", "controlled stream identity is invalid")
+    return (
+        response_id,
+        created,
+        value["object"],
+        value["model"],
+        value["system_fingerprint"],
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ControlledSSE:
+    documents: tuple[Mapping[str, Any], ...]
+    arguments: Mapping[str, Any]
+    input_tokens: int
+    output_tokens: int
+
+
+def _parse_controlled_sse(
+    body: bytes,
+    *,
+    attempt_id: str,
+    model_id: str,
+    tool_names: frozenset[str],
+    bearer: str,
+    max_input_tokens: int,
+    max_output_tokens: int,
+) -> _ControlledSSE:
+    try:
+        decoded = body.decode("utf-8")
+    except UnicodeDecodeError:
+        raise EngineRelayError("invalid_upstream", "controlled stream is not UTF-8") from None
+    if (
+        not decoded
+        or "\r" in decoded
+        or decoded.startswith("\ufeff")
+        or not decoded.endswith("\n\n")
+    ):
+        raise EngineRelayError("invalid_upstream", "controlled stream framing is invalid")
+    events = decoded.split("\n\n")
+    if len(events) != 5 or events[-1] != "":
+        raise EngineRelayError("invalid_upstream", "controlled stream event count is invalid")
+    payloads: list[str] = []
+    for event in events[:-1]:
+        if "\n" in event or not event.startswith("data: ") or len(event) <= len("data: "):
+            raise EngineRelayError("invalid_upstream", "controlled stream event is invalid")
+        payloads.append(event.removeprefix("data: "))
+    if payloads[-1] != "[DONE]" or any(payload == "[DONE]" for payload in payloads[:-1]):
+        raise EngineRelayError("invalid_upstream", "controlled stream terminator is invalid")
+    documents = tuple(
+        _strict_json(payload.encode("utf-8"), label="controlled stream event")
+        for payload in payloads[:-1]
+    )
+    if _json_contains_secret(documents, bearer):
+        raise EngineRelayError("secret_leak", "controlled stream contains gateway authority")
+    tool_document = _exact_mapping(
+        documents[0],
+        {"id", "object", "created", "model", "system_fingerprint", "choices"},
+        "controlled stream tool frame",
+    )
+    finish_document = _exact_mapping(
+        documents[1],
+        {"id", "object", "created", "model", "system_fingerprint", "choices"},
+        "controlled stream finish frame",
+    )
+    usage_document = _exact_mapping(
+        documents[2],
+        {"id", "object", "created", "model", "system_fingerprint", "choices", "usage"},
+        "controlled stream usage frame",
+    )
+    identity = _controlled_sse_base(tool_document, attempt_id=attempt_id, model_id=model_id)
+    if any(
+        _controlled_sse_base(document, attempt_id=attempt_id, model_id=model_id) != identity
+        for document in (finish_document, usage_document)
+    ):
+        raise EngineRelayError("invalid_upstream", "controlled stream identity drifted")
+
+    choices = tool_document.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        raise EngineRelayError("invalid_upstream", "controlled stream tool choice is invalid")
+    choice = _exact_mapping(
+        choices[0], {"index", "delta", "finish_reason"}, "controlled stream tool choice"
+    )
+    delta = _exact_mapping(
+        choice.get("delta"), {"role", "tool_calls"}, "controlled stream tool delta"
+    )
+    calls = delta.get("tool_calls")
+    if (
+        isinstance(choice.get("index"), bool)
+        or choice.get("index") != 0
+        or choice.get("finish_reason") is not None
+        or delta.get("role") != "assistant"
+        or not isinstance(calls, list)
+        or len(calls) != 1
+    ):
+        raise EngineRelayError("invalid_upstream", "controlled stream tool delta is invalid")
+    call = _exact_mapping(
+        calls[0], {"index", "id", "type", "function"}, "controlled stream tool call"
+    )
+    function = _exact_mapping(
+        call.get("function"), {"name", "arguments"}, "controlled stream function"
+    )
+    call_id = call.get("id")
+    tool_name = function.get("name")
+    arguments_text = function.get("arguments")
+    if (
+        isinstance(call.get("index"), bool)
+        or call.get("index") != 0
+        or not isinstance(call_id, str)
+        or _SSE_CALL_ID.fullmatch(call_id) is None
+        or call_id[5:9] != identity[0][-4:]
+        or call.get("type") != "function"
+        or not isinstance(tool_name, str)
+        or tool_name not in tool_names
+        or not isinstance(arguments_text, str)
+    ):
+        raise EngineRelayError("invalid_upstream", "controlled stream function is invalid")
+    try:
+        arguments = _strict_json(
+            arguments_text.encode("utf-8"), label="controlled stream function arguments"
+        )
+    except UnicodeEncodeError:
+        raise EngineRelayError(
+            "invalid_upstream", "controlled stream function is invalid"
+        ) from None
+    if _json_contains_secret(arguments, bearer):
+        raise EngineRelayError("secret_leak", "controlled stream contains gateway authority")
+    if arguments_text != json.dumps(
+        arguments,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ):
+        raise EngineRelayError(
+            "invalid_upstream", "controlled stream function arguments are not canonical"
+        )
+
+    finish_choices = finish_document.get("choices")
+    if not isinstance(finish_choices, list) or len(finish_choices) != 1:
+        raise EngineRelayError("invalid_upstream", "controlled stream finish choice is invalid")
+    finish = _exact_mapping(
+        finish_choices[0],
+        {"index", "delta", "finish_reason"},
+        "controlled stream finish choice",
+    )
+    if (
+        isinstance(finish.get("index"), bool)
+        or finish.get("index") != 0
+        or finish.get("delta") != {}
+        or finish.get("finish_reason") != "tool_calls"
+    ):
+        raise EngineRelayError("invalid_upstream", "controlled stream finish choice is invalid")
+
+    if usage_document.get("choices") != []:
+        raise EngineRelayError("invalid_upstream", "controlled stream usage choices are invalid")
+    usage = _exact_mapping(
+        usage_document.get("usage"),
+        {"prompt_tokens", "completion_tokens", "total_tokens"},
+        "controlled stream usage",
+    )
+    input_tokens = usage.get("prompt_tokens")
+    output_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
+    if (
+        isinstance(input_tokens, bool)
+        or not isinstance(input_tokens, int)
+        or not 1 <= input_tokens <= max_input_tokens
+        or isinstance(output_tokens, bool)
+        or not isinstance(output_tokens, int)
+        or not 1 <= output_tokens <= max_output_tokens
+        or isinstance(total_tokens, bool)
+        or not isinstance(total_tokens, int)
+        or total_tokens != input_tokens + output_tokens
+    ):
+        raise EngineRelayError("invalid_upstream", "controlled stream usage is invalid")
+    return _ControlledSSE(
+        documents=documents,
+        arguments=arguments,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+def _validate_controlled_provider_error(value: Mapping[str, Any]) -> None:
+    outer = _exact_mapping(value, {"error"}, "controlled provider refusal")
+    error = _exact_mapping(
+        outer.get("error"), {"message", "type", "code"}, "controlled provider refusal"
+    )
+    message = error.get("message")
+    code = error.get("code")
+    if (
+        error.get("type") != "invalid_request_error"
+        or not isinstance(message, str)
+        or not message.isascii()
+        or not 1 <= len(message) <= 512
+        or any(ord(character) < 32 or ord(character) == 127 for character in message)
+        or not isinstance(code, str)
+        or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code) is None
+    ):
+        raise EngineRelayError("invalid_upstream", "controlled provider refusal is invalid")
 
 
 def _normalized_headers(
@@ -423,6 +742,7 @@ class ModelGatewayPolicy:
     max_cost_microunits_per_request: int
     max_total_cost_microunits: int
     request_timeout_ms: int
+    allow_controlled_test_sse: bool = False
 
     def __post_init__(self) -> None:
         if _ATTEMPT_ID.fullmatch(self.attempt_id) is None:
@@ -505,6 +825,8 @@ class ModelGatewayPolicy:
             maximum=100_000_000,
         )
         _require_int(self.request_timeout_ms, "model gateway timeout", minimum=100, maximum=120_000)
+        if not isinstance(self.allow_controlled_test_sse, bool):
+            raise ValueError("model gateway controlled SSE policy is invalid")
 
     @classmethod
     def from_network_plan(cls, plan: EngineNetworkPlan, **values: Any) -> "ModelGatewayPolicy":
@@ -517,7 +839,7 @@ class ModelGatewayPolicy:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": "bluefire.model-gateway-policy.v1",
+            "schema_version": "bluefire.model-gateway-policy.v2",
             "attempt_id": self.attempt_id,
             "binding_digest": self.binding_digest,
             "delegation_digest": self.delegation_digest,
@@ -544,6 +866,7 @@ class ModelGatewayPolicy:
             "max_cost_microunits_per_request": self.max_cost_microunits_per_request,
             "max_total_cost_microunits": self.max_total_cost_microunits,
             "request_timeout_ms": self.request_timeout_ms,
+            "allow_controlled_test_sse": self.allow_controlled_test_sse,
             "path": "/v1/chat/completions",
             "redirect_policy": "refuse_all",
         }
@@ -663,6 +986,8 @@ class ProtectedModelResult:
     cost_microunits: int = 0
     provider_request_ref: str = ""
     protected_secret_absent: bool = False
+    fixture_usage_estimate: bool = False
+    live_model_proof: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -692,7 +1017,11 @@ def _safe_protected_revocation(
 
 
 class ProtectedModelForwarder(Protocol):
-    """Inject provider authority and enforce typed deadline, byte, token, and cost caps."""
+    """Inject provider authority and enforce typed deadline, byte, token, and cost caps.
+
+    Post-dispatch transport ambiguity must use ``ProtectedUpstreamUnknown``;
+    other exceptions assert that no publishable provider result was obtained.
+    """
 
     def forward(self, request: ModelForwardRequest) -> ProtectedModelResult: ...
 
@@ -720,6 +1049,8 @@ class RelayAuditRecord:
     recorded_at: str
     policy_digest: str
     evidence_ref: str | None
+    fixture_usage_estimate: bool = False
+    live_model_proof: bool = False
 
     def __post_init__(self) -> None:
         if self.relay_kind not in {"target", "model_gateway"}:
@@ -755,8 +1086,11 @@ class RelayAuditRecord:
             "secret_leak",
             "expired",
             "clock_invalid",
+            "upstream_unknown",
         }:
             raise ValueError("relay audit status is invalid")
+        if self.relay_kind == "target" and self.status == "upstream_unknown":
+            raise ValueError("target relay cannot claim model-provider ambiguity")
         if self.result_status is not None and (
             isinstance(self.result_status, bool)
             or not isinstance(self.result_status, int)
@@ -764,14 +1098,40 @@ class RelayAuditRecord:
             or 300 <= self.result_status <= 399
         ):
             raise ValueError("relay audit result status is invalid")
+        if self.status == "succeeded":
+            if (
+                self.response_digest is None
+                or self.result_status is None
+                or self.evidence_ref is None
+            ):
+                raise ValueError("successful relay audit evidence is incomplete")
+        elif (
+            self.response_digest is not None
+            or self.result_status is not None
+            or self.response_bytes != 0
+            or self.input_tokens != 0
+            or self.output_tokens != 0
+            or self.cost_microunits != 0
+        ):
+            raise ValueError("failed relay audit cannot claim a response")
         _require_timestamp(self.recorded_at, "relay audit timestamp")
         _require_digest(self.policy_digest, "relay audit policy")
         if self.evidence_ref is not None:
             _require_digest(self.evidence_ref, "relay audit evidence")
+        if not isinstance(self.fixture_usage_estimate, bool) or not isinstance(
+            self.live_model_proof, bool
+        ):
+            raise ValueError("relay audit model-proof state is invalid")
+        if self.fixture_usage_estimate and self.live_model_proof:
+            raise ValueError("relay audit model-proof state conflicts")
+        if self.status != "succeeded" and (self.fixture_usage_estimate or self.live_model_proof):
+            raise ValueError("failed relay audit cannot claim model proof")
+        if self.relay_kind == "target" and (self.fixture_usage_estimate or self.live_model_proof):
+            raise ValueError("target relay audit cannot claim model proof")
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": "bluefire.engine-relay-audit.v1",
+            "schema_version": "bluefire.engine-relay-audit.v2",
             "relay_kind": self.relay_kind,
             "attempt_id": self.attempt_id,
             "objective_ref": self.objective_ref,
@@ -791,6 +1151,8 @@ class RelayAuditRecord:
             "recorded_at": self.recorded_at,
             "policy_digest": self.policy_digest,
             "evidence_ref": self.evidence_ref,
+            "fixture_usage_estimate": self.fixture_usage_estimate,
+            "live_model_proof": self.live_model_proof,
         }
 
     @property
@@ -856,6 +1218,8 @@ class RelayReceipt:
     cost_microunits: int
     policy_digest: str
     audit_record_digest: str
+    fixture_usage_estimate: bool = False
+    live_model_proof: bool = False
 
     def __post_init__(self) -> None:
         if self.relay_kind not in {"target", "model_gateway"}:
@@ -891,10 +1255,18 @@ class RelayReceipt:
             (self.cost_microunits, "relay receipt cost", 100_000_000),
         ):
             _require_int(numeric_value, label, minimum=0, maximum=maximum)
+        if not isinstance(self.fixture_usage_estimate, bool) or not isinstance(
+            self.live_model_proof, bool
+        ):
+            raise ValueError("relay receipt model-proof state is invalid")
+        if self.fixture_usage_estimate and self.live_model_proof:
+            raise ValueError("relay receipt model-proof state conflicts")
+        if self.relay_kind == "target" and (self.fixture_usage_estimate or self.live_model_proof):
+            raise ValueError("target relay receipt cannot claim model proof")
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": "bluefire.engine-relay-receipt.v1",
+            "schema_version": "bluefire.engine-relay-receipt.v2",
             "relay_kind": self.relay_kind,
             "attempt_id": self.attempt_id,
             "sequence": self.sequence,
@@ -910,6 +1282,8 @@ class RelayReceipt:
             "cost_microunits": self.cost_microunits,
             "policy_digest": self.policy_digest,
             "audit_record_digest": self.audit_record_digest,
+            "fixture_usage_estimate": self.fixture_usage_estimate,
+            "live_model_proof": self.live_model_proof,
         }
 
     @property
@@ -1549,6 +1923,22 @@ class ControlledModelGateway:
         )
         try:
             result = self._forwarder.forward(forwarded)
+        except ProtectedUpstreamUnknown as exc:
+            try:
+                outcome_ref = _require_digest(exc.outcome_ref, "protected upstream outcome")
+            except Exception:
+                outcome_ref = None
+            self._finish_model_failure(
+                sequence,
+                request,
+                request_digest,
+                started,
+                "upstream_unknown",
+                evidence_ref=outcome_ref,
+            )
+            raise EngineRelayError(
+                "upstream_unknown", "model provider outcome is unknown"
+            ) from None
         except Exception:
             self._finish_model_failure(
                 sequence, request, request_digest, started, "upstream_failed"
@@ -1571,7 +1961,11 @@ class ControlledModelGateway:
             self._finish_model_failure(sequence, request, request_digest, started, exc.code)
             raise
         try:
-            result, response_headers, response_document = self._validate_result(result)
+            result, response_headers, response_document = self._validate_result(result, parsed)
+        except EngineRelayError as exc:
+            failure_status = "secret_leak" if exc.code == "secret_leak" else "invalid_upstream"
+            self._finish_model_failure(sequence, request, request_digest, started, failure_status)
+            raise EngineRelayError("invalid_upstream", "model response is invalid") from None
         except Exception:
             self._finish_model_failure(
                 sequence, request, request_digest, started, "invalid_upstream"
@@ -1614,6 +2008,8 @@ class ControlledModelGateway:
             recorded_at=recorded_at.isoformat().replace("+00:00", "Z"),
             policy_digest=self.policy.policy_digest,
             evidence_ref=result.provider_request_ref,
+            fixture_usage_estimate=result.fixture_usage_estimate,
+            live_model_proof=result.live_model_proof,
         )
         receipt = RelayReceipt(
             relay_kind="model_gateway",
@@ -1631,6 +2027,8 @@ class ControlledModelGateway:
             cost_microunits=result.cost_microunits,
             policy_digest=self.policy.policy_digest,
             audit_record_digest=audit.record_digest,
+            fixture_usage_estimate=result.fixture_usage_estimate,
+            live_model_proof=result.live_model_proof,
         )
         relay_response = RelayResponse(
             status=result.status,
@@ -1706,8 +2104,19 @@ class ControlledModelGateway:
         if parsed.get("model") != self.policy.model_id:
             raise EngineRelayError("scope_refused", "model identity is not admitted")
         stream = parsed.get("stream")
-        if stream is not None and stream is not False:
-            raise EngineRelayError("invalid_request", "streaming model responses are not admitted")
+        if stream is True:
+            if not self.policy.allow_controlled_test_sse:
+                raise EngineRelayError(
+                    "scope_refused", "controlled streaming model responses are not admitted"
+                )
+            _controlled_stream_tool_names(parsed)
+        elif stream is None or stream is False:
+            if "stream_options" in parsed:
+                raise EngineRelayError(
+                    "invalid_request", "stream options require an admitted streaming request"
+                )
+        else:
+            raise EngineRelayError("invalid_request", "model stream selection is invalid")
         if "max_tokens" in parsed and "max_completion_tokens" in parsed:
             raise EngineRelayError("invalid_request", "model request has conflicting token limits")
         declared = parsed.get("max_completion_tokens", parsed.get("max_tokens"))
@@ -1721,8 +2130,8 @@ class ControlledModelGateway:
         return parsed, headers
 
     def _validate_result(
-        self, result: ProtectedModelResult
-    ) -> tuple[ProtectedModelResult, tuple[tuple[str, str], ...], Mapping[str, Any]]:
+        self, result: ProtectedModelResult, request_document: Mapping[str, Any]
+    ) -> tuple[ProtectedModelResult, tuple[tuple[str, str], ...], Any]:
         if not isinstance(result, ProtectedModelResult):
             raise EngineRelayError("invalid_upstream", "model response is invalid")
         if (
@@ -1734,16 +2143,17 @@ class ControlledModelGateway:
             raise EngineRelayError("invalid_upstream", "model response status is invalid")
         if not isinstance(result.body, bytes) or len(result.body) > self.policy.max_response_bytes:
             raise EngineRelayError("invalid_upstream", "model response exceeds its limit")
+        if _secret_in_bytes(self._bearer, result.body):
+            raise EngineRelayError("secret_leak", "model response failed secret scanning")
         headers = _response_headers(
             result.headers,
             allowed=_MODEL_RESPONSE_HEADERS,
             body_size=len(result.body),
             label="model response",
         )
-        content_type = dict(headers).get("content-type")
-        if content_type != "application/json":
-            raise EngineRelayError("invalid_upstream", "model response content type is invalid")
-        parsed = _strict_json(result.body, label="model response")
+        rows = dict(headers)
+        if any(self._bearer in value for _, value in headers):
+            raise EngineRelayError("secret_leak", "model response failed secret scanning")
         try:
             _require_int(
                 result.input_tokens,
@@ -1768,8 +2178,70 @@ class ControlledModelGateway:
             raise EngineRelayError("invalid_upstream", "model usage receipt is invalid") from None
         if result.protected_secret_absent is not True:
             raise EngineRelayError("invalid_upstream", "model secret scan is incomplete")
-        if any(self._bearer in value for _, value in headers):
-            raise EngineRelayError("invalid_upstream", "model response failed secret scanning")
+        if not isinstance(result.fixture_usage_estimate, bool) or not isinstance(
+            result.live_model_proof, bool
+        ):
+            raise EngineRelayError("invalid_upstream", "model proof state is invalid")
+        if result.fixture_usage_estimate and result.live_model_proof:
+            raise EngineRelayError("invalid_upstream", "model proof state conflicts")
+
+        stream_requested = request_document.get("stream") is True
+        content_type = rows.get("content-type")
+        if content_type == "text/event-stream":
+            if (
+                not stream_requested
+                or not self.policy.allow_controlled_test_sse
+                or result.status != 200
+                or set(rows)
+                != {
+                    "cache-control",
+                    "content-length",
+                    "content-type",
+                    "x-bluefire-provider",
+                }
+                or rows.get("cache-control") != "no-store"
+                or rows.get("content-length") != str(len(result.body))
+                or rows.get("x-bluefire-provider") != _CONTROLLED_PROVIDER_LABEL
+                or result.fixture_usage_estimate is not True
+                or result.live_model_proof is not False
+                or result.cost_microunits != 0
+            ):
+                raise EngineRelayError("invalid_upstream", "controlled stream proof is invalid")
+            parsed_sse = _parse_controlled_sse(
+                result.body,
+                attempt_id=self.policy.attempt_id,
+                model_id=self.policy.model_id,
+                tool_names=_controlled_stream_tool_names(request_document),
+                bearer=self._bearer,
+                max_input_tokens=self.policy.max_input_tokens_per_request,
+                max_output_tokens=self.policy.max_output_tokens_per_request,
+            )
+            if (
+                parsed_sse.input_tokens != result.input_tokens
+                or parsed_sse.output_tokens != result.output_tokens
+            ):
+                raise EngineRelayError("invalid_upstream", "controlled stream usage drifted")
+            return result, headers, (*parsed_sse.documents, parsed_sse.arguments)
+
+        if content_type != "application/json" or "x-bluefire-provider" in rows:
+            raise EngineRelayError("invalid_upstream", "model response content type is invalid")
+        parsed = _strict_json(result.body, label="model response")
+        if _json_contains_secret(parsed, self._bearer):
+            raise EngineRelayError("secret_leak", "model response failed secret scanning")
+        if stream_requested:
+            if (
+                result.status < 400
+                or set(rows) != {"cache-control", "content-length", "content-type"}
+                or rows.get("cache-control") != "no-store"
+                or rows.get("content-length") != str(len(result.body))
+                or result.input_tokens != 0
+                or result.output_tokens != 0
+                or result.cost_microunits != 0
+                or result.fixture_usage_estimate is not False
+                or result.live_model_proof is not False
+            ):
+                raise EngineRelayError("invalid_upstream", "controlled provider refusal is invalid")
+            _validate_controlled_provider_error(parsed)
         return result, headers, parsed
 
     def _append_model_failure(
@@ -1779,6 +2251,8 @@ class ControlledModelGateway:
         request_digest: str,
         started: int,
         status: str,
+        *,
+        evidence_ref: str | None = None,
     ) -> None:
         self._append_audit(
             RelayAuditRecord(
@@ -1800,7 +2274,7 @@ class ControlledModelGateway:
                 elapsed_ms=max(0, (self._monotonic_ns() - started) // 1_000_000),
                 recorded_at=_audit_recorded_at(self._clock, self.policy.created_at),
                 policy_digest=self.policy.policy_digest,
-                evidence_ref=None,
+                evidence_ref=evidence_ref,
             )
         )
 
@@ -1811,8 +2285,17 @@ class ControlledModelGateway:
         request_digest: str,
         started: int,
         status: str,
+        *,
+        evidence_ref: str | None = None,
     ) -> None:
-        self._append_model_failure(sequence, request, request_digest, started, status)
+        self._append_model_failure(
+            sequence,
+            request,
+            request_digest,
+            started,
+            status,
+            evidence_ref=evidence_ref,
+        )
 
     def _append_audit(self, record: RelayAuditRecord) -> None:
         try:
