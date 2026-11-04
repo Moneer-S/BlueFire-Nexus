@@ -69,6 +69,9 @@ _CONTROLLER_JOB_FIELDS = frozenset(
 _ASSISTANCE_SELECTION_FIELDS = frozenset(
     {"kind", "experiment_id", "workspace_digest", "attempt_id", "check_id"}
 )
+_ACTION_PREPARE_FIELDS = frozenset(
+    {"schema_version", "expected_revision", "expected_digest", "workspace_digest"}
+)
 
 _DEFENSE_ROUTES = {
     "review": ("transition", "review_defense"),
@@ -96,6 +99,9 @@ _SERVICE_STATUS = {
     "engine_job_unavailable": HTTPStatus.CONFLICT,
     "engine_experiment_unavailable": HTTPStatus.CONFLICT,
     "engine_assistance_context_unavailable": HTTPStatus.CONFLICT,
+    "engine_action_unavailable": HTTPStatus.CONFLICT,
+    "engine_action_preparation_refused": HTTPStatus.CONFLICT,
+    "engine_action_stale": HTTPStatus.CONFLICT,
 }
 
 
@@ -118,6 +124,12 @@ class EngineExperimentAPIService(Protocol):
         self,
         experiment_id: str,
         selection: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
+    def prepare_action_request(
+        self,
+        experiment_id: str,
+        request: Mapping[str, Any],
     ) -> Mapping[str, Any]: ...
 
     def create_request(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
@@ -307,6 +319,18 @@ def _valid_assistance_selection(value: Mapping[str, Any]) -> bool:
     )
 
 
+def _valid_action_prepare_request(value: Mapping[str, Any]) -> bool:
+    return (
+        set(value) == _ACTION_PREPARE_FIELDS
+        and value.get("schema_version") == "bluefire.engine-action-prepare-request.v1"
+        and _revision(value.get("expected_revision"))
+        and all(
+            isinstance(value.get(field), str) and _DIGEST.fullmatch(value[field]) is not None
+            for field in ("expected_digest", "workspace_digest")
+        )
+    )
+
+
 def _parse_suffix(suffix: str) -> tuple[str, tuple[str, ...]] | None:
     if suffix == "":
         return "collection", ()
@@ -320,6 +344,8 @@ def _parse_suffix(suffix: str) -> tuple[str, tuple[str, ...]] | None:
         return "workspace", (experiment_id,)
     if parts[1:] == ["assistant-context"]:
         return "assistant-context", (experiment_id,)
+    if parts[1:] == ["actions", "prepare"]:
+        return "prepare-action", (experiment_id,)
     if parts[1:] == ["attempts"]:
         return "submit-attempt", (experiment_id,)
     if (
@@ -414,6 +440,14 @@ def dispatch_engine_experiments(
                 lambda: _service_call(
                     lambda: service.assistance_context_request(arguments[0], body)
                 )
+            )
+        return True
+    if operation == "prepare-action":
+        if not _valid_action_prepare_request(body):
+            _request_error(handler, "Engine action preparation request is invalid.")
+        else:
+            handler._dispatch(
+                lambda: _service_call(lambda: service.prepare_action_request(arguments[0], body))
             )
         return True
     if operation == "submit-attempt":

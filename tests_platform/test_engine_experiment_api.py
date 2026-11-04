@@ -49,6 +49,14 @@ class _Service:
         self.calls.append(("assistance_context_request", experiment_id, selection))
         return {"analysis_only": True}
 
+    def prepare_action_request(
+        self,
+        experiment_id: str,
+        request: Mapping[str, Any],
+    ):
+        self.calls.append(("prepare_action_request", experiment_id, request))
+        return {"prepared": True}
+
     def create_request(self, request: Mapping[str, Any]):
         self.calls.append(("create_request", request))
         return {"created": True}
@@ -164,6 +172,15 @@ def _assistance_selection() -> dict[str, Any]:
     }
 
 
+def _action_prepare_request() -> dict[str, Any]:
+    return {
+        "schema_version": "bluefire.engine-action-prepare-request.v1",
+        "expected_revision": 2,
+        "expected_digest": DIGEST,
+        "workspace_digest": DIGEST,
+    }
+
+
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
@@ -236,6 +253,60 @@ def test_assistant_context_is_post_only() -> None:
     assert dispatch_engine_experiments(handler, path)
     assert handler.service.calls == []
     assert handler.allowed == ["POST"]
+
+
+def test_action_prepare_posts_only_one_exact_workspace_binding() -> None:
+    request = _action_prepare_request()
+    path = f"{ROOT}/{EXPERIMENT}/actions/prepare"
+    handler = _Handler(path)
+
+    assert dispatch_engine_experiments(handler, path, request)
+    assert handler.service.calls == [("prepare_action_request", EXPERIMENT, request)]
+    assert handler.errors == [] and handler.allowed == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda body: body.update(action="start_baseline"),
+        lambda body: body.update(request_ref=DIGEST),
+        lambda body: body.update(command="launch"),
+        lambda body: body.update(evidence={}),
+        lambda body: body.update(expected_revision=True),
+        lambda body: body.update(expected_digest="not-a-digest"),
+        lambda body: body.update(workspace_digest="not-a-digest"),
+        lambda body: body.update(schema_version="bluefire.engine-action-prepare-request.v2"),
+        lambda body: body.pop("workspace_digest"),
+    ],
+)
+def test_action_prepare_rejects_client_authority_or_malformed_bindings(mutation) -> None:
+    request = _action_prepare_request()
+    mutation(request)
+    path = f"{ROOT}/{EXPERIMENT}/actions/prepare"
+    handler = _Handler(path)
+
+    assert dispatch_engine_experiments(handler, path, request)
+    assert handler.service.calls == []
+    assert handler.errors[0][1] == "engine_experiment_invalid"
+
+
+def test_action_prepare_is_post_only_and_query_free() -> None:
+    path = f"{ROOT}/{EXPERIMENT}/actions/prepare"
+    handler = _Handler(path)
+    assert dispatch_engine_experiments(handler, path)
+    assert handler.service.calls == []
+    assert handler.allowed == ["POST"]
+
+    handler = _Handler(path + "?action=start_baseline")
+    assert dispatch_engine_experiments(handler, path, _action_prepare_request())
+    assert handler.service.calls == []
+    assert handler.errors[0][1] == "invalid_management_query"
+
+    raw = f"{ROOT}/{EXPERIMENT}%2Factions%2Fprepare"
+    handler = _Handler(raw)
+    assert dispatch_engine_experiments(handler, path, _action_prepare_request())
+    assert handler.service.calls == []
+    assert handler.errors[0][1] == "engine_experiment_invalid"
 
 
 @pytest.mark.parametrize(
@@ -420,6 +491,7 @@ def test_unknown_or_authority_expanding_paths_never_dispatch(suffix: str) -> Non
         (f"{ROOT}/{EXPERIMENT}/workspace", {}, "GET"),
         (f"{ROOT}/{EXPERIMENT}/attempts", None, "POST"),
         (f"{ROOT}/{EXPERIMENT}/defense/review", None, "POST"),
+        (f"{ROOT}/{EXPERIMENT}/actions/prepare", None, "POST"),
     ],
 )
 def test_engine_routes_do_not_confuse_reads_and_commands(path, body, allowed) -> None:
@@ -463,6 +535,28 @@ def test_service_refusals_keep_stable_safe_api_codes() -> None:
     assert caught.value.status == 409
     assert caught.value.code == "engine_experiment_conflict"
     assert caught.value.message == "The experiment changed after review."
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "engine_action_unavailable",
+        "engine_action_preparation_refused",
+        "engine_action_stale",
+    ],
+)
+def test_action_prepare_refusals_are_stable_conflicts(code: str) -> None:
+    path = f"{ROOT}/{EXPERIMENT}/actions/prepare"
+    handler = _Handler(path)
+    handler.service.prepare_action_request = lambda *_args: (_ for _ in ()).throw(
+        EngineExperimentServiceError(code, "The action cannot be prepared safely.")
+    )
+
+    with pytest.raises(APIError) as caught:
+        dispatch_engine_experiments(handler, path, _action_prepare_request())
+    assert caught.value.status == 409
+    assert caught.value.code == code
+    assert caught.value.message == "The action cannot be prepared safely."
 
 
 def test_unknown_service_errors_do_not_echo_diagnostics() -> None:

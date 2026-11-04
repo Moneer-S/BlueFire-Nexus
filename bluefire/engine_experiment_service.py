@@ -13,6 +13,10 @@ import uuid
 from enum import Enum
 from typing import Any, Callable, Mapping, Protocol, TypeVar, cast
 
+from .engine_action_preparation import (
+    EngineActionPreparationCoordinator,
+    EngineActionPreparationServiceError,
+)
 from .engine_attempt_contract import AttemptState, EngineAttemptBinding
 from .engine_delegation import (
     EngineCapabilityDelegation,
@@ -213,6 +217,7 @@ class EngineExperimentService:
         clock: Callable[[], str],
         presentation_source: EngineExperimentPresentationSource,
         controller_jobs: EngineControllerJobs | None = None,
+        action_preparation: EngineActionPreparationCoordinator | None = None,
     ) -> None:
         self._history = history
         self._run_source = run_source
@@ -222,6 +227,7 @@ class EngineExperimentService:
         self._controller_jobs = controller_jobs
         self._clock = clock
         self._presentation_source = presentation_source
+        self._action_preparation = action_preparation
 
     def create(
         self,
@@ -389,6 +395,24 @@ class EngineExperimentService:
             )
 
         return self._mapped(operation)
+
+    def prepare_action_request(
+        self,
+        experiment_id: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Prepare only the server-derived current workspace action."""
+
+        coordinator = self._action_preparation
+        if coordinator is None:
+            raise EngineExperimentServiceError(
+                "engine_action_unavailable",
+                "The trusted engine action preparer is unavailable.",
+            )
+        try:
+            return coordinator.prepare_request(experiment_id, request)
+        except EngineActionPreparationServiceError as exc:
+            raise EngineExperimentServiceError(exc.code, str(exc)) from exc
 
     def submit_attempt(
         self,
