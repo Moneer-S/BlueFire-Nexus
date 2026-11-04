@@ -958,6 +958,8 @@ def test_retained_saved_attempt_wait_projection_keeps_only_fixed_classifications
                 "attempt_state": "failed",
                 "attempt_outcome": "terminal_failure",
                 "wait_outcome": "terminal_failure",
+                "attempt_error_code": "execution_callback_failed",
+                "attempt_error_type": "ProductStoreError",
                 "response": {"private": True},
             },
         }
@@ -969,10 +971,21 @@ def test_retained_saved_attempt_wait_projection_keeps_only_fixed_classifications
         "attempt_state": "failed",
         "attempt_outcome": "terminal_failure",
         "wait_outcome": "terminal_failure",
+        "attempt_error_code": "execution_callback_failed",
+        "attempt_error_type": "ProductStoreError",
     }
 
 
-@pytest.mark.parametrize("field", ["attempt_state", "attempt_outcome", "wait_outcome"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "attempt_state",
+        "attempt_outcome",
+        "wait_outcome",
+        "attempt_error_code",
+        "attempt_error_type",
+    ],
+)
 @pytest.mark.parametrize("value", [None, 1, "private", {}, []])
 def test_retained_saved_attempt_wait_projection_drops_unreviewed_classifications(
     field, value

@@ -307,6 +307,41 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                         "terminal_failure",
                     }:
                         safe_verification["wait_outcome"] = wait_outcome
+                    attempt_error_code = verification.get("attempt_error_code")
+                    if isinstance(attempt_error_code, str) and attempt_error_code in {
+                        "execution_callback_failed",
+                        "replay_cleanup_deferred",
+                        "replay_record_incomplete",
+                        "run_cleanup_deferred",
+                        "run_record_incomplete",
+                        "unknown",
+                    }:
+                        safe_verification["attempt_error_code"] = attempt_error_code
+                    attempt_error_type = verification.get("attempt_error_type")
+                    if isinstance(attempt_error_type, str) and attempt_error_type in {
+                        "APIError",
+                        "AssertionError",
+                        "CapabilityContractError",
+                        "EvidenceError",
+                        "FileNotFoundError",
+                        "JobCancelled",
+                        "JobRuntimeError",
+                        "OSError",
+                        "OrchestrationError",
+                        "PayloadUnavailable",
+                        "PermissionError",
+                        "ProductStoreError",
+                        "ReceiverSessionError",
+                        "RunnerAdapterError",
+                        "RunnerContractError",
+                        "RunnerTransportError",
+                        "RunStoreError",
+                        "TimeoutError",
+                        "TypeError",
+                        "ValueError",
+                        "other",
+                    }:
+                        safe_verification["attempt_error_type"] = attempt_error_type
                 row["retained_verification"] = safe_verification
         if row:
             result.append(row)

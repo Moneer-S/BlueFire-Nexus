@@ -194,6 +194,15 @@ const objectiveReadOutcomes = new Set(["ok", "not_found", "conflict", "authoriza
 const retainedAttemptStates = new Set(["queued", "planning", "awaiting_approval", "running", "paused",
   "cancelling", "cancelled", "completed", "failed", "interrupted"]);
 const retainedAttemptTerminalFailures = new Set(["cancelled", "failed", "interrupted"]);
+const retainedAttemptErrorCodes = new Set(["execution_callback_failed", "replay_cleanup_deferred",
+  "replay_record_incomplete", "run_cleanup_deferred", "run_record_incomplete"]);
+const retainedAttemptErrorTypes = new Set(["APIError", "AssertionError", "CapabilityContractError",
+  "EvidenceError", "FileNotFoundError", "JobCancelled", "JobRuntimeError", "OSError",
+  "OrchestrationError", "PayloadUnavailable", "PermissionError", "ProductStoreError",
+  "ReceiverSessionError", "RunnerAdapterError", "RunnerContractError", "RunnerTransportError",
+  "RunStoreError", "TimeoutError", "TypeError", "ValueError"]);
+const retainedAttemptErrorCode = value => retainedAttemptErrorCodes.has(value) ? value : "unknown";
+const retainedAttemptErrorType = value => retainedAttemptErrorTypes.has(value) ? value : "other";
 
 export async function waitForRetainedSavedAttempt({ readObjective, attemptId, remainingMs,
   maximum = 110000, onVerification }) {
@@ -206,10 +215,14 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
   let readOutcome = "pending";
   let attemptOutcome = "not_observed";
   let attemptState = "not_observed";
+  let attemptErrorCode;
+  let attemptErrorType;
   const update = waitOutcome => onVerification?.({
     schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
     read_outcome: readOutcome, attempt_state: attemptState,
     attempt_outcome: attemptOutcome, wait_outcome: waitOutcome,
+    ...(attemptErrorCode ? { attempt_error_code: attemptErrorCode } : {}),
+    ...(attemptErrorType ? { attempt_error_type: attemptErrorType } : {}),
   });
   update("pending");
   while (Date.now() < until) {
@@ -256,6 +269,8 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
       throw new Error("The retained-result attempt progress was invalid");
     }
     if (retainedAttemptTerminalFailures.has(attemptState)) {
+      attemptErrorCode = retainedAttemptErrorCode(attempt?.error?.code);
+      attemptErrorType = retainedAttemptErrorType(attempt?.error?.exception_type);
       attemptOutcome = "terminal_failure";
       update("terminal_failure");
       throw new Error("The retained-result attempt ended before its saved proof was ready");

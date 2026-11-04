@@ -404,9 +404,30 @@ test.each(["failed", "cancelled", "interrupted"])(
       schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
       read_outcome: "ok", attempt_state: state,
       attempt_outcome: "terminal_failure", wait_outcome: "terminal_failure",
+      attempt_error_code: "unknown", attempt_error_type: "other",
     });
   },
 );
+
+test("saved-attempt wait retains only fixed public failure classifications", async () => {
+  const diagnostics = [];
+  await assert.rejects(waitForRetainedSavedAttempt({
+    readObjective: async () => ({ outcome: "ok", run: { attempts: [{
+      job_id: ownerId, state: "failed", error: {
+        code: "execution_callback_failed", exception_type: "ProductStoreError",
+        message: "private failure message", private_path: "/private/path",
+      },
+    }] } }),
+    attemptId: ownerId, remainingMs: () => 1000, maximum: 1000,
+    onVerification: value => diagnostics.push(value),
+  }));
+  assert.deepEqual(diagnostics.at(-1), {
+    schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
+    read_outcome: "ok", attempt_state: "failed",
+    attempt_outcome: "terminal_failure", wait_outcome: "terminal_failure",
+    attempt_error_code: "execution_callback_failed", attempt_error_type: "ProductStoreError",
+  });
+});
 
 test("saved-attempt wait rejects an unreviewed state without retaining it", async () => {
   const diagnostics = [];
