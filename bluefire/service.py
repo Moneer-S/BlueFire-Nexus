@@ -2963,6 +2963,45 @@ class BlueFireService(
                     "The engine cancellation returned an invalid job response.",
                 )
             return dict(cancelled_job)
+        if job.get("kind") == "engine-controller-check":
+            request = job.get("request")
+            experiment_id = request.get("experiment_id") if isinstance(request, Mapping) else None
+            check_id = request.get("check_id") if isinstance(request, Mapping) else None
+            if not isinstance(experiment_id, str) or not isinstance(check_id, str):
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "job_signal_refused",
+                    "The controller-check job could not be bound to its saved check.",
+                )
+            try:
+                cancellation = self._engine_experiment_service.cancel_controller_check(
+                    experiment_id=experiment_id,
+                    check_id=check_id,
+                    job_id=job_id,
+                )
+            except EngineExperimentServiceError as exc:
+                try:
+                    durable_job = self.product_store.get_job(job_id)
+                except ProductStoreError:
+                    durable_job = None
+                if isinstance(durable_job, Mapping) and durable_job.get("state") in {
+                    "cancelling",
+                    "cancelled",
+                }:
+                    return dict(durable_job)
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "job_signal_refused",
+                    "The controller-check job could not be cancelled from its current state.",
+                ) from exc
+            cancelled_job = cancellation.get("job")
+            if not isinstance(cancelled_job, Mapping):
+                raise APIError(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "invalid_service_response",
+                    "The controller-check cancellation returned an invalid job response.",
+                )
+            return dict(cancelled_job)
         if job["kind"] == "receiver.defense.inspect":
             self.assistance.cancel(self.assistance_receiver.cancellation_parent(job))
             return self.product_store.get_job(job_id)

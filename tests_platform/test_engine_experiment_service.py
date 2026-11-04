@@ -13,6 +13,9 @@ from bluefire.engine_attempt_contract import (
 from bluefire.engine_experiment import (
     ENGINE_CAPABILITY_SCOPE_VERSION,
     CleanupState,
+    ControllerCheckRecord,
+    ControllerCheckRole,
+    ControllerCheckState,
     EngineExperiment,
     _controller_observation_record,
 )
@@ -23,9 +26,17 @@ from bluefire.engine_experiment_service import (
     EngineExperimentServiceError,
 )
 from bluefire.evidence import EvidenceRecord
+from bluefire.job_runtime import JobNotManaged
 from bluefire.product_store_errors import ProductStoreError, ResourceConflictError
 from bluefire.run_store import RunStoreError
 from bluefire.util import content_hash
+from tests_platform.test_engine_controller_jobs import _applied_experiment
+from tests_platform.test_engine_experiment import (
+    AFTER_SNAPSHOT,
+    MECHANISM_REF,
+    REPRODUCER_CHECK,
+    REPRODUCER_RUN,
+)
 
 
 def _digest(character: str) -> str:
@@ -198,8 +209,13 @@ class _Jobs:
 
 
 class _Lifecycle:
+    def __init__(self, state: str = "cancelled") -> None:
+        self.state = state
+        self.calls: list[str] = []
+
     def cancel(self, job_id):
-        return {"job_id": job_id, "state": "cancelled"}
+        self.calls.append(job_id)
+        return {"job_id": job_id, "state": self.state}
 
 
 class _PresentationSource:
@@ -275,6 +291,22 @@ class _PresentationSource:
                 "captured_at": experiment.updated_at,
             }
         )
+        change = experiment.defense_change
+        defensive_change = (
+            None
+            if change is None
+            else {
+                "change_id": change.change_id,
+                "state": change.state.value,
+                "kind": "identity",
+                "summary": "Require a signed session for protected tenant reads.",
+                "mechanism_ref": change.mechanism_ref,
+                "before_target_snapshot_ref": change.before_target_snapshot_ref,
+                "after_target_snapshot_ref": change.after_target_snapshot_ref,
+                "rollback_digest": change.rollback_digest,
+                "applied_at": change.applied_at,
+            }
+        )
         return {
             "schema_version": "bluefire.engine-experiment-presentation.v1",
             "experiment_id": experiment.experiment_id,
@@ -299,7 +331,7 @@ class _PresentationSource:
                 "scope_version": experiment.scope_version,
                 **limits,
             },
-            "defensive_change": None,
+            "defensive_change": defensive_change,
             "selection": None,
             "limitations": ["Controlled test-provider responses only."],
         }
@@ -312,8 +344,10 @@ class _NoopController:
 
 
 class _ControllerJobs:
-    def __init__(self) -> None:
+    def __init__(self, history: _History | None = None) -> None:
+        self.history = history
         self.requests: list[Mapping[str, Any]] = []
+        self.cancelled_checks: list[tuple[str, str, str]] = []
         self.state = "queued"
 
     def submit(self, **values):
@@ -328,6 +362,27 @@ class _ControllerJobs:
             "intent_digest": values["intent_digest"],
             "state": self.state,
         }
+
+    def settle_undispatched_check_cancellation(
+        self, *, experiment_id: str, check_id: str, job_id: str
+    ):
+        self.cancelled_checks.append((experiment_id, check_id, job_id))
+        history = self.history
+        assert history is not None and history.experiment is not None
+        experiment = history.experiment
+        _index, check = experiment._check(check_id)
+        settled_at = "2026-11-04T12:09:00Z"
+        terminal = check.settle(
+            state=ControllerCheckState.UNKNOWN,
+            result_digest=_digest("e"),
+            independent_evidence_refs=(),
+            cleanup_state=CleanupState.VERIFIED_ABSENT,
+            cleanup_evidence_ref=_digest("d"),
+            settled_at=settled_at,
+        )
+        history.experiment = experiment.settle_controller_check(terminal, timestamp=settled_at)
+        history.versions[history.experiment.revision] = history.experiment
+        return history.experiment.to_dict()
 
 
 class _UnboundControllerJobs(_ControllerJobs):
@@ -423,6 +478,7 @@ def _service(
     clock=None,
     presentation_source=None,
     run_source=None,
+    lifecycle=None,
 ) -> tuple[EngineExperimentService, _Jobs]:
     jobs = _Jobs(history)
     return (
@@ -430,7 +486,7 @@ def _service(
             history=history,
             run_source=run_source or _RunSource(),
             jobs=jobs,  # type: ignore[arg-type]
-            job_lifecycle=_Lifecycle(),
+            job_lifecycle=lifecycle or _Lifecycle(),
             controller=controller,
             clock=(lambda: CREATED_AT) if clock is None else clock,
             presentation_source=presentation_source or _PresentationSource(history),
@@ -438,6 +494,23 @@ def _service(
         ),
         jobs,
     )
+
+
+def _reserved_reproducer_check() -> EngineExperiment:
+    experiment = _applied_experiment()
+    created_at = "2026-11-04T12:08:00Z"
+    check = ControllerCheckRecord.reserve(
+        check_id=REPRODUCER_CHECK,
+        experiment_id=experiment.experiment_id,
+        job_id="job-" + "e" * 32,
+        run_id=REPRODUCER_RUN,
+        role=ControllerCheckRole.RETAINED_REPRODUCER,
+        mechanism_ref=MECHANISM_REF,
+        target_snapshot_ref=AFTER_SNAPSHOT,
+        input_digest=_digest("c"),
+        created_at=created_at,
+    )
+    return experiment.reserve_controller_check(check, timestamp=created_at)
 
 
 def test_create_read_list_and_workspace_share_one_canonical_head() -> None:
@@ -925,6 +998,130 @@ def test_cancel_does_not_reclassify_callback_settlement_as_undispatched() -> Non
 
     assert result["job"]["state"] == "cancelled"
     assert jobs.cancelled == []
+
+
+def test_cancel_controller_check_settles_undispatched_state_once() -> None:
+    experiment = _reserved_reproducer_check()
+    history = _History(experiment)
+    lifecycle = _Lifecycle()
+    controller_jobs = _ControllerJobs(history)
+    service, _jobs = _service(
+        history,
+        controller_jobs=controller_jobs,
+        lifecycle=lifecycle,
+    )
+    check = experiment.checks[0]
+
+    first = service.cancel_controller_check(
+        experiment_id=EXPERIMENT_ID,
+        check_id=check.check_id,
+        job_id=check.job_id,
+    )
+    second = service.cancel_controller_check(
+        experiment_id=EXPERIMENT_ID,
+        check_id=check.check_id,
+        job_id=check.job_id,
+    )
+
+    assert first["job"]["state"] == "cancelled"
+    assert second["job"] == first["job"]
+    assert controller_jobs.cancelled_checks == [(EXPERIMENT_ID, check.check_id, check.job_id)]
+    assert lifecycle.calls == [check.job_id, check.job_id]
+    assert history.experiment is not None
+    settled = history.experiment.checks[0]
+    assert settled.state is ControllerCheckState.UNKNOWN
+    assert settled.cleanup_state is CleanupState.VERIFIED_ABSENT
+    assert second["workspace"]["experiment_digest"] == history.experiment.digest
+
+
+@pytest.mark.parametrize("job_state", ["cancelling", "failed", "completed", "interrupted"])
+def test_cancel_controller_check_does_not_reclassify_dispatched_or_terminal_work(
+    job_state: str,
+) -> None:
+    experiment = _reserved_reproducer_check()
+    history = _History(experiment)
+    lifecycle = _Lifecycle(job_state)
+    controller_jobs = _ControllerJobs(history)
+    service, _jobs = _service(
+        history,
+        controller_jobs=controller_jobs,
+        lifecycle=lifecycle,
+    )
+    check = experiment.checks[0]
+
+    result = service.cancel_controller_check(
+        experiment_id=EXPERIMENT_ID,
+        check_id=check.check_id,
+        job_id=check.job_id,
+    )
+
+    assert result["job"]["state"] == job_state
+    assert controller_jobs.cancelled_checks == []
+    assert history.experiment is not None
+    assert history.experiment.checks[0].state is ControllerCheckState.RESERVED
+
+
+def test_cancel_controller_check_refuses_before_job_control_without_adapter_or_binding() -> None:
+    experiment = _reserved_reproducer_check()
+    history = _History(experiment)
+    lifecycle = _Lifecycle()
+    service, _jobs = _service(history, lifecycle=lifecycle)
+    check = experiment.checks[0]
+
+    with pytest.raises(EngineExperimentServiceError) as unavailable:
+        service.cancel_controller_check(
+            experiment_id=EXPERIMENT_ID,
+            check_id=check.check_id,
+            job_id=check.job_id,
+        )
+    assert unavailable.value.code == "engine_controller_refused"
+
+    controller_jobs = _ControllerJobs(history)
+    bound, _jobs = _service(
+        history,
+        controller_jobs=controller_jobs,
+        lifecycle=lifecycle,
+    )
+    with pytest.raises(EngineExperimentServiceError) as changed:
+        bound.cancel_controller_check(
+            experiment_id=EXPERIMENT_ID,
+            check_id=check.check_id,
+            job_id="job-" + "f" * 32,
+        )
+    assert changed.value.code == "engine_experiment_refused"
+    assert lifecycle.calls == []
+    assert controller_jobs.cancelled_checks == []
+
+
+def test_cancel_controller_check_after_restart_requires_recovery_without_replay() -> None:
+    class _RestartedLifecycle(_Lifecycle):
+        def cancel(self, job_id):
+            self.calls.append(job_id)
+            raise JobNotManaged("callback owner ended")
+
+    experiment = _reserved_reproducer_check()
+    history = _History(experiment)
+    lifecycle = _RestartedLifecycle()
+    controller_jobs = _ControllerJobs(history)
+    service, _jobs = _service(
+        history,
+        controller_jobs=controller_jobs,
+        lifecycle=lifecycle,
+    )
+    check = experiment.checks[0]
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.cancel_controller_check(
+            experiment_id=EXPERIMENT_ID,
+            check_id=check.check_id,
+            job_id=check.job_id,
+        )
+
+    assert caught.value.code == "engine_job_unavailable"
+    assert lifecycle.calls == [check.job_id]
+    assert controller_jobs.cancelled_checks == []
+    assert history.experiment is not None
+    assert history.experiment.checks[0].state is ControllerCheckState.RESERVED
 
 
 def test_workspace_projection_is_digest_bound() -> None:

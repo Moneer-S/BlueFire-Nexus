@@ -215,6 +215,115 @@ def test_generic_cancel_routes_engine_attempt_through_specialized_lifecycle(
     ]
 
 
+def test_generic_cancel_routes_controller_check_through_specialized_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path, monkeypatch)
+    job_id = "job-" + "c" * 32
+    check_id = "controller-check-" + "c" * 32
+    stored = {
+        "job_id": job_id,
+        "kind": "engine-controller-check",
+        "request": {
+            "experiment_id": EXPERIMENT_ID,
+            "check_id": check_id,
+        },
+    }
+    calls: list[dict[str, str]] = []
+
+    def cancel_controller_check(**values):
+        calls.append(values)
+        return {"job": {"job_id": job_id, "state": "cancelled"}, "workspace": {}}
+
+    monkeypatch.setattr(service.product_store, "get_job", lambda identifier: stored)
+    monkeypatch.setattr(
+        service._engine_experiment_service,
+        "cancel_controller_check",
+        cancel_controller_check,
+    )
+    try:
+        cancelled = service.cancel_job(job_id)
+    finally:
+        service.close()
+
+    assert cancelled == {"job_id": job_id, "state": "cancelled"}
+    assert calls == [
+        {
+            "experiment_id": EXPERIMENT_ID,
+            "check_id": check_id,
+            "job_id": job_id,
+        }
+    ]
+
+
+def test_generic_controller_check_cancel_rejects_an_unbound_stored_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path, monkeypatch)
+    job_id = "job-" + "d" * 32
+    monkeypatch.setattr(
+        service.product_store,
+        "get_job",
+        lambda identifier: {
+            "job_id": identifier,
+            "kind": "engine-controller-check",
+            "request": {"experiment_id": EXPERIMENT_ID},
+        },
+    )
+    try:
+        with pytest.raises(APIError) as caught:
+            service.cancel_job(job_id)
+    finally:
+        service.close()
+
+    assert caught.value.status == 409
+    assert caught.value.code == "job_signal_refused"
+
+
+def test_generic_controller_check_cancel_returns_durable_terminal_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(tmp_path, monkeypatch)
+    job_id = "job-" + "e" * 32
+    check_id = "controller-check-" + "e" * 32
+    stored = {
+        "job_id": job_id,
+        "kind": "engine-controller-check",
+        "request": {
+            "experiment_id": EXPERIMENT_ID,
+            "check_id": check_id,
+        },
+    }
+    refreshed = {
+        "job_id": job_id,
+        "kind": "engine-controller-check",
+        "state": "cancelled",
+    }
+    snapshots = iter((stored, refreshed))
+    monkeypatch.setattr(service.product_store, "get_job", lambda _identifier: next(snapshots))
+
+    def cancelled_without_workspace(**_values):
+        raise EngineExperimentServiceError(
+            "engine_workspace_unavailable",
+            "post-cancellation rendering is unavailable",
+        )
+
+    monkeypatch.setattr(
+        service._engine_experiment_service,
+        "cancel_controller_check",
+        cancelled_without_workspace,
+    )
+    try:
+        cancelled = service.cancel_job(job_id)
+    finally:
+        service.close()
+
+    assert cancelled == refreshed
+
+
 def test_controller_job_factory_receives_the_service_owned_stores_and_controller(
     tmp_path: Path,
 ) -> None:

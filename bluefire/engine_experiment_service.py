@@ -22,6 +22,7 @@ from .engine_action_submission import (
     EngineActionSubmissionServiceError,
 )
 from .engine_attempt_contract import AttemptState, EngineAttemptBinding
+from .engine_controller_jobs import EngineControllerJobError
 from .engine_delegation import (
     EngineCapabilityDelegation,
     EngineDelegationError,
@@ -155,6 +156,10 @@ class EngineControllerJobs(Protocol):
         request_ref: str,
         submission_id: str,
         intent_digest: str,
+    ) -> Mapping[str, Any]: ...
+
+    def settle_undispatched_check_cancellation(
+        self, *, experiment_id: str, check_id: str, job_id: str
     ) -> Mapping[str, Any]: ...
 
 
@@ -868,6 +873,58 @@ class EngineExperimentService:
 
         return self._mapped(operation)
 
+    def cancel_controller_check(
+        self,
+        *,
+        experiment_id: str,
+        check_id: str,
+        job_id: str,
+    ) -> Mapping[str, Any]:
+        """Cancel controller-check custody without stranding reserved state."""
+
+        def operation() -> Mapping[str, Any]:
+            controller_jobs = self._controller_jobs
+            if controller_jobs is None:
+                raise EngineControllerOperationError("trusted controller jobs are unavailable")
+            experiment = self._active(experiment_id)
+            _index, check = experiment._check(check_id)
+            if check.job_id != job_id:
+                raise EngineExperimentError("controller check belongs to another job")
+            job = self._job_lifecycle.cancel(job_id)
+            if not isinstance(job, Mapping) or job.get("job_id") != job_id:
+                raise JobRuntimeError("job controller returned another job")
+            state = job.get("state")
+            if state not in {
+                "queued",
+                "planning",
+                "running",
+                "paused",
+                "cancelling",
+                "cancelled",
+                "failed",
+                "completed",
+                "interrupted",
+            }:
+                raise JobRuntimeError("job controller returned an invalid state")
+            if state == "cancelled":
+                refreshed = self._active(experiment_id)
+                _refreshed_index, refreshed_check = refreshed._check(check_id)
+                if refreshed_check.state.value == "reserved":
+                    controller_jobs.settle_undispatched_check_cancellation(
+                        experiment_id=experiment_id,
+                        check_id=check_id,
+                        job_id=job_id,
+                    )
+            return {
+                "schema_version": "bluefire.engine-controller-check-cancellation.v1",
+                "job": dict(json_clone(job)),
+                "workspace": self._workspace_from_record(
+                    self._history.get_engine_experiment(experiment_id)
+                ),
+            }
+
+        return self._mapped(operation)
+
     def recover_attempt(self, *, experiment_id: str, attempt_id: str) -> Mapping[str, Any]:
         """Reconcile saved custody without relaunching or resubmitting an attempt."""
 
@@ -1184,6 +1241,11 @@ class EngineExperimentService:
                 "The saved engine attempt is unavailable, changed, or unsafe to execute.",
             ) from exc
         except EngineControllerOperationError as exc:
+            raise EngineExperimentServiceError(
+                "engine_controller_refused",
+                "The trusted observation or defense operation could not be completed safely.",
+            ) from exc
+        except EngineControllerJobError as exc:
             raise EngineExperimentServiceError(
                 "engine_controller_refused",
                 "The trusted observation or defense operation could not be completed safely.",

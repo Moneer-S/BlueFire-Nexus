@@ -1015,3 +1015,75 @@ def test_controller_check_cancel_refuses_a_job_that_reached_running(tmp_path: Pa
     )
     assert saved.checks[0].state is ControllerCheckState.RESERVED
     assert saved.checks[0].cleanup_state is CleanupState.PENDING
+
+
+def test_controller_check_cancel_and_dispatch_race_preserves_one_authority(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bluefire.db"
+    store = _experiment_store(path, _applied_versions())
+    _job, _request = _reserve_check(store)
+    experiment = EngineExperiment._from_controller_mapping(
+        store.get_engine_experiment_document(EXPERIMENT_ID)
+    )
+    terminal = _cancelled_check(experiment.checks[0])
+    barrier = threading.Barrier(2)
+    winners: list[str] = []
+    errors: list[Exception] = []
+
+    def dispatch() -> None:
+        candidate = ProductStore(path)
+        barrier.wait(timeout=5)
+        try:
+            candidate.transition_job(CHECK_JOB_ID, "planning")
+            candidate.transition_job(CHECK_JOB_ID, "running", progress={"phase": "ready"})
+            winners.append("dispatch")
+        except Exception as exc:  # pragma: no branch - asserted below
+            errors.append(exc)
+
+    def cancel() -> None:
+        candidate = ProductStore(path)
+        barrier.wait(timeout=5)
+        try:
+            try:
+                candidate.transition_job(CHECK_JOB_ID, "cancelled")
+            except ProductStoreError:
+                current = candidate.get_job(CHECK_JOB_ID)
+                if current["state"] == "planning":
+                    candidate.transition_job(CHECK_JOB_ID, "cancelled")
+                elif current["state"] == "running":
+                    candidate.transition_job(CHECK_JOB_ID, "cancelling")
+                    candidate.transition_job(CHECK_JOB_ID, "cancelled")
+                else:
+                    raise
+            candidate.settle_undispatched_engine_controller_check_cancellation(
+                experiment_id=EXPERIMENT_ID,
+                check_id=REPRODUCER_CHECK,
+                job_id=CHECK_JOB_ID,
+                check=terminal.to_dict(),
+                expected_revision=experiment.revision,
+                expected_experiment_digest=experiment.digest,
+            )
+            winners.append("cancel")
+        except Exception as exc:  # pragma: no branch - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=dispatch), threading.Thread(target=cancel)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(winners) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], (ProductStoreError, ResourceConflictError))
+    saved = EngineExperiment._from_controller_mapping(
+        ProductStore(path).get_engine_experiment_document(EXPERIMENT_ID)
+    ).checks[0]
+    if winners == ["cancel"]:
+        assert saved.state is ControllerCheckState.UNKNOWN
+        assert saved.cleanup_state is CleanupState.VERIFIED_ABSENT
+    else:
+        assert saved.state is ControllerCheckState.RESERVED
+        assert saved.cleanup_state is CleanupState.PENDING
