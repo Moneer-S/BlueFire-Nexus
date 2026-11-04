@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { parseEngineExperimentRoute, CompositionRoute } from "../src/pages/EngineExperimentRoute";
+import { parseEngineExperimentRoute, CompositionRoute, engineReviewSelection, resolvedEngineActionAcceptance } from "../src/pages/EngineExperimentRoute";
 import type { EngineExperiment } from "../src/lib/engine-experiment";
 import { engineExperimentApi } from "../src/lib/engine-experiment-api";
 import { AssistanceProvider, useAssistanceSelection } from "../src/state/AssistanceContext";
@@ -11,21 +11,28 @@ import { acceptedAction, actionDigest, actionWorkspace, preparedAction } from ".
 
 vi.mock("../src/pages/Composition", () => ({ CompositionPage: () => <h1>Ordinary composition workspace</h1> }));
 vi.mock("../src/components/EngineExperimentWorkspace", () => ({
-  EngineExperimentWorkspace: ({ experiment, selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction }: any) => <section aria-label="Engine experiment witness">
+  EngineExperimentWorkspace: ({ experiment, selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction, onCancelAttempt, onCancelCheck, cancellingAttemptId, cancellingCheckId }: any) => <section aria-label="Engine experiment witness">
     <h1>{experiment.objective.title}</h1>
     <output aria-label="Selected route item">{selectedAttemptId ?? selectedCheckId ?? "none"}</output>
-    <button type="button" onClick={() => onSelectAttempt(experiment.projection.attempts[0].attempt_id)}>Select baseline</button>
-    <button type="button" onClick={() => onSelectCheck(experiment.projection.checks[0].check_id)}>Select retest</button>
-    <button type="button" onClick={() => onPrimaryAction("start_baseline")}>Review next action</button>
+    {experiment.projection.attempts[0] ? <button type="button" onClick={() => onSelectAttempt(experiment.projection.attempts[0].attempt_id)}>Select baseline</button> : null}
+    {experiment.projection.checks[0] ? <button type="button" onClick={() => onSelectCheck(experiment.projection.checks[0].check_id)}>Select retest</button> : null}
+    <button type="button" onClick={() => onPrimaryAction(experiment.actions?.find((item: { primary: boolean }) => item.primary)?.kind ?? "start_baseline")}>Review next action</button>
+    {experiment.projection.attempts.find((item: { state: string }) => ["queued", "preflight", "running", "stopping"].includes(item.state)) ? <button type="button" disabled={Boolean(cancellingAttemptId)} onClick={() => onCancelAttempt(experiment.projection.attempts.find((item: { state: string }) => ["queued", "preflight", "running", "stopping"].includes(item.state)).attempt_id)}>{cancellingAttemptId ? "Requesting attempt cancellation" : "Cancel active attempt"}</button> : null}
+    {experiment.projection.checks.find((item: { state: string }) => item.state === "reserved") && onCancelCheck ? <button type="button" disabled={Boolean(cancellingCheckId)} onClick={() => onCancelCheck(experiment.projection.checks.find((item: { state: string }) => item.state === "reserved").check_id)}>{cancellingCheckId ? "Requesting check cancellation" : "Cancel active check"}</button> : null}
   </section>,
 }));
 
 const workspace = vi.hoisted(() => vi.fn());
 const prepare = vi.hoisted(() => vi.fn());
 const submit = vi.hoisted(() => vi.fn());
+const controlJob = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/engine-experiment-api", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/lib/engine-experiment-api")>();
   return { ...actual, engineExperimentApi: { ...actual.engineExperimentApi, workspace, prepare, submit } };
+});
+vi.mock("../src/lib/api", async importOriginal => {
+  const actual = await importOriginal<typeof import("../src/lib/api")>();
+  return { ...actual, api: { ...actual.api, controlJob } };
 });
 
 const experimentId = `experiment-${"a".repeat(32)}`;
@@ -57,12 +64,20 @@ function mount(path: string) {
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
+  controlJob.mockReset().mockResolvedValue({});
   prepare.mockReset().mockResolvedValue(preparedAction()); submit.mockReset().mockResolvedValue(acceptedAction());
   vi.mocked(engineExperimentApi.workspace).mockReset().mockImplementation(async (_experiment, selection) => {
     if (selection?.kind === "controller_check") throw new Error("Selected workspace context changed.");
     return raw;
   });
 });
+
+function routeExperiment(workflow: EngineExperiment["projection"]["workflow_state"], attempts: Array<Record<string, unknown>>, checks: Array<Record<string, unknown>>): EngineExperiment {
+  const value = actionWorkspace();
+  value.actions = [{ kind: "review_evidence", label: "Review evidence", enabled: true, primary: true, reason: "Review the current work." }];
+  value.projection = { ...value.projection, workflow_state: workflow, attempts, checks } as unknown as EngineExperiment["projection"];
+  return value;
+}
 
 it.each([
   [`?engine_experiment=${experimentId}&engine_experiment=${experimentId}`, "duplicate experiment"],
@@ -128,5 +143,89 @@ it("prepares against canonical unselected context while preserving route selecti
     await waitFor(() => expect(submit).toHaveBeenCalledWith(preparedAction()));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(`attempt=${returnedAttempt}`));
+  } finally { now.mockRestore(); }
+});
+
+it.each([
+  ["baseline_active", "engine_attempt", `engine-attempt-${"1".repeat(32)}`],
+  ["retained_reproducer_active", "controller_check", `controller-check-${"3".repeat(32)}`],
+  ["adaptive_search_active", "engine_attempt", `engine-attempt-${"2".repeat(32)}`],
+  ["legitimate_use_active", "controller_check", `controller-check-${"4".repeat(32)}`],
+] as const)("selects the semantic %s work item for evidence review", (workflow, kind, expectedId) => {
+  const value = routeExperiment(workflow,
+    [{ role: "baseline", attempt_id: `engine-attempt-${"1".repeat(32)}` }, { role: "adaptive_search", attempt_id: `engine-attempt-${"2".repeat(32)}` }],
+    [{ role: "retained_reproducer", check_id: `controller-check-${"3".repeat(32)}` }, { role: "legitimate_use", check_id: `controller-check-${"4".repeat(32)}` }]);
+  expect(engineReviewSelection(value)).toEqual({ kind, id: expectedId });
+});
+
+it("routes evidence review to the active adaptive attempt instead of the first attempt", async () => {
+  const value = routeExperiment("adaptive_search_active", [
+    { role: "baseline", attempt_id: attemptId, state: "completed" },
+    { role: "adaptive_search", attempt_id: `engine-attempt-${"f".repeat(32)}`, state: "running" },
+  ], []);
+  workspace.mockResolvedValue(value);
+  const user = userEvent.setup();
+  mount(`/composition?engine_experiment=${experimentId}`);
+  await user.click(await screen.findByRole("button", { name: "Review next action" }));
+  await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(`attempt=engine-attempt-${"f".repeat(32)}`));
+});
+
+it("cancels the exact active attempt job once and keeps its durable recovery path visible", async () => {
+  const activeAttemptId = `engine-attempt-${"e".repeat(32)}`;
+  const activeJobId = `job-${"7".repeat(32)}`;
+  const value = routeExperiment("adaptive_search_active", [{ role: "adaptive_search", attempt_id: activeAttemptId, job_id: activeJobId, state: "running" }], []);
+  workspace.mockResolvedValue(value);
+  let settle: ((value: unknown) => void) | undefined;
+  controlJob.mockImplementation(() => new Promise(resolve => { settle = resolve; }));
+  const user = userEvent.setup();
+  mount(`/composition?engine_experiment=${experimentId}&attempt=${activeAttemptId}`);
+  await user.click(await screen.findByRole("button", { name: "Cancel active attempt" }));
+  expect(controlJob).toHaveBeenCalledTimes(1);
+  expect(controlJob).toHaveBeenCalledWith(activeJobId, "cancel");
+  expect(screen.getByRole("button", { name: "Requesting attempt cancellation" })).toBeDisabled();
+  expect(screen.getByRole("link", { name: "Open saved job in Runs" })).toHaveAttribute("href", `/runs?job=${activeJobId}`);
+  await act(async () => { settle?.({ job_id: activeJobId, state: "stopping" }); });
+  expect(await screen.findByText("Cancellation requested")).toBeVisible();
+  expect(screen.getByLabelText("Current location")).toHaveTextContent(`attempt=${activeAttemptId}`);
+});
+
+it("surfaces attempt cancellation failure with the exact saved job link and permits another explicit request", async () => {
+  const activeAttemptId = `engine-attempt-${"e".repeat(32)}`;
+  const activeJobId = `job-${"8".repeat(32)}`;
+  const value = routeExperiment("adaptive_search_active", [{ role: "adaptive_search", attempt_id: activeAttemptId, job_id: activeJobId, state: "running" }], []);
+  workspace.mockResolvedValue(value);
+  controlJob.mockRejectedValue(new Error("Cancellation could not be confirmed."));
+  const user = userEvent.setup();
+  mount(`/composition?engine_experiment=${experimentId}&attempt=${activeAttemptId}`);
+  await user.click(await screen.findByRole("button", { name: "Cancel active attempt" }));
+  expect(await screen.findByText("Cancellation was refused")).toBeVisible();
+  expect(screen.getByText("Cancellation could not be confirmed.")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Open saved job in Runs" })).toHaveAttribute("href", `/runs?job=${activeJobId}`);
+  expect(screen.getByRole("button", { name: "Cancel active attempt" })).toBeEnabled();
+  expect(controlJob).toHaveBeenCalledWith(activeJobId, "cancel");
+});
+
+it("resolves a pure transition only when its exact revision and digest are visible", () => {
+  const value = actionWorkspace();
+  value.revision = 2;
+  value.experiment_digest = actionDigest("6");
+  const receipt = { ...acceptedAction(), job: null, transition: { revision: 2, digest: actionDigest("6") } };
+  expect(resolvedEngineActionAcceptance(receipt, value)).toEqual({ resolved: true, selection: null });
+  expect(resolvedEngineActionAcceptance({ ...receipt, transition: { ...receipt.transition!, digest: actionDigest("7") } }, value)).toEqual({ resolved: false, selection: null });
+});
+
+it("keeps an accepted but not-yet-projected durable job reachable", async () => {
+  const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-04T12:01:00Z"));
+  workspace.mockResolvedValue(actionWorkspace());
+  try {
+    const user = userEvent.setup();
+    mount(`/composition?engine_experiment=${experimentId}`);
+    await user.click(await screen.findByRole("button", { name: "Review next action" }));
+    await screen.findByText("Intended outcome");
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "Start baseline exploration" }));
+    expect(await screen.findByText("Action accepted")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Open saved job in Runs" })).toHaveAttribute("href", `/runs?job=${acceptedAction().job!.job_id}`);
+    expect(screen.getByRole("button", { name: "Refresh action status" })).toBeEnabled();
   } finally { now.mockRestore(); }
 });

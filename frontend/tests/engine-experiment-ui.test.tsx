@@ -121,12 +121,14 @@ it("requires the exact selected presenter context before exposing details", () =
 
 it("exposes fresh actions and cancellation but never unsupported resume", () => {
   const action = vi.fn(); const cancel = vi.fn();
-  renderWorkspace(<EngineExperimentWorkspace experiment={experiment()} onSelectAttempt={vi.fn()} onPrimaryAction={action} onCancelAttempt={cancel} />);
+  const view = renderWorkspace(<EngineExperimentWorkspace experiment={experiment()} onSelectAttempt={vi.fn()} onPrimaryAction={action} onCancelAttempt={cancel} />);
   fireEvent.click(screen.getByRole("button", { name: "Review evidence" }));
   fireEvent.click(screen.getByRole("button", { name: "Cancel attempt" }));
   expect(action).toHaveBeenCalledWith("review_evidence");
   expect(cancel).toHaveBeenCalledWith(attemptId("6"));
   expect(screen.queryByRole("button", { name: /resume/i })).not.toBeInTheDocument();
+  view.rerender(<MemoryRouter><EngineExperimentWorkspace experiment={experiment()} onSelectAttempt={vi.fn()} onPrimaryAction={action} onCancelAttempt={cancel} cancellingAttemptId={attemptId("6")} /></MemoryRouter>);
+  expect(screen.getByRole("button", { name: "Requesting cancellation" })).toBeDisabled();
 });
 
 it("does not promote an unmarked secondary action into the primary control", () => {

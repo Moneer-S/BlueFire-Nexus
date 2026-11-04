@@ -28,6 +28,7 @@ export interface EngineExperimentWorkspaceProps {
   onPrimaryAction?: (action: EngineWorkspaceActionKind) => void;
   onCancelAttempt?: (attemptId: string) => void;
   onCancelCheck?: (checkId: string) => void;
+  cancellingAttemptId?: string | null;
   runHref?: (runId: string) => string;
   comparisonHref?: string;
 }
@@ -88,7 +89,7 @@ const currentPhase = (workflow: EngineWorkflowState, phase: string): boolean => 
   comparison: ["choose_defense_disposition", "complete"],
 }[phase]?.includes(workflow) ?? false);
 
-export function EngineExperimentWorkspace({ experiment, selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction, onCancelAttempt, onCancelCheck, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: EngineExperimentWorkspaceProps) {
+export function EngineExperimentWorkspace({ experiment, selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction, onCancelAttempt, onCancelCheck, cancellingAttemptId, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: EngineExperimentWorkspaceProps) {
   const titleId = useId();
   const attemptDetailId = `${titleId}-selected-attempt`;
   const checkDetailId = `${titleId}-selected-check`;
@@ -145,7 +146,7 @@ export function EngineExperimentWorkspace({ experiment, selectedAttemptId, selec
   return <section className="engine-experiment-workspace" aria-labelledby={titleId}>
     <header className="engine-workspace-header">
       <div className="engine-workspace-title"><p>Defense experiment</p><h1 id={titleId}>{experiment.objective.title}</h1><span>{experiment.objective.summary}</span><div><Badge tone="info">{sentence(experiment.environment.platform)}</Badge><Badge tone="neutral">{experiment.environment.display_name}</Badge>{experiment.engine_setup.model.test_provider ? <Badge tone="warning">Labeled test provider</Badge> : <Badge tone="violet">{experiment.engine_setup.engine.display_name}</Badge>}</div></div>
-      <div className="engine-workspace-actions"><div><span>Workflow</span><strong>{engineWorkflowLabel(projection.workflow_state)}</strong></div><div><span>Revision</span><strong>{experiment.revision.toLocaleString()}</strong></div>{primaryAction && onPrimaryAction ? <Button type="button" variant="primary" disabled={!primaryAction.enabled} onClick={() => onPrimaryAction(primaryAction.kind)}>{primaryAction.label}<ArrowRight aria-hidden="true" /></Button> : null}{activeAttempt && activeAttempt.state !== "stopping" && onCancelAttempt ? <Button type="button" variant="danger" onClick={() => onCancelAttempt(activeAttempt.attempt_id)}><Square aria-hidden="true" />Cancel attempt</Button> : activeAttempt?.state === "stopping" ? <Button type="button" disabled><Square aria-hidden="true" />Stopping</Button> : null}</div>
+      <div className="engine-workspace-actions"><div><span>Workflow</span><strong>{engineWorkflowLabel(projection.workflow_state)}</strong></div><div><span>Revision</span><strong>{experiment.revision.toLocaleString()}</strong></div>{primaryAction && onPrimaryAction ? <Button type="button" variant="primary" disabled={!primaryAction.enabled} onClick={() => onPrimaryAction(primaryAction.kind)}>{primaryAction.label}<ArrowRight aria-hidden="true" /></Button> : null}{activeAttempt && activeAttempt.state !== "stopping" && onCancelAttempt ? <Button type="button" variant="danger" disabled={cancellingAttemptId === activeAttempt.attempt_id} onClick={() => onCancelAttempt(activeAttempt.attempt_id)}><Square aria-hidden="true" />{cancellingAttemptId === activeAttempt.attempt_id ? "Requesting cancellation" : "Cancel attempt"}</Button> : activeAttempt?.state === "stopping" ? <Button type="button" disabled><Square aria-hidden="true" />Stopping</Button> : null}</div>
     </header>
     {!completed && primaryAction?.reason ? <Callout tone={primaryAction.enabled && onPrimaryAction ? "info" : "warning"} title={primaryAction.enabled && onPrimaryAction ? "Next useful action" : primaryAction.enabled ? "Next action is not available here" : "Action not available"}><p>{primaryAction.reason}</p></Callout> : null}
     {experiment.current_target === null ? <Callout tone="warning" title="Current target state is not established"><p>BlueFire preserved the earlier evidence, but it cannot treat that history as proof of the target’s current state. Reconcile the defensive operation before starting another effect or drawing a current-state conclusion.</p></Callout> : null}
