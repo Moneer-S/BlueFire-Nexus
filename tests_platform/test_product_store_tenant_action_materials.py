@@ -365,7 +365,8 @@ def test_v18_to_v19_preserves_existing_acceptances_resources_and_generation_jour
     _as_v18(store)
     before = _existing_data(store.path)
     upgraded = ProductStore(store.path)
-    assert upgraded.schema_version == SCHEMA_VERSION == 19
+    assert upgraded.schema_version == SCHEMA_VERSION
+    assert SCHEMA_VERSION >= 19
     assert _existing_data(store.path) == before
     assert _counts(upgraded)[0] == 0
 

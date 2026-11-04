@@ -708,7 +708,8 @@ def test_v18_migration_preserves_all_journal_preparation_and_approval_data(tmp_p
     _as_v18(harness.store)
     before = _data_without_slots(harness.store.path)
     upgraded = ProductStore(harness.store.path)
-    assert upgraded.schema_version == 19
+    assert upgraded.schema_version == product_store.SCHEMA_VERSION
+    assert product_store.SCHEMA_VERSION >= 19
     assert _data_without_slots(harness.store.path) == before
     with upgraded._connection() as connection:
         assert (
