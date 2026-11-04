@@ -57,6 +57,14 @@ class _Service:
         self.calls.append(("prepare_action_request", experiment_id, request))
         return {"prepared": True}
 
+    def submit_prepared_action_request(
+        self,
+        experiment_id: str,
+        request: Mapping[str, Any],
+    ):
+        self.calls.append(("submit_prepared_action_request", experiment_id, request))
+        return {"accepted": True}
+
     def create_request(self, request: Mapping[str, Any]):
         self.calls.append(("create_request", request))
         return {"created": True}
@@ -178,6 +186,14 @@ def _action_prepare_request() -> dict[str, Any]:
         "expected_revision": 2,
         "expected_digest": DIGEST,
         "workspace_digest": DIGEST,
+    }
+
+
+def _action_submit_request() -> dict[str, Any]:
+    return {
+        "schema_version": "bluefire.engine-action-submit.v1",
+        "preparation_id": DIGEST,
+        "protected_request_ref": "sha256:" + "b" * 64,
     }
 
 
@@ -305,6 +321,71 @@ def test_action_prepare_is_post_only_and_query_free() -> None:
     raw = f"{ROOT}/{EXPERIMENT}%2Factions%2Fprepare"
     handler = _Handler(raw)
     assert dispatch_engine_experiments(handler, path, _action_prepare_request())
+    assert handler.service.calls == []
+    assert handler.errors[0][1] == "engine_experiment_invalid"
+
+
+def test_action_submit_posts_only_exact_retained_preparation_handles() -> None:
+    request = _action_submit_request()
+    path = f"{ROOT}/{EXPERIMENT}/actions/submit"
+    handler = _Handler(path)
+
+    assert dispatch_engine_experiments(handler, path, request)
+    assert handler.service.calls == [("submit_prepared_action_request", EXPERIMENT, request)]
+    assert handler.responses == [{"accepted": True}]
+    assert handler.errors == [] and handler.allowed == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda body: body.update(action="start_baseline"),
+        lambda body: body.update(approved_by="Browser operator"),
+        lambda body: body.update(reviewer="Browser operator"),
+        lambda body: body.update(approval_nonce="browser-nonce"),
+        lambda body: body.update(approval_id="approval-" + "3" * 32),
+        lambda body: body.update(expected_revision=2),
+        lambda body: body.update(workspace_digest=DIGEST),
+        lambda body: body.update(submission_id="12345678-1234-4123-8123-123456789abc"),
+        lambda body: body.update(intent_digest=DIGEST),
+        lambda body: body.update(limits={}),
+        lambda body: body.update(authority={}),
+        lambda body: body.update(token="browser-token"),
+        lambda body: body.update(preparation_id="not-a-digest"),
+        lambda body: body.update(preparation_id=True),
+        lambda body: body.update(preparation_id="sha256:" + "A" * 64),
+        lambda body: body.update(protected_request_ref="not-a-digest"),
+        lambda body: body.update(protected_request_ref=None),
+        lambda body: body.update(schema_version="bluefire.engine-action-submit.v2"),
+        lambda body: body.pop("preparation_id"),
+        lambda body: body.pop("protected_request_ref"),
+    ],
+)
+def test_action_submit_rejects_client_authority_or_malformed_handles(mutation) -> None:
+    request = _action_submit_request()
+    mutation(request)
+    path = f"{ROOT}/{EXPERIMENT}/actions/submit"
+    handler = _Handler(path)
+
+    assert dispatch_engine_experiments(handler, path, request)
+    assert handler.service.calls == []
+    assert handler.errors[0][1] == "engine_experiment_invalid"
+
+
+def test_action_submit_is_post_only_query_free_and_canonical() -> None:
+    path = f"{ROOT}/{EXPERIMENT}/actions/submit"
+    handler = _Handler(path)
+    assert dispatch_engine_experiments(handler, path)
+    assert handler.service.calls == []
+    assert handler.allowed == ["POST"]
+
+    handler = _Handler(path + "?reviewer=operator")
+    assert dispatch_engine_experiments(handler, path, _action_submit_request())
+    assert handler.service.calls == []
+    assert handler.errors[0][1] == "invalid_management_query"
+
+    handler = _Handler(f"{ROOT}/{EXPERIMENT}%2Factions%2Fsubmit")
+    assert dispatch_engine_experiments(handler, path, _action_submit_request())
     assert handler.service.calls == []
     assert handler.errors[0][1] == "engine_experiment_invalid"
 
@@ -492,6 +573,7 @@ def test_unknown_or_authority_expanding_paths_never_dispatch(suffix: str) -> Non
         (f"{ROOT}/{EXPERIMENT}/attempts", None, "POST"),
         (f"{ROOT}/{EXPERIMENT}/defense/review", None, "POST"),
         (f"{ROOT}/{EXPERIMENT}/actions/prepare", None, "POST"),
+        (f"{ROOT}/{EXPERIMENT}/actions/submit", None, "POST"),
     ],
 )
 def test_engine_routes_do_not_confuse_reads_and_commands(path, body, allowed) -> None:
@@ -557,6 +639,29 @@ def test_action_prepare_refusals_are_stable_conflicts(code: str) -> None:
     assert caught.value.status == 409
     assert caught.value.code == code
     assert caught.value.message == "The action cannot be prepared safely."
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [
+        ("engine_request_invalid", 400),
+        ("engine_action_unavailable", 409),
+        ("engine_action_submission_refused", 409),
+        ("engine_action_stale", 409),
+    ],
+)
+def test_action_submit_refusals_keep_stable_safe_api_codes(code: str, status: int) -> None:
+    path = f"{ROOT}/{EXPERIMENT}/actions/submit"
+    handler = _Handler(path)
+    handler.service.submit_prepared_action_request = lambda *_args: (_ for _ in ()).throw(
+        EngineExperimentServiceError(code, "The action cannot be accepted safely.")
+    )
+
+    with pytest.raises(APIError) as caught:
+        dispatch_engine_experiments(handler, path, _action_submit_request())
+    assert caught.value.status == status
+    assert caught.value.code == code
+    assert caught.value.message == "The action cannot be accepted safely."
 
 
 def test_unknown_service_errors_do_not_echo_diagnostics() -> None:

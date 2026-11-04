@@ -529,7 +529,7 @@ def test_v15_upgrade_preserves_experiment_and_enables_action_preparation(
         )
 
     upgraded = _ActionStore(path)
-    assert upgraded.schema_version == 16
+    assert upgraded.schema_version == 17
     assert upgraded.get_engine_experiment(EXPERIMENT_ID) == before
     prepared_at, expires_at, _ = _times()
     protected = _create_attempt(

@@ -508,6 +508,363 @@ def _append_experiment_at(
     return payload
 
 
+def reserve_engine_attempt_submission_at(
+    store: EngineJobProductStore,
+    connection: sqlite3.Connection,
+    *,
+    experiment_id: str,
+    binding: Mapping[str, Any],
+    delegation: Mapping[str, Any],
+    approval_binding: Mapping[str, Any],
+    approval_id: str,
+    approval_nonce: str,
+    approved_by: str,
+    job_kind: str,
+    job_request: Mapping[str, Any],
+    submission_id: str,
+    intent_digest: str,
+    expected_revision: int,
+    expected_experiment_digest: str,
+    reserved_at: str,
+) -> tuple[Mapping[str, Any], bool]:
+    """Reserve exact work inside the caller-owned write transaction."""
+
+    if not connection.in_transaction:
+        raise ProductStoreError("engine job reservation requires one transaction")
+    stable_kind = stable_identifier(job_kind, "job kind")
+    if stable_kind != _ENGINE_JOB_KIND:
+        raise ProductStoreError("engine attempt must use its dedicated job kind")
+    if not isinstance(approval_id, str) or _APPROVAL_ID.fullmatch(approval_id) is None:
+        raise ProductStoreError("engine approval identity is invalid")
+    if not isinstance(approval_nonce, str) or not approval_nonce or len(approval_nonce) > 200:
+        raise ProductStoreError("engine approval nonce is invalid")
+    if not isinstance(approved_by, str) or not approved_by.strip() or len(approved_by) > 200:
+        raise ProductStoreError("engine approval reviewer is invalid")
+    try:
+        parsed_delegation = EngineCapabilityDelegation.from_mapping(delegation)
+        parsed_binding = parsed_delegation.validate_attempt_binding(binding)
+        parsed_approval = parsed_delegation.validate_approval_binding(
+            approval_binding, parsed_binding
+        )
+    except (EngineDelegationError, TypeError, ValueError) as exc:
+        raise ProductStoreError("engine execution authority is invalid") from exc
+    if parsed_binding.experiment_id != experiment_id:
+        raise ProductStoreError("engine binding belongs to another experiment")
+    expected_request = _request_for(
+        _active_experiment_at(connection, experiment_id),
+        parsed_binding,
+        parsed_delegation,
+        parsed_approval,
+        approval_id,
+    )
+    request = safe_document(job_request, context="engine attempt job request")
+    if request != expected_request or content_hash(request) != intent_digest:
+        raise ProductStoreError("engine job intent differs from its exact authority")
+    job_id, submission_binding = store._job_submission_binding(submission_id, intent_digest)
+    context = _context_for(
+        experiment_id=experiment_id,
+        attempt_id=parsed_binding.attempt_id,
+        job_id=job_id,
+        delegation=parsed_delegation,
+        approval=parsed_approval,
+    )
+    try:
+        reserved = parse_iso8601_datetime(reserved_at)
+    except (TypeError, ValueError) as exc:
+        raise ProductStoreError("engine reservation time is invalid") from exc
+    if not (
+        parse_iso8601_datetime(parsed_binding.created_at)
+        <= reserved
+        < parse_iso8601_datetime(parsed_delegation.expires_at)
+    ):
+        raise ProductStoreError("engine reservation time is outside its delegated authority")
+
+    existing = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if existing is not None:
+        snapshot = store._matching_job_submission(existing, stable_kind, submission_binding)
+        stored_request = dict(cast(Mapping[str, Any], snapshot["request"]))
+        stored_request.pop("_submission", None)
+        if stored_request != request:
+            raise ProductStoreError("job submission ID is already bound to different work")
+        return snapshot, False
+
+    experiment = _active_experiment_at(
+        connection,
+        experiment_id,
+        expected_revision=expected_revision,
+        expected_digest=expected_experiment_digest,
+    )
+    if (
+        _request_for(
+            experiment,
+            parsed_binding,
+            parsed_delegation,
+            parsed_approval,
+            approval_id,
+        )
+        != request
+    ):
+        raise ResourceConflictError("engine experiment changed before job reservation")
+
+    approval_row = store._approval_row(connection, approval_id)
+    _approval_chronology(approval_row, require_consumed=True)
+    parsed_approval.validate_approval_record(store._approval_from_row(approval_row).to_dict())
+    claimed_at = utc_now()
+    claimed_time = parse_iso8601_datetime(claimed_at)
+    consumed_time = parse_iso8601_datetime(str(approval_row["consumed_at"]))
+    expiry_time = parse_iso8601_datetime(str(approval_row["expires_at"]))
+    if (
+        approval_row["nonce"] != approval_nonce
+        or approval_row["approved_by"] != approved_by.strip()
+        or not consumed_time <= claimed_time < expiry_time
+    ):
+        raise ProductStoreError("engine approval is expired, mismatched, or unavailable")
+
+    updated = experiment.reserve_attempt(
+        parsed_binding,
+        job_id=job_id,
+        delegation_digest=parsed_delegation.delegation_digest,
+        execution_approval_digest=content_hash(parsed_approval.to_dict()),
+        execution_approval_id=approval_id,
+        timestamp=reserved_at,
+    )
+    cursor = connection.execute(
+        """
+        UPDATE approval_requests SET status = 'claimed', claimed_at = ?
+        WHERE approval_id = ? AND status = 'consumed' AND nonce = ?
+          AND approved_by = ? AND state_digest = ? AND plan_digest = ?
+          AND target_scope_digest = ? AND profile_id = ? AND maximum_tier = ?
+        """,
+        (
+            claimed_at,
+            approval_id,
+            approval_nonce,
+            approved_by.strip(),
+            parsed_approval.state_digest,
+            parsed_approval.plan_digest,
+            parsed_approval.target_scope_digest,
+            parsed_approval.profile_id,
+            parsed_approval.maximum_tier,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise ResourceConflictError("engine approval claim lost a concurrent race")
+
+    stored_request = dict(cast(Mapping[str, Any], request))
+    stored_request["_submission"] = dict(submission_binding)
+    progress = safe_document({"_engine_execution": context}, context="engine attempt job progress")
+    connection.execute(
+        """
+        INSERT INTO jobs(
+            job_id, kind, state, request_json, progress_json, created_at, updated_at
+        ) VALUES (?, ?, 'queued', ?, ?, ?, ?)
+        """,
+        (
+            job_id,
+            stable_kind,
+            canonical_json(stored_request),
+            canonical_json(progress),
+            claimed_at,
+            claimed_at,
+        ),
+    )
+    _append_experiment_at(connection, experiment, updated)
+    row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    return store._job_from_row(row), True
+
+
+def reserve_engine_defense_operation_submission_at(
+    store: EngineJobProductStore,
+    connection: sqlite3.Connection,
+    *,
+    experiment_id: str,
+    change_id: str,
+    operation: str,
+    job_kind: str,
+    job_request: Mapping[str, Any],
+    submission_id: str,
+    intent_digest: str,
+    expected_revision: int,
+    expected_experiment_digest: str,
+    originating_job_id: str | None,
+    originating_operation_receipt_digest: str | None,
+) -> tuple[Mapping[str, Any], bool]:
+    """Reserve exact work inside the caller-owned write transaction."""
+
+    if not connection.in_transaction:
+        raise ProductStoreError("engine job reservation requires one transaction")
+    if stable_identifier(job_kind, "job kind") != _DEFENSE_JOB_KIND:
+        raise ProductStoreError("defense operation must use its dedicated job kind")
+    request = _job_request_document(job_request, context="engine defense job request")
+    if content_hash(request) != intent_digest:
+        raise ProductStoreError("engine defense job intent changed")
+    job, created, _job_id = _insert_idempotent_job_at(
+        store,
+        connection,
+        kind=_DEFENSE_JOB_KIND,
+        request=request,
+        submission_id=submission_id,
+        intent_digest=intent_digest,
+        now=utc_now(),
+    )
+    if not created:
+        return job, False
+    experiment = _active_experiment_at(
+        connection,
+        experiment_id,
+        expected_revision=expected_revision,
+        expected_digest=expected_experiment_digest,
+    )
+    expected = _defense_request(
+        experiment,
+        change_id=change_id,
+        operation=operation,
+        originating_job_id=originating_job_id,
+        originating_operation_receipt_digest=originating_operation_receipt_digest,
+    )
+    if request != expected:
+        raise ProductStoreError("engine defense job differs from its exact experiment")
+    change = experiment.defense_change
+    assert change is not None
+    ready = {
+        "apply": change.state is DefenseState.REVIEWED,
+        "reconcile_application": (
+            change.state is DefenseState.UNKNOWN and change.rollback_operation_digest is None
+        ),
+        "rollback": change.state in {DefenseState.APPLIED, DefenseState.RETAINED},
+        "reconcile_rollback": (
+            change.state is DefenseState.UNKNOWN and change.rollback_operation_digest is not None
+        ),
+    }
+    if not ready.get(operation, False):
+        raise ProductStoreError("engine defense operation is not ready")
+    if operation not in _RECONCILIATION_OPERATIONS:
+        if originating_job_id is not None or originating_operation_receipt_digest is not None:
+            raise ProductStoreError("new defense operation cannot cite an origin job")
+        return job, True
+    if not isinstance(originating_job_id, str) or not isinstance(
+        originating_operation_receipt_digest, str
+    ):
+        raise ProductStoreError("defense reconciliation requires its origin job")
+    origin = connection.execute(
+        "SELECT * FROM jobs WHERE job_id = ?", (originating_job_id,)
+    ).fetchone()
+    if (
+        origin is None
+        or origin["kind"] != _DEFENSE_JOB_KIND
+        or origin["state"] not in {"failed", "cancelled", "interrupted"}
+    ):
+        raise ProductStoreError("defense reconciliation requires its immutable terminal origin job")
+    origin_request, _submission = _saved_job_request(store, origin)
+    origin_operation = _ORIGIN_OPERATIONS[operation]
+    historical = _historical_experiment_at(
+        connection,
+        experiment_id,
+        origin_request.get("experiment_revision"),
+        origin_request.get("experiment_digest"),
+    )
+    if origin_request != _defense_request(
+        historical,
+        change_id=change_id,
+        operation=origin_operation,
+        originating_job_id=None,
+        originating_operation_receipt_digest=None,
+    ):
+        raise ProductStoreError("originating defense job intent changed")
+    expected_receipt = content_hash(
+        {
+            "schema_version": "bluefire.engine-defense-operation-receipt.v1",
+            "job_id": originating_job_id,
+            "request_digest": content_hash(origin_request),
+            "operation": origin_operation,
+        }
+    )
+    saved_receipt = (
+        change.application_receipt_digest
+        if operation == "reconcile_application"
+        else change.rollback_operation_digest
+    )
+    if (
+        originating_operation_receipt_digest != expected_receipt
+        or saved_receipt != expected_receipt
+    ):
+        raise ProductStoreError("originating defense operation receipt changed")
+    return job, True
+
+
+def reserve_engine_controller_check_submission_at(
+    store: EngineJobProductStore,
+    connection: sqlite3.Connection,
+    *,
+    experiment_id: str,
+    check_id: str,
+    run_id: str,
+    role: str,
+    mechanism_ref: str,
+    target_snapshot_ref: str,
+    input_digest: str,
+    reserved_at: str,
+    job_kind: str,
+    job_request: Mapping[str, Any],
+    submission_id: str,
+    intent_digest: str,
+    expected_revision: int,
+    expected_experiment_digest: str,
+) -> tuple[Mapping[str, Any], bool]:
+    """Reserve exact work inside the caller-owned write transaction."""
+
+    if not connection.in_transaction:
+        raise ProductStoreError("engine job reservation requires one transaction")
+    if stable_identifier(job_kind, "job kind") != _CHECK_JOB_KIND:
+        raise ProductStoreError("controller check must use its dedicated job kind")
+    request = _job_request_document(job_request, context="engine controller-check request")
+    if content_hash(request) != intent_digest:
+        raise ProductStoreError("controller-check job intent changed")
+    try:
+        check_role = ControllerCheckRole(role)
+    except ValueError as exc:
+        raise ProductStoreError("controller-check role is invalid") from exc
+    job, created, job_id = _insert_idempotent_job_at(
+        store,
+        connection,
+        kind=_CHECK_JOB_KIND,
+        request=request,
+        submission_id=submission_id,
+        intent_digest=intent_digest,
+        now=utc_now(),
+        initial_progress={
+            "_engine_controller_dispatch": {
+                "schema_version": _CHECK_DISPATCH_SCHEMA,
+                "begun": False,
+            }
+        },
+    )
+    if not created:
+        return job, False
+    experiment = _active_experiment_at(
+        connection,
+        experiment_id,
+        expected_revision=expected_revision,
+        expected_digest=expected_experiment_digest,
+    )
+    check = ControllerCheckRecord.reserve(
+        check_id=check_id,
+        experiment_id=experiment_id,
+        job_id=job_id,
+        run_id=run_id,
+        role=check_role,
+        mechanism_ref=mechanism_ref,
+        target_snapshot_ref=target_snapshot_ref,
+        input_digest=input_digest,
+        created_at=reserved_at,
+    )
+    if request != _check_request(experiment, check):
+        raise ProductStoreError("controller-check job differs from its exact experiment")
+    updated = experiment.reserve_controller_check(check, timestamp=reserved_at)
+    _append_experiment_at(connection, experiment, updated)
+    return job, True
+
+
 class EngineExperimentJobStoreMixin:
     """ProductStore implementation of ``EngineExperimentRepository``."""
 
@@ -548,157 +905,25 @@ class EngineExperimentJobStoreMixin:
         expected_experiment_digest: str,
         reserved_at: str,
     ) -> tuple[Mapping[str, Any], bool]:
-        stable_kind = stable_identifier(job_kind, "job kind")
-        if stable_kind != _ENGINE_JOB_KIND:
-            raise ProductStoreError("engine attempt must use its dedicated job kind")
-        if not isinstance(approval_id, str) or _APPROVAL_ID.fullmatch(approval_id) is None:
-            raise ProductStoreError("engine approval identity is invalid")
-        if not isinstance(approval_nonce, str) or not approval_nonce or len(approval_nonce) > 200:
-            raise ProductStoreError("engine approval nonce is invalid")
-        if not isinstance(approved_by, str) or not approved_by.strip() or len(approved_by) > 200:
-            raise ProductStoreError("engine approval reviewer is invalid")
-        try:
-            parsed_delegation = EngineCapabilityDelegation.from_mapping(delegation)
-            parsed_binding = parsed_delegation.validate_attempt_binding(binding)
-            parsed_approval = parsed_delegation.validate_approval_binding(
-                approval_binding, parsed_binding
-            )
-        except (EngineDelegationError, TypeError, ValueError) as exc:
-            raise ProductStoreError("engine execution authority is invalid") from exc
-        if parsed_binding.experiment_id != experiment_id:
-            raise ProductStoreError("engine binding belongs to another experiment")
-        expected_request = _request_for(
-            _engine_document(
-                {
-                    **self.get_engine_experiment_document(experiment_id),
-                }
-            ),
-            parsed_binding,
-            parsed_delegation,
-            parsed_approval,
-            approval_id,
-        )
-        request = safe_document(job_request, context="engine attempt job request")
-        if request != expected_request or content_hash(request) != intent_digest:
-            raise ProductStoreError("engine job intent differs from its exact authority")
-        job_id, submission_binding = self._job_submission_binding(submission_id, intent_digest)
-        context = _context_for(
-            experiment_id=experiment_id,
-            attempt_id=parsed_binding.attempt_id,
-            job_id=job_id,
-            delegation=parsed_delegation,
-            approval=parsed_approval,
-        )
-        try:
-            reserved = parse_iso8601_datetime(reserved_at)
-        except (TypeError, ValueError) as exc:
-            raise ProductStoreError("engine reservation time is invalid") from exc
-        if not (
-            parse_iso8601_datetime(parsed_binding.created_at)
-            <= reserved
-            < parse_iso8601_datetime(parsed_delegation.expires_at)
-        ):
-            raise ProductStoreError("engine reservation time is outside its delegated authority")
-
         with self._connection(write=True) as connection:
-            existing = connection.execute(
-                "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
-            ).fetchone()
-            if existing is not None:
-                snapshot = self._matching_job_submission(existing, stable_kind, submission_binding)
-                stored_request = dict(cast(Mapping[str, Any], snapshot["request"]))
-                stored_request.pop("_submission", None)
-                if stored_request != request:
-                    raise ProductStoreError("job submission ID is already bound to different work")
-                return snapshot, False
-
-            experiment = _active_experiment_at(
+            return reserve_engine_attempt_submission_at(
+                self,
                 connection,
-                experiment_id,
+                experiment_id=experiment_id,
+                binding=binding,
+                delegation=delegation,
+                approval_binding=approval_binding,
+                approval_id=approval_id,
+                approval_nonce=approval_nonce,
+                approved_by=approved_by,
+                job_kind=job_kind,
+                job_request=job_request,
+                submission_id=submission_id,
+                intent_digest=intent_digest,
                 expected_revision=expected_revision,
-                expected_digest=expected_experiment_digest,
+                expected_experiment_digest=expected_experiment_digest,
+                reserved_at=reserved_at,
             )
-            if (
-                _request_for(
-                    experiment,
-                    parsed_binding,
-                    parsed_delegation,
-                    parsed_approval,
-                    approval_id,
-                )
-                != request
-            ):
-                raise ResourceConflictError("engine experiment changed before job reservation")
-
-            approval_row = self._approval_row(connection, approval_id)
-            _approval_chronology(approval_row, require_consumed=True)
-            parsed_approval.validate_approval_record(
-                self._approval_from_row(approval_row).to_dict()
-            )
-            claimed_at = utc_now()
-            claimed_time = parse_iso8601_datetime(claimed_at)
-            consumed_time = parse_iso8601_datetime(str(approval_row["consumed_at"]))
-            expiry_time = parse_iso8601_datetime(str(approval_row["expires_at"]))
-            if (
-                approval_row["nonce"] != approval_nonce
-                or approval_row["approved_by"] != approved_by.strip()
-                or not consumed_time <= claimed_time < expiry_time
-            ):
-                raise ProductStoreError("engine approval is expired, mismatched, or unavailable")
-
-            updated = experiment.reserve_attempt(
-                parsed_binding,
-                job_id=job_id,
-                delegation_digest=parsed_delegation.delegation_digest,
-                execution_approval_digest=content_hash(parsed_approval.to_dict()),
-                execution_approval_id=approval_id,
-                timestamp=reserved_at,
-            )
-            cursor = connection.execute(
-                """
-                UPDATE approval_requests SET status = 'claimed', claimed_at = ?
-                WHERE approval_id = ? AND status = 'consumed' AND nonce = ?
-                  AND approved_by = ? AND state_digest = ? AND plan_digest = ?
-                  AND target_scope_digest = ? AND profile_id = ? AND maximum_tier = ?
-                """,
-                (
-                    claimed_at,
-                    approval_id,
-                    approval_nonce,
-                    approved_by.strip(),
-                    parsed_approval.state_digest,
-                    parsed_approval.plan_digest,
-                    parsed_approval.target_scope_digest,
-                    parsed_approval.profile_id,
-                    parsed_approval.maximum_tier,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise ResourceConflictError("engine approval claim lost a concurrent race")
-
-            stored_request = dict(cast(Mapping[str, Any], request))
-            stored_request["_submission"] = dict(submission_binding)
-            progress = safe_document(
-                {"_engine_execution": context}, context="engine attempt job progress"
-            )
-            connection.execute(
-                """
-                INSERT INTO jobs(
-                    job_id, kind, state, request_json, progress_json, created_at, updated_at
-                ) VALUES (?, ?, 'queued', ?, ?, ?, ?)
-                """,
-                (
-                    job_id,
-                    stable_kind,
-                    canonical_json(stored_request),
-                    canonical_json(progress),
-                    claimed_at,
-                    claimed_at,
-                ),
-            )
-            _append_experiment_at(connection, experiment, updated)
-            row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-            return self._job_from_row(row), True
 
     def load_engine_attempt_execution(
         self: EngineJobProductStore, experiment_id: str, attempt_id: str
@@ -1019,111 +1244,22 @@ class EngineExperimentJobStoreMixin:
         originating_job_id: str | None,
         originating_operation_receipt_digest: str | None,
     ) -> tuple[Mapping[str, Any], bool]:
-        if stable_identifier(job_kind, "job kind") != _DEFENSE_JOB_KIND:
-            raise ProductStoreError("defense operation must use its dedicated job kind")
-        request = _job_request_document(job_request, context="engine defense job request")
-        if content_hash(request) != intent_digest:
-            raise ProductStoreError("engine defense job intent changed")
         with self._connection(write=True) as connection:
-            job, created, _job_id = _insert_idempotent_job_at(
+            return reserve_engine_defense_operation_submission_at(
                 self,
                 connection,
-                kind=_DEFENSE_JOB_KIND,
-                request=request,
-                submission_id=submission_id,
-                intent_digest=intent_digest,
-                now=utc_now(),
-            )
-            if not created:
-                return job, False
-            experiment = _active_experiment_at(
-                connection,
-                experiment_id,
-                expected_revision=expected_revision,
-                expected_digest=expected_experiment_digest,
-            )
-            expected = _defense_request(
-                experiment,
+                experiment_id=experiment_id,
                 change_id=change_id,
                 operation=operation,
+                job_kind=job_kind,
+                job_request=job_request,
+                submission_id=submission_id,
+                intent_digest=intent_digest,
+                expected_revision=expected_revision,
+                expected_experiment_digest=expected_experiment_digest,
                 originating_job_id=originating_job_id,
                 originating_operation_receipt_digest=originating_operation_receipt_digest,
             )
-            if request != expected:
-                raise ProductStoreError("engine defense job differs from its exact experiment")
-            change = experiment.defense_change
-            assert change is not None
-            ready = {
-                "apply": change.state is DefenseState.REVIEWED,
-                "reconcile_application": (
-                    change.state is DefenseState.UNKNOWN
-                    and change.rollback_operation_digest is None
-                ),
-                "rollback": change.state in {DefenseState.APPLIED, DefenseState.RETAINED},
-                "reconcile_rollback": (
-                    change.state is DefenseState.UNKNOWN
-                    and change.rollback_operation_digest is not None
-                ),
-            }
-            if not ready.get(operation, False):
-                raise ProductStoreError("engine defense operation is not ready")
-            if operation not in _RECONCILIATION_OPERATIONS:
-                if (
-                    originating_job_id is not None
-                    or originating_operation_receipt_digest is not None
-                ):
-                    raise ProductStoreError("new defense operation cannot cite an origin job")
-                return job, True
-            if not isinstance(originating_job_id, str) or not isinstance(
-                originating_operation_receipt_digest, str
-            ):
-                raise ProductStoreError("defense reconciliation requires its origin job")
-            origin = connection.execute(
-                "SELECT * FROM jobs WHERE job_id = ?", (originating_job_id,)
-            ).fetchone()
-            if (
-                origin is None
-                or origin["kind"] != _DEFENSE_JOB_KIND
-                or origin["state"] not in {"failed", "cancelled", "interrupted"}
-            ):
-                raise ProductStoreError(
-                    "defense reconciliation requires its immutable terminal origin job"
-                )
-            origin_request, _submission = _saved_job_request(self, origin)
-            origin_operation = _ORIGIN_OPERATIONS[operation]
-            historical = _historical_experiment_at(
-                connection,
-                experiment_id,
-                origin_request.get("experiment_revision"),
-                origin_request.get("experiment_digest"),
-            )
-            if origin_request != _defense_request(
-                historical,
-                change_id=change_id,
-                operation=origin_operation,
-                originating_job_id=None,
-                originating_operation_receipt_digest=None,
-            ):
-                raise ProductStoreError("originating defense job intent changed")
-            expected_receipt = content_hash(
-                {
-                    "schema_version": "bluefire.engine-defense-operation-receipt.v1",
-                    "job_id": originating_job_id,
-                    "request_digest": content_hash(origin_request),
-                    "operation": origin_operation,
-                }
-            )
-            saved_receipt = (
-                change.application_receipt_digest
-                if operation == "reconcile_application"
-                else change.rollback_operation_digest
-            )
-            if (
-                originating_operation_receipt_digest != expected_receipt
-                or saved_receipt != expected_receipt
-            ):
-                raise ProductStoreError("originating defense operation receipt changed")
-            return job, True
 
     def begin_engine_defense_operation(
         self: EngineJobProductStore,
@@ -1246,55 +1382,25 @@ class EngineExperimentJobStoreMixin:
         expected_revision: int,
         expected_experiment_digest: str,
     ) -> tuple[Mapping[str, Any], bool]:
-        if stable_identifier(job_kind, "job kind") != _CHECK_JOB_KIND:
-            raise ProductStoreError("controller check must use its dedicated job kind")
-        request = _job_request_document(job_request, context="engine controller-check request")
-        if content_hash(request) != intent_digest:
-            raise ProductStoreError("controller-check job intent changed")
-        try:
-            check_role = ControllerCheckRole(role)
-        except ValueError as exc:
-            raise ProductStoreError("controller-check role is invalid") from exc
         with self._connection(write=True) as connection:
-            job, created, job_id = _insert_idempotent_job_at(
+            return reserve_engine_controller_check_submission_at(
                 self,
                 connection,
-                kind=_CHECK_JOB_KIND,
-                request=request,
-                submission_id=submission_id,
-                intent_digest=intent_digest,
-                now=utc_now(),
-                initial_progress={
-                    "_engine_controller_dispatch": {
-                        "schema_version": _CHECK_DISPATCH_SCHEMA,
-                        "begun": False,
-                    }
-                },
-            )
-            if not created:
-                return job, False
-            experiment = _active_experiment_at(
-                connection,
-                experiment_id,
-                expected_revision=expected_revision,
-                expected_digest=expected_experiment_digest,
-            )
-            check = ControllerCheckRecord.reserve(
-                check_id=check_id,
                 experiment_id=experiment_id,
-                job_id=job_id,
+                check_id=check_id,
                 run_id=run_id,
-                role=check_role,
+                role=role,
                 mechanism_ref=mechanism_ref,
                 target_snapshot_ref=target_snapshot_ref,
                 input_digest=input_digest,
-                created_at=reserved_at,
+                reserved_at=reserved_at,
+                job_kind=job_kind,
+                job_request=job_request,
+                submission_id=submission_id,
+                intent_digest=intent_digest,
+                expected_revision=expected_revision,
+                expected_experiment_digest=expected_experiment_digest,
             )
-            if request != _check_request(experiment, check):
-                raise ProductStoreError("controller-check job differs from its exact experiment")
-            updated = experiment.reserve_controller_check(check, timestamp=reserved_at)
-            _append_experiment_at(connection, experiment, updated)
-            return job, True
 
     def compare_and_swap_engine_controller_check_settlement(
         self: EngineJobProductStore,

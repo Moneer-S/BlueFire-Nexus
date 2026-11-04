@@ -17,6 +17,10 @@ from .engine_action_preparation import (
     EngineActionPreparationCoordinator,
     EngineActionPreparationServiceError,
 )
+from .engine_action_submission import (
+    EngineActionSubmissionCoordinator,
+    EngineActionSubmissionServiceError,
+)
 from .engine_attempt_contract import AttemptState, EngineAttemptBinding
 from .engine_delegation import (
     EngineCapabilityDelegation,
@@ -218,6 +222,7 @@ class EngineExperimentService:
         presentation_source: EngineExperimentPresentationSource,
         controller_jobs: EngineControllerJobs | None = None,
         action_preparation: EngineActionPreparationCoordinator | None = None,
+        action_submission: EngineActionSubmissionCoordinator | None = None,
     ) -> None:
         self._history = history
         self._run_source = run_source
@@ -228,6 +233,7 @@ class EngineExperimentService:
         self._clock = clock
         self._presentation_source = presentation_source
         self._action_preparation = action_preparation
+        self._action_submission = action_submission
 
     def create(
         self,
@@ -412,6 +418,24 @@ class EngineExperimentService:
         try:
             return coordinator.prepare_request(experiment_id, request)
         except EngineActionPreparationServiceError as exc:
+            raise EngineExperimentServiceError(exc.code, str(exc)) from exc
+
+    def submit_prepared_action_request(
+        self,
+        experiment_id: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Submit one retained preparation through the trusted acceptance seam."""
+
+        coordinator = self._action_submission
+        if coordinator is None:
+            raise EngineExperimentServiceError(
+                "engine_action_unavailable",
+                "The trusted engine action submission coordinator is unavailable.",
+            )
+        try:
+            return coordinator.submit(experiment_id=experiment_id, request=request)
+        except EngineActionSubmissionServiceError as exc:
             raise EngineExperimentServiceError(exc.code, str(exc)) from exc
 
     def submit_attempt(

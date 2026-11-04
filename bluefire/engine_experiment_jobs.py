@@ -9,6 +9,7 @@ adds no scheduler, database, subprocess, model client, or target access.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Protocol
@@ -247,6 +248,67 @@ class EngineExperimentJobs:
         self._repository = repository
         self._runtime = runtime
         self._clock = clock
+
+    def submit_prepared(
+        self,
+        *,
+        request: Mapping[str, Any],
+        submission_id: str,
+        intent_digest: str,
+        submission_factory: Callable[[], tuple[Mapping[str, Any], bool]],
+    ) -> Mapping[str, Any]:
+        """Enqueue one retained request through the existing admission gate.
+
+        The trusted factory owns atomic preparation, approval, reservation,
+        and acceptance validation. This adapter never reconstructs authority
+        from a caller-selected experiment head.
+        """
+
+        fields = {
+            "schema_version",
+            "experiment_id",
+            "attempt_id",
+            "binding_digest",
+            "delegation_digest",
+            "execution_approval_digest",
+            "execution_approval_id",
+        }
+        if not isinstance(request, Mapping) or set(request) != fields:
+            raise EngineExperimentJobError("prepared engine request fields changed")
+        parsed = dict(request)
+        if parsed["schema_version"] != "bluefire.engine-attempt-job.v1":
+            raise EngineExperimentJobError("prepared engine request version changed")
+        for field, pattern in (
+            ("experiment_id", r"experiment-[0-9a-f]{32}"),
+            ("attempt_id", r"engine-attempt-[0-9a-f]{32}"),
+            ("execution_approval_id", r"approval-[0-9a-f]{32}"),
+            ("binding_digest", r"sha256:[0-9a-f]{64}"),
+            ("delegation_digest", r"sha256:[0-9a-f]{64}"),
+            ("execution_approval_digest", r"sha256:[0-9a-f]{64}"),
+        ):
+            if not isinstance(parsed[field], str) or re.fullmatch(pattern, parsed[field]) is None:
+                raise EngineExperimentJobError("prepared engine request identity changed")
+        try:
+            canonical_submission = str(uuid.UUID(submission_id))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise EngineExperimentJobError("submission identity must be a canonical UUID") from exc
+        if canonical_submission != submission_id:
+            raise EngineExperimentJobError("submission identity must be a canonical UUID")
+        if intent_digest != content_hash(parsed):
+            raise EngineExperimentJobError("prepared engine intent digest changed")
+        if not callable(submission_factory):
+            raise EngineExperimentJobError("prepared engine submission factory is unavailable")
+        if self._runtime is None:
+            raise EngineExperimentJobError("external engine runtime is unavailable")
+        return self._controller.submit(
+            self.JOB_KIND,
+            parsed,
+            requires_approval=False,
+            callback=self._execute,
+            submission_id=submission_id,
+            intent_digest=intent_digest,
+            submission_factory=submission_factory,
+        )
 
     def submit(
         self,

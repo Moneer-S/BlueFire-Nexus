@@ -98,6 +98,8 @@ from .contracts import (
 from .detection_ai_jobs import DetectionAIJobs
 from .detection_create_jobs import DetectionCreateJobs
 from .detection_lab import DetectionLabService
+from .engine_action_preparation import EngineActionPreparationCoordinator
+from .engine_action_submission import EngineActionSubmissionCoordinator
 from .engine_experiment_jobs import EngineAttemptRuntime, EngineExperimentJobs
 from .engine_experiment_service import (
     EngineControllerJobs as EngineControllerJobsAdapter,
@@ -240,6 +242,19 @@ EngineControllerJobsFactory = Callable[
     [ProductStore, RunStore, RunJobController],
     EngineControllerJobsAdapter,
 ]
+EngineActionPreparationFactory = Callable[
+    [ProductStore, EngineExperimentService],
+    EngineActionPreparationCoordinator,
+]
+EngineActionSubmissionFactory = Callable[
+    [
+        ProductStore,
+        EngineExperimentService,
+        EngineExperimentJobs,
+        EngineControllerJobsAdapter | None,
+    ],
+    EngineActionSubmissionCoordinator,
+]
 
 
 class BlueFireService(
@@ -271,6 +286,8 @@ class BlueFireService(
         engine_controller_jobs: EngineControllerJobsAdapter | None = None,
         engine_controller_jobs_factory: EngineControllerJobsFactory | None = None,
         engine_experiment_presentation_source: EngineExperimentPresentationSource | None = None,
+        engine_action_preparation_factory: EngineActionPreparationFactory | None = None,
+        engine_action_submission_factory: EngineActionSubmissionFactory | None = None,
     ) -> None:
         if engine_controller_jobs is not None and engine_controller_jobs_factory is not None:
             raise ValueError(
@@ -359,6 +376,20 @@ class BlueFireService(
             controller_jobs=configured_engine_controller_jobs,
         )
         self.engine_experiment_service = self._engine_experiment_service
+        # Installed composition supplies pure factories after the shared workspace
+        # source exists.  The default service keeps both admission seams closed.
+        if engine_action_preparation_factory is not None:
+            self._engine_experiment_service._action_preparation = engine_action_preparation_factory(
+                self.product_store,
+                self._engine_experiment_service,
+            )
+        if engine_action_submission_factory is not None:
+            self._engine_experiment_service._action_submission = engine_action_submission_factory(
+                self.product_store,
+                self._engine_experiment_service,
+                self.engine_attempt_jobs,
+                configured_engine_controller_jobs,
+            )
         self.detection_ai = DetectionAIJobs(
             lab=self.detection_lab,
             controller=self.job_controller,

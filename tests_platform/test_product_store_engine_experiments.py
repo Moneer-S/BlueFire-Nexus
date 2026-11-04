@@ -371,7 +371,7 @@ def test_engine_experiment_schema_migrates_from_previous_version(tmp_path: Path)
     connection.close()
 
     store = ProductStore(path)
-    assert store.schema_version == SCHEMA_VERSION == 16
+    assert store.schema_version == SCHEMA_VERSION == 17
     experiment_id = "experiment-" + "9" * 32
     assert (
         store.create_engine_experiment(

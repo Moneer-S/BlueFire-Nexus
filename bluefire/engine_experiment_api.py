@@ -72,6 +72,7 @@ _ASSISTANCE_SELECTION_FIELDS = frozenset(
 _ACTION_PREPARE_FIELDS = frozenset(
     {"schema_version", "expected_revision", "expected_digest", "workspace_digest"}
 )
+_ACTION_SUBMIT_FIELDS = frozenset({"schema_version", "preparation_id", "protected_request_ref"})
 
 _DEFENSE_ROUTES = {
     "review": ("transition", "review_defense"),
@@ -101,6 +102,7 @@ _SERVICE_STATUS = {
     "engine_assistance_context_unavailable": HTTPStatus.CONFLICT,
     "engine_action_unavailable": HTTPStatus.CONFLICT,
     "engine_action_preparation_refused": HTTPStatus.CONFLICT,
+    "engine_action_submission_refused": HTTPStatus.CONFLICT,
     "engine_action_stale": HTTPStatus.CONFLICT,
 }
 
@@ -127,6 +129,12 @@ class EngineExperimentAPIService(Protocol):
     ) -> Mapping[str, Any]: ...
 
     def prepare_action_request(
+        self,
+        experiment_id: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
+    def submit_prepared_action_request(
         self,
         experiment_id: str,
         request: Mapping[str, Any],
@@ -331,6 +339,17 @@ def _valid_action_prepare_request(value: Mapping[str, Any]) -> bool:
     )
 
 
+def _valid_action_submit_request(value: Mapping[str, Any]) -> bool:
+    return (
+        set(value) == _ACTION_SUBMIT_FIELDS
+        and value.get("schema_version") == "bluefire.engine-action-submit.v1"
+        and all(
+            isinstance(value.get(field), str) and _DIGEST.fullmatch(value[field]) is not None
+            for field in ("preparation_id", "protected_request_ref")
+        )
+    )
+
+
 def _parse_suffix(suffix: str) -> tuple[str, tuple[str, ...]] | None:
     if suffix == "":
         return "collection", ()
@@ -346,6 +365,8 @@ def _parse_suffix(suffix: str) -> tuple[str, tuple[str, ...]] | None:
         return "assistant-context", (experiment_id,)
     if parts[1:] == ["actions", "prepare"]:
         return "prepare-action", (experiment_id,)
+    if parts[1:] == ["actions", "submit"]:
+        return "submit-prepared-action", (experiment_id,)
     if parts[1:] == ["attempts"]:
         return "submit-attempt", (experiment_id,)
     if (
@@ -448,6 +469,16 @@ def dispatch_engine_experiments(
         else:
             handler._dispatch(
                 lambda: _service_call(lambda: service.prepare_action_request(arguments[0], body))
+            )
+        return True
+    if operation == "submit-prepared-action":
+        if not _valid_action_submit_request(body):
+            _request_error(handler, "Engine action submission request is invalid.")
+        else:
+            handler._dispatch(
+                lambda: _service_call(
+                    lambda: service.submit_prepared_action_request(arguments[0], body)
+                )
             )
         return True
     if operation == "submit-attempt":

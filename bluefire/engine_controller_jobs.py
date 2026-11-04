@@ -396,6 +396,55 @@ class EngineControllerJobs:
         self._check_executor = check_executor
         self._clock = clock
 
+    def submit_prepared(
+        self,
+        *,
+        request: Mapping[str, Any],
+        submission_id: str,
+        intent_digest: str,
+        submission_factory: Callable[[], tuple[Mapping[str, Any], bool]],
+    ) -> Mapping[str, Any]:
+        """Enqueue an exact retained controller request through its job gate."""
+
+        submission_id = _submission(submission_id)
+        if not isinstance(request, Mapping):
+            raise EngineControllerJobError("prepared controller request fields changed")
+        if request.get("schema_version") == "bluefire.engine-defense-operation-job.v1":
+            parsed, operation = self._exact_defense_request(request)
+            if operation not in {DefenseOperation.APPLY, DefenseOperation.ROLLBACK}:
+                raise EngineControllerJobError("prepared defense reconciliation is unavailable")
+            if (
+                parsed["originating_job_id"] is not None
+                or parsed["originating_operation_receipt_digest"] is not None
+            ):
+                raise EngineControllerJobError("prepared defense operation gained an origin")
+            if self._defense_executor is None:
+                raise EngineControllerJobError("defense controller is unavailable")
+            kind = self.DEFENSE_JOB_KIND
+            callback = self._execute_defense
+        elif request.get("schema_version") == "bluefire.engine-controller-check-job.v1":
+            parsed = self._exact_check_request(request)
+            if self._check_executor is None:
+                raise EngineControllerJobError("controller check runtime is unavailable")
+            kind = self.CHECK_JOB_KIND
+            callback = self._execute_check
+        else:
+            raise EngineControllerJobError("prepared controller request version changed")
+        if parsed != dict(request):
+            raise EngineControllerJobError("prepared controller request fields changed")
+        if intent_digest != content_hash(parsed):
+            raise EngineControllerJobError("prepared controller intent digest changed")
+        if not callable(submission_factory):
+            raise EngineControllerJobError("prepared controller submission factory is unavailable")
+        return self._controller.submit(
+            kind,
+            parsed,
+            callback=callback,
+            submission_id=submission_id,
+            intent_digest=intent_digest,
+            submission_factory=submission_factory,
+        )
+
     def prepare_defense_operation(
         self,
         *,
