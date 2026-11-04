@@ -189,6 +189,69 @@ const retainedVerification = (onVerification, step, readOutcome) => onVerificati
   ...(readOutcome ? { read_outcome: readOutcome } : {}),
 });
 
+const objectiveReadOutcomes = new Set(["ok", "not_found", "conflict", "authorization_rejected",
+  "client_error", "server_error", "session_unavailable", "timeout", "transport_error", "invalid_response"]);
+
+export async function waitForRetainedSavedAttempt({ readObjective, attemptId, remainingMs,
+  maximum = 110000, onVerification }) {
+  const budgetRemaining = () => {
+    try { return Math.max(0, remainingMs()); }
+    catch { return 0; }
+  };
+  const startedRemaining = budgetRemaining();
+  const until = Date.now() + Math.min(maximum, Math.max(0, startedRemaining));
+  let readOutcome = "pending";
+  let attemptOutcome = "not_observed";
+  const update = waitOutcome => onVerification?.({
+    schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
+    read_outcome: readOutcome, attempt_outcome: attemptOutcome, wait_outcome: waitOutcome,
+  });
+  update("pending");
+  while (Date.now() < until) {
+    let loaded;
+    try { loaded = await readObjective(); }
+    catch {
+      readOutcome = "transport_error";
+      attemptOutcome = "unavailable";
+      update(budgetRemaining() <= 0 ? "budget_exhausted" : "read_failed");
+      throw new Error("The retained-result objective could not be read");
+    }
+    readOutcome = objectiveReadOutcomes.has(loaded?.outcome) ? loaded.outcome : "invalid_response";
+    if (readOutcome !== "ok" || !loaded?.run || !Array.isArray(loaded.run.attempts)) {
+      if (readOutcome === "ok") readOutcome = "invalid_response";
+      attemptOutcome = "unavailable";
+      update("read_failed");
+      throw new Error("The retained-result objective read was not usable");
+    }
+    let attempt;
+    for (const item of loaded.run.attempts) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        readOutcome = "invalid_response";
+        attemptOutcome = "unavailable";
+        update("read_failed");
+        throw new Error("The retained-result objective contained an invalid attempt");
+      }
+      if (item.job_id === attemptId) { attempt = item; break; }
+    }
+    if (attempt?.state === "completed" && (!attempt.progress || typeof attempt.progress !== "object" || Array.isArray(attempt.progress))) {
+      readOutcome = "invalid_response";
+      attemptOutcome = "unavailable";
+      update("read_failed");
+      throw new Error("The retained-result attempt progress was invalid");
+    }
+    attemptOutcome = !attempt ? "not_observed" : attempt.state !== "completed" ? "not_completed"
+      : attempt.progress?.settlement !== "settled" ? "not_settled"
+      : !attempt.progress?.verified_result ? "verified_result_missing" : "ready";
+    update(attemptOutcome === "ready" ? "ready" : "pending");
+    if (attemptOutcome === "ready") return loaded.run;
+    const delayMs = Math.min(400, budgetRemaining(), Math.max(0, until - Date.now()));
+    if (delayMs <= 0) break;
+    await delay(delayMs);
+  }
+  update(budgetRemaining() <= 0 ? "budget_exhausted" : "bounded_wait_expired");
+  throw new Error("The retained-result proof did not reach its bounded saved state");
+}
+
 export async function verifyRetainedHistoryAfterContinuation({ current, first, original, readOriginalRun, onVerification }) {
   retainedVerification(onVerification, "history_attempts");
   assert.equal(current.attempts.length, 2);
@@ -312,8 +375,10 @@ export async function runRetainedJourney(page, state, options) {
       remainingMs, setStage, onDiagnostic: options.onInteraction,
       captureFailure: capture ? (name, timeout) => capture(name, { failure: true, timeout }) : undefined });
     const id = state.attempts[index];
-    const current = await wait(() => read(`/composition/objectives/${state.ownerId}`), value => value.attempts.some(attempt =>
-      attempt.job_id === id && attempt.state === "completed" && attempt.progress.settlement === "settled" && attempt.progress.verified_result), 110000);
+    const current = await waitForRetainedSavedAttempt({
+      readObjective: () => options.readObjective(state.ownerId), attemptId: id, remainingMs,
+      onVerification: options.onVerification,
+    });
     options.onVerification?.({ schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt" });
     const attempt = current.attempts.find(item => item.job_id === id);
     const run = await read(`/runs/${attempt.request.composition_attempt.run_id}`);

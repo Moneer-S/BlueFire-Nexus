@@ -862,6 +862,7 @@ def test_retained_interaction_projection_keeps_only_known_categories_and_boolean
         "history_attempts",
         "history_result",
         "history_capture",
+        "saved_attempt_wait",
         "source_run_reload",
         "source_manifest",
         "source_evidence",
@@ -941,6 +942,56 @@ def test_retained_source_run_reload_projection_drops_unreviewed_outcome(outcome)
     assert _receiver_report_for_receipt(report)["errors"][0]["retained_verification"] == {
         "schema_version": "bluefire.installed-retained-verification.v1",
         "step": "source_run_reload",
+    }
+
+
+def test_retained_saved_attempt_wait_projection_keeps_only_fixed_classifications() -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-continuation-settlement",
+            "kind": "journey_failed",
+            "retained_verification": {
+                "schema_version": "bluefire.installed-retained-verification.v1",
+                "step": "saved_attempt_wait",
+                "read_outcome": "server_error",
+                "attempt_outcome": "unavailable",
+                "wait_outcome": "read_failed",
+                "response": {"private": True},
+            },
+        }
+    ]
+    assert _receiver_report_for_receipt(report)["errors"][0]["retained_verification"] == {
+        "schema_version": "bluefire.installed-retained-verification.v1",
+        "step": "saved_attempt_wait",
+        "read_outcome": "server_error",
+        "attempt_outcome": "unavailable",
+        "wait_outcome": "read_failed",
+    }
+
+
+@pytest.mark.parametrize("field", ["attempt_outcome", "wait_outcome"])
+@pytest.mark.parametrize("value", [None, 1, "private", {}, []])
+def test_retained_saved_attempt_wait_projection_drops_unreviewed_classifications(
+    field, value
+) -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-continuation-settlement",
+            "kind": "journey_failed",
+            "retained_verification": {
+                "schema_version": "bluefire.installed-retained-verification.v1",
+                "step": "saved_attempt_wait",
+                "read_outcome": "ok",
+                field: value,
+            },
+        }
+    ]
+    assert _receiver_report_for_receipt(report)["errors"][0]["retained_verification"] == {
+        "schema_version": "bluefire.installed-retained-verification.v1",
+        "step": "saved_attempt_wait",
+        "read_outcome": "ok",
     }
 
 

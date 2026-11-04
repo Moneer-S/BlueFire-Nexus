@@ -1926,6 +1926,7 @@ try {
   report.retained_execution = await runRetainedJourney(page, retained, {
     origin: ORIGIN, controlId: originalOwnerId, controlDigest: originalControlDigest, profileId: PROFILE, providerId: PROVIDER_ID, model: MODEL,
     read: path => appApi(path), remainingMs, setStage: value => { stage = value; },
+    readObjective: ownerId => appApiOutcome(`/composition/objectives/${ownerId}`),
     readOriginalRun: runId => appApiOutcome(`/runs/${runId}`),
     onInteraction: value => { retainedInteraction = value; },
     onVerification: value => { retainedVerification = value; },

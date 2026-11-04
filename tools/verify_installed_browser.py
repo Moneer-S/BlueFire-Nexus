@@ -241,6 +241,7 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                 "history_attempts",
                 "history_result",
                 "history_capture",
+                "saved_attempt_wait",
                 "source_run_reload",
                 "source_manifest",
                 "source_evidence",
@@ -248,20 +249,45 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
             if schema == "bluefire.installed-retained-verification.v1" and step in allowed_steps:
                 safe_verification = {"schema_version": schema, "step": step}
                 read_outcome = verification.get("read_outcome")
-                if step == "source_run_reload" and isinstance(read_outcome, str) and read_outcome in {
-                    "pending",
-                    "ok",
-                    "not_found",
-                    "conflict",
-                    "authorization_rejected",
-                    "client_error",
-                    "server_error",
-                    "session_unavailable",
-                    "timeout",
-                    "transport_error",
-                    "invalid_response",
-                }:
+                if (
+                    step in {"saved_attempt_wait", "source_run_reload"}
+                    and isinstance(read_outcome, str)
+                    and read_outcome
+                    in {
+                        "pending",
+                        "ok",
+                        "not_found",
+                        "conflict",
+                        "authorization_rejected",
+                        "client_error",
+                        "server_error",
+                        "session_unavailable",
+                        "timeout",
+                        "transport_error",
+                        "invalid_response",
+                    }
+                ):
                     safe_verification["read_outcome"] = read_outcome
+                if step == "saved_attempt_wait":
+                    attempt_outcome = verification.get("attempt_outcome")
+                    if isinstance(attempt_outcome, str) and attempt_outcome in {
+                        "not_observed",
+                        "not_completed",
+                        "not_settled",
+                        "verified_result_missing",
+                        "ready",
+                        "unavailable",
+                    }:
+                        safe_verification["attempt_outcome"] = attempt_outcome
+                    wait_outcome = verification.get("wait_outcome")
+                    if isinstance(wait_outcome, str) and wait_outcome in {
+                        "pending",
+                        "ready",
+                        "read_failed",
+                        "budget_exhausted",
+                        "bounded_wait_expired",
+                    }:
+                        safe_verification["wait_outcome"] = wait_outcome
                 row["retained_verification"] = safe_verification
         if row:
             result.append(row)

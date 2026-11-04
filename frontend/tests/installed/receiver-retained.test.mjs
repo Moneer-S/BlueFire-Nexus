@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { URL } from "node:url";
 import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, submitRetainedAttempt,
-  verifyRetainedHistoryAfterContinuation } from "./receiver-retained.mjs";
+  verifyRetainedHistoryAfterContinuation, waitForRetainedSavedAttempt } from "./receiver-retained.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
 import { retainedHash, assertRetainedSource, assertMetadataOnly, verifyRetainedOriginal, verifyRetainedContinuation, RETAINED_PACK, RETAINED_QUESTION, RETAINED_REVIEWER, RETAINED_METHOD } from "./receiver-retained-proof.mjs";
 
@@ -298,6 +298,88 @@ test("post-continuation proof retains only the fixed source-run failure category
     schema_version: "bluefire.installed-retained-verification.v1", step: "source_run_reload",
     read_outcome: "server_error",
   });
+});
+
+test("saved-attempt wait reports only bounded readiness classifications", async () => {
+  const diagnostics = [];
+  const attempt = { job_id: ownerId, state: "completed", progress: { settlement: "settled", verified_result: { digest: "private" } } };
+  const current = { attempts: [attempt] };
+  const result = await waitForRetainedSavedAttempt({
+    readObjective: async () => ({ outcome: "ok", run: current }), attemptId: ownerId,
+    remainingMs: () => 1000, maximum: 1000, onVerification: value => diagnostics.push(value),
+  });
+  assert.equal(result, current);
+  assert.deepEqual(diagnostics, [
+    { schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
+      read_outcome: "pending", attempt_outcome: "not_observed", wait_outcome: "pending" },
+    { schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
+      read_outcome: "ok", attempt_outcome: "ready", wait_outcome: "ready" },
+  ]);
+});
+
+test("saved-attempt wait classifies objective read failure without retaining response data", async () => {
+  const diagnostics = [];
+  await assert.rejects(waitForRetainedSavedAttempt({
+    readObjective: async () => ({ outcome: "server_error", run: { private: true } }), attemptId: ownerId,
+    remainingMs: () => 1000, maximum: 1000, onVerification: value => diagnostics.push(value),
+  }));
+  assert.deepEqual(diagnostics.at(-1), {
+    schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
+    read_outcome: "server_error", attempt_outcome: "unavailable", wait_outcome: "read_failed",
+  });
+});
+
+test("saved-attempt wait distinguishes an exhausted shared work budget", async () => {
+  const diagnostics = [];
+  await assert.rejects(waitForRetainedSavedAttempt({
+    readObjective: async () => { throw new Error("must not run"); }, attemptId: ownerId,
+    remainingMs: () => { throw new Error("Installed receiver deadline exceeded"); },
+    maximum: 1000, onVerification: value => diagnostics.push(value),
+  }));
+  assert.equal(diagnostics.at(-1).wait_outcome, "budget_exhausted");
+  assert.equal(diagnostics.at(-1).read_outcome, "pending");
+});
+
+test("saved-attempt wait rejects malformed completed progress without changing the settlement proof", async () => {
+  const diagnostics = [];
+  await assert.rejects(waitForRetainedSavedAttempt({
+    readObjective: async () => ({ outcome: "ok", run: {
+      attempts: [{ job_id: ownerId, state: "completed", progress: null }],
+    } }),
+    attemptId: ownerId, remainingMs: () => 1000, maximum: 1000,
+    onVerification: value => diagnostics.push(value),
+  }));
+  assert.deepEqual(diagnostics.at(-1), {
+    schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
+    read_outcome: "invalid_response", attempt_outcome: "unavailable", wait_outcome: "read_failed",
+  });
+});
+
+test("saved-attempt wait keeps one read per poll and the exact settlement gate", async () => {
+  vi.useFakeTimers();
+  try {
+    const other = `job-${"f".repeat(32)}`;
+    const states = [
+      { attempts: [] },
+      { attempts: [{ job_id: other, state: "completed", progress: { settlement: "settled", verified_result: {} } }] },
+      { attempts: [{ job_id: ownerId, state: "running", progress: {} }] },
+      { attempts: [{ job_id: ownerId, state: "completed", progress: { settlement: "pending" } }] },
+      { attempts: [{ job_id: ownerId, state: "completed", progress: { settlement: "settled" } }] },
+      { attempts: [{ job_id: ownerId, state: "completed", progress: { settlement: "settled", verified_result: {} } }] },
+    ];
+    let reads = 0;
+    const diagnostics = [];
+    const pending = waitForRetainedSavedAttempt({
+      readObjective: async () => ({ outcome: "ok", run: states[reads++] }), attemptId: ownerId,
+      remainingMs: () => 5000, maximum: 5000, onVerification: value => diagnostics.push(value),
+    });
+    await vi.runAllTimersAsync();
+    assert.equal(await pending, states.at(-1));
+    assert.equal(reads, states.length);
+    assert.deepEqual(diagnostics.slice(1).map(value => value.attempt_outcome),
+      ["not_observed", "not_observed", "not_completed", "not_settled", "verified_result_missing", "ready"]);
+    assert.equal(diagnostics.at(-1).wait_outcome, "ready");
+  } finally { vi.useRealTimers(); }
 });
 
 test("retention proof binds capture to its original producer before refusal and cleanup", () => {
