@@ -151,6 +151,22 @@ def _bounded_int(value: Any, name: str, minimum: int, maximum: int) -> int:
     return int(value)
 
 
+def _require_canonical_instance(
+    instance: object,
+    values: Mapping[str, Any],
+    name: str,
+) -> None:
+    for field_name, expected in values.items():
+        current = getattr(instance, field_name)
+        matches = (
+            current is expected
+            if isinstance(expected, Enum)
+            else (type(current) is type(expected) and current == expected)
+        )
+        if not matches:
+            raise EngineAttemptContractError(f"{name} bypassed canonical validation")
+
+
 def _bounded_evidence_content(value: Any) -> dict[str, Any]:
     nodes = 0
 
@@ -230,8 +246,15 @@ class EngineAttemptBinding:
     created_at: str
     parent_attempt_id: str | None
 
+    def __post_init__(self) -> None:
+        self._validate_instance()
+
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "EngineAttemptBinding":
+        return cls(**cls._validated_values(value))
+
+    @classmethod
+    def _validated_values(cls, value: Mapping[str, Any]) -> dict[str, Any]:
         fields = frozenset(cls.__dataclass_fields__)
         row = _exact(value, fields, "engine attempt binding")
         experiment_id = _string(row["experiment_id"], "experiment ID", maximum=43)
@@ -263,45 +286,45 @@ class EngineAttemptBinding:
             raise EngineAttemptContractError("parent attempt ID is invalid")
         if row["schema_version"] != "bluefire.engine-attempt-binding.v1":
             raise EngineAttemptContractError("engine attempt schema version is unsupported")
-        return cls(
-            schema_version="bluefire.engine-attempt-binding.v1",
-            experiment_id=experiment_id,
-            attempt_id=attempt_id,
-            run_id=run_id,
-            role=role,
-            objective_ref=_digest(row["objective_ref"], "objective reference"),
-            environment_ref=_digest(row["environment_ref"], "environment reference"),
-            target_snapshot_ref=_digest(row["target_snapshot_ref"], "target snapshot"),
-            scope_ref=_digest(row["scope_ref"], "scope reference"),
-            scope_version=_string(row["scope_version"], "scope version", maximum=80),
-            engine_id=engine_id,
-            engine_version=_string(row["engine_version"], "engine version", maximum=80),
-            engine_revision=revision,
-            engine_package_digest=_digest(row["engine_package_digest"], "engine package"),
-            policy_overlay_digest=_digest(row["policy_overlay_digest"], "policy overlay"),
-            model_provider=provider,
-            model_id=_string(row["model_id"], "model ID", maximum=160),
-            model_data_destination=_string(
+        return {
+            "schema_version": "bluefire.engine-attempt-binding.v1",
+            "experiment_id": experiment_id,
+            "attempt_id": attempt_id,
+            "run_id": run_id,
+            "role": role,
+            "objective_ref": _digest(row["objective_ref"], "objective reference"),
+            "environment_ref": _digest(row["environment_ref"], "environment reference"),
+            "target_snapshot_ref": _digest(row["target_snapshot_ref"], "target snapshot"),
+            "scope_ref": _digest(row["scope_ref"], "scope reference"),
+            "scope_version": _string(row["scope_version"], "scope version", maximum=80),
+            "engine_id": engine_id,
+            "engine_version": _string(row["engine_version"], "engine version", maximum=80),
+            "engine_revision": revision,
+            "engine_package_digest": _digest(row["engine_package_digest"], "engine package"),
+            "policy_overlay_digest": _digest(row["policy_overlay_digest"], "policy overlay"),
+            "model_provider": provider,
+            "model_id": _string(row["model_id"], "model ID", maximum=160),
+            "model_data_destination": _string(
                 row["model_data_destination"], "model data destination", maximum=200
             ),
-            model_authorization_ref=_digest(
+            "model_authorization_ref": _digest(
                 row["model_authorization_ref"], "model authorization reference"
             ),
-            wall_clock_seconds=_bounded_int(
+            "wall_clock_seconds": _bounded_int(
                 row["wall_clock_seconds"], "wall-clock seconds", 1, 7_200
             ),
-            action_limit=_bounded_int(row["action_limit"], "action limit", 1, 512),
-            cost_limit_microunits=_bounded_int(
+            "action_limit": _bounded_int(row["action_limit"], "action limit", 1, 512),
+            "cost_limit_microunits": _bounded_int(
                 row["cost_limit_microunits"], "cost limit", 0, 10_000_000_000
             ),
-            artifact_byte_limit=_bounded_int(
+            "artifact_byte_limit": _bounded_int(
                 row["artifact_byte_limit"], "artifact byte limit", 1, 64 * 1024 * 1024
             ),
-            created_at=_timestamp(row["created_at"], "binding creation time"),
-            parent_attempt_id=parent,
-        )
+            "created_at": _timestamp(row["created_at"], "binding creation time"),
+            "parent_attempt_id": parent,
+        }
 
-    def to_dict(self) -> dict[str, Any]:
+    def _document_unchecked(self) -> dict[str, Any]:
         return dict(
             json_clone(
                 {
@@ -312,6 +335,22 @@ class EngineAttemptBinding:
                 }
             )
         )
+
+    def _validate_instance(self) -> None:
+        _require_canonical_instance(
+            self,
+            self._validated_values(self._document_unchecked()),
+            "engine attempt binding",
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        document = self._document_unchecked()
+        _require_canonical_instance(
+            self,
+            self._validated_values(document),
+            "engine attempt binding",
+        )
+        return document
 
     @property
     def binding_digest(self) -> str:
@@ -332,6 +371,9 @@ class EngineAttemptRecord:
     exit_reason: str | None
     limitations: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        self._validate_instance()
+
     @classmethod
     def create(cls, binding: EngineAttemptBinding) -> "EngineAttemptRecord":
         return cls(
@@ -350,6 +392,10 @@ class EngineAttemptRecord:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "EngineAttemptRecord":
+        return cls(**cls._validated_values(value))
+
+    @classmethod
+    def _validated_values(cls, value: Mapping[str, Any]) -> dict[str, Any]:
         row = _exact(value, frozenset(cls.__dataclass_fields__), "engine attempt record")
         if row["schema_version"] != "bluefire.engine-attempt.v1":
             raise EngineAttemptContractError("engine attempt schema version is unsupported")
@@ -416,18 +462,52 @@ class EngineAttemptRecord:
             )
         ):
             raise EngineAttemptContractError("engine attempt lifecycle fields are inconsistent")
-        return cls(
-            schema_version="bluefire.engine-attempt.v1",
-            binding=binding,
-            binding_digest=binding.binding_digest,
-            state=state,
-            upstream_session_id=session,
-            started_at=started,
-            ended_at=ended,
-            exit_code=exit_code,
-            completeness=completeness,
-            exit_reason=exit_reason,
-            limitations=limitations,
+        return {
+            "schema_version": "bluefire.engine-attempt.v1",
+            "binding": binding,
+            "binding_digest": binding.binding_digest,
+            "state": state,
+            "upstream_session_id": session,
+            "started_at": started,
+            "ended_at": ended,
+            "exit_code": exit_code,
+            "completeness": completeness,
+            "exit_reason": exit_reason,
+            "limitations": limitations,
+        }
+
+    def _document_unchecked(self) -> dict[str, Any]:
+        binding: Any = self.binding
+        if isinstance(binding, EngineAttemptBinding):
+            binding = binding.to_dict()
+        state: Any = self.state.value if isinstance(self.state, AttemptState) else self.state
+        completeness: Any = (
+            self.completeness.value
+            if isinstance(self.completeness, AttemptCompleteness)
+            else self.completeness
+        )
+        limitations: Any = (
+            list(self.limitations) if isinstance(self.limitations, tuple) else self.limitations
+        )
+        return {
+            "schema_version": self.schema_version,
+            "binding": binding,
+            "binding_digest": self.binding_digest,
+            "state": state,
+            "upstream_session_id": self.upstream_session_id,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "exit_code": self.exit_code,
+            "completeness": completeness,
+            "exit_reason": self.exit_reason,
+            "limitations": limitations,
+        }
+
+    def _validate_instance(self) -> None:
+        _require_canonical_instance(
+            self,
+            self._validated_values(self._document_unchecked()),
+            "engine attempt record",
         )
 
     def transition(
@@ -511,19 +591,13 @@ class EngineAttemptRecord:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "schema_version": self.schema_version,
-            "binding": self.binding.to_dict(),
-            "binding_digest": self.binding_digest,
-            "state": self.state.value,
-            "upstream_session_id": self.upstream_session_id,
-            "started_at": self.started_at,
-            "ended_at": self.ended_at,
-            "exit_code": self.exit_code,
-            "completeness": self.completeness.value,
-            "exit_reason": self.exit_reason,
-            "limitations": list(self.limitations),
-        }
+        document = self._document_unchecked()
+        _require_canonical_instance(
+            self,
+            self._validated_values(document),
+            "engine attempt record",
+        )
+        return dict(json_clone(document))
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -742,6 +816,25 @@ class EngineEvidenceItem:
         )
         if current_digest != self.content_digest or current_evidence_id != self.evidence_id:
             raise EngineAttemptContractError("engine evidence changed after admission")
+        independent = self.category in {
+            EvidenceCategory.INDEPENDENT_TARGET_EFFECT,
+            EvidenceCategory.INDEPENDENT_SECURITY_OUTCOME,
+            EvidenceCategory.LEGITIMATE_USE,
+        }
+        recreated = type(self).create(
+            attempt_id=self.attempt_id,
+            run_id=self.run_id,
+            category=self.category,
+            producer=self.producer,
+            observed_at=self.observed_at,
+            content=content_copy,
+            source_artifact_digest=self.source_artifact_digest,
+            parent_evidence_ids=self.parent_evidence_ids,
+            limitations=self.limitations,
+            _controller_authority=(_CONTROLLER_EVIDENCE_AUTHORITY if independent else None),
+        )
+        if recreated != self:
+            raise EngineAttemptContractError("engine evidence bypassed canonical validation")
         return dict(
             json_clone(
                 {

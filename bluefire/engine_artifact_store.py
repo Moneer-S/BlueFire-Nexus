@@ -35,6 +35,8 @@ SAFE_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DEFAULT_MAX_FILE_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_TOTAL_BYTES = 16 * 1024 * 1024
 DEFAULT_MAX_FILES = 64
+MAX_SOURCE_TREE_ENTRIES = 4096
+MAX_SOURCE_TREE_DEPTH = 32
 WINDOWS_RESERVED = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
     | {f"COM{index}" for index in range(1, 10)}
@@ -62,6 +64,7 @@ class SourceCollectionSeal:
     source_root_device: int
     source_root_inode: int
     source_root_mtime_ns: int
+    source_tree_digest: str
     worker_state: str
     write_access_revoked: bool
     controller_receipt_digest: str
@@ -85,6 +88,7 @@ class SourceCollectionSeal:
             raise EngineArtifactStoreError("source collection seal fields are invalid")
         attempt_id = value["attempt_id"]
         digest = value["controller_receipt_digest"]
+        tree_digest = value["source_tree_digest"]
         identities = (
             value["source_root_device"],
             value["source_root_inode"],
@@ -100,6 +104,8 @@ class SourceCollectionSeal:
             )
             or value["worker_state"] != "stopped"
             or value["write_access_revoked"] is not True
+            or not isinstance(tree_digest, str)
+            or SHA256.fullmatch(tree_digest) is None
             or not isinstance(digest, str)
             or SHA256.fullmatch(digest) is None
         ):
@@ -113,6 +119,7 @@ class SourceCollectionSeal:
             "source_root_device": int(identities[0]),
             "source_root_inode": int(identities[1]),
             "source_root_mtime_ns": int(identities[2]),
+            "source_tree_digest": tree_digest,
             "worker_state": "stopped",
             "write_access_revoked": True,
             "controller_receipt_digest": digest,
@@ -121,6 +128,28 @@ class SourceCollectionSeal:
         for name, admitted_value in admitted.items():
             object.__setattr__(seal, name, admitted_value)
         return seal
+
+    def to_dict(self) -> dict[str, Any]:
+        if self._controller_attestation is not _CONTROLLER_SOURCE_AUTHORITY:
+            raise EngineArtifactStoreError("source collection seal requires controller authority")
+        document = {
+            "schema_version": self.schema_version,
+            "attempt_id": self.attempt_id,
+            "source_root_device": self.source_root_device,
+            "source_root_inode": self.source_root_inode,
+            "source_root_mtime_ns": self.source_root_mtime_ns,
+            "source_tree_digest": self.source_tree_digest,
+            "worker_state": self.worker_state,
+            "write_access_revoked": self.write_access_revoked,
+            "controller_receipt_digest": self.controller_receipt_digest,
+        }
+        recreated = type(self).from_mapping(
+            document,
+            _controller_authority=_CONTROLLER_SOURCE_AUTHORITY,
+        )
+        if recreated != self:
+            raise EngineArtifactStoreError("source collection seal bypassed canonical validation")
+        return document
 
 
 def _safe_name(value: object) -> tuple[str, tuple[str, ...]]:
@@ -147,6 +176,76 @@ def _safe_name(value: object) -> tuple[str, tuple[str, ...]]:
 def _is_reparse(details: os.stat_result) -> bool:
     marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x00000400)
     return bool(int(getattr(details, "st_file_attributes", 0)) & marker)
+
+
+def source_collection_tree_digest(source_run_dir: str | Path) -> str:
+    """Bind one bounded source tree without following links or reparse points."""
+
+    root = Path(source_run_dir)
+    if os.name == "nt":
+        root = _windows_extended_path(root)
+    try:
+        root_details = root.lstat()
+    except OSError as exc:
+        raise EngineArtifactStoreError("source run directory is unavailable") from exc
+    if root.is_symlink() or _is_reparse(root_details) or not stat.S_ISDIR(root_details.st_mode):
+        raise EngineArtifactStoreError("source run directory is unsafe")
+
+    records: list[dict[str, Any]] = []
+    pending: list[tuple[Path, tuple[str, ...]]] = [(root, ())]
+    while pending:
+        current, relative = pending.pop()
+        if len(relative) >= MAX_SOURCE_TREE_DEPTH:
+            raise EngineArtifactStoreError("source run directory exceeds its depth bound")
+        try:
+            with os.scandir(current) as iterator:
+                entries: list[os.DirEntry[str]] = []
+                remaining = MAX_SOURCE_TREE_ENTRIES - len(records)
+                for entry in iterator:
+                    if len(entries) >= remaining:
+                        raise EngineArtifactStoreError(
+                            "source run directory exceeds its entry bound"
+                        )
+                    entries.append(entry)
+        except OSError as exc:
+            raise EngineArtifactStoreError("source run directory could not be enumerated") from exc
+        entries.sort(key=lambda item: (item.name.casefold(), item.name))
+        child_directories: list[tuple[Path, tuple[str, ...]]] = []
+        for entry in entries:
+            try:
+                details = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise EngineArtifactStoreError(
+                    "source run directory changed during snapshot"
+                ) from exc
+            entry_relative = (*relative, entry.name)
+            if _is_reparse(details):
+                kind = "reparse"
+            elif stat.S_ISLNK(details.st_mode):
+                kind = "symlink"
+            elif stat.S_ISDIR(details.st_mode):
+                kind = "directory"
+                child_directories.append((Path(entry.path), entry_relative))
+            elif stat.S_ISREG(details.st_mode):
+                kind = "file"
+            else:
+                kind = "special"
+            records.append(
+                {
+                    "path_bytes": [os.fsencode(part).hex() for part in entry_relative],
+                    "kind": kind,
+                    "size": details.st_size,
+                }
+            )
+        pending.extend(reversed(child_directories))
+    return content_hash(
+        {
+            "schema_version": "bluefire.engine-source-tree.v1",
+            "root_device": root_details.st_dev,
+            "root_inode": root_details.st_ino,
+            "entries": records,
+        }
+    )
 
 
 def normalized_finding_id(attempt_id: str, source_artifact_digest: str, ordinal: int) -> str:
@@ -241,7 +340,10 @@ class EngineArtifactStore:
             raise EngineArtifactStoreError(
                 "source collection seal requires a controller-issued receipt"
             )
-        seal = source_seal
+        seal = SourceCollectionSeal.from_mapping(
+            source_seal.to_dict(),
+            _controller_authority=_CONTROLLER_SOURCE_AUTHORITY,
+        )
         if seal.attempt_id != attempt_id:
             raise EngineArtifactStoreError("source collection seal belongs to another attempt")
         self._verify_protected_root(self.root)
@@ -265,6 +367,9 @@ class EngineArtifactStore:
         ):
             raise EngineArtifactStoreError("source run directory is unsafe")
         source = source.resolve(strict=True)
+        initial_tree_digest = source_collection_tree_digest(source)
+        if initial_tree_digest != seal.source_tree_digest:
+            raise EngineArtifactStoreError("source run directory is unsafe or changed")
         selected: list[tuple[str, tuple[str, ...]]] = []
         seen: set[str] = set()
         selected_portable_parts: list[tuple[str, ...]] = []
@@ -308,6 +413,7 @@ class EngineArtifactStore:
             or _is_reparse(current_source)
             or (current_source.st_dev, current_source.st_ino, current_source.st_mtime_ns)
             != (source_details.st_dev, source_details.st_ino, source_details.st_mtime_ns)
+            or source_collection_tree_digest(source) != initial_tree_digest
         ):
             raise EngineArtifactStoreError("source run directory changed during collection")
 
@@ -365,21 +471,31 @@ class EngineArtifactStore:
                 for directory in [*reversed(created_directories), raw_root, staging_root]:
                     self._harden_private(directory, directory=True)
                     self._sync_directory(directory)
-                if attempt_root.exists():
+                if self._entry_exists(attempt_root):
                     raise EngineArtifactStoreError("attempt artifact destination already exists")
-                os.rename(staging_root, attempt_root)
+                self._publish_staging(staging_root, attempt_root)
                 staging_created = False
                 try:
                     self._sync_directory(self.root)
-                except EngineArtifactStoreError as exc:
+                except BaseException as exc:
                     raise EngineArtifactPublicationUnknown(
                         "artifact attempt is published but commit durability is unknown; "
                         "reconcile the complete manifest before retrying"
                     ) from exc
                 return manifest
-            except BaseException:
+            except BaseException as failure:
                 if staging_created:
-                    self._remove_failed_attempt(staging_root, attempt_id=attempt_id)
+                    final_exists = self._entry_exists(attempt_root)
+                    staging_exists = self._entry_exists(staging_root)
+                    if final_exists and not staging_exists:
+                        if isinstance(failure, EngineArtifactPublicationUnknown):
+                            raise
+                        raise EngineArtifactPublicationUnknown(
+                            "artifact attempt publication completed but its final commit state "
+                            "requires manifest reconciliation"
+                        ) from failure
+                    if staging_exists:
+                        self._remove_failed_attempt(staging_root, attempt_id=attempt_id)
                 raise
 
     def _read_source(self, root: Path, parts: tuple[str, ...]) -> bytes:
@@ -556,6 +672,45 @@ class EngineArtifactStore:
                 os.close(descriptor)
         except OSError as exc:
             raise EngineArtifactStoreError("artifact directory could not be synchronized") from exc
+
+    @staticmethod
+    def _entry_exists(path: Path) -> bool:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise EngineArtifactStoreError("artifact publication state is unavailable") from exc
+        return True
+
+    @staticmethod
+    def _publish_staging(staging_root: Path, attempt_root: Path) -> None:
+        if os.name != "nt":
+            try:
+                os.rename(staging_root, attempt_root)
+            except OSError as exc:
+                raise EngineArtifactStoreError(
+                    "artifact attempt could not be atomically published"
+                ) from exc
+            return
+
+        import ctypes
+        from ctypes import wintypes
+
+        operation = ctypes.WinDLL("kernel32.dll", use_last_error=True).MoveFileExW
+        operation.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+        operation.restype = wintypes.BOOL
+        movefile_write_through = 0x0000_0008
+        source = os.fspath(_windows_extended_path(staging_root))
+        destination = os.fspath(_windows_extended_path(attempt_root))
+        if operation(source, destination, movefile_write_through):
+            return
+        error = ctypes.get_last_error()
+        if error in {80, 183}:
+            raise EngineArtifactStoreError("attempt artifact destination already exists")
+        raise EngineArtifactStoreError(
+            f"artifact attempt could not be atomically published (Windows error {error})"
+        )
 
     def _remove_failed_attempt(self, attempt_root: Path, *, attempt_id: str) -> None:
         try:

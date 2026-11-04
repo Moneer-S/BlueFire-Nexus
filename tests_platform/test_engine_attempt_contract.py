@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -15,6 +16,7 @@ from bluefire.engine_attempt_contract import (
     EngineEvidenceItem,
     EvidenceCategory,
 )
+from bluefire.util import content_hash
 
 
 def digest(character: str) -> str:
@@ -78,6 +80,20 @@ def test_binding_keeps_engine_model_scope_and_attempt_identities_immutable() -> 
 def test_binding_rejects_invalid_identity_or_budget(field, value, message) -> None:
     with pytest.raises(EngineAttemptContractError, match=message):
         EngineAttemptBinding.from_mapping(binding_document(**{field: value}))
+
+
+def test_binding_direct_replace_and_serialization_cannot_bypass_validation() -> None:
+    binding = EngineAttemptBinding.from_mapping(binding_document())
+    direct = binding_document(action_limit=0, role=AttemptRole.BASELINE)
+
+    with pytest.raises(EngineAttemptContractError, match="action limit"):
+        EngineAttemptBinding(**direct)  # type: ignore[arg-type]
+    with pytest.raises(EngineAttemptContractError, match="action limit"):
+        replace(binding, action_limit=0)
+
+    object.__setattr__(binding, "attempt_id", "engine-attempt-invalid")
+    with pytest.raises(EngineAttemptContractError, match="attempt ID"):
+        binding.to_dict()
 
 
 def test_attempt_lifecycle_requires_distinct_upstream_session_and_real_timestamps() -> None:
@@ -225,6 +241,44 @@ def test_prestart_terminal_record_cannot_claim_process_outcome(
         EngineAttemptRecord.from_mapping(fabricated)
 
 
+def test_attempt_direct_replace_and_serialization_cannot_bypass_lifecycle() -> None:
+    binding = EngineAttemptBinding.from_mapping(binding_document())
+    queued = EngineAttemptRecord.create(binding)
+
+    with pytest.raises(EngineAttemptContractError, match="inconsistent"):
+        EngineAttemptRecord(
+            schema_version="bluefire.engine-attempt.v1",
+            binding=binding,
+            binding_digest=binding.binding_digest,
+            state=AttemptState.COMPLETED,
+            upstream_session_id=None,
+            started_at=None,
+            ended_at=None,
+            exit_code=0,
+            completeness=AttemptCompleteness.COMPLETE,
+            exit_reason="forged",
+            limitations=(),
+        )
+    with pytest.raises(EngineAttemptContractError, match="inconsistent"):
+        replace(
+            queued,
+            state=AttemptState.COMPLETED,
+            exit_code=0,
+            completeness=AttemptCompleteness.COMPLETE,
+        )
+
+    object.__setattr__(queued, "state", AttemptState.COMPLETED)
+    object.__setattr__(queued, "exit_code", 0)
+    object.__setattr__(queued, "completeness", AttemptCompleteness.COMPLETE)
+    with pytest.raises(EngineAttemptContractError, match="inconsistent"):
+        queued.to_dict()
+
+    forged_binding = EngineAttemptBinding.from_mapping(binding_document())
+    object.__setattr__(forged_binding, "attempt_id", "engine-attempt-invalid")
+    with pytest.raises(EngineAttemptContractError, match="attempt ID"):
+        EngineAttemptRecord.create(forged_binding)
+
+
 def test_evidence_categories_do_not_conflate_engine_and_independent_results() -> None:
     common = {
         "attempt_id": "engine-attempt-" + "2" * 32,
@@ -357,3 +411,36 @@ def test_evidence_serialization_rejects_mutation_after_admission_or_rehydration(
     cast(dict[str, Any], details)["outcome"] = "changed"
     with pytest.raises(EngineAttemptContractError, match="changed after admission"):
         rehydrated.to_dict()
+
+
+def test_private_evidence_admission_still_fails_canonical_serialization_when_invalid() -> None:
+    content = {"outcome": "reported"}
+    content_digest = content_hash(content)
+    identity = {
+        "attempt_id": "invalid-attempt",
+        "run_id": "run-20261104T120000Z-" + "3" * 16,
+        "category": EvidenceCategory.ENGINE_ASSERTION.value,
+        "producer": "strix",
+        "observed_at": "2026-11-04T12:02:00Z",
+        "content_digest": content_digest,
+        "source_artifact_digest": digest("c"),
+        "parent_evidence_ids": (),
+        "limitations": (),
+    }
+    forged = EngineEvidenceItem._admit(
+        evidence_id="engine-evidence-" + content_hash(identity).removeprefix("sha256:")[:24],
+        attempt_id="invalid-attempt",
+        run_id="run-20261104T120000Z-" + "3" * 16,
+        category=EvidenceCategory.ENGINE_ASSERTION,
+        producer="strix",
+        observed_at="2026-11-04T12:02:00Z",
+        content=content,
+        content_digest=content_digest,
+        source_artifact_digest=digest("c"),
+        parent_evidence_ids=(),
+        limitations=(),
+        controller_attestation=None,
+    )
+
+    with pytest.raises(EngineAttemptContractError, match="identity"):
+        forged.to_dict()

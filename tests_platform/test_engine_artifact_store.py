@@ -8,11 +8,13 @@ import pytest
 
 from bluefire.engine_artifact_store import (
     _CONTROLLER_SOURCE_AUTHORITY,
+    MAX_SOURCE_TREE_ENTRIES,
     EngineArtifactPublicationUnknown,
     EngineArtifactStore,
     EngineArtifactStoreError,
     SourceCollectionSeal,
     normalized_finding_id,
+    source_collection_tree_digest,
 )
 from bluefire.windows_owner_acl import _windows_extended_path
 
@@ -47,6 +49,7 @@ def seal(source: Path, *, attempt_id: str = ATTEMPT) -> SourceCollectionSeal:
             "source_root_device": details.st_dev,
             "source_root_inode": details.st_ino,
             "source_root_mtime_ns": details.st_mtime_ns,
+            "source_tree_digest": source_collection_tree_digest(source),
             "worker_state": "stopped",
             "write_access_revoked": True,
             "controller_receipt_digest": "sha256:" + "a" * 64,
@@ -71,15 +74,13 @@ def test_import_preserves_exact_raw_bytes_hashes_and_relative_names(tmp_path: Pa
         allowed_names=("run.json", "findings/finding-1.json"),
     )
 
-    assert (tmp_path / "owned" / ATTEMPT / "raw" / "run.json").read_bytes() == run
-    assert (
-        tmp_path / "owned" / ATTEMPT / "raw" / "findings" / "finding-1.json"
-    ).read_bytes() == finding
+    assert (store.root / ATTEMPT / "raw" / "run.json").read_bytes() == run
+    assert (store.root / ATTEMPT / "raw" / "findings" / "finding-1.json").read_bytes() == finding
     assert manifest["total_bytes"] == len(run) + len(finding)
     assert manifest["artifacts"][0]["sha256"] == "sha256:" + hashlib.sha256(run).hexdigest()
     assert manifest["storage_boundary"] == "contained_exclusive_protected_root"
     assert manifest["source_collection_receipt"] == "sha256:" + "a" * 64
-    assert (tmp_path / "owned" / ATTEMPT / "manifest.json").is_file()
+    assert (store.root / ATTEMPT / "manifest.json").is_file()
 
 
 @pytest.mark.parametrize(
@@ -156,6 +157,36 @@ def test_import_rejects_unbounded_or_scalar_name_collections(tmp_path: Path) -> 
         )
 
 
+def test_source_tree_snapshot_stops_enumeration_at_entry_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+
+    class OversizedScan:
+        consumed = 0
+
+        def __enter__(self) -> "OversizedScan":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __iter__(self) -> "OversizedScan":
+            return self
+
+        def __next__(self) -> object:
+            self.consumed += 1
+            return object()
+
+    scan = OversizedScan()
+    monkeypatch.setattr(os, "scandir", lambda _path: scan)
+
+    with pytest.raises(EngineArtifactStoreError, match="entry bound"):
+        source_collection_tree_digest(source)
+    assert scan.consumed == MAX_SOURCE_TREE_ENTRIES + 1
+
+
 def test_import_requires_stopped_write_revoked_source_seal(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -175,6 +206,16 @@ def test_import_requires_stopped_write_revoked_source_seal(tmp_path: Path) -> No
             invalid, _controller_authority=_CONTROLLER_SOURCE_AUTHORITY
         )
 
+    tampered = seal(source)
+    object.__setattr__(tampered, "write_access_revoked", False)
+    with pytest.raises(EngineArtifactStoreError, match="stopped snapshot"):
+        EngineArtifactStore(tmp_path / "tampered-owned").import_attempt(
+            attempt_id=ATTEMPT,
+            source_run_dir=source,
+            source_seal=tampered,
+            allowed_names=("run.json",),
+        )
+
 
 def test_direct_source_seal_constructor_cannot_bypass_controller_authority(
     tmp_path: Path,
@@ -190,10 +231,16 @@ def test_direct_source_seal_constructor_cannot_bypass_controller_authority(
             source_root_device=details.st_dev,
             source_root_inode=details.st_ino,
             source_root_mtime_ns=details.st_mtime_ns,
+            source_tree_digest=source_collection_tree_digest(source),
             worker_state="stopped",
             write_access_revoked=True,
             controller_receipt_digest="sha256:" + "a" * 64,
         )
+
+    unattested = seal(source)
+    object.__setattr__(unattested, "_controller_attestation", None)
+    with pytest.raises(EngineArtifactStoreError, match="controller authority"):
+        unattested.to_dict()
 
 
 def test_import_rejects_source_changed_after_collection_seal(tmp_path: Path) -> None:
@@ -202,6 +249,14 @@ def test_import_rejects_source_changed_after_collection_seal(tmp_path: Path) -> 
     (source / "run.json").write_bytes(b"{}")
     frozen = seal(source)
     (source / "later.json").write_bytes(b"change")
+    current = source.lstat()
+    os.utime(
+        source,
+        ns=(current.st_atime_ns, frozen.source_root_mtime_ns),
+    )
+
+    assert source.lstat().st_mtime_ns == frozen.source_root_mtime_ns
+    assert source_collection_tree_digest(source) != frozen.source_tree_digest
 
     with pytest.raises(EngineArtifactStoreError, match="unsafe"):
         EngineArtifactStore(tmp_path / "owned").import_attempt(
@@ -354,6 +409,63 @@ def test_root_sync_failure_is_commit_unknown_with_complete_reconcilable_attempt(
             source_seal=seal(source),
             allowed_names=("run.json",),
         )
+
+
+def test_post_publish_interrupt_is_commit_unknown_without_deleting_final_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "run.json").write_bytes(b'{"status":"complete"}\n')
+    store = EngineArtifactStore(tmp_path / "owned")
+    original_sync = store._sync_directory
+
+    def interrupt_root_sync(path: Path) -> None:
+        if path == store.root:
+            raise KeyboardInterrupt
+        original_sync(path)
+
+    monkeypatch.setattr(store, "_sync_directory", interrupt_root_sync)
+    with pytest.raises(EngineArtifactPublicationUnknown, match="published.*unknown"):
+        store.import_attempt(
+            attempt_id=ATTEMPT,
+            source_run_dir=source,
+            source_seal=seal(source),
+            allowed_names=("run.json",),
+        )
+
+    final = store.root / ATTEMPT
+    assert (final / "manifest.json").is_file()
+    assert (final / "raw" / "run.json").read_bytes() == b'{"status":"complete"}\n'
+    assert not (store.root / (".pending-" + ATTEMPT)).exists()
+
+
+def test_interrupt_at_atomic_promotion_boundary_preserves_final_for_reconciliation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "run.json").write_bytes(b'{"status":"complete"}\n')
+    store = EngineArtifactStore(tmp_path / "owned")
+    original_publish = store._publish_staging
+
+    def publish_then_interrupt(staging: Path, final: Path) -> None:
+        original_publish(staging, final)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(store, "_publish_staging", publish_then_interrupt)
+    with pytest.raises(EngineArtifactPublicationUnknown, match="requires manifest reconciliation"):
+        store.import_attempt(
+            attempt_id=ATTEMPT,
+            source_run_dir=source,
+            source_seal=seal(source),
+            allowed_names=("run.json",),
+        )
+
+    final = store.root / ATTEMPT
+    assert (final / "manifest.json").is_file()
+    assert (final / "raw" / "run.json").read_bytes() == b'{"status":"complete"}\n'
+    assert not (store.root / (".pending-" + ATTEMPT)).exists()
 
 
 def test_protected_root_is_verified_before_source_or_destination_bytes(

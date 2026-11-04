@@ -4,7 +4,11 @@ from dataclasses import replace
 
 import pytest
 
-from bluefire.engine_attempt_contract import AttemptRole, EngineAttemptBinding
+from bluefire.engine_attempt_contract import (
+    AttemptRole,
+    EngineAttemptBinding,
+    EngineAttemptContractError,
+)
 from bluefire.engine_delegation import (
     EngineCapabilityDelegation,
     EngineDelegationError,
@@ -180,9 +184,15 @@ def test_attempt_must_be_created_during_delegation() -> None:
         )
 
 
-def test_attempt_instance_is_reparsed_instead_of_trusted() -> None:
+def test_attempt_constructor_and_delegation_reparse_fail_closed() -> None:
     delegation = _delegation()
-    invalid = replace(_binding(delegation), run_id="not-a-run")
+    binding = _binding(delegation)
+
+    with pytest.raises(EngineAttemptContractError, match="run ID is invalid"):
+        replace(binding, run_id="not-a-run")
+
+    invalid = binding.to_dict()
+    invalid["run_id"] = "not-a-run"
 
     with pytest.raises(EngineDelegationError, match="binding is invalid"):
         delegation.validate_attempt_binding(invalid)
