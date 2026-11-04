@@ -19,7 +19,7 @@ const CHECK_ID = /^controller-check-[0-9a-f]{32}$/;
 export type EngineExperimentRouteSelection = { kind: "engine_attempt" | "controller_check"; id: string } | null;
 export type EngineExperimentRouteRequest = { experimentId: string; selection: EngineExperimentRouteSelection };
 
-type EngineCancellationRequest = { kind: "engine_attempt"; id: string; jobId: string };
+type EngineCancellationRequest = { kind: "engine_attempt" | "controller_check"; id: string; jobId: string };
 
 const attemptSelection = (experiment: EngineExperiment, role: "baseline" | "adaptive_search"): EngineExperimentRouteSelection => {
   const attempt = experiment.projection.attempts.find(item => item.role === role);
@@ -113,10 +113,12 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
     mutationFn: (request: EngineCancellationRequest) => api.controlJob(request.jobId, "cancel"),
     onSuccess: () => { void workspace.refetch(); },
   });
-  const cancelAttempt = (id: string) => {
+  const cancel = (kind: EngineCancellationRequest["kind"], id: string) => {
     if (cancellation.isPending) return;
-    const item = experiment?.projection.attempts.find(candidate => candidate.attempt_id === id);
-    if (item) cancellation.mutate({ kind: "engine_attempt", id, jobId: item.job_id });
+    const item = kind === "engine_attempt"
+      ? experiment?.projection.attempts.find(candidate => candidate.attempt_id === id)
+      : experiment?.projection.checks.find(candidate => candidate.check_id === id);
+    if (item) cancellation.mutate({ kind, id, jobId: item.job_id });
   };
   useEffect(() => {
     if (!experiment || !accepted) return;
@@ -135,8 +137,10 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
     <EngineExperimentWorkspace experiment={experiment} selectedAttemptId={selectedAttempt} selectedCheckId={selectedCheck}
       onSelectAttempt={id => select({ kind: "engine_attempt", id })}
       onSelectCheck={id => select({ kind: "controller_check", id })}
-      onCancelAttempt={cancelAttempt}
+      onCancelAttempt={id => cancel("engine_attempt", id)}
+      onCancelCheck={id => cancel("controller_check", id)}
       cancellingAttemptId={!cancellation.isError && cancellation.variables?.kind === "engine_attempt" ? cancellation.variables.id : null}
+      cancellingCheckId={!cancellation.isError && cancellation.variables?.kind === "controller_check" ? cancellation.variables.id : null}
       onPrimaryAction={action => {
         if (action === "review_evidence") { const selection = engineReviewSelection(experiment); if (selection) select(selection); }
         else if (action === "open_comparison") {

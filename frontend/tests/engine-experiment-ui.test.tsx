@@ -131,6 +131,15 @@ it("exposes fresh actions and cancellation but never unsupported resume", () => 
   expect(screen.getByRole("button", { name: "Requesting cancellation" })).toBeDisabled();
 });
 
+it("disables the exact reserved controller check while cancellation is pending", () => {
+  const pending = { ...checkSummary(), state: "reserved" as const, result_digest: null, independent_evidence_refs: [], cleanup: { state: "pending" as const, receipt_ref: null } };
+  const cancel = vi.fn();
+  const value = experiment({ attempts: [attemptSummary("baseline", "4")], checks: [pending] });
+  renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} onCancelCheck={cancel} cancellingCheckId={pending.check_id} />);
+  expect(screen.getByRole("button", { name: "Requesting cancellation" })).toBeDisabled();
+  expect(cancel).not.toHaveBeenCalled();
+});
+
 it("does not promote an unmarked secondary action into the primary control", () => {
   const value = experiment();
   value.actions = [{ kind: "review_evidence", label: "Secondary fixture action", enabled: true, reason: "Fixture only.", primary: false }];

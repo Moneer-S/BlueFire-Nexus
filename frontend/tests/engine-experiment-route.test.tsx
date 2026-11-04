@@ -206,6 +206,42 @@ it("surfaces attempt cancellation failure with the exact saved job link and perm
   expect(controlJob).toHaveBeenCalledWith(activeJobId, "cancel");
 });
 
+it("cancels the exact reserved controller-check job and preserves its selected context", async () => {
+  const activeCheckId = `controller-check-${"e".repeat(32)}`;
+  const activeJobId = `job-${"6".repeat(32)}`;
+  const value = routeExperiment("retained_reproducer_active", [], [{ role: "retained_reproducer", check_id: activeCheckId, job_id: activeJobId, state: "reserved" }]);
+  workspace.mockResolvedValue(value);
+  let settle: ((value: unknown) => void) | undefined;
+  controlJob.mockImplementation(() => new Promise(resolve => { settle = resolve; }));
+  const user = userEvent.setup();
+  mount(`/composition?engine_experiment=${experimentId}&check=${activeCheckId}`);
+  await user.click(await screen.findByRole("button", { name: "Cancel active check" }));
+  expect(controlJob).toHaveBeenCalledTimes(1);
+  expect(controlJob).toHaveBeenCalledWith(activeJobId, "cancel");
+  expect(screen.getByRole("button", { name: "Requesting check cancellation" })).toBeDisabled();
+  expect(screen.getByRole("link", { name: "Open saved job in Runs" })).toHaveAttribute("href", `/runs?job=${activeJobId}`);
+  await act(async () => { settle?.({ job_id: activeJobId, state: "cancelled" }); });
+  expect(await screen.findByText("Cancellation requested")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Requesting check cancellation" })).toBeDisabled();
+  expect(screen.getByLabelText("Current location")).toHaveTextContent(`check=${activeCheckId}`);
+});
+
+it("surfaces controller-check cancellation failure and re-enables the exact control", async () => {
+  const activeCheckId = `controller-check-${"f".repeat(32)}`;
+  const activeJobId = `job-${"5".repeat(32)}`;
+  const value = routeExperiment("legitimate_use_active", [], [{ role: "legitimate_use", check_id: activeCheckId, job_id: activeJobId, state: "reserved" }]);
+  workspace.mockResolvedValue(value);
+  controlJob.mockRejectedValue(new Error("Controller-check cancellation could not be confirmed."));
+  const user = userEvent.setup();
+  mount(`/composition?engine_experiment=${experimentId}&check=${activeCheckId}`);
+  await user.click(await screen.findByRole("button", { name: "Cancel active check" }));
+  expect(await screen.findByText("Cancellation was refused")).toBeVisible();
+  expect(screen.getByText("Controller-check cancellation could not be confirmed.")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Cancel active check" })).toBeEnabled();
+  expect(screen.getByRole("link", { name: "Open saved job in Runs" })).toHaveAttribute("href", `/runs?job=${activeJobId}`);
+  expect(controlJob).toHaveBeenCalledWith(activeJobId, "cancel");
+});
+
 it("resolves a pure transition only when its exact revision and digest are visible", () => {
   const value = actionWorkspace();
   value.revision = 2;
