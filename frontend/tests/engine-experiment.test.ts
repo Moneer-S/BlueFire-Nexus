@@ -28,7 +28,8 @@ function projectedAttempt(index: 0 | 1) {
     state: "completed", completeness: "complete",
     engine: { id: "strix", version: "0.3.0-fixture", revision: "a".repeat(40), package_digest: packageDigest },
     model: { provider: "fixture.provider", id: "controlled-fixture", data_destination: "attempt-local fixture gateway" },
-    target_snapshot_ref: index === 0 ? targetBefore : targetAfter, delegation_digest: scopeRef,
+    target_snapshot_ref: index === 0 ? targetBefore : targetAfter, delegation_digest: digest(index === 0 ? "b" : "c"),
+    execution_approval_id: id("approval", index === 0 ? "7" : "8"),
     execution_approval_digest: digest(index === 0 ? "7" : "8"),
     cleanup: { state: "verified_absent", receipt_ref: digest(index === 0 ? "9" : "a") },
     engine_evidence_count: 1, limitations: ["Labeled fixture evidence only."],
@@ -130,6 +131,8 @@ describe("engine experiment workspace parser", () => {
   it("accepts the exact workspace presenter and nested evidence-derived projection", () => {
     const parsed = checkedEngineExperiment(engineExperimentFixture(), experimentId, { kind: "engine_attempt", id: records[0].owner });
     expect(parsed.projection.attempts.map(item => item.role)).toEqual(["baseline", "adaptive_search"]);
+    expect(parsed.projection.attempts.map(item => item.execution_approval_id)).toEqual([id("approval", "7"), id("approval", "8")]);
+    expect(parsed.projection.attempts.every(item => item.delegation_digest !== parsed.authorization.scope_ref)).toBe(true);
     expect(parsed.projection.checks.map(item => item.role)).toEqual(["retained_reproducer", "legitimate_use"]);
     expect(parsed.selected_context?.kind).toBe("engine_attempt");
     expect(parsed.projection.conclusion.adaptive_search.limit_qualified).toBe(true);
@@ -141,6 +144,11 @@ describe("engine experiment workspace parser", () => {
     ["engine assertion with independent provenance", (value: any) => { value.selected_context.attempt.observations[0].provenance = "observed"; }],
     ["invalid calendar timestamp", (value: any) => { value.selected_context.attempt.started_at = "2026-02-31T12:00:01Z"; }],
     ["engine-only fields on a controller check", (value: any) => { value.projection.checks[0].engine = { id: "strix" }; }],
+    ["missing execution approval identity", (value: any) => { delete value.projection.attempts[0].execution_approval_id; }],
+    ["malformed execution approval identity", (value: any) => { value.projection.attempts[0].execution_approval_id = "approval-invalid"; }],
+    ["reused execution approval identity", (value: any) => { value.projection.attempts[1].execution_approval_id = value.projection.attempts[0].execution_approval_id; }],
+    ["reused execution approval binding", (value: any) => { value.projection.attempts[1].execution_approval_digest = value.projection.attempts[0].execution_approval_digest; }],
+    ["reused per-attempt delegation", (value: any) => { value.projection.attempts[1].delegation_digest = value.projection.attempts[0].delegation_digest; }],
     ["duplicate durable job identity", (value: any) => { value.projection.checks[0].job_id = value.projection.attempts[0].job_id; }],
     ["mismatched projection experiment identity", (value: any) => { value.projection.experiment_id = id("experiment", "f"); }],
     ["mismatched selected context", (value: any) => { value.selected_context.attempt.job_id = value.projection.attempts[1].job_id; }],
@@ -161,5 +169,22 @@ describe("engine experiment workspace parser", () => {
   it("refuses route and selected-record identities that do not match the response", () => {
     expect(() => checkedEngineExperiment(engineExperimentFixture(), id("experiment", "f"))).toThrow(/identity changed/i);
     expect(() => checkedEngineExperiment(engineExperimentFixture(), experimentId, { kind: "controller_check", id: records[2].owner })).toThrow(/selected workspace context changed/i);
+  });
+
+  it("accepts only reconciliation when a defensive operation leaves current state unknown", () => {
+    const value = structuredClone(engineExperimentFixture());
+    value.current_target = null;
+    value.defensive_change.state = "unknown";
+    value.projection.conclusion.defense.state = "unknown";
+    value.projection.conclusion.defense.current_target_snapshot_ref = null;
+    value.projection.workflow_state = "reconcile_defense";
+    value.actions = [{ kind: "reconcile_defense", label: "Reconcile defensive change", enabled: true, reason: "Inspect the target before continuing.", primary: true }];
+
+    const parsed = checkedEngineExperiment(value);
+    expect(parsed.current_target).toBeNull();
+    expect(parsed.actions.filter(action => action.enabled).map(action => action.kind)).toEqual(["reconcile_defense"]);
+
+    value.actions[0].kind = "start_adaptive_search";
+    expect(() => checkedEngineExperiment(value)).toThrow(/recovery changed/i);
   });
 });

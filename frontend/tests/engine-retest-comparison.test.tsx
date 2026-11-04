@@ -58,6 +58,16 @@ it("does not hide unknown cleanup behind a favorable security result", () => {
   expect(screen.getByText("Cleanup is not verified")).toBeInTheDocument();
 });
 
+it("does not present a historical result as current while target state needs reconciliation", () => {
+  const value = conclusion({
+    defense: { ...conclusion().defense, state: "unknown", current_target_snapshot_ref: null },
+  });
+  expect(engineComparisonConclusion(value)).toMatchObject({ tone: "warning", title: "Current target state needs reconciliation" });
+  render(<EngineRetestComparison conclusion={value} defensiveChange={{ ...defense, state: "unknown" }} />);
+  expect(screen.getByRole("heading", { name: "Current target state needs reconciliation" })).toBeInTheDocument();
+  expect(screen.getByText(/remain available as history/i)).toBeInTheDocument();
+});
+
 it("names incomplete observation before interpreting absent findings", () => {
   const value = conclusion({
     headline: "original_blocked_no_remaining_path_observed_within_limits",

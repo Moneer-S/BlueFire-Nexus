@@ -24,7 +24,7 @@ function attemptSummary(role: "baseline" | "adaptive_search", character: string,
   return {
     role, attempt_id: attemptId(character), job_id: jobId(character), run_id: runId(role === "baseline" ? "01" : "02", character), state, completeness: active ? "unknown" : state === "completed" ? "complete" : "partial",
     engine: { id: "strix", version: "fixture", revision: "1".repeat(40), package_digest: digest("2") }, model: { provider: "fixture-provider", id: "controlled-fixture", data_destination: "attempt-local test gateway" },
-    target_snapshot_ref: digest("9"), delegation_digest: digest("4"), execution_approval_digest: digest("5"), cleanup: { state: active ? "pending" : "verified_absent", receipt_ref: active ? null : digest(character) }, engine_evidence_count: 0, limitations: [],
+    target_snapshot_ref: digest("9"), delegation_digest: digest("4"), execution_approval_id: `approval-${character.repeat(32)}`, execution_approval_digest: digest("5"), cleanup: { state: active ? "pending" : "verified_absent", receipt_ref: active ? null : digest(character) }, engine_evidence_count: 0, limitations: [],
   };
 }
 
@@ -74,7 +74,10 @@ function experiment(options: { selectedContext?: EngineExperiment["selected_cont
 it("selects an exact saved engine attempt through its callback without submitting work", () => {
   const select = vi.fn(); const action = vi.fn(); const cancel = vi.fn();
   render(<EngineExperimentWorkspace experiment={experiment()} selectedAttemptId={attemptId("4")} onSelectAttempt={select} onPrimaryAction={action} onCancelAttempt={cancel} />);
+  expect(screen.queryByRole("main")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Baseline exploration/i })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText(`approval-${"4".repeat(32)}`)).toBeInTheDocument();
+  expect(screen.getByText(digest("5"))).toBeInTheDocument();
   const adaptive = screen.getByRole("button", { name: /Fresh adaptive search/i });
   expect(adaptive).toHaveAttribute("aria-pressed", "false");
   expect(select).not.toHaveBeenCalled(); expect(action).not.toHaveBeenCalled(); expect(cancel).not.toHaveBeenCalled();
@@ -126,4 +129,19 @@ it("keeps controller checks separate and selects their exact saved context", () 
   expect(defense).not.toBeNull();
   expect(within(defense as HTMLElement).getByText("Rollback plan")).toBeInTheDocument();
   expect(within(defense as HTMLElement).getByText("Rollback operation")).toBeInTheDocument();
+});
+
+it("makes unknown target state visible and exposes only reconciliation", () => {
+  const value = experiment();
+  value.current_target = null;
+  value.defensive_change = value.defensive_change ? { ...value.defensive_change, state: "unknown" } : null;
+  value.projection.conclusion = { ...value.projection.conclusion, defense: { ...value.projection.conclusion.defense, state: "unknown", current_target_snapshot_ref: null } };
+  value.projection.workflow_state = "reconcile_defense";
+  value.actions = [{ kind: "reconcile_defense", label: "Reconcile defensive change", enabled: true, reason: "Inspect the target before continuing.", primary: true }];
+
+  render(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} onPrimaryAction={vi.fn()} />);
+  expect(screen.getByText("Current target state is not established").closest('[role="status"]')).toBeInTheDocument();
+  expect(screen.getByText("Unavailable until reconciliation")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Reconcile defensive change" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Start fresh adaptive search" })).not.toBeInTheDocument();
 });

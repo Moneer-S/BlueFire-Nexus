@@ -35,6 +35,7 @@ const securityConclusion = (value: EngineExperimentConclusion): EngineComparison
 };
 
 export function engineComparisonConclusion(value: EngineExperimentConclusion): EngineComparisonConclusion {
+  if (value.defense.state === "unknown" || value.defense.current_target_snapshot_ref === null) return { title: "Current target state needs reconciliation", detail: "Recorded outcomes remain available as history, but they cannot establish the target’s current state after an uncertain defensive operation.", tone: "warning" };
   const conclusion = securityConclusion(value);
   if (conclusion.tone === "danger" || value.headline === "original_blocked_alternate_path_found") return conclusion;
   if (value.cleanup.status === "residue") return { title: "Retest recorded; cleanup left residue", detail: "Keep the security result and retained worker or target effects separate. Review cleanup evidence before disposition.", tone: "danger" };
