@@ -179,6 +179,11 @@ export function retainedResponse(state, path, body, data) {
   return false;
 }
 
+export function assertRetainedSavedRunProfile(run, profileId, onVerification) {
+  onVerification?.({ schema_version: "bluefire.installed-retained-verification.v1", step: "saved_run" });
+  assert.equal(run.profile.id, profileId);
+}
+
 export async function authorizeRetainedPurpose(page, { origin, model, reviewer }) {
   await page.goto(`${origin}/#/settings`, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: `Edit Responses API · ${model}`, exact: true }).click();
@@ -280,8 +285,7 @@ export async function runRetainedJourney(page, state, options) {
     options.onVerification?.({ schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt" });
     const attempt = current.attempts.find(item => item.job_id === id);
     const run = await read(`/runs/${attempt.request.composition_attempt.run_id}`);
-    options.onVerification?.({ schema_version: "bluefire.installed-retained-verification.v1", step: "saved_run" });
-    assert.equal(run.profile.profile_id, options.profileId);
+    assertRetainedSavedRunProfile(run, options.profileId, options.onVerification);
     return { current, attempt, run };
   };
   const first = await execute(0);
