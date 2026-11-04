@@ -1,11 +1,25 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { expect, it } from "vitest";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { EngineRetestComparison, engineComparisonConclusion } from "../src/components/EngineRetestComparison";
 import type { EngineDefenseChange, EngineExperimentConclusion } from "../src/lib/engine-experiment";
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const run = (character: string, second: string) => `run-20261104T1200${second}Z-${character.repeat(16)}`;
 const defense: EngineDefenseChange = { change_id: `defense-change-${"8".repeat(32)}`, state: "retained", kind: "identity", summary: "Removed the generated-record reader role.", mechanism_ref: digest("7"), before_target_snapshot_ref: digest("8"), after_target_snapshot_ref: digest("9"), rollback_digest: digest("a"), applied_at: "2026-11-04T12:02:00Z" };
+
+function LocationWitness() {
+  const location = useLocation();
+  return <output aria-label="Current route">{location.pathname + location.search}</output>;
+}
+
+const renderComparison = (value: EngineExperimentConclusion, change: EngineDefenseChange | null = defense, props: { comparisonHref?: string; runHref?: (runId: string) => string } = {}) => render(
+  <MemoryRouter initialEntries={["/compare"]}>
+    <EngineRetestComparison conclusion={value} defensiveChange={change} {...props} />
+    <LocationWitness />
+  </MemoryRouter>,
+);
 
 function conclusion(overrides: Partial<EngineExperimentConclusion> = {}): EngineExperimentConclusion {
   return {
@@ -22,13 +36,19 @@ function conclusion(overrides: Partial<EngineExperimentConclusion> = {}): Engine
   };
 }
 
-it("leads with a remaining path and labels each supporting run by role", () => {
-  render(<EngineRetestComparison conclusion={conclusion()} defensiveChange={defense} />);
+it("leads with a remaining path and labels each supporting run by role", async () => {
+  const user = userEvent.setup();
+  renderComparison(conclusion());
   expect(screen.getByRole("heading", { name: "Original route blocked; another path remains" })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: /Baseline exploration run/ })).toHaveAttribute("href", `/runs/${run("1", "01")}`);
+  const baseline = screen.getByRole("link", { name: /Baseline exploration run/ });
+  expect(baseline).toHaveAttribute("href", `/runs/${run("1", "01")}`);
   expect(screen.getByRole("link", { name: /Original mechanism retest run/ })).toHaveAttribute("href", `/runs/${run("2", "02")}`);
   expect(screen.getByRole("link", { name: /Fresh adaptive search run/ })).toHaveAttribute("href", `/runs/${run("3", "03")}`);
   expect(screen.getByRole("link", { name: /Legitimate-use check run/ })).toHaveAttribute("href", `/runs/${run("4", "04")}`);
+  await user.tab();
+  expect(baseline).toHaveFocus();
+  await user.keyboard("{Enter}");
+  expect(screen.getByLabelText("Current route")).toHaveTextContent(`/runs/${run("1", "01")}`);
 });
 
 it("keeps a bounded no-path search qualified instead of declaring remediation", () => {
@@ -37,7 +57,7 @@ it("keeps a bounded no-path search qualified instead of declaring remediation", 
     adaptive_search: { status: "no_path_observed_within_limits", run_id: run("3", "03"), support_refs: [`evidence-${"3".repeat(20)}`], limit_qualified: true },
   });
   expect(engineComparisonConclusion(value)).toMatchObject({ tone: "warning", title: "Original route blocked; bounded search found no new path" });
-  const { container } = render(<EngineRetestComparison conclusion={value} defensiveChange={defense} />);
+  const { container } = renderComparison(value);
   expect(container.querySelector(".engine-retest-comparison")).toHaveClass("is-warning");
   expect(screen.getByText(/not proof that no other path exists/i)).toBeInTheDocument();
 });
@@ -54,7 +74,7 @@ it("does not hide unknown cleanup behind a favorable security result", () => {
     cleanup: { status: "unknown", items: [] },
   });
   expect(engineComparisonConclusion(value)).toMatchObject({ tone: "warning", title: "Retest recorded; cleanup remains unknown" });
-  render(<EngineRetestComparison conclusion={value} defensiveChange={defense} />);
+  renderComparison(value);
   expect(screen.getByText("Cleanup is not verified")).toBeInTheDocument();
 });
 
@@ -63,7 +83,7 @@ it("does not present a historical result as current while target state needs rec
     defense: { ...conclusion().defense, state: "unknown", current_target_snapshot_ref: null },
   });
   expect(engineComparisonConclusion(value)).toMatchObject({ tone: "warning", title: "Current target state needs reconciliation" });
-  render(<EngineRetestComparison conclusion={value} defensiveChange={{ ...defense, state: "unknown" }} />);
+  renderComparison(value, { ...defense, state: "unknown" });
   expect(screen.getByRole("heading", { name: "Current target state needs reconciliation" })).toBeInTheDocument();
   expect(screen.getByText(/remain available as history/i)).toBeInTheDocument();
 });
@@ -75,7 +95,7 @@ it("names incomplete observation before interpreting absent findings", () => {
     telemetry_health: { status: "partial", expected_sources: ["target audit", "worker receipt"], verified_sources: ["worker receipt"], missing_sources: ["target audit"] },
   });
   expect(engineComparisonConclusion(value)).toMatchObject({ title: "Original route blocked; observation is incomplete" });
-  render(<EngineRetestComparison conclusion={value} defensiveChange={defense} />);
+  renderComparison(value);
   expect(screen.getByText("Observation is incomplete")).toBeInTheDocument();
   expect(screen.getByText(/cannot be interpreted as prevention/i)).toBeInTheDocument();
   expect(screen.getByText(/Missing: target audit/i)).toBeInTheDocument();
@@ -89,6 +109,15 @@ it("states when a conclusion has no supporting run route", () => {
     adaptive_search: { status: "not_attempted", run_id: null, support_refs: [] },
     legitimate_use: { status: "not_attempted", run_id: null, support_refs: [] },
   });
-  render(<EngineRetestComparison conclusion={value} defensiveChange={null} />);
+  renderComparison(value, null);
+  expect(screen.getByText("Supporting runs unavailable")).toBeInTheDocument();
+});
+
+it("refuses external result routes instead of creating full-page navigation", () => {
+  renderComparison(conclusion(), defense, {
+    runHref: () => "https://outside.invalid/run",
+    comparisonHref: "//outside.invalid/compare",
+  });
+  expect(screen.queryByRole("link")).not.toBeInTheDocument();
   expect(screen.getByText("Supporting runs unavailable")).toBeInTheDocument();
 });

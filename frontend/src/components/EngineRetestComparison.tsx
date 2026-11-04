@@ -1,4 +1,5 @@
 import { ArrowRight, CircleHelp, ShieldAlert, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Link } from "react-router-dom";
 import type { EngineDefenseChange, EngineExperimentConclusion } from "../lib/engine-experiment";
 import { Badge, Callout, DataList, Panel, sentence } from "./Primitives";
 
@@ -65,9 +66,21 @@ const reproducerLabel = (value: EngineExperimentConclusion["retained_reproducer"
 const adaptiveLabel = (value: EngineExperimentConclusion["adaptive_search"]["status"]): string => ({ not_attempted: "Not attempted", remaining_path_found: "Remaining path found", no_path_observed_within_limits: "No path observed within limits", inconclusive: "Inconclusive", pending: "Pending" })[value];
 const legitimateUseLabel = (value: EngineExperimentConclusion["legitimate_use"]["status"]): string => ({ not_attempted: "Not attempted", passed: "Passed", failed: "Failed", unknown: "Unknown" })[value];
 
+const internalResultHref = (value: string): string | null => {
+  if ([...value].some(character => character === "\\" || character.charCodeAt(0) <= 32)) return null;
+  if (!/^\/(?:runs|compare)(?:[/?#]|$)/.test(value)) return null;
+  const parsed = new URL(value, "https://bluefire.invalid");
+  return parsed.origin === "https://bluefire.invalid" ? `${parsed.pathname}${parsed.search}${parsed.hash}` : null;
+};
+
 export function EngineRetestComparison({ conclusion: value, defensiveChange, sourceRuns, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: { conclusion: EngineExperimentConclusion; defensiveChange: EngineDefenseChange | null; sourceRuns?: EngineSourceRunLink[]; runHref?: (runId: string) => string; comparisonHref?: string }) {
   const conclusion = engineComparisonConclusion(value);
   const runs = sourceRuns ?? conclusionSourceRuns(value);
+  const runLinks = runs.flatMap(source => {
+    const href = internalResultHref(runHref(source.runId));
+    return href === null ? [] : [{ ...source, href }];
+  });
+  const fullComparisonHref = comparisonHref === undefined ? null : internalResultHref(comparisonHref);
   const Icon = conclusion.tone === "success" ? ShieldCheck : conclusion.tone === "danger" ? ShieldAlert : conclusion.tone === "warning" ? TriangleAlert : CircleHelp;
   const observationIncomplete = value.telemetry_health.status !== "complete";
   const cleanupUnsettled = value.cleanup.status !== "verified_absent";
@@ -83,7 +96,7 @@ export function EngineRetestComparison({ conclusion: value, defensiveChange, sou
     </div>
     {defensiveChange ? <div className="engine-defense-summary"><div><span>{sentence(defensiveChange.kind)} change</span><strong>{defensiveChange.summary}</strong></div><Badge tone={["applied", "retained"].includes(defensiveChange.state) ? "success" : defensiveChange.state === "unknown" ? "warning" : "neutral"}>{sentence(defensiveChange.state)}</Badge></div> : <Callout tone="warning" title="Defensive change unavailable"><p>No reviewed change is linked to this comparison.</p></Callout>}
     {value.unknowns.length ? <details className="engine-comparison-unknowns" open><summary>Unknowns and unattempted work</summary><ul>{value.unknowns.map(item => <li key={item}>{item}</li>)}</ul></details> : null}
-    {runs.length || comparisonHref ? <nav className="engine-comparison-links" aria-label="Comparison source runs">{runs.map(source => <a href={runHref(source.runId)} key={source.runId}>{source.label}<ArrowRight aria-hidden="true" /></a>)}{comparisonHref ? <a href={comparisonHref}>Open full comparison<ArrowRight aria-hidden="true" /></a> : null}</nav> : <Callout tone="warning" title="Supporting runs unavailable"><p>The conclusion has no linked run route to inspect.</p></Callout>}
+    {runLinks.length || fullComparisonHref ? <nav className="engine-comparison-links" aria-label="Comparison source runs">{runLinks.map(source => <Link to={source.href} key={source.runId}>{source.label}<ArrowRight aria-hidden="true" /></Link>)}{fullComparisonHref ? <Link to={fullComparisonHref}>Open full comparison<ArrowRight aria-hidden="true" /></Link> : null}</nav> : <Callout tone="warning" title="Supporting runs unavailable"><p>The conclusion has no linked run route to inspect.</p></Callout>}
     <details><summary>Recorded change and proof boundary</summary><DataList items={[
       { label: "Defensive state", value: sentence(value.defense.state) },
       { label: "Telemetry health", value: sentence(value.telemetry_health.status) },
