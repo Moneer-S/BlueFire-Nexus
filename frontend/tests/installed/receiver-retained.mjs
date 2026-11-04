@@ -191,6 +191,9 @@ const retainedVerification = (onVerification, step, readOutcome) => onVerificati
 
 const objectiveReadOutcomes = new Set(["ok", "not_found", "conflict", "authorization_rejected",
   "client_error", "server_error", "session_unavailable", "timeout", "transport_error", "invalid_response"]);
+const retainedAttemptStates = new Set(["queued", "planning", "awaiting_approval", "running", "paused",
+  "cancelling", "cancelled", "completed", "failed", "interrupted"]);
+const retainedAttemptTerminalFailures = new Set(["cancelled", "failed", "interrupted"]);
 
 export async function waitForRetainedSavedAttempt({ readObjective, attemptId, remainingMs,
   maximum = 110000, onVerification }) {
@@ -202,9 +205,11 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
   const until = Date.now() + Math.min(maximum, Math.max(0, startedRemaining));
   let readOutcome = "pending";
   let attemptOutcome = "not_observed";
+  let attemptState = "not_observed";
   const update = waitOutcome => onVerification?.({
     schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
-    read_outcome: readOutcome, attempt_outcome: attemptOutcome, wait_outcome: waitOutcome,
+    read_outcome: readOutcome, attempt_state: attemptState,
+    attempt_outcome: attemptOutcome, wait_outcome: waitOutcome,
   });
   update("pending");
   while (Date.now() < until) {
@@ -212,6 +217,7 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
     try { loaded = await readObjective(); }
     catch {
       readOutcome = "transport_error";
+      attemptState = "unavailable";
       attemptOutcome = "unavailable";
       update(budgetRemaining() <= 0 ? "budget_exhausted" : "read_failed");
       throw new Error("The retained-result objective could not be read");
@@ -219,6 +225,7 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
     readOutcome = objectiveReadOutcomes.has(loaded?.outcome) ? loaded.outcome : "invalid_response";
     if (readOutcome !== "ok" || !loaded?.run || !Array.isArray(loaded.run.attempts)) {
       if (readOutcome === "ok") readOutcome = "invalid_response";
+      attemptState = "unavailable";
       attemptOutcome = "unavailable";
       update("read_failed");
       throw new Error("The retained-result objective read was not usable");
@@ -227,17 +234,31 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
     for (const item of loaded.run.attempts) {
       if (!item || typeof item !== "object" || Array.isArray(item)) {
         readOutcome = "invalid_response";
+        attemptState = "unavailable";
         attemptOutcome = "unavailable";
         update("read_failed");
         throw new Error("The retained-result objective contained an invalid attempt");
       }
       if (item.job_id === attemptId) { attempt = item; break; }
     }
+    if (attempt && !retainedAttemptStates.has(attempt.state)) {
+      readOutcome = "invalid_response";
+      attemptState = "invalid_response";
+      attemptOutcome = "unavailable";
+      update("read_failed");
+      throw new Error("The retained-result attempt state was invalid");
+    }
+    attemptState = attempt?.state ?? "not_observed";
     if (attempt?.state === "completed" && (!attempt.progress || typeof attempt.progress !== "object" || Array.isArray(attempt.progress))) {
       readOutcome = "invalid_response";
       attemptOutcome = "unavailable";
       update("read_failed");
       throw new Error("The retained-result attempt progress was invalid");
+    }
+    if (retainedAttemptTerminalFailures.has(attemptState)) {
+      attemptOutcome = "terminal_failure";
+      update("terminal_failure");
+      throw new Error("The retained-result attempt ended before its saved proof was ready");
     }
     attemptOutcome = !attempt ? "not_observed" : attempt.state !== "completed" ? "not_completed"
       : attempt.progress?.settlement !== "settled" ? "not_settled"

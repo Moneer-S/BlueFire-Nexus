@@ -311,9 +311,10 @@ test("saved-attempt wait reports only bounded readiness classifications", async 
   assert.equal(result, current);
   assert.deepEqual(diagnostics, [
     { schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
-      read_outcome: "pending", attempt_outcome: "not_observed", wait_outcome: "pending" },
+      read_outcome: "pending", attempt_state: "not_observed",
+      attempt_outcome: "not_observed", wait_outcome: "pending" },
     { schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
-      read_outcome: "ok", attempt_outcome: "ready", wait_outcome: "ready" },
+      read_outcome: "ok", attempt_state: "completed", attempt_outcome: "ready", wait_outcome: "ready" },
   ]);
 });
 
@@ -325,7 +326,8 @@ test("saved-attempt wait classifies objective read failure without retaining res
   }));
   assert.deepEqual(diagnostics.at(-1), {
     schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
-    read_outcome: "server_error", attempt_outcome: "unavailable", wait_outcome: "read_failed",
+    read_outcome: "server_error", attempt_state: "unavailable",
+    attempt_outcome: "unavailable", wait_outcome: "read_failed",
   });
 });
 
@@ -351,7 +353,8 @@ test("saved-attempt wait rejects malformed completed progress without changing t
   }));
   assert.deepEqual(diagnostics.at(-1), {
     schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
-    read_outcome: "invalid_response", attempt_outcome: "unavailable", wait_outcome: "read_failed",
+    read_outcome: "invalid_response", attempt_state: "completed",
+    attempt_outcome: "unavailable", wait_outcome: "read_failed",
   });
 });
 
@@ -378,8 +381,47 @@ test("saved-attempt wait keeps one read per poll and the exact settlement gate",
     assert.equal(reads, states.length);
     assert.deepEqual(diagnostics.slice(1).map(value => value.attempt_outcome),
       ["not_observed", "not_observed", "not_completed", "not_settled", "verified_result_missing", "ready"]);
+    assert.deepEqual(diagnostics.slice(1).map(value => value.attempt_state),
+      ["not_observed", "not_observed", "running", "completed", "completed", "completed"]);
     assert.equal(diagnostics.at(-1).wait_outcome, "ready");
   } finally { vi.useRealTimers(); }
+});
+
+test.each(["failed", "cancelled", "interrupted"])(
+  "saved-attempt wait fails promptly for terminal %s state", async state => {
+    const diagnostics = [];
+    let reads = 0;
+    await assert.rejects(waitForRetainedSavedAttempt({
+      readObjective: async () => {
+        reads += 1;
+        return { outcome: "ok", run: { attempts: [{ job_id: ownerId, state, error: { private: true } }] } };
+      },
+      attemptId: ownerId, remainingMs: () => 1000, maximum: 1000,
+      onVerification: value => diagnostics.push(value),
+    }));
+    assert.equal(reads, 1);
+    assert.deepEqual(diagnostics.at(-1), {
+      schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
+      read_outcome: "ok", attempt_state: state,
+      attempt_outcome: "terminal_failure", wait_outcome: "terminal_failure",
+    });
+  },
+);
+
+test("saved-attempt wait rejects an unreviewed state without retaining it", async () => {
+  const diagnostics = [];
+  await assert.rejects(waitForRetainedSavedAttempt({
+    readObjective: async () => ({ outcome: "ok", run: {
+      attempts: [{ job_id: ownerId, state: "private-state", private: true }],
+    } }),
+    attemptId: ownerId, remainingMs: () => 1000, maximum: 1000,
+    onVerification: value => diagnostics.push(value),
+  }));
+  assert.deepEqual(diagnostics.at(-1), {
+    schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
+    read_outcome: "invalid_response", attempt_state: "invalid_response",
+    attempt_outcome: "unavailable", wait_outcome: "read_failed",
+  });
 });
 
 test("retention proof binds capture to its original producer before refusal and cleanup", () => {

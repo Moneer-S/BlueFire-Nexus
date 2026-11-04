@@ -269,6 +269,23 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                 ):
                     safe_verification["read_outcome"] = read_outcome
                 if step == "saved_attempt_wait":
+                    attempt_state = verification.get("attempt_state")
+                    if isinstance(attempt_state, str) and attempt_state in {
+                        "not_observed",
+                        "queued",
+                        "planning",
+                        "awaiting_approval",
+                        "running",
+                        "paused",
+                        "cancelling",
+                        "cancelled",
+                        "completed",
+                        "failed",
+                        "interrupted",
+                        "unavailable",
+                        "invalid_response",
+                    }:
+                        safe_verification["attempt_state"] = attempt_state
                     attempt_outcome = verification.get("attempt_outcome")
                     if isinstance(attempt_outcome, str) and attempt_outcome in {
                         "not_observed",
@@ -277,6 +294,7 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                         "verified_result_missing",
                         "ready",
                         "unavailable",
+                        "terminal_failure",
                     }:
                         safe_verification["attempt_outcome"] = attempt_outcome
                     wait_outcome = verification.get("wait_outcome")
@@ -286,6 +304,7 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                         "read_failed",
                         "budget_exhausted",
                         "bounded_wait_expired",
+                        "terminal_failure",
                     }:
                         safe_verification["wait_outcome"] = wait_outcome
                 row["retained_verification"] = safe_verification
