@@ -1,0 +1,713 @@
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+import pytest
+
+from bluefire.engine_attempt_contract import (
+    AttemptCompleteness,
+    AttemptRole,
+    AttemptState,
+    EngineAttemptBinding,
+)
+from bluefire.engine_experiment import (
+    ENGINE_CAPABILITY_SCOPE_VERSION,
+    CleanupState,
+    EngineExperiment,
+)
+from bluefire.engine_experiment_service import (
+    EngineControllerAction,
+    EngineControllerJobAction,
+    EngineExperimentService,
+    EngineExperimentServiceError,
+)
+from bluefire.product_store_errors import ResourceConflictError
+from bluefire.run_store import RunStoreError
+from bluefire.util import content_hash
+
+
+def _digest(character: str) -> str:
+    return "sha256:" + character * 64
+
+
+EXPERIMENT_ID = "experiment-" + "1" * 32
+CREATED_AT = "2026-11-04T12:00:00Z"
+
+
+class _History:
+    def __init__(self, experiment: EngineExperiment | None = None) -> None:
+        self.experiment = experiment
+        self.versions = {} if experiment is None else {experiment.revision: experiment}
+        self.created_at = CREATED_AT
+
+    def create_engine_experiment(self, experiment_id, document, *, validator):
+        candidate = EngineExperiment._from_controller_mapping(validator(document))
+        if self.experiment is not None:
+            if self.experiment.to_dict() != candidate.to_dict():
+                raise ResourceConflictError("different history")
+        else:
+            self.experiment = candidate
+            self.versions[candidate.revision] = candidate
+        return self._record()
+
+    def save_engine_experiment(
+        self,
+        experiment_id,
+        document,
+        *,
+        expected_revision,
+        expected_digest,
+        validator,
+    ):
+        assert self.experiment is not None
+        if (
+            experiment_id != self.experiment.experiment_id
+            or expected_revision != self.experiment.revision
+            or expected_digest != self.experiment.digest
+        ):
+            raise ResourceConflictError("stale")
+        candidate = EngineExperiment._from_controller_mapping(validator(document))
+        self.experiment = candidate
+        self.versions[candidate.revision] = candidate
+        return self._record()
+
+    def get_engine_experiment(self, experiment_id, *, revision=None):
+        assert self.experiment is not None
+        if experiment_id != self.experiment.experiment_id:
+            raise AssertionError("unexpected experiment")
+        selected = self.experiment if revision is None else self.versions[revision]
+        return self._record(selected)
+
+    def list_engine_experiments(self, *, limit=100):
+        assert limit > 0
+        if self.experiment is None:
+            return []
+        return [
+            {
+                "schema_version": "bluefire.engine-experiment-head.v1",
+                "experiment_id": self.experiment.experiment_id,
+                "active_revision": self.experiment.revision,
+                "active_digest": self.experiment.digest,
+                "created_at": self.created_at,
+                "updated_at": self.experiment.updated_at,
+            }
+        ]
+
+    def _record(self, selected=None):
+        assert self.experiment is not None
+        candidate = self.experiment if selected is None else selected
+        return {
+            "schema_version": "bluefire.engine-experiment-record.v1",
+            "experiment_id": candidate.experiment_id,
+            "revision": candidate.revision,
+            "prior_digest": candidate.previous_revision_digest,
+            "digest": candidate.digest,
+            "document": candidate.to_dict(),
+            "created_at": self.created_at,
+            "active": candidate.revision == self.experiment.revision,
+            "active_revision": self.experiment.revision,
+        }
+
+
+class _RunSource:
+    def get_run(self, run_id, *, require_finalized=False):
+        del run_id, require_finalized
+        raise RunStoreError("run is not finalized")
+
+
+class _Jobs:
+    def __init__(self, history: _History) -> None:
+        self.history = history
+        self.submissions: list[Mapping[str, Any]] = []
+        self.cancelled: list[tuple[str, str, str]] = []
+        self.recovered: list[tuple[str, str]] = []
+
+    def submit(self, **values):
+        self.submissions.append(values)
+        return {"job_id": "job-" + "f" * 32, "state": "queued"}
+
+    def settle_undispatched_cancellation(self, *, experiment_id, attempt_id, job_id):
+        self.cancelled.append((experiment_id, attempt_id, job_id))
+        assert self.history.experiment is not None
+        return self.history.experiment.to_dict()
+
+    def reconcile_interrupted_attempt(self, *, experiment_id, attempt_id):
+        self.recovered.append((experiment_id, attempt_id))
+        assert self.history.experiment is not None
+        return self.history.experiment.to_dict()
+
+
+class _Lifecycle:
+    def cancel(self, job_id):
+        return {"job_id": job_id, "state": "cancelled"}
+
+
+class _PresentationSource:
+    def __init__(self, history: _History) -> None:
+        self.history = history
+
+    def get_engine_experiment_presentation(self, experiment_id, *, revision, experiment_digest):
+        experiment = self.history.versions[revision]
+        assert experiment.experiment_id == experiment_id
+        assert experiment.digest == experiment_digest
+        return self.presentation_for(experiment)
+
+    def presentation_for(self, experiment):
+        if experiment.attempts:
+            binding = experiment.attempts[0].record.binding
+            engine = {
+                "id": binding.engine_id,
+                "display_name": "Strix",
+                "version": binding.engine_version,
+                "revision": binding.engine_revision,
+                "package_digest": binding.engine_package_digest,
+                "sandbox_image_digest": _digest("b"),
+            }
+            model = {
+                "provider": binding.model_provider,
+                "id": binding.model_id,
+                "data_destination": binding.model_data_destination,
+                "authorization_digest": binding.model_authorization_ref,
+                "test_provider": True,
+            }
+            limits = {
+                "wall_clock_seconds": binding.wall_clock_seconds,
+                "action_limit": binding.action_limit,
+                "artifact_byte_limit": binding.artifact_byte_limit,
+                "cost_limit_microunits": binding.cost_limit_microunits,
+            }
+        else:
+            engine = {
+                "id": "strix",
+                "display_name": "Strix",
+                "version": "1.7.0",
+                "revision": "7" * 40,
+                "package_digest": _digest("7"),
+                "sandbox_image_digest": _digest("b"),
+            }
+            model = {
+                "provider": "provider.test",
+                "id": "test-model",
+                "data_destination": "https://model.test/v1",
+                "authorization_digest": _digest("9"),
+                "test_provider": True,
+            }
+            limits = {
+                "wall_clock_seconds": 300,
+                "action_limit": 20,
+                "artifact_byte_limit": 4 * 1024 * 1024,
+                "cost_limit_microunits": 1_000_000,
+            }
+        current_target = (
+            None
+            if experiment.current_target_snapshot_ref is None
+            else {
+                "snapshot_ref": experiment.current_target_snapshot_ref,
+                "display_name": "Generated tenant-record target",
+                "captured_at": experiment.updated_at,
+            }
+        )
+        return {
+            "schema_version": "bluefire.engine-experiment-presentation.v1",
+            "experiment_id": experiment.experiment_id,
+            "revision": experiment.revision,
+            "experiment_digest": experiment.digest,
+            "objective": {
+                "objective_ref": experiment.objective_ref,
+                "title": "Protect generated tenant records",
+                "summary": "Test the original failure, apply a bounded defense, and retest it.",
+            },
+            "environment": {
+                "environment_ref": experiment.environment_ref,
+                "environment_id": "tenant-record-lab",
+                "display_name": "Disposable tenant-record lab",
+                "platform": "linux",
+                "disposable": True,
+            },
+            "current_target": current_target,
+            "engine_setup": {"engine": engine, "model": model},
+            "authorization": {
+                "scope_ref": experiment.scope_ref,
+                "scope_version": experiment.scope_version,
+                **limits,
+            },
+            "defensive_change": None,
+            "selection": None,
+            "limitations": ["Controlled test-provider responses only."],
+        }
+
+
+class _NoopController:
+    def perform(self, *, action, experiment, request_ref):
+        del action, request_ref
+        return experiment._changed(timestamp=experiment.updated_at)
+
+
+class _ControllerJobs:
+    def __init__(self) -> None:
+        self.requests: list[Mapping[str, Any]] = []
+        self.state = "queued"
+
+    def submit(self, **values):
+        self.requests.append(values)
+        return {
+            "schema_version": "bluefire.engine-controller-job-submission.v1",
+            "job_id": "job-" + "e" * 32,
+            "kind": "engine-controller-operation",
+            "experiment_id": values["experiment"].experiment_id,
+            "action": values["action"].value,
+            "submission_id": values["submission_id"],
+            "intent_digest": values["intent_digest"],
+            "state": self.state,
+        }
+
+
+class _UnboundControllerJobs(_ControllerJobs):
+    def submit(self, **values):
+        result = dict(super().submit(**values))
+        result["action"] = "rollback_defense"
+        return result
+
+
+def _new_experiment() -> EngineExperiment:
+    return EngineExperiment.create(
+        experiment_id=EXPERIMENT_ID,
+        objective_ref=_digest("1"),
+        environment_ref=_digest("2"),
+        scope_ref=_digest("3"),
+        scope_version=ENGINE_CAPABILITY_SCOPE_VERSION,
+        target_snapshot_ref=_digest("4"),
+        created_at=CREATED_AT,
+    )
+
+
+def _reserve_baseline(experiment: EngineExperiment) -> EngineExperiment:
+    binding = EngineAttemptBinding.from_mapping(
+        {
+            "schema_version": "bluefire.engine-attempt-binding.v1",
+            "experiment_id": EXPERIMENT_ID,
+            "attempt_id": "engine-attempt-" + "a" * 32,
+            "run_id": "run-20261104T120100Z-" + "a" * 16,
+            "role": AttemptRole.BASELINE.value,
+            "objective_ref": _digest("1"),
+            "environment_ref": _digest("2"),
+            "target_snapshot_ref": _digest("4"),
+            "scope_ref": _digest("3"),
+            "scope_version": ENGINE_CAPABILITY_SCOPE_VERSION,
+            "engine_id": "strix",
+            "engine_version": "1.7.0",
+            "engine_revision": "7" * 40,
+            "engine_package_digest": _digest("7"),
+            "policy_overlay_digest": _digest("8"),
+            "model_provider": "provider.test",
+            "model_id": "test-model",
+            "model_data_destination": "https://model.test/v1",
+            "model_authorization_ref": _digest("9"),
+            "wall_clock_seconds": 300,
+            "action_limit": 20,
+            "cost_limit_microunits": 1_000_000,
+            "artifact_byte_limit": 4 * 1024 * 1024,
+            "created_at": "2026-11-04T12:01:00Z",
+            "parent_attempt_id": None,
+        }
+    )
+    return experiment.reserve_attempt(
+        binding,
+        job_id="job-" + "a" * 32,
+        delegation_digest=_digest("a"),
+        execution_approval_digest=_digest("b"),
+        execution_approval_id="approval-" + "a" * 32,
+        timestamp="2026-11-04T12:01:00Z",
+    )
+
+
+def _settle_cancelled(experiment: EngineExperiment) -> EngineExperiment:
+    queued = experiment.attempts[0].record
+    preflight = queued.transition(AttemptState.PREFLIGHT, timestamp="2026-11-04T12:02:00Z")
+    experiment = experiment.update_attempt_record(preflight, timestamp="2026-11-04T12:02:00Z")
+    running = preflight.transition(
+        AttemptState.RUNNING,
+        upstream_session_id="session-aabbccdd",
+        timestamp="2026-11-04T12:02:10Z",
+    )
+    experiment = experiment.update_attempt_record(running, timestamp="2026-11-04T12:02:10Z")
+    cancelled = running.transition(
+        AttemptState.CANCELLED,
+        timestamp="2026-11-04T12:02:20Z",
+        completeness=AttemptCompleteness.UNKNOWN,
+        exit_reason="controller_cancelled",
+    )
+    return experiment.settle_attempt(
+        cancelled,
+        engine_evidence=(),
+        artifact_manifest_ref=None,
+        cleanup_state=CleanupState.VERIFIED_ABSENT,
+        cleanup_evidence_ref=_digest("d"),
+        settled_at="2026-11-04T12:02:20Z",
+    )
+
+
+def _service(
+    history: _History,
+    *,
+    controller=None,
+    controller_jobs=None,
+    clock=None,
+) -> tuple[EngineExperimentService, _Jobs]:
+    jobs = _Jobs(history)
+    return (
+        EngineExperimentService(
+            history=history,
+            run_source=_RunSource(),
+            jobs=jobs,  # type: ignore[arg-type]
+            job_lifecycle=_Lifecycle(),
+            controller=controller,
+            clock=(lambda: CREATED_AT) if clock is None else clock,
+            presentation_source=_PresentationSource(history),
+            controller_jobs=controller_jobs,
+        ),
+        jobs,
+    )
+
+
+def test_create_read_list_and_workspace_share_one_canonical_head() -> None:
+    history = _History()
+    service, _jobs = _service(history)
+
+    workspace = service.create(
+        experiment_id=EXPERIMENT_ID,
+        objective_ref=_digest("1"),
+        environment_ref=_digest("2"),
+        scope_ref=_digest("3"),
+        scope_version=ENGINE_CAPABILITY_SCOPE_VERSION,
+        target_snapshot_ref=_digest("4"),
+    )
+
+    assert workspace["schema_version"] == "bluefire.engine-experiment-workspace.v1"
+    assert workspace["revision"] == 1
+    assert workspace["projection"]["workflow_state"] == "ready_for_baseline"
+    assert workspace["projection"]["experiment_digest"] == workspace["experiment_digest"]
+    saved = service.get(EXPERIMENT_ID)
+    assert saved["record"]["digest"] == workspace["experiment_digest"]
+    assert service.workspace(EXPERIMENT_ID) == workspace
+    assert service.list()["experiments"] == [
+        {
+            "schema_version": "bluefire.engine-experiment-head.v1",
+            "experiment_id": EXPERIMENT_ID,
+            "active_revision": 1,
+            "active_digest": workspace["experiment_digest"],
+            "created_at": CREATED_AT,
+            "updated_at": CREATED_AT,
+        }
+    ]
+
+
+def test_json_create_uses_trusted_clock_and_rejects_caller_time() -> None:
+    history = _History()
+    service, _jobs = _service(history)
+    request = {
+        "schema_version": "bluefire.engine-experiment-create.v1",
+        "experiment_id": EXPERIMENT_ID,
+        "objective_ref": _digest("1"),
+        "environment_ref": _digest("2"),
+        "scope_ref": _digest("3"),
+        "scope_version": ENGINE_CAPABILITY_SCOPE_VERSION,
+        "target_snapshot_ref": _digest("4"),
+    }
+
+    workspace = service.create_request(request)
+    assert workspace["revision"] == 1
+    assert service.get(EXPERIMENT_ID)["experiment"]["created_at"] == CREATED_AT
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.create_request({**request, "created_at": "2099-01-01T00:00:00Z"})
+    assert caught.value.code == "engine_request_invalid"
+
+
+def test_create_retry_reopens_same_identity_when_trusted_clock_advances() -> None:
+    history = _History()
+    times = iter((CREATED_AT, "2026-11-04T12:00:05Z"))
+    service, _jobs = _service(history, clock=lambda: next(times))
+    values = {
+        "experiment_id": EXPERIMENT_ID,
+        "objective_ref": _digest("1"),
+        "environment_ref": _digest("2"),
+        "scope_ref": _digest("3"),
+        "scope_version": ENGINE_CAPABILITY_SCOPE_VERSION,
+        "target_snapshot_ref": _digest("4"),
+    }
+
+    first = service.create(**values)
+    replay = service.create(**values)
+
+    assert replay == first
+    assert service.get(EXPERIMENT_ID)["experiment"]["created_at"] == CREATED_AT
+
+
+def test_record_integrity_and_stale_controller_transition_fail_closed() -> None:
+    history = _History(_new_experiment())
+    service, _jobs = _service(history, controller=_NoopController())
+    stale = _digest("f")
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.perform_controller_transition(
+            experiment_id=EXPERIMENT_ID,
+            expected_revision=1,
+            expected_digest=stale,
+            action=EngineControllerAction.REVIEW_DEFENSE,
+            request_ref=_digest("5"),
+        )
+    assert caught.value.code == "engine_experiment_conflict"
+
+    current = history.experiment
+    assert current is not None
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.perform_controller_transition(
+            experiment_id=EXPERIMENT_ID,
+            expected_revision=current.revision,
+            expected_digest=current.digest,
+            action=EngineControllerAction.REVIEW_DEFENSE,
+            request_ref=_digest("5"),
+        )
+    assert caught.value.code == "engine_controller_refused"
+    assert history.experiment == current
+
+    record = dict(history._record())
+    record["digest"] = _digest("e")
+    history.get_engine_experiment = lambda *_args, **_kwargs: record  # type: ignore[method-assign]
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.get(EXPERIMENT_ID)
+    assert caught.value.code == "engine_experiment_unavailable"
+
+
+def test_json_transition_contract_rejects_extras_and_never_accepts_evidence() -> None:
+    history = _History(_new_experiment())
+    service, _jobs = _service(history)
+    current = history.experiment
+    assert current is not None
+    request = {
+        "schema_version": "bluefire.engine-controller-transition.v1",
+        "expected_revision": current.revision,
+        "expected_digest": current.digest,
+        "action": "review_defense",
+        "request_ref": _digest("5"),
+        "evidence": {"assessment": "unauthorized_disclosure"},
+    }
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.perform_controller_transition_request(EXPERIMENT_ID, request)
+    assert caught.value.code == "engine_request_invalid"
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.submit_attempt_request(
+            {
+                "schema_version": "bluefire.engine-attempt-submit.v1",
+                "experiment_id": EXPERIMENT_ID,
+            }
+        )
+    assert caught.value.code == "engine_request_invalid"
+
+
+def test_controller_effect_is_a_visible_job_and_does_not_mutate_inline() -> None:
+    history = _History(_new_experiment())
+    controller_jobs = _ControllerJobs()
+    service, _jobs = _service(history, controller_jobs=controller_jobs)
+    current = history.experiment
+    assert current is not None
+    request_ref = _digest("5")
+    public_request = {
+        "schema_version": "bluefire.engine-controller-job.v1",
+        "experiment_id": EXPERIMENT_ID,
+        "revision": current.revision,
+        "experiment_digest": current.digest,
+        "action": EngineControllerJobAction.APPLY_DEFENSE.value,
+        "request_ref": request_ref,
+    }
+
+    job = service.submit_controller_operation_request(
+        EXPERIMENT_ID,
+        {
+            "schema_version": "bluefire.engine-controller-job-submit.v1",
+            "expected_revision": current.revision,
+            "expected_digest": current.digest,
+            "action": "apply_defense",
+            "request_ref": request_ref,
+            "submission_id": "11111111-1111-4111-8111-111111111111",
+            "intent_digest": content_hash(public_request),
+        },
+    )
+
+    assert job == {
+        "schema_version": "bluefire.engine-controller-job-submission.v1",
+        "job_id": "job-" + "e" * 32,
+        "kind": "engine-controller-operation",
+        "experiment_id": EXPERIMENT_ID,
+        "action": "apply_defense",
+        "submission_id": "11111111-1111-4111-8111-111111111111",
+        "intent_digest": content_hash(public_request),
+        "state": "queued",
+    }
+    assert history.experiment == current
+    assert controller_jobs.requests[0]["action"] is EngineControllerJobAction.APPLY_DEFENSE
+
+    controller_jobs.state = "completed"
+    replay = service.submit_controller_operation_request(
+        EXPERIMENT_ID,
+        {
+            "schema_version": "bluefire.engine-controller-job-submit.v1",
+            "expected_revision": current.revision,
+            "expected_digest": current.digest,
+            "action": "apply_defense",
+            "request_ref": request_ref,
+            "submission_id": "11111111-1111-4111-8111-111111111111",
+            "intent_digest": content_hash(public_request),
+        },
+    )
+    assert replay["job_id"] == job["job_id"]
+    assert replay["state"] == "completed"
+
+
+def test_controller_job_rejects_noncanonical_submission_and_unbound_receipt() -> None:
+    history = _History(_new_experiment())
+    current = history.experiment
+    assert current is not None
+    request_ref = _digest("5")
+    intent = content_hash(
+        {
+            "schema_version": "bluefire.engine-controller-job.v1",
+            "experiment_id": EXPERIMENT_ID,
+            "revision": current.revision,
+            "experiment_digest": current.digest,
+            "action": "apply_defense",
+            "request_ref": request_ref,
+        }
+    )
+    service, _jobs = _service(history, controller_jobs=_ControllerJobs())
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.submit_controller_operation(
+            experiment_id=EXPERIMENT_ID,
+            expected_revision=current.revision,
+            expected_digest=current.digest,
+            action=EngineControllerJobAction.APPLY_DEFENSE,
+            request_ref=request_ref,
+            submission_id="NOT-A-CANONICAL-UUID",
+            intent_digest=intent,
+        )
+    assert caught.value.code == "engine_experiment_refused"
+
+    unbound, _jobs = _service(history, controller_jobs=_UnboundControllerJobs())
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        unbound.submit_controller_operation(
+            experiment_id=EXPERIMENT_ID,
+            expected_revision=current.revision,
+            expected_digest=current.digest,
+            action=EngineControllerJobAction.APPLY_DEFENSE,
+            request_ref=request_ref,
+            submission_id="11111111-1111-4111-8111-111111111111",
+            intent_digest=intent,
+        )
+    assert caught.value.code == "engine_controller_refused"
+
+
+def test_cancel_and_recover_delegate_without_resubmitting() -> None:
+    experiment = _reserve_baseline(_new_experiment())
+    history = _History(experiment)
+    service, jobs = _service(history)
+    attempt = experiment.attempts[0]
+
+    cancelled = service.cancel_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=attempt.record.binding.attempt_id,
+        job_id=attempt.job_id,
+    )
+    assert cancelled["job"]["state"] == "cancelled"
+    assert jobs.cancelled == [(EXPERIMENT_ID, attempt.record.binding.attempt_id, attempt.job_id)]
+
+    recovered = service.recover_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=attempt.record.binding.attempt_id,
+    )
+    assert recovered["projection"]["workflow_state"] == "baseline_active"
+    assert jobs.recovered == [(EXPERIMENT_ID, attempt.record.binding.attempt_id)]
+
+
+def test_cancel_does_not_reclassify_callback_settlement_as_undispatched() -> None:
+    experiment = _settle_cancelled(_reserve_baseline(_new_experiment()))
+    history = _History(experiment)
+    service, jobs = _service(history)
+    attempt = experiment.attempts[0]
+
+    result = service.cancel_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=attempt.record.binding.attempt_id,
+        job_id=attempt.job_id,
+    )
+
+    assert result["job"]["state"] == "cancelled"
+    assert jobs.cancelled == []
+
+
+def test_workspace_projection_is_digest_bound() -> None:
+    history = _History(_new_experiment())
+    service, _jobs = _service(history)
+    workspace = service.workspace(EXPERIMENT_ID)
+
+    assert workspace["projection"]["experiment_digest"] == workspace["experiment_digest"]
+
+
+def test_workspace_deep_link_binds_exactly_one_saved_selection() -> None:
+    experiment = _reserve_baseline(_new_experiment())
+    history = _History(experiment)
+    service, _jobs = _service(history)
+    entry = experiment.attempts[0]
+
+    workspace = service.workspace(
+        EXPERIMENT_ID,
+        selected_attempt_id=entry.record.binding.attempt_id,
+    )
+    selected = workspace["selected_context"]
+    assert selected["kind"] == "engine_attempt"
+    assert selected["attempt"]["attempt_id"] == entry.record.binding.attempt_id
+    assert selected["attempt"]["job_id"] == entry.job_id
+    assert selected["attempt"]["run_id"] == entry.record.binding.run_id
+    assert selected["attempt"]["role"] == "baseline"
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.workspace(
+            EXPERIMENT_ID,
+            selected_attempt_id=entry.record.binding.attempt_id,
+            selected_check_id="controller-check-" + "c" * 32,
+        )
+    assert caught.value.code == "engine_request_invalid"
+
+    with pytest.raises(EngineExperimentServiceError) as caught:
+        service.workspace(
+            EXPERIMENT_ID,
+            selected_attempt_id="engine-attempt-" + "f" * 32,
+        )
+    assert caught.value.code == "engine_selection_not_found"
+
+
+def test_workspace_reopens_exact_historical_presentation_revision() -> None:
+    first = _new_experiment()
+    history = _History(first)
+    second = first._changed(timestamp="2026-11-04T12:00:05Z")
+    history.save_engine_experiment(
+        EXPERIMENT_ID,
+        second.to_dict(),
+        expected_revision=first.revision,
+        expected_digest=first.digest,
+        validator=lambda value: EngineExperiment._from_controller_mapping(value).to_dict(),
+    )
+    service, _jobs = _service(history)
+
+    current = service.workspace(EXPERIMENT_ID)
+    historical = service.workspace(EXPERIMENT_ID, revision=1)
+
+    assert current["revision"] == 2
+    assert historical["revision"] == 1
+    assert historical["experiment_digest"] == first.digest
+    assert current["experiment_digest"] == second.digest
+    assert historical["current_target"]["captured_at"] == CREATED_AT
+    assert current["current_target"]["captured_at"] == "2026-11-04T12:00:05Z"
