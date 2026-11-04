@@ -2506,6 +2506,46 @@ class TenantRecordLabLauncher:
             settled = self._best_effort_reconcile(current, sink)
             raise TenantLabStartFailure("fixed lab launch failed", settled) from exc
 
+    def check_running(self, record: TenantLabLifecycleRecord) -> str:
+        """Freshly verify exact retained custody/readiness without changing it."""
+
+        self._validate_record(record)
+        if record.state is not LifecycleState.RUNNING:
+            raise TenantLabLaunchError("fresh custody requires a running lab")
+        layout = self._layout_and_verify_packets(record.plan)
+        if not self._backend.verify_all_running(record.plan, record.children):
+            raise TenantLabLaunchError("fixed lab has no exact joint custody")
+        retained = {item.role: item for item in record.readiness}
+        observations: list[str] = []
+        for child in record.children:
+            spec = self._spec(record.plan, layout, child.role)
+            observed = self._backend.verify_ready(spec, child)
+            self._validate_readiness(spec, child, observed)
+            prior = retained[child.role]
+            if (
+                observed.role is not prior.role
+                or observed.process_identity_digest != prior.process_identity_digest
+                or observed.spec_digest != prior.spec_digest
+                or observed.endpoint != prior.endpoint
+                or observed.binding_digest != prior.binding_digest
+            ):
+                raise TenantLabLaunchError("fixed lab readiness identity changed")
+            _at_or_after(observed.observed_at, prior.observed_at, "fresh readiness")
+            _at_or_after(observed.observed_at, cast(str, record.running_at), "fresh readiness")
+            observations.append(observed.receipt_digest)
+        if not self._backend.verify_all_running(record.plan, record.children):
+            raise TenantLabLaunchError("fixed lab lost joint custody during readiness")
+        observed_at = self._now()
+        return content_hash(
+            {
+                "schema_version": "bluefire.tenant-record-live-custody.v1",
+                "plan_digest": record.plan.digest,
+                "lifecycle_digest": record.digest,
+                "readiness_receipt_digests": observations,
+                "observed_at": observed_at,
+            }
+        )
+
     def stop(
         self, record: TenantLabLifecycleRecord, sink: LifecycleSink
     ) -> TenantLabLifecycleRecord:

@@ -617,6 +617,80 @@ def test_joint_running_observation_blocks_a_stale_running_commit(
     assert ("running", LifecycleState.RUNNING) not in lifecycle.events
 
 
+def test_fresh_running_check_uses_readiness_and_joint_custody_without_effects(
+    tmp_path: Path,
+) -> None:
+    launcher, backend, prepared, sink = _prepared(tmp_path)
+    running = launcher.start(prepared, sink)
+    before = running.to_dict()
+    backend.events.clear()
+    receipt = launcher.check_running(running)
+    assert receipt.startswith("sha256:")
+    assert backend.events == [
+        "verify_all_running",
+        "ready:target",
+        "ready:test_provider",
+        "verify_all_running",
+    ]
+    assert running.to_dict() == before
+    # Clock advances every call: a fresh observation has a fresh receipt while
+    # the stable process/readiness identity must match the retained record.
+    assert launcher.check_running(running) != receipt
+
+
+def test_fresh_running_check_rejects_changed_readiness_and_lost_joint_custody(
+    tmp_path: Path,
+) -> None:
+    launcher, backend, prepared, sink = _prepared(tmp_path)
+    running = launcher.start(prepared, sink)
+    original_ready = backend.verify_ready
+
+    def changed_ready(spec: FixedChildSpec, child: OwnedChild) -> ReadinessReceipt:
+        ready: ReadinessReceipt = original_ready(spec, child)
+        endpoint = LoopbackEndpoint(ready.endpoint.host, ready.endpoint.port + 10)
+        binding = content_hash(
+            {
+                "role": child.role.value,
+                "process": child.process_identity_digest,
+                "endpoint": endpoint.to_dict(),
+                "packet": spec.packet_digest,
+                "plan": spec.plan_digest,
+            }
+        )
+        return replace(
+            ready,
+            endpoint=endpoint,
+            binding_digest=binding,
+            receipt_digest=content_hash(
+                {"binding_digest": binding, "observed_at": ready.observed_at}
+            ),
+        )
+
+    backend.verify_ready = changed_ready  # type: ignore[method-assign]
+    with pytest.raises(TenantLabLaunchError, match="identity changed"):
+        launcher.check_running(running)
+    backend.verify_ready = original_ready  # type: ignore[method-assign]
+    checks = iter((True, False))
+    backend.verify_all_running = lambda _plan, _children: next(checks)  # type: ignore[method-assign]
+    with pytest.raises(TenantLabLaunchError, match="lost joint custody"):
+        launcher.check_running(running)
+
+
+def test_fresh_running_check_rejects_unreserved_and_changed_packets_before_backend(
+    tmp_path: Path,
+) -> None:
+    launcher, backend, prepared, sink = _prepared(tmp_path)
+    with pytest.raises(TenantLabLaunchError, match="running lab"):
+        launcher.check_running(prepared)
+    assert backend.events == []
+    running = launcher.start(prepared, sink)
+    backend.events.clear()
+    backend.specs[0].packet_source.path.write_bytes(b"changed")
+    with pytest.raises(TenantLabLaunchError, match="packet changed"):
+        launcher.check_running(running)
+    assert backend.events == []
+
+
 def test_readiness_failure_settles_both_roles_without_starting_provider(
     tmp_path: Path,
 ) -> None:
