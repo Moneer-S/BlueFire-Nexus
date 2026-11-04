@@ -34,11 +34,36 @@ def test_release_rights_audit_covers_the_release_tree() -> None:
         "frontend_locked_packages": 393,
         "rust_release_crates": 43,
         "rust_locked_crates": 49,
-        "classified_assets": 57,
+        "classified_assets": 58,
         "project_source_files": report.project_source_files,
         "unresolved_items": [],
     }
     assert report.project_source_files > 250
+
+
+def test_strix_prompt_overlay_is_project_authored_external_adapter_policy() -> None:
+    relative = "bluefire/data/strix_prompt_policy_overlay.txt"
+    assets = POLICY["assets"]
+
+    assert assets["classifications"]["project-authored-external-adapter-policy-mit"] == [
+        relative
+    ]
+    context = assets["external_adapter_asset_context"][relative]
+    assert context == {
+        "asset_license": "MIT",
+        "content_sha256": "a88d1cb62230023c7809df4010831ea696e9a6e5793ab7ff80e46f24d4bc506d",
+        "upstream_project": "usestrix/strix",
+        "upstream_source_revision": "6b7ae2ebe4d47037a927aade23265ff4e4f27e84",
+        "upstream_license": "Apache-2.0",
+        "upstream_content_included": False,
+        "purpose": "BlueFire-authored replacement text for one hash-pinned upstream prompt region in the separately built modified Strix external-adapter candidate.",
+        "modification_notice": "THIRD_PARTY_NOTICES.md#strix-external-engine-candidate",
+        "oci_or_tool_image_redistributed": False,
+    }
+    assert hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() == context[
+        "content_sha256"
+    ]
+    assert relative not in assets["third_party_integrity"]
 
 
 def test_conditional_parser_dependency_requires_reviewed_provenance(
