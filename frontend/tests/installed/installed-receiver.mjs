@@ -688,6 +688,30 @@ async function appApi(path, requestedTimeout = remainingMs()) {
   }, { apiPath: path, timeout });
 }
 
+async function appApiOutcome(path, requestedTimeout = remainingMs()) {
+  const timeout = boundedTimeout(requestedTimeout);
+  return page.evaluate(async ({ apiPath, timeout }) => {
+    const token = sessionStorage.getItem("bluefire.browser-session.v1");
+    if (!token) return { outcome: "session_unavailable" };
+    try {
+      const response = await fetch(`/api/v1${apiPath}`, {
+        method: "GET", redirect: "error", credentials: "omit",
+        headers: { "X-BlueFire-Session": token, Accept: "application/json" },
+        signal: AbortSignal.timeout(timeout),
+      });
+      const outcome = response.ok ? "ok" : response.status === 404 ? "not_found"
+        : response.status === 409 ? "conflict" : [401, 403].includes(response.status) ? "authorization_rejected"
+        : response.status >= 400 && response.status < 500 ? "client_error"
+        : response.status >= 500 && response.status < 600 ? "server_error" : "invalid_response";
+      if (outcome !== "ok") return { outcome };
+      try { return { outcome, run: await response.json() }; }
+      catch { return { outcome: "invalid_response" }; }
+    } catch (error) {
+      return { outcome: error?.name === "TimeoutError" ? "timeout" : "transport_error" };
+    }
+  }, { apiPath: path, timeout });
+}
+
 function evidenceExpectation() {
   return { origin: ORIGIN, ownerId: compositionOwnerId, attemptId: report.composition?.attempt_id,
     settlement: report.composition?.settlement, objectiveEstablished: report.composition?.objective_established,
@@ -1902,6 +1926,7 @@ try {
   report.retained_execution = await runRetainedJourney(page, retained, {
     origin: ORIGIN, controlId: originalOwnerId, controlDigest: originalControlDigest, profileId: PROFILE, providerId: PROVIDER_ID, model: MODEL,
     read: path => appApi(path), remainingMs, setStage: value => { stage = value; },
+    readOriginalRun: runId => appApiOutcome(`/runs/${runId}`),
     onInteraction: value => { retainedInteraction = value; },
     onVerification: value => { retainedVerification = value; },
     onRevoked: () => { report.cleanup = { ...(report.cleanup ?? {}), retained_grant_revoked: true }; },

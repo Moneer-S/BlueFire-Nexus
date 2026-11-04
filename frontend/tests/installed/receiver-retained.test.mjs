@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { URL } from "node:url";
-import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, submitRetainedAttempt } from "./receiver-retained.mjs";
+import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, submitRetainedAttempt,
+  verifyRetainedHistoryAfterContinuation } from "./receiver-retained.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
 import { retainedHash, assertRetainedSource, assertMetadataOnly, verifyRetainedOriginal, verifyRetainedContinuation, RETAINED_PACK, RETAINED_QUESTION, RETAINED_REVIEWER, RETAINED_METHOD } from "./receiver-retained-proof.mjs";
 
@@ -261,6 +262,43 @@ function continuationFixture() {
   result.receiver_result = { ...result.receiver_result, decision: "accepted", redacted_record_count: 8, retained_record_count: 0 };
   return { run, attempt, expected: { ...first.expected, source: first.source, original } };
 }
+
+test("post-continuation proof reloads the immutable original run with a bounded outcome", async () => {
+  const first = originalFixture();
+  const second = continuationFixture();
+  const original = verifyRetainedOriginal(first.attempt, first.run, first.expected).original;
+  const steps = [];
+  await verifyRetainedHistoryAfterContinuation({
+    current: { attempts: [first.attempt, second.attempt] }, first, original,
+    readOriginalRun: async run => ({ outcome: "ok", run: run === original.run_id ? first.run : null }),
+    onVerification: value => steps.push(value),
+  });
+  assert.deepEqual(steps, [
+    { schema_version: "bluefire.installed-retained-verification.v1", step: "history_attempts" },
+    { schema_version: "bluefire.installed-retained-verification.v1", step: "history_result" },
+    { schema_version: "bluefire.installed-retained-verification.v1", step: "history_capture" },
+    { schema_version: "bluefire.installed-retained-verification.v1", step: "source_run_reload", read_outcome: "pending" },
+    { schema_version: "bluefire.installed-retained-verification.v1", step: "source_run_reload", read_outcome: "ok" },
+    { schema_version: "bluefire.installed-retained-verification.v1", step: "source_manifest" },
+    { schema_version: "bluefire.installed-retained-verification.v1", step: "source_evidence" },
+  ]);
+});
+
+test("post-continuation proof retains only the fixed source-run failure category", async () => {
+  const first = originalFixture();
+  const second = continuationFixture();
+  const original = verifyRetainedOriginal(first.attempt, first.run, first.expected).original;
+  const steps = [];
+  await assert.rejects(verifyRetainedHistoryAfterContinuation({
+    current: { attempts: [first.attempt, second.attempt] }, first, original,
+    readOriginalRun: async () => ({ outcome: "server_error", private_detail: "must not be retained" }),
+    onVerification: value => steps.push(value),
+  }));
+  assert.deepEqual(steps.at(-1), {
+    schema_version: "bluefire.installed-retained-verification.v1", step: "source_run_reload",
+    read_outcome: "server_error",
+  });
+});
 
 test("retention proof binds capture to its original producer before refusal and cleanup", () => {
   const { run, attempt, source, expected } = originalFixture();

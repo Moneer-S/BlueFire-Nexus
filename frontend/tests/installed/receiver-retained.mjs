@@ -184,6 +184,38 @@ export function assertRetainedSavedRunProfile(run, profileId, onVerification) {
   assert.equal(run.profile.id, profileId);
 }
 
+const retainedVerification = (onVerification, step, readOutcome) => onVerification?.({
+  schema_version: "bluefire.installed-retained-verification.v1", step,
+  ...(readOutcome ? { read_outcome: readOutcome } : {}),
+});
+
+export async function verifyRetainedHistoryAfterContinuation({ current, first, original, readOriginalRun, onVerification }) {
+  retainedVerification(onVerification, "history_attempts");
+  assert.equal(current.attempts.length, 2);
+  const originalAgain = current.attempts.find(item => item.job_id === first.attempt.job_id);
+  retainedVerification(onVerification, "history_result");
+  assert.deepEqual(originalAgain.progress.verified_result, first.attempt.progress.verified_result);
+  retainedVerification(onVerification, "history_capture");
+  assert.deepEqual(originalAgain.progress.retained_artifact_capture, first.attempt.progress.retained_artifact_capture);
+  retainedVerification(onVerification, "source_run_reload", "pending");
+  let loaded;
+  try {
+    loaded = await readOriginalRun(original.run_id);
+  } catch {
+    retainedVerification(onVerification, "source_run_reload", "transport_error");
+    throw new Error("The original source run could not be reloaded");
+  }
+  const outcome = loaded?.outcome;
+  const allowed = new Set(["ok", "not_found", "conflict", "authorization_rejected", "client_error",
+    "server_error", "session_unavailable", "timeout", "transport_error", "invalid_response"]);
+  retainedVerification(onVerification, "source_run_reload", allowed.has(outcome) ? outcome : "invalid_response");
+  assert.equal(outcome, "ok");
+  retainedVerification(onVerification, "source_manifest");
+  assert.deepEqual(loaded.run.manifest, first.run.manifest);
+  retainedVerification(onVerification, "source_evidence");
+  assert.deepEqual(loaded.run.evidence, first.run.evidence);
+}
+
 export async function authorizeRetainedPurpose(page, { origin, model, reviewer }) {
   await page.goto(`${origin}/#/settings`, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: `Edit Responses API · ${model}`, exact: true }).click();
@@ -367,13 +399,8 @@ export async function runRetainedJourney(page, state, options) {
   const second = await execute(1);
   state.second = verifyRetainedContinuation(second.attempt, second.run, { ownerId: state.ownerId, grant,
     source: state.source, original: state.first, onVerifyStep: options.onVerification });
-  assert.equal(second.current.attempts.length, 2);
-  const originalAgain = second.current.attempts.find(item => item.job_id === first.attempt.job_id);
-  assert.deepEqual(originalAgain.progress.verified_result, first.attempt.progress.verified_result);
-  assert.deepEqual(originalAgain.progress.retained_artifact_capture, first.attempt.progress.retained_artifact_capture);
-  const sourceRun = await read(`/runs/${state.first.run_id}`);
-  assert.deepEqual(sourceRun.manifest, first.run.manifest);
-  assert.deepEqual(sourceRun.evidence, first.run.evidence);
+  await verifyRetainedHistoryAfterContinuation({ current: second.current, first, original: state.first,
+    readOriginalRun: options.readOriginalRun, onVerification: options.onVerification });
   setStage("retained-grant-revoke");
   const revokeResponse = postResponse(`/composition/objectives/${state.ownerId}/revoke`);
   await page.getByRole("button", { name: "Revoke", exact: true }).click();

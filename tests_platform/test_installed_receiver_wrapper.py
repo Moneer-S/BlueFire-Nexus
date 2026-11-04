@@ -859,6 +859,12 @@ def test_retained_interaction_projection_keeps_only_known_categories_and_boolean
         "materialized_evidence",
         "continuation_plan",
         "complete",
+        "history_attempts",
+        "history_result",
+        "history_capture",
+        "source_run_reload",
+        "source_manifest",
+        "source_evidence",
     ],
 )
 def test_retained_verification_projection_keeps_only_reviewed_stage(step) -> None:
@@ -878,6 +884,63 @@ def test_retained_verification_projection_keeps_only_reviewed_stage(step) -> Non
     assert _receiver_report_for_receipt(report)["errors"][0]["retained_verification"] == {
         "schema_version": "bluefire.installed-retained-verification.v1",
         "step": step,
+    }
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "pending",
+        "ok",
+        "not_found",
+        "conflict",
+        "authorization_rejected",
+        "client_error",
+        "server_error",
+        "session_unavailable",
+        "timeout",
+        "transport_error",
+        "invalid_response",
+    ],
+)
+def test_retained_source_run_reload_projection_keeps_only_reviewed_outcome(outcome) -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-continuation-settlement",
+            "kind": "journey_failed",
+            "retained_verification": {
+                "schema_version": "bluefire.installed-retained-verification.v1",
+                "step": "source_run_reload",
+                "read_outcome": outcome,
+                "response": {"private": True},
+            },
+        }
+    ]
+    assert _receiver_report_for_receipt(report)["errors"][0]["retained_verification"] == {
+        "schema_version": "bluefire.installed-retained-verification.v1",
+        "step": "source_run_reload",
+        "read_outcome": outcome,
+    }
+
+
+@pytest.mark.parametrize("outcome", [None, 1, "private", {}, []])
+def test_retained_source_run_reload_projection_drops_unreviewed_outcome(outcome) -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-continuation-settlement",
+            "kind": "journey_failed",
+            "retained_verification": {
+                "schema_version": "bluefire.installed-retained-verification.v1",
+                "step": "source_run_reload",
+                "read_outcome": outcome,
+            },
+        }
+    ]
+    assert _receiver_report_for_receipt(report)["errors"][0]["retained_verification"] == {
+        "schema_version": "bluefire.installed-retained-verification.v1",
+        "step": "source_run_reload",
     }
 
 
