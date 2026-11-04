@@ -29,6 +29,7 @@ from . import product_store_capability_api as capability_store_api
 from . import product_store_detection_evaluations as detection_evaluation_store
 from . import product_store_engine_experiments as engine_experiment_store
 from . import product_store_engine_jobs as engine_job_store
+from . import product_store_engine_presentations as engine_presentation_store
 from . import product_store_file_access as file_access_store
 from . import product_store_proposal_reviews as proposal_review_store
 from .comparison_snapshot_store import list_legacy_resources, reject_generic_resource_write
@@ -72,7 +73,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -261,6 +262,7 @@ class ApprovalRequest:
 
 class ProductStore(
     engine_job_store.EngineExperimentJobStoreMixin,
+    engine_presentation_store.EngineExperimentPresentationStoreMixin,
     engine_experiment_store.EngineExperimentStoreMixin,
     capability_store_api.CapabilityStoreMixin,
     file_access_store.FileAccessStoreMixin,
@@ -843,6 +845,7 @@ class ProductStore(
             capability_store_api.initialize_schema(connection)
             file_access_store.initialize_schema(connection)
             engine_experiment_store.initialize_schema(connection)
+            engine_presentation_store.initialize_schema(connection)
             self._initialize_macos_workspace_schema(connection)
             if current is None or int(current) < 6:
                 self._migrate_legacy_plugin_metadata(connection)

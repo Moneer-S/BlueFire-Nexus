@@ -34,6 +34,18 @@ class EngineExperimentSelectionNotFound(EngineExperimentWorkspaceError):
 class EngineExperimentPresentationSource(Protocol):
     """Trusted, read-only source for controller-supplied workspace display metadata."""
 
+    def assert_engine_experiment_presentation_create_ready(
+        self, experiment: EngineExperiment
+    ) -> None:
+        """Refuse creation unless exact revision-one presentation is provisioned."""
+
+    def assert_engine_experiment_presentation_transition_ready(
+        self,
+        current: EngineExperiment,
+        successor: EngineExperiment,
+    ) -> None:
+        """Refuse a transition unless exact successor presentation is provisioned."""
+
     def get_engine_experiment_presentation(
         self,
         experiment_id: str,
@@ -522,10 +534,13 @@ def _checked_presentation(
         if checked_target["snapshot_ref"] != experiment.current_target_snapshot_ref:
             raise EngineExperimentWorkspaceError("current target snapshot changed")
         captured = parse_iso8601_datetime(cast(str, checked_target["captured_at"]))
-        if not (
-            parse_iso8601_datetime(experiment.created_at)
-            <= captured
-            <= parse_iso8601_datetime(experiment.updated_at)
+        updated = parse_iso8601_datetime(experiment.updated_at)
+        initial_snapshot = (
+            checked_target["snapshot_ref"] == experiment.initial_target_snapshot_ref
+        )
+        if captured > updated or (
+            not initial_snapshot
+            and captured < parse_iso8601_datetime(experiment.created_at)
         ):
             raise EngineExperimentWorkspaceError("current target capture time changed")
 

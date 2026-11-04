@@ -365,13 +365,13 @@ def test_engine_experiment_schema_migrates_from_previous_version(tmp_path: Path)
         "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
     )
     connection.execute(
-        "INSERT INTO schema_migrations(version, applied_at) VALUES (13, '2026-11-03T00:00:00Z')"
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (14, '2026-11-03T00:00:00Z')"
     )
     connection.commit()
     connection.close()
 
     store = ProductStore(path)
-    assert store.schema_version == SCHEMA_VERSION == 14
+    assert store.schema_version == SCHEMA_VERSION == 15
     experiment_id = "experiment-" + "9" * 32
     assert (
         store.create_engine_experiment(
