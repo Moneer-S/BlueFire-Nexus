@@ -1746,6 +1746,7 @@ class Orchestrator:
             mode is ExecutionMode.EXECUTE
             and not macos_attempt
             and replay is None
+            and self.grant_execution is None
             and objective_reached
             and cleanup_attempted
             and cleanup_success
