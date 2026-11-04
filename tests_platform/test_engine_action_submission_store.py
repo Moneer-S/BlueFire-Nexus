@@ -22,7 +22,7 @@ from bluefire.engine_experiment import (
     EngineExperiment,
     _controller_observation_record,
 )
-from bluefire.product_store import ProductStore
+from bluefire.product_store import SCHEMA_VERSION, ProductStore
 from bluefire.product_store_errors import ProductStoreError, ResourceConflictError
 from bluefire.product_store_serialization import canonical_json
 from bluefire.util import content_hash
@@ -796,12 +796,12 @@ def test_schema16_upgrade_preserves_retained_preparation_and_enables_acceptance(
     before = store.get_protected_engine_action_preparation(protected["request_ref"])
     with sqlite3.connect(store.path) as connection:
         connection.execute("DROP TABLE engine_action_acceptances")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 17")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 17")
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations VALUES (16, '2026-11-04T00:00:00Z')"
         )
     upgraded = ProductStore(store.path)
-    assert upgraded.schema_version == 17
+    assert upgraded.schema_version == SCHEMA_VERSION
     assert upgraded.get_protected_engine_action_preparation(protected["request_ref"]) == before
     assert _accept(upgraded, values)[1] is True
 

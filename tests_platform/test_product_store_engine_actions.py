@@ -29,7 +29,7 @@ from bluefire.engine_experiment import (
     _controller_observation_record,
 )
 from bluefire.engine_experiment_jobs import EngineExperimentJobs
-from bluefire.product_store import ProductStore
+from bluefire.product_store import SCHEMA_VERSION, ProductStore
 from bluefire.product_store_errors import ProductStoreError, ResourceConflictError
 from bluefire.tenant_record_experiment_controller import (
     TenantFailureMechanism,
@@ -529,7 +529,7 @@ def test_v15_upgrade_preserves_experiment_and_enables_action_preparation(
         )
 
     upgraded = _ActionStore(path)
-    assert upgraded.schema_version == 17
+    assert upgraded.schema_version == SCHEMA_VERSION
     assert upgraded.get_engine_experiment(EXPERIMENT_ID) == before
     prepared_at, expires_at, _ = _times()
     protected = _create_attempt(
@@ -1560,9 +1560,11 @@ def test_action_kind_rejects_wrong_approval_contract(
             experiment_digest=history["digest"],
             workspace_digest=WORKSPACE_REF,
             action=action,
-            limits=_limits()
-            if action is EngineWorkspaceAction.START_BASELINE
-            else _controller_limits(),
+            limits=(
+                _limits()
+                if action is EngineWorkspaceAction.START_BASELINE
+                else _controller_limits()
+            ),
             prepared_at=prepared_at,
             expires_at=expires_at,
             protected_factory=attempt_factory,

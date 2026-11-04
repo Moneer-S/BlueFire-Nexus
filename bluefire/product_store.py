@@ -34,6 +34,7 @@ from . import product_store_engine_jobs as engine_job_store
 from . import product_store_engine_presentations as engine_presentation_store
 from . import product_store_file_access as file_access_store
 from . import product_store_proposal_reviews as proposal_review_store
+from . import product_store_tenant_generation_journals as tenant_generation_journal_store
 from .comparison_snapshot_store import list_legacy_resources, reject_generic_resource_write
 from .contracts import ScenarioDefinition
 from .local_lock import (
@@ -75,7 +76,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -263,6 +264,7 @@ class ApprovalRequest:
 
 
 class ProductStore(
+    tenant_generation_journal_store.TenantGenerationJournalStoreMixin,
     engine_job_store.EngineExperimentJobStoreMixin,
     engine_presentation_store.EngineExperimentPresentationStoreMixin,
     engine_action_store.EngineActionPreparationStoreMixin,
@@ -852,6 +854,7 @@ class ProductStore(
             engine_presentation_store.initialize_schema(connection)
             engine_action_store.initialize_schema(connection)
             engine_action_submission_store.initialize_schema(connection)
+            tenant_generation_journal_store.initialize_schema(connection)
             self._initialize_macos_workspace_schema(connection)
             if current is None or int(current) < 6:
                 self._migrate_legacy_plugin_metadata(connection)
@@ -1542,9 +1545,7 @@ class ProductStore(
                 else (
                     {"suspended", "revoked"}
                     if previous == "trusted"
-                    else {"revoked"}
-                    if previous == "suspended"
-                    else set()
+                    else {"revoked"} if previous == "suspended" else set()
                 )
             )
             if state not in allowed:
