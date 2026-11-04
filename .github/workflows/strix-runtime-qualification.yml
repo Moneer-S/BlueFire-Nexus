@@ -1,0 +1,71 @@
+name: Strix runtime qualification preparation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strix-runtime-qualification-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare offline runtime and image inventory without execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact BlueFire revision without retained credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up exact Python toolchain
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12.14"
+          check-latest: false
+
+      - name: Set up exact Go toolchain for the candidate build hook
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.24.10"
+          cache: false
+
+      - name: Set up exact uv frontend without a shared cache
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+
+      - name: Rebuild the provenance-bound candidate
+        shell: bash
+        run: >-
+          python -m tools.build_strix_engine_candidate
+          --work-root "$RUNNER_TEMP/bluefire-strix-candidate-work"
+          --output-root "$RUNNER_TEMP/bluefire-strix-candidate-output"
+          --bluefire-source-revision "${{ github.sha }}"
+
+      - name: Prepare exact offline closure and non-executed image inventory
+        shell: bash
+        run: >-
+          python -m tools.qualify_strix_runtime_candidate
+          --candidate-root "$RUNNER_TEMP/bluefire-strix-candidate-output"
+          --source-root "$RUNNER_TEMP/bluefire-strix-candidate-work/source"
+          --work-root "$RUNNER_TEMP/bluefire-strix-qualification-work"
+          --output-root "$RUNNER_TEMP/bluefire-strix-qualification-output"
+          --bluefire-source-revision "${{ github.sha }}"
+
+      - name: Upload short-lived candidate and preparation artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: strix-runtime-qualification-preparation-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/bluefire-strix-candidate-output
+            ${{ runner.temp }}/bluefire-strix-qualification-output
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 3
