@@ -253,9 +253,14 @@ function continuationFixture() {
 
 test("retention proof binds capture to its original producer before refusal and cleanup", () => {
   const { run, attempt, source, expected } = originalFixture();
-  const proof = verifyRetainedOriginal(attempt, run, expected);
+  const steps = [];
+  const proof = verifyRetainedOriginal(attempt, run, {
+    ...expected, onVerifyStep: value => steps.push(value.step),
+  });
   assert.deepEqual(proof.source, source);
   assert.equal(proof.original.objective_established, false);
+  assert.deepEqual(steps, ["attempt", "run", "verified_result", "receiver_observation", "run_metadata", "capture",
+    "source", "capture_digest", "producer_step", "evidence_lineage", "event_order", "complete"]);
   for (const mutate of [
     value => { value.events[0].sequence = 4; },
     value => { value.evidence.records[1].content.sha256 = "0".repeat(64); },
@@ -266,13 +271,25 @@ test("retention proof binds capture to its original producer before refusal and 
   const failedExit = structuredClone(attempt);
   failedExit.progress.receiver_observation.process_exit.returncode = 1;
   assert.throws(() => verifyRetainedOriginal(failedExit, run, expected));
+  const eventSteps = [];
+  const wrongEvents = structuredClone(run);
+  wrongEvents.events[0].sequence = 4;
+  assert.throws(() => verifyRetainedOriginal(attempt, wrongEvents, {
+    ...expected, onVerifyStep: value => eventSteps.push(value.step),
+  }));
+  assert.equal(eventSteps.at(-1), "event_order");
 });
 
 test("fresh materialization proof requires exact bytes, new receipt, independent observation and no prefix replay", () => {
   const { run, attempt, expected } = continuationFixture();
-  const proof = verifyRetainedContinuation(attempt, run, expected);
+  const steps = [];
+  const proof = verifyRetainedContinuation(attempt, run, {
+    ...expected, onVerifyStep: value => steps.push(value.step),
+  });
   assert.equal(proof.objective_established, true);
   assert.equal(proof.source_ref, expected.source.source_ref);
+  assert.deepEqual(steps, ["attempt", "run", "verified_result", "receiver_observation", "run_metadata",
+    "materialization", "materialized_evidence", "continuation_plan", "complete"]);
   for (const mutate of [
     value => { value.steps[0].artifacts.workspace.sha256 = "0".repeat(64); },
     value => { value.steps[0].artifacts.workspace.receipt_ids = [receiptA]; },

@@ -839,6 +839,72 @@ def test_retained_interaction_projection_keeps_only_known_categories_and_boolean
     assert "private" not in json.dumps(safe)
 
 
+@pytest.mark.parametrize(
+    "step",
+    [
+        "saved_attempt",
+        "saved_run",
+        "attempt",
+        "run",
+        "verified_result",
+        "receiver_observation",
+        "run_metadata",
+        "capture",
+        "source",
+        "capture_digest",
+        "producer_step",
+        "evidence_lineage",
+        "event_order",
+        "materialization",
+        "materialized_evidence",
+        "continuation_plan",
+        "complete",
+    ],
+)
+def test_retained_verification_projection_keeps_only_reviewed_stage(step) -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-original-settlement",
+            "kind": "journey_failed",
+            "retained_verification": {
+                "schema_version": "bluefire.installed-retained-verification.v1",
+                "step": step,
+                "owner_id": "private identity",
+                "response": {"private": True},
+            },
+        }
+    ]
+    assert _receiver_report_for_receipt(report)["errors"][0]["retained_verification"] == {
+        "schema_version": "bluefire.installed-retained-verification.v1",
+        "step": step,
+    }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "private",
+        {"schema_version": "private", "step": "capture"},
+        {
+            "schema_version": "bluefire.installed-retained-verification.v1",
+            "step": "private",
+        },
+    ],
+)
+def test_retained_verification_projection_rejects_unreviewed_values(value) -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-original-settlement",
+            "kind": "journey_failed",
+            "retained_verification": value,
+        }
+    ]
+    assert "retained_verification" not in _receiver_report_for_receipt(report)["errors"][0]
+
+
 @pytest.mark.parametrize("invalid", [None, 1, "private text", [], {"detail": "private response"}])
 def test_retained_interaction_projection_rejects_untyped_state_and_unknown_categories(
     invalid,

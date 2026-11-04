@@ -277,13 +277,17 @@ export async function runRetainedJourney(page, state, options) {
     const id = state.attempts[index];
     const current = await wait(() => read(`/composition/objectives/${state.ownerId}`), value => value.attempts.some(attempt =>
       attempt.job_id === id && attempt.state === "completed" && attempt.progress.settlement === "settled" && attempt.progress.verified_result), 110000);
+    options.onVerification?.({ schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt" });
     const attempt = current.attempts.find(item => item.job_id === id);
     const run = await read(`/runs/${attempt.request.composition_attempt.run_id}`);
+    options.onVerification?.({ schema_version: "bluefire.installed-retained-verification.v1", step: "saved_run" });
     assert.equal(run.profile.profile_id, options.profileId);
     return { current, attempt, run };
   };
   const first = await execute(0);
-  const originalProof = verifyRetainedOriginal(first.attempt, first.run, { ownerId: state.ownerId, grant });
+  const originalProof = verifyRetainedOriginal(first.attempt, first.run, {
+    ownerId: state.ownerId, grant, onVerifyStep: options.onVerification,
+  });
   state.first = originalProof.original;
   state.source = originalProof.source;
   setStage("retained-history-selection");
@@ -358,7 +362,7 @@ export async function runRetainedJourney(page, state, options) {
   if (capture) await capture("receiver-retained-source-1440x900");
   const second = await execute(1);
   state.second = verifyRetainedContinuation(second.attempt, second.run, { ownerId: state.ownerId, grant,
-    source: state.source, original: state.first });
+    source: state.source, original: state.first, onVerifyStep: options.onVerification });
   assert.equal(second.current.attempts.length, 2);
   const originalAgain = second.current.attempts.find(item => item.job_id === first.attempt.job_id);
   assert.deepEqual(originalAgain.progress.verified_result, first.attempt.progress.verified_result);

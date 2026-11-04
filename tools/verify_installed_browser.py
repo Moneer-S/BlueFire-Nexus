@@ -216,6 +216,31 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                     safe_retained[field] = item
             if safe_retained:
                 row["retained_interaction"] = safe_retained
+        verification = entry.get("retained_verification")
+        if isinstance(verification, dict):
+            schema = verification.get("schema_version")
+            step = verification.get("step")
+            allowed_steps = {
+                "saved_attempt",
+                "saved_run",
+                "attempt",
+                "run",
+                "verified_result",
+                "receiver_observation",
+                "run_metadata",
+                "capture",
+                "source",
+                "capture_digest",
+                "producer_step",
+                "evidence_lineage",
+                "event_order",
+                "materialization",
+                "materialized_evidence",
+                "continuation_plan",
+                "complete",
+            }
+            if schema == "bluefire.installed-retained-verification.v1" and step in allowed_steps:
+                row["retained_verification"] = {"schema_version": schema, "step": step}
         if row:
             result.append(row)
     return result

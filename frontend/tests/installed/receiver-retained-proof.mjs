@@ -15,6 +15,9 @@ export const retainedHash = value => `sha256:${createHash("sha256").update(JSON.
 export const exact = (value, keys) => value !== null && typeof value === "object" && !Array.isArray(value)
   && same(Object.keys(value).sort(), [...keys].sort());
 const digest = value => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+const verifyStep = (callback, step) => callback?.({
+  schema_version: "bluefire.installed-retained-verification.v1", step,
+});
 
 export function assertRetainedSource(source) {
   assert.ok(exact(source, ["run_id", "attempt_id", "lineage_id", "step_id", "artifact", "artifact_type", "sha256", "size_bytes", "source_ref"]));
@@ -40,7 +43,8 @@ export function assertMetadataOnly(value) {
   }
 }
 
-function verifiedAttempt(attempt, run, { ownerId, grant, accepted }) {
+function verifiedAttempt(attempt, run, { ownerId, grant, accepted, onVerifyStep }) {
+  verifyStep(onVerifyStep, "attempt");
   const marker = attempt.request.composition_attempt;
   const verified = attempt.progress.verified_result;
   assert.equal(attempt.progress.settlement, "settled");
@@ -49,11 +53,13 @@ function verifiedAttempt(attempt, run, { ownerId, grant, accepted }) {
   assert.equal(marker.grant_id, grant.grant_id);
   assert.equal(marker.grant_digest, grant.grant_digest);
   assert.equal(marker.run_id, run.run_id);
+  verifyStep(onVerifyStep, "run");
   assert.equal(run.mode, "execute");
   assert.equal(receiverRunIsNotDemo(run), true);
   assert.ok(["completed", "incomplete"].includes(run.status));
   assert.equal(run.manifest.run_id, run.run_id);
   assert.ok(digest(run.manifest.bundle_hash));
+  verifyStep(onVerifyStep, "verified_result");
   assert.equal(verified.run_id, run.run_id);
   assert.equal(verified.source_binding.manifest_digest, retainedHash(run.manifest));
   assert.equal(verified.source_binding.run_id, run.run_id);
@@ -70,11 +76,13 @@ function verifiedAttempt(attempt, run, { ownerId, grant, accepted }) {
   assert.deepEqual(verified.cleanup, { run: "complete", receiver: "verified_closed" });
   assert.equal(run.cleanup.success, true);
   assert.equal(run.cleanup.outstanding_receipt_count, 0);
+  verifyStep(onVerifyStep, "receiver_observation");
   assert.equal(attempt.progress.receiver_observation.state, "verified");
   assert.equal(attempt.progress.receiver_observation.terminal.decision.authenticated, true);
   assert.equal(attempt.progress.receiver_observation.terminal.decision.decision, accepted ? "accepted" : "policy_refused");
   assert.equal(attempt.progress.receiver_observation.process_exit.returncode, 0);
   assert.equal(attempt.progress.receiver_closed, true);
+  verifyStep(onVerifyStep, "run_metadata");
   assertMetadataOnly(run);
   return { job_id: attempt.job_id, attempt_id: marker.attempt_id, run_id: run.run_id,
     objective_established: accepted, receiver_decision: verified.receiver_result.decision,
@@ -83,14 +91,19 @@ function verifiedAttempt(attempt, run, { ownerId, grant, accepted }) {
 
 export function verifyRetainedOriginal(attempt, run, expected) {
   const proof = verifiedAttempt(attempt, run, { ...expected, accepted: false });
+  const onVerifyStep = expected.onVerifyStep;
+  verifyStep(onVerifyStep, "capture");
   const capture = attempt.progress.retained_artifact_capture;
   assert.equal(capture.schema_version, "bluefire.retained-artifact-capture.v1");
+  verifyStep(onVerifyStep, "source");
   const source = assertRetainedSource(capture.source);
   assert.equal(source.run_id, run.run_id);
   assert.equal(source.attempt_id, proof.attempt_id);
   assert.equal(source.step_id, "stage_records");
+  verifyStep(onVerifyStep, "capture_digest");
   const { capture_digest: captureDigest, ...body } = capture;
   assert.equal(captureDigest, retainedHash(body));
+  verifyStep(onVerifyStep, "producer_step");
   const stage = run.steps.find(step => step.step_id === source.step_id);
   assert.equal(stage.status, "success");
   assert.equal(stage.action_id, "sandbox.collection.stage.v1");
@@ -98,6 +111,7 @@ export function verifyRetainedOriginal(attempt, run, expected) {
   assert.equal(stage.artifacts.bundle.sha256, source.sha256);
   assert.equal(stage.artifacts.bundle.size, source.size_bytes);
   assert.equal(stage.artifacts.bundle.receipt_ids.length, 1);
+  verifyStep(onVerifyStep, "evidence_lineage");
   const producer = run.evidence.records.find(record => record.record_hash === capture.producer_record_hash);
   const observed = run.evidence.records.find(record => record.record_hash === capture.observation_record_hash);
   assert.equal(producer?.provenance, "executed");
@@ -109,11 +123,13 @@ export function verifyRetainedOriginal(attempt, run, expected) {
   assert.equal(observed.content.sha256, source.sha256);
   assert.equal(observed.content.size_bytes, source.size_bytes);
   assert.ok(run.manifest.files["artifacts.json"]);
+  verifyStep(onVerifyStep, "event_order");
   const retained = run.events.find(event => event.event_type === "artifact.retained" && same(event.data.source, source));
   const handoff = run.events.find(event => event.event_type === "step.completed" && event.data.action_id === "sandbox.peer.handoff.v1");
   const cleanup = run.events.find(event => event.event_type === "step.completed" && event.data.action_id === "sandbox.cleanup.v1");
   assert.ok(retained && handoff && cleanup && retained.sequence < handoff.sequence && handoff.sequence < cleanup.sequence,
     "The real successful collection must be captured before later refusal and cleanup");
+  verifyStep(onVerifyStep, "complete");
   return { source, original: { ...proof, capture_digest: captureDigest,
     producer_record_hash: producer.record_hash, observation_record_hash: observed.record_hash,
     receipt_id: stage.artifacts.bundle.receipt_ids[0] } };
@@ -121,6 +137,8 @@ export function verifyRetainedOriginal(attempt, run, expected) {
 
 export function verifyRetainedContinuation(attempt, run, { source, original, ...expected }) {
   const proof = verifiedAttempt(attempt, run, { ...expected, accepted: true });
+  const onVerifyStep = expected.onVerifyStep;
+  verifyStep(onVerifyStep, "materialization");
   assert.notEqual(proof.job_id, original.job_id);
   assert.notEqual(proof.attempt_id, original.attempt_id);
   assert.notEqual(proof.run_id, original.run_id);
@@ -142,12 +160,14 @@ export function verifyRetainedContinuation(attempt, run, { source, original, ...
   assert.deepEqual(workspace.historical_source, source);
   assert.equal(workspace.receipt_ids.length, 1);
   assert.notEqual(workspace.receipt_ids[0], original.receipt_id);
+  verifyStep(onVerifyStep, "materialized_evidence");
   const executed = run.evidence.records.find(record => first.evidence_ids.includes(record.evidence_id) && record.provenance === "executed");
   const observed = run.evidence.records.find(record => first.evidence_ids.includes(record.evidence_id) && record.provenance === "observed"
     && record.content.sha256 === source.sha256 && record.content.size_bytes === source.size_bytes);
   assert.ok(executed && observed, "Materialized bytes must have independent filesystem observation");
   assert.ok(observed.parent_evidence_ids.includes(executed.evidence_id));
   assert.equal(observed.content.path, "fixtures/input.jsonl");
+  verifyStep(onVerifyStep, "continuation_plan");
   const planTransform = run.scenario.steps.find(step => step.behavior_id === "sandbox.fixture.transform.v1");
   const planCleanup = run.scenario.steps.find(step => step.behavior_id === "sandbox.cleanup.v1");
   assert.equal(planTransform.parameters.redact_values, true);
@@ -155,6 +175,7 @@ export function verifyRetainedContinuation(attempt, run, { source, original, ...
   assert.deepEqual(planCleanup.inputs.workspace, { from_step: first.step_id, artifact: "workspace" });
   assert.deepEqual(run.steps.map(step => step.action_id), [RETAINED_METHOD, "sandbox.fixture.transform.v1",
     "sandbox.discovery.metadata.v1", "sandbox.collection.stage.v1", "sandbox.peer.handoff.v1", "sandbox.cleanup.v1"]);
+  verifyStep(onVerifyStep, "complete");
   return { ...proof, materialize_step_id: first.step_id, source_ref: source.source_ref,
     materialized_sha256: workspace.sha256, materialized_size_bytes: workspace.size,
     receipt_id: workspace.receipt_ids[0], independent_observation: true,
