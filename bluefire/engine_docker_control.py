@@ -1010,22 +1010,14 @@ def _validate_exec(policy: DockerApiPolicy, request: DockerApiRequest) -> Mappin
 def _archive_path(value: str, policy: DockerApiPolicy) -> str:
     if (
         not isinstance(value, str)
-        or len(value) > 260
-        or "\\" in value
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or value != policy.exec_working_directory
+        or value not in {item.destination for item in policy.tmpfs}
     ):
-        raise EngineDockerPolicyError("Docker archive path is invalid")
-    allowed_prefixes = (
-        policy.exec_working_directory.rstrip("/") + "/",
-        "/tmp/sandbox-docker-archive/",
-    )
-    if value == policy.exec_working_directory:
-        return value
-    if not value.startswith(allowed_prefixes):
-        raise EngineDockerPolicyError("Docker archive path is outside the sandbox workspace")
-    parts = value.split("/")
-    if any(part in {"", ".", ".."} for part in parts[1:]):
-        raise EngineDockerPolicyError("Docker archive path is not canonical")
+        # Docker resolves the requested path inside the container. A lexical
+        # descendant check cannot prove that a descendant is not a symlink to
+        # the root filesystem. Until the controller has trusted resolved-path
+        # evidence, only the exact admitted tmpfs mountpoint may be archived.
+        raise EngineDockerPolicyError("Docker archive path is not the exact admitted mountpoint")
     return value
 
 

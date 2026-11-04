@@ -711,14 +711,28 @@ def test_exec_allows_bounded_model_chosen_commands_only_in_owned_sandbox() -> No
     "path,allowed",
     [
         ("/workspace", True),
-        ("/workspace/results/report.json", True),
-        ("/tmp/sandbox-docker-archive/bundle.tar", True),
+        ("/workspace/", False),
+        ("/workspace/.", False),
+        ("/workspace/link", False),
+        ("/workspace/results/report.json", False),
+        ("/workspace//report.json", False),
+        ("/workspace/%2e%2e/etc/passwd", False),
+        ("/workspace/%2Fetc/passwd", False),
+        ("/workspace/symlink/../../etc/passwd", False),
+        ("/tmp/sandbox-docker-archive/bundle.tar", False),
         ("/etc/passwd", False),
         ("/workspace/../etc/passwd", False),
+        ("/proc/self/root/workspace", False),
+        ("/Workspace", False),
+        ("workspace", False),
+        ("/workspace\\link", False),
+        ("/workspace\x00link", False),
         ("/tmp", False),
     ],
 )
-def test_archive_reads_are_bounded_to_owned_workspace(path: str, allowed: bool) -> None:
+def test_archive_reads_are_limited_to_the_exact_admitted_mountpoint(
+    path: str, allowed: bool
+) -> None:
     target = f"/v1.47/containers/{CONTAINER_ID}/archive?{urlencode({'path': path})}"
     if allowed:
         result = authorize("GET", target)
