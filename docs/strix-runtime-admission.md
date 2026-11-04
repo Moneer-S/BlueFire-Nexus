@@ -161,29 +161,73 @@ evidence. The actual runtime bridge still refuses attempts lacking the exact
 per-attempt external network, custody, protected-root, and process-containment
 receipts.
 
-## Non-admitting product boundary
+## Current product boundary and persisted admission
 
-This workflow does not wire the receipt into a production admission resolver.
-`StrixEngineRuntime` currently trusts the separate resolver's structured
-`runtime_qualified` decision and digest; no production resolver in this slice
-loads this manifest with a controller-held expected ref. Therefore this receipt
-cannot, by itself, enable a live engine attempt and records
-`production_runtime_admitted: false`.
+The product now has a controller-only qualification resolver and private
+append-only persistence for runtime authority and per-attempt admission. This
+does not change the startup workflow's claim: its receipt alone cannot enable a
+live engine attempt and still records `production_runtime_admitted: false`.
 
-The required follow-on contract is exact: controller state must retain the
-expected manifest ref, approved BlueFire revision, and threat-review ref; the
-manifest must live under a controller-private pinned artifact root whose
-ancestors are checked against links, junctions, and reparse points; and the
-resolver must call `load_strix_runtime_qualification` with that expected ref.
-It must compare the returned BlueFire revision, threat-review ref, and full
-build-identity digest with controller authority, bind the build to the installed
-executable and image inventory, then combine it with current per-attempt
-authorization, target snapshot, network, model gateway, process/container
-custody, protected roots, budgets, cancellation, and cleanup receipts. Only
-that resolver may construct a `StrixRuntimeAdmission` with
-`runtime_qualified: true`. Until that separate integration is implemented and
-reviewed, the production resolver must refuse or return
-`runtime_qualified: false`.
+The committed state layers are deliberately separate:
+
+| Store layer | Responsibility | What it cannot establish |
+| --- | --- | --- |
+| v18 tenant-generation journal | Exact generated-lab generation, transition, custody, and reconciliation history | Strix runtime authority or a launchable attempt |
+| v19 tenant action material | Immutable server-derived preparation material, exact protected references, and atomic preparation/approval retention | A missing runtime admission, browser-supplied authority, or resource provisioning |
+| v20 Strix runtime store | Append-only authority lineage, immutable attempt reservations and verified admission records, and admission lifecycle heads | Runtime allocation, credentials, process launch, or effectiveness |
+
+`ControllerQualifiedStrixAdmissionResolver` loads only an expected manifest ref
+from a controller-private pinned artifact root, compares the installed BlueFire
+revision, threat-review ref, and complete build identity, and reopens one exact
+persisted admission. The authority and admission sources preserve the original
+authority generation under which the record was admitted. A later revocation or
+reactivation cannot relabel that historical record. Launch resolution requires
+the exact active admitted authority and a `verified` admission lifecycle;
+`unknown`, `revoked`, and `cleaned` records are reconciliation-only.
+
+The runtime rereads the complete resolution after entering `RUNNING` and before
+credential acquisition, then rereads it again after acquisition and before any
+secret access or worker launch. Drift or revocation settles as a prelaunch
+failure with no worker start. A failed credential revocation is retained as an
+explicit limitation. Recovery may reopen historical custody without replaying
+or recreating resources. These rereads do not claim an atomic lock against the
+final operating-system launch instant.
+
+The remaining production boundary is concrete rather than credential-blocked:
+trusted protected registries and a controller-owned admission issuer must
+allocate and independently verify the network, model gateway, process/container
+custody, protected roots, containment, budgets, cancellation, source seal, and
+cleanup evidence before retaining a verified v20 admission. The installed
+service has not yet wired that issuer and composition. Missing material therefore
+refuses before approval, credentials, target access, or worker launch.
+
+## Restricted runtime profile decision
+
+The pinned Strix source remains the default engine, but its stock Docker backend
+is not admissible for BlueFire's first controlled workflow. At the inspected pin
+it requests a host-gateway mapping, adds `NET_ADMIN` and `NET_RAW`, may pull a
+missing image, and does not add BlueFire's custody label. A policy proxy must
+reject those requests; it must not silently rewrite them and make an unsafe
+request appear qualified.
+
+Strix exposes a public downstream-backend registry selected by
+`STRIX_RUNTIME_BACKEND`. The planned integration is a separately hashed
+`bluefire-controlled` bootstrap and backend that register through that hook
+before invoking the official headless CLI. The profile will use an exact
+preloaded image, internal target and model relays, a non-root owned sandbox,
+bounded resources, no host gateway or host mounts, and an empty capability set
+for the first HTTP authorization lab. It preserves Strix reasoning, agent
+coordination, reports, exit semantics, and bounded commands inside the owned
+sandbox. Raw-packet scanning, interface manipulation, VPN/TUN devices,
+privileged mounts, host access, and unrelated network discovery remain
+explicitly unavailable profile capabilities, not evidence of target prevention.
+
+This restricted backend is planned and under qualification; it is not part of
+the admitted candidate or a live proof yet. Its bootstrap, backend, policy,
+relay, SDK closure, image, and profile digests must be added to build identity,
+runtime authority, v20 admission, action material, and launch intent before use.
+`production_runtime_admitted` remains false until the complete session,
+cancellation, artifact, independent-observation, and cleanup journey passes.
 
 ## Workflow and outputs
 

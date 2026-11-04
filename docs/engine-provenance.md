@@ -139,6 +139,29 @@ Further runtime work must separately establish target binding, outer network con
 lifecycle stop and cleanup, raw evidence collection, and controlled-provider mechanics. Live-model
 quality is a different proof and requires its own authorization.
 
+## Planned BlueFire restricted runtime profile
+
+The reviewed source exposes a public downstream runtime-backend registry. BlueFire plans to keep
+the exact pinned upstream package and official headless CLI while registering a separately hashed
+`bluefire-controlled` backend before invoking it. This is preferable to patching upstream source or
+silently normalizing unsafe Docker requests.
+
+The stock Docker backend is not admissible for the first BlueFire workflow. At this pin it can pull
+a missing image, adds `NET_ADMIN` and `NET_RAW`, requests
+`host.docker.internal=host-gateway`, and lacks BlueFire's custody label. The controller policy must
+refuse those requests. The restricted backend will instead emit the exact safe request shape for a
+preloaded image, fixed internal network and relays, non-root user, bounded resources, required
+upstream and BlueFire labels, no host mounts or host gateway, and no extra capabilities for the
+initial HTTP authorization lab.
+
+The bootstrap, controlled-backend implementation, policy, relay contract, SDK closure, sandbox
+image, and runtime-profile digests are additional BlueFire artifacts. They are not covered by the
+current prompt-overlay digest and are not yet included in the candidate or startup admission.
+Qualification and every later authority, admission, preparation, and launch record must bind them
+before use. Until that exact profile passes session, cancellation, evidence, independent-observation,
+and cleanup qualification, `production_runtime_admitted` remains false and no live Strix capability
+claim follows from this document.
+
 ## Updating the pin
 
 A source, package, prompt, lock, build-hook, Go-module, sandbox, or toolchain change requires a new
