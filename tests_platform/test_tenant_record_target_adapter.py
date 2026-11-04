@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from bluefire.tenant_record_experiment_controller import (
     TenantFailureMechanism,
     TenantRoute,
     TenantTargetOperationUnknown,
+    tenant_target_snapshot_ref,
 )
 from bluefire.tenant_record_lab import (
     TenantDefenseConfig,
@@ -42,6 +44,8 @@ from bluefire.tenant_record_service import TenantRecordApplication, TenantRespon
 from bluefire.tenant_record_target_adapter import (
     FixedTenantLoopbackTransport,
     TenantControllerAdmission,
+    TenantEngineTargetRequest,
+    TenantEngineTargetRoute,
     TenantGenerationCleanupOutcome,
     TenantGenerationCleanupResult,
     TenantGenerationExpectation,
@@ -400,6 +404,7 @@ class FakeTransport:
         self.generation = generation
         self.root = root
         self.calls = []
+        self.response_caps = []
         self.counter = 0
         self.audit = BoundedTenantAuditLog(max_events=generation.packet.max_audit_events)
         self.application = TenantRecordApplication(
@@ -418,6 +423,7 @@ class FakeTransport:
 
     def request(self, endpoint, request) -> TenantResponse:  # type: ignore[no-untyped-def]
         self.calls.append((endpoint, request.target, request.headers, request.timeout_seconds))
+        self.response_caps.append(request.max_response_bytes)
         matching = [
             item for item in self.generation.admissions if item.token == request.source_token
         ]
@@ -504,7 +510,10 @@ def _adapter(
     transport = FakeTransport(generation=generation, root=tmp_path, signing_key=signing_key)
     return (
         TenantRecordLauncherTargetAdapter(
-            scratch_root=tmp_path, source=source, transport=transport
+            scratch_root=tmp_path,
+            source=source,
+            transport=transport,
+            monotonic_ns=lambda: 1_000_000_000,
         ),
         source,
         transport,
@@ -917,7 +926,7 @@ def test_fixed_loopback_transport_emits_only_fixed_get_grammar(monkeypatch) -> N
 
         @staticmethod
         def read(maximum: int) -> bytes:
-            assert maximum == 64 * 1024 + 1
+            assert maximum == 1024 + 1
             return body
 
         @staticmethod
@@ -973,6 +982,7 @@ def test_fixed_loopback_transport_emits_only_fixed_get_grammar(monkeypatch) -> N
         record_id="record-protected-0001",
         source_token=b"z" * 32,
         timeout_seconds=2.0,
+        max_response_bytes=1024,
         tenant_header="tenant-protected",
     )
 
@@ -987,6 +997,475 @@ def test_fixed_loopback_transport_emits_only_fixed_get_grammar(monkeypatch) -> N
     assert encoded == base64.urlsafe_b64encode(b"z" * 32).decode("ascii").rstrip("=")
     assert "=" not in encoded
     assert response.body == body
+
+
+def _engine_request(
+    generation: TenantRunningGeneration,
+    root: Path,
+    fixture: TenantRecordFixture,
+    *,
+    suffix: str,
+    route: TenantEngineTargetRoute,
+    record_id: str | None = None,
+    tenant_id: str | None = None,
+    tenant_assertion: str | None = None,
+    max_response_bytes: int = 64 * 1024,
+    deadline_ns: int = 10_000_000_000,
+) -> TenantEngineTargetRequest:
+    expectation = _expectation(generation, root)
+    return TenantEngineTargetRequest(
+        relay_request_id="relay-request-" + suffix * 32,
+        operation_digest=_digest(f"engine-operation-{suffix}"),
+        expected_generation=expectation,
+        target_snapshot_ref=tenant_target_snapshot_ref(
+            fixture_digest=fixture.digest,
+            target_snapshot_id=expectation.target_snapshot_id,
+            service_generation=expectation.service_generation,
+        ),
+        route=route,
+        record_id=record_id,
+        tenant_id=tenant_id,
+        tenant_assertion=tenant_assertion,
+        max_response_bytes=max_response_bytes,
+        deadline_ns=deadline_ns,
+    )
+
+
+def test_engine_request_public_contract_and_exact_routes_are_audited(
+    tmp_path: Path,
+) -> None:
+    fixture, before, _after = _fixture_and_configs()
+    generation = _generation(tmp_path, fixture=fixture, config=before, marker="cf")
+    adapter, source, transport = _adapter(tmp_path, generation)
+    record = fixture.records_for(fixture.protected_tenant_id)[0]
+    requests = (
+        _engine_request(
+            generation,
+            tmp_path,
+            fixture,
+            suffix="1",
+            route=TenantEngineTargetRoute.HEALTH,
+        ),
+        _engine_request(
+            generation,
+            tmp_path,
+            fixture,
+            suffix="2",
+            route=TenantEngineTargetRoute.METADATA,
+        ),
+        _engine_request(
+            generation,
+            tmp_path,
+            fixture,
+            suffix="3",
+            route=TenantEngineTargetRoute.RECORD_LOOKUP,
+            record_id=record.record_id,
+            tenant_assertion=fixture.protected_tenant_id,
+        ),
+        _engine_request(
+            generation,
+            tmp_path,
+            fixture,
+            suffix="4",
+            route=TenantEngineTargetRoute.BOUNDED_EXPORT,
+            tenant_id=fixture.protected_tenant_id,
+            tenant_assertion=fixture.protected_tenant_id,
+        ),
+    )
+
+    results = tuple(adapter.engine_request(request) for request in requests)
+
+    assert tuple(field.name for field in fields(TenantEngineTargetRequest)) == (
+        "relay_request_id",
+        "operation_digest",
+        "expected_generation",
+        "target_snapshot_ref",
+        "route",
+        "record_id",
+        "tenant_id",
+        "tenant_assertion",
+        "max_response_bytes",
+        "deadline_ns",
+    )
+    assert [result.response.status for result in results] == [200, 200, 200, 200]
+    assert [result.audit_row.route for result in results] == [
+        "health",
+        "metadata",
+        "record_lookup",
+        "bounded_export",
+    ]
+    assert all(result.audit_row.source_identity == "engine_worker" for result in results)
+    assert all(result.protected_secret_absent for result in results)
+    assert len({result.target_request_id for result in results}) == 4
+    assert len(source.audit_bindings) == 4
+    assert transport.response_caps == [64 * 1024] * 4
+    assert all("authorization" not in dict(call[2]) for call in transport.calls)
+
+
+@pytest.mark.parametrize(
+    ("route", "record_id", "tenant_id", "tenant_assertion"),
+    (
+        (TenantEngineTargetRoute.HEALTH, "record-protected-0001", None, None),
+        (TenantEngineTargetRoute.METADATA, None, "tenant-protected", None),
+        (TenantEngineTargetRoute.RECORD_LOOKUP, None, None, None),
+        (
+            TenantEngineTargetRoute.BOUNDED_EXPORT,
+            None,
+            "tenant-protected",
+            "tenant-probe",
+        ),
+    ),
+)
+def test_engine_request_rejects_route_field_smuggling(
+    tmp_path: Path,
+    route: TenantEngineTargetRoute,
+    record_id: str | None,
+    tenant_id: str | None,
+    tenant_assertion: str | None,
+) -> None:
+    fixture, before, _after = _fixture_and_configs()
+    generation = _generation(tmp_path, fixture=fixture, config=before, marker="de")
+    expectation = _expectation(generation, tmp_path)
+
+    with pytest.raises(TenantTargetAdapterError, match="route binding"):
+        TenantEngineTargetRequest(
+            relay_request_id="relay-request-" + "5" * 32,
+            operation_digest=_digest("bad-route-binding"),
+            expected_generation=expectation,
+            target_snapshot_ref=tenant_target_snapshot_ref(
+                fixture_digest=fixture.digest,
+                target_snapshot_id=expectation.target_snapshot_id,
+                service_generation=expectation.service_generation,
+            ),
+            route=route,
+            record_id=record_id,
+            tenant_id=tenant_id,
+            tenant_assertion=tenant_assertion,
+            max_response_bytes=64 * 1024,
+            deadline_ns=1,
+        )
+
+
+def test_engine_request_rejects_stale_generation_before_dispatch(tmp_path: Path) -> None:
+    fixture, before, after = _fixture_and_configs()
+    baseline = _generation(tmp_path, fixture=fixture, config=before, marker="ef")
+    hardened = _generation(
+        tmp_path,
+        fixture=fixture,
+        config=after,
+        marker="fa",
+        admissions=_admissions(b"n"),
+    )
+    adapter, source, transport = _adapter(tmp_path, baseline)
+    request = _engine_request(
+        baseline,
+        tmp_path,
+        fixture,
+        suffix="6",
+        route=TenantEngineTargetRoute.HEALTH,
+    )
+    source.current = hardened
+
+    with pytest.raises(TenantTargetAdapterError, match="generation"):
+        adapter.engine_request(request)
+
+    assert transport.calls == []
+
+
+def test_engine_request_post_dispatch_generation_drift_is_unknown(tmp_path: Path) -> None:
+    fixture, before, after = _fixture_and_configs()
+    baseline = _generation(tmp_path, fixture=fixture, config=before, marker="ab")
+    hardened = _generation(
+        tmp_path,
+        fixture=fixture,
+        config=after,
+        marker="bc",
+        admissions=_admissions(b"d"),
+    )
+    adapter, source, transport = _adapter(tmp_path, baseline)
+    original = transport.request
+
+    def drifting(endpoint, request):  # type: ignore[no-untyped-def]
+        response = original(endpoint, request)
+        source.current = hardened
+        return response
+
+    transport.request = drifting  # type: ignore[method-assign]
+    request = _engine_request(
+        baseline,
+        tmp_path,
+        fixture,
+        suffix="7",
+        route=TenantEngineTargetRoute.HEALTH,
+    )
+
+    with pytest.raises(TenantTargetOperationUnknown) as raised:
+        adapter.engine_request(request)
+
+    assert raised.value.__cause__ is None
+    assert len(transport.calls) == 1
+    assert source.audit_bindings == []
+
+
+def test_engine_request_requires_durable_audit_retention(tmp_path: Path) -> None:
+    fixture, before, _after = _fixture_and_configs()
+    generation = _generation(tmp_path, fixture=fixture, config=before, marker="cd")
+    adapter, source, transport = _adapter(tmp_path, generation)
+
+    def fail_retention(_binding):  # type: ignore[no-untyped-def]
+        raise RuntimeError("token=must-not-escape")
+
+    source.retain_audit_binding = fail_retention  # type: ignore[method-assign]
+    request = _engine_request(
+        generation,
+        tmp_path,
+        fixture,
+        suffix="8",
+        route=TenantEngineTargetRoute.HEALTH,
+    )
+
+    with pytest.raises(TenantTargetOperationUnknown) as raised:
+        adapter.engine_request(request)
+
+    assert raised.value.__cause__ is None
+    assert "token" not in str(raised.value)
+    assert len(transport.calls) == 1
+
+
+def test_engine_request_rejects_audit_tamper_after_effect(tmp_path: Path) -> None:
+    fixture, before, _after = _fixture_and_configs()
+    generation = _generation(tmp_path, fixture=fixture, config=before, marker="da")
+    adapter, source, transport = _adapter(tmp_path, generation)
+    original = transport.request
+
+    def tampered(endpoint, request):  # type: ignore[no-untyped-def]
+        response = original(endpoint, request)
+        row = replace(transport.audit.snapshot()[-1], response_status=299)
+        layout = WorkspaceLayout.for_run(tmp_path, generation.lifecycle.plan.run_id)
+        _write_private(
+            layout.target_audit,
+            canonical_json_bytes(row.to_dict()) + b"\n",
+        )
+        return response
+
+    transport.request = tampered  # type: ignore[method-assign]
+    request = _engine_request(
+        generation,
+        tmp_path,
+        fixture,
+        suffix="9",
+        route=TenantEngineTargetRoute.HEALTH,
+    )
+
+    with pytest.raises(TenantTargetOperationUnknown):
+        adapter.engine_request(request)
+
+    assert len(transport.calls) == 1
+    assert len(source.audit_bindings) == 1
+
+
+def test_engine_request_secret_scan_rejects_raw_and_encoded_admission(
+    tmp_path: Path,
+) -> None:
+    fixture, before, _after = _fixture_and_configs()
+    generation = _generation(tmp_path, fixture=fixture, config=before, marker="eb")
+    adapter, source, transport = _adapter(tmp_path, generation)
+    original = transport.request
+    secret = generation.admission("engine_worker").token
+
+    def leaking(endpoint, request):  # type: ignore[no-untyped-def]
+        response = original(endpoint, request)
+        body = b'{"leak":"' + base64.urlsafe_b64encode(secret).rstrip(b"=") + b'"}\n'
+        headers = dict(response.headers)
+        headers["content-length"] = str(len(body))
+        row = replace(
+            transport.audit.snapshot()[-1],
+            response_bytes=len(body),
+            response_sha256="sha256:" + hashlib.sha256(body).hexdigest(),
+            response_headers_sha256=content_hash(headers),
+            returned_record_ids=(),
+            returned_record_digests=(),
+        )
+        layout = WorkspaceLayout.for_run(tmp_path, generation.lifecycle.plan.run_id)
+        _write_private(layout.target_audit, canonical_json_bytes(row.to_dict()) + b"\n")
+        return TenantResponse(status=response.status, headers=headers, body=body)
+
+    transport.request = leaking  # type: ignore[method-assign]
+    request = _engine_request(
+        generation,
+        tmp_path,
+        fixture,
+        suffix="a",
+        route=TenantEngineTargetRoute.HEALTH,
+    )
+
+    with pytest.raises(TenantTargetOperationUnknown) as raised:
+        adapter.engine_request(request)
+
+    public = str(raised.value) + repr(raised.value)
+    assert secret.hex() not in public
+    assert base64.urlsafe_b64encode(secret).decode("ascii").rstrip("=") not in public
+    assert len(source.audit_bindings) == 1
+
+
+def test_cleaned_or_unreconciled_adapter_never_dispatches_engine_request(
+    tmp_path: Path,
+) -> None:
+    fixture, before, _after = _fixture_and_configs()
+    generation = _generation(tmp_path, fixture=fixture, config=before, marker="fc")
+    adapter, source, transport = _adapter(tmp_path, generation)
+    source.cleanup_result = TenantGenerationCleanupResult(
+        outcome=TenantGenerationCleanupOutcome.CLEANED,
+        prior_lifecycle_digest=generation.lifecycle.digest,
+        write_ahead_receipt_digest=_digest("engine-cleanup-wa"),
+        source_receipt_digest=_digest("engine-cleanup-source"),
+        cleaned_lifecycle=_cleaned_lifecycle(generation),
+    )
+    request = _engine_request(
+        generation,
+        tmp_path,
+        fixture,
+        suffix="b",
+        route=TenantEngineTargetRoute.HEALTH,
+    )
+    adapter.cleanup_lab(
+        fixture,
+        expected_config_digest=before.digest,
+        operation_id=CLEANUP_OPERATION,
+    )
+
+    with pytest.raises(TenantTargetAdapterError, match="cleaned"):
+        adapter.engine_request(request)
+    assert transport.calls == []
+
+    generation_two = _generation(tmp_path, fixture=fixture, config=before, marker="ad")
+    adapter_two, source_two, transport_two = _adapter(tmp_path, generation_two)
+    source_two.fail_check = True
+    request_two = _engine_request(
+        generation_two,
+        tmp_path,
+        fixture,
+        suffix="c",
+        route=TenantEngineTargetRoute.HEALTH,
+    )
+    with pytest.raises(TenantTargetAdapterError, match="revalidated"):
+        adapter_two.engine_request(request_two)
+    assert transport_two.calls == []
+
+
+def test_unknown_adapter_cannot_rebind_engine_request_to_restarted_generation(
+    tmp_path: Path,
+) -> None:
+    fixture, before, _after = _fixture_and_configs()
+    original_generation = _generation(
+        tmp_path,
+        fixture=fixture,
+        config=before,
+        marker="ba",
+    )
+    restarted_generation = _generation(
+        tmp_path,
+        fixture=fixture,
+        config=before,
+        marker="cb",
+        admissions=_admissions(b"r"),
+    )
+    adapter, source, transport = _adapter(tmp_path, original_generation)
+    original_transport = transport.request
+    attempts = 0
+
+    def uncertain(_endpoint, _request):  # type: ignore[no-untyped-def]
+        nonlocal attempts
+        attempts += 1
+        raise TimeoutError("request outcome unknown")
+
+    transport.request = uncertain  # type: ignore[method-assign]
+    first = _engine_request(
+        original_generation,
+        tmp_path,
+        fixture,
+        suffix="d",
+        route=TenantEngineTargetRoute.HEALTH,
+    )
+    with pytest.raises(TenantTargetOperationUnknown):
+        adapter.engine_request(first)
+    assert attempts == 1
+
+    source.current = restarted_generation
+    transport.request = original_transport  # type: ignore[method-assign]
+    second = replace(first, relay_request_id="relay-request-" + "e" * 32)
+    with pytest.raises(TenantTargetAdapterError, match="generation"):
+        adapter.engine_request(second)
+    assert transport.calls == []
+
+
+def test_engine_deadline_is_refreshed_after_slow_generation_preflight(tmp_path: Path) -> None:
+    fixture, before, _after = _fixture_and_configs()
+    generation = _generation(tmp_path, fixture=fixture, config=before, marker="dc")
+    source = FakeSource(generation, tmp_path)
+    transport = FakeTransport(generation=generation, root=tmp_path)
+    clock_values = iter((1_000_000_000, 10_000_000_000))
+    adapter = TenantRecordLauncherTargetAdapter(
+        scratch_root=tmp_path,
+        source=source,
+        transport=transport,
+        monotonic_ns=lambda: next(clock_values),
+    )
+    request = _engine_request(
+        generation,
+        tmp_path,
+        fixture,
+        suffix="f",
+        route=TenantEngineTargetRoute.HEALTH,
+        deadline_ns=6_000_000_000,
+    )
+
+    with pytest.raises(TenantTargetAdapterError, match="deadline"):
+        adapter.engine_request(request)
+
+    assert transport.calls == []
+    assert len(source.checked) == 2
+
+
+def test_engine_response_is_snapshotted_before_audit_and_secret_checks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture, before, _after = _fixture_and_configs()
+    generation = _generation(tmp_path, fixture=fixture, config=before, marker="ed")
+    adapter, _source, transport = _adapter(tmp_path, generation)
+    original_transport = transport.request
+    original_audit_check = adapter_module._check_engine_audit
+    returned_headers: dict[str, str] = {}
+
+    def capture(endpoint, request):  # type: ignore[no-untyped-def]
+        response = original_transport(endpoint, request)
+        assert isinstance(response.headers, dict)
+        returned_headers.update(response.headers)
+        return TenantResponse(
+            status=response.status,
+            headers=returned_headers,
+            body=response.body,
+        )
+
+    def mutate_transport_owned_headers(**values):  # type: ignore[no-untyped-def]
+        original_audit_check(**values)
+        returned_headers["content-length"] = "999999"
+
+    transport.request = capture  # type: ignore[method-assign]
+    monkeypatch.setattr(adapter_module, "_check_engine_audit", mutate_transport_owned_headers)
+    result = adapter.engine_request(
+        _engine_request(
+            generation,
+            tmp_path,
+            fixture,
+            suffix="0",
+            route=TenantEngineTargetRoute.HEALTH,
+        )
+    )
+
+    assert returned_headers["content-length"] == "999999"
+    assert result.response.headers["content-length"] == str(len(result.response.body))
 
 
 def test_duplicate_response_request_identity_becomes_unknown_before_overwrite(

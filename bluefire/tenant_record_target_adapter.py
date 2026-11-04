@@ -22,6 +22,8 @@ import json
 import os
 import re
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -36,6 +38,7 @@ from .tenant_record_experiment_controller import (
     TenantTargetCleanup,
     TenantTargetOperationUnknown,
     TenantTargetReadback,
+    tenant_target_snapshot_ref,
 )
 from .tenant_record_lab import (
     TenantDefenseConfig,
@@ -73,6 +76,7 @@ _REQUEST_ID = re.compile(r"^request-[0-9a-f]{24}$")
 _DEFENSE_OPERATION = re.compile(r"^tenant-defense-[0-9a-f]{32}$")
 _ROLLBACK_OPERATION = re.compile(r"^tenant-rollback-[0-9a-f]{32}$")
 _CLEANUP_OPERATION = re.compile(r"^tenant-cleanup-[0-9a-f]{32}$")
+_RELAY_REQUEST_ID = re.compile(r"^relay-request-[0-9a-f]{32}$")
 _LAB_ID = re.compile(r"^[a-z][a-z0-9-]{7,63}$")
 _SOURCE_IDENTITIES = ("engine_worker", "ordinary_user", "controller_probe")
 _RESPONSE_HEADERS = frozenset(
@@ -88,6 +92,107 @@ _RESPONSE_HEADERS = frozenset(
 
 class TenantTargetAdapterError(RuntimeError):
     """Raised when the fixed target binding cannot be established safely."""
+
+
+class TenantEngineTargetRoute(str, Enum):
+    """The complete public route vocabulary admitted to an engine worker."""
+
+    HEALTH = "health"
+    METADATA = "metadata"
+    RECORD_LOOKUP = "record_lookup"
+    BOUNDED_EXPORT = "bounded_export"
+
+
+@dataclass(frozen=True, slots=True)
+class TenantEngineTargetRequest:
+    """One typed engine request with no transport or admission authority."""
+
+    relay_request_id: str
+    operation_digest: str
+    expected_generation: TenantGenerationExpectation
+    target_snapshot_ref: str
+    route: TenantEngineTargetRoute
+    record_id: str | None
+    tenant_id: str | None
+    tenant_assertion: str | None
+    max_response_bytes: int
+    deadline_ns: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.relay_request_id, str)
+            or _RELAY_REQUEST_ID.fullmatch(self.relay_request_id) is None
+        ):
+            raise TenantTargetAdapterError("engine relay request identity is invalid")
+        _digest(self.operation_digest, "engine target operation")
+        _digest(self.target_snapshot_ref, "engine target snapshot")
+        if not isinstance(self.expected_generation, TenantGenerationExpectation):
+            raise TenantTargetAdapterError("engine target generation is invalid")
+        if not isinstance(self.route, TenantEngineTargetRoute):
+            raise TenantTargetAdapterError("engine target route is invalid")
+        if (
+            isinstance(self.max_response_bytes, bool)
+            or not isinstance(self.max_response_bytes, int)
+            or not 1 <= self.max_response_bytes <= MAX_RESPONSE_BYTES
+            or isinstance(self.deadline_ns, bool)
+            or not isinstance(self.deadline_ns, int)
+            or self.deadline_ns <= 0
+        ):
+            raise TenantTargetAdapterError("engine target request bounds are invalid")
+        for value in (self.record_id, self.tenant_id, self.tenant_assertion):
+            if value is not None and (
+                not isinstance(value, str) or _LAB_ID.fullmatch(value) is None
+            ):
+                raise TenantTargetAdapterError("engine target request identity is invalid")
+        if self.route in {TenantEngineTargetRoute.HEALTH, TenantEngineTargetRoute.METADATA}:
+            valid = (
+                self.record_id is None and self.tenant_id is None and self.tenant_assertion is None
+            )
+        elif self.route is TenantEngineTargetRoute.RECORD_LOOKUP:
+            valid = self.record_id is not None and self.tenant_id is None
+        else:
+            valid = (
+                self.record_id is None
+                and self.tenant_id is not None
+                and self.tenant_assertion in {None, self.tenant_id}
+            )
+        if not valid:
+            raise TenantTargetAdapterError("engine target route binding is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class TenantEngineTargetResult:
+    """A retained target result safe to return across the relay boundary."""
+
+    relay_request_id: str
+    operation_digest: str
+    target_request_id: str
+    response: TenantResponse = field(repr=False)
+    generation_digest: str
+    audit_row: TenantAuditRow
+    audit_binding: TenantBoundAuditReceipt
+    audit_retention_ref: str
+    target_observation_ref: str
+    protected_secret_absent: bool
+
+    def __post_init__(self) -> None:
+        if _RELAY_REQUEST_ID.fullmatch(self.relay_request_id) is None:
+            raise TenantTargetAdapterError("engine relay result identity is invalid")
+        if _REQUEST_ID.fullmatch(self.target_request_id) is None:
+            raise TenantTargetAdapterError("engine target result identity is invalid")
+        for value, label in (
+            (self.operation_digest, "engine target result operation"),
+            (self.generation_digest, "engine target result generation"),
+            (self.audit_retention_ref, "engine target audit retention"),
+            (self.target_observation_ref, "engine target observation"),
+        ):
+            _digest(value, label)
+        if self.audit_row.request_id != self.target_request_id:
+            raise TenantTargetAdapterError("engine target audit identity changed")
+        if self.audit_binding.request_id != self.target_request_id:
+            raise TenantTargetAdapterError("engine target audit binding changed")
+        if self.protected_secret_absent is not True:
+            raise TenantTargetAdapterError("engine target secret check is incomplete")
 
 
 def _digest(value: object, label: str) -> str:
@@ -498,6 +603,7 @@ class _FixedTargetRequest:
     record_id: str | None
     source_token: bytes = field(repr=False)
     timeout_seconds: float
+    max_response_bytes: int = MAX_RESPONSE_BYTES
     tenant_header: str | None = None
     session_token: str | None = field(default=None, repr=False)
 
@@ -509,6 +615,9 @@ class _FixedTargetRequest:
             or not 32 <= len(self.source_token) <= 64
             or not isinstance(self.timeout_seconds, (int, float))
             or not 0 < self.timeout_seconds <= REQUEST_TIMEOUT_SECONDS
+            or isinstance(self.max_response_bytes, bool)
+            or not isinstance(self.max_response_bytes, int)
+            or not 1 <= self.max_response_bytes <= MAX_RESPONSE_BYTES
         ):
             raise TenantTargetAdapterError("fixed target request is invalid")
         if self.route is TenantRoute.RECORD_LOOKUP:
@@ -544,11 +653,78 @@ class _FixedTargetRequest:
         return tuple(result)
 
 
+@dataclass(frozen=True, slots=True)
+class _FixedEngineTargetRequest:
+    """Private fixed wire request populated only from a typed engine operation."""
+
+    route: TenantEngineTargetRoute
+    record_id: str | None
+    tenant_id: str | None
+    tenant_assertion: str | None
+    source_token: bytes = field(repr=False)
+    timeout_seconds: float
+    max_response_bytes: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.route, TenantEngineTargetRoute)
+            or type(self.source_token) is not bytes
+            or not 32 <= len(self.source_token) <= 64
+            or not isinstance(self.timeout_seconds, (int, float))
+            or not 0 < self.timeout_seconds <= REQUEST_TIMEOUT_SECONDS
+            or isinstance(self.max_response_bytes, bool)
+            or not isinstance(self.max_response_bytes, int)
+            or not 1 <= self.max_response_bytes <= MAX_RESPONSE_BYTES
+        ):
+            raise TenantTargetAdapterError("fixed engine target request is invalid")
+        for value in (self.record_id, self.tenant_id, self.tenant_assertion):
+            if value is not None and _LAB_ID.fullmatch(value) is None:
+                raise TenantTargetAdapterError("fixed engine target identity is invalid")
+        if self.route in {TenantEngineTargetRoute.HEALTH, TenantEngineTargetRoute.METADATA}:
+            valid = (
+                self.record_id is None and self.tenant_id is None and self.tenant_assertion is None
+            )
+        elif self.route is TenantEngineTargetRoute.RECORD_LOOKUP:
+            valid = self.record_id is not None and self.tenant_id is None
+        else:
+            valid = (
+                self.record_id is None
+                and self.tenant_id is not None
+                and self.tenant_assertion in {None, self.tenant_id}
+            )
+        if not valid:
+            raise TenantTargetAdapterError("fixed engine target route is invalid")
+
+    @property
+    def target(self) -> str:
+        if self.route is TenantEngineTargetRoute.HEALTH:
+            return "/health"
+        if self.route is TenantEngineTargetRoute.METADATA:
+            return "/openapi.json"
+        if self.route is TenantEngineTargetRoute.RECORD_LOOKUP:
+            if self.record_id is None:
+                raise TenantTargetAdapterError("fixed engine record identity is unavailable")
+            return f"/records/{self.record_id}"
+        if self.tenant_id is None:
+            raise TenantTargetAdapterError("fixed engine tenant identity is unavailable")
+        return f"/exports?tenant={self.tenant_id}"
+
+    @property
+    def headers(self) -> tuple[tuple[str, str], ...]:
+        encoded = base64.urlsafe_b64encode(self.source_token).decode("ascii").rstrip("=")
+        result = [("host", LOGICAL_AUTHORITY), (SOURCE_HEADER, encoded)]
+        if self.tenant_assertion is not None:
+            result.append(("x-bluefire-lab-tenant", self.tenant_assertion))
+        return tuple(result)
+
+
 class TenantTargetTransport(Protocol):
     """Internal fixed request transport; it accepts no URL or command."""
 
     def request(
-        self, endpoint: LoopbackEndpoint, request: _FixedTargetRequest
+        self,
+        endpoint: LoopbackEndpoint,
+        request: _FixedTargetRequest | _FixedEngineTargetRequest,
     ) -> TenantResponse: ...
 
 
@@ -560,7 +736,11 @@ class FixedTenantLoopbackTransport:
             raise TenantTargetAdapterError("target request timeout is invalid")
         self._timeout = float(timeout_seconds)
 
-    def request(self, endpoint: LoopbackEndpoint, request: _FixedTargetRequest) -> TenantResponse:
+    def request(
+        self,
+        endpoint: LoopbackEndpoint,
+        request: _FixedTargetRequest | _FixedEngineTargetRequest,
+    ) -> TenantResponse:
         if endpoint.host not in {"127.0.0.1", "::1"} or not 1 <= endpoint.port <= 65535:
             raise TenantTargetAdapterError("target endpoint is not numeric loopback")
         timeout = min(self._timeout, request.timeout_seconds)
@@ -573,8 +753,8 @@ class FixedTenantLoopbackTransport:
                 connection.putheader(name, value)
             connection.endheaders()
             wire = connection.getresponse()
-            body = wire.read(MAX_RESPONSE_BYTES + 1)
-            if len(body) > MAX_RESPONSE_BYTES:
+            body = wire.read(request.max_response_bytes + 1)
+            if len(body) > request.max_response_bytes:
                 raise TenantTargetAdapterError("target response exceeded its byte bound")
             headers: dict[str, str] = {}
             for raw_name, raw_value in wire.getheaders():
@@ -621,6 +801,7 @@ class TenantRecordLauncherTargetAdapter:
         scratch_root: Path,
         source: TenantLauncherGenerationSource,
         transport: TenantTargetTransport | None = None,
+        monotonic_ns: Callable[[], int] = time.monotonic_ns,
     ) -> None:
         try:
             root = scratch_root.resolve(strict=True)
@@ -641,6 +822,7 @@ class TenantRecordLauncherTargetAdapter:
         self._root_mount_identity = root_mount_identity
         self._source = source
         self._transport = transport or FixedTenantLoopbackTransport()
+        self._monotonic_ns = monotonic_ns
         self._expected: TenantGenerationExpectation | None = None
         self._request_bindings: dict[str, tuple[str, str]] = {}
         self._seen_request_ids: set[str] = set()
@@ -727,6 +909,166 @@ class TenantRecordLauncherTargetAdapter:
                 raise TenantTargetAdapterError(
                     "retained target audit binding is unavailable"
                 ) from None
+
+    def engine_request(self, request: TenantEngineTargetRequest) -> TenantEngineTargetResult:
+        """Execute one typed engine operation through the protected target child."""
+
+        if not isinstance(request, TenantEngineTargetRequest):
+            raise TenantTargetAdapterError("engine target request is invalid")
+        with self._lock:
+            now_ns = self._monotonic_ns()
+            if (
+                isinstance(now_ns, bool)
+                or not isinstance(now_ns, int)
+                or request.deadline_ns <= now_ns
+            ):
+                raise TenantTargetAdapterError("engine target request deadline expired")
+            generation = self._checked_running(request.expected_generation)
+            snapshot_ref = tenant_target_snapshot_ref(
+                fixture_digest=generation.source.fixture.digest,
+                target_snapshot_id=generation.target_ready.target_snapshot_id,
+                service_generation=generation.target_ready.service_generation,
+            )
+            if request.target_snapshot_ref != snapshot_ref:
+                raise TenantTargetAdapterError("engine target snapshot changed")
+            requested_tenant = _engine_requested_tenant(request, generation.source.fixture)
+            generation = self._checked_running(request.expected_generation)
+            dispatch_ns = self._monotonic_ns()
+            if isinstance(dispatch_ns, bool) or not isinstance(dispatch_ns, int):
+                raise TenantTargetAdapterError("engine target monotonic clock is invalid")
+            remaining_seconds = (request.deadline_ns - dispatch_ns) / 1_000_000_000
+            timeout_seconds = min(
+                REQUEST_TIMEOUT_SECONDS,
+                generation.source.packet.remaining_seconds,
+                remaining_seconds,
+            )
+            if timeout_seconds <= 0:
+                raise TenantTargetAdapterError("engine target request deadline expired")
+            if (
+                len(self._seen_request_ids) >= generation.target_ready.max_requests
+                or len(self._request_bindings) >= generation.target_ready.max_requests
+            ):
+                raise TenantTargetAdapterError("target request binding limit reached")
+            admission = generation.source.admission("engine_worker")
+            fixed = _FixedEngineTargetRequest(
+                route=request.route,
+                record_id=request.record_id,
+                tenant_id=request.tenant_id,
+                tenant_assertion=request.tenant_assertion,
+                source_token=admission.token,
+                timeout_seconds=timeout_seconds,
+                max_response_bytes=request.max_response_bytes,
+            )
+            effect_ns = self._monotonic_ns()
+            if (
+                isinstance(effect_ns, bool)
+                or not isinstance(effect_ns, int)
+                or effect_ns >= request.deadline_ns
+            ):
+                raise TenantTargetAdapterError("engine target request deadline expired")
+            try:
+                raw_response = self._transport.request(generation.generic_ready.endpoint, fixed)
+            except Exception:
+                self._mark_unknown()
+                receipt = _request_unknown_receipt(
+                    generation, request.operation_digest, "engine_worker", "transport"
+                )
+                raise TenantTargetOperationUnknown(
+                    "engine target request outcome is unknown", receipt_digest=receipt
+                ) from None
+            try:
+                if (
+                    not isinstance(raw_response, TenantResponse)
+                    or type(raw_response.body) is not bytes
+                ):
+                    raise TenantTargetAdapterError("engine target response is invalid")
+                response = TenantResponse(
+                    status=raw_response.status,
+                    headers=dict(raw_response.headers),
+                    body=bytes(raw_response.body),
+                )
+                _check_response(response)
+                if len(response.body) > request.max_response_bytes:
+                    raise TenantTargetAdapterError("engine target response exceeded its byte bound")
+                target_request_id = response.headers.get("x-bluefire-lab-request")
+                if (
+                    not isinstance(target_request_id, str)
+                    or _REQUEST_ID.fullmatch(target_request_id) is None
+                    or target_request_id in self._seen_request_ids
+                ):
+                    raise TenantTargetAdapterError("engine target response identity is invalid")
+                if self._monotonic_ns() >= request.deadline_ns:
+                    raise TenantTargetAdapterError("engine target response missed its deadline")
+                self._checked_running(request.expected_generation)
+                self._seen_request_ids.add(target_request_id)
+                self._request_bindings[target_request_id] = (
+                    request.expected_generation.digest,
+                    "engine_worker",
+                )
+                row = self.audit_row(target_request_id)
+                binding, retention_ref = self.audit_binding(
+                    target_request_id,
+                    generation_digest=request.expected_generation.digest,
+                )
+                _check_engine_audit(
+                    request=request,
+                    response=response,
+                    row=row,
+                    binding=binding,
+                    retention_ref=retention_ref,
+                    generation=generation,
+                    requested_tenant=requested_tenant,
+                )
+                if not _engine_secret_absent(
+                    admission.token,
+                    response=response,
+                    row=row,
+                    binding=binding,
+                    retention_ref=retention_ref,
+                ):
+                    raise TenantTargetAdapterError(
+                        "engine target response failed its protected secret check"
+                    )
+                self._checked_running(request.expected_generation)
+                if self._monotonic_ns() >= request.deadline_ns:
+                    raise TenantTargetAdapterError("engine target response missed its deadline")
+            except Exception:
+                self._mark_unknown()
+                receipt = _request_unknown_receipt(
+                    generation, request.operation_digest, "engine_worker", "postcondition"
+                )
+                raise TenantTargetOperationUnknown(
+                    "engine target request postcondition is unknown",
+                    receipt_digest=receipt,
+                ) from None
+            observation_ref = _safe_receipt(
+                "bluefire.tenant-engine-target-observation.v1",
+                {
+                    "relay_request_id": request.relay_request_id,
+                    "operation_digest": request.operation_digest,
+                    "target_request_id": target_request_id,
+                    "generation_digest": request.expected_generation.digest,
+                    "target_snapshot_ref": request.target_snapshot_ref,
+                    "audit_row_digest": row.digest,
+                    "audit_binding_digest": binding.digest,
+                    "audit_retention_ref": retention_ref,
+                    "response_status": response.status,
+                    "response_sha256": _bytes_digest(response.body),
+                    "response_headers_sha256": content_hash(dict(response.headers)),
+                },
+            )
+            return TenantEngineTargetResult(
+                relay_request_id=request.relay_request_id,
+                operation_digest=request.operation_digest,
+                target_request_id=target_request_id,
+                response=response,
+                generation_digest=request.expected_generation.digest,
+                audit_row=row,
+                audit_binding=binding,
+                audit_retention_ref=retention_ref,
+                target_observation_ref=observation_ref,
+                protected_secret_absent=True,
+            )
 
     def controller_request(
         self,
@@ -960,7 +1302,7 @@ class TenantRecordLauncherTargetAdapter:
     ) -> _VerifiedGeneration:
         if self._cleaned:
             raise TenantTargetAdapterError("target lab is already cleaned")
-        pinned = None if self._uncertain else (self._expected if expected is None else expected)
+        pinned = expected if expected is not None else (None if self._uncertain else self._expected)
         try:
             source = self._source.checked_running(pinned)
             verified = self._verify_snapshot(source)
@@ -1050,6 +1392,114 @@ class TenantRecordLauncherTargetAdapter:
             service_generation=ready.service_generation,
         )
         return _VerifiedGeneration(source, ready, generic, expectation)
+
+
+def _bytes_digest(value: bytes) -> str:
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _engine_requested_tenant(
+    request: TenantEngineTargetRequest,
+    fixture: TenantRecordFixture,
+) -> str | None:
+    if request.route in {TenantEngineTargetRoute.HEALTH, TenantEngineTargetRoute.METADATA}:
+        return None
+    if request.route is TenantEngineTargetRoute.BOUNDED_EXPORT:
+        if request.tenant_id not in {
+            fixture.probe_tenant_id,
+            fixture.protected_tenant_id,
+        }:
+            raise TenantTargetAdapterError("engine target tenant is outside the fixture")
+        return request.tenant_id
+    matches = [record for record in fixture.records if record.record_id == request.record_id]
+    if len(matches) != 1:
+        raise TenantTargetAdapterError("engine target record is outside the fixture")
+    requested_tenant = matches[0].tenant_id
+    if request.tenant_assertion not in {None, requested_tenant}:
+        raise TenantTargetAdapterError("engine target assertion changed tenant scope")
+    return requested_tenant
+
+
+def _check_engine_audit(
+    *,
+    request: TenantEngineTargetRequest,
+    response: TenantResponse,
+    row: TenantAuditRow,
+    binding: TenantBoundAuditReceipt,
+    retention_ref: str,
+    generation: _VerifiedGeneration,
+    requested_tenant: str | None,
+) -> None:
+    _digest(retention_ref, "engine target audit retention")
+    response_headers_sha256 = content_hash(dict(response.headers))
+    if (
+        row.request_id != response.headers.get("x-bluefire-lab-request")
+        or row.source_identity != "engine_worker"
+        or row.route != request.route.value
+        or row.requested_tenant != requested_tenant
+        or row.response_status != response.status
+        or row.response_bytes != len(response.body)
+        or row.response_bytes > request.max_response_bytes
+        or row.response_sha256 != _bytes_digest(response.body)
+        or row.response_headers_sha256 != response_headers_sha256
+        or row.target_snapshot_id != request.expected_generation.target_snapshot_id
+        or row.service_generation != request.expected_generation.service_generation
+        or binding.request_id != row.request_id
+        or binding.audit_row_digest != row.digest
+        or binding.source_identity != "engine_worker"
+        or binding.source_admission_digest
+        != generation.source.admission("engine_worker").token_digest
+        or binding.plan_digest != generation.source.lifecycle.plan.digest
+        or binding.lifecycle_digest != generation.source.lifecycle.digest
+        or binding.liveness_receipt_digest != generation.source.liveness_receipt_digest
+        or binding.run_id != generation.source.lifecycle.plan.run_id
+        or binding.attempt_id != generation.source.lifecycle.plan.attempt_id
+        or binding.packet_digest != generation.source.packet.packet_digest
+        or binding.fixture_digest != generation.source.fixture.digest
+        or binding.config_digest != generation.source.config.digest
+        or binding.endpoint != generation.generic_ready.endpoint
+        or binding.ready_digest != request.expected_generation.ready_digest
+        or binding.target_snapshot_id != request.expected_generation.target_snapshot_id
+        or binding.service_generation != request.expected_generation.service_generation
+    ):
+        raise TenantTargetAdapterError("engine target audit binding changed")
+
+
+def _engine_secret_absent(
+    secret: bytes,
+    *,
+    response: TenantResponse,
+    row: TenantAuditRow,
+    binding: TenantBoundAuditReceipt,
+    retention_ref: str,
+) -> bool:
+    encoded = {
+        secret,
+        secret.hex().encode("ascii"),
+        base64.b64encode(secret),
+        base64.b64encode(secret).rstrip(b"="),
+        base64.urlsafe_b64encode(secret),
+        base64.urlsafe_b64encode(secret).rstrip(b"="),
+    }
+    public = b"\n".join(
+        (
+            response.body,
+            canonical_json_bytes(dict(response.headers)),
+            canonical_json_bytes(row.to_dict()),
+            canonical_json_bytes(
+                {
+                    "binding_digest": binding.digest,
+                    "source_admission_digest": binding.source_admission_digest,
+                    "retention_ref": retention_ref,
+                }
+            ),
+        )
+    )
+    escaped = {
+        json.dumps(value.decode("latin1"), ensure_ascii=True)[1:-1].encode("ascii")
+        for value in encoded
+    }
+    return not any(candidate and candidate in public for candidate in encoded | escaped)
 
 
 def _checked_mechanism(
