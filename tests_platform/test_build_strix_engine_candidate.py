@@ -130,6 +130,10 @@ def test_sanitized_environment_drops_ambient_credentials(tmp_path: Path) -> None
     assert environment["GOTOOLCHAIN"] == "local"
     assert environment["GONOSUMDB"] == ""
     assert environment["GOFLAGS"] == "-mod=readonly -buildvcs=false"
+    assert environment["GIT_CONFIG_COUNT"] == "1"
+    assert environment["GIT_CONFIG_KEY_0"] == "safe.directory"
+    assert environment["GIT_CONFIG_VALUE_0"] == str(Path(candidate.__file__).resolve().parents[1])
+    assert environment["GIT_CONFIG_VALUE_0"] != "*"
 
 
 def test_source_archive_is_deterministic_and_uses_git_inventory(tmp_path: Path) -> None:
@@ -227,14 +231,8 @@ def test_build_backend_constraints_are_hash_pinned_and_cross_checked(tmp_path: P
         "trove-classifiers",
     }
     assert receipt["constraints"]["hatchling"]["version"] == "1.32.4"
-    assert (
-        receipt["constraints"]["hatchling"]["version_cross_checked_in_upstream_lock"]
-        is False
-    )
-    assert (
-        receipt["constraints"]["packaging"]["version_cross_checked_in_upstream_lock"]
-        is True
-    )
+    assert receipt["constraints"]["hatchling"]["version_cross_checked_in_upstream_lock"] is False
+    assert receipt["constraints"]["packaging"]["version_cross_checked_in_upstream_lock"] is True
     assert "#sha256=" in destination.read_text(encoding="ascii")
     source = (ROOT / "tools/build_strix_engine_candidate.py").read_text(encoding="utf-8")
     assert '"--require-build-hashes"' in source
@@ -271,16 +269,16 @@ def test_sbom_must_match_reviewed_lock_and_not_leak_host_paths(tmp_path: Path) -
         candidate._validate_sbom(sbom, _lock_fixture(), forbidden_roots=(tmp_path / "build",))
 
     unlocked = _sbom_fixture()
-    unlocked["components"].append(
-        {"type": "library", "name": "unlocked-package", "version": "1.0"}
-    )
+    unlocked["components"].append({"type": "library", "name": "unlocked-package", "version": "1.0"})
     sbom.write_text(json.dumps(unlocked), encoding="utf-8")
     with pytest.raises(candidate.StrixCandidateBuildError, match="does not match uv.lock"):
         candidate._validate_sbom(sbom, _lock_fixture(), forbidden_roots=(tmp_path / "build",))
 
 
 def test_overlay_result_is_the_reviewed_modified_build() -> None:
-    assert PATCHED_PROMPT_SHA256 == "1908703508eff7287d492e63d1722d7f1a4a968ab3d2c237e92898abdd65d6fe"
+    assert (
+        PATCHED_PROMPT_SHA256 == "1908703508eff7287d492e63d1722d7f1a4a968ab3d2c237e92898abdd65d6fe"
+    )
 
 
 def test_workflow_is_manual_read_only_bounded_and_commit_pinned() -> None:
@@ -293,25 +291,19 @@ def test_workflow_is_manual_read_only_bounded_and_commit_pinned() -> None:
     assert job["timeout-minutes"] == "30"
     steps = job["steps"]
     uses = {step["uses"]: step for step in steps if "uses" in step}
-    checkout = uses[
-        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
-    ]["with"]
+    checkout = uses["actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"]["with"]
     assert checkout == {
         "ref": "${{ github.sha }}",
         "fetch-depth": "1",
         "persist-credentials": "false",
     }
-    python = uses[
-        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
-    ]["with"]
+    python = uses["actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"]["with"]
     assert python["python-version"] == "3.12.14"
     go = uses["actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"]["with"]
     assert go == {"go-version": "1.24.10", "cache": "false"}
     uv = uses["astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2"]["with"]
     assert uv == {"version": "0.13.6", "enable-cache": "false"}
-    upload = uses[
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-    ]["with"]
+    upload = uses["actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"]["with"]
     assert upload["if-no-files-found"] == "error"
     assert upload["retention-days"] == "7"
 

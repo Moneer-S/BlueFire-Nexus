@@ -20,7 +20,7 @@ import platform
 import re
 import shutil
 import stat
-import subprocess
+import subprocess  # nosec B404
 import sys
 import tarfile
 import zipfile
@@ -175,7 +175,9 @@ def _read_regular(path: Path, maximum: int, *, allow_empty: bool = False) -> byt
     try:
         before = path.lstat()
     except OSError as exc:
-        raise StrixCandidateBuildError(f"required regular file is unavailable: {path.name}") from exc
+        raise StrixCandidateBuildError(
+            f"required regular file is unavailable: {path.name}"
+        ) from exc
     if (
         not stat.S_ISREG(before.st_mode)
         or _is_reparse(before)
@@ -183,7 +185,9 @@ def _read_regular(path: Path, maximum: int, *, allow_empty: bool = False) -> byt
         or before.st_size > maximum
         or (before.st_size == 0 and not allow_empty)
     ):
-        raise StrixCandidateBuildError(f"file is not a bounded standalone regular file: {path.name}")
+        raise StrixCandidateBuildError(
+            f"file is not a bounded standalone regular file: {path.name}"
+        )
     try:
         payload = path.read_bytes()
         after = path.lstat()
@@ -222,7 +226,7 @@ def _run(
     if not arguments or not all(isinstance(item, str) and item for item in arguments):
         raise StrixCandidateBuildError("refusing an empty or malformed build command")
     try:
-        completed = subprocess.run(  # noqa: S603 - no shell; callers provide fixed commands.
+        completed = subprocess.run(  # noqa: S603  # nosec B603 - fixed argv; no shell.
             list(arguments),
             cwd=cwd,
             env=dict(environment),
@@ -267,6 +271,7 @@ def build_sanitized_environment(work_root: Path, inherited: Mapping[str, str]) -
         directory.mkdir(parents=True, mode=0o700, exist_ok=False)
 
     null_device = "NUL" if os.name == "nt" else "/dev/null"
+    bluefire_repository = Path(__file__).resolve().parents[1]
     environment.update(
         {
             "HOME": str(isolated_home),
@@ -284,6 +289,9 @@ def build_sanitized_environment(work_root: Path, inherited: Mapping[str, str]) -
             "UV_CACHE_DIR": str(uv_cache),
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": null_device,
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "safe.directory",
+            "GIT_CONFIG_VALUE_0": str(bluefire_repository),
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_ASKPASS": null_device,
             "GCM_INTERACTIVE": "never",
@@ -356,7 +364,9 @@ def _tracked_source_inventory(
         except ValueError as exc:
             raise StrixCandidateBuildError("reviewed Git tree inventory is malformed") from exc
         if object_type != "blob" or mode not in {"100644", "100755"}:
-            raise StrixCandidateBuildError("reviewed Git tree contains a link, submodule, or special mode")
+            raise StrixCandidateBuildError(
+                "reviewed Git tree contains a link, submodule, or special mode"
+            )
         pure = PurePosixPath(path)
         if (
             not path
@@ -416,7 +426,9 @@ def _validate_bluefire_checkout(
             environment=environment,
         )
         if working_blob != blob:
-            raise StrixCandidateBuildError(f"BlueFire candidate input differs from HEAD: {relative}")
+            raise StrixCandidateBuildError(
+                f"BlueFire candidate input differs from HEAD: {relative}"
+            )
         files[relative] = {"git_blob": blob, "sha256": _sha256(payload)}
     return {"commit": commit, "tree": tree, "files": files}
 
@@ -603,7 +615,9 @@ def _validate_wheel_record(archive: zipfile.ZipFile, record_name: str) -> None:
                 raise StrixCandidateBuildError("wheel RECORD must leave its own digest empty")
             continue
         member = _wheel_member(archive, row[0], MAX_WHEEL_MEMBER_BYTES)
-        expected_digest = base64.urlsafe_b64encode(hashlib.sha256(member).digest()).rstrip(b"=").decode()
+        expected_digest = (
+            base64.urlsafe_b64encode(hashlib.sha256(member).digest()).rstrip(b"=").decode()
+        )
         if row[1] != f"sha256={expected_digest}" or row[2] != str(len(member)):
             raise StrixCandidateBuildError("wheel RECORD digest or size does not match content")
     if seen != expected:
@@ -646,14 +660,23 @@ def inspect_wheel(wheel: Path, expected_prompt: bytes, expected_license: bytes) 
             )
             if metadata.defects:
                 raise StrixCandidateBuildError("wheel package metadata is malformed")
-            if metadata.get("Name") != "strix-agent" or metadata.get("Version") != DECLARED_PACKAGE_VERSION:
-                raise StrixCandidateBuildError("wheel package identity does not match reviewed source")
+            if (
+                metadata.get("Name") != "strix-agent"
+                or metadata.get("Version") != DECLARED_PACKAGE_VERSION
+            ):
+                raise StrixCandidateBuildError(
+                    "wheel package identity does not match reviewed source"
+                )
             if metadata.get("Requires-Python") != UPSTREAM_PYTHON_REQUIREMENT:
-                raise StrixCandidateBuildError("wheel Python requirement does not match reviewed source")
+                raise StrixCandidateBuildError(
+                    "wheel Python requirement does not match reviewed source"
+                )
             license_expression = metadata.get("License-Expression") or metadata.get("License")
             if license_expression != UPSTREAM_LICENSE:
                 raise StrixCandidateBuildError("wheel license metadata is not Apache-2.0")
-            entry_points = _wheel_member(archive, entry_names[0], MAX_METADATA_BYTES).decode("utf-8")
+            entry_points = _wheel_member(archive, entry_names[0], MAX_METADATA_BYTES).decode(
+                "utf-8"
+            )
             if "strix = strix.interface.main:main" not in entry_points:
                 raise StrixCandidateBuildError("wheel Strix entry point drifted")
             wheel_metadata = _wheel_member(archive, wheel_names[0], MAX_METADATA_BYTES).decode(
@@ -667,9 +690,11 @@ def inspect_wheel(wheel: Path, expected_prompt: bytes, expected_license: bytes) 
             if _wheel_member(archive, PROMPT_PATH, MAX_SOURCE_FILE_BYTES) != expected_prompt:
                 raise StrixCandidateBuildError("wheel does not contain the reviewed policy overlay")
             license_names = [name for name in names if name.endswith(".dist-info/licenses/LICENSE")]
-            if len(license_names) != 1 or _wheel_member(
-                archive, license_names[0], MAX_SOURCE_FILE_BYTES
-            ) != expected_license:
+            if (
+                len(license_names) != 1
+                or _wheel_member(archive, license_names[0], MAX_SOURCE_FILE_BYTES)
+                != expected_license
+            ):
                 raise StrixCandidateBuildError("wheel does not contain the exact upstream license")
             sidecars = [name for name in names if name == "strix/bin/strix-tui"]
             sidecar = (
@@ -1142,9 +1167,7 @@ def build_candidate(
             "package_sha256": f"sha256:{wheel_artifact.sha256}",
             "executable_sha256": None,
             "image_inventory_sha256": None,
-            "embedded_tui_sha256": (
-                f"sha256:{wheel_receipt['contained_sidecar']['sha256']}"
-            ),
+            "embedded_tui_sha256": (f"sha256:{wheel_receipt['contained_sidecar']['sha256']}"),
             "ready_for_strix_build_identity": False,
             "note": (
                 "The protected installed Strix CLI executable and qualified image inventory "
