@@ -306,7 +306,7 @@ jobs:
           python -m pip install build
 
       - name: Install isolated pinned Rust toolchain
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' || matrix.platform == 'macos'
         shell: bash
         env:
           RUSTUP_HOME: ${{ runner.temp }}/bluefire-wheel-rustup
@@ -316,7 +316,8 @@ jobs:
           printf 'RUSTUP_HOME=%s\n' "$RUSTUP_HOME" >> "$GITHUB_ENV"
           channel="$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)"
           test -n "$channel"
-          rustup toolchain install "$channel" --profile minimal --component cargo --component clippy --component rustfmt
+          rustup toolchain install "$channel" --profile minimal --component cargo --component clippy --component rustfmt --force
+          rustup run "$channel" rustc -vV
           rustup run "$channel" cargo --version
           rustup show
 
