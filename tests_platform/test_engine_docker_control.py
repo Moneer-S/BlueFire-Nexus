@@ -16,6 +16,7 @@ from bluefire.engine_docker_control import (
     DockerResponseContract,
     EngineDockerPolicyError,
     authorize_docker_api_request,
+    validate_docker_container_namespace_proof,
 )
 from bluefire.engine_network_policy import EngineNetworkPlan
 from bluefire.strix_adapter import StrixBuildIdentity
@@ -170,7 +171,7 @@ def create_body() -> dict[str, object]:
             "NanoCpus": plan.nano_cpus,
             "NetworkMode": plan.network_name,
             "OomKillDisable": False,
-            "PidMode": "private",
+            "PidMode": "",
             "PidsLimit": plan.pids_limit,
             "PortBindings": {},
             "Privileged": False,
@@ -179,7 +180,7 @@ def create_body() -> dict[str, object]:
             "RestartPolicy": {"MaximumRetryCount": 0, "Name": "no"},
             "SecurityOpt": ["no-new-privileges:true"],
             "Tmpfs": {"/workspace": TMPFS_OPTIONS},
-            "UTSMode": "private",
+            "UTSMode": "",
         },
         "Image": plan.image_reference,
         "Labels": dict(plan.required_labels),
@@ -229,6 +230,13 @@ def test_policy_binds_existing_plans_labels_image_network_and_tmpfs() -> None:
     assert item.network_policy_digest == network().policy_digest
     assert item.container_name.endswith(ATTEMPT_ID[-12:])
     assert item.policy_digest == content_hash(item.to_dict())
+    assert (
+        item.expected_ipc_mode,
+        item.expected_pid_mode,
+        item.expected_uts_mode,
+    ) == ("private", "", "")
+    assert item.to_dict()["expected_pid_mode"] == ""
+    assert item.to_dict()["expected_uts_mode"] == ""
     assert dict(item.required_labels) == {
         "bluefire.engine.attempt": ATTEMPT_ID,
         "strix-run-id": ATTEMPT_ID,
@@ -304,6 +312,9 @@ def test_policy_rejects_root_broad_capabilities_multiple_containers_and_large_tm
         {"api_version": "latest"},
         {"expected_user": "root"},
         {"expected_capabilities": ("SYS_ADMIN",)},
+        {"expected_ipc_mode": ""},
+        {"expected_pid_mode": "private"},
+        {"expected_uts_mode": "private"},
         {"tmpfs": ()},
         {"memory_bytes": 2.0 * 1024**3},
         {"expected_container_count": 2},
@@ -433,6 +444,86 @@ def test_exact_container_create_requires_post_inspect_registration() -> None:
 
     with pytest.raises(EngineDockerPolicyError, match="count"):
         authorize("POST", f"/v1.47/containers/create?name={plan.container_name}", create_body())
+
+
+def test_moby_private_namespace_wire_values_are_exact_and_inspectable() -> None:
+    plan = policy()
+    row = create_body()
+    host = row["HostConfig"]
+    assert isinstance(host, dict)
+
+    assert host["IpcMode"] == "private"
+    assert host["PidMode"] == ""
+    assert host["UTSMode"] == ""
+    # A real inspect HostConfig contains many additional fields. The proof is
+    # deliberately strict about these three namespace modes without pretending
+    # that its small projection is the entire Moby response schema.
+    inspected_host = dict(host)
+    inspected_host["UsernsMode"] = ""
+    validate_docker_container_namespace_proof(plan, inspected_host)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("IpcMode", ""),
+        ("IpcMode", "host"),
+        ("IpcMode", f"container:{CONTAINER_ID}"),
+        ("IpcMode", None),
+        ("IpcMode", False),
+        ("PidMode", "private"),
+        ("PidMode", "host"),
+        ("PidMode", f"container:{CONTAINER_ID}"),
+        ("PidMode", f"container:{OTHER_CONTAINER_ID}"),
+        ("PidMode", "container:"),
+        ("PidMode", "HOST"),
+        ("PidMode", "host "),
+        ("PidMode", None),
+        ("PidMode", False),
+        ("PidMode", 0),
+        ("UTSMode", "private"),
+        ("UTSMode", "host"),
+        ("UTSMode", f"container:{CONTAINER_ID}"),
+        ("UTSMode", "HOST"),
+        ("UTSMode", "host "),
+        ("UTSMode", None),
+        ("UTSMode", False),
+        ("UTSMode", 0),
+    ],
+)
+def test_create_and_inspect_proof_refuse_namespace_sharing_and_invalid_modes(
+    field: str, value: object
+) -> None:
+    row = create_body()
+    host = row["HostConfig"]
+    assert isinstance(host, dict)
+    host[field] = value
+
+    with pytest.raises(EngineDockerPolicyError, match="private namespace"):
+        validate_docker_container_namespace_proof(policy(), host)
+    with pytest.raises(EngineDockerPolicyError, match="private namespace"):
+        authorize_docker_api_request(
+            policy(),
+            request("POST", f"/v1.47/containers/create?name={policy().container_name}", row),
+            ownership(container=False, exec_id=False),
+        )
+
+
+@pytest.mark.parametrize("field", ["IpcMode", "PidMode", "UTSMode"])
+def test_create_and_inspect_proof_require_all_namespace_fields(field: str) -> None:
+    row = create_body()
+    host = row["HostConfig"]
+    assert isinstance(host, dict)
+    host.pop(field)
+
+    with pytest.raises(EngineDockerPolicyError, match="private namespace"):
+        validate_docker_container_namespace_proof(policy(), host)
+    with pytest.raises(EngineDockerPolicyError):
+        authorize_docker_api_request(
+            policy(),
+            request("POST", f"/v1.47/containers/create?name={policy().container_name}", row),
+            ownership(container=False, exec_id=False),
+        )
 
 
 def test_every_authorization_is_bound_to_the_admitted_daemon_and_baseline() -> None:

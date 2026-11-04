@@ -306,6 +306,9 @@ class DockerApiPolicy:
     required_labels: tuple[tuple[str, str], ...]
     expected_user: str
     expected_capabilities: tuple[str, ...]
+    expected_ipc_mode: str
+    expected_pid_mode: str
+    expected_uts_mode: str
     tmpfs: tuple[DockerTmpfs, ...]
     memory_bytes: int
     nano_cpus: int
@@ -371,6 +374,16 @@ class DockerApiPolicy:
             or not set(self.expected_capabilities) <= {"NET_ADMIN", "NET_RAW"}
         ):
             raise EngineDockerPolicyError("Docker policy capability set is not supported")
+        # Moby represents private/default PID and UTS namespaces as the empty
+        # string. Unlike IpcMode, neither enum accepts the literal "private".
+        # Pinning the wire/inspect values here keeps the create request and the
+        # later positive-ownership proof on the same daemon semantics.
+        if (
+            self.expected_ipc_mode,
+            self.expected_pid_mode,
+            self.expected_uts_mode,
+        ) != ("private", "", ""):
+            raise EngineDockerPolicyError("Docker policy namespace modes are not private")
         if (
             not isinstance(self.tmpfs, tuple)
             or not self.tmpfs
@@ -488,6 +501,9 @@ class DockerApiPolicy:
             required_labels=labels,
             expected_user=custody.expected_user,
             expected_capabilities=custody.expected_capabilities,
+            expected_ipc_mode="private",
+            expected_pid_mode="",
+            expected_uts_mode="",
             tmpfs=tuple(mounts),
             memory_bytes=custody.memory_bytes,
             nano_cpus=custody.nano_cpus,
@@ -520,6 +536,9 @@ class DockerApiPolicy:
                     "required_labels": dict(self.required_labels),
                     "expected_user": self.expected_user,
                     "expected_capabilities": list(self.expected_capabilities),
+                    "expected_ipc_mode": self.expected_ipc_mode,
+                    "expected_pid_mode": self.expected_pid_mode,
+                    "expected_uts_mode": self.expected_uts_mode,
                     "tmpfs": [
                         {
                             "destination": item.destination,
@@ -546,6 +565,36 @@ class DockerApiPolicy:
     @property
     def policy_digest(self) -> str:
         return content_hash(self.to_dict())
+
+
+def validate_docker_container_namespace_proof(
+    policy: DockerApiPolicy, host_config: Mapping[str, Any]
+) -> None:
+    """Verify Moby's exact private namespace representation.
+
+    Docker create and container inspect both use an empty ``PidMode`` and
+    ``UTSMode`` for private namespaces. ``IpcMode`` is a different Moby enum
+    and supports the explicit ``private`` value. Requiring all three fields
+    prevents a pending container from being promoted after joining host or
+    another container's namespaces.
+    """
+
+    if not isinstance(policy, DockerApiPolicy) or not isinstance(host_config, Mapping):
+        raise EngineDockerPolicyError("Docker container namespace proof is invalid")
+    expected = {
+        "IpcMode": policy.expected_ipc_mode,
+        "PidMode": policy.expected_pid_mode,
+        "UTSMode": policy.expected_uts_mode,
+    }
+    for field, value in expected.items():
+        if (
+            field not in host_config
+            or not isinstance(host_config[field], str)
+            or host_config[field] != value
+        ):
+            raise EngineDockerPolicyError(
+                f"Docker container {field} does not prove a private namespace"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -872,9 +921,7 @@ def _validate_create(policy: DockerApiPolicy, request: DockerApiRequest) -> Mapp
         raise EngineDockerPolicyError("Docker create security options are not fixed")
     if host["NetworkMode"] != policy.network_name:
         raise EngineDockerPolicyError("Docker create network mode does not match")
-    for key in ("IpcMode", "PidMode", "UTSMode"):
-        if host[key] != "private":
-            raise EngineDockerPolicyError("Docker create requests a host namespace")
+    validate_docker_container_namespace_proof(policy, host)
     if (
         host["CgroupParent"] != policy.cgroup_parent
         or _CGROUP_PARENT.fullmatch(str(host["CgroupParent"])) is None
@@ -1221,4 +1268,5 @@ __all__ = [
     "DockerTmpfs",
     "EngineDockerPolicyError",
     "authorize_docker_api_request",
+    "validate_docker_container_namespace_proof",
 ]
