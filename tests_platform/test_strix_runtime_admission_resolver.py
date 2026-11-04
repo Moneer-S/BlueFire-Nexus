@@ -6,7 +6,7 @@ import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import pytest
 
@@ -24,6 +24,7 @@ from bluefire.strix_policy_overlay import (
 from bluefire.strix_redistribution_review import strix_redistribution_review
 from bluefire.strix_runtime_admission_resolver import (
     ControllerQualifiedStrixAdmissionResolver,
+    PersistedStrixRuntimeAdmissionRecord,
     ProtectedStrixQualificationManifestSource,
     StrixRuntimeAdmissionResolverError,
     StrixRuntimeAuthorityRecord,
@@ -138,34 +139,118 @@ def write_manifest(root: Path, *, key: str = ARTIFACT_KEY) -> tuple[Path, bytes,
 
 class AuthoritySource:
     def __init__(self, current: StrixRuntimeAuthorityRecord) -> None:
-        self.current = current
+        self._current = current
         self.reads = 0
+        initial_digest = content_hash(current.to_dict())
+        self.records = {initial_digest: current}
+        self.parents: dict[str, str] = {}
+
+    @property
+    def current(self) -> StrixRuntimeAuthorityRecord:
+        return self._current
+
+    @current.setter
+    def current(self, value: StrixRuntimeAuthorityRecord) -> None:
+        previous = self._current
+        previous_digest = content_hash(previous.to_dict())
+        current_digest = content_hash(value.to_dict())
+        self.records[current_digest] = value
+        if value.generation > previous.generation:
+            self.parents[current_digest] = previous_digest
+        self._current = value
 
     def read_current(self) -> StrixRuntimeAuthorityRecord:
         self.reads += 1
         return self.current
 
+    def read_exact(self, *, generation: int, record_digest: str):
+        record = self.records.get(record_digest)
+        return record if record is not None and record.generation == generation else None
+
+    def is_descendant(
+        self,
+        *,
+        ancestor_generation: int,
+        ancestor_record_digest: str,
+        descendant_generation: int,
+        descendant_record_digest: str,
+    ) -> bool:
+        if descendant_generation <= ancestor_generation:
+            return False
+        cursor = descendant_record_digest
+        while cursor in self.parents:
+            cursor = self.parents[cursor]
+            if cursor == ancestor_record_digest:
+                return True
+        return False
+
 
 class AdmissionSource:
-    def __init__(self, admission: StrixRuntimeAdmission | None) -> None:
+    def __init__(
+        self,
+        admission: StrixRuntimeAdmission | None,
+        *,
+        binding_digest: str,
+        delegation_digest: str,
+        authority_generation: int,
+        authority_record_digest: str,
+    ) -> None:
         self.admission = admission
-        self.calls: list[dict[str, str]] = []
+        self.calls: list[dict[str, str | int]] = []
+        self.record_ref = digest("8")
+        self.record_digest = digest("9")
+        self.custody_source_ref = digest("a")
+        self.custody_record_ref = digest("b")
+        self.custody_record_digest = digest("c")
+        self.binding_digest = binding_digest
+        self.authority_generation = authority_generation
+        self.authority_record_digest = authority_record_digest
+        self.delegation_digest = delegation_digest
+        self.lifecycle_state = "VERIFIED"
+        self.lifecycle_head_digest = digest("d")
+        self.on_reopen: Callable[[int], None] | None = None
 
     def reopen_exact(
         self,
         *,
         attempt_id: str,
         binding_digest: str,
-        runtime_qualification_ref: str,
-    ) -> StrixRuntimeAdmission | None:
+        delegation_digest: str,
+    ) -> PersistedStrixRuntimeAdmissionRecord | None:
         self.calls.append(
             {
                 "attempt_id": attempt_id,
                 "binding_digest": binding_digest,
-                "runtime_qualification_ref": runtime_qualification_ref,
+                "delegation_digest": delegation_digest,
             }
         )
-        return self.admission
+        if self.on_reopen is not None:
+            self.on_reopen(len(self.calls))
+        if self.admission is None:
+            return None
+        return PersistedStrixRuntimeAdmissionRecord(
+            schema_version="bluefire.persisted-strix-runtime-admission.v1",
+            record_ref=self.record_ref,
+            record_digest=self.record_digest,
+            custody_source_ref=self.custody_source_ref,
+            custody_record_ref=self.custody_record_ref,
+            custody_record_digest=self.custody_record_digest,
+            binding_digest=self.binding_digest,
+            authority_generation=self.authority_generation,
+            authority_record_digest=self.authority_record_digest,
+            delegation_digest=self.delegation_digest,
+            lifecycle_state=self.lifecycle_state,
+            lifecycle_head_digest=self.lifecycle_head_digest,
+            admission=self.admission,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MappingMarker:
+    value: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"value": self.value}
 
 
 @dataclass(slots=True)
@@ -254,18 +339,58 @@ def make_case(tmp_path: Path) -> Case:
         created_at=NOW,
         expires_at="2026-11-04T12:06:00Z",
     )
-    marker = cast(Any, object())
+    marker = cast(Any, MappingMarker("retained-proof"))
+    workspace = cast(
+        Any,
+        SimpleNamespace(
+            attempt_id="attempt-" + "a" * 32,
+            cwd=tmp_path / "workspace",
+            home=tmp_path / "workspace" / "home",
+            temporary=tmp_path / "workspace" / "tmp",
+            objective_file=tmp_path / "workspace" / "objective.txt",
+            config_file=tmp_path / "workspace" / "config.json",
+            mcp_file=tmp_path / "workspace" / "mcp.json",
+            objective_sha256=digest("7"),
+        ),
+    )
     admission = StrixRuntimeAdmission(
         objective_ref=binding.objective_ref,
         environment_ref=binding.environment_ref,
         runtime_qualification_ref=manifest_ref,
         runtime_qualified=True,
         build=build,
-        scope=marker,
-        gateway=marker,
-        budgets=marker,
-        limits=marker,
-        workspace=marker,
+        scope=cast(
+            Any,
+            SimpleNamespace(
+                target="http://127.0.0.1:18080/",
+                resolved_addresses=("127.0.0.1",),
+                target_snapshot_digest=binding.target_snapshot_ref,
+                scope_digest=binding.scope_ref,
+                network_policy_digest=delegation.network_policy_digest,
+                network_name="bluefire-test",
+            ),
+        ),
+        gateway=cast(
+            Any,
+            SimpleNamespace(
+                model=binding.model_id,
+                base_url=binding.model_data_destination,
+                authorization_digest=binding.model_authorization_ref,
+            ),
+        ),
+        budgets=cast(
+            Any,
+            SimpleNamespace(
+                wall_seconds=binding.wall_clock_seconds,
+                max_turns_per_agent=binding.action_limit,
+                max_model_cost_usd="1",
+            ),
+        ),
+        limits=cast(
+            Any,
+            SimpleNamespace(memory="2g", cpus="2", pids=512, log_size="20m", log_files=2),
+        ),
+        workspace=workspace,
         executable=tmp_path / "never-executed-strix",
         path_environment="/never/executed",
         control_root=tmp_path / "never-used-controller",
@@ -291,7 +416,13 @@ def make_case(tmp_path: Path) -> Case:
             revocation_reason=None,
         )
     )
-    admissions = AdmissionSource(admission)
+    admissions = AdmissionSource(
+        admission,
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+        authority_generation=authority.current.generation,
+        authority_record_digest=content_hash(authority.current.to_dict()),
+    )
     manifests = ProtectedStrixQualificationManifestSource(root)
     resolver = ControllerQualifiedStrixAdmissionResolver(
         authority_source=authority,
@@ -324,14 +455,17 @@ def test_valid_exact_case_returns_the_persisted_admission_without_recreation(
     resolved = case.resolver.resolve(case.binding, case.delegation)
 
     assert resolved is case.admission
-    assert case.authority.reads == 1
-    assert case.admissions.calls == [
-        {
+    assert case.authority.reads == 2
+    assert len(case.admissions.calls) == 2
+    assert all(
+        call
+        == {
             "attempt_id": case.binding.attempt_id,
             "binding_digest": case.binding.binding_digest,
-            "runtime_qualification_ref": case.manifest_ref,
+            "delegation_digest": case.delegation.delegation_digest,
         }
-    ]
+        for call in case.admissions.calls
+    )
     after = case.artifact.stat()
     assert (after.st_size, after.st_mtime_ns, after.st_ctime_ns) == (
         before.st_size,
@@ -340,13 +474,200 @@ def test_valid_exact_case_returns_the_persisted_admission_without_recreation(
     )
 
 
+def test_launch_resolution_rereads_exact_unchanged_authority_and_admission(
+    tmp_path: Path,
+) -> None:
+    case = make_case(tmp_path)
+
+    initial = case.resolver.resolve_for_launch(case.binding, case.delegation)
+    current = case.resolver.require_current(
+        case.binding,
+        case.delegation,
+        expected_resolution_ref=initial.resolution_ref,
+    )
+
+    assert initial.admission is current.admission is case.admission
+    assert initial.resolution_ref == current.resolution_ref
+    assert case.authority.reads == 4
+    assert len(case.admissions.calls) == 4
+
+
+def test_authority_rotation_during_admission_load_refuses_the_resolution(
+    tmp_path: Path,
+) -> None:
+    case = make_case(tmp_path)
+
+    def rotate(reopen_number: int) -> None:
+        if reopen_number == 1:
+            case.authority.current = replace(
+                case.authority.current,
+                generation=2,
+                state="revoked",
+                recorded_at="2026-11-04T12:02:00Z",
+                revocation_reason="runtime candidate withdrawn during resolution",
+            )
+
+    case.admissions.on_reopen = rotate
+
+    with pytest.raises(
+        StrixRuntimeAdmissionResolverError,
+        match="changed while admission was resolved",
+    ):
+        case.resolver.resolve_for_launch(case.binding, case.delegation)
+
+
+def test_lifecycle_rotation_during_final_admission_reread_refuses_resolution(
+    tmp_path: Path,
+) -> None:
+    case = make_case(tmp_path)
+
+    def rotate(reopen_number: int) -> None:
+        if reopen_number == 2:
+            case.admissions.lifecycle_state = "UNKNOWN"
+            case.admissions.lifecycle_head_digest = digest("6")
+
+    case.admissions.on_reopen = rotate
+
+    with pytest.raises(
+        StrixRuntimeAdmissionResolverError,
+        match="changed while admission was resolved",
+    ):
+        case.resolver.resolve_for_launch(case.binding, case.delegation)
+
+
+@pytest.mark.parametrize(
+    ("drift", "message"),
+    [
+        ("authority_generation", "no longer launchable"),
+        ("record_ref", "changed before launch"),
+        ("record_digest", "changed before launch"),
+        ("custody_source_ref", "changed before launch"),
+        ("custody_record_ref", "changed before launch"),
+        ("custody_record_digest", "changed before launch"),
+        ("admission", "changed before launch"),
+        ("delegation", "exact attempt authority"),
+    ],
+)
+def test_launch_resolution_refuses_authority_admission_custody_or_delegation_drift(
+    tmp_path: Path,
+    drift: str,
+    message: str,
+) -> None:
+    case = make_case(tmp_path)
+    initial = case.resolver.resolve_for_launch(case.binding, case.delegation)
+    delegation = case.delegation
+    if drift == "authority_generation":
+        case.authority.current = replace(case.authority.current, generation=2)
+    elif drift == "record_ref":
+        case.admissions.record_ref = digest("6")
+    elif drift == "record_digest":
+        case.admissions.record_digest = digest("6")
+    elif drift == "custody_source_ref":
+        case.admissions.custody_source_ref = digest("6")
+    elif drift == "custody_record_ref":
+        case.admissions.custody_record_ref = digest("6")
+    elif drift == "custody_record_digest":
+        case.admissions.custody_record_digest = digest("6")
+    elif drift == "admission":
+        case.admissions.admission = replace(case.admission, path_environment="/changed")
+    else:
+        delegation = replace(
+            case.delegation,
+            delegation_id="engine-delegation-" + "4" * 32,
+        )
+
+    with pytest.raises(StrixRuntimeAdmissionResolverError, match=message):
+        case.resolver.require_current(
+            case.binding,
+            delegation,
+            expected_resolution_ref=initial.resolution_ref,
+        )
+
+
+def test_launch_resolution_refuses_revocation_after_initial_resolution(tmp_path: Path) -> None:
+    case = make_case(tmp_path)
+    initial = case.resolver.resolve_for_launch(case.binding, case.delegation)
+    case.authority.current = replace(
+        case.authority.current,
+        generation=2,
+        state="revoked",
+        revocation_reason="runtime candidate withdrawn",
+    )
+
+    with pytest.raises(StrixRuntimeAdmissionResolverError, match="no longer launchable"):
+        case.resolver.require_current(
+            case.binding,
+            case.delegation,
+            expected_resolution_ref=initial.resolution_ref,
+        )
+
+
+@pytest.mark.parametrize("state", ["UNKNOWN", "REVOKED", "CLEANED"])
+def test_nonlaunch_lifecycle_reopens_for_reconciliation_but_refuses_launch(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    case = make_case(tmp_path)
+    initial = case.resolver.resolve_for_launch(case.binding, case.delegation)
+    case.admissions.lifecycle_state = state
+    case.admissions.lifecycle_head_digest = digest("6")
+
+    with pytest.raises(StrixRuntimeAdmissionResolverError, match="no longer launchable"):
+        case.resolver.require_current(
+            case.binding,
+            case.delegation,
+            expected_resolution_ref=initial.resolution_ref,
+        )
+    recovered = case.resolver.resolve(case.binding, case.delegation)
+    assert recovered.runtime_qualified is False
+    assert recovered.custody is case.admission.custody
+
+
+def test_verified_lifecycle_head_drift_changes_launch_resolution(tmp_path: Path) -> None:
+    case = make_case(tmp_path)
+    initial = case.resolver.resolve_for_launch(case.binding, case.delegation)
+    case.admissions.lifecycle_head_digest = digest("6")
+
+    with pytest.raises(StrixRuntimeAdmissionResolverError, match="changed before launch"):
+        case.resolver.require_current(
+            case.binding,
+            case.delegation,
+            expected_resolution_ref=initial.resolution_ref,
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("qualification_manifest_ref", digest("a"), "artifact is invalid"),
-        ("installed_bluefire_revision", "2" * 40, "another BlueFire revision"),
-        ("strix_build_digest", digest("a"), "differs from controller authority"),
-        ("threat_review_ref", digest("a"), "differs from controller authority"),
+        ("binding_digest", digest("6"), "exact attempt authority"),
+        ("authority_generation", 9, "missing or invalid"),
+        ("authority_record_digest", digest("6"), "missing or invalid"),
+        ("delegation_digest", digest("6"), "exact attempt authority"),
+    ],
+)
+def test_persisted_admission_envelope_must_match_the_source_query(
+    tmp_path: Path,
+    field: str,
+    value: int | str,
+    message: str,
+) -> None:
+    case = make_case(tmp_path)
+    setattr(case.admissions, field, value)
+
+    with pytest.raises(
+        StrixRuntimeAdmissionResolverError,
+        match=message,
+    ):
+        case.resolver.resolve_for_launch(case.binding, case.delegation)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message", "admission_reads"),
+    [
+        ("qualification_manifest_ref", digest("a"), "not a proven descendant", 1),
+        ("installed_bluefire_revision", "2" * 40, "another BlueFire revision", 0),
+        ("strix_build_digest", digest("a"), "not a proven descendant", 1),
+        ("threat_review_ref", digest("a"), "not a proven descendant", 1),
     ],
 )
 def test_controller_anchor_mismatch_fails_closed(
@@ -354,6 +675,7 @@ def test_controller_anchor_mismatch_fails_closed(
     field: str,
     value: str,
     message: str,
+    admission_reads: int,
 ) -> None:
     case = make_case(tmp_path)
     authority = case.authority.current.to_dict()
@@ -363,7 +685,7 @@ def test_controller_anchor_mismatch_fails_closed(
     with pytest.raises(StrixRuntimeAdmissionResolverError, match=message):
         case.resolver.resolve(case.binding, case.delegation)
 
-    assert case.admissions.calls == []
+    assert len(case.admissions.calls) == admission_reads
 
 
 def test_protected_root_substitution_is_rejected_even_with_identical_bytes(
@@ -383,7 +705,7 @@ def test_protected_root_substitution_is_rejected_even_with_identical_bytes(
     with pytest.raises(StrixRuntimeAdmissionResolverError, match="root identity changed"):
         case.resolver.resolve(case.binding, case.delegation)
 
-    assert case.admissions.calls == []
+    assert len(case.admissions.calls) == 1
 
 
 def test_symlinked_manifest_is_rejected(tmp_path: Path) -> None:
@@ -401,7 +723,7 @@ def test_symlinked_manifest_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(StrixRuntimeAdmissionResolverError, match="private regular file"):
         case.resolver.resolve(case.binding, case.delegation)
 
-    assert case.admissions.calls == []
+    assert len(case.admissions.calls) == 1
 
 
 def test_reparse_ancestor_is_rejected(
@@ -456,7 +778,7 @@ def test_hardlinked_manifest_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(StrixRuntimeAdmissionResolverError, match="private regular file"):
         case.resolver.resolve(case.binding, case.delegation)
 
-    assert case.admissions.calls == []
+    assert len(case.admissions.calls) == 1
 
 
 def test_revoked_current_generation_overrides_stale_qualified_admission(
@@ -474,7 +796,7 @@ def test_revoked_current_generation_overrides_stale_qualified_admission(
 
     revoked = case.resolver.resolve(case.binding, case.delegation)
 
-    assert case.authority.reads == 2
+    assert case.authority.reads == 4
     assert revoked is not case.admission
     assert revoked.runtime_qualified is False
     assert replace(revoked, runtime_qualified=True) == case.admission
@@ -498,8 +820,8 @@ def test_restart_reopens_exact_state_without_writes_or_runtime_effects(tmp_path:
     second = restarted.resolve(case.binding, case.delegation)
 
     assert first is second is case.admission
-    assert case.authority.reads == 2
-    assert len(case.admissions.calls) == 2
+    assert case.authority.reads == 4
+    assert len(case.admissions.calls) == 4
     assert sorted(path.name for path in case.root.iterdir()) == entries_before
     metadata_after = case.artifact.stat()
     assert (

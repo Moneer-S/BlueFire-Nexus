@@ -4,7 +4,7 @@ import hashlib
 import json
 import threading
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import pytest
 
@@ -56,6 +56,7 @@ from bluefire.strix_engine_runtime import (
     StrixEngineRuntime,
     StrixEngineRuntimeError,
     StrixRuntimeAdmission,
+    StrixRuntimeAdmissionResolution,
 )
 from bluefire.strix_policy_overlay import (
     OVERLAY_SHA256,
@@ -108,9 +109,16 @@ class Custody:
 
 
 class Lease:
-    def __init__(self, authorization_ref: str, events: list[str]) -> None:
+    def __init__(
+        self,
+        authorization_ref: str,
+        events: list[str],
+        *,
+        fail_revoke: bool = False,
+    ) -> None:
         self._authorization_ref = authorization_ref
         self.events = events
+        self.fail_revoke = fail_revoke
 
     @property
     def authorization_ref(self) -> str:
@@ -122,6 +130,8 @@ class Lease:
 
     def revoke(self) -> str:
         self.events.append("revoked")
+        if self.fail_revoke:
+            raise RuntimeError("credential revocation unavailable")
         return digest("e")
 
 
@@ -130,11 +140,16 @@ class Credentials:
         self.authorization_ref = authorization_ref
         self.events = events
         self.reconcile_calls = 0
+        self.fail_revoke = False
 
     def acquire(self, binding, delegation):
         del binding, delegation
         self.events.append("lease")
-        return Lease(self.authorization_ref, self.events)
+        return Lease(
+            self.authorization_ref,
+            self.events,
+            fail_revoke=self.fail_revoke,
+        )
 
     def reconcile_revocation(self, binding, delegation):
         del binding, delegation
@@ -290,12 +305,33 @@ class Worker:
 
 
 class Resolver:
-    def __init__(self, admission: StrixRuntimeAdmission) -> None:
+    def __init__(
+        self,
+        admission: StrixRuntimeAdmission,
+        *,
+        on_require_current: Callable[[int], None] | None = None,
+    ) -> None:
         self.admission = admission
+        self.resolution_ref = digest("e")
+        self.require_current_calls = 0
+        self.on_require_current = on_require_current
 
     def resolve(self, binding, delegation):
         del binding, delegation
         return self.admission
+
+    def resolve_for_launch(self, binding, delegation):
+        del binding, delegation
+        return StrixRuntimeAdmissionResolution(self.admission, self.resolution_ref)
+
+    def require_current(self, binding, delegation, *, expected_resolution_ref):
+        del binding, delegation
+        self.require_current_calls += 1
+        if self.on_require_current is not None:
+            self.on_require_current(self.require_current_calls)
+        if expected_resolution_ref != self.resolution_ref:
+            raise RuntimeError("runtime admission changed")
+        return StrixRuntimeAdmissionResolution(self.admission, self.resolution_ref)
 
 
 def _build(executable: Path) -> StrixBuildIdentity:
@@ -593,6 +629,7 @@ def test_execute_binds_exact_plan_revokes_before_intake_and_retains_only_engine_
     )
 
     assert worker.run_calls == 1
+    assert cast(Resolver, runtime._resolver).require_current_calls == 2
     assert events == ["lease", "secret", "worker", "revoked", "sealed", "imported"]
     assert [record.state for record, _timestamp in transitions] == [AttemptState.RUNNING]
     assert settlement.record.state is AttemptState.COMPLETED
@@ -607,6 +644,105 @@ def test_execute_binds_exact_plan_revokes_before_intake_and_retains_only_engine_
         "strix_runs/upstream-run-1/run.json",
         "strix_runs/upstream-run-1/coverage.json",
     )
+
+
+@pytest.mark.parametrize(
+    ("drift_on_check", "expected_events"),
+    [
+        (1, []),
+        (2, ["lease", "revoked"]),
+    ],
+)
+def test_runtime_authority_drift_before_launch_fails_without_worker_or_secret(
+    tmp_path: Path,
+    drift_on_check: int,
+    expected_events: list[str],
+) -> None:
+    runtime, binding, delegation, _admission, worker, _artifacts, _credentials, events = _runtime(
+        tmp_path
+    )
+    resolver = cast(Resolver, runtime._resolver)
+
+    def drift(check_number: int) -> None:
+        if check_number == drift_on_check:
+            resolver.resolution_ref = digest("f")
+
+    resolver.on_require_current = drift
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert resolver.require_current_calls == drift_on_check
+    assert events == expected_events
+    assert worker.run_calls == 0
+    assert settlement.record.state is AttemptState.FAILED
+    assert settlement.record.completeness is AttemptCompleteness.UNKNOWN
+    assert settlement.record.exit_reason == "runtime_authority_changed_before_launch"
+    assert settlement.engine_evidence == ()
+    assert settlement.artifact_manifest_ref is None
+    assert settlement.cleanup_state is CleanupState.VERIFIED_ABSENT
+    assert settlement.cleanup_evidence_ref is not None
+
+
+@pytest.mark.parametrize(
+    ("malformed_on_check", "expected_events"),
+    [
+        (1, []),
+        (2, ["lease", "revoked"]),
+    ],
+)
+def test_malformed_reread_settles_as_prelaunch_authority_failure(
+    tmp_path: Path,
+    malformed_on_check: int,
+    expected_events: list[str],
+) -> None:
+    runtime, binding, delegation, _admission, worker, _artifacts, _credentials, events = _runtime(
+        tmp_path
+    )
+    resolver = cast(Resolver, runtime._resolver)
+
+    def malformed(check_number: int) -> None:
+        if check_number == malformed_on_check:
+            raise AttributeError("malformed nested admission")
+
+    resolver.on_require_current = malformed
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert events == expected_events
+    assert worker.run_calls == 0
+    assert settlement.record.state is AttemptState.FAILED
+    assert settlement.record.exit_reason == "runtime_authority_changed_before_launch"
+    assert settlement.cleanup_state is CleanupState.VERIFIED_ABSENT
+
+
+def test_second_reread_failure_records_unverified_credential_revocation(
+    tmp_path: Path,
+) -> None:
+    runtime, binding, delegation, _admission, worker, _artifacts, credentials, events = _runtime(
+        tmp_path
+    )
+    resolver = cast(Resolver, runtime._resolver)
+    credentials.fail_revoke = True
+
+    def drift(check_number: int) -> None:
+        if check_number == 2:
+            resolver.resolution_ref = digest("f")
+
+    resolver.on_require_current = drift
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert events == ["lease", "revoked"]
+    assert worker.run_calls == 0
+    assert settlement.record.exit_reason == "runtime_authority_changed_before_launch"
+    assert "Model gateway credential revocation is unverified." in settlement.record.limitations
+    assert settlement.cleanup_state is CleanupState.VERIFIED_ABSENT
 
 
 def test_execute_requires_exact_durable_reservation_and_outcome(tmp_path: Path) -> None:

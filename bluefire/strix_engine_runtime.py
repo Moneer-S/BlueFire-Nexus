@@ -116,6 +116,20 @@ class StrixRuntimeAdmissionResolver(Protocol):
         delegation: EngineCapabilityDelegation,
     ) -> "StrixRuntimeAdmission": ...
 
+    def resolve_for_launch(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+    ) -> "StrixRuntimeAdmissionResolution": ...
+
+    def require_current(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+        *,
+        expected_resolution_ref: str,
+    ) -> "StrixRuntimeAdmissionResolution": ...
+
 
 @dataclass(frozen=True, slots=True)
 class ProcessContainmentReceipt:
@@ -254,6 +268,19 @@ class StrixRuntimeAdmission:
 
 
 @dataclass(frozen=True, slots=True)
+class StrixRuntimeAdmissionResolution:
+    """One opaque, controller-bound view of an already persisted admission."""
+
+    admission: StrixRuntimeAdmission
+    resolution_ref: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.admission, StrixRuntimeAdmission):
+            raise StrixEngineRuntimeError("Strix runtime resolution admission is invalid")
+        _require_digest(self.resolution_ref, "Strix runtime resolution")
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedAdmission:
     admission: StrixRuntimeAdmission
     strix_plan: StrixLaunchPlan
@@ -262,6 +289,7 @@ class _PreparedAdmission:
     custody_plan: ContainerCustodyPlan
     containment: ProcessContainmentReceipt
     launch_plan_digest: str
+    resolution_ref: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,21 +362,55 @@ class StrixEngineRuntime:
                 settled_at=ended_at,
             )
 
+        if not self._launch_resolution_is_current(
+            checked_binding,
+            checked_delegation,
+            expected_resolution_ref=prepared.resolution_ref,
+        ):
+            return self._prelaunch_authority_failure(
+                checked_binding,
+                prepared,
+                running,
+                credential_lease_acquired=False,
+                revocation_ref=None,
+            )
         lease = self._credentials.acquire(checked_binding, checked_delegation)
         revocation_ref: str | None = None
+        launch: EngineLaunchPlan | None = None
+        outcome: EngineWorkerOutcome | None = None
+        authority_changed = False
         try:
-            secret = _gateway_secret(lease, checked_binding.model_authorization_ref)
-            launch = self._worker_plan(prepared, checked_binding, secret)
-            outcome = self._worker.run(
-                launch,
-                cancellation=context.cancellation_event,
-                custody=prepared.admission.custody,
-            )
+            # This closes the credential-acquisition window with a fresh
+            # fail-closed reread.  It is not an atomic claim over OS launch.
+            if not self._launch_resolution_is_current(
+                checked_binding,
+                checked_delegation,
+                expected_resolution_ref=prepared.resolution_ref,
+            ):
+                authority_changed = True
+            else:
+                secret = _gateway_secret(lease, checked_binding.model_authorization_ref)
+                launch = self._worker_plan(prepared, checked_binding, secret)
+                outcome = self._worker.run(
+                    launch,
+                    cancellation=context.cancellation_event,
+                    custody=prepared.admission.custody,
+                )
         finally:
             try:
                 revocation_ref = _require_digest(lease.revoke(), "model gateway revocation receipt")
             except (OSError, RuntimeError, TypeError, ValueError):
                 revocation_ref = None
+        if authority_changed:
+            return self._prelaunch_authority_failure(
+                checked_binding,
+                prepared,
+                running,
+                credential_lease_acquired=True,
+                revocation_ref=revocation_ref,
+            )
+        if launch is None or outcome is None:
+            raise StrixEngineRuntimeError("Strix launch outcome is unavailable")
         retained_reservation = read_launch_reservation(
             prepared.admission.control_root, checked_binding.attempt_id
         )
@@ -375,6 +437,69 @@ class StrixEngineRuntime:
             running,
             outcome,
             revocation_ref=revocation_ref,
+        )
+
+    def _launch_resolution_is_current(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+        *,
+        expected_resolution_ref: str,
+    ) -> bool:
+        try:
+            current = self._resolver.require_current(
+                binding,
+                delegation,
+                expected_resolution_ref=expected_resolution_ref,
+            )
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+        return (
+            isinstance(current, StrixRuntimeAdmissionResolution)
+            and current.resolution_ref == expected_resolution_ref
+            and current.admission.runtime_qualified is True
+        )
+
+    def _prelaunch_authority_failure(
+        self,
+        binding: EngineAttemptBinding,
+        prepared: _PreparedAdmission,
+        running: EngineAttemptRecord,
+        *,
+        credential_lease_acquired: bool,
+        revocation_ref: str | None,
+    ) -> EngineRuntimeSettlement:
+        ended_at = _require_timestamp(self._clock(), "Strix authority refusal time")
+        limitations = [
+            "Runtime authority or the exact saved admission changed before launch; "
+            "external-engine process launch did not begin."
+        ]
+        if credential_lease_acquired and revocation_ref is None:
+            limitations.append("Model gateway credential revocation is unverified.")
+        terminal = running.transition(
+            AttemptState.FAILED,
+            timestamp=ended_at,
+            completeness=AttemptCompleteness.UNKNOWN,
+            exit_reason="runtime_authority_changed_before_launch",
+            limitations=tuple(limitations),
+        )
+        return EngineRuntimeSettlement(
+            record=terminal,
+            engine_evidence=(),
+            artifact_manifest_ref=None,
+            cleanup_state=CleanupState.VERIFIED_ABSENT,
+            cleanup_evidence_ref=content_hash(
+                {
+                    "schema_version": "bluefire.strix-prelaunch-authority-refusal.v1",
+                    "binding_digest": binding.binding_digest,
+                    "launch_plan_digest": prepared.launch_plan_digest,
+                    "resolution_ref": prepared.resolution_ref,
+                    "credential_lease_acquired": credential_lease_acquired,
+                    "gateway_revocation_ref": revocation_ref,
+                    "recorded_at": ended_at,
+                }
+            ),
+            settled_at=ended_at,
         )
 
     def _persistence_unknown(
@@ -743,7 +868,10 @@ class StrixEngineRuntime:
     ) -> tuple[EngineAttemptBinding, EngineCapabilityDelegation, _PreparedAdmission]:
         checked_delegation = EngineCapabilityDelegation.from_mapping(delegation.to_dict())
         checked_binding = checked_delegation.validate_attempt_binding(binding)
-        admission = self._resolver.resolve(checked_binding, checked_delegation)
+        resolution = self._resolver.resolve_for_launch(checked_binding, checked_delegation)
+        if not isinstance(resolution, StrixRuntimeAdmissionResolution):
+            raise StrixEngineRuntimeError("Strix runtime resolution is invalid")
+        admission = resolution.admission
         if not isinstance(admission, StrixRuntimeAdmission):
             raise StrixEngineRuntimeError("Strix runtime admission is invalid")
         if (
@@ -952,6 +1080,7 @@ class StrixEngineRuntime:
                 custody_plan=custody_plan,
                 containment=containment,
                 launch_plan_digest=launch_plan_digest,
+                resolution_ref=resolution.resolution_ref,
             ),
         )
 

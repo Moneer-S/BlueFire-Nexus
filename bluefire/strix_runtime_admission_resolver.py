@@ -24,7 +24,7 @@ from typing import Any, Mapping, Protocol
 from .engine_attempt_contract import EngineAttemptBinding
 from .engine_delegation import EngineCapabilityDelegation
 from .strix_adapter import StrixBuildIdentity
-from .strix_engine_runtime import StrixRuntimeAdmission
+from .strix_engine_runtime import StrixRuntimeAdmission, StrixRuntimeAdmissionResolution
 from .strix_runtime_qualification import (
     QualifiedStrixRuntime,
     StrixRuntimeQualificationError,
@@ -276,6 +276,70 @@ class AppendOnlyStrixRuntimeAuthoritySource(Protocol):
 
     def read_current(self) -> StrixRuntimeAuthorityRecord: ...
 
+    def read_exact(
+        self,
+        *,
+        generation: int,
+        record_digest: str,
+    ) -> StrixRuntimeAuthorityRecord | None: ...
+
+    def is_descendant(
+        self,
+        *,
+        ancestor_generation: int,
+        ancestor_record_digest: str,
+        descendant_generation: int,
+        descendant_record_digest: str,
+    ) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedStrixRuntimeAdmissionRecord:
+    """Controller-owned identity for one immutable saved admission."""
+
+    schema_version: str
+    record_ref: str
+    record_digest: str
+    custody_source_ref: str
+    custody_record_ref: str
+    custody_record_digest: str
+    binding_digest: str
+    authority_generation: int
+    authority_record_digest: str
+    delegation_digest: str
+    lifecycle_state: str
+    lifecycle_head_digest: str
+    admission: StrixRuntimeAdmission
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "bluefire.persisted-strix-runtime-admission.v1":
+            raise StrixRuntimeAdmissionResolverError(
+                "persisted Strix admission record schema is unsupported"
+            )
+        _digest(self.record_ref, "persisted Strix admission record ref")
+        _digest(self.record_digest, "persisted Strix admission record digest")
+        _digest(self.custody_source_ref, "persisted Strix custody source ref")
+        _digest(self.custody_record_ref, "persisted Strix custody record ref")
+        _digest(self.custody_record_digest, "persisted Strix custody record digest")
+        _digest(self.binding_digest, "persisted Strix binding")
+        if (
+            isinstance(self.authority_generation, bool)
+            or not isinstance(self.authority_generation, int)
+            or self.authority_generation < 1
+        ):
+            raise StrixRuntimeAdmissionResolverError(
+                "persisted Strix authority generation is invalid"
+            )
+        _digest(self.authority_record_digest, "persisted Strix authority record")
+        _digest(self.delegation_digest, "persisted Strix delegation")
+        if self.lifecycle_state not in {"VERIFIED", "UNKNOWN", "REVOKED", "CLEANED"}:
+            raise StrixRuntimeAdmissionResolverError(
+                "persisted Strix admission lifecycle is invalid"
+            )
+        _digest(self.lifecycle_head_digest, "persisted Strix admission lifecycle head")
+        if not isinstance(self.admission, StrixRuntimeAdmission):
+            raise StrixRuntimeAdmissionResolverError("persisted Strix admission record is invalid")
+
 
 class StrixQualificationManifestSource(Protocol):
     def load_exact(
@@ -294,8 +358,8 @@ class PersistedStrixRuntimeAdmissionSource(Protocol):
         *,
         attempt_id: str,
         binding_digest: str,
-        runtime_qualification_ref: str,
-    ) -> StrixRuntimeAdmission | None: ...
+        delegation_digest: str,
+    ) -> PersistedStrixRuntimeAdmissionRecord | None: ...
 
 
 class ProtectedStrixQualificationManifestSource:
@@ -377,6 +441,101 @@ class ProtectedStrixQualificationManifestSource:
         return loaded
 
 
+def _admission_identity_document(
+    admission: StrixRuntimeAdmission,
+    *,
+    custody_source_ref: str,
+    custody_record_ref: str,
+    custody_record_digest: str,
+) -> dict[str, Any]:
+    """Canonical non-secret identity for one exact persisted admission."""
+
+    _digest(custody_source_ref, "persisted Strix custody source ref")
+    _digest(custody_record_ref, "persisted Strix custody record ref")
+    _digest(custody_record_digest, "persisted Strix custody record digest")
+    workspace = admission.workspace
+    return {
+        "schema_version": "bluefire.strix-runtime-admission-identity.v1",
+        "objective_ref": admission.objective_ref,
+        "environment_ref": admission.environment_ref,
+        "runtime_qualification_ref": admission.runtime_qualification_ref,
+        "runtime_qualified": admission.runtime_qualified,
+        "build": admission.build.to_dict(),
+        "scope": {
+            "target": admission.scope.target,
+            "resolved_addresses": list(admission.scope.resolved_addresses),
+            "target_snapshot_digest": admission.scope.target_snapshot_digest,
+            "scope_digest": admission.scope.scope_digest,
+            "network_policy_digest": admission.scope.network_policy_digest,
+            "network_name": admission.scope.network_name,
+        },
+        "gateway": {
+            "model": admission.gateway.model,
+            "base_url": admission.gateway.base_url,
+            "authorization_digest": admission.gateway.authorization_digest,
+        },
+        "budgets": {
+            "wall_seconds": admission.budgets.wall_seconds,
+            "max_turns_per_agent": admission.budgets.max_turns_per_agent,
+            "max_model_cost_usd": admission.budgets.max_model_cost_usd,
+        },
+        "limits": {
+            "memory": admission.limits.memory,
+            "cpus": admission.limits.cpus,
+            "pids": admission.limits.pids,
+            "log_size": admission.limits.log_size,
+            "log_files": admission.limits.log_files,
+        },
+        "workspace": {
+            "attempt_id": workspace.attempt_id,
+            "cwd": str(workspace.cwd),
+            "home": str(workspace.home),
+            "temporary": str(workspace.temporary),
+            "objective_file": str(workspace.objective_file),
+            "config_file": str(workspace.config_file),
+            "mcp_file": str(workspace.mcp_file),
+            "objective_sha256": workspace.objective_sha256,
+        },
+        "executable": str(admission.executable),
+        "path_environment": admission.path_environment,
+        "control_root": str(admission.control_root),
+        "network_plan": admission.network_plan.to_dict(),
+        "network_snapshot": admission.network_snapshot.to_dict(),
+        "network_verification": admission.network_verification.to_dict(),
+        "custody_plan": admission.custody_plan.to_dict(),
+        "protected_roots": admission.protected_roots.to_dict(),
+        "containment": admission.containment.to_dict(),
+        "custody_source_ref": custody_source_ref,
+        "custody_record_ref": custody_record_ref,
+        "custody_record_digest": custody_record_digest,
+    }
+
+
+def _persisted_record_identity(record: PersistedStrixRuntimeAdmissionRecord) -> str:
+    return content_hash(
+        {
+            "schema_version": record.schema_version,
+            "record_ref": record.record_ref,
+            "record_digest": record.record_digest,
+            "custody_source_ref": record.custody_source_ref,
+            "custody_record_ref": record.custody_record_ref,
+            "custody_record_digest": record.custody_record_digest,
+            "binding_digest": record.binding_digest,
+            "authority_generation": record.authority_generation,
+            "authority_record_digest": record.authority_record_digest,
+            "delegation_digest": record.delegation_digest,
+            "lifecycle_state": record.lifecycle_state,
+            "lifecycle_head_digest": record.lifecycle_head_digest,
+            "admission_identity": _admission_identity_document(
+                record.admission,
+                custody_source_ref=record.custody_source_ref,
+                custody_record_ref=record.custody_record_ref,
+                custody_record_digest=record.custody_record_digest,
+            ),
+        }
+    )
+
+
 class ControllerQualifiedStrixAdmissionResolver:
     """Resolve only the exact controller-saved admission for one attempt."""
 
@@ -400,6 +559,37 @@ class ControllerQualifiedStrixAdmissionResolver:
         binding: EngineAttemptBinding,
         delegation: EngineCapabilityDelegation,
     ) -> StrixRuntimeAdmission:
+        return self._resolve(binding, delegation, launch_only=False).admission
+
+    def resolve_for_launch(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+    ) -> StrixRuntimeAdmissionResolution:
+        return self._resolve(binding, delegation, launch_only=True)
+
+    def require_current(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+        *,
+        expected_resolution_ref: str,
+    ) -> StrixRuntimeAdmissionResolution:
+        _digest(expected_resolution_ref, "expected Strix runtime resolution")
+        current = self._resolve(binding, delegation, launch_only=True)
+        if current.resolution_ref != expected_resolution_ref:
+            raise StrixRuntimeAdmissionResolverError(
+                "Strix runtime authority or saved admission changed before launch"
+            )
+        return current
+
+    def _resolve(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+        *,
+        launch_only: bool,
+    ) -> StrixRuntimeAdmissionResolution:
         try:
             checked_delegation = EngineCapabilityDelegation.from_mapping(delegation.to_dict())
             checked_binding = checked_delegation.validate_attempt_binding(binding)
@@ -412,43 +602,100 @@ class ControllerQualifiedStrixAdmissionResolver:
             raise StrixRuntimeAdmissionResolverError("runtime authority is unavailable") from exc
         if not isinstance(current, StrixRuntimeAuthorityRecord):
             raise StrixRuntimeAdmissionResolverError("runtime authority is invalid")
-        authority = StrixRuntimeAuthorityRecord.from_mapping(current.to_dict())
-        if authority.installed_bluefire_revision != self._installed_bluefire_revision:
+        current_authority = StrixRuntimeAuthorityRecord.from_mapping(current.to_dict())
+        if current_authority.installed_bluefire_revision != self._installed_bluefire_revision:
             raise StrixRuntimeAdmissionResolverError(
                 "runtime authority belongs to another BlueFire revision"
             )
+        current_authority_digest = content_hash(current_authority.to_dict())
+
+        try:
+            persisted = self._admission_source.reopen_exact(
+                attempt_id=checked_binding.attempt_id,
+                binding_digest=checked_binding.binding_digest,
+                delegation_digest=checked_delegation.delegation_digest,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise StrixRuntimeAdmissionResolverError(
+                "persisted Strix admission is unavailable"
+            ) from exc
+        if persisted is None:
+            raise StrixRuntimeAdmissionResolverError("persisted Strix admission is missing")
+        if not isinstance(persisted, PersistedStrixRuntimeAdmissionRecord):
+            raise StrixRuntimeAdmissionResolverError(
+                "persisted Strix admission source returned an invalid record"
+            )
+        if (
+            persisted.binding_digest != checked_binding.binding_digest
+            or persisted.delegation_digest != checked_delegation.delegation_digest
+        ):
+            raise StrixRuntimeAdmissionResolverError(
+                "persisted Strix admission record differs from the exact attempt authority"
+            )
+        persisted_identity = _persisted_record_identity(persisted)
+        try:
+            admitted_raw = self._authority_source.read_exact(
+                generation=persisted.authority_generation,
+                record_digest=persisted.authority_record_digest,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise StrixRuntimeAdmissionResolverError(
+                "admitted runtime authority is unavailable"
+            ) from exc
+        if not isinstance(admitted_raw, StrixRuntimeAuthorityRecord):
+            raise StrixRuntimeAdmissionResolverError(
+                "admitted runtime authority is missing or invalid"
+            )
+        admitted_authority = StrixRuntimeAuthorityRecord.from_mapping(admitted_raw.to_dict())
+        if (
+            admitted_authority.generation != persisted.authority_generation
+            or content_hash(admitted_authority.to_dict()) != persisted.authority_record_digest
+            or admitted_authority.installed_bluefire_revision != self._installed_bluefire_revision
+            or admitted_authority.state != "active"
+        ):
+            raise StrixRuntimeAdmissionResolverError(
+                "persisted Strix admission authority provenance is invalid"
+            )
+        exact_current_head = (
+            current_authority.generation == persisted.authority_generation
+            and current_authority_digest == persisted.authority_record_digest
+        )
+        if not exact_current_head:
+            try:
+                descendant = self._authority_source.is_descendant(
+                    ancestor_generation=persisted.authority_generation,
+                    ancestor_record_digest=persisted.authority_record_digest,
+                    descendant_generation=current_authority.generation,
+                    descendant_record_digest=current_authority_digest,
+                )
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                raise StrixRuntimeAdmissionResolverError(
+                    "current runtime authority lineage is unavailable"
+                ) from exc
+            if descendant is not True:
+                raise StrixRuntimeAdmissionResolverError(
+                    "current runtime authority is not a proven descendant"
+                )
 
         qualified = self._manifest_source.load_exact(
-            protected_artifact_key=authority.protected_artifact_key,
-            expected_ref=authority.qualification_manifest_ref,
+            protected_artifact_key=admitted_authority.protected_artifact_key,
+            expected_ref=admitted_authority.qualification_manifest_ref,
         )
         if not isinstance(qualified, QualifiedStrixRuntime):
             raise StrixRuntimeAdmissionResolverError(
                 "protected qualification source returned an invalid value"
             )
         if (
-            qualified.runtime_qualification_ref != authority.qualification_manifest_ref
-            or qualified.bluefire_source_revision != authority.installed_bluefire_revision
-            or content_hash(qualified.build.to_dict()) != authority.strix_build_digest
-            or qualified.threat_review_ref != authority.threat_review_ref
+            qualified.runtime_qualification_ref != admitted_authority.qualification_manifest_ref
+            or qualified.bluefire_source_revision != admitted_authority.installed_bluefire_revision
+            or content_hash(qualified.build.to_dict()) != admitted_authority.strix_build_digest
+            or qualified.threat_review_ref != admitted_authority.threat_review_ref
             or qualified.runtime_qualified is not True
         ):
             raise StrixRuntimeAdmissionResolverError(
-                "runtime qualification differs from controller authority"
+                "runtime qualification differs from admitted controller authority"
             )
-
-        try:
-            saved = self._admission_source.reopen_exact(
-                attempt_id=checked_binding.attempt_id,
-                binding_digest=checked_binding.binding_digest,
-                runtime_qualification_ref=authority.qualification_manifest_ref,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            raise StrixRuntimeAdmissionResolverError(
-                "persisted Strix admission is unavailable"
-            ) from exc
-        if saved is None:
-            raise StrixRuntimeAdmissionResolverError("persisted Strix admission is missing")
+        saved = persisted.admission
         if not isinstance(saved, StrixRuntimeAdmission) or not isinstance(
             saved.build, StrixBuildIdentity
         ):
@@ -456,9 +703,9 @@ class ControllerQualifiedStrixAdmissionResolver:
         if (
             saved.objective_ref != checked_binding.objective_ref
             or saved.environment_ref != checked_binding.environment_ref
-            or saved.runtime_qualification_ref != authority.qualification_manifest_ref
+            or saved.runtime_qualification_ref != admitted_authority.qualification_manifest_ref
             or saved.build.to_dict() != qualified.build.to_dict()
-            or content_hash(saved.build.to_dict()) != authority.strix_build_digest
+            or content_hash(saved.build.to_dict()) != admitted_authority.strix_build_digest
             or checked_binding.engine_id != "strix"
             or checked_binding.engine_version != saved.build.package_version
             or checked_binding.engine_revision != saved.build.source_revision
@@ -468,20 +715,90 @@ class ControllerQualifiedStrixAdmissionResolver:
             raise StrixRuntimeAdmissionResolverError(
                 "persisted Strix admission differs from the exact attempt authority"
             )
-        if authority.state == "active":
-            if saved.runtime_qualified is not True:
-                raise StrixRuntimeAdmissionResolverError(
-                    "persisted Strix admission is not launch-qualified"
-                )
-            return saved
-        return (
-            saved if saved.runtime_qualified is False else replace(saved, runtime_qualified=False)
+        try:
+            final_persisted = self._admission_source.reopen_exact(
+                attempt_id=checked_binding.attempt_id,
+                binding_digest=checked_binding.binding_digest,
+                delegation_digest=checked_delegation.delegation_digest,
+            )
+            final_current_raw = self._authority_source.read_current()
+            final_persisted_identity = (
+                _persisted_record_identity(final_persisted)
+                if isinstance(final_persisted, PersistedStrixRuntimeAdmissionRecord)
+                else None
+            )
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise StrixRuntimeAdmissionResolverError(
+                "runtime authority changed while admission was resolved"
+            ) from exc
+        if (
+            not isinstance(final_persisted, PersistedStrixRuntimeAdmissionRecord)
+            or final_persisted_identity != persisted_identity
+            or not isinstance(final_current_raw, StrixRuntimeAuthorityRecord)
+        ):
+            raise StrixRuntimeAdmissionResolverError(
+                "runtime authority changed while admission was resolved"
+            )
+        final_current = StrixRuntimeAuthorityRecord.from_mapping(final_current_raw.to_dict())
+        if (
+            final_current.generation != current_authority.generation
+            or content_hash(final_current.to_dict()) != current_authority_digest
+        ):
+            raise StrixRuntimeAdmissionResolverError(
+                "runtime authority changed while admission was resolved"
+            )
+        launchable = exact_current_head and persisted.lifecycle_state == "VERIFIED"
+        if launch_only and not launchable:
+            raise StrixRuntimeAdmissionResolverError(
+                "runtime authority or admission lifecycle is no longer launchable"
+            )
+        if not launchable:
+            saved = (
+                saved
+                if saved.runtime_qualified is False
+                else replace(saved, runtime_qualified=False)
+            )
+        elif saved.runtime_qualified is not True:
+            raise StrixRuntimeAdmissionResolverError(
+                "persisted Strix admission is not launch-qualified"
+            )
+        admission_identity_digest = content_hash(
+            _admission_identity_document(
+                saved,
+                custody_source_ref=persisted.custody_source_ref,
+                custody_record_ref=persisted.custody_record_ref,
+                custody_record_digest=persisted.custody_record_digest,
+            )
+        )
+        resolution_ref = content_hash(
+            {
+                "schema_version": "bluefire.strix-runtime-resolution.v1",
+                "binding_digest": checked_binding.binding_digest,
+                "delegation_digest": checked_delegation.delegation_digest,
+                "admitted_authority_generation": persisted.authority_generation,
+                "admitted_authority_record_digest": persisted.authority_record_digest,
+                "current_authority_generation": current_authority.generation,
+                "current_authority_record_digest": current_authority_digest,
+                "persisted_admission_record_ref": persisted.record_ref,
+                "persisted_admission_record_digest": persisted.record_digest,
+                "custody_source_ref": persisted.custody_source_ref,
+                "custody_record_ref": persisted.custody_record_ref,
+                "custody_record_digest": persisted.custody_record_digest,
+                "lifecycle_state": persisted.lifecycle_state,
+                "lifecycle_head_digest": persisted.lifecycle_head_digest,
+                "admission_identity_digest": admission_identity_digest,
+            }
+        )
+        return StrixRuntimeAdmissionResolution(
+            admission=saved,
+            resolution_ref=resolution_ref,
         )
 
 
 __all__ = [
     "AppendOnlyStrixRuntimeAuthoritySource",
     "ControllerQualifiedStrixAdmissionResolver",
+    "PersistedStrixRuntimeAdmissionRecord",
     "PersistedStrixRuntimeAdmissionSource",
     "ProtectedStrixQualificationManifestSource",
     "StrixQualificationManifestSource",
