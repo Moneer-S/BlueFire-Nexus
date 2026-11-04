@@ -22,17 +22,38 @@ from .engine_delegation import (
     EngineDelegationError,
     EngineExecutionApprovalBinding,
 )
-from .engine_experiment import CleanupState, EngineExperiment, EngineExperimentError
+from .engine_experiment import (
+    CleanupState,
+    ControllerCheckRecord,
+    ControllerCheckRole,
+    ControllerCheckState,
+    DefenseState,
+    EngineExperiment,
+    EngineExperimentError,
+    _controller_observation_record,
+)
+from .evidence import EvidenceRecord
 from .product_store_contracts import safe_document, stable_identifier
 from .product_store_errors import ProductStoreError, ResourceConflictError
 from .product_store_serialization import canonical_json, utc_now
 from .util import content_hash, parse_iso8601_datetime
 
 _ENGINE_JOB_KIND = "engine-attempt"
+_DEFENSE_JOB_KIND = "engine-controller-operation"
+_CHECK_JOB_KIND = "engine-controller-check"
 _ENGINE_CONTEXT_SCHEMA = "bluefire.engine-execution-context.v1"
+_CHECK_DISPATCH_SCHEMA = "bluefire.engine-controller-check-dispatch.v1"
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _APPROVAL_ID = re.compile(r"^approval-[0-9a-f]{32}$")
 _MAX_CONTEXT_DOCUMENT_BYTES = 128 * 1024
+_DEFENSE_OPERATIONS = frozenset(
+    {"apply", "reconcile_application", "rollback", "reconcile_rollback"}
+)
+_RECONCILIATION_OPERATIONS = frozenset({"reconcile_application", "reconcile_rollback"})
+_ORIGIN_OPERATIONS = {
+    "reconcile_application": "apply",
+    "reconcile_rollback": "rollback",
+}
 
 
 class EngineJobProductStore(Protocol):
@@ -97,7 +118,11 @@ def _canonical_context_document(value: Mapping[str, Any], label: str) -> str:
 
 
 def _decode_context_document(value: Any, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > _MAX_CONTEXT_DOCUMENT_BYTES:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > _MAX_CONTEXT_DOCUMENT_BYTES
+    ):
         raise ProductStoreError(f"saved {label} is invalid")
     try:
         document = json.loads(value)
@@ -183,6 +208,176 @@ def _parse_context(
     return value, delegation, approval
 
 
+def _job_request_document(value: Any, *, context: str) -> dict[str, Any]:
+    document = safe_document(value, context=context)
+    if not isinstance(document, dict):
+        raise ProductStoreError(f"{context} must be a JSON object")
+    return document
+
+
+def _saved_job_request(
+    store: EngineJobProductStore,
+    row: sqlite3.Row,
+) -> tuple[dict[str, Any], Mapping[str, str]]:
+    try:
+        request = json.loads(str(row["request_json"]))
+    except (TypeError, ValueError) as exc:
+        raise ProductStoreError("saved controller job request is invalid") from exc
+    if not isinstance(request, dict):
+        raise ProductStoreError("saved controller job request is invalid")
+    submission = request.pop("_submission", None)
+    if not isinstance(submission, dict) or set(submission) != {
+        "schema_version",
+        "submission_id",
+        "intent_digest",
+    }:
+        raise ProductStoreError("saved controller job submission is invalid")
+    if submission.get("schema_version") != "bluefire.job-submission.v1":
+        raise ProductStoreError("saved controller job submission schema is invalid")
+    submission_id = submission.get("submission_id")
+    intent_digest = submission.get("intent_digest")
+    if not isinstance(submission_id, str) or not isinstance(intent_digest, str):
+        raise ProductStoreError("saved controller job submission is invalid")
+    expected_job_id, expected = store._job_submission_binding(submission_id, intent_digest)
+    if (
+        expected_job_id != row["job_id"]
+        or submission != expected
+        or content_hash(request) != intent_digest
+    ):
+        raise ProductStoreError("saved controller job submission changed")
+    return request, cast(Mapping[str, str], submission)
+
+
+def _insert_idempotent_job_at(
+    store: EngineJobProductStore,
+    connection: sqlite3.Connection,
+    *,
+    kind: str,
+    request: Mapping[str, Any],
+    submission_id: str,
+    intent_digest: str,
+    now: str,
+    initial_progress: Mapping[str, Any] | None = None,
+) -> tuple[Mapping[str, Any], bool, str]:
+    job_id, submission = store._job_submission_binding(submission_id, intent_digest)
+    existing = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if existing is not None:
+        snapshot = store._matching_job_submission(existing, kind, submission)
+        saved, _saved_submission = _saved_job_request(store, existing)
+        if saved != request:
+            raise ProductStoreError("job submission ID is already bound to different work")
+        return snapshot, False, job_id
+    stored = dict(request)
+    stored["_submission"] = dict(submission)
+    progress = (
+        {}
+        if initial_progress is None
+        else _job_request_document(initial_progress, context="controller job initial progress")
+    )
+    connection.execute(
+        """
+        INSERT INTO jobs(
+            job_id, kind, state, request_json, progress_json, created_at, updated_at
+        ) VALUES (?, ?, 'queued', ?, ?, ?, ?)
+        """,
+        (job_id, kind, canonical_json(stored), canonical_json(progress), now, now),
+    )
+    row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    return store._job_from_row(row), True, job_id
+
+
+def _defense_request(
+    experiment: EngineExperiment,
+    *,
+    change_id: str,
+    operation: str,
+    originating_job_id: str | None,
+    originating_operation_receipt_digest: str | None,
+) -> dict[str, Any]:
+    change = experiment.defense_change
+    if change is None or change.change_id != change_id:
+        raise ProductStoreError("engine defense change is unavailable")
+    if operation not in _DEFENSE_OPERATIONS:
+        raise ProductStoreError("engine defense operation is invalid")
+    return {
+        "schema_version": "bluefire.engine-defense-operation-job.v1",
+        "experiment_id": experiment.experiment_id,
+        "experiment_revision": experiment.revision,
+        "experiment_digest": experiment.digest,
+        "change_id": change.change_id,
+        "change_digest": content_hash(change.to_dict()),
+        "operation": operation,
+        "originating_job_id": originating_job_id,
+        "originating_operation_receipt_digest": originating_operation_receipt_digest,
+    }
+
+
+def _check_request(
+    experiment: EngineExperiment,
+    check: ControllerCheckRecord,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "bluefire.engine-controller-check-job.v1",
+        "experiment_id": experiment.experiment_id,
+        "experiment_revision": experiment.revision,
+        "experiment_digest": experiment.digest,
+        "check_id": check.check_id,
+        "run_id": check.run_id,
+        "role": check.role.value,
+        "performer": check.performer.value,
+        "mechanism_ref": check.mechanism_ref,
+        "target_snapshot_ref": check.target_snapshot_ref,
+        "input_digest": check.input_digest,
+        "reserved_at": check.created_at,
+    }
+
+
+def _historical_experiment_at(
+    connection: sqlite3.Connection,
+    experiment_id: str,
+    revision: Any,
+    digest: Any,
+) -> EngineExperiment:
+    if (
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision <= 0
+        or not isinstance(digest, str)
+        or _DIGEST.fullmatch(digest) is None
+    ):
+        raise ProductStoreError("saved controller job experiment binding is invalid")
+    row = connection.execute(
+        """
+        SELECT * FROM engine_experiment_versions
+        WHERE experiment_id = ? AND revision = ? AND digest = ?
+        """,
+        (experiment_id, revision, digest),
+    ).fetchone()
+    if row is None:
+        raise ProductStoreError("saved controller job experiment revision is unavailable")
+    record = experiment_store._record_from_row(row, active_revision=revision)
+    return _engine_document(record["document"])
+
+
+def _controller_observation(value: Mapping[str, Any]):
+    if not isinstance(value, Mapping):
+        raise ProductStoreError("controller observation is invalid")
+    try:
+        observation = _controller_observation_record(
+            target_snapshot_ref=value["target_snapshot_ref"],
+            mechanism_ref=value["mechanism_ref"],
+            attempt_id=value["attempt_id"],
+            check_id=value["check_id"],
+            check_input_digest=value["check_input_digest"],
+            evidence=EvidenceRecord.from_mapping(value["evidence"]),
+        )
+    except (EngineExperimentError, KeyError, TypeError, ValueError) as exc:
+        raise ProductStoreError("controller observation is invalid") from exc
+    if observation.to_dict() != value:
+        raise ProductStoreError("controller observation is not canonical")
+    return observation
+
+
 def _approval_chronology(row: sqlite3.Row, *, require_consumed: bool) -> None:
     required = ["requested_at", "approved_at", "consumed_at"]
     if not all(isinstance(row[name], str) and row[name] for name in required):
@@ -193,9 +388,7 @@ def _approval_chronology(row: sqlite3.Row, *, require_consumed: bool) -> None:
         consumed = parse_iso8601_datetime(str(row["consumed_at"]))
         expires = parse_iso8601_datetime(str(row["expires_at"]))
         claimed = (
-            None
-            if row["claimed_at"] is None
-            else parse_iso8601_datetime(str(row["claimed_at"]))
+            None if row["claimed_at"] is None else parse_iso8601_datetime(str(row["claimed_at"]))
         )
     except (TypeError, ValueError) as exc:
         raise ProductStoreError("engine approval lifecycle time is invalid") from exc
@@ -204,12 +397,7 @@ def _approval_chronology(row: sqlite3.Row, *, require_consumed: bool) -> None:
     if require_consumed:
         if row["status"] != "consumed" or claimed is not None:
             raise ProductStoreError("engine approval is unavailable or already claimed")
-    elif (
-        row["status"] != "claimed"
-        or claimed is None
-        or claimed < consumed
-        or claimed >= expires
-    ):
+    elif row["status"] != "claimed" or claimed is None or claimed < consumed or claimed >= expires:
         raise ProductStoreError("engine approval is not durably claimed")
 
 
@@ -335,7 +523,10 @@ class EngineExperimentJobStoreMixin:
         ):
             raise ProductStoreError("active engine experiment record is invalid")
         experiment = _engine_document(record.get("document"))
-        if record.get("digest") != experiment.digest or record.get("revision") != experiment.revision:
+        if (
+            record.get("digest") != experiment.digest
+            or record.get("revision") != experiment.revision
+        ):
             raise ProductStoreError("active engine experiment record digest is invalid")
         return experiment.to_dict()
 
@@ -427,13 +618,16 @@ class EngineExperimentJobStoreMixin:
                 expected_revision=expected_revision,
                 expected_digest=expected_experiment_digest,
             )
-            if _request_for(
-                experiment,
-                parsed_binding,
-                parsed_delegation,
-                parsed_approval,
-                approval_id,
-            ) != request:
+            if (
+                _request_for(
+                    experiment,
+                    parsed_binding,
+                    parsed_delegation,
+                    parsed_approval,
+                    approval_id,
+                )
+                != request
+            ):
                 raise ResourceConflictError("engine experiment changed before job reservation")
 
             approval_row = self._approval_row(connection, approval_id)
@@ -516,7 +710,9 @@ class EngineExperimentJobStoreMixin:
                 _index, entry = experiment._attempt(attempt_id)
             except EngineExperimentError as exc:
                 raise ProductStoreError("engine attempt was not found") from exc
-            job = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (entry.job_id,)).fetchone()
+            job = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (entry.job_id,)
+            ).fetchone()
             if job is None or job["kind"] != _ENGINE_JOB_KIND:
                 raise ProductStoreError("engine attempt job is unavailable")
             progress = json.loads(str(job["progress_json"]))
@@ -712,6 +908,522 @@ class EngineExperimentJobStoreMixin:
                 settled_at=settled_at,
             )
             return _append_experiment_at(connection, experiment, updated)
+
+    def reserve_engine_defense_operation_submission(
+        self: EngineJobProductStore,
+        *,
+        experiment_id: str,
+        change_id: str,
+        operation: str,
+        job_kind: str,
+        job_request: Mapping[str, Any],
+        submission_id: str,
+        intent_digest: str,
+        expected_revision: int,
+        expected_experiment_digest: str,
+        originating_job_id: str | None,
+        originating_operation_receipt_digest: str | None,
+    ) -> tuple[Mapping[str, Any], bool]:
+        if stable_identifier(job_kind, "job kind") != _DEFENSE_JOB_KIND:
+            raise ProductStoreError("defense operation must use its dedicated job kind")
+        request = _job_request_document(job_request, context="engine defense job request")
+        if content_hash(request) != intent_digest:
+            raise ProductStoreError("engine defense job intent changed")
+        with self._connection(write=True) as connection:
+            job, created, _job_id = _insert_idempotent_job_at(
+                self,
+                connection,
+                kind=_DEFENSE_JOB_KIND,
+                request=request,
+                submission_id=submission_id,
+                intent_digest=intent_digest,
+                now=utc_now(),
+            )
+            if not created:
+                return job, False
+            experiment = _active_experiment_at(
+                connection,
+                experiment_id,
+                expected_revision=expected_revision,
+                expected_digest=expected_experiment_digest,
+            )
+            expected = _defense_request(
+                experiment,
+                change_id=change_id,
+                operation=operation,
+                originating_job_id=originating_job_id,
+                originating_operation_receipt_digest=originating_operation_receipt_digest,
+            )
+            if request != expected:
+                raise ProductStoreError("engine defense job differs from its exact experiment")
+            change = experiment.defense_change
+            assert change is not None
+            ready = {
+                "apply": change.state is DefenseState.REVIEWED,
+                "reconcile_application": (
+                    change.state is DefenseState.UNKNOWN
+                    and change.rollback_operation_digest is None
+                ),
+                "rollback": change.state in {DefenseState.APPLIED, DefenseState.RETAINED},
+                "reconcile_rollback": (
+                    change.state is DefenseState.UNKNOWN
+                    and change.rollback_operation_digest is not None
+                ),
+            }
+            if not ready.get(operation, False):
+                raise ProductStoreError("engine defense operation is not ready")
+            if operation not in _RECONCILIATION_OPERATIONS:
+                if (
+                    originating_job_id is not None
+                    or originating_operation_receipt_digest is not None
+                ):
+                    raise ProductStoreError("new defense operation cannot cite an origin job")
+                return job, True
+            if not isinstance(originating_job_id, str) or not isinstance(
+                originating_operation_receipt_digest, str
+            ):
+                raise ProductStoreError("defense reconciliation requires its origin job")
+            origin = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (originating_job_id,)
+            ).fetchone()
+            if (
+                origin is None
+                or origin["kind"] != _DEFENSE_JOB_KIND
+                or origin["state"] not in {"failed", "cancelled", "interrupted"}
+            ):
+                raise ProductStoreError(
+                    "defense reconciliation requires its immutable terminal origin job"
+                )
+            origin_request, _submission = _saved_job_request(self, origin)
+            origin_operation = _ORIGIN_OPERATIONS[operation]
+            historical = _historical_experiment_at(
+                connection,
+                experiment_id,
+                origin_request.get("experiment_revision"),
+                origin_request.get("experiment_digest"),
+            )
+            if origin_request != _defense_request(
+                historical,
+                change_id=change_id,
+                operation=origin_operation,
+                originating_job_id=None,
+                originating_operation_receipt_digest=None,
+            ):
+                raise ProductStoreError("originating defense job intent changed")
+            expected_receipt = content_hash(
+                {
+                    "schema_version": "bluefire.engine-defense-operation-receipt.v1",
+                    "job_id": originating_job_id,
+                    "request_digest": content_hash(origin_request),
+                    "operation": origin_operation,
+                }
+            )
+            saved_receipt = (
+                change.application_receipt_digest
+                if operation == "reconcile_application"
+                else change.rollback_operation_digest
+            )
+            if (
+                originating_operation_receipt_digest != expected_receipt
+                or saved_receipt != expected_receipt
+            ):
+                raise ProductStoreError("originating defense operation receipt changed")
+            return job, True
+
+    def begin_engine_defense_operation(
+        self: EngineJobProductStore,
+        *,
+        experiment_id: str,
+        change_id: str,
+        operation: str,
+        operation_receipt_digest: str,
+        job_id: str,
+        request_digest: str,
+        started_at: str,
+        expected_revision: int,
+        expected_experiment_digest: str,
+    ) -> Mapping[str, Any]:
+        if operation not in {"apply", "rollback"}:
+            raise ProductStoreError("only a new defense operation can begin an effect")
+        with self._connection(write=True) as connection:
+            experiment = _active_experiment_at(
+                connection,
+                experiment_id,
+                expected_revision=expected_revision,
+                expected_digest=expected_experiment_digest,
+            )
+            job = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if job is None or job["kind"] != _DEFENSE_JOB_KIND or job["state"] != "running":
+                raise ProductStoreError("defense effect requires its running bound job")
+            request, _submission = _saved_job_request(self, job)
+            if request_digest != content_hash(request) or request != _defense_request(
+                experiment,
+                change_id=change_id,
+                operation=operation,
+                originating_job_id=None,
+                originating_operation_receipt_digest=None,
+            ):
+                raise ProductStoreError("defense effect job intent changed")
+            expected_receipt = content_hash(
+                {
+                    "schema_version": "bluefire.engine-defense-operation-receipt.v1",
+                    "job_id": job_id,
+                    "request_digest": request_digest,
+                    "operation": operation,
+                }
+            )
+            if operation_receipt_digest != expected_receipt:
+                raise ProductStoreError("defense operation receipt changed")
+            if operation == "apply":
+                updated = experiment.begin_defense_application(
+                    change_id,
+                    operation_receipt_digest=operation_receipt_digest,
+                    started_at=started_at,
+                )
+            else:
+                updated = experiment.begin_defense_rollback(
+                    change_id,
+                    rollback_operation_digest=operation_receipt_digest,
+                    rollback_started_at=started_at,
+                )
+            return _append_experiment_at(connection, experiment, updated)
+
+    def settle_engine_defense_operation(
+        self: EngineJobProductStore,
+        *,
+        experiment_id: str,
+        change_id: str,
+        operation: str,
+        target_snapshot_ref: str,
+        configuration_digest: str | None,
+        receipt_digest: str,
+        settled_at: str,
+        expected_revision: int,
+        expected_experiment_digest: str,
+    ) -> Mapping[str, Any]:
+        if operation not in _DEFENSE_OPERATIONS:
+            raise ProductStoreError("engine defense operation is invalid")
+        with self._connection(write=True) as connection:
+            experiment = _active_experiment_at(
+                connection,
+                experiment_id,
+                expected_revision=expected_revision,
+                expected_digest=expected_experiment_digest,
+            )
+            if operation in {"apply", "reconcile_application"}:
+                if configuration_digest is None:
+                    raise ProductStoreError("defense application lacks its configuration digest")
+                updated = experiment.reconcile_defense_applied(
+                    change_id,
+                    applied_configuration_digest=configuration_digest,
+                    reconciliation_receipt_digest=receipt_digest,
+                    observed_target_snapshot_ref=target_snapshot_ref,
+                    reconciled_at=settled_at,
+                )
+            else:
+                if configuration_digest is not None:
+                    raise ProductStoreError(
+                        "defense rollback cannot claim an applied configuration"
+                    )
+                updated = experiment.reconcile_defense_rolled_back(
+                    change_id,
+                    rollback_receipt_digest=receipt_digest,
+                    observed_target_snapshot_ref=target_snapshot_ref,
+                    rolled_back_at=settled_at,
+                )
+            return _append_experiment_at(connection, experiment, updated)
+
+    def reserve_engine_controller_check_submission(
+        self: EngineJobProductStore,
+        *,
+        experiment_id: str,
+        check_id: str,
+        run_id: str,
+        role: str,
+        mechanism_ref: str,
+        target_snapshot_ref: str,
+        input_digest: str,
+        reserved_at: str,
+        job_kind: str,
+        job_request: Mapping[str, Any],
+        submission_id: str,
+        intent_digest: str,
+        expected_revision: int,
+        expected_experiment_digest: str,
+    ) -> tuple[Mapping[str, Any], bool]:
+        if stable_identifier(job_kind, "job kind") != _CHECK_JOB_KIND:
+            raise ProductStoreError("controller check must use its dedicated job kind")
+        request = _job_request_document(job_request, context="engine controller-check request")
+        if content_hash(request) != intent_digest:
+            raise ProductStoreError("controller-check job intent changed")
+        try:
+            check_role = ControllerCheckRole(role)
+        except ValueError as exc:
+            raise ProductStoreError("controller-check role is invalid") from exc
+        with self._connection(write=True) as connection:
+            job, created, job_id = _insert_idempotent_job_at(
+                self,
+                connection,
+                kind=_CHECK_JOB_KIND,
+                request=request,
+                submission_id=submission_id,
+                intent_digest=intent_digest,
+                now=utc_now(),
+                initial_progress={
+                    "_engine_controller_dispatch": {
+                        "schema_version": _CHECK_DISPATCH_SCHEMA,
+                        "begun": False,
+                    }
+                },
+            )
+            if not created:
+                return job, False
+            experiment = _active_experiment_at(
+                connection,
+                experiment_id,
+                expected_revision=expected_revision,
+                expected_digest=expected_experiment_digest,
+            )
+            check = ControllerCheckRecord.reserve(
+                check_id=check_id,
+                experiment_id=experiment_id,
+                job_id=job_id,
+                run_id=run_id,
+                role=check_role,
+                mechanism_ref=mechanism_ref,
+                target_snapshot_ref=target_snapshot_ref,
+                input_digest=input_digest,
+                created_at=reserved_at,
+            )
+            if request != _check_request(experiment, check):
+                raise ProductStoreError("controller-check job differs from its exact experiment")
+            updated = experiment.reserve_controller_check(check, timestamp=reserved_at)
+            _append_experiment_at(connection, experiment, updated)
+            return job, True
+
+    def compare_and_swap_engine_controller_check_settlement(
+        self: EngineJobProductStore,
+        *,
+        experiment_id: str,
+        check: Mapping[str, Any],
+        independent_observations: Iterable[Mapping[str, Any]],
+        expected_revision: int,
+        expected_experiment_digest: str,
+    ) -> Mapping[str, Any]:
+        try:
+            terminal = ControllerCheckRecord.from_mapping(check)
+        except (EngineExperimentError, TypeError, ValueError) as exc:
+            raise ProductStoreError("controller-check settlement is invalid") from exc
+        raw_observations = tuple(independent_observations)
+        observations = tuple(_controller_observation(value) for value in raw_observations)
+        if tuple(item.evidence_id for item in observations) != terminal.independent_evidence_refs:
+            raise ProductStoreError(
+                "controller-check observations differ from the terminal evidence references"
+            )
+        with self._connection(write=True) as connection:
+            experiment = _active_experiment_at(
+                connection,
+                experiment_id,
+                expected_revision=expected_revision,
+                expected_digest=expected_experiment_digest,
+            )
+            _index, current = experiment._check(terminal.check_id)
+            job = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (current.job_id,)
+            ).fetchone()
+            if (
+                job is None
+                or job["kind"] != _CHECK_JOB_KIND
+                or job["state"]
+                not in {
+                    "running",
+                    "cancelling",
+                    "cancelled",
+                    "failed",
+                    "interrupted",
+                }
+            ):
+                raise ProductStoreError("controller-check settlement lacks its bound job")
+            request, _submission = _saved_job_request(self, job)
+            historical = _historical_experiment_at(
+                connection,
+                experiment_id,
+                request.get("experiment_revision"),
+                request.get("experiment_digest"),
+            )
+            if request != _check_request(historical, current):
+                raise ProductStoreError("controller-check job intent changed")
+            working = experiment
+            settled_at = terminal.settled_at or terminal.created_at
+            for observation in observations:
+                next_value = working.record_independent_observation(
+                    observation, timestamp=settled_at
+                )
+                _append_experiment_at(connection, working, next_value)
+                working = next_value
+            settled = working.settle_controller_check(terminal, timestamp=settled_at)
+            return _append_experiment_at(connection, working, settled)
+
+    def reconcile_engine_controller_check_cleanup(
+        self: EngineJobProductStore,
+        *,
+        experiment_id: str,
+        check_id: str,
+        cleanup_state: str,
+        cleanup_evidence_ref: str,
+        timestamp: str,
+        expected_revision: int,
+        expected_experiment_digest: str,
+    ) -> Mapping[str, Any]:
+        try:
+            cleanup = CleanupState(cleanup_state)
+        except ValueError as exc:
+            raise ProductStoreError("controller-check cleanup state is invalid") from exc
+        with self._connection(write=True) as connection:
+            experiment = _active_experiment_at(
+                connection,
+                experiment_id,
+                expected_revision=expected_revision,
+                expected_digest=expected_experiment_digest,
+            )
+            updated = experiment.reconcile_check_cleanup(
+                check_id,
+                cleanup_state=cleanup,
+                cleanup_evidence_ref=cleanup_evidence_ref,
+                timestamp=timestamp,
+            )
+            return _append_experiment_at(connection, experiment, updated)
+
+    def settle_undispatched_engine_controller_check_cancellation(
+        self: EngineJobProductStore,
+        *,
+        experiment_id: str,
+        check_id: str,
+        job_id: str,
+        check: Mapping[str, Any],
+        expected_revision: int,
+        expected_experiment_digest: str,
+    ) -> Mapping[str, Any]:
+        try:
+            terminal = ControllerCheckRecord.from_mapping(check)
+        except (EngineExperimentError, TypeError, ValueError) as exc:
+            raise ProductStoreError("controller-check cancellation is invalid") from exc
+        if (
+            terminal.state is not ControllerCheckState.UNKNOWN
+            or terminal.cleanup_state is not CleanupState.VERIFIED_ABSENT
+            or terminal.independent_evidence_refs
+            or terminal.settled_at is None
+        ):
+            raise ProductStoreError(
+                "undispatched controller cancellation requires the exact absent outcome"
+            )
+        expected_result = content_hash(
+            {
+                "schema_version": "bluefire.engine-controller-check-unknown.v1",
+                "check_id": check_id,
+                "dispatched": False,
+                "recorded_at": terminal.settled_at,
+            }
+        )
+        expected_cleanup = content_hash(
+            {
+                "schema_version": "bluefire.engine-controller-check-uncertain.v1",
+                "experiment_id": experiment_id,
+                "check_id": check_id,
+                "job_id": job_id,
+                "run_id": terminal.run_id,
+                "dispatched": False,
+                "cleanup_state": CleanupState.VERIFIED_ABSENT.value,
+                "recorded_at": terminal.settled_at,
+            }
+        )
+        if (
+            terminal.result_digest != expected_result
+            or terminal.cleanup_evidence_ref != expected_cleanup
+        ):
+            raise ProductStoreError("controller cancellation receipt changed")
+        with self._connection(write=True) as connection:
+            experiment = _active_experiment_at(
+                connection,
+                experiment_id,
+                expected_revision=expected_revision,
+                expected_digest=expected_experiment_digest,
+            )
+            _index, current = experiment._check(check_id)
+            job = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if (
+                job is None
+                or job["kind"] != _CHECK_JOB_KIND
+                or job["state"] != "cancelled"
+                or current.job_id != job_id
+                or current.state is not ControllerCheckState.RESERVED
+                or current.cleanup_state is not CleanupState.PENDING
+                or current.cleanup_evidence_ref is not None
+            ):
+                raise ResourceConflictError("controller-check dispatch or custody already began")
+            try:
+                progress = json.loads(str(job["progress_json"]))
+            except (TypeError, ValueError) as exc:
+                raise ProductStoreError("controller-check dispatch marker is invalid") from exc
+            marker = (
+                progress.get("_engine_controller_dispatch") if isinstance(progress, dict) else None
+            )
+            if marker != {
+                "schema_version": _CHECK_DISPATCH_SCHEMA,
+                "begun": False,
+            }:
+                raise ResourceConflictError(
+                    "controller-check dispatch may have begun; recovery is required"
+                )
+            request, _submission = _saved_job_request(self, job)
+            historical = _historical_experiment_at(
+                connection,
+                experiment_id,
+                request.get("experiment_revision"),
+                request.get("experiment_digest"),
+            )
+            if request != _check_request(historical, current):
+                raise ProductStoreError("controller-check cancellation intent changed")
+            updated = experiment.settle_controller_check(terminal, timestamp=terminal.settled_at)
+            return _append_experiment_at(connection, experiment, updated)
+
+    def load_engine_controller_check_recovery(
+        self: EngineJobProductStore, experiment_id: str, check_id: str
+    ) -> Mapping[str, Any]:
+        with self._connection() as connection:
+            connection.execute("BEGIN")
+            experiment = _active_experiment_at(connection, experiment_id)
+            try:
+                _index, check = experiment._check(check_id)
+            except EngineExperimentError as exc:
+                raise ProductStoreError("controller check was not found") from exc
+            job = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (check.job_id,)
+            ).fetchone()
+            if (
+                job is None
+                or job["kind"] != _CHECK_JOB_KIND
+                or job["state"]
+                not in {
+                    "cancelled",
+                    "failed",
+                    "interrupted",
+                    "completed",
+                }
+            ):
+                raise ProductStoreError("controller-check recovery requires its terminal bound job")
+            request, _submission = _saved_job_request(self, job)
+            historical = _historical_experiment_at(
+                connection,
+                experiment_id,
+                request.get("experiment_revision"),
+                request.get("experiment_digest"),
+            )
+            if request != _check_request(historical, check):
+                raise ProductStoreError("controller-check recovery intent changed")
+            snapshot = self._job_from_row(job)
+            connection.commit()
+        return {"experiment": experiment.to_dict(), "job": snapshot}
 
 
 __all__ = ["EngineExperimentJobStoreMixin"]

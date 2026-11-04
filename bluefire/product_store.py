@@ -4416,6 +4416,30 @@ class ProductStore(
                 if progress is not None
                 else json.loads(row["progress_json"])
             )
+            if row["kind"] == "engine-controller-check":
+                current_progress = json.loads(row["progress_json"])
+                marker = current_progress.get("_engine_controller_dispatch")
+                if marker is not None and marker not in (
+                    {
+                        "schema_version": "bluefire.engine-controller-check-dispatch.v1",
+                        "begun": False,
+                    },
+                    {
+                        "schema_version": "bluefire.engine-controller-check-dispatch.v1",
+                        "begun": True,
+                    },
+                ):
+                    raise ProductStoreError("controller-check dispatch marker is invalid")
+                if marker is None:
+                    raise ProductStoreError("controller-check dispatch marker is missing")
+                dispatch_begun = bool(marker["begun"]) or (
+                    state == "running" and current != "running"
+                )
+                next_progress = dict(next_progress)
+                next_progress["_engine_controller_dispatch"] = {
+                    "schema_version": "bluefire.engine-controller-check-dispatch.v1",
+                    "begun": dispatch_begun,
+                }
             next_error = (
                 _canonical_json(_safe_document(error, context=f"job.{job_id}.error"))
                 if error is not None

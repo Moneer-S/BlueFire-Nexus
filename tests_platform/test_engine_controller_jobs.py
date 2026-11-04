@@ -681,6 +681,37 @@ def test_requests_reject_tampering_and_unavailable_callbacks() -> None:
         )
 
 
+def test_product_store_submission_metadata_is_strictly_normalized() -> None:
+    defense_repository = _Repository(_reviewed_experiment())
+    defense_jobs = _jobs(defense_repository)
+    defense = defense_jobs.prepare_defense_operation(
+        experiment_id=EXPERIMENT_ID,
+        change_id=_defense().change_id,
+        operation=DefenseOperation.APPLY,
+    )
+    check_repository = _Repository(_applied_experiment())
+    check_jobs = _jobs(check_repository)
+    check = _check_request(check_jobs)
+
+    for request, parser in (
+        (defense, defense_jobs._exact_defense_request),
+        (check, check_jobs._exact_check_request),
+    ):
+        stored = {
+            **request,
+            "_submission": {
+                "schema_version": "bluefire.job-submission.v1",
+                "submission_id": "66666666-6666-4666-8666-666666666666",
+                "intent_digest": content_hash(request),
+            },
+        }
+        parsed = parser(stored)
+        assert (parsed[0] if isinstance(parsed, tuple) else parsed) == request
+        stored["_submission"]["intent_digest"] = _digest("0")
+        with pytest.raises(EngineControllerJobError, match="submission binding changed"):
+            parser(stored)
+
+
 def test_defense_executor_cannot_change_the_saved_operation() -> None:
     repository = _Repository(_reviewed_experiment())
     jobs = _jobs(

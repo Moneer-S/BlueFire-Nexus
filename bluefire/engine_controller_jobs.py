@@ -85,6 +85,26 @@ def _submission(value: Any) -> str:
     return value
 
 
+def _product_store_request(request: Mapping[str, Any], label: str) -> dict[str, Any]:
+    """Strip and verify ProductStore's immutable idempotent-submission binding."""
+
+    if not isinstance(request, Mapping):
+        raise EngineControllerJobError(f"{label} request fields changed")
+    parsed = dict(request)
+    submission = parsed.pop("_submission", None)
+    if submission is None:
+        return parsed
+    if (
+        not isinstance(submission, Mapping)
+        or set(submission) != {"schema_version", "submission_id", "intent_digest"}
+        or submission.get("schema_version") != "bluefire.job-submission.v1"
+        or submission.get("intent_digest") != content_hash(parsed)
+    ):
+        raise EngineControllerJobError(f"{label} submission binding changed")
+    _submission(submission.get("submission_id"))
+    return parsed
+
+
 @dataclass(frozen=True, slots=True)
 class DefenseOperationSettlement:
     """Trusted readback after a controller-owned defense operation."""
@@ -296,7 +316,14 @@ class EngineControllerRepository(Protocol):
         expected_revision: int,
         expected_experiment_digest: str,
     ) -> Mapping[str, Any]:
-        """Atomically verify finalized RunStore evidence, attest, and settle."""
+        """Atomically persist preverified evidence identities, attest, and settle.
+
+        The trusted controller executor/service must verify the finalized
+        filesystem RunStore bundle before this call.  ProductStore then binds
+        the canonical controller attestations and exact terminal evidence IDs
+        in its own SQLite transaction; it does not claim a cross-filesystem
+        transaction with RunStore.
+        """
 
         ...
 
@@ -868,9 +895,9 @@ class EngineControllerJobs:
             "originating_job_id",
             "originating_operation_receipt_digest",
         }
-        if not isinstance(request, Mapping) or set(request) != fields:
+        parsed = _product_store_request(request, "defense operation")
+        if set(parsed) != fields:
             raise EngineControllerJobError("defense operation request fields changed")
-        parsed = dict(request)
         if parsed["schema_version"] != "bluefire.engine-defense-operation-job.v1":
             raise EngineControllerJobError("defense operation request version changed")
         try:
@@ -946,9 +973,9 @@ class EngineControllerJobs:
             "input_digest",
             "reserved_at",
         }
-        if not isinstance(request, Mapping) or set(request) != fields:
+        parsed = _product_store_request(request, "controller check")
+        if set(parsed) != fields:
             raise EngineControllerJobError("controller check request fields changed")
-        parsed = dict(request)
         if parsed["schema_version"] != "bluefire.engine-controller-check-job.v1":
             raise EngineControllerJobError("controller check request version changed")
         if (
