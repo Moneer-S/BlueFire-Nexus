@@ -7,21 +7,25 @@ import { parseEngineExperimentRoute, CompositionRoute } from "../src/pages/Engin
 import type { EngineExperiment } from "../src/lib/engine-experiment";
 import { engineExperimentApi } from "../src/lib/engine-experiment-api";
 import { AssistanceProvider, useAssistanceSelection } from "../src/state/AssistanceContext";
+import { acceptedAction, actionDigest, actionWorkspace, preparedAction } from "./engine-action-fixture";
 
 vi.mock("../src/pages/Composition", () => ({ CompositionPage: () => <h1>Ordinary composition workspace</h1> }));
 vi.mock("../src/components/EngineExperimentWorkspace", () => ({
-  EngineExperimentWorkspace: ({ experiment, selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck }: any) => <section aria-label="Engine experiment witness">
+  EngineExperimentWorkspace: ({ experiment, selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction }: any) => <section aria-label="Engine experiment witness">
     <h1>{experiment.objective.title}</h1>
     <output aria-label="Selected route item">{selectedAttemptId ?? selectedCheckId ?? "none"}</output>
     <button type="button" onClick={() => onSelectAttempt(experiment.projection.attempts[0].attempt_id)}>Select baseline</button>
     <button type="button" onClick={() => onSelectCheck(experiment.projection.checks[0].check_id)}>Select retest</button>
+    <button type="button" onClick={() => onPrimaryAction("start_baseline")}>Review next action</button>
   </section>,
 }));
 
 const workspace = vi.hoisted(() => vi.fn());
+const prepare = vi.hoisted(() => vi.fn());
+const submit = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/engine-experiment-api", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/lib/engine-experiment-api")>();
-  return { ...actual, engineExperimentApi: { ...actual.engineExperimentApi, workspace } };
+  return { ...actual, engineExperimentApi: { ...actual.engineExperimentApi, workspace, prepare, submit } };
 });
 
 const experimentId = `experiment-${"a".repeat(32)}`;
@@ -53,6 +57,7 @@ function mount(path: string) {
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
+  prepare.mockReset().mockResolvedValue(preparedAction()); submit.mockReset().mockResolvedValue(acceptedAction());
   vi.mocked(engineExperimentApi.workspace).mockReset().mockImplementation(async (_experiment, selection) => {
     if (selection?.kind === "controller_check") throw new Error("Selected workspace context changed.");
     return raw;
@@ -102,4 +107,26 @@ it("shows a recoverable error when the server cannot bind a requested selection"
   mount(`/composition?engine_experiment=${experimentId}&check=${checkId}`);
   expect(await screen.findByText("Engine experiment unavailable")).toBeVisible();
   expect(screen.getByRole("link", { name: "Composition workspace" })).toHaveAttribute("href", "/composition");
+});
+
+it("prepares against canonical unselected context while preserving route selection, then selects the accepted job", async () => {
+  const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-04T12:01:00Z"));
+  const canonical = actionWorkspace();
+  const returnedAttempt = `engine-attempt-${"f".repeat(32)}`;
+  let admitted = false;
+  workspace.mockImplementation(async (_id, selection) => ({ ...canonical, workspace_digest: selection ? actionDigest("8") : canonical.workspace_digest, projection: { ...canonical.projection, attempts: [{ attempt_id: attemptId, state: "completed" }, ...(admitted ? [{ attempt_id: returnedAttempt, job_id: acceptedAction().job!.job_id, state: "queued" }] : [])] } }));
+  submit.mockImplementation(async () => { admitted = true; return acceptedAction(); });
+  try {
+    const user = userEvent.setup();
+    mount(`/composition?engine_experiment=${experimentId}&attempt=${attemptId}`);
+    await user.click(await screen.findByRole("button", { name: "Review next action" }));
+    await screen.findByText("Intended outcome");
+    expect(workspace).toHaveBeenCalledWith(experimentId);
+    expect(prepare.mock.calls[0]![0].workspace_digest).toBe(canonical.workspace_digest);
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(`attempt=${attemptId}`);
+    await user.click(screen.getByRole("checkbox")); await user.click(screen.getByRole("button", { name: "Start baseline exploration" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(preparedAction()));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(`attempt=${returnedAttempt}`));
+  } finally { now.mockRestore(); }
 });

@@ -174,3 +174,15 @@
 @media (prefers-reduced-motion: reduce) {
   .engine-experiment-workspace *, .engine-experiment-workspace *::before, .engine-experiment-workspace *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+.engine-action-review { width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; }
+.engine-action-review .data-list { margin-block: 16px; }
+.engine-action-review .data-list > div { min-width: 0; }
+.engine-action-review code, .engine-action-review dd { overflow-wrap: anywhere; }
+.engine-action-review details { padding-block: 12px; border-block: 1px solid var(--line); }
+.engine-action-review summary { cursor: pointer; }
+.engine-action-ack { display: flex; align-items: flex-start; gap: 10px; margin-block: 18px; line-height: 1.5; }
+.engine-action-ack input { flex: 0 0 auto; margin-top: 5px; width: 18px; height: 18px; }
+.engine-action-review .dialog-actions { flex-wrap: wrap; }
+.engine-action-review .dialog-actions .button { white-space: normal; }
+.engine-action-review :focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .engine-action-review, .engine-action-review *, .engine-action-overlay { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

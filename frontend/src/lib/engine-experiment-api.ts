@@ -1,5 +1,6 @@
 import { request } from "./api";
 import { checkedEngineExperiment, type EngineExperiment, type EngineWorkspaceSelection } from "./engine-experiment";
+import { checkedPreparedEngineAction, checkedEngineActionAcceptance, type PreparedEngineAction } from "./engine-actions";
 
 const EXPERIMENT_ID = /^experiment-[0-9a-f]{32}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -84,6 +85,14 @@ export function engineExperimentPath(experimentId: string, selection?: { kind: "
 }
 
 export const engineExperimentApi = {
+  prepare: async (workspace: EngineExperiment) => {
+    if (!engineExperimentId(workspace.experiment_id) || workspace.selected_context !== null || !Number.isSafeInteger(workspace.revision) || workspace.revision < 1 || workspace.revision > 10_000 || !DIGEST.test(workspace.experiment_digest) || !DIGEST.test(workspace.workspace_digest)) throw new Error("Reload the canonical engine workspace before reviewing this action.");
+    return checkedPreparedEngineAction(await request<unknown>(`/engine-experiments/${workspace.experiment_id}/actions/prepare`, { method: "POST", body: JSON.stringify({ schema_version: "bluefire.engine-action-prepare-request.v1", expected_revision: workspace.revision, expected_digest: workspace.experiment_digest, workspace_digest: workspace.workspace_digest }) }), workspace);
+  },
+  submit: async (prepared: PreparedEngineAction) => {
+    if (!engineExperimentId(prepared.experiment_id) || !DIGEST.test(prepared.preparation_id) || !DIGEST.test(prepared.protected_request_ref)) throw new Error("The prepared engine action identity is invalid.");
+    return checkedEngineActionAcceptance(await request<unknown>(`/engine-experiments/${prepared.experiment_id}/actions/submit`, { method: "POST", body: JSON.stringify({ schema_version: "bluefire.engine-action-submit.v1", preparation_id: prepared.preparation_id, protected_request_ref: prepared.protected_request_ref }) }), prepared);
+  },
   list: async (): Promise<EngineExperimentList> => checkedEngineExperimentList(await request<unknown>("/engine-experiments")),
   workspace: async (experimentId: string, selection?: EngineWorkspaceSelection | null): Promise<EngineExperiment> => {
     if (!engineExperimentId(experimentId)) throw new Error("The engine experiment identity is invalid.");
