@@ -34,6 +34,10 @@ from email.policy import default as email_policy
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
+from bluefire.strix_redistribution_review import (
+    is_blocked_strix_redistribution_review,
+    strix_redistribution_review,
+)
 from tools import build_strix_engine_candidate as candidate
 
 PIP_VERSION = "25.3"
@@ -49,12 +53,12 @@ PIP_WHEEL_SIZE = 1_778_622
 SYFT_VERSION = "1.56.0"
 SYFT_ARCHIVE_NAME = "syft_1.56.0_linux_amd64.tar.gz"
 SYFT_ARCHIVE_URL = (
-    "https://github.com/anchore/syft/releases/download/v1.56.0/" "syft_1.56.0_linux_amd64.tar.gz"
+    "https://github.com/anchore/syft/releases/download/v1.56.0/syft_1.56.0_linux_amd64.tar.gz"
 )
 SYFT_ARCHIVE_SHA256 = "1c2493cfcf52d3367d6cb25780d9190c111c2219c34c820574c43e8bae15c528"
 SYFT_CHECKSUMS_NAME = "syft_1.56.0_checksums.txt"
 SYFT_CHECKSUMS_URL = (
-    "https://github.com/anchore/syft/releases/download/v1.56.0/" "syft_1.56.0_checksums.txt"
+    "https://github.com/anchore/syft/releases/download/v1.56.0/syft_1.56.0_checksums.txt"
 )
 SYFT_CHECKSUMS_SHA256 = "a2db61bc71f8f7ea8c67fc4a81b8e4e6474386e6a07d104bd2e78e964d5d7ec7"
 
@@ -409,6 +413,8 @@ def validate_candidate(
         raise StrixRuntimeQualificationError("candidate unexpectedly records execution")
     if not isinstance(qualification, dict) or qualification.get("runtime_qualified") is not False:
         raise StrixRuntimeQualificationError("candidate qualification state is invalid")
+    if not is_blocked_strix_redistribution_review(qualification.get("redistribution_review")):
+        raise StrixRuntimeQualificationError("candidate redistribution review must remain blocked")
 
     checksums = _parse_checksums(
         _read_regular(root / candidate.CHECKSUMS_NAME, candidate.MAX_OUTPUT_BYTES)
@@ -879,7 +885,7 @@ def _install_runtime(
     if not combined_payload.endswith(b"\n"):
         combined_payload += b"\n"
     combined_payload += (
-        f"strix-agent @ {candidate_wheel.as_uri()} " f"--hash=sha256:{wheel_identity['sha256']}\n"
+        f"strix-agent @ {candidate_wheel.as_uri()} --hash=sha256:{wheel_identity['sha256']}\n"
     ).encode("ascii")
     _write_exclusive(combined_requirements, combined_payload)
     _run_pip(
@@ -1087,8 +1093,7 @@ def resolve_oci_identity(fetch: RegistryFetch) -> dict[str, Any]:
 def _registry_fetcher() -> RegistryFetch:
     # This is a public anonymous-token endpoint, not a credential or embedded secret.
     token_url = (  # nosec B105
-        "https://ghcr.io/token?service=ghcr.io&"
-        "scope=repository%3Ausestrix%2Fstrix-sandbox%3Apull"
+        "https://ghcr.io/token?service=ghcr.io&scope=repository%3Ausestrix%2Fstrix-sandbox%3Apull"
     )
     request = urllib.request.Request(
         token_url,
@@ -1512,11 +1517,12 @@ def prepare_runtime_candidate(
             "containment_proven": False,
             "lifecycle_proven": False,
             "license_review_complete": False,
+            "redistribution_review": strix_redistribution_review(),
             "blocking_reasons": [
                 "Independent review of this preparation has not completed.",
                 "A second clean build has not established artifact reproducibility.",
                 "Containment, lifecycle, cancellation, and cleanup have not been exercised.",
-                "Image notices, licenses, and redistribution rights remain under review.",
+                "Go TUI, bundled viewer assets, complete runtime wheels, and OCI rights remain unreviewed.",
                 "No Strix, target, sandbox container, or model execution was performed.",
             ],
         },

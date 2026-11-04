@@ -141,8 +141,18 @@ It also keeps all of these false:
 - lifecycle, cancellation, and cleanup effectiveness;
 - target or model execution;
 - offensive or defensive effectiveness;
-- complete image-license review; and
+- complete component-license review; and
 - redistribution authorization.
+
+`qualification.redistribution_review` separately fixes `redistribution_ready` to false and
+retains incomplete reviews for third-party Go TUI dependencies, bundled frontend/viewer assets,
+the complete Python runtime wheel closure, and OCI image notices/rights. Component license
+expressions, notice completeness, and confirmed redistribution rights remain unknown (`null`).
+The loader rejects an omitted or altered blocked review, including root-license-only clearance;
+a passing startup probe cannot promote it. BlueFire remains MIT and Strix's root source
+attribution remains Apache-2.0. See the
+[redistribution gate](engine-provenance.md#redistribution-remains-blocked) and its pinned official
+sources. This is separate from the limited `runtime_qualified: true` startup claim.
 
 The probe does not establish that Strix can complete a scan, that its sandbox
 can start, that a model makes a useful decision, that a defense works, or that

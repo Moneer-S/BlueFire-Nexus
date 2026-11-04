@@ -21,6 +21,7 @@ from bluefire.strix_policy_overlay import (
     REVIEWED_PROMPT_SHA256,
     REVIEWED_SOURCE_REVISION,
 )
+from bluefire.strix_redistribution_review import strix_redistribution_review
 from bluefire.strix_runtime_admission_resolver import (
     ControllerQualifiedStrixAdmissionResolver,
     ProtectedStrixQualificationManifestSource,
@@ -119,6 +120,7 @@ def manifest() -> dict[str, Any]:
             "effectiveness_proven": False,
             "license_review_complete": False,
             "redistribution_authorized": False,
+            "redistribution_review": strix_redistribution_review(),
             "limitations": list(RUNTIME_QUALIFICATION_LIMITATIONS),
         },
     }

@@ -69,6 +69,14 @@ The generated notices report is an inventory aid, not a rights decision. It expl
 NOTICE completeness, license review, and redistribution review unresolved. The Apache-2.0 license
 of the Strix source repository is not applied to the image or its third-party packages.
 
+The preparation manifest also preserves the candidate's blocked
+`qualification.redistribution_review`. Go TUI dependencies, bundled frontend/viewer assets,
+the complete Python runtime wheel closure, and OCI image notices/rights all remain unreviewed.
+License expressions, notice completeness, and confirmed rights remain unknown (`null`);
+redistribution readiness and authorization remain false. See the
+[redistribution gate](engine-provenance.md#redistribution-remains-blocked) for the pinned official
+sources and exact scope. Hash-bound inventory or installation does not complete that review.
+
 ## Workflow and outputs
 
 `.github/workflows/strix-runtime-qualification.yml` uses a standard `ubuntu-24.04` hosted runner,

@@ -18,6 +18,7 @@ from bluefire.strix_adapter import (
     PATCHED_PROMPT_SHA256,
     REVIEWED_PROMPT_SHA256,
 )
+from bluefire.strix_redistribution_review import strix_redistribution_review
 from bluefire.strix_runtime_qualification import (
     RUNTIME_QUALIFICATION_LIMITATIONS,
     StrixRuntimeQualificationError,
@@ -116,6 +117,7 @@ def valid_manifest() -> dict[str, object]:
             "effectiveness_proven": False,
             "license_review_complete": False,
             "redistribution_authorized": False,
+            "redistribution_review": strix_redistribution_review(),
             "limitations": list(RUNTIME_QUALIFICATION_LIMITATIONS),
         },
     }
@@ -177,6 +179,25 @@ def test_loader_rejects_broader_or_unqualified_claims(
     payload = write_manifest(path, manifest)
 
     with pytest.raises(StrixRuntimeQualificationError):
+        load_strix_runtime_qualification(
+            path, expected_ref="sha256:" + hashlib.sha256(payload).hexdigest()
+        )
+
+
+@pytest.mark.parametrize("scope", [None, *strix_redistribution_review()["component_reviews"]])
+def test_loader_rejects_root_only_or_component_redistribution_clearance(
+    tmp_path: Path, scope: str | None
+) -> None:
+    manifest = valid_manifest()
+    review = strix_redistribution_review()
+    if scope is None:
+        review.pop("component_reviews")
+    else:
+        review["component_reviews"][scope]["review_complete"] = True
+    manifest["qualification"]["redistribution_review"] = review  # type: ignore[index]
+    path = tmp_path / admission.MANIFEST_NAME
+    payload = write_manifest(path, manifest)
+    with pytest.raises(StrixRuntimeQualificationError, match="redistribution"):
         load_strix_runtime_qualification(
             path, expected_ref="sha256:" + hashlib.sha256(payload).hexdigest()
         )
@@ -260,6 +281,39 @@ def test_loader_rejects_contradictory_oci_inventory_identity(tmp_path: Path) -> 
         load_strix_runtime_qualification(
             path, expected_ref="sha256:" + hashlib.sha256(payload).hexdigest()
         )
+
+
+@pytest.mark.parametrize(
+    ("review", "complete"),
+    [
+        (None, False),
+        ({"license": "Apache-2.0"}, False),
+        ({"redistribution_ready": True}, False),
+        (strix_redistribution_review(), True),
+        (strix_redistribution_review(), 0),
+    ],
+)
+def test_preparation_rejects_root_only_or_missing_rights_review(
+    tmp_path: Path, review: object, complete: object
+) -> None:
+    manifest = {
+        "schema": "bluefire.strix-runtime-qualification-preparation.v1",
+        "status": "prepared-not-runtime-qualified",
+        "bluefire_source_revision": REVISION,
+        "execution": {"strix": False},
+        "qualification": {
+            "runtime_qualified": False,
+            "license_review_complete": complete,
+            "redistribution_review": review,
+        },
+    }
+    name = admission.preparation.QUALIFICATION_MANIFEST_NAME
+    payload = write_manifest(tmp_path / name, manifest)
+    (tmp_path / admission.CHECKSUMS_NAME).write_text(
+        f"{hashlib.sha256(payload).hexdigest()}  {name}\n", encoding="ascii"
+    )
+    with pytest.raises(admission.StrixRuntimeAdmissionQualificationError, match="redistribution"):
+        admission._validate_preparation(tmp_path, revision=REVISION, candidate_identity={})
 
 
 def test_checksum_tree_binds_every_regular_file_and_rejects_links(tmp_path: Path) -> None:
@@ -395,6 +449,7 @@ def test_qualifier_emits_an_admissible_manifest_without_running_a_real_probe(
 
     assert manifest["qualification"]["runtime_qualified"] is True
     assert manifest["qualification"]["scope"] == "exact-installed-cli-startup-only"
+    assert manifest["qualification"]["redistribution_review"] == strix_redistribution_review()
     assert manifest["execution"] == {
         "strix_imported": True,
         "strix_cli": True,
@@ -526,7 +581,10 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
         },
         "sandbox": {"image": candidate.SANDBOX_IMAGE},
         "execution": {"strix": False},
-        "qualification": {"runtime_qualified": False},
+        "qualification": {
+            "runtime_qualified": False,
+            "redistribution_review": strix_redistribution_review(),
+        },
         "policy_overlay": {
             "upstream_sha256": upstream_hash,
             "overlay_sha256": overlay_hash,
@@ -632,7 +690,11 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
         "status": "prepared-not-runtime-qualified",
         "bluefire_source_revision": REVISION,
         "execution": {"strix": False},
-        "qualification": {"runtime_qualified": False},
+        "qualification": {
+            "runtime_qualified": False,
+            "license_review_complete": False,
+            "redistribution_review": strix_redistribution_review(),
+        },
         "candidate": {
             "manifest_sha256": identity["manifest_sha256"],
             "checksums_sha256": identity["checksums_sha256"],

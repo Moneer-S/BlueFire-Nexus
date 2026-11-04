@@ -36,7 +36,7 @@ at commit `6b7ae2ebe4d47037a927aade23265ff4e4f27e84`, Git tree
 but is not the published `v1.7.0` release commit. BlueFire therefore records it as an exact
 modified-source build and makes no release-equivalence claim.
 
-The source repository is Apache-2.0. Its exact
+The source root declares Apache-2.0. Its exact
 [`LICENSE`](https://github.com/usestrix/strix/blob/6b7ae2ebe4d47037a927aade23265ff4e4f27e84/LICENSE)
 is preserved in candidate outputs. The reviewed tree contains no `NOTICE` file; the builder checks
 that absence and fails closed if a future pin adds one until its distribution is handled.
@@ -53,6 +53,23 @@ sandbox image. The OCI index is not bundled or redistributed, and its tools and 
 are not represented as Apache-2.0 merely because the Strix source root uses that license. Runtime
 installation, containment, model quality, target effects, and security effectiveness require
 separate qualification.
+
+BlueFire remains MIT licensed; neither project's root attribution clears every component in
+the assembled Strix candidate. The pinned
+[`pyproject.toml`](https://github.com/usestrix/strix/blob/6b7ae2ebe4d47037a927aade23265ff4e4f27e84/pyproject.toml)
+specifies a compiled Go TUI and prebuilt viewer static assets in the wheel, excluding their
+source directories from that wheel. The builder's Python lock-export SBOM does not inventory
+those components or OCI contents. A root `NOTICE` absence is not proof of complete third-party
+notices.
+
+Redistribution readiness remains blocked pending review of third-party Go TUI dependencies,
+bundled frontend/viewer assets, the complete platform Python runtime wheel closure (including
+nested libraries and notices), and the OCI image. Their complete license expressions, notice
+completeness, and confirmed redistribution rights are unknown; this notice does not assign
+licenses to those components. Candidate, preparation, and CLI-startup admission manifests record
+these unresolved facts under `qualification.redistribution_review`, with readiness, completed
+license review, and redistribution authorization false. Artifact integrity and CLI startup do
+not satisfy that gate. See [the provenance gate](docs/engine-provenance.md#redistribution-remains-blocked).
 
 ## Atomic gzip collection adapter
 

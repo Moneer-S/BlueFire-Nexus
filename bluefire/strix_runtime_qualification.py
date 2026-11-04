@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Any, Mapping, cast
 
 from .strix_adapter import StrixBuildIdentity
+from .strix_redistribution_review import (
+    is_blocked_strix_redistribution_review,
+    strix_redistribution_review,
+)
 from .util import canonical_json_bytes, json_clone
 
 
@@ -116,6 +120,7 @@ _QUALIFICATION_FIELDS = frozenset(
         "effectiveness_proven",
         "license_review_complete",
         "redistribution_authorized",
+        "redistribution_review",
         "limitations",
     }
 )
@@ -124,7 +129,7 @@ RUNTIME_QUALIFICATION_LIMITATIONS = (
     "No sandbox container, target, model, sidecar, or network operation was exercised.",
     "Attempt containment, cancellation, cleanup, and evidence admission require separate proof.",
     "A second clean build has not established artifact reproducibility.",
-    "Image notice completeness and redistribution rights remain unresolved.",
+    "Go TUI, bundled viewer assets, complete runtime wheels, and OCI notices/rights remain unresolved.",
     "No production resolver currently admits this receipt into a live engine attempt.",
 )
 
@@ -331,6 +336,8 @@ def load_strix_runtime_qualification(path: Path, *, expected_ref: str) -> Qualif
     qualification = _exact(
         row["qualification"], _QUALIFICATION_FIELDS, "runtime qualification claims"
     )
+    if not is_blocked_strix_redistribution_review(qualification["redistribution_review"]):
+        raise StrixRuntimeQualificationError("runtime redistribution review must remain blocked")
     if qualification != {
         "runtime_qualified": True,
         "production_runtime_admitted": False,
@@ -343,6 +350,7 @@ def load_strix_runtime_qualification(path: Path, *, expected_ref: str) -> Qualif
         "effectiveness_proven": False,
         "license_review_complete": False,
         "redistribution_authorized": False,
+        "redistribution_review": strix_redistribution_review(),
         "limitations": list(RUNTIME_QUALIFICATION_LIMITATIONS),
     }:
         raise StrixRuntimeQualificationError("runtime qualification claims are invalid")

@@ -15,7 +15,7 @@ The builder accepts only these source identities:
 | Git tree | `23c06e4a0e58bdf3b4979863d7623230e4091332` |
 | Declared package version | `1.7.0` |
 | Published `v1.7.0` release commit | `55bc07991aacb1c26a81b43e7ca53148730d2019` |
-| Source license | Apache-2.0 |
+| Root declared source license | Apache-2.0; does not clear third-party components |
 | Python requirement | `>=3.12` |
 
 The reviewed source commit is not the published `v1.7.0` release commit. The candidate records
@@ -87,6 +87,33 @@ version in `uv.lock`; independent proof that the export is the complete selected
 remains a qualification blocker. The reviewed tree has no upstream `NOTICE`, and the builder
 checks that exact-tree absence. A future `NOTICE` addition fails closed until its distribution is
 handled.
+
+## Redistribution remains blocked
+
+BlueFire remains MIT licensed. Strix's pinned
+[`LICENSE`](https://github.com/usestrix/strix/blob/6b7ae2ebe4d47037a927aade23265ff4e4f27e84/LICENSE)
+and [`pyproject.toml`](https://github.com/usestrix/strix/blob/6b7ae2ebe4d47037a927aade23265ff4e4f27e84/pyproject.toml)
+declare Apache-2.0 for Strix source. Preserving that license and the BlueFire modification
+notice does not establish redistribution readiness for the assembled candidate. The pinned
+packaging metadata includes a compiled Go TUI and prebuilt viewer static assets in the wheel,
+while excluding their source directories from that wheel. The candidate's Python lock export
+does not inventory those bundled components or the OCI image.
+
+Candidate, preparation, and CLI-startup admission manifests all carry
+`qualification.redistribution_review`, schema `bluefire.strix-redistribution-review.v1`.
+It fixes `redistribution_ready`, `license_review_complete`, `redistribution_authorized`, and
+`root_license_is_component_clearance` to false. Four separate component reviews remain
+incomplete: third-party Go TUI dependencies, bundled frontend/viewer assets, the complete
+platform Python runtime wheel closure (including nested libraries and notices), and the OCI
+image. Their license expressions, notice completeness, and confirmed redistribution rights
+remain `null` (unknown), rather than inheriting either project's root license.
+
+Downstream validation rejects an omitted or altered blocked review, including a root-license-only
+claim. Existing receipts without this gate must be rebuilt; checksum consistency, an SBOM, and
+a successful CLI-startup probe cannot supply the missing rights review. A separately reviewed
+component inventory and applicable license texts, attribution, notices, and rights are required
+before any future redistribution-ready claim. This increment neither completes that inventory
+nor changes runtime or packaging scope.
 
 Candidate metadata provides `sha256:`-prefixed canonical-source and package inputs for a later
 `StrixBuildIdentity`, but deliberately leaves the protected installed CLI executable hash and

@@ -27,6 +27,10 @@ from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
+from bluefire.strix_redistribution_review import (
+    is_blocked_strix_redistribution_review,
+    strix_redistribution_review,
+)
 from bluefire.strix_runtime_qualification import (
     RUNTIME_QUALIFICATION_LIMITATIONS,
     load_strix_runtime_qualification,
@@ -334,6 +338,12 @@ def _validate_preparation(
             "runtime preparation unexpectedly records execution or qualification"
         )
     prepared_candidate = manifest.get("candidate")
+    if qualification.get("license_review_complete") is not False or not (
+        is_blocked_strix_redistribution_review(qualification.get("redistribution_review"))
+    ):
+        raise StrixRuntimeAdmissionQualificationError(
+            "runtime preparation redistribution review must remain blocked"
+        )
     if not isinstance(prepared_candidate, dict) or (
         prepared_candidate.get("manifest_sha256") != candidate_identity["manifest_sha256"]
         or prepared_candidate.get("checksums_sha256") != candidate_identity["checksums_sha256"]
@@ -1066,6 +1076,7 @@ def qualify_runtime_admission(
                 "effectiveness_proven": False,
                 "license_review_complete": False,
                 "redistribution_authorized": False,
+                "redistribution_review": strix_redistribution_review(),
                 "limitations": list(RUNTIME_QUALIFICATION_LIMITATIONS),
             },
         }

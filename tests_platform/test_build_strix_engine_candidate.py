@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from bluefire.strix_policy_overlay import PATCHED_PROMPT_SHA256
+from bluefire.strix_redistribution_review import strix_redistribution_review
 from tools import build_strix_engine_candidate as candidate
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -279,6 +280,28 @@ def test_overlay_result_is_the_reviewed_modified_build() -> None:
     assert (
         PATCHED_PROMPT_SHA256 == "1908703508eff7287d492e63d1722d7f1a4a968ab3d2c237e92898abdd65d6fe"
     )
+
+
+def test_root_license_attribution_does_not_clear_bundled_components() -> None:
+    review = strix_redistribution_review()
+    assert review["project_license_attribution"] == {
+        "bluefire": "MIT",
+        "strix_source": "Apache-2.0",
+    }
+    assert review["redistribution_ready"] is False
+    assert review["redistribution_authorized"] is False
+    assert review["root_license_is_component_clearance"] is False
+    assert set(review["component_reviews"]) == {
+        "third_party_go_tui",
+        "bundled_frontend_viewer_assets",
+        "complete_python_runtime_wheels",
+        "oci_image",
+    }
+    for component in review["component_reviews"].values():
+        assert component["review_complete"] is False
+        assert component["license_expression"] is None
+        assert component["notices_complete"] is None
+        assert component["redistribution_rights_confirmed"] is None
 
 
 def test_workflow_is_manual_read_only_bounded_and_commit_pinned() -> None:

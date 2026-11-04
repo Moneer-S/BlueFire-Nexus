@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 import yaml
 
+from bluefire.strix_redistribution_review import strix_redistribution_review
 from tools import qualify_strix_runtime_candidate as qualification
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -247,7 +248,10 @@ def test_candidate_validation_binds_checksum_source_and_untracked_state(
             "target": False,
             "model": False,
         },
-        "qualification": {"runtime_qualified": False},
+        "qualification": {
+            "runtime_qualified": False,
+            "redistribution_review": strix_redistribution_review(),
+        },
         "policy_overlay": {
             "patched_sha256": hashlib.sha256((source / "prompt.jinja").read_bytes()).hexdigest()
         },
@@ -275,6 +279,21 @@ def test_candidate_validation_binds_checksum_source_and_untracked_state(
     environment = {"PATH": os.environ["PATH"]}
     receipt = qualification.validate_candidate(candidate_root, source, revision, environment)
     assert receipt["wheel_identity"]["sha256"] == hashlib.sha256(wheel_payload).hexdigest()
+
+    # A correct root license cannot replace the incomplete component review.
+    for invalid_review in (
+        None,
+        {"project_license_attribution": {"bluefire": "MIT", "strix_source": "Apache-2.0"}},
+        {**strix_redistribution_review(), "redistribution_ready": True},
+        {**strix_redistribution_review(), "redistribution_ready": 0},
+        {**strix_redistribution_review(), "component_reviews": {}},
+    ):
+        manifest["qualification"]["redistribution_review"] = invalid_review
+        changed_payload = qualification._canonical_json(manifest) + b"\n"
+        (candidate_root / qualification.candidate.MANIFEST_NAME).write_bytes(changed_payload)
+        with pytest.raises(qualification.StrixRuntimeQualificationError, match="redistribution"):
+            qualification.validate_candidate(candidate_root, source, revision, environment)
+    (candidate_root / qualification.candidate.MANIFEST_NAME).write_bytes(manifest_payload)
 
     (source / "uv.toml").write_text("offline = false\n", encoding="utf-8")
     with pytest.raises(qualification.StrixRuntimeQualificationError, match="reviewed overlay"):
@@ -318,7 +337,7 @@ def test_wheel_inspection_expands_compressed_filename_tags(tmp_path: Path) -> No
         )
         archive.writestr(
             "demo-1.0.dist-info/WHEEL",
-            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\n" "Tag: py2-none-any\nTag: py3-none-any\n",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py2-none-any\nTag: py3-none-any\n",
         )
         archive.writestr("demo-1.0.dist-info/RECORD", "")
     receipt = qualification._inspect_wheel(wheel)
@@ -609,6 +628,7 @@ def test_preparation_manifest_and_checksums_remain_hard_false(
     assert manifest["status"] == "prepared-not-runtime-qualified"
     assert manifest["qualification"]["runtime_qualified"] is False
     assert manifest["qualification"]["reproducibility_proven"] is False
+    assert manifest["qualification"]["redistribution_review"] == strix_redistribution_review()
     assert not any(manifest["execution"].values())
     checksum_paths = {
         line.split("  ", 1)[1]

@@ -37,6 +37,7 @@ from bluefire.strix_policy_overlay import (
     REVIEWED_SOURCE_REVISION,
     apply_policy_overlay,
 )
+from bluefire.strix_redistribution_review import strix_redistribution_review
 
 UPSTREAM_REPOSITORY = "https://github.com/usestrix/strix.git"
 UPSTREAM_COMMIT = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"
@@ -1177,6 +1178,7 @@ def build_candidate(
         },
         "qualification": {
             "runtime_qualified": False,
+            "redistribution_review": strix_redistribution_review(),
             "blocking_reasons": [
                 "OCI platform child manifest/config/layers have not been bound.",
                 "Sandbox image inventory and third-party notices are not complete.",
@@ -1184,6 +1186,7 @@ def build_candidate(
                 "An exact offline runtime dependency wheelhouse is not attached.",
                 "SBOM production-closure completeness is not independently proven.",
                 "A second clean build has not established artifact reproducibility.",
+                "Go TUI, bundled viewer assets, complete runtime wheels, and OCI rights remain unreviewed.",
             ],
         },
         "limitations": [
