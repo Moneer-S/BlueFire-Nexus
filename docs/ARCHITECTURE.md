@@ -122,6 +122,22 @@ That legacy loop cannot create or reorder nodes or choose an edge for another ou
 
 Objective-level continuation distinguishes recorded history, currently applicable findings, and proposed work. The versioned receiver evidence-context proposal path supplies selected sealed findings and original compiled choices to a separately authorized model purpose. It records reconsidered choices and exact citations in the existing durable proposal job, pins the latest settled frontier, and revalidates context before publication and when checking candidate readiness. Historical summaries remain separate from executable facts.
 
+Those responsibilities stay distinct in every planning representation:
+
+| Responsibility | Required treatment |
+| --- | --- |
+| What happened | Append-only attempts, decisions, effects, observations, cleanup, and source identities. An abandoned route remains evidence and is never rewritten as success. |
+| What applies now | Findings classified as established, uncertain, stale, or available, with semantic compatibility, custody, freshness, and current resource state resolved by ordinary code. A historical record alone is not current proof. |
+| What should happen next | A proposal that names the earlier assumption being reconsidered, exact imported dependencies, prerequisites to refresh, any state to restore or recreate, and the authority needed for new effects. |
+
+Nonlocal replanning may therefore revisit a choice made several stages earlier,
+retain useful findings learned on the dead-end route, and construct a different
+continuation. Reusing a still-valid result must not repeat its producer effect.
+Refreshing an observation, repeating an action for a justified fresh test, and
+restoring environment state are separate operations, each with a new identity
+and the applicable review. The workspace must show why the plan changed, what
+was reused, what was rechecked, and what actually executed afterward.
+
 The experimental receiver v2 pack supports explicit retained-result dependencies within the same saved objective. A pure contract defines source identity, bounds and wire validation; the application resolver checks the source attempt, compiled plan, observed content identity, trusted capture record and current payload. Native materialization produces a new workspace output and receipt from the exact retained bytes. Existing producer checks continue to apply to downstream bindings. This is a bounded implementation of result reuse, not complete nonlocal backtracking. Planning must not silently repeat completed effects or treat an old observation as proof of a mutable resource's present state. Existing grants and exact-plan approvals do not gain new authority. See [Retained results](RETAINED_RESULTS.md), [AI Planner](AI_PLANNER.md) and the [program acceptance case](AI_FIRST_PROGRAM.md#nonlocal-replanning-acceptance).
 
 The reuse-first external-engine path is a distinct authorization model. Its first bounded workflow records a baseline attempt and a fresh adaptive-search attempt after a defensive change, while preserving the baseline findings and identity. The broader design requires future continuations to reconsider an earlier decision, cite useful findings from an abandoned attempt, and import an explicitly validated result into a new plan. That general nonlocal replanning and result-import surface is not yet implemented by the two-role experiment contract. Ordinary code must resolve every citation to its source identity, check semantic compatibility and freshness, and decide whether a current resource must be re-observed or recreated. Every attempt and upstream session has a new identity; history is append-only. The attacking worker cannot apply a defensive mutation or change its own delegation. Legacy exact-plan approvals do not authorize this path.
