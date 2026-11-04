@@ -1,4 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { EngineExperimentWorkspace } from "../src/components/EngineExperimentWorkspace";
 import type { EngineAttempt, EngineControllerCheck, EngineExperiment, EngineExperimentConclusion, EngineProjectionAttempt, EngineProjectionCheck } from "../src/lib/engine-experiment";
@@ -7,6 +9,7 @@ const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const attemptId = (character: string) => `engine-attempt-${character.repeat(32)}`;
 const jobId = (character: string) => `job-${character.repeat(32)}`;
 const runId = (suffix: string, character: string) => `run-20261104T1200${suffix}Z-${character.repeat(16)}`;
+const renderWorkspace = (ui: ReactElement) => render(<MemoryRouter>{ui}</MemoryRouter>);
 
 function attemptDetail(role: "baseline" | "adaptive_search", character: string, state: EngineAttempt["state"] = "completed"): EngineAttempt {
   const active = ["queued", "preflight", "running", "stopping"].includes(state);
@@ -73,9 +76,16 @@ function experiment(options: { selectedContext?: EngineExperiment["selected_cont
 
 it("selects an exact saved engine attempt through its callback without submitting work", () => {
   const select = vi.fn(); const action = vi.fn(); const cancel = vi.fn();
-  render(<EngineExperimentWorkspace experiment={experiment()} selectedAttemptId={attemptId("4")} onSelectAttempt={select} onPrimaryAction={action} onCancelAttempt={cancel} />);
+  renderWorkspace(<EngineExperimentWorkspace experiment={experiment()} selectedAttemptId={attemptId("4")} onSelectAttempt={select} onPrimaryAction={action} onCancelAttempt={cancel} />);
   expect(screen.queryByRole("main")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Baseline exploration/i })).toHaveAttribute("aria-pressed", "true");
+  const selectedButton = screen.getByRole("button", { name: /Baseline exploration/i });
+  const selectedDetailId = selectedButton.getAttribute("aria-controls");
+  expect(selectedDetailId).toBeTruthy();
+  const selectedDetail = document.getElementById(selectedDetailId!);
+  expect(selectedDetail).toHaveAttribute("tabindex", "-1");
+  expect(document.getElementById(selectedDetail?.getAttribute("aria-labelledby") ?? "")).toHaveTextContent("Baseline exploration");
+  expect(screen.getByRole("link", { name: "Open Baseline exploration run" })).toHaveAttribute("href", `/runs/${runId("01", "4")}`);
   expect(screen.getByText(`approval-${"4".repeat(32)}`)).toBeInTheDocument();
   expect(screen.getByText(digest("5"))).toBeInTheDocument();
   const adaptive = screen.getByRole("button", { name: /Fresh adaptive search/i });
@@ -85,22 +95,33 @@ it("selects an exact saved engine attempt through its callback without submittin
   expect(select).toHaveBeenCalledWith(attemptId("6"));
 });
 
+it("keeps the constrained phase path keyboard reachable and identifies the current phase", () => {
+  renderWorkspace(<EngineExperimentWorkspace experiment={experiment()} onSelectAttempt={vi.fn()} />);
+  const phaseRail = screen.getByRole("list", { name: "Experiment phases" });
+  expect(phaseRail).toHaveAttribute("tabindex", "0");
+  expect(phaseRail).toHaveAttribute("aria-describedby");
+  phaseRail.focus();
+  expect(phaseRail).toHaveFocus();
+  expect(within(phaseRail).getByText("Fresh adaptive search").closest("li")).toHaveAttribute("aria-current", "step");
+});
+
 it("does not silently substitute when a route-selected attempt is missing", () => {
-  render(<EngineExperimentWorkspace experiment={experiment()} selectedAttemptId={attemptId("f")} onSelectAttempt={vi.fn()} />);
+  renderWorkspace(<EngineExperimentWorkspace experiment={experiment()} selectedAttemptId={attemptId("f")} onSelectAttempt={vi.fn()} />);
   expect(screen.getByText("Selected attempt is unavailable")).toBeInTheDocument();
   expect(screen.getAllByRole("button", { name: /exploration|adaptive search/i }).every(button => button.getAttribute("aria-pressed") === "false")).toBe(true);
   expect(screen.queryByText("Selected engine attempt")).not.toBeInTheDocument();
 });
 
 it("requires the exact selected presenter context before exposing details", () => {
-  render(<EngineExperimentWorkspace experiment={experiment({ selectedContext: null })} selectedAttemptId={attemptId("4")} onSelectAttempt={vi.fn()} />);
+  renderWorkspace(<EngineExperimentWorkspace experiment={experiment({ selectedContext: null })} selectedAttemptId={attemptId("4")} onSelectAttempt={vi.fn()} />);
   expect(screen.getByText("Selected attempt details are unavailable")).toBeInTheDocument();
   expect(screen.queryByText("Selected engine attempt")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Baseline exploration/i })).not.toHaveAttribute("aria-controls");
 });
 
 it("exposes fresh actions and cancellation but never unsupported resume", () => {
   const action = vi.fn(); const cancel = vi.fn();
-  render(<EngineExperimentWorkspace experiment={experiment()} onSelectAttempt={vi.fn()} onPrimaryAction={action} onCancelAttempt={cancel} />);
+  renderWorkspace(<EngineExperimentWorkspace experiment={experiment()} onSelectAttempt={vi.fn()} onPrimaryAction={action} onCancelAttempt={cancel} />);
   fireEvent.click(screen.getByRole("button", { name: "Review evidence" }));
   fireEvent.click(screen.getByRole("button", { name: "Cancel attempt" }));
   expect(action).toHaveBeenCalledWith("review_evidence");
@@ -111,24 +132,52 @@ it("exposes fresh actions and cancellation but never unsupported resume", () => 
 it("does not promote an unmarked secondary action into the primary control", () => {
   const value = experiment();
   value.actions = [{ kind: "review_evidence", label: "Secondary fixture action", enabled: true, reason: "Fixture only.", primary: false }];
-  render(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} onPrimaryAction={vi.fn()} />);
+  renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} onPrimaryAction={vi.fn()} />);
   expect(screen.queryByRole("button", { name: "Secondary fixture action" })).not.toBeInTheDocument();
+});
+
+it("does not render an actionable control when the host has no action handler", () => {
+  renderWorkspace(<EngineExperimentWorkspace experiment={experiment()} onSelectAttempt={vi.fn()} />);
+  expect(screen.queryByRole("button", { name: "Review evidence" })).not.toBeInTheDocument();
+  expect(screen.getByText("Next action is not available here")).toBeInTheDocument();
 });
 
 it("keeps controller checks separate and selects their exact saved context", () => {
   const selectCheck = vi.fn();
-  render(<EngineExperimentWorkspace experiment={experiment({ selectedContext: { kind: "controller_check", check: checkDetail() }, attempts: [attemptSummary("baseline", "4")] })} selectedCheckId={`controller-check-${"c".repeat(32)}`} onSelectAttempt={vi.fn()} onSelectCheck={selectCheck} />);
+  renderWorkspace(<EngineExperimentWorkspace experiment={experiment({ selectedContext: { kind: "controller_check", check: checkDetail() }, attempts: [attemptSummary("baseline", "4")] })} selectedCheckId={`controller-check-${"c".repeat(32)}`} onSelectAttempt={vi.fn()} onSelectCheck={selectCheck} />);
   const checks = screen.getByRole("heading", { name: "Trusted controller checks" }).closest("section")!;
   expect(within(checks).getByText("Original mechanism retest")).toBeInTheDocument();
   expect(within(checks).getByText(/without assigning model or engine authorship/i)).toBeInTheDocument();
   expect(within(checks).queryByText("Engine assertion")).not.toBeInTheDocument();
   expect(within(checks).getByText("The exact fixture mechanism was blocked.")).toBeInTheDocument();
-  fireEvent.click(within(checks).getByRole("button", { name: "Selected" }));
+  const selectedButton = within(checks).getByRole("button", { name: "Selected" });
+  const selectedDetailId = selectedButton.getAttribute("aria-controls");
+  const selectedCard = selectedDetailId ? document.getElementById(selectedDetailId) : null;
+  expect(selectedDetailId).toBeTruthy();
+  expect(selectedCard).toHaveClass("engine-check-card", "is-selected");
+  expect(selectedCard).toHaveAttribute("tabindex", "-1");
+  expect(document.getElementById(selectedCard?.getAttribute("aria-labelledby") ?? "")).toHaveTextContent("Original mechanism retest");
+  fireEvent.click(selectedButton);
   expect(selectCheck).toHaveBeenCalledWith(`controller-check-${"c".repeat(32)}`);
   const defense = screen.getByRole("heading", { name: "Defensive change" }).closest("section") ?? screen.getByRole("heading", { name: "Defensive change" }).parentElement?.parentElement;
   expect(defense).not.toBeNull();
   expect(within(defense as HTMLElement).getByText("Rollback plan")).toBeInTheDocument();
   expect(within(defense as HTMLElement).getByText("Rollback operation")).toBeInTheDocument();
+});
+
+it("moves focus to newly revealed selected details without focusing on initial load", () => {
+  const initial = experiment();
+  const view = render(<MemoryRouter><EngineExperimentWorkspace experiment={initial} selectedAttemptId={attemptId("4")} onSelectAttempt={vi.fn()} onSelectCheck={vi.fn()} /></MemoryRouter>);
+  expect(screen.getByText("Selected engine attempt").closest("section")).not.toHaveFocus();
+
+  const selectedCheckId = `controller-check-${"c".repeat(32)}`;
+  const next = experiment({ selectedContext: { kind: "controller_check", check: checkDetail() }, attempts: [attemptSummary("baseline", "4")] });
+  view.rerender(<MemoryRouter><EngineExperimentWorkspace experiment={next} selectedCheckId={selectedCheckId} onSelectAttempt={vi.fn()} onSelectCheck={vi.fn()} /></MemoryRouter>);
+
+  const selectedButton = screen.getByRole("button", { name: "Selected" });
+  const selectedDetailId = selectedButton.getAttribute("aria-controls");
+  expect(selectedDetailId).toBeTruthy();
+  expect(document.getElementById(selectedDetailId!)).toHaveFocus();
 });
 
 it("makes unknown target state visible and exposes only reconciliation", () => {
@@ -139,7 +188,7 @@ it("makes unknown target state visible and exposes only reconciliation", () => {
   value.projection.workflow_state = "reconcile_defense";
   value.actions = [{ kind: "reconcile_defense", label: "Reconcile defensive change", enabled: true, reason: "Inspect the target before continuing.", primary: true }];
 
-  render(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} onPrimaryAction={vi.fn()} />);
+  renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} onPrimaryAction={vi.fn()} />);
   expect(screen.getByText("Current target state is not established").closest('[role="status"]')).toBeInTheDocument();
   expect(screen.getByText("Unavailable until reconciliation")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Reconcile defensive change" })).toBeEnabled();
