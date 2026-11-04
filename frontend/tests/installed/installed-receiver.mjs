@@ -833,8 +833,18 @@ function homeRecordProjection(value, ownerId) {
 }
 
 async function assertRecentOutcomeContexts(projection) {
+  const currentRuns = await appApi("/runs");
+  assert.ok(Array.isArray(currentRuns.runs));
+  const visibleRunIds = currentRuns.runs.slice(0, 4).map(run => run.run_id);
   const recentRows = page.locator(".recent-work-table tbody tr");
-  await recentRows.first().waitFor({ state: "visible" });
+  await page.waitForFunction(expected => {
+    const ids = [...document.querySelectorAll(".recent-work-table tbody tr .recent-work-name a")].map(anchor => {
+      const href = anchor.getAttribute("href");
+      const path = href?.startsWith("#") ? href.slice(1) : href;
+      return path?.startsWith("/runs/") ? decodeURIComponent(path.slice("/runs/".length)) : undefined;
+    });
+    return ids.length === expected.length && ids.every((id, index) => id === expected[index]);
+  }, visibleRunIds);
   const rows = await recentRows.evaluateAll(elements => elements.map(element => {
     const runHref = element.querySelector(".recent-work-name a")?.getAttribute("href");
     const runPath = runHref?.startsWith("#") ? runHref.slice(1) : runHref;
@@ -867,7 +877,10 @@ async function assertRecentOutcomeContexts(projection) {
     assert.equal(row.status, `Run status: ${homeRunStatusLabel(phase.run_status)}`,
       "Receiver context must leave the saved run status unchanged");
   }
-  assert.ok(matchedOwnerRows > 0, "At least one recent row must belong to the selected verified receiver workflow");
+  assert.deepEqual(rows.map(row => row.runId), visibleRunIds,
+    "Recent outcomes must retain the service's current four-run ordering");
+  assert.equal(matchedOwnerRows, visibleRunIds.filter(runId => expected.has(runId)).length,
+    "Only visible runs from the selected workflow may receive its phase context");
 }
 
 async function waitRememberedWork(ownerId) {
