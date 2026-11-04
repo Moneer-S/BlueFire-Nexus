@@ -12,6 +12,7 @@ import { api, ApiError, DEMO_MODE, type ReplayPreparation } from "../lib/api";
 import { comparisonLink, detectionLink } from "../lib/run-handoffs";
 import { methodComparisonLink } from "../lib/method-comparison";
 import { receiverControlLink } from "../lib/receiver-navigation";
+import { engineExperimentJobLink } from "../lib/engine-experiment-api";
 import { configurationForMode, hasExecutePlanReview } from "../lib/run-configuration";
 import { RunConfigurationPanel } from "../components/RunConfiguration";
 import { ExecuteOnboarding, GUIDED_EXECUTE_PROFILE_ID, GUIDED_EXECUTE_SCENARIO_ID, guidedExecuteConfiguration, isExecuteRunnerReady } from "../components/ExecuteOnboarding";
@@ -260,7 +261,8 @@ export function RunWorkspace({ embedded }: { embedded?: { job: RunJob; releaseEn
   const liveRunId = typeof activeJob?.progress.run_id === "string" ? activeJob.progress.run_id : undefined;
   const eventCursor = liveEvents.reduce((maximum, event) => Math.max(maximum, Number(event.sequence) || 0), 0);
   const eventsQuery = useQuery({ queryKey: ["run-events", liveRunId, eventCursor, activeJob?.state], queryFn: () => api.runEvents(liveRunId!, eventCursor), enabled: Boolean(liveRunId), refetchInterval: activeJob && terminalJobStates.has(activeJob.state) ? false : 650 });
-  const resultRunId = activeJob && terminalJobStates.has(activeJob.state) ? activeJob.result_ref : undefined;
+  const engineExperimentLink = engineExperimentJobLink(activeJob);
+  const resultRunId = activeJob && terminalJobStates.has(activeJob.state) && !["engine-attempt", "engine-controller-check"].includes(activeJob.kind) ? activeJob.result_ref : undefined;
   const resultQuery = useQuery({ queryKey: ["run", resultRunId], queryFn: () => api.runDetail(resultRunId!), enabled: Boolean(resultRunId && activeRun?.run_id !== resultRunId) });
   useEffect(() => {
     if (!inventoryAuthoritative || activeJobIdRef.current !== activeJobId) return;
@@ -433,6 +435,7 @@ export function RunWorkspace({ embedded }: { embedded?: { job: RunJob; releaseEn
     {!focusedPreparation && !linkedJobId && !showLiveWorkspace ? <RunHistoryPanel runs={runsQuery.data?.runs} unavailable={runsQuery.data?.unavailable_run_count ?? 0} pending={runsQuery.isPending} error={runsQuery.error} retry={() => runsQuery.refetch()} /> : null}
     {notice ? <Callout tone={runMutation.isError || approvalMutation.isError || runnerLifecycleMutation.isError || controlMutation.isError || activeJobsQuery.isError || jobQuery.isError || eventsQuery.isError || resultQuery.isError ? "danger" : preflight && !preflight.ready ? "warning" : "info"} title="Run status">{notice}</Callout> : null}
     {receiverControlLink(activeJob) ? <Callout title="Part of your receiver control test"><p>Return to the test to inspect the receiver policy, measured outcome and cleanup before the next phase.</p><Link className="button button-secondary button-medium" to={receiverControlLink(activeJob)!}>Return to receiver control test</Link></Callout> : null}
+    {engineExperimentLink ? <Callout title="Part of your engine experiment"><p>Review this {activeJob?.kind === "engine-attempt" ? "engine attempt" : "trusted controller check"}, its evidence and cleanup in the saved engine experiment.</p><Link className="button button-secondary button-medium" to={engineExperimentLink}>Return to engine experiment and evidence</Link></Callout> : null}
     {assistanceRunLink(activeJob) ? <Callout title="Part of your Assistant experiment"><p>This run belongs to the reviewed saved graph. Its evidence inspection and recovery stay with that operation.</p><Link className="button button-secondary button-medium" to={assistanceRunLink(activeJob)!}>Return to Assistant run and evidence</Link>{activeJob && terminalJobStates.has(activeJob.state) && activeJob.state !== "completed" ? <p>Review this run and its cleanup before starting new work. Evidence recovery does not repeat execution.</p> : null}</Callout> : null}
     {methodComparisonLink(activeJob) ? <Callout title="Part of your method test"><p>This replay belongs to the reviewed comparison workflow. Its saved rule will be evaluated against both runs.</p><Link className="button button-secondary button-medium" to={methodComparisonLink(activeJob)!}>Return to method test and results</Link>{activeJob && terminalJobStates.has(activeJob.state) && activeJob.state !== "completed" ? <p>Inspect the retained result and recover comparison work there. This run will not be replayed by a comparison retry.</p> : null}</Callout> : null}
     <>
