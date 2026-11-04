@@ -16,7 +16,8 @@ vi.mock("../src/components/EngineExperimentWorkspace", () => ({
     <output aria-label="Selected route item">{selectedAttemptId ?? selectedCheckId ?? "none"}</output>
     {experiment.projection.attempts[0] ? <button type="button" onClick={() => onSelectAttempt(experiment.projection.attempts[0].attempt_id)}>Select baseline</button> : null}
     {experiment.projection.checks[0] ? <button type="button" onClick={() => onSelectCheck(experiment.projection.checks[0].check_id)}>Select retest</button> : null}
-    <button type="button" onClick={() => onPrimaryAction(experiment.actions?.find((item: { primary: boolean }) => item.primary)?.kind ?? "start_baseline")}>Review next action</button>
+    {experiment.actions?.find((item: { primary: boolean }) => item.primary) ? <button type="button" onClick={() => onPrimaryAction(experiment.actions.find((item: { primary: boolean }) => item.primary).kind)}>Review next action</button> : null}
+    {experiment.actions?.filter((item: { kind: string }) => ["retain_defense", "rollback_defense"].includes(item.kind)).map((item: { kind: string; label: string; enabled: boolean }) => <button type="button" key={item.kind} disabled={!item.enabled} onClick={() => onPrimaryAction(item.kind)}>{item.label}</button>)}
     {experiment.projection.attempts.find((item: { state: string }) => ["queued", "preflight", "running", "stopping"].includes(item.state)) ? <button type="button" disabled={Boolean(cancellingAttemptId)} onClick={() => onCancelAttempt(experiment.projection.attempts.find((item: { state: string }) => ["queued", "preflight", "running", "stopping"].includes(item.state)).attempt_id)}>{cancellingAttemptId ? "Requesting attempt cancellation" : "Cancel active attempt"}</button> : null}
     {experiment.projection.checks.find((item: { state: string }) => item.state === "reserved") && onCancelCheck ? <button type="button" disabled={Boolean(cancellingCheckId)} onClick={() => onCancelCheck(experiment.projection.checks.find((item: { state: string }) => item.state === "reserved").check_id)}>{cancellingCheckId ? "Requesting check cancellation" : "Cancel active check"}</button> : null}
   </section>,
@@ -228,4 +229,46 @@ it("keeps an accepted but not-yet-projected durable job reachable", async () => 
     expect(screen.getByRole("link", { name: "Open saved job in Runs" })).toHaveAttribute("href", `/runs?job=${acceptedAction().job!.job_id}`);
     expect(screen.getByRole("button", { name: "Refresh action status" })).toBeEnabled();
   } finally { now.mockRestore(); }
+});
+
+it("reviews the exact server-advertised disposition choice", async () => {
+  const canonical = actionWorkspace();
+  canonical.actions = [
+    { kind: "retain_defense", label: "Retain applied defensive change", enabled: true, reason: "Keep the applied change.", primary: false },
+    { kind: "rollback_defense", label: "Roll back defensive change", enabled: true, reason: "Restore the prior configuration.", primary: false },
+  ];
+  const retain = { ...preparedAction(), action_kind: "retain_defense", preparation_kind: "controller_transition", effect: { kind: "defense_disposition", summary: "Retain the applied defensive change.", changes_target: false, uses_external_engine: false }, requires_approval: false, approval: { required: false, state: "not_required", review_binding_digest: null, expires_at: null }, submission: null, limits: { wall_clock_seconds: null, action_limit: null, artifact_byte_limit: null, cost_limit_microunits: null, target_scope_digest: null, maximum_tier: null } } as const;
+  workspace.mockResolvedValue(canonical);
+  prepare.mockResolvedValue(retain);
+  const user = userEvent.setup();
+  mount(`/composition?engine_experiment=${experimentId}`);
+  await user.click(await screen.findByRole("button", { name: "Retain applied defensive change" }));
+  expect(await screen.findByRole("dialog")).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Retain defensive change" })).toBeVisible();
+  expect(prepare).toHaveBeenCalledWith(canonical, "retain_defense");
+  expect(screen.getByRole("checkbox")).not.toBeChecked();
+});
+
+it("does not replace an unconfirmed disposition acceptance with another choice", async () => {
+  const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-04T12:01:00Z"));
+  const canonical = actionWorkspace();
+  canonical.actions = [
+    { kind: "retain_defense", label: "Retain applied defensive change", enabled: true, reason: "Keep the applied change.", primary: false },
+    { kind: "rollback_defense", label: "Roll back defensive change", enabled: true, reason: "Restore the prior configuration.", primary: false },
+  ];
+  const retain = { ...preparedAction(), action_kind: "retain_defense", preparation_kind: "controller_transition", effect: { kind: "defense_disposition", summary: "Retain the applied defensive change.", changes_target: false, uses_external_engine: false }, requires_approval: false, approval: { required: false, state: "not_required", review_binding_digest: null, expires_at: null }, submission: null, limits: { wall_clock_seconds: null, action_limit: null, artifact_byte_limit: null, cost_limit_microunits: null, target_scope_digest: null, maximum_tier: null } } as const;
+  workspace.mockResolvedValue(canonical); prepare.mockResolvedValue(retain); submit.mockRejectedValueOnce(new Error("network interrupted"));
+  const user = userEvent.setup();
+  mount(`/composition?engine_experiment=${experimentId}`);
+  await user.click(await screen.findByRole("button", { name: "Retain applied defensive change" }));
+  await user.click(await screen.findByRole("checkbox"));
+  await user.click(screen.getByRole("button", { name: "Retain defensive change" }));
+  expect(await screen.findByText(/Acceptance is unconfirmed/)).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  await user.click(screen.getByRole("button", { name: "Roll back defensive change" }));
+  expect(await screen.findByText("Unconfirmed action acceptance")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Retry exact prepared request" })).toBeVisible();
+  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(prepare).toHaveBeenCalledWith(canonical, "retain_defense");
+  now.mockRestore();
 });

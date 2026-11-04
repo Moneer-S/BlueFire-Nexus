@@ -66,6 +66,14 @@ def _request(experiment: EngineExperiment) -> dict[str, Any]:
     }
 
 
+def _selected_request(experiment: EngineExperiment, action: str) -> dict[str, Any]:
+    return {
+        **_request(experiment),
+        "schema_version": "bluefire.engine-action-prepare-request.v2",
+        "action_kind": action,
+    }
+
+
 class _History:
     def __init__(self, experiment: EngineExperiment) -> None:
         self.experiment = experiment
@@ -182,6 +190,104 @@ def test_prepare_derives_one_current_action_and_rereads_before_persisting() -> N
     assert saved["workspace_digest"] == WORKSPACE_DIGEST
     assert saved["action"] is EngineWorkspaceAction.START_BASELINE
     assert "request_ref" not in saved and "command" not in saved
+
+
+def test_prepare_v2_selects_one_exact_enabled_disposition_from_server_rows() -> None:
+    experiment = _experiment()
+    history = _History(experiment)
+    workspace = _workspace(experiment, action="retain_defense")
+    workspace["actions"].append(
+        {"kind": "rollback_defense", "enabled": True, "reason": "Reviewed rollback."}
+    )
+    source = _WorkspaceSource([workspace])
+    preparer = _Preparer()
+
+    _coordinator(history, source, preparer).prepare_request(
+        EXPERIMENT_ID, _selected_request(experiment, "rollback_defense")
+    )
+
+    assert source.calls == 2
+    assert preparer.calls[0][2] is EngineWorkspaceAction.ROLLBACK_DEFENSE
+    assert history.created[0]["action"] is EngineWorkspaceAction.ROLLBACK_DEFENSE
+
+
+def test_prepare_v2_keeps_both_disposition_reviews_separate_on_one_head() -> None:
+    experiment = _experiment()
+    history = _History(experiment)
+    workspace = _workspace(experiment, action="retain_defense")
+    workspace["actions"].append({"kind": "rollback_defense", "enabled": True})
+    source = _WorkspaceSource([workspace])
+    preparer = _Preparer()
+
+    coordinator = _coordinator(history, source, preparer)
+    coordinator.prepare_request(EXPERIMENT_ID, _selected_request(experiment, "retain_defense"))
+    coordinator.prepare_request(EXPERIMENT_ID, _selected_request(experiment, "rollback_defense"))
+
+    assert [row["action"] for row in history.created] == [
+        EngineWorkspaceAction.RETAIN_DEFENSE,
+        EngineWorkspaceAction.ROLLBACK_DEFENSE,
+    ]
+    assert [call[2] for call in preparer.calls] == [
+        EngineWorkspaceAction.RETAIN_DEFENSE,
+        EngineWorkspaceAction.ROLLBACK_DEFENSE,
+    ]
+
+
+def test_prepare_v1_refuses_ambiguous_server_choices() -> None:
+    experiment = _experiment()
+    history = _History(experiment)
+    workspace = _workspace(experiment, action="retain_defense")
+    workspace["actions"].append({"kind": "rollback_defense", "enabled": True})
+    preparer = _Preparer()
+
+    with pytest.raises(EngineActionPreparationServiceError) as caught:
+        _coordinator(history, _WorkspaceSource([workspace]), preparer).prepare_request(
+            EXPERIMENT_ID, _request(experiment)
+        )
+
+    assert caught.value.code == "engine_action_preparation_refused"
+    assert history.created == [] and preparer.calls == []
+
+
+@pytest.mark.parametrize(
+    ("actions", "selected", "code"),
+    [
+        (
+            [{"kind": "retain_defense", "enabled": False}],
+            "retain_defense",
+            "engine_action_unavailable",
+        ),
+        (
+            [{"kind": "retain_defense", "enabled": True}],
+            "rollback_defense",
+            "engine_action_preparation_refused",
+        ),
+        (
+            [
+                {"kind": "retain_defense", "enabled": True},
+                {"kind": "retain_defense", "enabled": True},
+            ],
+            "retain_defense",
+            "engine_action_preparation_refused",
+        ),
+    ],
+)
+def test_prepare_v2_refuses_disabled_missing_or_duplicate_selection(
+    actions: list[dict[str, Any]], selected: str, code: str
+) -> None:
+    experiment = _experiment()
+    history = _History(experiment)
+    workspace = _workspace(experiment)
+    workspace["actions"] = actions
+    preparer = _Preparer()
+
+    with pytest.raises(EngineActionPreparationServiceError) as caught:
+        _coordinator(history, _WorkspaceSource([workspace]), preparer).prepare_request(
+            EXPERIMENT_ID, _selected_request(experiment, selected)
+        )
+
+    assert caught.value.code == code
+    assert history.created == [] and preparer.calls == []
 
 
 def test_prepare_uses_trusted_atomic_retainer_after_rechecking_workspace() -> None:

@@ -122,6 +122,7 @@ export function EngineExperimentWorkspace({ experiment, selectedAttemptId, selec
   const activeAttempt = projection.attempts.find(attempt => activeAttemptState(attempt.state));
   const activeCheck = projection.checks.find(check => activeCheckState(check.state));
   const primaryAction = experiment.actions.find(action => action.primary);
+  const dispositionActions = experiment.actions.filter(action => action.kind === "retain_defense" || action.kind === "rollback_defense");
   const baselineEvidence = baseline ? projection.observations.filter(item => item.attempt_id === baseline.attempt_id) : [];
   const phaseState = (available: boolean, current: boolean, complete: boolean) => current ? "Current" : complete ? "Recorded" : available ? "Available" : "Pending";
   const phases = [
@@ -134,7 +135,7 @@ export function EngineExperimentWorkspace({ experiment, selectedAttemptId, selec
     { key: "comparison", label: "Comparison and disposition", state: projection.workflow_state === "complete" ? "Complete" : phaseState(true, currentPhase(projection.workflow_state, "comparison"), false), icon: Gauge },
   ];
   const completed = projection.workflow_state === "complete";
-  const comparison = <EngineRetestComparison conclusion={projection.conclusion} defensiveChange={experiment.defensive_change} sourceRuns={sourceRuns} runHref={runHref} comparisonHref={comparisonHref} />;
+  const comparison = <EngineRetestComparison conclusion={projection.conclusion} defensiveChange={experiment.defensive_change} dispositionActions={dispositionActions} onDispositionAction={onPrimaryAction} sourceRuns={sourceRuns} runHref={runHref} comparisonHref={comparisonHref} />;
 
   useEffect(() => {
     if (actualSelection && previousSelection.current !== actualSelection) {

@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 from .api_context import API_PREFIX
 from .application_errors import APIError
+from .engine_action_preparation import EngineWorkspaceAction
 from .engine_experiment_service import EngineExperimentServiceError
 
 _EXPERIMENT_ID = re.compile(r"^experiment-[0-9a-f]{32}$")
@@ -72,6 +73,7 @@ _ASSISTANCE_SELECTION_FIELDS = frozenset(
 _ACTION_PREPARE_FIELDS = frozenset(
     {"schema_version", "expected_revision", "expected_digest", "workspace_digest"}
 )
+_ACTION_PREPARE_V2_FIELDS = frozenset((*_ACTION_PREPARE_FIELDS, "action_kind"))
 _ACTION_SUBMIT_FIELDS = frozenset({"schema_version", "preparation_id", "protected_request_ref"})
 
 _DEFENSE_ROUTES = {
@@ -328,9 +330,19 @@ def _valid_assistance_selection(value: Mapping[str, Any]) -> bool:
 
 
 def _valid_action_prepare_request(value: Mapping[str, Any]) -> bool:
+    schema = value.get("schema_version")
+    if schema == "bluefire.engine-action-prepare-request.v1":
+        fields_valid = set(value) == _ACTION_PREPARE_FIELDS
+    elif schema == "bluefire.engine-action-prepare-request.v2":
+        fields_valid = (
+            set(value) == _ACTION_PREPARE_V2_FIELDS
+            and isinstance(value.get("action_kind"), str)
+            and value["action_kind"] in {action.value for action in EngineWorkspaceAction}
+        )
+    else:
+        fields_valid = False
     return (
-        set(value) == _ACTION_PREPARE_FIELDS
-        and value.get("schema_version") == "bluefire.engine-action-prepare-request.v1"
+        fields_valid
         and _revision(value.get("expected_revision"))
         and all(
             isinstance(value.get(field), str) and _DIGEST.fullmatch(value[field]) is not None

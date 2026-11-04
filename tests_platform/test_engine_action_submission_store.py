@@ -14,6 +14,7 @@ import pytest
 import bluefire.product_store_engine_action_submissions as submissions
 import bluefire.product_store_engine_actions as preparations
 import bluefire.product_store_engine_jobs as engine_jobs
+import bluefire.product_store_tenant_action_materials as material_slots
 from bluefire.engine_action_preparation import EngineWorkspaceAction
 from bluefire.engine_controller_jobs import DefenseOperation, EngineControllerJobs
 from bluefire.engine_experiment import (
@@ -25,6 +26,7 @@ from bluefire.engine_experiment import (
 from bluefire.product_store import SCHEMA_VERSION, ProductStore
 from bluefire.product_store_errors import ProductStoreError, ResourceConflictError
 from bluefire.product_store_serialization import canonical_json
+from bluefire.tenant_record_generation_source import ProductStoreTenantGenerationJournal
 from bluefire.util import content_hash
 from tests_platform.test_engine_experiment import build_completed_experiment
 from tests_platform.test_product_store_engine_actions import (
@@ -758,20 +760,92 @@ def test_retain_transition_uses_retained_plan_and_only_appends_pure_cas(
     prepared_at = "2026-11-04T12:20:00Z"
     monkeypatch.setattr(preparations, "utc_now", lambda: prepared_at)
     monkeypatch.setattr(submissions, "utc_now", lambda: prepared_at)
-    protected = store.create_engine_action_preparation(
+    assert experiment.defense_change is not None
+    rollback_request = _controller_jobs(
+        _ControllerRepository(experiment)
+    ).prepare_defense_operation(
         experiment_id=experiment.experiment_id,
-        experiment_revision=experiment.revision,
-        experiment_digest=experiment.digest,
-        workspace_digest=WORKSPACE_REF,
-        action=EngineWorkspaceAction.RETAIN_DEFENSE,
-        limits=_controller_limits(),
-        prepared_at=prepared_at,
-        expires_at="2026-11-04T12:25:00Z",
-        protected_factory=lambda _approval, _submission: (
+        change_id=experiment.defense_change.change_id,
+        operation=DefenseOperation.ROLLBACK,
+    )
+    expires_at = "2026-11-04T12:25:00Z"
+    journal = ProductStoreTenantGenerationJournal(
+        store,
+        owner_id=experiment.experiment_id,
+        inputs_digest=content_hash("disposition material inputs"),
+    ).read()
+
+    def retain_material(
+        owner: ProductStore, preparation_values: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        document = {
+            "schema_version": material_slots.SLOT_SCHEMA,
+            "experiment_id": experiment.experiment_id,
+            "experiment_revision": experiment.revision,
+            "experiment_digest": experiment.digest,
+            "action_kind": preparation_values["action"].value,
+            "workspace_digest": WORKSPACE_REF,
+            "material": {"prepared_at": prepared_at, "expires_at": expires_at},
+            "generation_journal": {
+                "owner_id": journal["owner_id"],
+                "journal_id": journal["journal_id"],
+                "revision": journal["revision"],
+                "digest": journal["digest"],
+                "inputs_digest": journal["document"]["inputs_digest"],
+            },
+        }
+        return owner._retain_tenant_action_material_preparation(
+            document=document,
+            validator=lambda value: value,
+            preparation_values=preparation_values,
+        )
+
+    rollback_preparation = {
+        "experiment_id": experiment.experiment_id,
+        "experiment_revision": experiment.revision,
+        "experiment_digest": experiment.digest,
+        "workspace_digest": WORKSPACE_REF,
+        "action": EngineWorkspaceAction.ROLLBACK_DEFENSE,
+        "limits": _controller_limits(),
+        "prepared_at": prepared_at,
+        "expires_at": expires_at,
+        "protected_factory": lambda _approval, _submission: (
+            rollback_request,
+            _material_authority("tenant_defense_plan", plan),
+        ),
+    }
+    retain_preparation = {
+        "experiment_id": experiment.experiment_id,
+        "experiment_revision": experiment.revision,
+        "experiment_digest": experiment.digest,
+        "workspace_digest": WORKSPACE_REF,
+        "action": EngineWorkspaceAction.RETAIN_DEFENSE,
+        "limits": _controller_limits(),
+        "prepared_at": prepared_at,
+        "expires_at": expires_at,
+        "protected_factory": lambda _approval, _submission: (
             None,
             _material_authority("tenant_defense_plan", plan),
         ),
-    )
+    }
+    barrier = threading.Barrier(2)
+
+    def issue(values: Mapping[str, Any]) -> Mapping[str, Any]:
+        owner = ProductStore(store.path)
+        barrier.wait(timeout=5)
+        return retain_material(owner, values)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rollback_future = pool.submit(issue, rollback_preparation)
+        retain_future = pool.submit(issue, retain_preparation)
+        rollback = rollback_future.result(timeout=20)
+        protected = retain_future.result(timeout=20)
+    rollback_values = {
+        "experiment_id": experiment.experiment_id,
+        "preparation_id": store.prepared_engine_action(rollback["request_ref"])["preparation_id"],
+        "request_ref": rollback["request_ref"],
+        "reviewer": REVIEWER,
+    }
     values = {
         "experiment_id": experiment.experiment_id,
         "preparation_id": store.prepared_engine_action(protected["request_ref"])["preparation_id"],
@@ -780,10 +854,20 @@ def test_retain_transition_uses_retained_plan_and_only_appends_pure_cas(
     }
     expected = experiment.retain_defense(applied.defense_change.change_id, retained_at=prepared_at)
     before_counts = _counts(store)
+    with store._connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM tenant_action_material_slots WHERE experiment_id=?",
+                (experiment.experiment_id,),
+            ).fetchone()[0]
+            == 2
+        )
     receipt, created = _accept(store, values)
     assert created is True and receipt["job"] is None
     assert receipt["transition"] == {"revision": expected.revision, "digest": expected.digest}
     assert store.get_engine_experiment(experiment.experiment_id)["document"] == expected.to_dict()
+    with pytest.raises(ResourceConflictError, match="expected revision"):
+        _accept(store, rollback_values)
     assert _accept(store, values) == (receipt, False)
     assert _receipt(store, values) == receipt
     assert _counts(store) == (before_counts[0], 1, before_counts[2] + 1)

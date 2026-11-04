@@ -72,6 +72,10 @@ class EnginePreparedApprovalState(str, Enum):
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _EXPERIMENT_ID = re.compile(r"^experiment-[0-9a-f]{32}$")
 _SCHEMA = "bluefire.engine-prepared-action.v1"
+_PREPARE_V1_FIELDS = frozenset(
+    {"schema_version", "expected_revision", "expected_digest", "workspace_digest"}
+)
+_PREPARE_V2_FIELDS = frozenset((*_PREPARE_V1_FIELDS, "action_kind"))
 _LIMIT_FIELDS = frozenset(
     {
         "wall_clock_seconds",
@@ -113,7 +117,7 @@ _ACTION_CONTRACT = {
     EngineWorkspaceAction.RETAIN_DEFENSE: (
         EnginePreparedActionKind.CONTROLLER_TRANSITION,
         EnginePreparedEffectKind.DEFENSE_DISPOSITION,
-        "Retain the verified defensive change as the experiment disposition.",
+        "Retain the applied defensive change as the experiment disposition.",
         False,
         False,
         False,
@@ -253,17 +257,24 @@ class EngineActionPreparationCoordinator:
         self._clock = clock
 
     def prepare_request(self, experiment_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
-        fields = {
-            "schema_version",
-            "expected_revision",
-            "expected_digest",
-            "workspace_digest",
-        }
-        if (
-            not isinstance(request, Mapping)
-            or set(request) != fields
-            or request.get("schema_version") != "bluefire.engine-action-prepare-request.v1"
-        ):
+        if not isinstance(request, Mapping):
+            raise EngineActionPreparationServiceError(
+                "engine_request_invalid",
+                "The engine action preparation request does not match the supported contract.",
+            )
+        schema = request.get("schema_version")
+        selected_action: EngineWorkspaceAction | None = None
+        if schema == "bluefire.engine-action-prepare-request.v1":
+            valid_fields = set(request) == _PREPARE_V1_FIELDS
+        elif schema == "bluefire.engine-action-prepare-request.v2":
+            valid_fields = set(request) == _PREPARE_V2_FIELDS
+            try:
+                selected_action = EngineWorkspaceAction(request.get("action_kind"))
+            except (TypeError, ValueError):
+                valid_fields = False
+        else:
+            valid_fields = False
+        if not valid_fields:
             raise EngineActionPreparationServiceError(
                 "engine_request_invalid",
                 "The engine action preparation request does not match the supported contract.",
@@ -302,6 +313,7 @@ class EngineActionPreparationCoordinator:
                 workspace,
                 experiment=experiment,
                 expected_workspace_digest=expected_workspace,
+                requested_action=selected_action,
             )
             prepared_at = _timestamp(self._clock(), "engine action preparation time")
             plan = self._preparer.prepare(
@@ -371,6 +383,7 @@ class EngineActionPreparationCoordinator:
         *,
         experiment: EngineExperiment,
         expected_workspace_digest: str,
+        requested_action: EngineWorkspaceAction | None = None,
     ) -> EngineWorkspaceAction:
         if (
             workspace.get("schema_version") != "bluefire.engine-experiment-workspace.v1"
@@ -381,9 +394,24 @@ class EngineActionPreparationCoordinator:
         ):
             raise ResourceConflictError("engine action workspace binding changed")
         actions = workspace.get("actions")
-        if not isinstance(actions, list) or len(actions) != 1:
+        if not isinstance(actions, list) or not actions:
             raise EngineActionPreparationError("engine workspace action is ambiguous")
-        row = actions[0]
+        if any(not isinstance(item, Mapping) for item in actions):
+            raise EngineActionPreparationError("engine workspace action is invalid")
+        kinds = [item.get("kind") for item in actions]
+        if any(not isinstance(kind, str) for kind in kinds) or len(set(kinds)) != len(kinds):
+            raise EngineActionPreparationError("engine workspace action is ambiguous")
+        if requested_action is None:
+            if len(actions) != 1:
+                raise EngineActionPreparationError("engine workspace action is ambiguous")
+            row = actions[0]
+        else:
+            matches = [item for item in actions if item.get("kind") == requested_action.value]
+            if len(matches) != 1:
+                raise EngineActionPreparationError(
+                    "selected engine workspace action is unavailable"
+                )
+            row = matches[0]
         if not isinstance(row, Mapping) or row.get("enabled") is not True:
             raise EngineActionPreparationServiceError(
                 "engine_action_unavailable",
@@ -400,9 +428,12 @@ class EngineActionPreparationCoordinator:
                 "The current workspace action does not use an execution preparation.",
             )
         try:
-            return EngineWorkspaceAction(raw_kind)
+            action = EngineWorkspaceAction(raw_kind)
         except (TypeError, ValueError) as exc:
             raise EngineActionPreparationError("engine workspace action is unsupported") from exc
+        if requested_action is not None and action is not requested_action:
+            raise EngineActionPreparationError("selected engine workspace action changed")
+        return action
 
 
 def _exact(value: Any, fields: frozenset[str], label: str) -> Mapping[str, Any]:

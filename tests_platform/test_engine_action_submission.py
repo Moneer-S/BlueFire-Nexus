@@ -184,6 +184,45 @@ def test_submit_derives_exact_inner_request_and_returns_only_safe_receipt(tmp_pa
     assert REVIEWER not in encoded
 
 
+def test_submit_revalidates_retained_action_among_multiple_server_choices(
+    tmp_path: Path,
+) -> None:
+    store, protected, request = _prepared(tmp_path)
+    coordinator, gate, workspace = _coordinator(store)
+    workspace.value = {
+        **workspace.value,
+        "actions": [
+            {"kind": "start_adaptive_search", "enabled": True},
+            {"kind": "start_baseline", "enabled": True},
+        ],
+    }
+
+    result = coordinator.submit(experiment_id=EXPERIMENT_ID, request=request)
+
+    assert result["action_kind"] == "start_baseline"
+    assert workspace.calls == gate.factory_calls == 1
+    assert store.get_approval_request(protected["approval_request_id"])["status"] == "claimed"
+
+
+def test_submit_refuses_duplicate_selected_action_before_approval(tmp_path: Path) -> None:
+    store, protected, request = _prepared(tmp_path)
+    coordinator, gate, workspace = _coordinator(store)
+    workspace.value = {
+        **workspace.value,
+        "actions": [
+            {"kind": "start_baseline", "enabled": True},
+            {"kind": "start_baseline", "enabled": True},
+        ],
+    }
+
+    with pytest.raises(EngineActionSubmissionServiceError) as failure:
+        coordinator.submit(experiment_id=EXPERIMENT_ID, request=request)
+
+    assert failure.value.code == "engine_action_submission_refused"
+    assert gate.factory_calls == workspace.calls == 1
+    _assert_pending(store, protected)
+
+
 @pytest.mark.parametrize(
     "field",
     [

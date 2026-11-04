@@ -1,9 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { EngineRetestComparison, engineComparisonConclusion } from "../src/components/EngineRetestComparison";
-import type { EngineDefenseChange, EngineExperimentConclusion } from "../src/lib/engine-experiment";
+import type { EngineDefenseChange, EngineExperimentConclusion, EngineWorkspaceAction } from "../src/lib/engine-experiment";
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const run = (character: string, second: string) => `run-20261104T1200${second}Z-${character.repeat(16)}`;
@@ -14,7 +14,7 @@ function LocationWitness() {
   return <output aria-label="Current route">{location.pathname + location.search}</output>;
 }
 
-const renderComparison = (value: EngineExperimentConclusion, change: EngineDefenseChange | null = defense, props: { comparisonHref?: string; runHref?: (runId: string) => string } = {}) => render(
+const renderComparison = (value: EngineExperimentConclusion, change: EngineDefenseChange | null = defense, props: { comparisonHref?: string; runHref?: (runId: string) => string; dispositionActions?: EngineWorkspaceAction[]; onDispositionAction?: (action: EngineWorkspaceAction["kind"]) => void } = {}) => render(
   <MemoryRouter initialEntries={["/compare"]}>
     <EngineRetestComparison conclusion={value} defensiveChange={change} {...props} />
     <LocationWitness />
@@ -76,6 +76,7 @@ it("does not hide unknown cleanup behind a favorable security result", () => {
   expect(engineComparisonConclusion(value)).toMatchObject({ tone: "warning", title: "Retest recorded; cleanup remains unknown" });
   renderComparison(value);
   expect(screen.getByText("Cleanup is not verified")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Choose what happens to the applied change" })).not.toBeInTheDocument();
 });
 
 it("does not present a historical result as current while target state needs reconciliation", () => {
@@ -120,4 +121,30 @@ it("refuses external result routes instead of creating full-page navigation", ()
   });
   expect(screen.queryByRole("link")).not.toBeInTheDocument();
   expect(screen.getByText("Supporting runs unavailable")).toBeInTheDocument();
+});
+
+it("presents both server-advertised disposition choices without hiding proof warnings", async () => {
+  const onDispositionAction = vi.fn();
+  const actions: EngineWorkspaceAction[] = [
+    { kind: "retain_defense", label: "Retain applied defensive change", enabled: true, reason: "Keep the current applied change.", primary: false },
+    { kind: "rollback_defense", label: "Roll back defensive change", enabled: true, reason: "Restore the reviewed prior configuration.", primary: false },
+  ];
+  const value = conclusion({ telemetry_health: { status: "partial", expected_sources: ["target audit", "worker receipt"], verified_sources: ["worker receipt"], missing_sources: ["target audit"] }, unknowns: ["Adaptive search ended within a bounded budget."] });
+  const user = userEvent.setup();
+  renderComparison(value, { ...defense, state: "applied" }, { dispositionActions: actions, onDispositionAction });
+  expect(screen.getByRole("heading", { name: "Choose what happens to the applied change" })).toBeVisible();
+  expect(screen.getByText(/does not stop workers, remove artifacts, or reset the lab/i)).toBeVisible();
+  expect(screen.getByText(/does not establish remediation or cleanup/i)).toBeVisible();
+  expect(screen.getByText("Observation is incomplete")).toBeVisible();
+  expect(screen.getByText("Unknowns and unattempted work")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Retain applied defensive change" }));
+  await user.click(screen.getByRole("button", { name: "Roll back defensive change" }));
+  expect(onDispositionAction).toHaveBeenNthCalledWith(1, "retain_defense");
+  expect(onDispositionAction).toHaveBeenNthCalledWith(2, "rollback_defense");
+});
+
+it("renders no disposition controls when the server advertises none", () => {
+  renderComparison(conclusion({ defense: { ...conclusion().defense, state: "unknown", current_target_snapshot_ref: null } }), { ...defense, state: "unknown" });
+  expect(screen.queryByRole("heading", { name: "Choose what happens to the applied change" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /defensive change/i })).not.toBeInTheDocument();
 });

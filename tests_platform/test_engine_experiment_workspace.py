@@ -21,6 +21,7 @@ from bluefire.engine_experiment import (
 from bluefire.engine_experiment_workspace import (
     EngineExperimentSelectionNotFound,
     EngineExperimentWorkspaceError,
+    _actions,
     checked_engine_experiment_workspace,
     present_engine_experiment_workspace,
     project_engine_experiment_workspace,
@@ -67,6 +68,58 @@ class _RunSource:
         if require_finalized and "manifest" not in document:
             raise ValueError("run is not finalized")
         return document
+
+
+def _disposition_projection() -> dict[str, Any]:
+    return {
+        "workflow_state": "choose_defense_disposition",
+        "conclusion": {
+            "defense": {"state": "applied"},
+            "cleanup": {"status": "verified_absent"},
+        },
+        "run_integrity": [{"state": "verified"}],
+        "attempts": [],
+        "checks": [],
+    }
+
+
+def test_disposition_advertises_two_non_primary_exact_effect_choices() -> None:
+    actions = _actions(
+        _disposition_projection(),
+        {"snapshot_ref": _digest("1"), "display_name": "Current target"},
+    )
+
+    assert [item["kind"] for item in actions] == ["retain_defense", "rollback_defense"]
+    assert all(item["enabled"] is True and item["primary"] is False for item in actions)
+    assert "cleanup" in actions[0]["reason"]
+    assert "does not stop workers or reset the lab" in actions[1]["reason"]
+
+
+@pytest.mark.parametrize(
+    "blocked", ["target", "defense", "cleanup", "integrity", "attempt", "check"]
+)
+def test_disposition_is_not_advertised_without_exact_settled_applied_state(
+    blocked: str,
+) -> None:
+    projection = _disposition_projection()
+    target: Mapping[str, Any] | None = {
+        "snapshot_ref": _digest("1"),
+        "display_name": "Current target",
+    }
+    if blocked == "target":
+        target = None
+    elif blocked == "defense":
+        projection["conclusion"]["defense"]["state"] = "unknown"
+    elif blocked == "cleanup":
+        projection["conclusion"]["cleanup"]["status"] = "residue"
+    elif blocked == "integrity":
+        projection["run_integrity"][0]["state"] = "unavailable"
+    elif blocked == "attempt":
+        projection["attempts"] = [{"state": "running"}]
+    else:
+        projection["checks"] = [{"state": "reserved"}]
+
+    assert _actions(projection, target) == []
 
 
 class _PresentationSource:

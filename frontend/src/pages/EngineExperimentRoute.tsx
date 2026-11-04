@@ -9,7 +9,7 @@ import { usePublishEngineExperimentSelection } from "../state/AssistanceContext"
 import { useRememberDefensiveWork } from "../state/activeDefensiveWork";
 import { CompositionPage } from "./Composition";
 import { EngineActionReview } from "../components/EngineActionReview";
-import type { EngineActionAcceptance } from "../lib/engine-actions";
+import { engineActionLabels, type EngineActionAcceptance, type PreparedActionKind } from "../lib/engine-actions";
 import type { EngineExperiment } from "../lib/engine-experiment";
 import { api } from "../lib/api";
 
@@ -92,10 +92,12 @@ export function CompositionRoute() {
 
 function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequest }) {
   const navigate = useNavigate();
+  const [reviewAction, setReviewAction] = useState<PreparedActionKind | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [uncertainAction, setUncertainAction] = useState<PreparedActionKind | null>(null);
+  const [reviewNotice, setReviewNotice] = useState<string>();
   const [accepted, setAccepted] = useState<EngineActionAcceptance>();
   const [pollUntil, setPollUntil] = useState(0);
-  const [actionNotice, setActionNotice] = useState<string>();
   const workspace = useQuery({ queryKey: ["engine-experiment-workspace", request.experimentId, request.selection?.kind ?? null, request.selection?.id ?? null], queryFn: () => engineExperimentApi.workspace(request.experimentId, request.selection), retry: false, refetchInterval: state => {
     const projection = state.state.data?.projection;
     return accepted && Date.now() < pollUntil || projection && ([...projection.attempts].some(item => ["queued", "preflight", "running", "stopping"].includes(item.state)) || projection.checks.some(item => item.state === "reserved")) ? 1500 : false;
@@ -127,7 +129,7 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
   if (workspace.isError || !experiment) return <div className="page"><Link to="/composition">Composition workspace</Link><ErrorState title="Engine experiment unavailable" error={workspace.error ?? new Error("The engine experiment workspace is unavailable.")} retry={() => { void workspace.refetch(); }} /></div>;
   return <div className="page engine-experiment-route">
     <Link to="/composition">Composition workspace</Link>
-    {actionNotice ? <Callout title="Defense disposition"><p>{actionNotice}</p></Callout> : null}
+    {reviewNotice ? <Callout tone="warning" title="Unconfirmed action acceptance"><p>{reviewNotice}</p></Callout> : null}
     {accepted ? <Callout title="Action accepted"><p>{accepted.job ? "The durable job was accepted. BlueFire is refreshing its saved status." : "The saved workspace transition was accepted and is being refreshed."}</p>{accepted.job ? <Link to={`/runs?job=${encodeURIComponent(accepted.job.job_id)}`}>Open saved job in Runs</Link> : null}<button type="button" className="button button-secondary button-small" onClick={() => { setPollUntil(Date.now() + 60_000); void workspace.refetch(); }}>Refresh action status</button></Callout> : null}
     {cancellation.variables ? <Callout tone={cancellation.isError ? "danger" : cancellation.isSuccess ? "success" : "info"} title={cancellation.isError ? "Cancellation was refused" : cancellation.isSuccess ? "Cancellation requested" : "Requesting cancellation"}><p>{cancellation.isError ? (cancellation.error instanceof Error ? cancellation.error.message : "The saved job could not be cancelled.") : cancellation.isSuccess ? "BlueFire accepted the cancellation request and is refreshing the saved work state." : "BlueFire is asking the saved job to stop and will preserve its recorded evidence."}</p><Link to={`/runs?job=${encodeURIComponent(cancellation.variables.jobId)}`}>Open saved job in Runs</Link><button type="button" className="button button-secondary button-small" onClick={() => { void workspace.refetch(); }}>Refresh saved state</button></Callout> : null}
     <EngineExperimentWorkspace experiment={experiment} selectedAttemptId={selectedAttempt} selectedCheckId={selectedCheck}
@@ -136,16 +138,22 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
       onCancelAttempt={cancelAttempt}
       cancellingAttemptId={!cancellation.isError && cancellation.variables?.kind === "engine_attempt" ? cancellation.variables.id : null}
       onPrimaryAction={action => {
-        setActionNotice(undefined);
         if (action === "review_evidence") { const selection = engineReviewSelection(experiment); if (selection) select(selection); }
-        else if (action === "open_comparison" || action === "choose_defense_disposition") {
-          if (action === "choose_defense_disposition") setActionNotice("Review the comparison below. Retain and rollback acceptance are unavailable from this workspace.");
+        else if (action === "open_comparison") {
           const comparison = document.querySelector<HTMLElement>(".engine-retest-comparison");
           comparison?.setAttribute("tabindex", "-1"); comparison?.focus(); comparison?.scrollIntoView({ block: "start" });
         }
-        else setReviewOpen(true);
+        else if (Object.hasOwn(engineActionLabels, action)) {
+          const selected = action as PreparedActionKind;
+          if (uncertainAction && uncertainAction !== selected) {
+            setReviewNotice(`Acceptance of ${engineActionLabels[uncertainAction].toLowerCase()} is unconfirmed. Recover that exact prepared request before reviewing another action.`);
+            setReviewAction(uncertainAction); setReviewOpen(true);
+          } else {
+            setReviewNotice(undefined); setReviewAction(selected); setReviewOpen(true);
+          }
+        }
       }}
       runHref={id => `/runs/${encodeURIComponent(id)}`} />
-    <EngineActionReview key={request.experimentId} open={reviewOpen} onClose={() => setReviewOpen(false)} experiment={experiment} onAccepted={receipt => { setAccepted(receipt); setPollUntil(Date.now() + 60_000); void workspace.refetch(); }} />
+    <EngineActionReview key={`${request.experimentId}:${reviewAction ?? "none"}`} open={reviewOpen} actionKind={reviewAction} onClose={() => setReviewOpen(false)} onUncertainChange={action => { setUncertainAction(action); if (!action) setReviewNotice(undefined); }} experiment={experiment} onAccepted={receipt => { setAccepted(receipt); setReviewOpen(false); setPollUntil(Date.now() + 60_000); void workspace.refetch(); }} />
   </div>;
 }

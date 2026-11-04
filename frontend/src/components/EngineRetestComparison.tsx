@@ -1,7 +1,8 @@
 import { ArrowRight, CircleHelp, ShieldAlert, ShieldCheck, TriangleAlert } from "lucide-react";
+import { useId } from "react";
 import { Link } from "react-router-dom";
-import type { EngineDefenseChange, EngineExperimentConclusion } from "../lib/engine-experiment";
-import { Badge, Callout, DataList, Panel, sentence } from "./Primitives";
+import type { EngineDefenseChange, EngineExperimentConclusion, EngineWorkspaceAction, EngineWorkspaceActionKind } from "../lib/engine-experiment";
+import { Badge, Button, Callout, DataList, Panel, sentence } from "./Primitives";
 
 export interface EngineComparisonConclusion {
   title: string;
@@ -73,7 +74,8 @@ const internalResultHref = (value: string): string | null => {
   return parsed.origin === "https://bluefire.invalid" ? `${parsed.pathname}${parsed.search}${parsed.hash}` : null;
 };
 
-export function EngineRetestComparison({ conclusion: value, defensiveChange, sourceRuns, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: { conclusion: EngineExperimentConclusion; defensiveChange: EngineDefenseChange | null; sourceRuns?: EngineSourceRunLink[]; runHref?: (runId: string) => string; comparisonHref?: string }) {
+export function EngineRetestComparison({ conclusion: value, defensiveChange, dispositionActions = [], onDispositionAction, sourceRuns, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: { conclusion: EngineExperimentConclusion; defensiveChange: EngineDefenseChange | null; dispositionActions?: EngineWorkspaceAction[]; onDispositionAction?: (action: EngineWorkspaceActionKind) => void; sourceRuns?: EngineSourceRunLink[]; runHref?: (runId: string) => string; comparisonHref?: string }) {
+  const dispositionHeadingId = useId();
   const conclusion = engineComparisonConclusion(value);
   const runs = sourceRuns ?? conclusionSourceRuns(value);
   const runLinks = runs.flatMap(source => {
@@ -95,6 +97,7 @@ export function EngineRetestComparison({ conclusion: value, defensiveChange, sou
       <article><span>Legitimate use</span><strong>{legitimateUseLabel(value.legitimate_use.status)}</strong><Badge tone={value.legitimate_use.status === "passed" ? "success" : value.legitimate_use.status === "failed" ? "danger" : "warning"}>Independent control</Badge></article>
     </div>
     {defensiveChange ? <div className="engine-defense-summary"><div><span>{sentence(defensiveChange.kind)} change</span><strong>{defensiveChange.summary}</strong></div><Badge tone={["applied", "retained"].includes(defensiveChange.state) ? "success" : defensiveChange.state === "unknown" ? "warning" : "neutral"}>{sentence(defensiveChange.state)}</Badge></div> : <Callout tone="warning" title="Defensive change unavailable"><p>No reviewed change is linked to this comparison.</p></Callout>}
+    {dispositionActions.length ? <section className="engine-disposition-actions" aria-labelledby={dispositionHeadingId}><div><span>Defensive change disposition</span><h3 id={dispositionHeadingId}>Choose what happens to the applied change</h3><p>This choice does not stop workers, remove artifacts, or reset the lab.</p></div><div>{dispositionActions.map(action => <article key={action.kind}><strong>{action.label}</strong><p>{action.kind === "retain_defense" ? "Keep the currently applied change. This does not establish remediation or cleanup." : "Run the reviewed rollback against the authorized target. Rollback is separate from cleanup and lab reset."}</p>{action.reason ? <small>{action.reason}</small> : null}<Button type="button" variant={action.kind === "rollback_defense" ? "danger" : "primary"} disabled={!action.enabled || !onDispositionAction} onClick={() => onDispositionAction?.(action.kind)}>{action.label}</Button></article>)}</div></section> : null}
     {value.unknowns.length ? <details className="engine-comparison-unknowns" open><summary>Unknowns and unattempted work</summary><ul>{value.unknowns.map(item => <li key={item}>{item}</li>)}</ul></details> : null}
     {runLinks.length || fullComparisonHref ? <nav className="engine-comparison-links" aria-label="Comparison source runs">{runLinks.map(source => <Link to={source.href} key={source.runId}>{source.label}<ArrowRight aria-hidden="true" /></Link>)}{fullComparisonHref ? <Link to={fullComparisonHref}>Open full comparison<ArrowRight aria-hidden="true" /></Link> : null}</nav> : <Callout tone="warning" title="Supporting runs unavailable"><p>The conclusion has no linked run route to inspect.</p></Callout>}
     <details><summary>Recorded change and proof boundary</summary><DataList items={[

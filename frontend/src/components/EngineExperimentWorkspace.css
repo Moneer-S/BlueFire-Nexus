@@ -129,6 +129,15 @@
 .engine-defense-summary > div { display: grid; min-width: 0; gap: 4px; }
 .engine-defense-summary span { color: var(--muted); font-size: .72rem; }
 .engine-defense-summary strong { font-size: .8rem; overflow-wrap: anywhere; }
+.engine-disposition-actions { display: grid; gap: 13px; padding: 16px; border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--surface-soft) 76%, transparent); }
+.engine-disposition-actions > div:first-child > span { color: var(--blue-soft); font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.engine-disposition-actions h3 { margin: 4px 0; font-size: .95rem; }
+.engine-disposition-actions > div:first-child > p { margin: 0; color: var(--muted-strong); font-size: .76rem; line-height: 1.5; }
+.engine-disposition-actions > div:last-child { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.engine-disposition-actions article { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 8px; padding: 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.engine-disposition-actions article strong { font-size: .82rem; }
+.engine-disposition-actions article p, .engine-disposition-actions article small { margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+.engine-disposition-actions article .button { justify-self: start; }
 .engine-comparison-unknowns { padding: 13px; border: 1px solid color-mix(in srgb, var(--amber) 28%, var(--line)); border-radius: 9px; }
 .engine-comparison-unknowns ul { margin-bottom: 0; }
 .engine-comparison-links { display: flex; flex-wrap: wrap; gap: 10px 22px; }
@@ -168,6 +177,7 @@
   .engine-attempt-stats > div:nth-child(-n+2), .engine-comparison-grid article:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .engine-context-rail { grid-template-columns: minmax(0, 1fr); }
   .engine-selected-attempt > header, .engine-defense-summary { align-items: start; flex-direction: column; }
+  .engine-disposition-actions > div:last-child { grid-template-columns: minmax(0, 1fr); }
   .engine-artifact-list li { grid-template-columns: auto minmax(0, 1fr); }
   .engine-artifact-list details { grid-column: 2; }
 }

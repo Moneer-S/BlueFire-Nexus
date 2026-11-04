@@ -131,6 +131,7 @@ class EngineActionSubmissionCoordinator:
                     self._workspace_source.workspace(experiment_id),
                     experiment=experiment,
                     expected_workspace_digest=retained["workspace_digest"],
+                    requested_action=action,
                 )
                 if current.value != retained["action_kind"]:
                     raise ResourceConflictError("prepared workspace action changed")

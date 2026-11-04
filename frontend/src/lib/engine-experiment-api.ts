@@ -1,6 +1,6 @@
 import { request } from "./api";
 import { checkedEngineExperiment, type EngineExperiment, type EngineWorkspaceSelection } from "./engine-experiment";
-import { checkedPreparedEngineAction, checkedEngineActionAcceptance, type PreparedEngineAction } from "./engine-actions";
+import { checkedPreparedEngineAction, checkedEngineActionAcceptance, engineActionLabels, type PreparedActionKind, type PreparedEngineAction } from "./engine-actions";
 
 const EXPERIMENT_ID = /^experiment-[0-9a-f]{32}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -85,9 +85,15 @@ export function engineExperimentPath(experimentId: string, selection?: { kind: "
 }
 
 export const engineExperimentApi = {
-  prepare: async (workspace: EngineExperiment) => {
+  prepare: async (workspace: EngineExperiment, actionKind?: PreparedActionKind) => {
     if (!engineExperimentId(workspace.experiment_id) || workspace.selected_context !== null || !Number.isSafeInteger(workspace.revision) || workspace.revision < 1 || workspace.revision > 10_000 || !DIGEST.test(workspace.experiment_digest) || !DIGEST.test(workspace.workspace_digest)) throw new Error("Reload the canonical engine workspace before reviewing this action.");
-    return checkedPreparedEngineAction(await request<unknown>(`/engine-experiments/${workspace.experiment_id}/actions/prepare`, { method: "POST", body: JSON.stringify({ schema_version: "bluefire.engine-action-prepare-request.v1", expected_revision: workspace.revision, expected_digest: workspace.experiment_digest, workspace_digest: workspace.workspace_digest }) }), workspace);
+    const enabled = workspace.actions.filter(item => item.enabled && Object.hasOwn(engineActionLabels, item.kind));
+    const selected = actionKind === undefined ? enabled.length === 1 ? enabled[0] : undefined : enabled.filter(item => item.kind === actionKind).length === 1 ? enabled.find(item => item.kind === actionKind) : undefined;
+    if (!selected || !Object.hasOwn(engineActionLabels, selected.kind)) throw new Error("Reload the canonical engine workspace before reviewing this action.");
+    const body = actionKind === undefined
+      ? { schema_version: "bluefire.engine-action-prepare-request.v1", expected_revision: workspace.revision, expected_digest: workspace.experiment_digest, workspace_digest: workspace.workspace_digest }
+      : { schema_version: "bluefire.engine-action-prepare-request.v2", expected_revision: workspace.revision, expected_digest: workspace.experiment_digest, workspace_digest: workspace.workspace_digest, action_kind: actionKind };
+    return checkedPreparedEngineAction(await request<unknown>(`/engine-experiments/${workspace.experiment_id}/actions/prepare`, { method: "POST", body: JSON.stringify(body) }), workspace, selected.kind as PreparedActionKind);
   },
   submit: async (prepared: PreparedEngineAction) => {
     if (!engineExperimentId(prepared.experiment_id) || !DIGEST.test(prepared.preparation_id) || !DIGEST.test(prepared.protected_request_ref)) throw new Error("The prepared engine action identity is invalid.");

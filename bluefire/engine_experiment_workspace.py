@@ -824,11 +824,51 @@ def _checked_selection(value: Any, experiment: EngineExperiment) -> dict[str, An
         raise EngineExperimentWorkspaceError("engine workspace selection changed")
     return expected
 
-def _actions(projection: Mapping[str, Any], current_target: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+def _actions(
+    projection: Mapping[str, Any], current_target: Mapping[str, Any] | None
+) -> list[dict[str, Any]]:
     state = projection["workflow_state"]
     conclusion = cast(Mapping[str, Any], projection["conclusion"])
     integrity = cast(list[Mapping[str, Any]], projection["run_integrity"])
     all_verified = all(item["state"] == "verified" for item in integrity)
+    if state == "choose_defense_disposition":
+        defense = cast(Mapping[str, Any], conclusion["defense"])
+        cleanup = cast(Mapping[str, Any], conclusion["cleanup"])
+        attempts = cast(list[Mapping[str, Any]], projection["attempts"])
+        checks = cast(list[Mapping[str, Any]], projection["checks"])
+        active = any(
+            item["state"] in {"queued", "preflight", "running", "stopping"} for item in attempts
+        ) or any(item["state"] == "reserved" for item in checks)
+        if (
+            not all_verified
+            or current_target is None
+            or defense["state"] != "applied"
+            or cleanup["status"] != "verified_absent"
+            or active
+        ):
+            return []
+        return [
+            {
+                "kind": "retain_defense",
+                "label": "Retain applied defensive change",
+                "enabled": True,
+                "reason": (
+                    "Records the applied change as this experiment's disposition without "
+                    "claiming cleanup or broad remediation."
+                ),
+                "primary": False,
+            },
+            {
+                "kind": "rollback_defense",
+                "label": "Roll back applied defensive change",
+                "enabled": True,
+                "reason": (
+                    "Runs the exact reviewed rollback through the trusted controller; it does "
+                    "not stop workers or reset the lab."
+                ),
+                "primary": False,
+            },
+        ]
     primary: dict[str, tuple[str, str, bool]] = {
         "ready_for_baseline": (
             "start_baseline",
@@ -887,11 +927,6 @@ def _actions(projection: Mapping[str, Any], current_target: Mapping[str, Any] | 
             "Review active legitimate-use check",
             True,
         ),
-        "choose_defense_disposition": (
-            "choose_defense_disposition",
-            "Choose defense disposition",
-            all_verified and current_target is not None,
-        ),
         "complete": (
             "open_comparison",
             "Open outcome comparison",
@@ -911,7 +946,6 @@ def _actions(projection: Mapping[str, Any], current_target: Mapping[str, Any] | 
             "repeat_mechanism": "Runs the controller-owned retained mechanism against the changed target.",
             "start_adaptive_search": "Requires a fresh delegation and execution approval.",
             "run_legitimate_use": "Uses the trusted-client check without engine or model authorship.",
-            "choose_defense_disposition": "Retain or roll back only after reviewing the complete workflow.",
             "open_comparison": "Reviews actual attempts, controller checks, unknowns, and cleanup together.",
         }[kind]
     else:

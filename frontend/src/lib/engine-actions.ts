@@ -40,16 +40,17 @@ const contracts: Record<PreparedActionKind, [string, string, boolean, boolean]> 
   reconcile_defense: ["controller_job", "defensive_change", false, false], reconcile_rollback: ["controller_job", "defensive_change", false, false],
   repeat_mechanism: ["controller_job", "controller_check", false, false], run_legitimate_use: ["controller_job", "controller_check", false, false],
 };
-export function checkedPreparedEngineAction(value: unknown, workspace: EngineExperiment): PreparedEngineAction {
+export function checkedPreparedEngineAction(value: unknown, workspace: EngineExperiment, expectedActionKind: PreparedActionKind): PreparedEngineAction {
   const v = row(value, ["schema_version", "preparation_id", "protected_request_ref", "experiment_id", "revision", "experiment_digest", "workspace_digest", "action_kind", "preparation_kind", "effect", "requires_approval", "approval", "submission", "limits", "prepared_at", "expires_at", "effects_started_at_preparation"]);
   const effect = row(v.effect, ["kind", "summary", "changes_target", "uses_external_engine"]);
   const approval = row(v.approval, ["required", "state", "review_binding_digest", "expires_at"]);
   const limits = row(v.limits, ["wall_clock_seconds", "action_limit", "artifact_byte_limit", "cost_limit_microunits", "target_scope_digest", "maximum_tier"]);
   const contract = typeof v.action_kind === "string" && Object.hasOwn(contracts, v.action_kind) ? contracts[v.action_kind as PreparedActionKind] : undefined;
-  const action = workspace.actions.find(item => item.primary && item.enabled);
+  const matchingActions = workspace.actions.filter(item => item.enabled && item.kind === expectedActionKind);
+  const action = matchingActions.length === 1 ? matchingActions[0] : undefined;
   if (!contract || v.schema_version !== "bluefire.engine-prepared-action.v1" || v.effects_started_at_preparation !== false
     || v.experiment_id !== workspace.experiment_id || v.revision !== workspace.revision || v.experiment_digest !== workspace.experiment_digest || v.workspace_digest !== workspace.workspace_digest
-    || v.action_kind !== action?.kind || !digest(v.preparation_id) || !digest(v.protected_request_ref)
+    || v.action_kind !== expectedActionKind || v.action_kind !== action?.kind || !digest(v.preparation_id) || !digest(v.protected_request_ref)
     || v.preparation_kind !== contract[0] || effect.kind !== contract[1] || effect.changes_target !== contract[2] || effect.uses_external_engine !== contract[3]
     || typeof effect.summary !== "string" || !effect.summary.trim() || effect.summary.length > 240 || [...effect.summary].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
     || v.requires_approval !== contract[3] || approval.required !== contract[3]

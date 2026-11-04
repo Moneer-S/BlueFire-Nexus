@@ -189,6 +189,14 @@ def _action_prepare_request() -> dict[str, Any]:
     }
 
 
+def _action_prepare_v2_request(action: str = "retain_defense") -> dict[str, Any]:
+    return {
+        **_action_prepare_request(),
+        "schema_version": "bluefire.engine-action-prepare-request.v2",
+        "action_kind": action,
+    }
+
+
 def _action_submit_request() -> dict[str, Any]:
     return {
         "schema_version": "bluefire.engine-action-submit.v1",
@@ -279,6 +287,38 @@ def test_action_prepare_posts_only_one_exact_workspace_binding() -> None:
     assert dispatch_engine_experiments(handler, path, request)
     assert handler.service.calls == [("prepare_action_request", EXPERIMENT, request)]
     assert handler.errors == [] and handler.allowed == []
+
+
+def test_action_prepare_v2_posts_only_one_server_advertised_action_selector() -> None:
+    request = _action_prepare_v2_request("rollback_defense")
+    path = f"{ROOT}/{EXPERIMENT}/actions/prepare"
+    handler = _Handler(path)
+
+    assert dispatch_engine_experiments(handler, path, request)
+    assert handler.service.calls == [("prepare_action_request", EXPERIMENT, request)]
+    assert handler.errors == [] and handler.allowed == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda body: body.update(action_kind="review_evidence"),
+        lambda body: body.update(action_kind="choose_defense_disposition"),
+        lambda body: body.update(action_kind="retain"),
+        lambda body: body.update(action_kind=None),
+        lambda body: body.update(approval_nonce="caller-secret"),
+        lambda body: body.pop("action_kind"),
+    ],
+)
+def test_action_prepare_v2_rejects_navigation_authority_or_malformed_selector(mutation) -> None:
+    request = _action_prepare_v2_request()
+    mutation(request)
+    path = f"{ROOT}/{EXPERIMENT}/actions/prepare"
+    handler = _Handler(path)
+
+    assert dispatch_engine_experiments(handler, path, request)
+    assert handler.service.calls == []
+    assert handler.errors[0][1] == "engine_experiment_invalid"
 
 
 @pytest.mark.parametrize(
