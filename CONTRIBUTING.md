@@ -62,9 +62,19 @@ privileges, or persistent host modifications.
 ## Design rules
 
 - Python owns contracts, planning, policy, evidence, replay, comparison, API,
-  and UI. It does not implement behavior effects.
-- Real effects require a versioned, registered Rust action with a strict schema.
-- Never add a generic command, script, payload, binary, or destination field.
+  and UI. Legacy exact-plan effects remain implemented by the native runner.
+- Exact-plan scenario effects require a versioned, registered Rust action with
+  a strict schema. A separately reviewed external-engine experiment may instead
+  invoke one exact pinned engine through its supported worker interface only
+  after its exact runtime candidate and independently effective network,
+  process, and container custody have qualified. That path must bind an
+  approved disposable environment, immutable scope and budgets, independently
+  supervise the worker and its descendants, and import only bounded, hashed
+  artifacts. Review alone is not execution qualification, and this path does
+  not add a generic host executor.
+- Never add a caller-selected command, script, payload, binary, mount, tool
+  server, credential, or destination field. Engine installation and admission
+  are reviewed separately from experiment execution.
 - Simulate output stays synthetic; runner self-report stays executed; only an
   independent collector can claim observed evidence.
 - New scenario edges must preserve typed artifact compatibility and explicit
@@ -73,9 +83,12 @@ privileges, or persistent host modifications.
   limitations.
 - Plugins remain declarative until a separately reviewed installation and trust
   mechanism exists.
-- AI Off must make no provider call; Assist records without applying; Auto may
-  apply only a registered compatible alternate selected inside the deterministic
-  next-node allowlist. Model output never grants policy or execution authority.
+- AI Off must make no provider call. The legacy exact-plan Assist and Auto paths
+  retain their deterministic next-node and reviewed-method limits. An admitted
+  objective-level experiment may create a new attempt or continuation from
+  applicable saved findings, but only within its versioned capability
+  delegation. Model output never grants target ownership, scope, credentials,
+  policy, defensive-change authority, executable admission, or spending.
 - SQLite product-state migrations and seeding must be idempotent and must never
   persist resolved secret values.
 

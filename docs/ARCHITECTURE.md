@@ -1,6 +1,6 @@
 # Architecture
 
-BlueFire Nexus separates planning from effects. The Python package is the control plane; the Rust crate is the execution authority. The boundary is intentional: scenario, AI, plugin, or UI data can select only registered IDs and typed values, never an arbitrary executable instruction.
+BlueFire Nexus separates planning from effects. The Python package is the control plane. Exact-plan scenario effects use the Rust execution authority. A separately admitted external-engine worker can own exploration inside one reviewed disposable environment, while BlueFire retains experiment identity, scope, lifecycle, evidence, defensive changes, and comparison. Neither boundary accepts an arbitrary executable instruction from scenario, model, plugin, or UI data.
 
 ## System view
 
@@ -27,8 +27,14 @@ flowchart LR
     transport --> host[Separate managed runner host]
     host --> runner[Reviewed Rust action registry]
 
+    service --> enginePolicy[External engine admission]
+    enginePolicy --> engineWorker[Pinned owned engine worker]
+    engineWorker --> engineLab[Authorized disposable lab]
+    engineWorker --> engineArtifacts[Engine assertions and tool results]
+
     simulation --> evidence[Evidence graph]
     runner --> evidence
+    engineArtifacts --> evidence[Evidence graph with explicit provenance]
     collectors[Independent collectors] --> evidence
     evidence --> store[Run bundle store]
     store --> replay[Replay]
@@ -51,6 +57,7 @@ The UI and CLI are adapters over the same service boundary. Neither browser stat
 | bluefire/planner.py | Deterministic plan compilation, outcome-edge selection, budget state, and compatible-alternate compilation | Policy bypass or action creation |
 | bluefire/policy.py | Deny-by-default Execute decisions and request-bound approval checks | Performing actions |
 | RunnerActionAdapter | Sole mapping from logical parameters and artifact bindings to a known Rust action's sealed parameters | Generic commands, arbitrary paths, or unknown actions |
+| External engine admission and worker | Bind one exact reviewed engine build, disposable environment, target snapshot, model destination, limits, process/container ownership and artifact policy to a new attempt | Installing model-selected code, widening scope, applying defensive changes, or treating engine output as independent evidence |
 | bluefire/runner_client.py, bluefire/runner_transport.py, bluefire/runner_host.py, and bluefire/runner_lifecycle.py | Authenticated loopback task transport, durable replay/cancellation state, exact managed-process ownership, and fixed invocation of one verified runner binary | Shell execution, cross-host exposure, or behavior implementation |
 | runner/ | Strict manifest/profile validation and compiled sandbox actions | Simulation, planning, UI, or arbitrary execution |
 | bluefire/evidence.py and bluefire/collectors.py | Provenance records, same-run evidence graph, bounded sandbox/fixture observation, health, and explicit gaps | Treating runner self-report as independent observation |
@@ -116,6 +123,16 @@ That legacy loop cannot create or reorder nodes or choose an edge for another ou
 Objective-level continuation distinguishes recorded history, currently applicable findings, and proposed work. The versioned receiver evidence-context proposal path supplies selected sealed findings and original compiled choices to a separately authorized model purpose. It records reconsidered choices and exact citations in the existing durable proposal job, pins the latest settled frontier, and revalidates context before publication and when checking candidate readiness. Historical summaries remain separate from executable facts.
 
 The experimental receiver v2 pack supports explicit retained-result dependencies within the same saved objective. A pure contract defines source identity, bounds and wire validation; the application resolver checks the source attempt, compiled plan, observed content identity, trusted capture record and current payload. Native materialization produces a new workspace output and receipt from the exact retained bytes. Existing producer checks continue to apply to downstream bindings. This is a bounded implementation of result reuse, not complete nonlocal backtracking. Planning must not silently repeat completed effects or treat an old observation as proof of a mutable resource's present state. Existing grants and exact-plan approvals do not gain new authority. See [Retained results](RETAINED_RESULTS.md), [AI Planner](AI_PLANNER.md) and the [program acceptance case](AI_FIRST_PROGRAM.md#nonlocal-replanning-acceptance).
+
+The reuse-first external-engine path is a distinct authorization model. Its first bounded workflow records a baseline attempt and a fresh adaptive-search attempt after a defensive change, while preserving the baseline findings and identity. The broader design requires future continuations to reconsider an earlier decision, cite useful findings from an abandoned attempt, and import an explicitly validated result into a new plan. That general nonlocal replanning and result-import surface is not yet implemented by the two-role experiment contract. Ordinary code must resolve every citation to its source identity, check semantic compatibility and freshness, and decide whether a current resource must be re-observed or recreated. Every attempt and upstream session has a new identity; history is append-only. The attacking worker cannot apply a defensive mutation or change its own delegation. Legacy exact-plan approvals do not authorize this path.
+
+## External engine experiment boundary
+
+An external engine is admitted as one pinned, attributed build behind a narrow worker contract: preflight, start, observe, inspect state, cancel, verify owned work stopped, and collect bounded artifacts. BlueFire supplies an immutable objective, environment and target snapshot, scope version, model destination, budgets and attempt identity. The engine owns reasoning and tool scheduling inside that envelope.
+
+The worker receives a fresh home, configuration and workspace. Global tool servers, host credentials, cloud metadata, management sockets and unrelated mounts are excluded. Independently effective network enforcement and process or container custody outside model-writable content are fail-closed prerequisites for execution; the current controller contracts validate their receipts and snapshots but do not themselves enforce the host boundary. A worker exit code, report, finding or completed status remains engine-reported data. BlueFire preserves raw bytes and hashes, normalizes them without executing report content, and records independent target observations separately. Partial, stopped, cancelled, budget-exhausted, failed and completed attempts remain distinct.
+
+The workflow contract requires a baseline exploration, an independently verified effect, a separately reviewed defensive change, an exact reproducer against the changed target, a fresh adaptive attempt, a legitimate-use control, and a recomputed comparison. Cleanup, target reset, rollback and intentionally retained hardening are separate decisions. A controlled deterministic provider can qualify the application and lifecycle mechanics; only a separately authorized live-model evaluation can establish evidence-dependent model decision quality.
 
 AI enablement does not imply Execute, and Execute does not imply AI.
 
