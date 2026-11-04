@@ -48,6 +48,7 @@ from .util import canonical_json_bytes, content_hash, parse_iso8601_datetime
 PACKET_SCHEMA = "bluefire.tenant-record-target-packet.v1"
 READY_SCHEMA = "bluefire.tenant-record-target-ready.v1"
 SOURCE_HEADER = "x-bluefire-lab-source-token"
+TARGET_LOGICAL_AUTHORITY = "tenant-record.test"
 MAX_PACKET_BYTES = 128 * 1024
 MAX_AUDIT_BYTES = 2 * 1024 * 1024
 MAX_REQUESTS = 256
@@ -655,12 +656,16 @@ class TargetChildService:
         audit_sink: AuditFileSink,
         admissions: tuple[SourceAdmission, ...],
         budget: RequestBudget,
+        numeric_authority: str,
     ) -> None:
+        if numeric_authority not in {"127.0.0.1", "[::1]"}:
+            raise TenantTargetChildError("target numeric authority is invalid")
         self._application = application
         self._audit_log = audit_log
         self._audit_sink = audit_sink
         self._admissions = admissions
         self._budget = budget
+        self._numeric_authority = numeric_authority
         self._failed = False
 
     @property
@@ -681,6 +686,7 @@ class TargetChildService:
             source_identity, filtered = self._admit(headers)
         except TenantTargetChildError:
             return _error_response(403, "source_not_admitted")
+        filtered = self._constrain_authority(filtered)
         before = self._audit_log.snapshot()
         try:
             response = self._application.handle(
@@ -727,6 +733,39 @@ class TargetChildService:
         if len(matches) != 1:
             raise TenantTargetChildError("target source admission is invalid")
         return matches[0], filtered
+
+    def _constrain_authority(self, headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        positions = [
+            index for index, (name, _value) in enumerate(headers) if name.strip().lower() == "host"
+        ]
+        if len(positions) != 1:
+            # Preserve missing or duplicate Host fields so the application
+            # records the malformed request through its protected audit path.
+            return headers
+        index = positions[0]
+        name, authority = headers[index]
+        exact_name = name == name.strip()
+        allowed = exact_name and (
+            authority == TARGET_LOGICAL_AUTHORITY
+            or authority == self._numeric_authority
+            or self._numeric_authority_with_port(authority)
+        )
+        if allowed:
+            return headers
+        # The application owns the canonical invalid-host response and audit
+        # row.  Replace only the rejected authority so its more permissive
+        # general-purpose host parser cannot bless a port-qualified logical
+        # authority that is not the controller's retained mechanism.
+        constrained = list(headers)
+        constrained[index] = (name, "")
+        return constrained
+
+    def _numeric_authority_with_port(self, authority: str) -> bool:
+        prefix = self._numeric_authority + ":"
+        if not authority.startswith(prefix):
+            return False
+        port = authority.removeprefix(prefix)
+        return bool(port) and port.isascii() and port.isdigit() and 1 <= int(port) <= 65535
 
 
 def _error_response(status: int, code: str) -> ChildResponse:
@@ -1054,7 +1093,11 @@ def run_target_child(
         config=config,
         audit_log=audit_log,
         signing_key=packet.signing_key,
-        allowed_hosts=(allowed_host,),
+        # The listener remains bound to a numeric loopback address.  The
+        # package-owned logical authority is the controller's fixed request
+        # identity for the retained mechanism; it is not a DNS or routing
+        # input and cannot select another target.
+        allowed_hosts=(allowed_host, TARGET_LOGICAL_AUTHORITY),
     )
     service = TargetChildService(
         application=application,
@@ -1062,6 +1105,7 @@ def run_target_child(
         audit_sink=sink,
         admissions=packet.admissions,
         budget=budget,
+        numeric_authority=allowed_host,
     )
     server: TargetServer | None = None
     try:

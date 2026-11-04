@@ -70,7 +70,7 @@ def admitted_headers(
 
 
 def service(
-    root: Path, *, maximum: int = 8
+    root: Path, *, maximum: int = 8, numeric_host: str = "127.0.0.1"
 ) -> tuple[child.TargetChildService, Path, child.AuditFileSink]:
     fixture = generate_tenant_record_fixture(SEED, held_out=True)
     config = baseline_defense_config(fixture)
@@ -86,7 +86,7 @@ def service(
         fixture=fixture,
         config=config,
         audit_log=log,
-        allowed_hosts=("127.0.0.1",),
+        allowed_hosts=(numeric_host, child.TARGET_LOGICAL_AUTHORITY),
         clock=lambda: NOW,
         request_id_factory=request_id,
     )
@@ -96,6 +96,7 @@ def service(
         audit_sink=sink,
         admissions=packet(max_requests=maximum).admissions,
         budget=child.RequestBudget(maximum),
+        numeric_authority=numeric_host,
     )
     return target, audit_path, sink
 
@@ -242,6 +243,87 @@ def test_service_derives_source_identity_and_persists_audit_before_response(
     assert SIGNING_KEY not in persisted
 
 
+@pytest.mark.parametrize(
+    ("authority", "numeric_host"),
+    [
+        (child.TARGET_LOGICAL_AUTHORITY, "127.0.0.1"),
+        ("127.0.0.1", "127.0.0.1"),
+        ("127.0.0.1:43123", "127.0.0.1"),
+        (child.TARGET_LOGICAL_AUTHORITY, "[::1]"),
+        ("[::1]", "[::1]"),
+        ("[::1]:43123", "[::1]"),
+    ],
+)
+def test_service_accepts_only_fixed_logical_or_numeric_loopback_authority(
+    tmp_path: Path, authority: str, numeric_host: str
+) -> None:
+    target, audit_path, sink = service(tmp_path, numeric_host=numeric_host)
+    headers = admitted_headers()
+    headers[0] = ("Host", authority)
+
+    response = target.handle_get("/health", headers)
+    sink.close()
+
+    assert response.status == 200
+    rows = [json.loads(line) for line in audit_path.read_bytes().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["decision"] == "public_health"
+
+
+@pytest.mark.parametrize(
+    "authority",
+    [
+        "tenant-record.test.example",
+        "tenant-record.test@127.0.0.1",
+        "tenant-record.test:0",
+        "tenant-record.test:43123",
+        "tenant-record.test:65536",
+        "tenant-record.test:not-a-port",
+        "tenant-record.test evil",
+        "tenant-record.\ttest",
+        "127.0.0.1:0",
+        "127.0.0.1:65536",
+        "127.0.0.1:not-a-port",
+        "localhost",
+        "127.0.0.2",
+        "[::2]",
+    ],
+)
+def test_service_rejects_authority_lookalikes_and_alternates(
+    tmp_path: Path, authority: str
+) -> None:
+    target, audit_path, sink = service(tmp_path)
+    headers = admitted_headers()
+    headers[0] = ("Host", authority)
+
+    response = target.handle_get("/health", headers)
+    sink.close()
+
+    assert response.status == 400
+    assert json.loads(response.body)["error"] == "invalid_host"
+    rows = [json.loads(line) for line in audit_path.read_bytes().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["decision"] == "invalid_request"
+
+
+def test_service_rejects_duplicate_or_ambiguous_host_authority(tmp_path: Path) -> None:
+    target, audit_path, sink = service(tmp_path)
+    response = target.handle_get(
+        "/health",
+        [
+            *admitted_headers(),
+            ("host", child.TARGET_LOGICAL_AUTHORITY),
+        ],
+    )
+    sink.close()
+
+    assert response.status == 400
+    assert json.loads(response.body)["error"] == "invalid_request"
+    rows = [json.loads(line) for line in audit_path.read_bytes().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["decision"] == "invalid_request"
+
+
 def test_service_rejects_spoofed_or_missing_admission_without_application_audit(
     tmp_path: Path,
 ) -> None:
@@ -291,6 +373,7 @@ def test_audit_persistence_failure_is_terminal_and_suppresses_success() -> None:
         audit_sink=BrokenSink(),  # type: ignore[arg-type]
         admissions=packet().admissions,
         budget=child.RequestBudget(2),
+        numeric_authority="127.0.0.1",
     )
 
     response = target.handle_get("/health", admitted_headers())
