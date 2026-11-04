@@ -205,6 +205,11 @@ ProtectedActionFactory = Callable[
     tuple[Mapping[str, Any] | None, Mapping[str, Any]],
 ]
 
+# Controller-private material sources may retain an immutable slot and its
+# preparation in one protected-store transaction. The browser cannot provide
+# this callback or any of the trusted preparation values passed into it.
+ProtectedPreparationRetainer = Callable[..., Mapping[str, Any]]
+
 
 @dataclass(frozen=True, slots=True)
 class EngineActionPreparationPlan:
@@ -215,6 +220,7 @@ class EngineActionPreparationPlan:
     expires_at: str
     protected_factory: ProtectedActionFactory
     approval_request: Mapping[str, Any] | None = None
+    retain_preparation: ProtectedPreparationRetainer | None = None
 
 
 class TrustedEngineActionPreparer(Protocol):
@@ -317,7 +323,12 @@ class EngineActionPreparationCoordinator:
             fresh_workspace = dict(json_clone(self._workspace_source.workspace(experiment_id)))
             if fresh_workspace != workspace:
                 raise ResourceConflictError("engine action workspace changed")
-            protected = self._history.create_engine_action_preparation(
+            retain_preparation = (
+                self._history.create_engine_action_preparation
+                if plan.retain_preparation is None
+                else plan.retain_preparation
+            )
+            protected = retain_preparation(
                 experiment_id=experiment.experiment_id,
                 experiment_revision=experiment.revision,
                 experiment_digest=experiment.digest,
@@ -829,6 +840,7 @@ __all__ = [
     "PreparedEngineAction",
     "PreparedEngineActionLimits",
     "ProtectedActionFactory",
+    "ProtectedPreparationRetainer",
     "TrustedEngineActionPreparer",
     "engine_action_contract",
 ]

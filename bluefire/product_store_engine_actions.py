@@ -1004,6 +1004,47 @@ class EngineActionPreparationStoreMixin:
         error rolls back both the preparation and its pending approval row.
         """
 
+        with self._connection(write=True) as connection:
+            return EngineActionPreparationStoreMixin._create_engine_action_preparation_at(
+                self,
+                connection,
+                experiment_id=experiment_id,
+                experiment_revision=experiment_revision,
+                experiment_digest=experiment_digest,
+                workspace_digest=workspace_digest,
+                action=action,
+                limits=limits,
+                prepared_at=prepared_at,
+                expires_at=expires_at,
+                protected_factory=protected_factory,
+                approval_request=approval_request,
+            )
+
+    def _create_engine_action_preparation_at(
+        self: EngineActionProductStore,
+        connection: sqlite3.Connection,
+        *,
+        experiment_id: str,
+        experiment_revision: int,
+        experiment_digest: str,
+        workspace_digest: str,
+        action: EngineWorkspaceAction,
+        limits: PreparedEngineActionLimits | Mapping[str, Any],
+        prepared_at: str,
+        expires_at: str,
+        protected_factory: ProtectedActionFactory,
+        approval_request: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        """Retain a preparation in the caller's existing write transaction.
+
+        Private slot issuance uses this implementation so the preparation and
+        approval remain owned here and commit atomically with their material.
+        The caller must use the store's ``BEGIN IMMEDIATE`` connection.
+        """
+
+        if not connection.in_transaction:
+            raise ProductStoreError("engine action preparation requires one transaction")
+
         if not isinstance(experiment_id, str) or _EXPERIMENT_ID.fullmatch(experiment_id) is None:
             raise ProductStoreError("engine action experiment identity is invalid")
         if (
@@ -1037,221 +1078,223 @@ class EngineActionPreparationStoreMixin:
         elif any(value is not None for value in checked_limits.to_dict().values()):
             raise ProductStoreError("controller action cannot claim engine limits")
 
-        with self._connection(write=True) as connection:
-            current_time = parse_iso8601_datetime(utc_now())
-            if expiry_time <= current_time:
-                raise ProductStoreError("engine action preparation is already expired")
-            if not 0 <= (current_time - prepared_time).total_seconds() <= 60:
-                raise ProductStoreError("engine action preparation time is not current")
-            head = connection.execute(
-                """
-                SELECT head.active_revision, head.active_digest, version.document_json
-                FROM engine_experiment_heads AS head
-                JOIN engine_experiment_versions AS version
-                  ON version.experiment_id = head.experiment_id
-                 AND version.revision = head.active_revision
-                WHERE head.experiment_id = ?
-                """,
-                (experiment_id,),
-            ).fetchone()
-            if (
-                head is None
-                or int(head["active_revision"]) != experiment_revision
-                or str(head["active_digest"]) != experiment_digest
-            ):
-                raise ResourceConflictError("engine action experiment head changed")
-            try:
-                experiment = EngineExperiment._from_controller_mapping(
-                    json.loads(str(head["document_json"]))
-                )
-            except (EngineExperimentError, TypeError, ValueError) as exc:
-                raise ProductStoreError("engine action experiment is invalid") from exc
-            if experiment.digest != experiment_digest:
-                raise ProductStoreError("engine action experiment digest changed")
-            reviewed_plan = _retained_review_plan(
-                connection,
-                action=action,
-                experiment=experiment,
+        current_time = parse_iso8601_datetime(utc_now())
+        if expiry_time <= current_time:
+            raise ProductStoreError("engine action preparation is already expired")
+        if prepared_time > current_time:
+            raise ProductStoreError("engine action preparation time is not current")
+        head = connection.execute(
+            """
+            SELECT head.active_revision, head.active_digest, version.document_json
+            FROM engine_experiment_heads AS head
+            JOIN engine_experiment_versions AS version
+              ON version.experiment_id = head.experiment_id
+             AND version.revision = head.active_revision
+            WHERE head.experiment_id = ?
+            """,
+            (experiment_id,),
+        ).fetchone()
+        if (
+            head is None
+            or int(head["active_revision"]) != experiment_revision
+            or str(head["active_digest"]) != experiment_digest
+        ):
+            raise ResourceConflictError("engine action experiment head changed")
+        try:
+            experiment = EngineExperiment._from_controller_mapping(
+                json.loads(str(head["document_json"]))
             )
-            latest = connection.execute(
-                """
-                SELECT * FROM engine_action_preparations
-                WHERE experiment_id = ? AND experiment_revision = ?
-                  AND experiment_digest = ? AND workspace_digest = ?
-                  AND action_kind = ?
-                ORDER BY generation DESC LIMIT 1
-                """,
-                (
-                    experiment_id,
-                    experiment_revision,
-                    experiment_digest,
-                    workspace_digest,
-                    action.value,
-                ),
-            ).fetchone()
-            if (
-                latest is not None
-                and parse_iso8601_datetime(str(latest["expires_at"])) > current_time
-            ):
-                requested_approval_digest = (
-                    None if checked_approval is None else content_hash(checked_approval)
-                )
-                if (
-                    canonical_json(checked_limits.to_dict()) != latest["limits_json"]
-                    or content_hash(checked_limits.to_dict()) != latest["limits_digest"]
-                    or expires_at != latest["expires_at"]
-                    or requested_approval_digest != latest["approval_review_binding_digest"]
-                ):
-                    raise ResourceConflictError(
-                        "unexpired engine action preparation has different review inputs"
-                    )
-                return EngineActionPreparationStoreMixin._protected_engine_action_from_row(
-                    latest,
-                    experiment,
-                    _approval_document(self, connection, latest["approval_request_id"]),
-                    reviewed_plan=reviewed_plan,
-                )
-            generation = 1 if latest is None else int(latest["generation"]) + 1
-            approval: Mapping[str, Any] | None = None
-            if checked_approval is not None:
-                approval = self._create_approval_request_at(
-                    connection,
-                    run_id=checked_approval["run_id"],
-                    state_digest=checked_approval["state_digest"],
-                    plan_digest=checked_approval["plan_digest"],
-                    profile_id=checked_approval["profile_id"],
-                    target_scope_digest=checked_approval["target_scope_digest"],
-                    maximum_tier=checked_approval["maximum_tier"],
-                    expires_at=checked_approval["expires_at"],
-                )
-            submission_id = (
-                str(uuid.uuid4())
-                if preparation_kind
-                in {
-                    EnginePreparedActionKind.ENGINE_ATTEMPT,
-                    EnginePreparedActionKind.CONTROLLER_JOB,
-                }
-                else None
-            )
-            job_request, raw_authority = protected_factory(approval, submission_id)
-            if not isinstance(raw_authority, Mapping):
-                raise ProductStoreError("protected engine authority is invalid")
-            if submission_id is None:
-                if job_request is not None:
-                    raise ProductStoreError("controller transition cannot carry a job request")
-                intent_digest = None
-            else:
-                if not isinstance(job_request, Mapping):
-                    raise ProductStoreError("prepared job request is unavailable")
-                intent_digest = content_hash(job_request)
-            approval_id = None if approval is None else approval.get("approval_id")
-            authority = _protected_authority(
-                raw_authority,
-                action=action,
-                experiment=experiment,
-                prepared_at=prepared_at,
-                reviewed_plan=reviewed_plan,
-                approval_id=cast(str | None, approval_id),
-                approval_record=approval,
-                limits=checked_limits,
-                job_request=job_request,
-            )
-            protected = _safe_protected(
-                {
-                    "schema_version": _PROTECTED_SCHEMA,
-                    "experiment_id": experiment_id,
-                    "experiment_revision": experiment_revision,
-                    "experiment_digest": experiment_digest,
-                    "workspace_digest": workspace_digest,
-                    "action_kind": action.value,
-                    "preparation_kind": preparation_kind.value,
-                    "approval_request_id": approval_id,
-                    "submission_id": submission_id,
-                    "job_request": None if job_request is None else dict(job_request),
-                    "authority": authority,
-                }
-            )
-            protected_digest = content_hash(protected)
-            approval_review_digest = (
+        except (EngineExperimentError, TypeError, ValueError) as exc:
+            raise ProductStoreError("engine action experiment is invalid") from exc
+        if experiment.digest != experiment_digest:
+            raise ProductStoreError("engine action experiment digest changed")
+        reviewed_plan = _retained_review_plan(
+            connection,
+            action=action,
+            experiment=experiment,
+        )
+        latest = connection.execute(
+            """
+            SELECT * FROM engine_action_preparations
+            WHERE experiment_id = ? AND experiment_revision = ?
+              AND experiment_digest = ? AND workspace_digest = ?
+              AND action_kind = ?
+            ORDER BY generation DESC LIMIT 1
+            """,
+            (
+                experiment_id,
+                experiment_revision,
+                experiment_digest,
+                workspace_digest,
+                action.value,
+            ),
+        ).fetchone()
+        if latest is not None and parse_iso8601_datetime(str(latest["expires_at"])) > current_time:
+            requested_approval_digest = (
                 None if checked_approval is None else content_hash(checked_approval)
             )
-            limits_document = checked_limits.to_dict()
-            limits_json = canonical_json(limits_document)
-            limits_digest = content_hash(limits_document)
-            ref_binding = {
-                "schema_version": "bluefire.engine-action-preparation-ref.v1",
+            if (
+                canonical_json(checked_limits.to_dict()) != latest["limits_json"]
+                or content_hash(checked_limits.to_dict()) != latest["limits_digest"]
+                or prepared_at != latest["prepared_at"]
+                or expires_at != latest["expires_at"]
+                or requested_approval_digest != latest["approval_review_binding_digest"]
+            ):
+                raise ResourceConflictError(
+                    "unexpired engine action preparation has different review inputs"
+                )
+            return EngineActionPreparationStoreMixin._protected_engine_action_from_row(
+                latest,
+                experiment,
+                _approval_document(self, connection, latest["approval_request_id"]),
+                reviewed_plan=reviewed_plan,
+            )
+        # Only an exact unexpired durable acknowledgement can outlive this
+        # creation window. Its original timestamp and all review inputs were
+        # checked above; a new preparation never receives a refreshed time.
+        if not 0 <= (current_time - prepared_time).total_seconds() <= 60:
+            raise ProductStoreError("engine action preparation time is not current")
+        generation = 1 if latest is None else int(latest["generation"]) + 1
+        approval: Mapping[str, Any] | None = None
+        if checked_approval is not None:
+            approval = self._create_approval_request_at(
+                connection,
+                run_id=checked_approval["run_id"],
+                state_digest=checked_approval["state_digest"],
+                plan_digest=checked_approval["plan_digest"],
+                profile_id=checked_approval["profile_id"],
+                target_scope_digest=checked_approval["target_scope_digest"],
+                maximum_tier=checked_approval["maximum_tier"],
+                expires_at=checked_approval["expires_at"],
+            )
+        submission_id = (
+            str(uuid.uuid4())
+            if preparation_kind
+            in {
+                EnginePreparedActionKind.ENGINE_ATTEMPT,
+                EnginePreparedActionKind.CONTROLLER_JOB,
+            }
+            else None
+        )
+        job_request, raw_authority = protected_factory(approval, submission_id)
+        if not isinstance(raw_authority, Mapping):
+            raise ProductStoreError("protected engine authority is invalid")
+        if submission_id is None:
+            if job_request is not None:
+                raise ProductStoreError("controller transition cannot carry a job request")
+            intent_digest = None
+        else:
+            if not isinstance(job_request, Mapping):
+                raise ProductStoreError("prepared job request is unavailable")
+            intent_digest = content_hash(job_request)
+        approval_id = None if approval is None else approval.get("approval_id")
+        authority = _protected_authority(
+            raw_authority,
+            action=action,
+            experiment=experiment,
+            prepared_at=prepared_at,
+            reviewed_plan=reviewed_plan,
+            approval_id=cast(str | None, approval_id),
+            approval_record=approval,
+            limits=checked_limits,
+            job_request=job_request,
+        )
+        protected = _safe_protected(
+            {
+                "schema_version": _PROTECTED_SCHEMA,
                 "experiment_id": experiment_id,
                 "experiment_revision": experiment_revision,
                 "experiment_digest": experiment_digest,
                 "workspace_digest": workspace_digest,
-                "generation": generation,
                 "action_kind": action.value,
                 "preparation_kind": preparation_kind.value,
-                "protected_request_digest": protected_digest,
-                "limits_digest": limits_digest,
                 "approval_request_id": approval_id,
-                "approval_review_binding_digest": approval_review_digest,
                 "submission_id": submission_id,
-                "intent_digest": intent_digest,
-                "prepared_at": prepared_at,
-                "expires_at": expires_at,
+                "job_request": None if job_request is None else dict(job_request),
+                "authority": authority,
             }
-            request_ref = content_hash(ref_binding)
-            row_without_digest = {
-                **ref_binding,
-                "request_ref": request_ref,
-                "protected_request": protected,
-                "limits": limits_document,
-                "requires_approval": requires_approval,
-            }
-            record_digest = content_hash(row_without_digest)
-            connection.execute(
-                """
-                INSERT INTO engine_action_preparations(
-                    request_ref, experiment_id, experiment_revision,
-                    experiment_digest, workspace_digest, generation,
-                    action_kind, preparation_kind, protected_request_json,
-                    protected_request_digest, limits_json, limits_digest,
-                    requires_approval, approval_request_id,
-                    approval_review_binding_digest, submission_id, intent_digest,
-                    prepared_at, expires_at, record_digest
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    request_ref,
-                    experiment_id,
-                    experiment_revision,
-                    experiment_digest,
-                    workspace_digest,
-                    generation,
-                    action.value,
-                    preparation_kind.value,
-                    canonical_json(protected),
-                    protected_digest,
-                    limits_json,
-                    limits_digest,
-                    int(requires_approval),
-                    approval_id,
-                    approval_review_digest,
-                    submission_id,
-                    intent_digest,
-                    prepared_at,
-                    expires_at,
-                    record_digest,
-                ),
-            )
-            saved = connection.execute(
-                "SELECT * FROM engine_action_preparations WHERE request_ref = ?",
-                (request_ref,),
-            ).fetchone()
-            if saved is None:  # pragma: no cover - SQLite insert invariant
-                raise ProductStoreError("engine action preparation was not retained")
-            return EngineActionPreparationStoreMixin._protected_engine_action_from_row(
-                saved,
-                experiment,
-                _approval_document(self, connection, saved["approval_request_id"]),
-                reviewed_plan=reviewed_plan,
-            )
+        )
+        protected_digest = content_hash(protected)
+        approval_review_digest = (
+            None if checked_approval is None else content_hash(checked_approval)
+        )
+        limits_document = checked_limits.to_dict()
+        limits_json = canonical_json(limits_document)
+        limits_digest = content_hash(limits_document)
+        ref_binding = {
+            "schema_version": "bluefire.engine-action-preparation-ref.v1",
+            "experiment_id": experiment_id,
+            "experiment_revision": experiment_revision,
+            "experiment_digest": experiment_digest,
+            "workspace_digest": workspace_digest,
+            "generation": generation,
+            "action_kind": action.value,
+            "preparation_kind": preparation_kind.value,
+            "protected_request_digest": protected_digest,
+            "limits_digest": limits_digest,
+            "approval_request_id": approval_id,
+            "approval_review_binding_digest": approval_review_digest,
+            "submission_id": submission_id,
+            "intent_digest": intent_digest,
+            "prepared_at": prepared_at,
+            "expires_at": expires_at,
+        }
+        request_ref = content_hash(ref_binding)
+        row_without_digest = {
+            **ref_binding,
+            "request_ref": request_ref,
+            "protected_request": protected,
+            "limits": limits_document,
+            "requires_approval": requires_approval,
+        }
+        record_digest = content_hash(row_without_digest)
+        connection.execute(
+            """
+            INSERT INTO engine_action_preparations(
+                request_ref, experiment_id, experiment_revision,
+                experiment_digest, workspace_digest, generation,
+                action_kind, preparation_kind, protected_request_json,
+                protected_request_digest, limits_json, limits_digest,
+                requires_approval, approval_request_id,
+                approval_review_binding_digest, submission_id, intent_digest,
+                prepared_at, expires_at, record_digest
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                request_ref,
+                experiment_id,
+                experiment_revision,
+                experiment_digest,
+                workspace_digest,
+                generation,
+                action.value,
+                preparation_kind.value,
+                canonical_json(protected),
+                protected_digest,
+                limits_json,
+                limits_digest,
+                int(requires_approval),
+                approval_id,
+                approval_review_digest,
+                submission_id,
+                intent_digest,
+                prepared_at,
+                expires_at,
+                record_digest,
+            ),
+        )
+        saved = connection.execute(
+            "SELECT * FROM engine_action_preparations WHERE request_ref = ?",
+            (request_ref,),
+        ).fetchone()
+        if saved is None:  # pragma: no cover - SQLite insert invariant
+            raise ProductStoreError("engine action preparation was not retained")
+        return EngineActionPreparationStoreMixin._protected_engine_action_from_row(
+            saved,
+            experiment,
+            _approval_document(self, connection, saved["approval_request_id"]),
+            reviewed_plan=reviewed_plan,
+        )
 
     def get_protected_engine_action_preparation(
         self: EngineActionProductStore, request_ref: str

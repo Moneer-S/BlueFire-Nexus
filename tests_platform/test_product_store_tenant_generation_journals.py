@@ -340,7 +340,7 @@ def test_v17_to_v18_preserves_all_existing_data_including_acceptances(tmp_path: 
     _as_v17(store)
     before = _existing_data(store.path)
     upgraded = ProductStore(store.path)
-    assert upgraded.schema_version == SCHEMA_VERSION == 18
+    assert upgraded.schema_version == SCHEMA_VERSION == 19
     assert _existing_data(store.path) == before
     assert _create(upgraded)["revision"] == 1
     assert _existing_data(store.path) == before

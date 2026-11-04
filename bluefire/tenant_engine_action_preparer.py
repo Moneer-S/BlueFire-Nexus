@@ -5,11 +5,11 @@ an already running generation.  They must never allocate an admission, start a
 lab, acquire a credential, or execute a request.  Missing material is a refusal;
 preparation is deliberately not a provisioning or recovery interface.
 
-An immutable material slot is retained before this module is called.  The first
-store materialization must use that slot's creation time; subsequent preparation
-requests reuse its exact identities, expiry and approval binding.  The existing
-store assigns and retains the submission identity atomically, then passes it to
-the pure protected factory.  Reconciliation has no admitted preparation here.
+The private issuer can retain a candidate slot atomically with its preparation.
+The first store materialization must use that material's creation time;
+subsequent requests reuse its exact identities, expiry and approval binding.
+The existing store assigns and retains the submission identity atomically,
+then passes it to the pure protected factory. Reconciliation is unavailable.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from .engine_action_preparation import (
     EngineActionPreparationError,
@@ -146,6 +146,18 @@ class ActiveTenantGenerationSource(Protocol):
     ) -> TenantRunningGeneration: ...
 
 
+class TenantActionMaterialIssuer(Protocol):
+    """Private atomic retention callback; browser requests supply no material."""
+
+    def retainer(
+        self,
+        *,
+        material: TenantActionPreparationMaterial,
+        experiment: EngineExperiment,
+        workspace_digest: str,
+    ) -> Callable[..., Mapping[str, Any]]: ...
+
+
 def _timestamp(value: str) -> str:
     parsed = parse_iso8601_datetime(value)
     if parsed.isoformat().replace("+00:00", "Z") != value:
@@ -181,11 +193,13 @@ class ControllerOwnedTenantActionPreparer:
         generation_source: ActiveTenantGenerationSource,
         runtime_resolver: StrixRuntimeAdmissionResolver,
         controller_jobs: EngineControllerJobs,
+        material_issuer: TenantActionMaterialIssuer | None = None,
     ) -> None:
         self._materials = material_source
         self._generations = generation_source
         self._resolver = runtime_resolver
         self._jobs = controller_jobs
+        self._issuer = material_issuer
 
     def prepare(
         self,
@@ -348,7 +362,18 @@ class ControllerOwnedTenantActionPreparer:
                 ) from exc
 
         return EngineActionPreparationPlan(
-            action, limits, material.expires_at, protected_factory, approval_request
+            action,
+            limits,
+            material.expires_at,
+            protected_factory,
+            approval_request,
+            None
+            if self._issuer is None
+            else self._issuer.retainer(
+                material=material,
+                experiment=experiment,
+                workspace_digest=workspace["workspace_digest"],
+            ),
         )
 
     def _read_material(

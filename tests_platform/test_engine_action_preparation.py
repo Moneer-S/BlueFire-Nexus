@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Mapping
 
 import pytest
@@ -181,6 +182,33 @@ def test_prepare_derives_one_current_action_and_rereads_before_persisting() -> N
     assert saved["workspace_digest"] == WORKSPACE_DIGEST
     assert saved["action"] is EngineWorkspaceAction.START_BASELINE
     assert "request_ref" not in saved and "command" not in saved
+
+
+def test_prepare_uses_trusted_atomic_retainer_after_rechecking_workspace() -> None:
+    experiment = _experiment()
+    history = _History(experiment)
+    source = _WorkspaceSource([_workspace(experiment)])
+    retained: list[Mapping[str, Any]] = []
+
+    def retain_preparation(**values: Any) -> Mapping[str, Any]:
+        assert source.calls == 2
+        retained.append(values)
+        return {"request_ref": REQUEST_REF}
+
+    class RetainingPreparer(_Preparer):
+        def prepare(self, **values):
+            return replace(super().prepare(**values), retain_preparation=retain_preparation)
+
+    result = _coordinator(history, source, RetainingPreparer()).prepare_request(
+        EXPERIMENT_ID, _request(experiment)
+    )
+
+    assert result["request_ref"] == REQUEST_REF
+    assert not history.created
+    assert len(retained) == 1
+    assert retained[0]["experiment_digest"] == experiment.digest
+    assert retained[0]["workspace_digest"] == WORKSPACE_DIGEST
+    assert retained[0]["prepared_at"] == PREPARED_AT
 
 
 @pytest.mark.parametrize(

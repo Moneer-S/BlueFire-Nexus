@@ -688,6 +688,57 @@ def test_exact_unexpired_retry_reuses_one_row_approval_and_submission(
         assert connection.execute("SELECT COUNT(*) FROM approval_requests").fetchone()[0] == 1
 
 
+def test_exact_delayed_retry_retains_its_original_time_without_factory_or_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    base = datetime.now(timezone.utc).replace(microsecond=0)
+    prepared_at, expires_at = _iso(base), _iso(base + timedelta(minutes=5))
+    monkeypatch.setattr(action_store, "utc_now", lambda: _iso(base))
+    calls: list[tuple[str, str]] = []
+    first = _create_attempt(store, prepared_at=prepared_at, expires_at=expires_at, calls=calls)
+
+    monkeypatch.setattr(action_store, "utc_now", lambda: _iso(base + timedelta(seconds=90)))
+    second = _create_attempt(store, prepared_at=prepared_at, expires_at=expires_at, calls=calls)
+
+    assert second == first
+    assert second["prepared_at"] == prepared_at
+    assert len(calls) == 1
+    with store._connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM approval_requests").fetchone()[0] == 1
+
+
+def test_shared_preparation_helper_refuses_a_connection_without_transaction(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    prepared_at, expires_at, _ = _times()
+    history = store.get_engine_experiment(EXPERIMENT_ID)
+    calls: list[tuple[str, str]] = []
+    factory, approval_request = _attempt_factory(store, prepared_at, expires_at, calls)
+
+    with store._connection() as connection:
+        with pytest.raises(ProductStoreError, match="requires one transaction"):
+            store._create_engine_action_preparation_at(
+                connection,
+                experiment_id=EXPERIMENT_ID,
+                experiment_revision=history["revision"],
+                experiment_digest=history["digest"],
+                workspace_digest=WORKSPACE_REF,
+                action=EngineWorkspaceAction.START_BASELINE,
+                limits=_limits(),
+                prepared_at=prepared_at,
+                expires_at=expires_at,
+                protected_factory=factory,
+                approval_request=approval_request,
+            )
+        assert connection.execute("SELECT COUNT(*) FROM approval_requests").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) FROM engine_action_preparations").fetchone()[0] == 0
+        )
+    assert not calls
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -1014,9 +1065,12 @@ def test_untyped_or_command_bearing_attempt_authority_is_rejected_atomically(
         assert connection.execute("SELECT COUNT(*) FROM approval_requests").fetchone()[0] == 0
 
 
-def test_preparation_refuses_future_server_time_without_writes(tmp_path: Path) -> None:
+@pytest.mark.parametrize("offset", [-61, 10])
+def test_preparation_refuses_noncurrent_server_time_without_writes(
+    tmp_path: Path, offset: int
+) -> None:
     store = _store(tmp_path)
-    prepared_at, expires_at, _ = _times(offset=10)
+    prepared_at, expires_at, _ = _times(offset=offset)
     history = store.get_engine_experiment(EXPERIMENT_ID)
     factory, approval_request = _attempt_factory(store, prepared_at, expires_at, [])
 
