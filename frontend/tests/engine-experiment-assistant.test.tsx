@@ -63,6 +63,7 @@ it("uses the strict engine context for an explanation-only durable request and s
 
   expect(await screen.findByText("Bounded tenant-record defense")).toBeVisible();
   expect(await screen.findByText(/Labeled test provider · application mechanics only/)).toBeVisible();
+  expect(screen.getByRole("group", { name: "Saved defense experiment summary" })).toHaveTextContent("Selected attempt: Baseline exploration · Completed");
   const user = userEvent.setup();
   await user.click(screen.getByText("Saved experiment evidence and source model"));
   expect(screen.getByText(/source model: provider.test \/ fixture-model/i)).toBeVisible();

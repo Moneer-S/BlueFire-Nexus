@@ -24,6 +24,8 @@
 .engine-phase-rail .is-recorded { color: var(--green); }
 .engine-phase-rail .is-current { color: var(--blue-soft); background: linear-gradient(180deg, color-mix(in srgb, var(--blue) 12%, transparent), transparent); box-shadow: inset 0 -2px 0 var(--blue); }
 .engine-phase-rail .is-current strong { color: var(--text); }
+.engine-outcome-first { min-width: 0; }
+.engine-outcome-first .engine-retest-comparison { box-shadow: 0 14px 38px color-mix(in srgb, var(--blue) 8%, transparent); }
 
 .engine-workspace-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 330px); gap: 18px; align-items: start; min-width: 0; }
 .engine-workspace-main, .engine-context-rail, .engine-checks, .engine-attempt-evidence { display: grid; gap: 16px; min-width: 0; }
@@ -141,6 +143,9 @@
 .engine-context-rail .data-list { margin: 0; }
 .engine-context-rail code { font-size: .72rem; overflow-wrap: anywhere; }
 .engine-context-rail > .panel > strong, .engine-context-rail > .panel > p { margin: 0; font-size: .8rem; line-height: 1.5; }
+.engine-context-summary { color: var(--muted-strong); }
+.engine-context-details { padding-top: 10px; border-top: 1px solid var(--line); }
+.engine-context-details .data-list { margin-top: 12px; }
 .engine-limitations ul { margin: 0; padding-left: 18px; }
 .engine-limitations li { margin-block: 8px; color: var(--muted-strong); font-size: .78rem; line-height: 1.45; }
 
@@ -152,6 +157,8 @@
   .engine-workspace-actions { justify-content: flex-start; }
   .engine-workspace-layout { grid-template-columns: minmax(0, 1fr); }
   .engine-context-rail { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .engine-context-rail > .panel { padding: 16px; }
+  .engine-context-rail .engine-context-details:not([open]) { padding-top: 8px; }
 }
 @container engine-workspace (max-width: 720px) {
   .engine-workspace-header { padding: 18px; }

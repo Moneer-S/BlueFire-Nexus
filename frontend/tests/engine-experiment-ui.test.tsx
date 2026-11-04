@@ -165,10 +165,10 @@ it("keeps controller checks separate and selects their exact saved context", () 
   expect(within(defense as HTMLElement).getByText("Rollback operation")).toBeInTheDocument();
 });
 
-it("moves focus to newly revealed selected details without focusing on initial load", () => {
+it("focuses route-selected detail on initial load and when the route selection changes", () => {
   const initial = experiment();
   const view = render(<MemoryRouter><EngineExperimentWorkspace experiment={initial} selectedAttemptId={attemptId("4")} onSelectAttempt={vi.fn()} onSelectCheck={vi.fn()} /></MemoryRouter>);
-  expect(screen.getByText("Selected engine attempt").closest("section")).not.toHaveFocus();
+  expect(screen.getByText("Selected engine attempt").closest("section")).toHaveFocus();
 
   const selectedCheckId = `controller-check-${"c".repeat(32)}`;
   const next = experiment({ selectedContext: { kind: "controller_check", check: checkDetail() }, attempts: [attemptSummary("baseline", "4")] });
@@ -178,6 +178,29 @@ it("moves focus to newly revealed selected details without focusing on initial l
   const selectedDetailId = selectedButton.getAttribute("aria-controls");
   expect(selectedDetailId).toBeTruthy();
   expect(document.getElementById(selectedDetailId!)).toHaveFocus();
+});
+
+it("leads a completed experiment with its established outcome and recorded disposition", () => {
+  const value = experiment({ attempts: [attemptSummary("baseline", "4"), attemptSummary("adaptive_search", "6")] });
+  value.projection.workflow_state = "complete";
+  value.actions = [{ kind: "review_evidence", label: "Review evidence", enabled: true, reason: "Reviews actual attempts, controller checks, unknowns, and cleanup together.", primary: true }];
+
+  renderWorkspace(<EngineExperimentWorkspace experiment={value} selectedAttemptId={attemptId("4")} onSelectAttempt={vi.fn()} />);
+
+  expect(screen.queryByText("Next action is not available here")).not.toBeInTheDocument();
+  const phases = screen.getByRole("list", { name: "Experiment phases" });
+  const disposition = within(phases).getByText("Comparison and disposition").closest("li");
+  expect(disposition).toHaveTextContent("Complete");
+  expect(disposition).not.toHaveAttribute("aria-current");
+
+  const outcome = screen.getByLabelText("Established experiment outcome");
+  const attempts = screen.getByRole("heading", { name: "Engine attempts" }).closest("section");
+  expect(outcome.compareDocumentPosition(attempts!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+  const environment = screen.getByRole("heading", { name: "Disposable fixture lab" }).closest("section")!;
+  expect(within(environment).getByText("Fixture target")).toBeVisible();
+  expect(within(environment).getByText(digest("9"))).not.toBeVisible();
+  expect(within(environment).getByText("Exact target identity and provenance")).toBeVisible();
 });
 
 it("makes unknown target state visible and exposes only reconciliation", () => {

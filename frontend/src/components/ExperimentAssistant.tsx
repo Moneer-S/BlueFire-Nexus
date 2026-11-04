@@ -27,6 +27,7 @@ import type { CatalogResponse, DetectionCaseRole } from "../types";
 import { Button, ErrorState, Field, sentence } from "./Primitives";
 import { engineExperimentPath } from "../lib/engine-experiment-api";
 import { engineExperimentAssistanceContext, type EngineExperimentAssistanceSummary } from "../lib/engine-assistance";
+import { engineAttemptLabel, engineControllerCheckLabel } from "../lib/engine-experiment";
 import "./ExperimentAssistant.css";
 
 // The response heading's icon states what the operator should expect next.
@@ -465,12 +466,16 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
 
 function EngineExperimentAssistanceEvidence({ summary }: { summary: EngineExperimentAssistanceSummary }) {
   const selected = summary.selected_record;
+  const selectedLabel = selected
+    ? selected.kind === "engine_attempt" ? engineAttemptLabel(selected.role) : engineControllerCheckLabel(selected.role)
+    : null;
   const sourceProvider = summary.provider.test_provider
     ? "Labeled test provider · application mechanics only"
     : "Recorded source provider · live inference not established";
   return <>
     <div className="assistant-comparison-summary" role="group" aria-label="Saved defense experiment summary">
       <strong>{sentence(summary.conclusion.headline as string)}</strong>
+      {selected && selectedLabel ? <p><strong>Selected {selected.kind === "engine_attempt" ? "attempt" : "controller check"}:</strong> {selectedLabel} · {sentence(selected.state)}</p> : <p>Full saved experiment summary</p>}
       <p>{summary.independent_observations.length} independent observation{summary.independent_observations.length === 1 ? "" : "s"} · {summary.attempts.length} engine attempt{summary.attempts.length === 1 ? "" : "s"} · {summary.checks.length} controller check{summary.checks.length === 1 ? "" : "s"}</p>
       <p>{sourceProvider}</p>
     </div>
