@@ -28,6 +28,7 @@ from . import product_store_ai_authorizations as ai_authorization_store
 from . import product_store_capability_api as capability_store_api
 from . import product_store_detection_evaluations as detection_evaluation_store
 from . import product_store_engine_experiments as engine_experiment_store
+from . import product_store_engine_jobs as engine_job_store
 from . import product_store_file_access as file_access_store
 from . import product_store_proposal_reviews as proposal_review_store
 from .comparison_snapshot_store import list_legacy_resources, reject_generic_resource_write
@@ -259,6 +260,7 @@ class ApprovalRequest:
 
 
 class ProductStore(
+    engine_job_store.EngineExperimentJobStoreMixin,
     engine_experiment_store.EngineExperimentStoreMixin,
     capability_store_api.CapabilityStoreMixin,
     file_access_store.FileAccessStoreMixin,
