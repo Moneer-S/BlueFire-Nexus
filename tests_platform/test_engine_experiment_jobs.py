@@ -13,12 +13,17 @@ from bluefire.engine_attempt_contract import (
     EngineEvidenceItem,
 )
 from bluefire.engine_delegation import EngineCapabilityDelegation
-from bluefire.engine_experiment import CleanupState, EngineExperiment
+from bluefire.engine_experiment import (
+    CleanupState,
+    EngineExperiment,
+    _controller_observation_record,
+)
 from bluefire.engine_experiment_jobs import (
     EngineExperimentJobError,
     EngineExperimentJobs,
     EngineRuntimeSettlement,
 )
+from bluefire.evidence import EvidenceRecord
 from bluefire.util import content_hash
 from tests_platform.test_engine_experiment import (
     BASELINE_ATTEMPT,
@@ -26,11 +31,13 @@ from tests_platform.test_engine_experiment import (
     ENVIRONMENT_REF,
     EXPERIMENT_ID,
     INITIAL_SNAPSHOT,
+    MECHANISM_REF,
     OBJECTIVE_REF,
     SCOPE_REF,
     _binding,
     _digest,
     _new_experiment,
+    _tenant_observation,
 )
 
 SUBMISSION_ID = "11111111-1111-4111-8111-111111111111"
@@ -97,6 +104,7 @@ class _Repository:
         self.existing_submission: Mapping[str, Any] | None = None
         self.cancelled_job_ids: set[str] = set()
         self.cancel_settle_calls = 0
+        self.settlement_recoveries: list[bool] = []
 
     def get_engine_experiment_document(self, experiment_id: str):
         assert experiment_id == self.experiment.experiment_id
@@ -166,6 +174,7 @@ class _Repository:
 
     def compare_and_swap_engine_attempt_settlement(self, **values):
         self._cas(values)
+        self.settlement_recoveries.append(values["recovery"])
         self.experiment = self.experiment.settle_attempt(
             EngineAttemptRecord.from_mapping(values["record"]),
             engine_evidence=tuple(
@@ -176,6 +185,18 @@ class _Repository:
             cleanup_evidence_ref=values["cleanup_evidence_ref"],
             settled_at=values["settled_at"],
         )
+        for item in values["independent_observations"]:
+            observation = _controller_observation_record(
+                target_snapshot_ref=item["target_snapshot_ref"],
+                mechanism_ref=item["mechanism_ref"],
+                attempt_id=item["attempt_id"],
+                check_id=item["check_id"],
+                check_input_digest=item["check_input_digest"],
+                evidence=EvidenceRecord.from_mapping(item["evidence"]),
+            )
+            self.experiment = self.experiment.record_independent_observation(
+                observation, timestamp=values["settled_at"]
+            )
         return self.experiment.to_dict()
 
     def reconcile_engine_attempt_cleanup(self, **values):
@@ -212,11 +233,20 @@ class _Repository:
 
 
 class _Runtime:
-    def __init__(self, *, fail: bool = False, cancel: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        cancel: bool = False,
+        independent_observations=(),
+        reconcile_terminal: bool = False,
+    ) -> None:
         self.execute_calls = 0
         self.reconcile_calls = 0
         self.fail = fail
         self.cancel = cancel
+        self.independent_observations = tuple(independent_observations)
+        self.reconcile_terminal = reconcile_terminal
 
     def execute(self, context, binding, delegation, transition):
         del context
@@ -247,18 +277,28 @@ class _Runtime:
             cleanup_state=CleanupState.VERIFIED_ABSENT,
             cleanup_evidence_ref=_digest("b"),
             settled_at="2026-11-04T12:04:00Z",
+            independent_observations=self.independent_observations,
         )
 
     def reconcile(self, binding, delegation, saved_record):
         self.reconcile_calls += 1
         assert delegation.validate_attempt_binding(binding) == binding
+        record = saved_record
+        if self.reconcile_terminal:
+            record = saved_record.transition(
+                AttemptState.FAILED,
+                timestamp="2026-11-04T12:04:00Z",
+                completeness=AttemptCompleteness.UNKNOWN,
+                exit_reason="reconciled_after_interruption",
+            )
         return EngineRuntimeSettlement(
-            record=saved_record,
+            record=record,
             engine_evidence=(),
             artifact_manifest_ref=_digest("a"),
             cleanup_state=CleanupState.VERIFIED_ABSENT,
             cleanup_evidence_ref=_digest("c"),
             settled_at="2026-11-04T12:05:00Z",
+            independent_observations=self.independent_observations,
         )
 
 
@@ -319,6 +359,20 @@ def _authority():
     return binding, delegation, delegation.approval_binding(binding)
 
 
+def _independent_observation(*, timestamp: str = "2026-11-04T12:03:30Z"):
+    return _controller_observation_record(
+        target_snapshot_ref=INITIAL_SNAPSHOT,
+        mechanism_ref=MECHANISM_REF,
+        attempt_id=BASELINE_ATTEMPT,
+        evidence=_tenant_observation(
+            owner_id=BASELINE_ATTEMPT,
+            run_id=BASELINE_RUN,
+            timestamp=timestamp,
+            hardened=False,
+        ),
+    )
+
+
 def _jobs(runtime=None, *, controller=None, clock=None):
     selected_controller = _Controller() if controller is None else controller
     repository = _Repository(_new_experiment())
@@ -371,6 +425,121 @@ def test_idempotent_submission_executes_once_and_persists_cas_state() -> None:
     assert entry.delegation_digest == delegation.delegation_digest
     assert entry.execution_approval_digest == content_hash(approval.to_dict())
     assert entry.execution_approval_id == "approval-" + "1" * 32
+    assert repository.settlement_recoveries == [False]
+
+
+def test_runtime_settlement_atomically_persists_controller_observation() -> None:
+    observation = _independent_observation()
+    runtime = _Runtime(independent_observations=(observation,))
+    jobs, _controller, repository, _runtime = _jobs(runtime)
+    binding, delegation, approval = _authority()
+
+    _submit(jobs, binding, delegation, approval)
+
+    assert repository.experiment.independent_observations == (observation,)
+    assert repository.experiment.attempts[0].record.state is AttemptState.COMPLETED
+    assert repository.settlement_recoveries == [False]
+
+
+def test_runtime_settlement_rejects_duplicate_or_out_of_lifecycle_observations() -> None:
+    binding, _delegation, _approval = _authority()
+    preflight = EngineAttemptRecord.create(binding).transition(AttemptState.PREFLIGHT)
+    running = preflight.transition(
+        AttemptState.RUNNING,
+        upstream_session_id="strix-session-validation",
+        timestamp="2026-11-04T12:03:00Z",
+    )
+    terminal = running.transition(
+        AttemptState.COMPLETED,
+        timestamp="2026-11-04T12:04:00Z",
+        exit_code=0,
+        completeness=AttemptCompleteness.COMPLETE,
+        exit_reason="completed",
+    )
+    observation = _independent_observation()
+
+    duplicate = EngineRuntimeSettlement(
+        record=terminal,
+        engine_evidence=(),
+        artifact_manifest_ref=_digest("a"),
+        cleanup_state=CleanupState.VERIFIED_ABSENT,
+        cleanup_evidence_ref=_digest("b"),
+        settled_at="2026-11-04T12:04:30Z",
+        independent_observations=(observation, observation),
+    )
+    with pytest.raises(EngineExperimentJobError, match="reused"):
+        duplicate.validate(binding)
+
+    too_early = EngineRuntimeSettlement(
+        record=terminal,
+        engine_evidence=(),
+        artifact_manifest_ref=_digest("a"),
+        cleanup_state=CleanupState.VERIFIED_ABSENT,
+        cleanup_evidence_ref=_digest("b"),
+        settled_at="2026-11-04T12:04:30Z",
+        independent_observations=(_independent_observation(timestamp="2026-11-04T12:02:59Z"),),
+    )
+    with pytest.raises(EngineExperimentJobError, match="outside"):
+        too_early.validate(binding)
+
+
+def test_interrupted_reconciliation_marks_settlement_as_recovery() -> None:
+    controller = _Controller(run_callback=False)
+    runtime = _Runtime(
+        reconcile_terminal=True,
+        independent_observations=(_independent_observation(),),
+    )
+    jobs, _controller, repository, _runtime = _jobs(
+        runtime,
+        controller=controller,
+    )
+    binding, delegation, approval = _authority()
+    _submit(jobs, binding, delegation, approval)
+    queued = repository.experiment.attempts[0].record
+    preflight = queued.transition(AttemptState.PREFLIGHT)
+    running = preflight.transition(
+        AttemptState.RUNNING,
+        upstream_session_id="strix-session-recovery",
+        timestamp="2026-11-04T12:03:00Z",
+    )
+    repository.experiment = repository.experiment.update_attempt_record(
+        preflight,
+        timestamp="2026-11-04T12:02:30Z",
+    ).update_attempt_record(running, timestamp="2026-11-04T12:03:00Z")
+
+    recovered = jobs.reconcile_interrupted_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=BASELINE_ATTEMPT,
+    )
+
+    assert recovered["attempts"][0]["record"]["state"] == "failed"
+    assert repository.experiment.independent_observations
+    assert repository.settlement_recoveries == [True]
+
+
+def test_settled_reconciliation_accepts_only_exact_saved_observation_replay() -> None:
+    observation = _independent_observation()
+    runtime = _Runtime(independent_observations=(observation,))
+    jobs, _controller, repository, _runtime = _jobs(runtime)
+    binding, delegation, approval = _authority()
+    _submit(jobs, binding, delegation, approval)
+
+    replayed = jobs.reconcile_interrupted_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=BASELINE_ATTEMPT,
+    )
+
+    assert len(replayed["independent_observations"]) == 1
+    assert repository.experiment.independent_observations == (observation,)
+
+    runtime.independent_observations = (_independent_observation(timestamp="2026-11-04T12:03:31Z"),)
+    with pytest.raises(EngineExperimentJobError, match="separate verified publication"):
+        jobs.reconcile_interrupted_attempt(
+            experiment_id=EXPERIMENT_ID,
+            attempt_id=BASELINE_ATTEMPT,
+        )
+
+    assert repository.experiment.independent_observations == (observation,)
 
 
 def test_runtime_unavailable_fails_before_approval_or_job_reservation() -> None:

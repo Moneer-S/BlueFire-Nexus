@@ -1014,16 +1014,34 @@ class EngineExperimentJobStoreMixin:
         experiment_id: str,
         record: Mapping[str, Any],
         engine_evidence: Iterable[Mapping[str, Any]],
+        independent_observations: Iterable[Mapping[str, Any]] = (),
         artifact_manifest_ref: str | None,
         cleanup_state: str,
         cleanup_evidence_ref: str,
         settled_at: str,
         expected_revision: int,
         expected_experiment_digest: str,
+        recovery: bool = False,
     ) -> Mapping[str, Any]:
+        """Persist one exact terminal attempt and its preverified observations.
+
+        The installed controller must reopen the finalized RunStore bundle and
+        verify each byte-identical EvidenceRecord before calling this method.
+        ProductStore validates the controller attestation and experiment/job
+        bindings, but deliberately neither reads nor publishes RunStore data.
+        """
+
         parsed_record = _attempt_record(record)
         raw_evidence = tuple(engine_evidence)
         evidence = _engine_evidence(raw_evidence)
+        raw_observations = tuple(independent_observations)
+        if len(raw_observations) > 256:
+            raise ProductStoreError("engine settlement has too many independent observations")
+        observations = tuple(_controller_observation(value) for value in raw_observations)
+        if len({item.evidence_id for item in observations}) != len(observations):
+            raise ProductStoreError("engine settlement reuses an independent observation")
+        if type(recovery) is not bool:
+            raise ProductStoreError("engine settlement origin is invalid")
         try:
             cleanup = CleanupState(cleanup_state)
         except ValueError as exc:
@@ -1035,6 +1053,68 @@ class EngineExperimentJobStoreMixin:
                 expected_revision=expected_revision,
                 expected_digest=expected_experiment_digest,
             )
+            if len(experiment.independent_observations) + len(observations) > 256:
+                raise ProductStoreError(
+                    "engine settlement exceeds the independent observation limit"
+                )
+            saved_observation_ids = {
+                item.evidence_id for item in experiment.independent_observations
+            }
+            if any(item.evidence_id in saved_observation_ids for item in observations):
+                raise ProductStoreError("engine settlement reuses a saved independent observation")
+            try:
+                _index, current = experiment._attempt(parsed_record.binding.attempt_id)
+            except EngineExperimentError as exc:
+                raise ProductStoreError("engine settlement attempt was not found") from exc
+            job = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (current.job_id,)
+            ).fetchone()
+            allowed_states = (
+                {"failed", "cancelled", "interrupted"} if recovery else {"running", "cancelling"}
+            )
+            if job is None or job["kind"] != _ENGINE_JOB_KIND or job["state"] not in allowed_states:
+                raise ProductStoreError("engine settlement lacks its bound job in the exact state")
+            request, _submission = _saved_job_request(self, job)
+            expected_request = {
+                "schema_version": "bluefire.engine-attempt-job.v1",
+                "experiment_id": experiment.experiment_id,
+                "attempt_id": current.record.binding.attempt_id,
+                "binding_digest": current.record.binding_digest,
+                "delegation_digest": current.delegation_digest,
+                "execution_approval_digest": current.execution_approval_digest,
+                "execution_approval_id": current.execution_approval_id,
+            }
+            if current.job_id != job["job_id"] or request != expected_request:
+                raise ProductStoreError("engine settlement job differs from its exact attempt")
+            if observations:
+                if parsed_record.started_at is None or parsed_record.ended_at is None:
+                    raise ProductStoreError(
+                        "engine observations require a bounded attempt lifecycle"
+                    )
+                try:
+                    binding_created = parse_iso8601_datetime(parsed_record.binding.created_at)
+                    started = parse_iso8601_datetime(parsed_record.started_at)
+                    ended = parse_iso8601_datetime(parsed_record.ended_at)
+                    settled = parse_iso8601_datetime(settled_at)
+                    observed_times = tuple(
+                        parse_iso8601_datetime(item.evidence.timestamp) for item in observations
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ProductStoreError("engine observation time is invalid") from exc
+                for observation, observed in zip(observations, observed_times, strict=True):
+                    if (
+                        observation.attempt_id != parsed_record.binding.attempt_id
+                        or observation.check_id is not None
+                        or observation.check_input_digest is not None
+                        or observation.evidence.run_id != parsed_record.binding.run_id
+                        or observation.target_snapshot_ref
+                        != parsed_record.binding.target_snapshot_ref
+                        or observation.evidence.target_scope_ref != experiment.scope_ref
+                        or not binding_created <= started <= observed <= ended <= settled
+                    ):
+                        raise ProductStoreError(
+                            "engine observation differs from its exact attempt binding"
+                        )
             updated = experiment.settle_attempt(
                 parsed_record,
                 engine_evidence=evidence,
@@ -1043,7 +1123,15 @@ class EngineExperimentJobStoreMixin:
                 cleanup_evidence_ref=cleanup_evidence_ref,
                 settled_at=settled_at,
             )
-            return _append_experiment_at(connection, experiment, updated)
+            _append_experiment_at(connection, experiment, updated)
+            working = updated
+            for observation in observations:
+                next_value = working.record_independent_observation(
+                    observation, timestamp=settled_at
+                )
+                _append_experiment_at(connection, working, next_value)
+                working = next_value
+            return cast(Mapping[str, Any], working.to_dict())
 
     def compare_and_swap_engine_attempt_observation(
         self: EngineJobProductStore,
@@ -1162,6 +1250,31 @@ class EngineExperimentJobStoreMixin:
                 expected_revision=expected_revision,
                 expected_digest=expected_experiment_digest,
             )
+            try:
+                _index, current = experiment._attempt(attempt_id)
+            except EngineExperimentError as exc:
+                raise ProductStoreError("engine cleanup attempt was not found") from exc
+            job = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (current.job_id,)
+            ).fetchone()
+            if (
+                job is None
+                or job["kind"] != _ENGINE_JOB_KIND
+                or job["state"] not in {"completed", "failed", "cancelled", "interrupted"}
+            ):
+                raise ProductStoreError("engine cleanup lacks its terminal bound job")
+            request, _submission = _saved_job_request(self, job)
+            expected_request = {
+                "schema_version": "bluefire.engine-attempt-job.v1",
+                "experiment_id": experiment.experiment_id,
+                "attempt_id": current.record.binding.attempt_id,
+                "binding_digest": current.record.binding_digest,
+                "delegation_digest": current.delegation_digest,
+                "execution_approval_digest": current.execution_approval_digest,
+                "execution_approval_id": current.execution_approval_id,
+            }
+            if current.job_id != job["job_id"] or request != expected_request:
+                raise ProductStoreError("engine cleanup job differs from its exact attempt")
             updated = experiment.reconcile_attempt_cleanup(
                 attempt_id,
                 cleanup_state=cleanup,

@@ -32,7 +32,9 @@ from .engine_experiment import (
     CleanupState,
     EngineExperiment,
     EngineExperimentError,
+    IndependentObservationRecord,
 )
+from .evidence import EvidenceProvenance
 from .job_runtime import JobContext, JobResult
 from .util import content_hash, parse_iso8601_datetime
 
@@ -125,12 +127,14 @@ class EngineExperimentRepository(Protocol):
         experiment_id: str,
         record: Mapping[str, Any],
         engine_evidence: Iterable[Mapping[str, Any]],
+        independent_observations: Iterable[Mapping[str, Any]] = (),
         artifact_manifest_ref: str | None,
         cleanup_state: str,
         cleanup_evidence_ref: str,
         settled_at: str,
         expected_revision: int,
         expected_experiment_digest: str,
+        recovery: bool = False,
     ) -> Mapping[str, Any]: ...
 
     def reconcile_engine_attempt_cleanup(
@@ -186,12 +190,22 @@ class EngineAttemptRuntime(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class EngineRuntimeSettlement:
+    """One terminal runtime result ready for an atomic ProductStore append.
+
+    ``independent_observations`` are controller-attested references to evidence
+    the caller already reopened and verified byte-for-byte in a finalized
+    RunStore bundle.  This value carries that verified result across the
+    ProductStore transaction boundary; it does not publish or verify RunStore
+    evidence itself.
+    """
+
     record: EngineAttemptRecord
     engine_evidence: tuple[EngineEvidenceItem, ...]
     artifact_manifest_ref: str | None
     cleanup_state: CleanupState
     cleanup_evidence_ref: str
     settled_at: str
+    independent_observations: tuple[IndependentObservationRecord, ...] = ()
 
     def validate(self, binding: EngineAttemptBinding) -> None:
         if (
@@ -216,6 +230,56 @@ class EngineRuntimeSettlement:
             for item in self.engine_evidence
         ):
             raise EngineExperimentJobError("runtime returned invalid engine evidence")
+        observations = self.independent_observations
+        if not isinstance(observations, tuple) or len(observations) > 256:
+            raise EngineExperimentJobError("runtime returned too many independent observations")
+        observation_ids: set[str] = set()
+        for observation in observations:
+            try:
+                observation.validate()
+            except (AttributeError, EngineExperimentError, TypeError, ValueError) as exc:
+                raise EngineExperimentJobError(
+                    "runtime returned an invalid independent observation"
+                ) from exc
+            evidence = observation.evidence
+            if (
+                observation.attempt_id != binding.attempt_id
+                or observation.check_id is not None
+                or observation.check_input_digest is not None
+                or observation.target_snapshot_ref != binding.target_snapshot_ref
+                or evidence.run_id != binding.run_id
+                or evidence.target_scope_ref != binding.scope_ref
+                or evidence.provenance is not EvidenceProvenance.OBSERVED
+                or evidence.content.get("independent_observation") is not True
+                or evidence.content.get("engine_assertion") is not False
+            ):
+                raise EngineExperimentJobError(
+                    "runtime observation differs from its attempt binding"
+                )
+            if evidence.evidence_id in observation_ids:
+                raise EngineExperimentJobError("runtime reused an independent observation")
+            observation_ids.add(evidence.evidence_id)
+        if observations:
+            if self.record.started_at is None or self.record.ended_at is None:
+                raise EngineExperimentJobError(
+                    "runtime observations require a bounded attempt lifecycle"
+                )
+            try:
+                binding_created = parse_iso8601_datetime(binding.created_at)
+                started = parse_iso8601_datetime(self.record.started_at)
+                ended = parse_iso8601_datetime(self.record.ended_at)
+                settled = parse_iso8601_datetime(self.settled_at)
+                observed = tuple(
+                    parse_iso8601_datetime(item.evidence.timestamp) for item in observations
+                )
+            except ValueError as exc:
+                raise EngineExperimentJobError("runtime observation time is invalid") from exc
+            if not binding_created <= started <= ended <= settled or any(
+                timestamp < started or timestamp > ended for timestamp in observed
+            ):
+                raise EngineExperimentJobError(
+                    "runtime observation falls outside its attempt lifecycle"
+                )
         if self.cleanup_state is CleanupState.PENDING:
             raise EngineExperimentJobError("runtime settlement left cleanup pending")
         if not isinstance(
@@ -614,6 +678,19 @@ class EngineExperimentJobs:
                 raise EngineExperimentJobError(
                     "recovery attempted to rewrite a settled engine outcome"
                 )
+            saved_observations = {
+                item.evidence_id: item
+                for item in experiment.independent_observations
+                if item.attempt_id == attempt_id
+            }
+            if any(
+                (saved := saved_observations.get(item.evidence_id)) is None
+                or saved.to_dict() != item.to_dict()
+                for item in settlement.independent_observations
+            ):
+                raise EngineExperimentJobError(
+                    "settled recovery observations require separate verified publication"
+                )
             return self._repository.reconcile_engine_attempt_cleanup(
                 experiment_id=experiment.experiment_id,
                 attempt_id=attempt_id,
@@ -623,7 +700,7 @@ class EngineExperimentJobs:
                 expected_revision=experiment.revision,
                 expected_experiment_digest=experiment.digest,
             )
-        return self._cas_settlement(experiment, settlement).to_dict()
+        return self._cas_settlement(experiment, settlement, recovery=True).to_dict()
 
     def settle_undispatched_cancellation(
         self,
@@ -834,19 +911,27 @@ class EngineExperimentJobs:
         return EngineExperiment._from_controller_mapping(value)
 
     def _cas_settlement(
-        self, experiment: EngineExperiment, settlement: EngineRuntimeSettlement
+        self,
+        experiment: EngineExperiment,
+        settlement: EngineRuntimeSettlement,
+        *,
+        recovery: bool = False,
     ) -> EngineExperiment:
         settlement.validate(settlement.record.binding)
         value = self._repository.compare_and_swap_engine_attempt_settlement(
             experiment_id=experiment.experiment_id,
             record=settlement.record.to_dict(),
             engine_evidence=(item.to_dict() for item in settlement.engine_evidence),
+            independent_observations=(
+                item.to_dict() for item in settlement.independent_observations
+            ),
             artifact_manifest_ref=settlement.artifact_manifest_ref,
             cleanup_state=settlement.cleanup_state.value,
             cleanup_evidence_ref=settlement.cleanup_evidence_ref,
             settled_at=settlement.settled_at,
             expected_revision=experiment.revision,
             expected_experiment_digest=experiment.digest,
+            recovery=recovery,
         )
         return EngineExperiment._from_controller_mapping(value)
 
