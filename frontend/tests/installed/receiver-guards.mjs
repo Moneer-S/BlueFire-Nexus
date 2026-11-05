@@ -39,6 +39,13 @@ export function createReceiverReloadContextCorrelation(matchesNavigation, matche
 
 const terminalCompositionStates = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
+export function receiverCompositionSettledAttempt(objective, jobId) {
+  return Boolean(objective?.attempts?.some(attempt => attempt?.job_id === jobId
+    && attempt.state === "completed"
+    && attempt.progress?.settlement === "settled"
+    && attempt.progress?.verified_result));
+}
+
 export function receiverCompositionCleanupState(objective) {
   if (!objective || typeof objective !== "object" || Array.isArray(objective)
     || !objective.owner || typeof objective.owner !== "object" || Array.isArray(objective.owner)

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { receiverCompositionCleanupState } from "./receiver-guards.mjs";
+import { receiverCompositionCleanupState, receiverCompositionSettledAttempt } from "./receiver-guards.mjs";
 
 const owner = { job_id: "job-" + "a".repeat(32), state: "completed", progress: { admission: { accepted: true } } };
 const attempt = {
@@ -24,4 +24,18 @@ test("missing grant is conclusive only for a completed refused admission", () =>
   assert.equal(receiverCompositionCleanupState({ owner: { ...owner, progress: {} }, grant: null, attempts: [] }), "unresolved");
   assert.equal(receiverCompositionCleanupState({ owner: { ...owner, progress: { admission: { accepted: false } } }, grant: null, attempts: [] }), "no_grant");
   assert.equal(receiverCompositionCleanupState({ owner: { ...owner, progress: { admission: { accepted: false } } }, grant: null, attempts: [attempt] }), "unresolved");
+});
+
+test("composition attempt waits through published settlement until the child is completed", () => {
+  const jobId = "job-" + "b".repeat(32);
+  const published = { attempts: [{ job_id: jobId, state: "running", progress: {
+    settlement: "settled", verified_result: { objective: { established: false } },
+  } }] };
+  assert.equal(receiverCompositionSettledAttempt(published, jobId), false);
+  assert.equal(receiverCompositionSettledAttempt({ ...published, attempts: [{
+    ...published.attempts[0], state: "completed",
+  }] }, jobId), true);
+  assert.equal(receiverCompositionSettledAttempt({ ...published, attempts: [{
+    ...published.attempts[0], state: "failed",
+  }] }, jobId), false);
 });

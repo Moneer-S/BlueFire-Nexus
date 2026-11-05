@@ -138,6 +138,44 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
         "pending_kind": {"none", "grant", "proposal", "attempt", "other", "unavailable", "missing"},
         "grant_status": {"active", "paused", "revoked", "expired", "other", "missing"},
         "grant_time": {"expired", "under_30_seconds", "over_30_seconds", "unknown"},
+        "response_error_code": {
+            "invalid_service_response",
+            "service_error",
+            "composition_refused",
+            "conflict",
+            "not_found",
+            "other",
+            "missing",
+        },
+        "checkpoint": {
+            "response_json",
+            "response_ok",
+            "owner_binding",
+            "wait_terminal",
+            "child_state",
+            "verified_result",
+            "run_binding",
+            "other",
+            "missing",
+        },
+        "child_state": {
+            "queued",
+            "planning",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted",
+            "other",
+            "missing",
+        },
+        "child_settlement": {
+            "settled",
+            "pending_cleanup",
+            "interrupted_unusable",
+            "other",
+            "missing",
+        },
     }
     interaction_booleans = (
         "route_matches",
@@ -178,6 +216,9 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                 item = interaction.get(field)
                 if type(item) is bool or item is None:
                     safe[field] = item
+            status = interaction.get("response_status")
+            if status is None or type(status) is int and 100 <= status <= 599:
+                safe["response_status"] = status
             if safe:
                 row["composition_interaction"] = safe
         retained = entry.get("retained_interaction")

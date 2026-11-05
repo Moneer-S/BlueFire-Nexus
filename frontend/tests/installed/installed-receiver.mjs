@@ -26,6 +26,7 @@ import {
   receiverOwnerContextMatches,
   receiverApprovalAcknowledgementName,
   receiverCompositionCleanupState,
+  receiverCompositionSettledAttempt,
   sameJson as same,
 } from "./receiver-guards.mjs";
 import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
@@ -212,6 +213,9 @@ let prepareHttpDiagnostic;
 let pendingPreparationFailure;
 let compositionInteractionStep = "reconcile";
 let compositionInteractionUi;
+let compositionAttemptResponseStatus;
+let compositionAttemptResponseErrorCode;
+let compositionAttemptCheckpoint;
 let retainedInteraction;
 let retainedVerification;
 const settingsReadAllowed = createReceiverSettingsReadPolicy();
@@ -1804,16 +1808,25 @@ try {
   compositionInteractionStep = "click";
   await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).click();
   compositionInteractionStep = "response";
-  latestCompositionObjective = await (await attemptResponse).json();
+  const completedResponse = await attemptResponse;
+  compositionAttemptResponseStatus = completedResponse.status();
+  compositionAttemptCheckpoint = "response_json";
+  latestCompositionObjective = await completedResponse.json();
+  compositionAttemptResponseErrorCode = latestCompositionObjective?.error?.code;
   compositionInteractionStep = "settlement";
+  compositionAttemptCheckpoint = "response_ok";
+  assert.equal(completedResponse.ok(), true);
+  compositionAttemptCheckpoint = "owner_binding";
   assert.equal(latestCompositionObjective.owner?.job_id, compositionOwnerId);
-  const settledComposition = await waitComposition(value => value.attempts?.some(attempt =>
-    attempt.job_id === compositionAttemptJobId && attempt.progress?.settlement === "settled"
-      && attempt.progress?.verified_result));
+  compositionAttemptCheckpoint = "wait_terminal";
+  const settledComposition = await waitComposition(value =>
+    receiverCompositionSettledAttempt(value, compositionAttemptJobId));
   const composedAttempt = settledComposition.attempts.find(attempt => attempt.job_id === compositionAttemptJobId);
   const binding = composedAttempt?.request?.composition_attempt;
   const verified = composedAttempt?.progress?.verified_result;
+  compositionAttemptCheckpoint = "child_state";
   assert.equal(composedAttempt?.state, "completed");
+  compositionAttemptCheckpoint = "verified_result";
   assert.equal(binding?.parent_job_id, compositionOwnerId);
   assert.equal(binding?.grant_id, grantId);
   assert.equal(binding?.grant_digest, settledComposition.grant.document.grant_digest);
@@ -1843,6 +1856,7 @@ try {
     run_cleaned: true, receiver_closed: true,
   });
   stage = "composition-finalized-run-read";
+  compositionAttemptCheckpoint = "run_binding";
   const finalizedComposedRun = await appApi(`/runs/${encodeURIComponent(binding.run_id)}`);
   stage = "composition-finalized-run-binding";
   assert.equal(finalizedComposedRun.schema_version, "bluefire.run-result.v1");
@@ -2314,7 +2328,12 @@ try {
     compositionInteractionUi = await compositionUiSnapshot("failure");
     failure.composition_interaction = receiverCompositionInteractionDiagnostic(
       compositionInteractionStep, compositionInteractionUi, latestCompositionObjective,
-      latestCompositionContext, latestCompositionProposal, Date.now(),
+      latestCompositionContext, latestCompositionProposal, Date.now(), {
+        job_id: compositionAttemptJobId,
+        response_status: compositionAttemptResponseStatus,
+        response_error_code: compositionAttemptResponseErrorCode,
+        checkpoint: compositionAttemptCheckpoint,
+      },
     );
   }
   if (stage.endsWith("-preparation") && currentPhase && receiverJobId) {
