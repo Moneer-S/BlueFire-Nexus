@@ -857,9 +857,9 @@ def _ownership(
 ) -> DockerOwnership:
     return DockerOwnership.create(
         daemon_instance_digest=state.ownership.daemon_instance_digest,
-        pending_container_ids=pending
-        if pending is not None
-        else state.ownership.pending_container_ids,
+        pending_container_ids=(
+            pending if pending is not None else state.ownership.pending_container_ids
+        ),
         container_ids=containers if containers is not None else state.ownership.container_ids,
         exec_bindings=exec_bindings if exec_bindings is not None else state.ownership.exec_bindings,
     )
@@ -1395,9 +1395,11 @@ class DockerPolicyProxy:
                         request_ref=request_ref,
                         sequence=sequence,
                         phase="suppressed" if transport_entered else "refused",
-                        outcome="response_refused"
-                        if response_digest is not None
-                        else ("transport_failed" if transport_entered else "protocol_refused"),
+                        outcome=(
+                            "response_refused"
+                            if response_digest is not None
+                            else ("transport_failed" if transport_entered else "protocol_refused")
+                        ),
                         operation=operation,
                         request_digest=request_digest,
                         response_digest=response_digest,

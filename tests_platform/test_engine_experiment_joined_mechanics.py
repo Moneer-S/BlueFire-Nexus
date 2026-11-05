@@ -548,9 +548,9 @@ class _CheckExecutor:
 
     def reconcile(self, check: ControllerCheckRecord) -> ControllerCheckRecovery:
         return ControllerCheckRecovery(
-            settlement=self._settlement(check)
-            if check.state is ControllerCheckState.RESERVED
-            else None,
+            settlement=(
+                self._settlement(check) if check.state is ControllerCheckState.RESERVED else None
+            ),
             cleanup_state=CleanupState.VERIFIED_ABSENT,
             cleanup_evidence_ref=_digest("4"),
             reconciled_at=self.timeline(),

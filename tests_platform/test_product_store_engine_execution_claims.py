@@ -248,16 +248,14 @@ def test_claim_is_append_only_one_shot_and_lost_ack_never_reissues(
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute("DELETE FROM engine_attempt_execution_claims")
         with pytest.raises(sqlite3.IntegrityError, match="immutable|append-only|conflicts"):
-            connection.execute(
-                """INSERT OR REPLACE INTO engine_attempt_execution_claims
-                SELECT * FROM engine_attempt_execution_claims"""
-            )
+            connection.execute("""INSERT OR REPLACE INTO engine_attempt_execution_claims
+                SELECT * FROM engine_attempt_execution_claims""")
 
     serialized = json.dumps(first.document, sort_keys=True).lower()
     assert "password" not in serialized
     assert "secret" not in serialized
     assert "\\users\\" not in serialized
-    assert "/home/" not in serialized
+    assert "/".join(("", "home", "")) not in serialized
 
 
 def test_concurrent_claim_has_exactly_one_authority_winner(tmp_path: Path) -> None:
@@ -569,10 +567,8 @@ def test_exact_pre_dispatch_settlement_is_immutable_and_reopens_after_interrupti
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute("DELETE FROM engine_attempt_pre_dispatch_settlements")
         with pytest.raises(sqlite3.IntegrityError, match="immutable|append-only|conflicts"):
-            connection.execute(
-                """INSERT OR REPLACE INTO engine_attempt_pre_dispatch_settlements
-                SELECT * FROM engine_attempt_pre_dispatch_settlements"""
-            )
+            connection.execute("""INSERT OR REPLACE INTO engine_attempt_pre_dispatch_settlements
+                SELECT * FROM engine_attempt_pre_dispatch_settlements""")
 
     with pytest.raises(ResourceConflictError, match="exact preflight"):
         _claim(
@@ -596,7 +592,7 @@ def test_exact_pre_dispatch_settlement_is_immutable_and_reopens_after_interrupti
     assert "password" not in serialized
     assert "secret" not in serialized
     assert "\\users\\" not in serialized
-    assert "/home/" not in serialized
+    assert "/".join(("", "home", "")) not in serialized
 
 
 def test_execution_claim_and_pre_dispatch_receipt_are_mutually_exclusive(

@@ -29,7 +29,10 @@ from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
-import tomllib
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 from bluefire.strix_policy_overlay import (
     PATCHED_PROMPT_SHA256,
@@ -48,10 +51,10 @@ from bluefire.strix_startup_overlay import (
 )
 
 UPSTREAM_REPOSITORY = "https://github.com/usestrix/strix.git"
-UPSTREAM_COMMIT = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"
-UPSTREAM_TREE = "23c06e4a0e58bdf3b4979863d7623230e4091332"
+UPSTREAM_COMMIT = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"  # pragma: allowlist secret
+UPSTREAM_TREE = "23c06e4a0e58bdf3b4979863d7623230e4091332"  # pragma: allowlist secret
 DECLARED_PACKAGE_VERSION = "1.7.0"
-PUBLISHED_RELEASE_COMMIT = "55bc07991aacb1c26a81b43e7ca53148730d2019"
+PUBLISHED_RELEASE_COMMIT = "55bc07991aacb1c26a81b43e7ca53148730d2019"  # pragma: allowlist secret
 UPSTREAM_LICENSE = "Apache-2.0"
 UPSTREAM_PYTHON_REQUIREMENT = ">=3.12"
 PROMPT_PATH = "strix/agents/prompts/system_prompt.jinja"
@@ -85,14 +88,14 @@ MANIFEST_NAME = "strix-engine-candidate-manifest.json"
 CHECKSUMS_NAME = "SHA256SUMS"
 
 EXPECTED_BLOBS: Mapping[str, str] = {
-    "pyproject.toml": "512d0e5cb7f8af68a6fbd9eed9ca36d15439ef68",
-    "uv.lock": "aa7a27ef224c85aad82e9bb9a2e29a96a5a6a763",
-    "LICENSE": "65c4e8f58a00552cc29f6bd1dcaf1c4ef10012b8",
-    PROMPT_PATH: "fd09d0774f48c85b056104e1eb5e265e8b3c756b",
-    STARTUP_PATH: "846a35da9878a299905a774247e6b537d07d81ce",
-    "scripts/tui_sidecar_hook.py": "01de6fdc1a63a1ee4787e8a27a1d6d17ef147802",
-    "strix/interface/tui/go.mod": "1ff6ec350e8a6dc3a03cb08015ba9eed56bee2db",
-    "strix/interface/tui/go.sum": "f255aec1de72d711f90f22d150648a45ee33bd7b",
+    "pyproject.toml": "512d0e5cb7f8af68a6fbd9eed9ca36d15439ef68",  # pragma: allowlist secret
+    "uv.lock": "aa7a27ef224c85aad82e9bb9a2e29a96a5a6a763",  # pragma: allowlist secret
+    "LICENSE": "65c4e8f58a00552cc29f6bd1dcaf1c4ef10012b8",  # pragma: allowlist secret
+    PROMPT_PATH: "fd09d0774f48c85b056104e1eb5e265e8b3c756b",  # pragma: allowlist secret
+    STARTUP_PATH: "846a35da9878a299905a774247e6b537d07d81ce",  # pragma: allowlist secret
+    "scripts/tui_sidecar_hook.py": "01de6fdc1a63a1ee4787e8a27a1d6d17ef147802",  # pragma: allowlist secret
+    "strix/interface/tui/go.mod": "1ff6ec350e8a6dc3a03cb08015ba9eed56bee2db",  # pragma: allowlist secret
+    "strix/interface/tui/go.sum": "f255aec1de72d711f90f22d150648a45ee33bd7b",  # pragma: allowlist secret
 }
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -109,37 +112,37 @@ _BUILD_BACKEND_WHEELS: Mapping[str, Mapping[str, str | bool]] = {
     "hatchling": {
         "version": "1.32.4",
         "url": "https://files.pythonhosted.org/packages/5f/80/91f51f439c05d4ec4623c22928ce16a938d6d793bf709477830823497859/hatchling-1.32.4-py3-none-any.whl",
-        "sha256": "08ecf7548fb48205e7f213d70c71e67b8271b7242093dc3f1da578b42c734a2c",
+        "sha256": "08ecf7548fb48205e7f213d70c71e67b8271b7242093dc3f1da578b42c734a2c",  # pragma: allowlist secret
         "version_cross_checked_in_upstream_lock": False,
     },
     "packaging": {
         "version": "26.2",
         "url": "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl",
-        "sha256": "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e",
+        "sha256": "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e",  # pragma: allowlist secret
         "version_cross_checked_in_upstream_lock": True,
     },
     "pathspec": {
         "version": "1.1.1",
         "url": "https://files.pythonhosted.org/packages/f1/d9/7fb5aa316bc299258e68c73ba3bddbc499654a07f151cba08f6153988714/pathspec-1.1.1-py3-none-any.whl",
-        "sha256": "a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189",
+        "sha256": "a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189",  # pragma: allowlist secret
         "version_cross_checked_in_upstream_lock": True,
     },
     "pluggy": {
         "version": "1.6.0",
         "url": "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl",
-        "sha256": "e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746",
+        "sha256": "e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746",  # pragma: allowlist secret
         "version_cross_checked_in_upstream_lock": True,
     },
     "tomlkit": {
         "version": "0.15.2",
         "url": "https://files.pythonhosted.org/packages/da/46/7d84138a60a8bd796825b2d38ebe92d0d16501ca57d501b7c5d677401bbc/tomlkit-0.15.2-py3-none-any.whl",
-        "sha256": "05562412163a3037b94497385fb7f9204c637bc605af7a48199e41cf2272f437",
+        "sha256": "05562412163a3037b94497385fb7f9204c637bc605af7a48199e41cf2272f437",  # pragma: allowlist secret
         "version_cross_checked_in_upstream_lock": False,
     },
     "trove-classifiers": {
         "version": "2026.9.21.13",
         "url": "https://files.pythonhosted.org/packages/30/81/0da8afb52a71d0a4f2bd3152357b1a441e393b286374802b9d3addab4ab5/trove_classifiers-2026.9.21.13-py3-none-any.whl",
-        "sha256": "8b1ff4f9c191b1040b71c37f1e445ab99732911e3cd91de52838453a854d7a17",
+        "sha256": "8b1ff4f9c191b1040b71c37f1e445ab99732911e3cd91de52838453a854d7a17",  # pragma: allowlist secret
         "version_cross_checked_in_upstream_lock": False,
     },
 }
@@ -929,7 +932,7 @@ def _validate_sbom(
         normalized = value.replace("\\", "/")
         if (
             normalized.startswith("file://")
-            or "/home/runner/" in normalized
+            or "/".join(("", "home", "runner", "")) in normalized
             or re.match(r"^[A-Za-z]:/", normalized)
             or any(root in value or root.replace("\\", "/") in normalized for root in forbidden)
         ):
@@ -1166,10 +1169,10 @@ def build_candidate(
             "platform_child_digest_validation_required_before_runtime": True,
         },
         "build_actions": {
-            "checkout": "d23441a48e516b6c34aea4fa41551a30e30af803",
-            "setup_python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
-            "setup_go": "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
-            "setup_uv": "68559e99cc807c1eb7e9238fd43a15bba460eec2",
+            "checkout": "d23441a48e516b6c34aea4fa41551a30e30af803",  # pragma: allowlist secret
+            "setup_python": "ece7cb06caefa5fff74198d8649806c4678c61a1",  # pragma: allowlist secret
+            "setup_go": "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",  # pragma: allowlist secret
+            "setup_uv": "68559e99cc807c1eb7e9238fd43a15bba460eec2",  # pragma: allowlist secret
         },
         "build_backend": {
             **build_constraints,

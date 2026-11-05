@@ -210,7 +210,11 @@ class _Method:
     digest_fields: tuple[str, ...]
 
 
-_BASE_REQUEST = (("schema_version", "str"), ("request_digest", "digest"), ("identity_digest", "digest"))
+_BASE_REQUEST = (
+    ("schema_version", "str"),
+    ("request_digest", "digest"),
+    ("identity_digest", "digest"),
+)
 _BASE_RECEIPT = _BASE_REQUEST
 _HANDLE = (("handle", "handle"),)
 _RESOURCE_RECEIPT = _BASE_RECEIPT + (("resource_digest", "digest"),)
@@ -231,101 +235,320 @@ _LIFECYCLE_RECEIPT = _BASE_RECEIPT + (
     ("operation_lifecycle", "operation_lifecycle"),
 )
 _LIFECYCLE_BODY = (
-    "resource_digest", "operation_digest", "relay_digest", "relay_upstream_digest",
-    "relay_channel_digest", "relay_retry_digest", "observation_id",
+    "resource_digest",
+    "operation_digest",
+    "relay_digest",
+    "relay_upstream_digest",
+    "relay_channel_digest",
+    "relay_retry_digest",
+    "observation_id",
 )
 _BLOB_REQUEST = _BASE_REQUEST + (
-    ("operation_id", "operation"), ("handle", "handle"), ("byte_limit", "object_limit"),
-    ("archive", "optional_archive"), ("archive_digest", "optional_digest"),
+    ("operation_id", "operation"),
+    ("handle", "handle"),
+    ("byte_limit", "object_limit"),
+    ("archive", "optional_archive"),
+    ("archive_digest", "optional_digest"),
 )
 
 # Every accepted method and every serialized field appears in this literal table.
-METHODS: Mapping[str, _Method] = MappingProxyType({
-    "create_exact": _Method(
-        backend.ControlledCreateRequest, backend.ControlledCreateReceipt, "create",
-        _BASE_REQUEST + (
-            ("attempt_id", "attempt"), ("profile_digest", "digest"),
-            ("image_reference", "image"), ("image_digest", "digest"),
-            ("manifest_digest", "digest"), ("sandbox_user", "sandbox_user"),
-            ("read_only_root", "true"), ("tmpfs_contract_digest", "digest"),
-            ("exposed_ports", "caido_ports"), ("host_port_mode", "relay_only"),
+METHODS: Mapping[str, _Method] = MappingProxyType(
+    {
+        "create_exact": _Method(
+            backend.ControlledCreateRequest,
+            backend.ControlledCreateReceipt,
+            "create",
+            _BASE_REQUEST
+            + (
+                ("attempt_id", "attempt"),
+                ("profile_digest", "digest"),
+                ("image_reference", "image"),
+                ("image_digest", "digest"),
+                ("manifest_digest", "digest"),
+                ("sandbox_user", "sandbox_user"),
+                ("read_only_root", "true"),
+                ("tmpfs_contract_digest", "digest"),
+                ("exposed_ports", "caido_ports"),
+                ("host_port_mode", "relay_only"),
+            ),
+            _BASE_RECEIPT + (("handle", "handle"), ("lifecycle", "running")),
+            (
+                "image_reference",
+                "image_digest",
+                "manifest_digest",
+                "sandbox_user",
+                "read_only_root",
+                "tmpfs_contract_digest",
+                "exposed_ports",
+                "host_port_mode",
+            ),
         ),
-        _BASE_RECEIPT + (("handle", "handle"), ("lifecycle", "running")),
-        ("image_reference", "image_digest", "manifest_digest", "sandbox_user", "read_only_root", "tmpfs_contract_digest", "exposed_ports", "host_port_mode"),
-    ),
-    "reconcile_create": _Method(backend.ControlledLifecycleRequest, backend.ControlledLifecycleReceipt, "reconcile-create", _LIFECYCLE_REQUEST, _LIFECYCLE_RECEIPT, _LIFECYCLE_BODY),
-    "exec_exact": _Method(
-        backend.ControlledExecRequest, backend.ControlledExecReceipt, "exec",
-        _BASE_REQUEST + (("operation_id", "operation"),) + _HANDLE + (
-            ("argv", "argv"), ("timeout_seconds", "timeout"),
-            ("working_directory", "workspace_root"), ("stdin_mode", "disabled"),
-            ("pty", "false"),
+        "reconcile_create": _Method(
+            backend.ControlledLifecycleRequest,
+            backend.ControlledLifecycleReceipt,
+            "reconcile-create",
+            _LIFECYCLE_REQUEST,
+            _LIFECYCLE_RECEIPT,
+            _LIFECYCLE_BODY,
         ),
-        _RESOURCE_RECEIPT + (
-            ("exit_code", "exit_code"), ("stdout_digest", "digest"),
-            ("stderr_digest", "digest"), ("stdout", "output"),
-            ("stderr", "output"), ("complete", "true"),
+        "exec_exact": _Method(
+            backend.ControlledExecRequest,
+            backend.ControlledExecReceipt,
+            "exec",
+            _BASE_REQUEST
+            + (("operation_id", "operation"),)
+            + _HANDLE
+            + (
+                ("argv", "argv"),
+                ("timeout_seconds", "timeout"),
+                ("working_directory", "workspace_root"),
+                ("stdin_mode", "disabled"),
+                ("pty", "false"),
+            ),
+            _RESOURCE_RECEIPT
+            + (
+                ("exit_code", "exit_code"),
+                ("stdout_digest", "digest"),
+                ("stderr_digest", "digest"),
+                ("stdout", "output"),
+                ("stderr", "output"),
+                ("complete", "true"),
+            ),
+            (
+                "resource_digest",
+                "operation_id",
+                "argv",
+                "timeout_seconds",
+                "working_directory",
+                "stdin_mode",
+                "pty",
+            ),
         ),
-        ("resource_digest", "operation_id", "argv", "timeout_seconds", "working_directory", "stdin_mode", "pty"),
-    ),
-    "cancel_exact": _Method(backend.ControlledLifecycleRequest, backend.ControlledLifecycleReceipt, "cancel", _LIFECYCLE_REQUEST, _LIFECYCLE_RECEIPT, _LIFECYCLE_BODY),
-    "read_exact": _Method(
-        backend.ControlledReadRequest, backend.ControlledReadReceipt, "read",
-        _BASE_REQUEST + (("observation_id", "observation"),) + _HANDLE + (("workspace_path", "path"), ("byte_limit", "object_limit")),
-        _RESOURCE_RECEIPT + (("workspace_path", "path"), ("content_digest", "digest"), ("content", "archive"), ("regular_file", "true"), ("canonical", "true")),
-        ("resource_digest", "observation_id", "workspace_path", "byte_limit"),
-    ),
-    "begin_write_exact": _Method(
-        backend.ControlledWriteBeginRequest, backend.ControlledWriteBeginReceipt, "write-begin",
-        _BASE_REQUEST + (("operation_id", "operation"),) + _HANDLE + (("workspace_path", "path"), ("content_size", "size"), ("content_digest", "digest"), ("chunk_size", "chunk_size")),
-        _RESOURCE_RECEIPT + (("transfer_id", "transfer"), ("next_offset", "size")),
-        ("resource_digest", "operation_id", "workspace_path", "content_size", "content_digest", "chunk_size"),
-    ),
-    "write_chunk_exact": _Method(
-        backend.ControlledWriteChunkRequest, backend.ControlledWriteChunkReceipt, "write-chunk",
-        _BASE_REQUEST + (("operation_id", "operation"),) + _HANDLE + (("transfer_id", "transfer"), ("index", "index"), ("offset", "size"), ("total_size", "size"), ("content_digest", "digest"), ("chunk_digest", "digest"), ("chunk", "chunk")),
-        _RESOURCE_RECEIPT + (("transfer_id", "transfer"), ("chunk_digest", "digest"), ("next_offset", "size")),
-        ("resource_digest", "operation_id", "transfer_id", "index", "offset", "total_size", "content_digest", "chunk_digest"),
-    ),
-    "commit_write_exact": _Method(
-        backend.ControlledWriteCommitRequest, backend.ControlledWriteCommitReceipt, "write-commit",
-        _BASE_REQUEST + (("operation_id", "operation"),) + _HANDLE + (("transfer_id", "transfer"), ("workspace_path", "path"), ("content_size", "size"), ("content_digest", "digest")),
-        _RESOURCE_RECEIPT + (("transfer_id", "transfer"), ("workspace_path", "path"), ("content_size", "size"), ("content_digest", "digest"), ("atomically_published", "true")),
-        ("resource_digest", "operation_id", "transfer_id", "workspace_path", "content_size", "content_digest"),
-    ),
-    "reconcile_write_exact": _Method(
-        backend.ControlledWriteReconcileRequest, backend.ControlledWriteReconcileReceipt, "write-reconcile",
-        _BASE_REQUEST + (("operation_id", "operation"),) + _HANDLE + (("transfer_id", "optional_transfer"), ("workspace_path", "path"), ("content_size", "size"), ("content_digest", "digest")),
-        _RESOURCE_RECEIPT + (("operation_id", "operation"), ("workspace_path", "path"), ("content_size", "size"), ("content_digest", "digest"), ("outcome", "write_outcome"), ("transfer_lifecycle", "transfer_lifecycle")),
-        ("resource_digest", "operation_id", "transfer_id", "workspace_path", "content_size", "content_digest"),
-    ),
-    "abort_write_exact": _Method(
-        backend.ControlledWriteAbortRequest, backend.ControlledLifecycleReceipt, "write-abort",
-        _BASE_REQUEST + (("operation_id", "operation"),) + _HANDLE + (("transfer_id", "transfer"),),
-        _LIFECYCLE_RECEIPT,
-        ("resource_digest", "operation_id", "transfer_id"),
-    ),
-    "running_exact": _Method(backend.ControlledLifecycleRequest, backend.ControlledLifecycleReceipt, "running", _LIFECYCLE_REQUEST, _LIFECYCLE_RECEIPT, _LIFECYCLE_BODY),
-    "persist_exact": _Method(
-        backend.ControlledWorkspaceBlobRequest, backend.ControlledWorkspaceBlobReceipt, "persist",
-        _BLOB_REQUEST,
-        _RESOURCE_RECEIPT + (("archive_digest", "digest"), ("archive_size", "size"), ("archive", "archive"), ("sealed", "true")),
-        ("resource_digest", "operation_id", "byte_limit"),
-    ),
-    "hydrate_exact": _Method(
-        backend.ControlledWorkspaceBlobRequest, backend.ControlledHydrateReceipt, "hydrate",
-        _BLOB_REQUEST,
-        _RESOURCE_RECEIPT + (("archive_digest", "digest"), ("applied", "true")),
-        ("resource_digest", "operation_id", "byte_limit", "archive_digest", "archive_size"),
-    ),
-    "resolve_caido_exact": _Method(
-        backend.ControlledPortRequest, backend.ControlledPortReceipt, "port",
-        _BASE_REQUEST + _HANDLE + (("container_port", "caido_port"), ("relay_digest", "digest"), ("upstream_digest", "digest"), ("channel_digest", "digest"), ("retry_contract_digest", "digest")),
-        _RESOURCE_RECEIPT + (("container_port", "caido_port"), ("relay_digest", "digest"), ("upstream_digest", "digest"), ("channel_digest", "digest"), ("retry_contract_digest", "digest"), ("retry_count", "zero"), ("host", "loopback"), ("port", "port"), ("tls", "false"), ("published_host_port", "false")),
-        ("resource_digest", "container_port", "relay_digest", "upstream_digest", "channel_digest", "retry_contract_digest"),
-    ),
-    "delete_exact": _Method(backend.ControlledLifecycleRequest, backend.ControlledLifecycleReceipt, "delete", _LIFECYCLE_REQUEST, _LIFECYCLE_RECEIPT, _LIFECYCLE_BODY),
-})
+        "cancel_exact": _Method(
+            backend.ControlledLifecycleRequest,
+            backend.ControlledLifecycleReceipt,
+            "cancel",
+            _LIFECYCLE_REQUEST,
+            _LIFECYCLE_RECEIPT,
+            _LIFECYCLE_BODY,
+        ),
+        "read_exact": _Method(
+            backend.ControlledReadRequest,
+            backend.ControlledReadReceipt,
+            "read",
+            _BASE_REQUEST
+            + (("observation_id", "observation"),)
+            + _HANDLE
+            + (("workspace_path", "path"), ("byte_limit", "object_limit")),
+            _RESOURCE_RECEIPT
+            + (
+                ("workspace_path", "path"),
+                ("content_digest", "digest"),
+                ("content", "archive"),
+                ("regular_file", "true"),
+                ("canonical", "true"),
+            ),
+            ("resource_digest", "observation_id", "workspace_path", "byte_limit"),
+        ),
+        "begin_write_exact": _Method(
+            backend.ControlledWriteBeginRequest,
+            backend.ControlledWriteBeginReceipt,
+            "write-begin",
+            _BASE_REQUEST
+            + (("operation_id", "operation"),)
+            + _HANDLE
+            + (
+                ("workspace_path", "path"),
+                ("content_size", "size"),
+                ("content_digest", "digest"),
+                ("chunk_size", "chunk_size"),
+            ),
+            _RESOURCE_RECEIPT + (("transfer_id", "transfer"), ("next_offset", "size")),
+            (
+                "resource_digest",
+                "operation_id",
+                "workspace_path",
+                "content_size",
+                "content_digest",
+                "chunk_size",
+            ),
+        ),
+        "write_chunk_exact": _Method(
+            backend.ControlledWriteChunkRequest,
+            backend.ControlledWriteChunkReceipt,
+            "write-chunk",
+            _BASE_REQUEST
+            + (("operation_id", "operation"),)
+            + _HANDLE
+            + (
+                ("transfer_id", "transfer"),
+                ("index", "index"),
+                ("offset", "size"),
+                ("total_size", "size"),
+                ("content_digest", "digest"),
+                ("chunk_digest", "digest"),
+                ("chunk", "chunk"),
+            ),
+            _RESOURCE_RECEIPT
+            + (("transfer_id", "transfer"), ("chunk_digest", "digest"), ("next_offset", "size")),
+            (
+                "resource_digest",
+                "operation_id",
+                "transfer_id",
+                "index",
+                "offset",
+                "total_size",
+                "content_digest",
+                "chunk_digest",
+            ),
+        ),
+        "commit_write_exact": _Method(
+            backend.ControlledWriteCommitRequest,
+            backend.ControlledWriteCommitReceipt,
+            "write-commit",
+            _BASE_REQUEST
+            + (("operation_id", "operation"),)
+            + _HANDLE
+            + (
+                ("transfer_id", "transfer"),
+                ("workspace_path", "path"),
+                ("content_size", "size"),
+                ("content_digest", "digest"),
+            ),
+            _RESOURCE_RECEIPT
+            + (
+                ("transfer_id", "transfer"),
+                ("workspace_path", "path"),
+                ("content_size", "size"),
+                ("content_digest", "digest"),
+                ("atomically_published", "true"),
+            ),
+            (
+                "resource_digest",
+                "operation_id",
+                "transfer_id",
+                "workspace_path",
+                "content_size",
+                "content_digest",
+            ),
+        ),
+        "reconcile_write_exact": _Method(
+            backend.ControlledWriteReconcileRequest,
+            backend.ControlledWriteReconcileReceipt,
+            "write-reconcile",
+            _BASE_REQUEST
+            + (("operation_id", "operation"),)
+            + _HANDLE
+            + (
+                ("transfer_id", "optional_transfer"),
+                ("workspace_path", "path"),
+                ("content_size", "size"),
+                ("content_digest", "digest"),
+            ),
+            _RESOURCE_RECEIPT
+            + (
+                ("operation_id", "operation"),
+                ("workspace_path", "path"),
+                ("content_size", "size"),
+                ("content_digest", "digest"),
+                ("outcome", "write_outcome"),
+                ("transfer_lifecycle", "transfer_lifecycle"),
+            ),
+            (
+                "resource_digest",
+                "operation_id",
+                "transfer_id",
+                "workspace_path",
+                "content_size",
+                "content_digest",
+            ),
+        ),
+        "abort_write_exact": _Method(
+            backend.ControlledWriteAbortRequest,
+            backend.ControlledLifecycleReceipt,
+            "write-abort",
+            _BASE_REQUEST
+            + (("operation_id", "operation"),)
+            + _HANDLE
+            + (("transfer_id", "transfer"),),
+            _LIFECYCLE_RECEIPT,
+            ("resource_digest", "operation_id", "transfer_id"),
+        ),
+        "running_exact": _Method(
+            backend.ControlledLifecycleRequest,
+            backend.ControlledLifecycleReceipt,
+            "running",
+            _LIFECYCLE_REQUEST,
+            _LIFECYCLE_RECEIPT,
+            _LIFECYCLE_BODY,
+        ),
+        "persist_exact": _Method(
+            backend.ControlledWorkspaceBlobRequest,
+            backend.ControlledWorkspaceBlobReceipt,
+            "persist",
+            _BLOB_REQUEST,
+            _RESOURCE_RECEIPT
+            + (
+                ("archive_digest", "digest"),
+                ("archive_size", "size"),
+                ("archive", "archive"),
+                ("sealed", "true"),
+            ),
+            ("resource_digest", "operation_id", "byte_limit"),
+        ),
+        "hydrate_exact": _Method(
+            backend.ControlledWorkspaceBlobRequest,
+            backend.ControlledHydrateReceipt,
+            "hydrate",
+            _BLOB_REQUEST,
+            _RESOURCE_RECEIPT + (("archive_digest", "digest"), ("applied", "true")),
+            ("resource_digest", "operation_id", "byte_limit", "archive_digest", "archive_size"),
+        ),
+        "resolve_caido_exact": _Method(
+            backend.ControlledPortRequest,
+            backend.ControlledPortReceipt,
+            "port",
+            _BASE_REQUEST
+            + _HANDLE
+            + (
+                ("container_port", "caido_port"),
+                ("relay_digest", "digest"),
+                ("upstream_digest", "digest"),
+                ("channel_digest", "digest"),
+                ("retry_contract_digest", "digest"),
+            ),
+            _RESOURCE_RECEIPT
+            + (
+                ("container_port", "caido_port"),
+                ("relay_digest", "digest"),
+                ("upstream_digest", "digest"),
+                ("channel_digest", "digest"),
+                ("retry_contract_digest", "digest"),
+                ("retry_count", "zero"),
+                ("host", "loopback"),
+                ("port", "port"),
+                ("tls", "false"),
+                ("published_host_port", "false"),
+            ),
+            (
+                "resource_digest",
+                "container_port",
+                "relay_digest",
+                "upstream_digest",
+                "channel_digest",
+                "retry_contract_digest",
+            ),
+        ),
+        "delete_exact": _Method(
+            backend.ControlledLifecycleRequest,
+            backend.ControlledLifecycleReceipt,
+            "delete",
+            _LIFECYCLE_REQUEST,
+            _LIFECYCLE_RECEIPT,
+            _LIFECYCLE_BODY,
+        ),
+    }
+)
 
 
 def _path(value: Any) -> bool:
@@ -368,7 +591,9 @@ def _handle_wire(handle: Any) -> dict[str, str]:
     }
 
 
-def _decode_handle(value: Any, handles: Mapping[tuple[str, str], backend.ControlledSandboxHandle] | None) -> backend.ControlledSandboxHandle:
+def _decode_handle(
+    value: Any, handles: Mapping[tuple[str, str], backend.ControlledSandboxHandle] | None
+) -> backend.ControlledSandboxHandle:
     if (
         type(value) is not dict
         or set(value) != {"attempt_id", "resource_id", "resource_digest"}
@@ -392,7 +617,11 @@ def _decode_handle(value: Any, handles: Mapping[tuple[str, str], backend.Control
     )
 
 
-def _field(value: Any, rule: str, handles: Mapping[tuple[str, str], backend.ControlledSandboxHandle] | None = None) -> Any:
+def _field(
+    value: Any,
+    rule: str,
+    handles: Mapping[tuple[str, str], backend.ControlledSandboxHandle] | None = None,
+) -> Any:
     if rule == "handle":
         if type(value) is backend.ControlledSandboxHandle:
             return value
@@ -412,14 +641,27 @@ def _field(value: Any, rule: str, handles: Mapping[tuple[str, str], backend.Cont
                 "optional_archive": backend.MAX_WORKSPACE_OBJECT_BYTES,
             }[rule]
             raw = _decode_bytes(value, maximum)
-        maximum = backend.WRITE_CHUNK_BYTES if rule == "chunk" else backend.MAX_EXEC_OUTPUT_BYTES if rule == "output" else backend.MAX_WORKSPACE_OBJECT_BYTES
+        maximum = (
+            backend.WRITE_CHUNK_BYTES
+            if rule == "chunk"
+            else (
+                backend.MAX_EXEC_OUTPUT_BYTES
+                if rule == "output"
+                else backend.MAX_WORKSPACE_OBJECT_BYTES
+            )
+        )
         if len(raw) > maximum:
             raise _refuse()
         return raw
     if rule == "argv":
         if type(value) not in {tuple, list} or not 1 <= len(value) <= backend.MAX_EXEC_ARGUMENTS:
             raise _refuse()
-        if not all(type(part) is str and part and all((ord(char) >= 32 and ord(char) != 127) or char in {"\t", "\n"} for char in part) for part in value):
+        if not all(
+            type(part) is str
+            and part
+            and all((ord(char) >= 32 and ord(char) != 127) or char in {"\t", "\n"} for char in part)
+            for part in value
+        ):
             raise _refuse()
         if sum(len(part.encode("utf-8")) for part in value) > backend.MAX_EXEC_ARGUMENT_BYTES:
             raise _refuse()
@@ -434,9 +676,13 @@ def _field(value: Any, rule: str, handles: Mapping[tuple[str, str], backend.Cont
             raise _refuse()
         return (backend.CAIDO_PORT,)
     patterns = {
-        "digest": _DIGEST, "attempt": backend._ATTEMPT_ID,
-        "operation": _OPERATION, "observation": _OBSERVATION,
-        "transfer": _TRANSFER, "image": _IMAGE, "sandbox_user": _SANDBOX_USER,
+        "digest": _DIGEST,
+        "attempt": backend._ATTEMPT_ID,
+        "operation": _OPERATION,
+        "observation": _OBSERVATION,
+        "transfer": _TRANSFER,
+        "image": _IMAGE,
+        "sandbox_user": _SANDBOX_USER,
     }
     if rule in patterns:
         if type(value) is not str or patterns[rule].fullmatch(value) is None:
@@ -445,10 +691,16 @@ def _field(value: Any, rule: str, handles: Mapping[tuple[str, str], backend.Cont
     if rule.startswith("optional_"):
         return None if value is None else _field(value, rule[9:], handles)
     literals: dict[str, Any] = {
-        "true": True, "false": False, "zero": 0, "running": "running",
-        "workspace_root": backend.WORKSPACE_ROOT, "disabled": "disabled",
-        "relay_only": "controller-relay-only", "caido_port": backend.CAIDO_PORT,
-        "loopback": "127.0.0.1", "chunk_size": backend.WRITE_CHUNK_BYTES,
+        "true": True,
+        "false": False,
+        "zero": 0,
+        "running": "running",
+        "workspace_root": backend.WORKSPACE_ROOT,
+        "disabled": "disabled",
+        "relay_only": "controller-relay-only",
+        "caido_port": backend.CAIDO_PORT,
+        "loopback": "127.0.0.1",
+        "chunk_size": backend.WRITE_CHUNK_BYTES,
         "object_limit": backend.MAX_WORKSPACE_OBJECT_BYTES,
     }
     if rule in literals:
@@ -482,7 +734,8 @@ def _field(value: Any, rule: str, handles: Mapping[tuple[str, str], backend.Cont
     bounds = {
         "size": (0, backend.MAX_WORKSPACE_OBJECT_BYTES),
         "index": (0, backend.MAX_WORKSPACE_OBJECT_BYTES // backend.WRITE_CHUNK_BYTES),
-        "exit_code": (-1, 255), "port": (1, 65535),
+        "exit_code": (-1, 255),
+        "port": (1, 65535),
     }
     if rule in bounds:
         low, high = bounds[rule]
@@ -492,7 +745,9 @@ def _field(value: Any, rule: str, handles: Mapping[tuple[str, str], backend.Cont
     raise _refuse()
 
 
-def _payload(value: Any, expected_type: type[Any], fields: tuple[tuple[str, str], ...]) -> dict[str, Any]:
+def _payload(
+    value: Any, expected_type: type[Any], fields: tuple[tuple[str, str], ...]
+) -> dict[str, Any]:
     if type(value) is not expected_type:
         raise _refuse()
     result: dict[str, Any] = {}
@@ -504,7 +759,9 @@ def _payload(value: Any, expected_type: type[Any], fields: tuple[tuple[str, str]
         if rule in {"handle", "optional_handle"}:
             result[name] = None if field_value is None else _handle_wire(field_value)
         elif rule in {"chunk", "output", "archive", "optional_archive"}:
-            result[name] = None if field_value is None else base64.b64encode(field_value).decode("ascii")
+            result[name] = (
+                None if field_value is None else base64.b64encode(field_value).decode("ascii")
+            )
         elif rule == "argv":
             result[name] = list(field_value)
         elif rule == "caido_ports":
@@ -514,7 +771,12 @@ def _payload(value: Any, expected_type: type[Any], fields: tuple[tuple[str, str]
     return result
 
 
-def _inflate(payload: Any, expected_type: type[Any], fields: tuple[tuple[str, str], ...], handles: Mapping[tuple[str, str], backend.ControlledSandboxHandle] | None = None) -> Any:
+def _inflate(
+    payload: Any,
+    expected_type: type[Any],
+    fields: tuple[tuple[str, str], ...],
+    handles: Mapping[tuple[str, str], backend.ControlledSandboxHandle] | None = None,
+) -> Any:
     if type(payload) is not dict or set(payload) != {name for name, _rule in fields}:
         raise _refuse()
     values = {name: _field(payload[name], rule, handles) for name, rule in fields}
@@ -541,23 +803,39 @@ def _request_body(method: _Method, request: Any) -> dict[str, Any]:
     return body
 
 
-def _validate_request(method_name: str, request: Any, profile: backend.ControlledRuntimeProfile, binding: ControlledWorkerBinding) -> None:
+def _validate_request(
+    method_name: str,
+    request: Any,
+    profile: backend.ControlledRuntimeProfile,
+    binding: ControlledWorkerBinding,
+) -> None:
     method = METHODS[method_name]
     if (
         request.schema_version != f"bluefire.strix-controlled-{method.kind}-request.v1"
         or request.identity_digest != binding.identity_digest
-        or request.request_digest != content_hash({
-            "schema_version": f"bluefire.strix-controlled-{method.kind}-request.v1",
-            "identity_digest": profile.identity_digest,
-            "attempt_id": profile.attempt_id,
-            "profile_digest": profile.profile_digest,
-            **_request_body(method, request),
-        })
+        or request.request_digest
+        != content_hash(
+            {
+                "schema_version": f"bluefire.strix-controlled-{method.kind}-request.v1",
+                "identity_digest": profile.identity_digest,
+                "attempt_id": profile.attempt_id,
+                "profile_digest": profile.profile_digest,
+                **_request_body(method, request),
+            }
+        )
     ):
         raise _refuse()
-    if method_name in {"create_exact", "reconcile_create", "cancel_exact", "running_exact", "delete_exact"} and request.attempt_id != binding.attempt_id:
+    if (
+        method_name
+        in {"create_exact", "reconcile_create", "cancel_exact", "running_exact", "delete_exact"}
+        and request.attempt_id != binding.attempt_id
+    ):
         raise _refuse()
-    if method_name != "create_exact" and request.handle is not None and request.handle.attempt_id != binding.attempt_id:
+    if (
+        method_name != "create_exact"
+        and request.handle is not None
+        and request.handle.attempt_id != binding.attempt_id
+    ):
         raise _refuse()
     if method_name == "create_exact":
         expected = backend.ControlledCreateRequest.create(profile)
@@ -571,23 +849,47 @@ def _validate_request(method_name: str, request: Any, profile: backend.Controlle
             or request.relay_retry_digest != profile.relay_retry_digest
         ):
             raise _refuse()
-        if method_name == "reconcile_create" and (request.handle is not None or request.operation_digest is None or request.observation_id is not None):
+        if method_name == "reconcile_create" and (
+            request.handle is not None
+            or request.operation_digest is None
+            or request.observation_id is not None
+        ):
             raise _refuse()
-        if method_name == "cancel_exact" and (request.handle is None or request.operation_digest is None or request.observation_id is not None):
+        if method_name == "cancel_exact" and (
+            request.handle is None
+            or request.operation_digest is None
+            or request.observation_id is not None
+        ):
             raise _refuse()
-        if method_name == "running_exact" and (request.handle is None or request.observation_id is None or request.operation_digest is not None):
+        if method_name == "running_exact" and (
+            request.handle is None
+            or request.observation_id is None
+            or request.operation_digest is not None
+        ):
             raise _refuse()
-        if method_name == "delete_exact" and (request.handle is None or request.observation_id is not None or request.operation_digest is not None):
+        if method_name == "delete_exact" and (
+            request.handle is None
+            or request.observation_id is not None
+            or request.operation_digest is not None
+        ):
             raise _refuse()
-    elif method_name == "persist_exact" and (request.archive is not None or request.archive_digest is not None):
+    elif method_name == "persist_exact" and (
+        request.archive is not None or request.archive_digest is not None
+    ):
         raise _refuse()
-    elif method_name == "hydrate_exact" and (type(request.archive) is not bytes or _sha256(request.archive) != request.archive_digest):
+    elif method_name == "hydrate_exact" and (
+        type(request.archive) is not bytes or _sha256(request.archive) != request.archive_digest
+    ):
         raise _refuse()
     elif method_name == "write_chunk_exact" and (
-        not request.chunk or _sha256(request.chunk) != request.chunk_digest
+        not request.chunk
+        or _sha256(request.chunk) != request.chunk_digest
         or request.offset + len(request.chunk) > request.total_size
         or request.offset != request.index * backend.WRITE_CHUNK_BYTES
-        or (request.offset + len(request.chunk) < request.total_size and len(request.chunk) != backend.WRITE_CHUNK_BYTES)
+        or (
+            request.offset + len(request.chunk) < request.total_size
+            and len(request.chunk) != backend.WRITE_CHUNK_BYTES
+        )
     ):
         raise _refuse()
     elif method_name == "resolve_caido_exact" and (
@@ -599,9 +901,15 @@ def _validate_request(method_name: str, request: Any, profile: backend.Controlle
         raise _refuse()
 
 
-def _validate_receipt(method_name: str, receipt: Any, request: Any, binding: ControlledWorkerBinding) -> None:
+def _validate_receipt(
+    method_name: str, receipt: Any, request: Any, binding: ControlledWorkerBinding
+) -> None:
     method = METHODS[method_name]
-    expected_schema = "bluefire.strix-controlled-lifecycle-receipt.v1" if method.receipt_type is backend.ControlledLifecycleReceipt else f"bluefire.strix-controlled-{method.kind}-receipt.v1"
+    expected_schema = (
+        "bluefire.strix-controlled-lifecycle-receipt.v1"
+        if method.receipt_type is backend.ControlledLifecycleReceipt
+        else f"bluefire.strix-controlled-{method.kind}-receipt.v1"
+    )
     if (
         receipt.schema_version != expected_schema
         or receipt.request_digest != request.request_digest
@@ -622,22 +930,54 @@ def _validate_receipt(method_name: str, receipt: Any, request: Any, binding: Con
         ):
             raise _refuse()
     elif method_name == "read_exact":
-        if receipt.workspace_path != request.workspace_path or len(receipt.content) > request.byte_limit or _sha256(receipt.content) != receipt.content_digest:
+        if (
+            receipt.workspace_path != request.workspace_path
+            or len(receipt.content) > request.byte_limit
+            or _sha256(receipt.content) != receipt.content_digest
+        ):
             raise _refuse()
     elif method_name == "begin_write_exact":
         if receipt.next_offset != 0:
             raise _refuse()
     elif method_name == "write_chunk_exact":
-        if receipt.transfer_id != request.transfer_id or receipt.chunk_digest != request.chunk_digest or receipt.next_offset != request.offset + len(request.chunk):
+        if (
+            receipt.transfer_id != request.transfer_id
+            or receipt.chunk_digest != request.chunk_digest
+            or receipt.next_offset != request.offset + len(request.chunk)
+        ):
             raise _refuse()
     elif method_name == "commit_write_exact":
-        if (receipt.transfer_id, receipt.workspace_path, receipt.content_size, receipt.content_digest) != (request.transfer_id, request.workspace_path, request.content_size, request.content_digest):
+        if (
+            receipt.transfer_id,
+            receipt.workspace_path,
+            receipt.content_size,
+            receipt.content_digest,
+        ) != (
+            request.transfer_id,
+            request.workspace_path,
+            request.content_size,
+            request.content_digest,
+        ):
             raise _refuse()
     elif method_name == "reconcile_write_exact":
-        if (receipt.operation_id, receipt.workspace_path, receipt.content_size, receipt.content_digest) != (request.operation_id, request.workspace_path, request.content_size, request.content_digest):
+        if (
+            receipt.operation_id,
+            receipt.workspace_path,
+            receipt.content_size,
+            receipt.content_digest,
+        ) != (
+            request.operation_id,
+            request.workspace_path,
+            request.content_size,
+            request.content_digest,
+        ):
             raise _refuse()
     elif method_name == "persist_exact":
-        if receipt.archive_size != len(receipt.archive) or receipt.archive_size > request.byte_limit or _sha256(receipt.archive) != receipt.archive_digest:
+        if (
+            receipt.archive_size != len(receipt.archive)
+            or receipt.archive_size > request.byte_limit
+            or _sha256(receipt.archive) != receipt.archive_digest
+        ):
             raise _refuse()
     elif method_name == "hydrate_exact":
         if receipt.archive_digest != request.archive_digest:
@@ -669,12 +1009,19 @@ def _ambiguous_receipt(method: str, receipt: Any) -> bool:
     if method in {"delete_exact", "reconcile_create"}:
         return bool(receipt.lifecycle != "absent" or receipt.relay_lifecycle != "absent")
     if method == "cancel_exact":
-        return bool(receipt.lifecycle not in {"cancelled", "absent"} or receipt.operation_lifecycle != "terminal")
+        return bool(
+            receipt.lifecycle not in {"cancelled", "absent"}
+            or receipt.operation_lifecycle != "terminal"
+        )
     if method == "abort_write_exact":
         return bool(receipt.lifecycle not in {"absent", "cancelled"})
     if method == "running_exact":
         return not (
-            (receipt.lifecycle == "running" and receipt.relay_lifecycle in {"active", "not_applicable"} and receipt.operation_lifecycle == "not_applicable")
+            (
+                receipt.lifecycle == "running"
+                and receipt.relay_lifecycle in {"active", "not_applicable"}
+                and receipt.operation_lifecycle == "not_applicable"
+            )
             or (receipt.lifecycle == "absent" and receipt.relay_lifecycle == "absent")
         )
     if method == "reconcile_write_exact":
@@ -683,14 +1030,25 @@ def _ambiguous_receipt(method: str, receipt: Any) -> bool:
 
 
 _WIRE_KEYS = {
-    "protocol_version", "binding", "direction", "sequence", "request_id",
-    "method", "reply_to_sequence", "payload",
+    "protocol_version",
+    "binding",
+    "direction",
+    "sequence",
+    "request_id",
+    "method",
+    "reply_to_sequence",
+    "payload",
 }
 
 
 class _Channel:
-    def __init__(self, profile: backend.ControlledRuntimeProfile, binding: ControlledWorkerBinding) -> None:
-        if type(profile) is not backend.ControlledRuntimeProfile or type(binding) is not ControlledWorkerBinding:
+    def __init__(
+        self, profile: backend.ControlledRuntimeProfile, binding: ControlledWorkerBinding
+    ) -> None:
+        if (
+            type(profile) is not backend.ControlledRuntimeProfile
+            or type(binding) is not ControlledWorkerBinding
+        ):
             raise _refuse()
         if (
             binding.attempt_id != profile.attempt_id
@@ -738,24 +1096,36 @@ class _Channel:
 
     def _clock(self, now_ns: int) -> None:
         if (
-            self._poisoned or not _exact_int(now_ns, 1, 2**63 - 1)
-            or now_ns < self._last_now_ns or now_ns >= self.binding.deadline_ns
+            self._poisoned
+            or not _exact_int(now_ns, 1, 2**63 - 1)
+            or now_ns < self._last_now_ns
+            or now_ns >= self.binding.deadline_ns
         ):
             self._poisoned = True
             raise _refuse()
         self._last_now_ns = now_ns
 
-    def _envelope(self, direction: str, sequence: int, request_id: str, method: str, reply_to_sequence: int | None, payload: dict[str, Any]) -> bytes:
-        return encode_frame({
-            "protocol_version": PROTOCOL_VERSION,
-            "binding": self.binding.wire(),
-            "direction": direction,
-            "sequence": sequence,
-            "request_id": request_id,
-            "method": method,
-            "reply_to_sequence": reply_to_sequence,
-            "payload": payload,
-        })
+    def _envelope(
+        self,
+        direction: str,
+        sequence: int,
+        request_id: str,
+        method: str,
+        reply_to_sequence: int | None,
+        payload: dict[str, Any],
+    ) -> bytes:
+        return encode_frame(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "binding": self.binding.wire(),
+                "direction": direction,
+                "sequence": sequence,
+                "request_id": request_id,
+                "method": method,
+                "reply_to_sequence": reply_to_sequence,
+                "payload": payload,
+            }
+        )
 
     def _check_new_request(self, method: str, request: Any) -> None:
         if (
@@ -771,9 +1141,9 @@ class _Channel:
                 for _sequence, pending_method, pending_request in self._pending.values()
                 if pending_method == "exec_exact"
             ]
-            if (
-                pending_exec != [request.operation_digest]
-                or any(pending_method == "cancel_exact" for _sequence, pending_method, _request in self._pending.values())
+            if pending_exec != [request.operation_digest] or any(
+                pending_method == "cancel_exact"
+                for _sequence, pending_method, _request in self._pending.values()
             ):
                 raise _refuse()
         elif self._pending:
@@ -783,7 +1153,10 @@ class _Channel:
             if key in self._retired:
                 raise _refuse()
         if method == "reconcile_create":
-            if request.operation_digest != backend.ControlledCreateRequest.create(self.profile).request_digest:
+            if (
+                request.operation_digest
+                != backend.ControlledCreateRequest.create(self.profile).request_digest
+            ):
                 raise _refuse()
         elif method == "cancel_exact":
             if self._seen_digests.get(request.operation_digest) != "exec_exact":
@@ -792,7 +1165,12 @@ class _Channel:
             operation_id = request.operation_id
             if operation_id in self._operation_owner:
                 raise _refuse()
-        if method in {"write_chunk_exact", "commit_write_exact", "reconcile_write_exact", "abort_write_exact"}:
+        if method in {
+            "write_chunk_exact",
+            "commit_write_exact",
+            "reconcile_write_exact",
+            "abort_write_exact",
+        }:
             if self._operation_owner.get(request.operation_id) != "begin_write_exact":
                 raise _refuse()
             if self._write_transfer.get(request.operation_id) != request.transfer_id:
@@ -806,9 +1184,16 @@ class _Channel:
                 ):
                     raise _refuse()
             elif method in {"commit_write_exact", "reconcile_write_exact"}:
-                if (request.workspace_path, request.content_size, request.content_digest) != (path, size, digest):
+                if (request.workspace_path, request.content_size, request.content_digest) != (
+                    path,
+                    size,
+                    digest,
+                ):
                     raise _refuse()
-                if method == "commit_write_exact" and self._write_offset[request.operation_id] != size:
+                if (
+                    method == "commit_write_exact"
+                    and self._write_offset[request.operation_id] != size
+                ):
                     raise _refuse()
 
     def _record_request(self, method: str, request: Any) -> None:
@@ -819,7 +1204,9 @@ class _Channel:
             self._operation_owner[request.operation_id] = method
         if method == "begin_write_exact":
             self._write_meta[request.operation_id] = (
-                request.workspace_path, request.content_size, request.content_digest,
+                request.workspace_path,
+                request.content_size,
+                request.content_digest,
             )
 
     def _record_receipt(self, method: str, request: Any, receipt: Any) -> None:
@@ -828,7 +1215,11 @@ class _Channel:
             self._write_offset[request.operation_id] = 0
         elif method == "write_chunk_exact":
             self._write_offset[request.operation_id] = receipt.next_offset
-        elif method == "delete_exact" and receipt.lifecycle == "absent" and receipt.relay_lifecycle == "absent":
+        elif (
+            method == "delete_exact"
+            and receipt.lifecycle == "absent"
+            and receipt.relay_lifecycle == "absent"
+        ):
             self._retired.add((request.handle.resource_id, request.handle.resource_digest))
 
     def _receive(self, frame: bytes, now_ns: int, direction: str) -> dict[str, Any]:
@@ -861,11 +1252,21 @@ class WorkerChannel(_Channel):
 
     def request(self, method: str, request: Any, *, request_id: str, now_ns: int) -> bytes:
         self._clock(now_ns)
-        if type(method) is not str or method not in METHODS or type(request_id) is not str or _HEX32.fullmatch(request_id) is None or request_id in self._seen_ids:
+        if (
+            type(method) is not str
+            or method not in METHODS
+            or type(request_id) is not str
+            or _HEX32.fullmatch(request_id) is None
+            or request_id in self._seen_ids
+        ):
             raise _refuse()
         spec = METHODS[method]
         payload = _payload(request, spec.request_type, spec.request_fields)
-        if method != "create_exact" and request.handle is not None and request.handle.opaque_ref is not _INERT_REF:
+        if (
+            method != "create_exact"
+            and request.handle is not None
+            and request.handle.opaque_ref is not _INERT_REF
+        ):
             raise _refuse()
         _validate_request(method, request, self.profile, self.binding)
         self._check_new_request(method, request)
@@ -905,7 +1306,9 @@ class WorkerChannel(_Channel):
 class ControllerChannel(_Channel):
     """Controller-side pure join state and original-handle resolver."""
 
-    def __init__(self, profile: backend.ControlledRuntimeProfile, binding: ControlledWorkerBinding) -> None:
+    def __init__(
+        self, profile: backend.ControlledRuntimeProfile, binding: ControlledWorkerBinding
+    ) -> None:
         super().__init__(profile, binding)
         self._handles: dict[tuple[str, str], backend.ControlledSandboxHandle] = {}
 
@@ -917,7 +1320,9 @@ class ControllerChannel(_Channel):
                 raise _refuse()
             method = value["method"]
             spec = METHODS[method]
-            request = _inflate(value["payload"], spec.request_type, spec.request_fields, self._handles)
+            request = _inflate(
+                value["payload"], spec.request_type, spec.request_fields, self._handles
+            )
             _validate_request(method, request, self.profile, self.binding)
             self._check_new_request(method, request)
             self._seen_ids.add(request_id)
@@ -944,14 +1349,22 @@ class ControllerChannel(_Channel):
                 if key in self._handles or handle.opaque_ref is _INERT_REF:
                     raise _refuse()
             response_sequence = self._sent_sequence + 1
-            frame = self._envelope("response", response_sequence, request_id, method, sequence, payload)
+            frame = self._envelope(
+                "response", response_sequence, request_id, method, sequence, payload
+            )
             if method == "create_exact":
                 self._handles[key] = handle
             self._sent_sequence = response_sequence
             del self._pending[request_id]
             self._record_receipt(method, request, receipt)
-            if method == "delete_exact" and receipt.lifecycle == "absent" and receipt.relay_lifecycle == "absent":
-                self._handles.pop((request.handle.resource_id, request.handle.resource_digest), None)
+            if (
+                method == "delete_exact"
+                and receipt.lifecycle == "absent"
+                and receipt.relay_lifecycle == "absent"
+            ):
+                self._handles.pop(
+                    (request.handle.resource_id, request.handle.resource_digest), None
+                )
             if _ambiguous_receipt(method, receipt):
                 self._poisoned = True
             return frame
@@ -963,25 +1376,29 @@ class ControllerChannel(_Channel):
 class ControllerDispatcher:
     """Literal dispatch to the controller's fifteen typed methods, without I/O."""
 
-    def __init__(self, channel: ControllerChannel, transport: backend.ControlledControllerTransport) -> None:
+    def __init__(
+        self, channel: ControllerChannel, transport: backend.ControlledControllerTransport
+    ) -> None:
         self.channel = channel
-        self._calls: Mapping[str, Callable[[Any], Awaitable[Any]]] = MappingProxyType({
-            "create_exact": transport.create_exact,
-            "reconcile_create": transport.reconcile_create,
-            "exec_exact": transport.exec_exact,
-            "cancel_exact": transport.cancel_exact,
-            "read_exact": transport.read_exact,
-            "begin_write_exact": transport.begin_write_exact,
-            "write_chunk_exact": transport.write_chunk_exact,
-            "commit_write_exact": transport.commit_write_exact,
-            "reconcile_write_exact": transport.reconcile_write_exact,
-            "abort_write_exact": transport.abort_write_exact,
-            "running_exact": transport.running_exact,
-            "persist_exact": transport.persist_exact,
-            "hydrate_exact": transport.hydrate_exact,
-            "resolve_caido_exact": transport.resolve_caido_exact,
-            "delete_exact": transport.delete_exact,
-        })
+        self._calls: Mapping[str, Callable[[Any], Awaitable[Any]]] = MappingProxyType(
+            {
+                "create_exact": transport.create_exact,
+                "reconcile_create": transport.reconcile_create,
+                "exec_exact": transport.exec_exact,
+                "cancel_exact": transport.cancel_exact,
+                "read_exact": transport.read_exact,
+                "begin_write_exact": transport.begin_write_exact,
+                "write_chunk_exact": transport.write_chunk_exact,
+                "commit_write_exact": transport.commit_write_exact,
+                "reconcile_write_exact": transport.reconcile_write_exact,
+                "abort_write_exact": transport.abort_write_exact,
+                "running_exact": transport.running_exact,
+                "persist_exact": transport.persist_exact,
+                "hydrate_exact": transport.hydrate_exact,
+                "resolve_caido_exact": transport.resolve_caido_exact,
+                "delete_exact": transport.delete_exact,
+            }
+        )
 
     async def dispatch(self, frame: bytes, *, received_ns: int, replied_ns: int) -> bytes:
         try:

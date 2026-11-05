@@ -1058,9 +1058,9 @@ class StrixEngineRuntime:
                     "execution_claim_ref": self._expected_claim_ref,
                     "runtime_resolution_ref": self._expected_resolution_ref,
                     "reconciliation_ref": reconciliation_ref,
-                    "worker_outcome_digest": None
-                    if outcome is None
-                    else content_hash(outcome.to_dict()),
+                    "worker_outcome_digest": (
+                        None if outcome is None else content_hash(outcome.to_dict())
+                    ),
                     "issue": issue,
                 }
             ),

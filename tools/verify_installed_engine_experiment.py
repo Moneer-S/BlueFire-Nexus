@@ -137,7 +137,7 @@ def bind_installed_wheel(
                 or info.is_dir()
                 or path.is_absolute()
                 or not path.parts
-                or any(part in ("", ".", "..") for part in path.parts)
+                or any(part in ("", ".", "..") for part in info.filename.split("/"))
                 or "\\" in info.filename
                 or (mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG))
                 or info.file_size < 0
@@ -155,6 +155,7 @@ def bind_installed_wheel(
         dist_prefix = metadata_names[0].removesuffix("METADATA")
         if record_names[0] != dist_prefix + "RECORD" or wheel_names[0] != dist_prefix + "WHEEL":
             raise RuntimeError("candidate wheel metadata belongs to another distribution")
+        data_purelib_prefix = dist_prefix.removesuffix(".dist-info/") + ".data/purelib/"
         metadata = BytesParser().parsebytes(archive.read(metadata_names[0]))
         if metadata.get("Name") != "bluefire-nexus" or metadata.get("Version") != installed_version:
             raise RuntimeError("candidate wheel identity does not match the installation")
@@ -183,6 +184,7 @@ def bind_installed_wheel(
             records[record_path] = (record_hash, int(record_size))
         if set(records) != names:
             raise RuntimeError("candidate wheel RECORD inventory is incomplete")
+        installed_names: set[str] = set()
         for name in sorted(names - {record_names[0]}):
             info = archive.getinfo(name)
             payload = archive.read(info)
@@ -193,7 +195,17 @@ def bind_installed_wheel(
                 or _member_digest(payload) != expected_hash
             ):
                 raise RuntimeError("candidate wheel payload failed RECORD verification")
-            candidate = purelib / Path(*PurePosixPath(name).parts)
+            installed_name = name
+            if ".data/" in name:
+                if not name.startswith(data_purelib_prefix):
+                    raise RuntimeError("candidate wheel uses an unsupported .data scheme")
+                installed_name = name.removeprefix(data_purelib_prefix)
+                if not installed_name:
+                    raise RuntimeError("candidate wheel contains an unsafe .data member")
+            if installed_name in installed_names:
+                raise RuntimeError("candidate wheel has ambiguous installed member paths")
+            installed_names.add(installed_name)
+            candidate = purelib / Path(*PurePosixPath(installed_name).parts)
             destination = candidate.resolve(strict=True)
             if (
                 not destination.is_relative_to(purelib)

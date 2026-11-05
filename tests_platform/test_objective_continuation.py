@@ -302,9 +302,7 @@ def test_explicit_prerequisite_never_establishes_state_or_synthesizes_output(cas
     requested = (
         source.resource_generation_ref
         if kind is PrerequisiteKind.RESTORE
-        else digest("recreated-generation")
-        if kind is PrerequisiteKind.RECREATE
-        else None
+        else digest("recreated-generation") if kind is PrerequisiteKind.RECREATE else None
     )
     action = PrerequisiteAction(
         "refresh-locator",

@@ -103,15 +103,15 @@ def _oci_fixture(
 def test_tool_and_image_pins_are_exact() -> None:
     assert qualification.PIP_VERSION == "25.3"
     assert qualification.PIP_WHEEL_SHA256 == (
-        "9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd"
+        "9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd"  # pragma: allowlist secret
     )
     assert qualification.PIP_WHEEL_SIZE == 1_778_622
     assert qualification.SYFT_VERSION == "1.56.0"
     assert qualification.SYFT_ARCHIVE_SHA256 == (
-        "1c2493cfcf52d3367d6cb25780d9190c111c2219c34c820574c43e8bae15c528"
+        "1c2493cfcf52d3367d6cb25780d9190c111c2219c34c820574c43e8bae15c528"  # pragma: allowlist secret
     )
     assert qualification.SYFT_CHECKSUMS_SHA256 == (
-        "a2db61bc71f8f7ea8c67fc4a81b8e4e6474386e6a07d104bd2e78e964d5d7ec7"
+        "a2db61bc71f8f7ea8c67fc4a81b8e4e6474386e6a07d104bd2e78e964d5d7ec7"  # pragma: allowlist secret
     )
     assert qualification.candidate.SANDBOX_IMAGE.endswith(
         "@sha256:78df914f3029464c9d00580f531ec51025c251c422ec3b09c3f19c5fa6d80c30"
@@ -842,10 +842,18 @@ def test_workflow_is_single_pr_trigger_read_only_pinned_and_non_executing() -> N
     steps = workflow["jobs"]["prepare"]["steps"]
     checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
     assert checkout["with"]["ref"] == "${{ github.sha }}"
+    version_selector = next(step for step in steps if step.get("id") == "uv-version")
+    assert version_selector["name"] == "Read reviewed uv build version"
+    assert "UV_VERSION" in version_selector["run"]
+    execution_commands = [
+        step["run"] for step in steps if "run" in step and step is not version_selector
+    ]
     commands = [step["run"] for step in steps if "run" in step]
     assert sum("python -m tools.build_strix_engine_candidate" in run for run in commands) == 1
     assert sum("python -m tools.qualify_strix_runtime_candidate" in run for run in commands) == 1
-    assert all('--bluefire-source-revision "${{ github.sha }}"' in run for run in commands)
+    assert all(
+        '--bluefire-source-revision "${{ github.sha }}"' in run for run in execution_commands
+    )
     assert "upload-artifact" not in raw
     assert "persist-credentials: false" in raw
     for identity in qualification.ACTION_IDENTITIES.values():

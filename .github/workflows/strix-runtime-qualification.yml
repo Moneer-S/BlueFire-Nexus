@@ -36,10 +36,37 @@ jobs:
           go-version: "1.24.10"
           cache: false
 
+      - name: Read reviewed uv build version
+        id: uv-version
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import ast
+          import re
+          from pathlib import Path
+
+          source = Path("tools/build_strix_engine_candidate.py").read_text(encoding="utf-8")
+          tree = ast.parse(source)
+          values = [
+              node.value.value
+              for node in tree.body
+              if isinstance(node, ast.Assign)
+              and any(
+                  isinstance(target, ast.Name) and target.id == "UV_VERSION"
+                  for target in node.targets
+              )
+              and isinstance(node.value, ast.Constant)
+              and isinstance(node.value.value, str)
+          ]
+          if len(values) != 1 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", values[0]):
+              raise SystemExit("candidate build must define one exact uv version")
+          print(f"version={values[0]}")
+          PY
+
       - name: Set up exact uv frontend without a shared cache
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: "0.13.6"
+          version: ${{ steps.uv-version.outputs.version }}
           enable-cache: false
 
       - name: Rebuild the provenance-bound candidate

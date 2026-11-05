@@ -205,7 +205,7 @@ def test_failed_publication_cleans_only_owned_staging_and_sanitizes_os_errors(
     store = _store(tmp_path / "private-secret-root" / "runs")
     retained = store.root / "operator-evidence.txt"
     retained.write_text("keep", encoding="utf-8")
-    secret = "private-secret-root"
+    secret = "private-secret-root"  # pragma: allowlist secret
     publish = partial(_publish, store)
     if failure == "payload":
         values = _values()

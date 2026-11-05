@@ -508,7 +508,7 @@ def test_admission_conflicts_stale_authority_and_secret_or_path_fields_refuse(
             expected_head_digest=envelope["lifecycle_head_digest"],
         )
     malformed = admission(store, current)
-    malformed["secret"] = "plaintext"
+    malformed["secret"] = "plaintext"  # pragma: allowlist secret
     with pytest.raises(ProductStoreError):
         runtime_store._admission(malformed)
     malformed = admission(store, current)

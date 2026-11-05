@@ -300,9 +300,7 @@ def test_scope_refuses_global_ambiguous_or_link_local_targets(target: str, addre
         ("https://[fd00::7]/", "fd00::7", "https://[fd00::7]"),
     ],
 )
-def test_scope_accepts_canonical_root_origins(
-    target: str, address: str, origin: str
-) -> None:
+def test_scope_accepts_canonical_root_origins(target: str, address: str, origin: str) -> None:
     scope = StrixScope(target, (address,), DIGEST, DIGEST, DIGEST, "bf-strix-test")
     assert scope.target == target
     assert scope.origin == origin
@@ -331,9 +329,7 @@ def test_scope_accepts_canonical_root_origins(
         "http://bluefire-lab:8080/\n",
     ],
 )
-def test_target_admission_rejects_paths_and_noncanonical_forms(
-    target: str, tmp_path: Path
-) -> None:
+def test_target_admission_rejects_paths_and_noncanonical_forms(target: str, tmp_path: Path) -> None:
     with pytest.raises(StrixAdapterError, match="Strix target"):
         StrixScope(target, ("172.18.0.7",), DIGEST, DIGEST, DIGEST, "bf-strix-test")
     with pytest.raises(StrixAdapterError, match="Strix expected target"):

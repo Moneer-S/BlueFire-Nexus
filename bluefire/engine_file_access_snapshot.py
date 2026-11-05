@@ -917,11 +917,11 @@ class FileAccessTargetSnapshot:
                 "filesystem": (
                     ["fixtures/access-probe.json"]
                     if step == "probe"
-                    else ["fixtures/access-owner.json"]
-                    if step == "owner"
-                    else ["fixtures/transformed.jsonl"]
-                    if step == "mode"
-                    else []
+                    else (
+                        ["fixtures/access-owner.json"]
+                        if step == "owner"
+                        else ["fixtures/transformed.jsonl"] if step == "mode" else []
+                    )
                 ),
                 "network": [],
             }

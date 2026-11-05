@@ -57,12 +57,23 @@ def _request(
     operation_id: str | None = None,
 ) -> Any:
     spec = channel.METHODS[method]
-    operation = operation_id or "operation-" + (
-        "f" if method in {"begin_write_exact", "write_chunk_exact", "commit_write_exact", "reconcile_write_exact", "abort_write_exact"}
-        else "a" if method == "persist_exact"
-        else "b" if method == "hydrate_exact"
-        else "e"
-    ) * 32
+    operation = (
+        operation_id
+        or "operation-"
+        + (
+            "f"
+            if method
+            in {
+                "begin_write_exact",
+                "write_chunk_exact",
+                "commit_write_exact",
+                "reconcile_write_exact",
+                "abort_write_exact",
+            }
+            else "a" if method == "persist_exact" else "b" if method == "hydrate_exact" else "e"
+        )
+        * 32
+    )
     observation = "observation-" + "f" * 32
     transfer = "transfer-" + "d" * 32
     data = b"written"
@@ -83,29 +94,100 @@ def _request(
             relay_retry_digest=profile.relay_retry_digest,
             observation_id=observation if method == "running_exact" else None,
             handle=None if method == "reconcile_create" else handle,
-            operation_digest=exec_digest if method == "cancel_exact" else backend.ControlledCreateRequest.create(profile).request_digest if method == "reconcile_create" else None,
+            operation_digest=(
+                exec_digest
+                if method == "cancel_exact"
+                else (
+                    backend.ControlledCreateRequest.create(profile).request_digest
+                    if method == "reconcile_create"
+                    else None
+                )
+            ),
         )
     elif method == "exec_exact":
-        values = dict(operation_id=operation, handle=handle, argv=("echo", "hello"), timeout_seconds=120.0, working_directory="/workspace", stdin_mode="disabled", pty=False)
+        values = dict(
+            operation_id=operation,
+            handle=handle,
+            argv=("echo", "hello"),
+            timeout_seconds=120.0,
+            working_directory="/workspace",
+            stdin_mode="disabled",
+            pty=False,
+        )
     elif method == "read_exact":
-        values = dict(observation_id=observation, handle=handle, workspace_path="/workspace/read.txt", byte_limit=backend.MAX_WORKSPACE_OBJECT_BYTES)
+        values = dict(
+            observation_id=observation,
+            handle=handle,
+            workspace_path="/workspace/read.txt",
+            byte_limit=backend.MAX_WORKSPACE_OBJECT_BYTES,
+        )
     elif method == "begin_write_exact":
-        values = dict(operation_id=operation, handle=handle, workspace_path="/workspace/out.txt", content_size=len(data), content_digest=data_digest, chunk_size=backend.WRITE_CHUNK_BYTES)
+        values = dict(
+            operation_id=operation,
+            handle=handle,
+            workspace_path="/workspace/out.txt",
+            content_size=len(data),
+            content_digest=data_digest,
+            chunk_size=backend.WRITE_CHUNK_BYTES,
+        )
     elif method == "write_chunk_exact":
-        values = dict(operation_id=operation, handle=handle, transfer_id=transfer, index=0, offset=0, total_size=len(data), content_digest=data_digest, chunk_digest=data_digest, chunk=data)
+        values = dict(
+            operation_id=operation,
+            handle=handle,
+            transfer_id=transfer,
+            index=0,
+            offset=0,
+            total_size=len(data),
+            content_digest=data_digest,
+            chunk_digest=data_digest,
+            chunk=data,
+        )
     elif method == "commit_write_exact":
-        values = dict(operation_id=operation, handle=handle, transfer_id=transfer, workspace_path="/workspace/out.txt", content_size=len(data), content_digest=data_digest)
+        values = dict(
+            operation_id=operation,
+            handle=handle,
+            transfer_id=transfer,
+            workspace_path="/workspace/out.txt",
+            content_size=len(data),
+            content_digest=data_digest,
+        )
     elif method == "reconcile_write_exact":
-        values = dict(operation_id=operation, handle=handle, transfer_id=transfer, workspace_path="/workspace/out.txt", content_size=len(data), content_digest=data_digest)
+        values = dict(
+            operation_id=operation,
+            handle=handle,
+            transfer_id=transfer,
+            workspace_path="/workspace/out.txt",
+            content_size=len(data),
+            content_digest=data_digest,
+        )
     elif method == "abort_write_exact":
         values = dict(operation_id=operation, handle=handle, transfer_id=transfer)
     elif method == "persist_exact":
-        values = dict(operation_id=operation, handle=handle, byte_limit=backend.MAX_WORKSPACE_OBJECT_BYTES, archive=None, archive_digest=None)
+        values = dict(
+            operation_id=operation,
+            handle=handle,
+            byte_limit=backend.MAX_WORKSPACE_OBJECT_BYTES,
+            archive=None,
+            archive_digest=None,
+        )
     elif method == "hydrate_exact":
         archive = b"sealed-workspace-archive"
-        values = dict(operation_id=operation, handle=handle, byte_limit=backend.MAX_WORKSPACE_OBJECT_BYTES, archive=archive, archive_digest=backend._sha256_bytes(archive))
+        values = dict(
+            operation_id=operation,
+            handle=handle,
+            byte_limit=backend.MAX_WORKSPACE_OBJECT_BYTES,
+            archive=archive,
+            archive_digest=backend._sha256_bytes(archive),
+        )
     elif method == "resolve_caido_exact":
-        values = dict(handle=handle, container_port=backend.CAIDO_PORT, relay_digest=profile.relay_digest, upstream_digest=profile.relay_upstream_digest, channel_digest=profile.relay_channel_digest, retry_contract_digest=profile.relay_retry_digest)
+        values = dict(
+            handle=handle,
+            container_port=backend.CAIDO_PORT,
+            relay_digest=profile.relay_digest,
+            upstream_digest=profile.relay_upstream_digest,
+            channel_digest=profile.relay_channel_digest,
+            retry_contract_digest=profile.relay_retry_digest,
+        )
     else:
         raise AssertionError(method)
     draft = spec.request_type(**common, **values)
@@ -119,7 +201,9 @@ def _mutate(frame: bytes, change: Any) -> bytes:
     return channel.encode_frame(value)
 
 
-def _create(worker: channel.WorkerChannel, controller: channel.ControllerChannel, transport: FakeTransport) -> backend.ControlledSandboxHandle:
+def _create(
+    worker: channel.WorkerChannel, controller: channel.ControllerChannel, transport: FakeTransport
+) -> backend.ControlledSandboxHandle:
     request = backend.ControlledCreateRequest.create(worker.profile)
     frame = worker.request("create_exact", request, request_id="1" * 32, now_ns=100)
     method, request_id, decoded = controller.request(frame, now_ns=100)
@@ -137,17 +221,28 @@ def test_exact_fifteen_method_table_and_all_roundtrips() -> None:
     handle = _create(worker, controller, transport)
     dispatcher = channel.ControllerDispatcher(controller, transport)
     methods = (
-        "reconcile_create", "exec_exact", "read_exact",
-        "begin_write_exact", "write_chunk_exact", "commit_write_exact",
-        "reconcile_write_exact", "abort_write_exact", "running_exact",
-        "persist_exact", "hydrate_exact", "resolve_caido_exact", "delete_exact",
+        "reconcile_create",
+        "exec_exact",
+        "read_exact",
+        "begin_write_exact",
+        "write_chunk_exact",
+        "commit_write_exact",
+        "reconcile_write_exact",
+        "abort_write_exact",
+        "running_exact",
+        "persist_exact",
+        "hydrate_exact",
+        "resolve_caido_exact",
+        "delete_exact",
     )
     for index, method in enumerate(methods, 2):
         request = _request(method, worker.profile, handle)
         request_id = f"{index:032x}"
         tick = index * 10
         frame = worker.request(method, request, request_id=request_id, now_ns=tick + 100)
-        response = _complete(dispatcher.dispatch(frame, received_ns=tick + 100, replied_ns=tick + 101))
+        response = _complete(
+            dispatcher.dispatch(frame, received_ns=tick + 100, replied_ns=tick + 101)
+        )
         if method != "reconcile_create":
             assert transport.calls[-1][1].handle is transport.handle
         observed_method, observed_id, observed = worker.response(response, now_ns=tick + 101)
@@ -176,10 +271,27 @@ def test_literal_dispatcher_uses_original_handle_and_sanitizes_effect_error() ->
     assert not controller.usable
 
 
-@pytest.mark.parametrize("field", ["claim_digest", "plan_digest", "profile_digest", "identity_digest", "controller_fence", "attempt_id", "nonce", "deadline_ns"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "claim_digest",
+        "plan_digest",
+        "profile_digest",
+        "identity_digest",
+        "controller_fence",
+        "attempt_id",
+        "nonce",
+        "deadline_ns",
+    ],
+)
 def test_crossed_binding_or_fence_poisoned(field: str) -> None:
     worker, controller, _transport = _pair()
-    frame = worker.request("create_exact", backend.ControlledCreateRequest.create(worker.profile), request_id="1" * 32, now_ns=100)
+    frame = worker.request(
+        "create_exact",
+        backend.ControlledCreateRequest.create(worker.profile),
+        request_id="1" * 32,
+        now_ns=100,
+    )
 
     def forge(value: dict[str, Any]) -> None:
         value["binding"][field] = 123 if field == "deadline_ns" else "forged"
@@ -199,17 +311,36 @@ def test_float_for_integer_binding_and_reply_sequence_are_refused() -> None:
     worker, controller, transport = _pair()
     frame = worker.request("create_exact", request, request_id="1" * 32, now_ns=100)
     _method, request_id, decoded = controller.request(frame, now_ns=100)
-    response = controller.response(request_id, _complete(transport.create_exact(decoded)), now_ns=101)
+    response = controller.response(
+        request_id, _complete(transport.create_exact(decoded)), now_ns=101
+    )
     forged_reply = _mutate(response, lambda value: value.update(reply_to_sequence=1.0))
     with pytest.raises(channel.ControlledWorkerChannelError):
         worker.response(forged_reply, now_ns=101)
     assert not worker.usable
 
 
-@pytest.mark.parametrize("change", ["extra", "missing", "duplicate", "spacing", "nan", "wrong_sequence", "unknown_method", "wrong_request_digest"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "extra",
+        "missing",
+        "duplicate",
+        "spacing",
+        "nan",
+        "wrong_sequence",
+        "unknown_method",
+        "wrong_request_digest",
+    ],
+)
 def test_noncanonical_unknown_or_unjoined_request_poisoned(change: str) -> None:
     worker, controller, _transport = _pair()
-    frame = worker.request("create_exact", backend.ControlledCreateRequest.create(worker.profile), request_id="1" * 32, now_ns=100)
+    frame = worker.request(
+        "create_exact",
+        backend.ControlledCreateRequest.create(worker.profile),
+        request_id="1" * 32,
+        now_ns=100,
+    )
     if change in {"duplicate", "spacing", "nan"}:
         raw = frame[4:]
         if change == "duplicate":
@@ -220,6 +351,7 @@ def test_noncanonical_unknown_or_unjoined_request_poisoned(change: str) -> None:
             raw = raw[:-1] + b',"extra":NaN}'
         frame = len(raw).to_bytes(4, "little") + raw
     else:
+
         def alter(value: dict[str, Any]) -> None:
             if change == "extra":
                 value["extra"] = "secret"
@@ -231,6 +363,7 @@ def test_noncanonical_unknown_or_unjoined_request_poisoned(change: str) -> None:
                 value["method"] = "arbitrary_host_command"
             else:
                 value["payload"]["request_digest"] = "sha256:" + "0" * 64
+
         frame = _mutate(frame, alter)
     with pytest.raises(channel.ControlledWorkerChannelError) as failure:
         controller.request(frame, now_ns=100)
@@ -254,7 +387,12 @@ def test_oversized_header_refused_before_body_and_partial_eof_poisoned() -> None
 
 def test_replay_request_id_and_lost_response_poison_channel() -> None:
     worker, controller, _transport = _pair()
-    frame = worker.request("create_exact", backend.ControlledCreateRequest.create(worker.profile), request_id="1" * 32, now_ns=100)
+    frame = worker.request(
+        "create_exact",
+        backend.ControlledCreateRequest.create(worker.profile),
+        request_id="1" * 32,
+        now_ns=100,
+    )
     controller.request(frame, now_ns=100)
     with pytest.raises(channel.ControlledWorkerChannelError):
         controller.request(frame, now_ns=101)
@@ -262,13 +400,28 @@ def test_replay_request_id_and_lost_response_poison_channel() -> None:
     worker.eof()
     assert not worker.usable and worker.pending_count == 1
     with pytest.raises(channel.ControlledWorkerChannelError):
-        worker.request("create_exact", backend.ControlledCreateRequest.create(worker.profile), request_id="2" * 32, now_ns=102)
+        worker.request(
+            "create_exact",
+            backend.ControlledCreateRequest.create(worker.profile),
+            request_id="2" * 32,
+            now_ns=102,
+        )
     second_worker, _second_controller, _transport = _pair()
-    second_worker.request("create_exact", backend.ControlledCreateRequest.create(second_worker.profile), request_id="1" * 32, now_ns=100)
+    second_worker.request(
+        "create_exact",
+        backend.ControlledCreateRequest.create(second_worker.profile),
+        request_id="1" * 32,
+        now_ns=100,
+    )
     second_worker.timeout()
     assert not second_worker.usable
     third_worker, _third_controller, _transport = _pair()
-    third_worker.request("create_exact", backend.ControlledCreateRequest.create(third_worker.profile), request_id="1" * 32, now_ns=100)
+    third_worker.request(
+        "create_exact",
+        backend.ControlledCreateRequest.create(third_worker.profile),
+        request_id="1" * 32,
+        now_ns=100,
+    )
     third_worker.partial()
     assert not third_worker.usable and third_worker.pending_count == 1
 
@@ -305,7 +458,12 @@ def test_channel_request_budget_is_bounded(monkeypatch: pytest.MonkeyPatch) -> N
     handle = _create(worker, controller, transport)
     monkeypatch.setattr(channel, "MAX_REQUESTS", 1)
     with pytest.raises(channel.ControlledWorkerChannelError):
-        worker.request("read_exact", _request("read_exact", worker.profile, handle), request_id="2" * 32, now_ns=200)
+        worker.request(
+            "read_exact",
+            _request("read_exact", worker.profile, handle),
+            request_id="2" * 32,
+            now_ns=200,
+        )
     assert worker.usable and worker.pending_count == 0
 
 
@@ -313,7 +471,9 @@ def test_cancel_can_complete_before_in_flight_exec() -> None:
     worker, controller, transport = _pair()
     handle = _create(worker, controller, transport)
     execution = _request("exec_exact", worker.profile, handle)
-    cancellation = _request("cancel_exact", worker.profile, handle, exec_digest=execution.request_digest)
+    cancellation = _request(
+        "cancel_exact", worker.profile, handle, exec_digest=execution.request_digest
+    )
     exec_frame = worker.request("exec_exact", execution, request_id="2" * 32, now_ns=200)
     cancel_frame = worker.request("cancel_exact", cancellation, request_id="3" * 32, now_ns=201)
     _m, exec_id, server_exec = controller.request(exec_frame, now_ns=200)
@@ -346,7 +506,9 @@ def test_forged_response_join_and_payload_bound_poison() -> None:
     assert "SENSITIVE_TEXT" not in str(failure.value)
     assert not worker.usable
     with pytest.raises(channel.ControlledWorkerChannelError):
-        channel._decode_bytes("A" * (4 * ((backend.WRITE_CHUNK_BYTES + 2) // 3) + 4), backend.WRITE_CHUNK_BYTES)
+        channel._decode_bytes(
+            "A" * (4 * ((backend.WRITE_CHUNK_BYTES + 2) // 3) + 4), backend.WRITE_CHUNK_BYTES
+        )
 
 
 def test_invalid_local_receipt_poisons_controller_after_effect() -> None:
@@ -391,7 +553,12 @@ def test_digest_forgery_and_noncanonical_path_rejected_before_dispatch() -> None
         worker.request("read_exact", bad, request_id="2" * 32, now_ns=200)
     assert worker.usable and controller.usable
     valid = worker.request("read_exact", request, request_id="2" * 32, now_ns=201)
-    forged = _mutate(valid, lambda value: value["payload"]["handle"].update({"resource_digest": content_hash("secrets")}))
+    forged = _mutate(
+        valid,
+        lambda value: value["payload"]["handle"].update(
+            {"resource_digest": content_hash("secrets")}
+        ),
+    )
     with pytest.raises(channel.ControlledWorkerChannelError):
         controller.request(forged, now_ns=201)
     assert not controller.usable
@@ -449,7 +616,9 @@ def test_nonfinite_json_and_expired_reply_poison() -> None:
     second_worker, second_controller, second_transport = _pair()
     second_handle = _create(second_worker, second_controller, second_transport)
     second_request = _request("exec_exact", second_worker.profile, second_handle)
-    request_frame = second_worker.request("exec_exact", second_request, request_id="2" * 32, now_ns=200)
+    request_frame = second_worker.request(
+        "exec_exact", second_request, request_id="2" * 32, now_ns=200
+    )
     _method, request_id, decoded = second_controller.request(request_frame, now_ns=200)
     receipt = _complete(second_transport.exec_exact(decoded))
     response = second_controller.response(request_id, receipt, now_ns=201)
@@ -460,7 +629,12 @@ def test_nonfinite_json_and_expired_reply_poison() -> None:
 
 def test_exposed_port_rejects_float_and_unknown_outcome_latches_both_sides() -> None:
     worker, controller, transport = _pair()
-    frame = worker.request("create_exact", backend.ControlledCreateRequest.create(worker.profile), request_id="1" * 32, now_ns=100)
+    frame = worker.request(
+        "create_exact",
+        backend.ControlledCreateRequest.create(worker.profile),
+        request_id="1" * 32,
+        now_ns=100,
+    )
     forged = _mutate(frame, lambda value: value["payload"].update(exposed_ports=[48080.0]))
     with pytest.raises(channel.ControlledWorkerChannelError):
         controller.request(forged, now_ns=100)
@@ -483,11 +657,18 @@ def test_verified_delete_retires_handle_before_another_effect() -> None:
     request = _request("delete_exact", worker.profile, handle)
     frame = worker.request("delete_exact", request, request_id="2" * 32, now_ns=200)
     _method, request_id, decoded = controller.request(frame, now_ns=200)
-    response = controller.response(request_id, _complete(transport.delete_exact(decoded)), now_ns=201)
+    response = controller.response(
+        request_id, _complete(transport.delete_exact(decoded)), now_ns=201
+    )
     worker.response(response, now_ns=201)
     assert worker.usable and controller.usable
     with pytest.raises(channel.ControlledWorkerChannelError):
-        worker.request("exec_exact", _request("exec_exact", worker.profile, handle), request_id="3" * 32, now_ns=202)
+        worker.request(
+            "exec_exact",
+            _request("exec_exact", worker.profile, handle),
+            request_id="3" * 32,
+            now_ns=202,
+        )
     assert not controller._handles
 
 
@@ -498,7 +679,9 @@ def test_unverified_delete_poisons_without_retirement_claim() -> None:
     request = _request("delete_exact", worker.profile, handle)
     frame = worker.request("delete_exact", request, request_id="2" * 32, now_ns=200)
     _method, request_id, decoded = controller.request(frame, now_ns=200)
-    response = controller.response(request_id, _complete(transport.delete_exact(decoded)), now_ns=201)
+    response = controller.response(
+        request_id, _complete(transport.delete_exact(decoded)), now_ns=201
+    )
     assert not controller.usable and controller._handles
     worker.response(response, now_ns=201)
     assert not worker.usable
@@ -513,5 +696,7 @@ def test_create_reconciliation_uses_exact_digest_on_fresh_channel() -> None:
     request = _request("reconcile_create", profile, None)
     frame = worker.request("reconcile_create", request, request_id="1" * 32, now_ns=100)
     _method, request_id, decoded = controller.request(frame, now_ns=100)
-    response = controller.response(request_id, _complete(transport.reconcile_create(decoded)), now_ns=101)
+    response = controller.response(
+        request_id, _complete(transport.reconcile_create(decoded)), now_ns=101
+    )
     assert worker.response(response, now_ns=101)[2].lifecycle == "absent"

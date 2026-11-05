@@ -20,8 +20,8 @@ from typing import Any, Mapping
 
 PROFILE_SCHEMA = "bluefire.strix-root-tool-conformance.v1"
 PROFILE_ID = "strix-root-chat-completions-6b7ae2e.v1"
-SOURCE_COMMIT = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"
-SOURCE_TREE = "23c06e4a0e58bdf3b4979863d7623230e4091332"
+SOURCE_COMMIT = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"  # pragma: allowlist secret
+SOURCE_TREE = "23c06e4a0e58bdf3b4979863d7623230e4091332"  # pragma: allowlist secret
 SDK_VERSION = "0.19.0"
 PROVIDER_ID = "controlled-strix-mechanics.v1"
 MODEL_ID = "bluefire-controlled-strix-mechanics-v1"

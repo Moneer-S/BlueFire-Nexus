@@ -106,7 +106,7 @@ it("shows unavailable history separately from empty history and retries just tha
   const user = userEvent.setup(); mount("/?work=file");
   expect(await screen.findByText("File access history unavailable")).toBeVisible();
   expect(screen.queryByText("No saved file access work.")).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Try again" }));
+  await user.click(screen.getByRole("button", { name: "Retry file access history" }));
   expect(await screen.findByText("No saved file access work.")).toBeVisible();
   expect(fileAccessApi.list).toHaveBeenCalledTimes(2); expect(api.receiverTests).not.toHaveBeenCalled();
 });

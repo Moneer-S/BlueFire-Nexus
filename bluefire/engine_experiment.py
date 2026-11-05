@@ -2181,9 +2181,7 @@ class EngineExperiment:
                 timestamp=(
                     proposed.started_at
                     if proposed.state is AttemptState.RUNNING
-                    else proposed.ended_at
-                    if proposed.state in _TERMINAL_ATTEMPT_STATES
-                    else None
+                    else proposed.ended_at if proposed.state in _TERMINAL_ATTEMPT_STATES else None
                 ),
                 exit_code=proposed.exit_code,
                 completeness=proposed.completeness,

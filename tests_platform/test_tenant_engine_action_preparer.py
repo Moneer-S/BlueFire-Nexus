@@ -116,9 +116,9 @@ def _stage(action: EngineWorkspaceAction):
     for entry in completed.attempts:
         binding = replace(
             entry.record.binding,
-            target_snapshot_ref=before
-            if entry.record.binding.role is AttemptRole.BASELINE
-            else after,
+            target_snapshot_ref=(
+                before if entry.record.binding.role is AttemptRole.BASELINE else after
+            ),
         )
         attempts.append(
             replace(
@@ -134,9 +134,9 @@ def _stage(action: EngineWorkspaceAction):
     )
     observations = tuple(
         _controller_observation_record(
-            target_snapshot_ref=before
-            if observation.attempt_id == attempts[0].record.binding.attempt_id
-            else after,
+            target_snapshot_ref=(
+                before if observation.attempt_id == attempts[0].record.binding.attempt_id else after
+            ),
             mechanism_ref=mechanism_ref,
             attempt_id=observation.attempt_id,
             check_id=observation.check_id,
@@ -397,12 +397,14 @@ def _case(
             else None
         ),
         defense_plan=None if action in _ENGINE_ACTIONS else plan,
-        mechanism=mechanism
-        if action in _CHECK_ACTIONS or action is EngineWorkspaceAction.REVIEW_DEFENSE
-        else None,
-        change_id="defense-change-" + "e" * 32
-        if action is EngineWorkspaceAction.REVIEW_DEFENSE
-        else None,
+        mechanism=(
+            mechanism
+            if action in _CHECK_ACTIONS or action is EngineWorkspaceAction.REVIEW_DEFENSE
+            else None
+        ),
+        change_id=(
+            "defense-change-" + "e" * 32 if action is EngineWorkspaceAction.REVIEW_DEFENSE else None
+        ),
     )
     if admission is not None:
         binding, _ = ControllerOwnedTenantActionPreparer._engine_authority(experiment, material)
@@ -526,9 +528,9 @@ def test_all_supported_actions_are_exact_inert_and_stable(
         action=action,
         experiment=case.experiment,
         prepared_at=case.material.prepared_at,
-        reviewed_plan=None
-        if action is EngineWorkspaceAction.REVIEW_DEFENSE
-        else case.material.defense_plan,
+        reviewed_plan=(
+            None if action is EngineWorkspaceAction.REVIEW_DEFENSE else case.material.defense_plan
+        ),
         approval_id=None if approval is None else approval["approval_id"],
         approval_record=approval,
         limits=first.limits,

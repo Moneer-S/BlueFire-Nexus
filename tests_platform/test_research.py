@@ -83,9 +83,7 @@ def test_builtin_registry_uses_reviewed_immutable_current_references() -> None:
         "6132b92779873cb0d05bef07ba0a480d47eb1cc8"  # pragma: allowlist secret
     )
     strix = sources["research.strix-engine.v1"]
-    assert strix.pin == (
-        "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"  # pragma: allowlist secret
-    )
+    assert strix.pin == ("6b7ae2ebe4d47037a927aade23265ff4e4f27e84")  # pragma: allowlist secret
     assert strix.version == "1.7.0 (declared at reviewed source commit)"
     assert strix.use_classification is SourceUseClassification.EXTERNAL_ADAPTER
     assert strix.cache_policy == "external_only"

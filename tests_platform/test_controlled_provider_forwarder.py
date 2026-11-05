@@ -30,7 +30,7 @@ from bluefire.util import content_hash
 
 ATTEMPT = "engine-attempt-" + "a" * 32
 REQUEST = "gateway-request-" + "b" * 32
-SECRET = "durable-provider-material-never-leaves-transport"
+SECRET = "durable-provider-material-never-leaves-transport"  # pragma: allowlist secret
 
 
 def digest(value: str) -> str:

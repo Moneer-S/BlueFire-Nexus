@@ -48,8 +48,8 @@ def _assert_publication_contract(workflow: dict) -> None:
     upload = _step(workflow, UPLOAD_NAME)
     assert upload["uses"] == UPLOAD_ACTION
     assert upload["if"] == (
-        "success() && matrix.platform == 'linux' "
-        "&& steps.installed-engine-mechanics.outcome == 'success'"
+        "always() && matrix.platform == 'linux' "
+        "&& steps.installed-engine-mechanics.outcome != 'skipped'"
     )
     assert upload["with"] == {
         "name": "bluefire-installed-deterministic-engine-mechanics-linux-x86_64-${{ github.sha }}",
@@ -178,8 +178,18 @@ def test_mechanics_publication_rejects_weakened_scope_or_retention(key: str, val
         _assert_publication_contract(workflow)
 
 
-@pytest.mark.parametrize("condition", ["always()", "matrix.platform == 'linux'", "success()"])
-def test_mechanics_publication_requires_success_and_linux(condition: str) -> None:
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "success() && matrix.platform == 'linux' && steps.installed-engine-mechanics.outcome == 'success'",
+        "always()",
+        "matrix.platform == 'linux'",
+        "success()",
+    ],
+)
+def test_mechanics_publication_runs_after_verifier_failure_but_only_on_linux(
+    condition: str,
+) -> None:
     workflow = _workflow()
     _step(workflow, UPLOAD_NAME)["if"] = condition
     with pytest.raises(AssertionError):

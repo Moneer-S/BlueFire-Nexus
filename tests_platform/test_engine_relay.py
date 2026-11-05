@@ -36,8 +36,8 @@ from bluefire.util import content_hash
 ATTEMPT_ID = "engine-attempt-0123456789abcdef0123456789abcdef"
 CREATED_AT = "2026-11-04T12:00:00Z"
 EXPIRES_AT = "2026-11-04T12:30:00Z"
-TOKEN = "ephemeral-gateway-token-0123456789abcdef"
-PROTECTED_SECRET = "durable-provider-secret-must-not-leak"
+TOKEN = "ephemeral-gateway-token-0123456789abcdef"  # pragma: allowlist secret
+PROTECTED_SECRET = "durable-provider-secret-must-not-leak"  # pragma: allowlist secret
 
 
 def _digest(label: str) -> str:
@@ -1846,9 +1846,9 @@ def test_controlled_sse_rejects_semantically_invalid_frames(case: str) -> None:
     elif case == "array_arguments":
         documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] = "[]"
     elif case == "duplicate_arguments":
-        documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] = (
-            '{"unexpected":"a","unexpected":"b"}'
-        )
+        documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"][
+            "arguments"
+        ] = '{"unexpected":"a","unexpected":"b"}'
     elif case == "finish_drift":
         documents[1]["choices"][0]["finish_reason"] = "stop"
     elif case == "usage_total":

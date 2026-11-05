@@ -21,7 +21,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 _BACKEND = "bluefire-controlled"
-_SOURCE_REVISION = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"
+_SOURCE_REVISION = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"  # pragma: allowlist secret
 _ATTEMPT = re.compile(r"^engine-attempt-[0-9a-f]{32}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:-]{0,255}@sha256:[0-9a-f]{64}$")

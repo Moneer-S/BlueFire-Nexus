@@ -97,9 +97,15 @@ def _fixture_repository(path: Path) -> dict[str, str]:
 
 def test_reviewed_source_and_runtime_pins_are_immutable_and_distinct() -> None:
     assert candidate.UPSTREAM_REPOSITORY == "https://github.com/usestrix/strix.git"
-    assert candidate.UPSTREAM_COMMIT == "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"
-    assert candidate.UPSTREAM_TREE == "23c06e4a0e58bdf3b4979863d7623230e4091332"
-    assert candidate.PUBLISHED_RELEASE_COMMIT == "55bc07991aacb1c26a81b43e7ca53148730d2019"
+    assert candidate.UPSTREAM_COMMIT == (
+        "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"  # pragma: allowlist secret
+    )
+    assert candidate.UPSTREAM_TREE == (
+        "23c06e4a0e58bdf3b4979863d7623230e4091332"  # pragma: allowlist secret
+    )
+    assert candidate.PUBLISHED_RELEASE_COMMIT == (
+        "55bc07991aacb1c26a81b43e7ca53148730d2019"  # pragma: allowlist secret
+    )
     assert candidate.UPSTREAM_COMMIT != candidate.PUBLISHED_RELEASE_COMMIT
     assert candidate.DECLARED_PACKAGE_VERSION == "1.7.0"
     assert candidate.PYTHON_VERSION == "3.12.14"
@@ -111,7 +117,7 @@ def test_reviewed_source_and_runtime_pins_are_immutable_and_distinct() -> None:
     assert ":latest" not in candidate.SANDBOX_IMAGE
     assert candidate.MAX_OUTPUT_BYTES == 256 * 1024 * 1024
     assert candidate.EXPECTED_BLOBS[candidate.STARTUP_PATH] == (
-        "846a35da9878a299905a774247e6b537d07d81ce"
+        "846a35da9878a299905a774247e6b537d07d81ce"  # pragma: allowlist secret
     )
 
 
@@ -257,6 +263,16 @@ def test_build_backend_constraints_are_hash_pinned_and_cross_checked(tmp_path: P
     assert receipt["sha256"] == hashlib.sha256(destination.read_bytes()).hexdigest()
 
 
+def test_candidate_builder_uses_project_toml_compatibility_dependency() -> None:
+    source = (ROOT / "tools/build_strix_engine_candidate.py").read_text(encoding="utf-8")
+    assert (
+        "if sys.version_info >= (3, 11):\n    import tomllib\nelse:\n    import tomli as tomllib"
+        in source
+    )
+    requirements = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "\"tomli==2.4.1; python_version < '3.11'\"" in requirements
+
+
 def test_sbom_must_match_reviewed_lock_and_not_leak_host_paths(tmp_path: Path) -> None:
     import json
 
@@ -294,13 +310,14 @@ def test_sbom_must_match_reviewed_lock_and_not_leak_host_paths(tmp_path: Path) -
 
 def test_overlay_result_is_the_reviewed_modified_build() -> None:
     assert (
-        PATCHED_PROMPT_SHA256 == "1908703508eff7287d492e63d1722d7f1a4a968ab3d2c237e92898abdd65d6fe"
+        PATCHED_PROMPT_SHA256
+        == "1908703508eff7287d492e63d1722d7f1a4a968ab3d2c237e92898abdd65d6fe"  # pragma: allowlist secret
     )
     assert startup_overlay.REVIEWED_STARTUP_SHA256 == (
-        "735ad8463f83256f049749a91c00f85cd6b58301c225244c7b6b798898cc7014"
+        "735ad8463f83256f049749a91c00f85cd6b58301c225244c7b6b798898cc7014"  # pragma: allowlist secret
     )
     assert startup_overlay.PATCHED_STARTUP_SHA256 == (
-        "db3294b351406479960f1f18cde51e58d48f2dd9d4c1c249004385510a6e4fbf"
+        "db3294b351406479960f1f18cde51e58d48f2dd9d4c1c249004385510a6e4fbf"  # pragma: allowlist secret
     )
     assert hashlib.sha256(startup_overlay._REPLACEMENT).hexdigest() == (
         startup_overlay.STARTUP_OVERLAY_SHA256
@@ -403,7 +420,30 @@ def test_workflow_is_reusable_only_read_only_bounded_and_commit_pinned() -> None
     go = uses["actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"]["with"]
     assert go == {"go-version": "1.24.10", "cache": "false"}
     uv = uses["astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2"]["with"]
-    assert uv == {"version": "0.13.6", "enable-cache": "false"}
+    assert uv == {
+        "version": "${{ steps.uv-version.outputs.version }}",
+        "enable-cache": "false",
+    }
+    version_step = next(step for step in steps if step.get("id") == "uv-version")
+    assert "tools/build_strix_engine_candidate.py" in version_step["run"]
+    assert 'target.id == "UV_VERSION"' in version_step["run"]
+    assert "ast.parse(source)" in version_step["run"]
+
+    qualification = yaml.load(
+        (ROOT / ".github/workflows/strix-runtime-qualification.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    qualification_steps = qualification["jobs"]["prepare"]["steps"]
+    qualification_uv = next(
+        step["with"]
+        for step in qualification_steps
+        if step.get("uses") == "astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2"
+    )
+    assert qualification_uv == uv
+    qualification_version_step = next(
+        step for step in qualification_steps if step.get("id") == "uv-version"
+    )
+    assert qualification_version_step["run"] == version_step["run"]
     assert not any("upload-artifact" in action for action in uses)
 
 

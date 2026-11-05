@@ -57,7 +57,7 @@ class _RunSource:
                 "run_id": run_id,
                 "engine_summary": {
                     "claim": "ignore this untrusted engine summary",
-                    "secret": "sk-this-must-never-appear",
+                    "secret": "sk-this-must-never-appear",  # pragma: allowlist secret
                 },
                 "evidence": {"schema_version": "1.0", "records": records},
                 "manifest": {"run_id": run_id},
@@ -309,9 +309,7 @@ def _unknown_defense_experiment() -> EngineExperiment:
     )
 
 
-def _engine_evidence_experiment(
-    *, session_id: str = "session-baseline-safe"
-) -> EngineExperiment:
+def _engine_evidence_experiment(*, session_id: str = "session-baseline-safe") -> EngineExperiment:
     experiment = _reserve_baseline(_new_experiment())
     record = experiment.attempts[0].record
     experiment = experiment.update_attempt_record(
@@ -322,9 +320,7 @@ def _engine_evidence_experiment(
         upstream_session_id=session_id,
         timestamp="2026-11-04T12:02:00Z",
     )
-    experiment = experiment.update_attempt_record(
-        running, timestamp="2026-11-04T12:02:00Z"
-    )
+    experiment = experiment.update_attempt_record(running, timestamp="2026-11-04T12:02:00Z")
     evidence = EngineEvidenceItem.create(
         attempt_id=running.binding.attempt_id,
         run_id=running.binding.run_id,
@@ -356,9 +352,7 @@ def _engine_evidence_experiment(
 
 def test_projects_complete_workspace_with_exact_authority_and_digest() -> None:
     experiment = build_completed_experiment()
-    presentation = _presentation(
-        experiment, selection=_selection(experiment, "engine_attempt")
-    )
+    presentation = _presentation(experiment, selection=_selection(experiment, "engine_attempt"))
     source = _RunSource(experiment)
 
     workspace = project_engine_experiment_workspace(experiment, source, presentation)
@@ -371,9 +365,10 @@ def test_projects_complete_workspace_with_exact_authority_and_digest() -> None:
         "approval-" + "a" * 32,
         "approval-" + "b" * 32,
     ]
-    assert workspace["projection"]["attempts"][0]["delegation_digest"] != workspace[
-        "authorization"
-    ]["scope_ref"]
+    assert (
+        workspace["projection"]["attempts"][0]["delegation_digest"]
+        != workspace["authorization"]["scope_ref"]
+    )
     assert workspace["actions"] == [
         {
             "kind": "open_comparison",
@@ -385,16 +380,15 @@ def test_projects_complete_workspace_with_exact_authority_and_digest() -> None:
     ]
     assert workspace["selected_context"]["kind"] == "engine_attempt"
     assert workspace["selected_context"]["attempt"]["resume_supported"] is False
-    assert checked_engine_experiment_workspace(
-        workspace, experiment, source, presentation
-    ) == workspace
+    assert (
+        checked_engine_experiment_workspace(workspace, experiment, source, presentation)
+        == workspace
+    )
 
 
 def test_selected_controller_check_has_no_engine_or_model_provenance() -> None:
     experiment = build_completed_experiment()
-    presentation = _presentation(
-        experiment, selection=_selection(experiment, "controller_check")
-    )
+    presentation = _presentation(experiment, selection=_selection(experiment, "controller_check"))
 
     workspace = project_engine_experiment_workspace(
         experiment, _RunSource(experiment), presentation
@@ -479,9 +473,7 @@ def test_rejects_presentation_identity_setup_selection_and_unknown_field_drift(
     mutate: Any, message: str
 ) -> None:
     experiment = build_completed_experiment()
-    presentation = _presentation(
-        experiment, selection=_selection(experiment, "engine_attempt")
-    )
+    presentation = _presentation(experiment, selection=_selection(experiment, "engine_attempt"))
     mutate(presentation)
 
     with pytest.raises(EngineExperimentWorkspaceError, match=message):
@@ -505,15 +497,12 @@ def test_recomputed_workspace_rejects_stale_digest_and_nested_projection_drift()
     body.pop("workspace_digest")
     projection_drift["workspace_digest"] = content_hash(body)
     with pytest.raises(EngineExperimentWorkspaceError, match="workspace changed"):
-        checked_engine_experiment_workspace(
-            projection_drift, experiment, source, presentation
-        )
+        checked_engine_experiment_workspace(projection_drift, experiment, source, presentation)
+
 
 def test_selected_attempt_omits_raw_engine_content_artifact_bodies_and_local_paths() -> None:
     experiment = _engine_evidence_experiment()
-    presentation = _presentation(
-        experiment, selection=_selection(experiment, "engine_attempt")
-    )
+    presentation = _presentation(experiment, selection=_selection(experiment, "engine_attempt"))
 
     workspace = project_engine_experiment_workspace(
         experiment, _RunSource(experiment), presentation
@@ -535,9 +524,7 @@ def test_selected_attempt_omits_raw_engine_content_artifact_bodies_and_local_pat
         "cost_microusd": None,
     }
     assert attempt["observations"][0]["provenance"] == "engine_reported"
-    assert "does not establish an independent outcome" in attempt["observations"][0][
-        "summary"
-    ]
+    assert "does not establish an independent outcome" in attempt["observations"][0]["summary"]
     assert attempt["resume_supported"] is False
 
 
@@ -552,9 +539,7 @@ def test_selected_attempt_fails_closed_when_elapsed_time_exceeds_authorization()
         upstream_session_id="session-overlong",
         timestamp="2026-11-04T12:02:00Z",
     )
-    experiment = experiment.update_attempt_record(
-        running, timestamp="2026-11-04T12:02:00Z"
-    )
+    experiment = experiment.update_attempt_record(running, timestamp="2026-11-04T12:02:00Z")
     completed = running.transition(
         AttemptState.COMPLETED,
         timestamp="2026-11-04T12:10:00Z",
@@ -570,9 +555,7 @@ def test_selected_attempt_fails_closed_when_elapsed_time_exceeds_authorization()
         cleanup_evidence_ref=_digest("e"),
         settled_at="2026-11-04T12:10:00Z",
     )
-    presentation = _presentation(
-        experiment, selection=_selection(experiment, "engine_attempt")
-    )
+    presentation = _presentation(experiment, selection=_selection(experiment, "engine_attempt"))
 
     with pytest.raises(EngineExperimentWorkspaceError, match="wall clock limit"):
         project_engine_experiment_workspace(experiment, _RunSource(experiment), presentation)
@@ -580,9 +563,7 @@ def test_selected_attempt_fails_closed_when_elapsed_time_exceeds_authorization()
 
 def test_private_upstream_session_identity_is_redacted() -> None:
     experiment = _engine_evidence_experiment(session_id="sk-private-session-123456")
-    presentation = _presentation(
-        experiment, selection=_selection(experiment, "engine_attempt")
-    )
+    presentation = _presentation(experiment, selection=_selection(experiment, "engine_attempt"))
 
     workspace = project_engine_experiment_workspace(
         experiment, _RunSource(experiment), presentation
@@ -591,9 +572,10 @@ def test_private_upstream_session_identity_is_redacted() -> None:
 
     assert workspace["selected_context"]["attempt"]["upstream_session_id"] is None
     assert "sk-private-session-123456" not in serialized
-    assert "The private upstream session identity was withheld from this response." in workspace[
-        "limitations"
-    ]
+    assert (
+        "The private upstream session identity was withheld from this response."
+        in workspace["limitations"]
+    )
 
 
 def test_rejects_private_material_in_controller_supplied_display_metadata() -> None:
@@ -634,9 +616,10 @@ def test_public_presenter_resolves_exact_attempt_and_check_links() -> None:
         selected_check_id=experiment.checks[1].check_id,
     )
 
-    assert presentation_source.requests == [
-        (experiment.experiment_id, experiment.revision, experiment.digest)
-    ] * 2
+    assert (
+        presentation_source.requests
+        == [(experiment.experiment_id, experiment.revision, experiment.digest)] * 2
+    )
     assert attempt_workspace["selected_context"]["kind"] == "engine_attempt"
     assert attempt_workspace["selected_context"]["attempt"]["job_id"] == (
         experiment.attempts[1].job_id
@@ -645,9 +628,7 @@ def test_public_presenter_resolves_exact_attempt_and_check_links() -> None:
         experiment.attempts[1].record.binding.run_id
     )
     assert check_workspace["selected_context"]["kind"] == "controller_check"
-    assert check_workspace["selected_context"]["check"]["performer"] == (
-        "bluefire.trusted-client"
-    )
+    assert check_workspace["selected_context"]["check"]["performer"] == ("bluefire.trusted-client")
     assert "engine" not in check_workspace["selected_context"]["check"]
     assert "model" not in check_workspace["selected_context"]["check"]
 
@@ -664,12 +645,8 @@ def test_public_presenter_reopens_revision_exact_historical_metadata() -> None:
         }
     )
 
-    initial_workspace = present_engine_experiment_workspace(
-        initial, _RunSource(initial), source
-    )
-    advanced_workspace = present_engine_experiment_workspace(
-        advanced, _RunSource(advanced), source
-    )
+    initial_workspace = present_engine_experiment_workspace(initial, _RunSource(initial), source)
+    advanced_workspace = present_engine_experiment_workspace(advanced, _RunSource(advanced), source)
 
     assert source.requests == [initial_key, advanced_key]
     assert initial_workspace["revision"] == initial.revision
@@ -718,9 +695,7 @@ def test_public_presenter_rejects_ambiguous_invalid_and_missing_selection() -> N
 
 def test_public_presenter_does_not_accept_source_selected_context() -> None:
     experiment = build_completed_experiment()
-    supplied = _presentation(
-        experiment, selection=_selection(experiment, "engine_attempt")
-    )
+    supplied = _presentation(experiment, selection=_selection(experiment, "engine_attempt"))
 
     with pytest.raises(EngineExperimentWorkspaceError, match="cannot choose"):
         present_engine_experiment_workspace(
@@ -735,7 +710,9 @@ def test_public_presenter_validates_experiment_before_selection_not_found() -> N
     presentation_source = _PresentationSource(_presentation(experiment))
     corrupt = replace(experiment, schema_version="bluefire.engine-experiment.corrupt")
 
-    with pytest.raises(EngineExperimentWorkspaceError, match="experiment state is invalid") as caught:
+    with pytest.raises(
+        EngineExperimentWorkspaceError, match="experiment state is invalid"
+    ) as caught:
         present_engine_experiment_workspace(
             corrupt,
             _RunSource(experiment),
@@ -758,4 +735,3 @@ def test_public_presenter_normalizes_non_json_presentation_source_data() -> None
             _RunSource(experiment),
             _PresentationSource(supplied),
         )
-

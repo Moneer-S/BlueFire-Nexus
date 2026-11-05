@@ -292,7 +292,10 @@ def test_document_bounds_secrets_and_historical_tampering_fail_closed(tmp_path: 
         store._create_tenant_generation_journal(
             OWNER,
             JOURNAL,
-            {**_document(), "operation": {"secret": "plaintext-material"}},
+            {
+                **_document(),
+                "operation": {"secret": "plaintext-material"},  # pragma: allowlist secret
+            },
             validator=_validate_journal,
         )
     first = _create(store)

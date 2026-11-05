@@ -173,13 +173,13 @@ def _material_document(material: TenantActionPreparationMaterial) -> dict[str, A
         "prepared_at": material.prepared_at,
         "expires_at": material.expires_at,
         "target": asdict(material.target),
-        "engine_identity": None
-        if material.engine_identity is None
-        else asdict(material.engine_identity),
+        "engine_identity": (
+            None if material.engine_identity is None else asdict(material.engine_identity)
+        ),
         "engine_policy": policy,
-        "check_identity": None
-        if material.check_identity is None
-        else asdict(material.check_identity),
+        "check_identity": (
+            None if material.check_identity is None else asdict(material.check_identity)
+        ),
         "defense_plan": None if material.defense_plan is None else material.defense_plan.to_dict(),
         "mechanism": None if material.mechanism is None else material.mechanism.to_dict(),
         "change_id": material.change_id,
@@ -214,13 +214,17 @@ def _material(document: Mapping[str, Any]) -> TenantActionPreparationMaterial:
         prepared_at=row["prepared_at"],
         expires_at=row["expires_at"],
         target=TenantGenerationExpectation(**row["target"]),
-        engine_identity=None
-        if row["engine_identity"] is None
-        else TenantEngineAttemptIdentity(**row["engine_identity"]),
+        engine_identity=(
+            None
+            if row["engine_identity"] is None
+            else TenantEngineAttemptIdentity(**row["engine_identity"])
+        ),
         engine_policy=policy,
-        check_identity=None
-        if row["check_identity"] is None
-        else TenantControllerCheckIdentity(**row["check_identity"]),
+        check_identity=(
+            None
+            if row["check_identity"] is None
+            else TenantControllerCheckIdentity(**row["check_identity"])
+        ),
         defense_plan=None if row["defense_plan"] is None else _tenant_plan(row["defense_plan"]),
         mechanism=None if row["mechanism"] is None else _tenant_mechanism(row["mechanism"]),
         change_id=row["change_id"],
@@ -519,15 +523,19 @@ class ProductStoreTenantActionMaterialSource:
             },
             "runtime": runtime,
             "controller_lineage": {
-                "plan_digest": None
-                if material.defense_plan is None
-                else material.defense_plan.digest,
-                "mechanism_digest": None
-                if material.mechanism is None
-                else content_hash(material.mechanism.to_dict()),
-                "change_digest": None
-                if experiment.defense_change is None
-                else content_hash(experiment.defense_change.to_dict()),
+                "plan_digest": (
+                    None if material.defense_plan is None else material.defense_plan.digest
+                ),
+                "mechanism_digest": (
+                    None
+                    if material.mechanism is None
+                    else content_hash(material.mechanism.to_dict())
+                ),
+                "change_digest": (
+                    None
+                    if experiment.defense_change is None
+                    else content_hash(experiment.defense_change.to_dict())
+                ),
                 "observations": [
                     content_hash(item.to_dict()) for item in experiment.independent_observations
                 ],

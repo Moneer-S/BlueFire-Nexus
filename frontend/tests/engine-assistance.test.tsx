@@ -101,7 +101,7 @@ it.each([
   ["other attempt", (value: any) => { value.reference_summary.selected_record.id = `engine-attempt-${"e".repeat(32)}`; }],
   ["dispatch capability", (value: any) => { value.capabilities = [{ id: "graph.propose_and_validate" }]; }],
   ["unknown top-level field", (value: any) => { value.raw_output = "never"; }],
-  ["unknown nested field", (value: any) => { value.reference_summary.provider.api_key = "never"; }],
+  ["unknown nested field", (value: any) => { value.reference_summary.provider.api_key = "never"; }], // pragma: allowlist secret
   ["unproven live model", (value: any) => { value.reference_summary.provider.live_model_inference_proven = true; }],
   ["local path", (value: any) => { value.reference_summary.objective.summary = "Inspect /private/operator/output.json"; }],
   ["secret", (value: any) => { value.reference_summary.selected_record.observations[0].summary = "token=secret-value"; }],

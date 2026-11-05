@@ -375,12 +375,14 @@ class ControllerOwnedTenantActionPreparer:
             material.expires_at,
             protected_factory,
             approval_request,
-            None
-            if self._issuer is None
-            else self._issuer.retainer(
-                material=material,
-                experiment=experiment,
-                workspace_digest=workspace["workspace_digest"],
+            (
+                None
+                if self._issuer is None
+                else self._issuer.retainer(
+                    material=material,
+                    experiment=experiment,
+                    workspace_digest=workspace["workspace_digest"],
+                )
             ),
         )
 

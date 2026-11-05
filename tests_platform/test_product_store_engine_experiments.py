@@ -233,7 +233,7 @@ def test_engine_experiment_rejects_secrets_raw_payloads_and_bad_contracts(
         )
 
     secret = _document(experiment_id, revision=1)
-    secret["api_key"] = "plaintext"
+    secret["api_key"] = "plaintext"  # pragma: allowlist secret
     with pytest.raises(ProductStoreError, match="environment-variable reference"):
         store.create_engine_experiment(experiment_id, secret, validator=_validator)
 

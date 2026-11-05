@@ -45,24 +45,20 @@ def test_strix_prompt_overlay_is_project_authored_external_adapter_policy() -> N
     relative = "bluefire/data/strix_prompt_policy_overlay.txt"
     assets = POLICY["assets"]
 
-    assert assets["classifications"]["project-authored-external-adapter-policy-mit"] == [
-        relative
-    ]
+    assert assets["classifications"]["project-authored-external-adapter-policy-mit"] == [relative]
     context = assets["external_adapter_asset_context"][relative]
     assert context == {
         "asset_license": "MIT",
-        "content_sha256": "a88d1cb62230023c7809df4010831ea696e9a6e5793ab7ff80e46f24d4bc506d",
+        "content_sha256": "a88d1cb62230023c7809df4010831ea696e9a6e5793ab7ff80e46f24d4bc506d",  # pragma: allowlist secret
         "upstream_project": "usestrix/strix",
-        "upstream_source_revision": "6b7ae2ebe4d47037a927aade23265ff4e4f27e84",
+        "upstream_source_revision": "6b7ae2ebe4d47037a927aade23265ff4e4f27e84",  # pragma: allowlist secret
         "upstream_license": "Apache-2.0",
         "upstream_content_included": False,
         "purpose": "BlueFire-authored replacement text for one hash-pinned upstream prompt region in the separately built modified Strix external-adapter candidate.",
         "modification_notice": "THIRD_PARTY_NOTICES.md#strix-external-engine-candidate",
         "oci_or_tool_image_redistributed": False,
     }
-    assert hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() == context[
-        "content_sha256"
-    ]
+    assert hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() == context["content_sha256"]
     assert relative not in assets["third_party_integrity"]
 
 

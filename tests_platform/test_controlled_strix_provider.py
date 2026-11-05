@@ -62,9 +62,9 @@ def _request(
     return canonical_json(
         {
             "model": conformance.MODEL_ID,
-            "messages": messages
-            if messages is not None
-            else [{"role": "user", "content": "prompt secret"}],
+            "messages": (
+                messages if messages is not None else [{"role": "user", "content": "prompt secret"}]
+            ),
             "tools": tools if tools is not None else synthetic_tools(),
             "stream": True,
             "parallel_tool_calls": False,

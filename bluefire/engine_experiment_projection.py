@@ -311,9 +311,7 @@ def _original_mechanism(
     status = (
         "established"
         if "unauthorized_disclosure" in assessments
-        else "not_established"
-        if observations
-        else "unknown"
+        else "not_established" if observations else "unknown"
     )
     return {
         "status": status,
@@ -332,9 +330,7 @@ def _reproducer(check: Any, observations: list[IndependentObservationRecord]) ->
         else (
             "blocked"
             if "authorization_denied" in assessments
-            else "not_established"
-            if observations
-            else "unknown"
+            else "not_established" if observations else "unknown"
         )
     )
     return {"status": status, "run_id": check.run_id, "support_refs": _support(observations)}
@@ -377,9 +373,7 @@ def _legitimate(check: Any, observations: list[IndependentObservationRecord]) ->
     status = (
         "failed"
         if "authorization_denied" in assessments
-        else "passed"
-        if assessments == {"legitimate_use_succeeded"}
-        else "unknown"
+        else "passed" if assessments == {"legitimate_use_succeeded"} else "unknown"
     )
     return {"status": status, "run_id": check.run_id, "support_refs": _support(observations)}
 

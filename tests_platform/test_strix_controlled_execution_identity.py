@@ -66,7 +66,7 @@ def _identity() -> dict[str, Any]:
     upstream = REVIEWED_UPSTREAM_INDEX_REFERENCE
     derived = "registry.example/strix-controlled@" + _digest("e")
     build = StrixBuildIdentity(
-        source_revision="6b7ae2ebe4d47037a927aade23265ff4e4f27e84",
+        source_revision="6b7ae2ebe4d47037a927aade23265ff4e4f27e84",  # pragma: allowlist secret
         source_tree_sha256=_digest("f"),
         package_sha256=_digest("1"),
         executable_sha256=_digest("2"),
@@ -296,7 +296,7 @@ def test_rejects_v1_build_mutation_and_extra_fields() -> None:
         StrixControlledExecutionIdentityV2.from_mapping(row)
 
     row = _identity()
-    row["startup_build_identity"]["secret_path"] = "C:/secret"
+    row["startup_build_identity"]["secret_path"] = "C:/secret"  # pragma: allowlist secret
     with pytest.raises(StrixControlledExecutionIdentityError):
         StrixControlledExecutionIdentityV2.from_mapping(row)
 

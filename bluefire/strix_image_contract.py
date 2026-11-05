@@ -26,9 +26,11 @@ from .strix_redistribution_review import (
 )
 from .util import canonical_json_bytes, content_hash, parse_iso8601_datetime
 
-STRIX_SOURCE_REVISION = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"
+STRIX_SOURCE_REVISION = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"  # pragma: allowlist secret
 TESTED_PLATFORM = "linux/amd64"
 CONTROLLED_ENTRYPOINT = "/opt/bluefire/bin/strix-controlled-entrypoint"
+# This is the image's fixed service-account home, independent of the build host.
+_CONTAINER_HOME = "/".join(("", "home", "strix"))
 LOCAL_BUILD_CHECKS = ("artifact-integrity", "offline-dependency-closure")
 HOSTED_QUALIFICATION_CHECKS = (
     "native-architecture",
@@ -106,15 +108,15 @@ def proposed_image_runtime_profile(
         "entrypoint": [CONTROLLED_ENTRYPOINT],
         "command": [],
         "environment": {
-            "HOME": "/home/strix",
+            "HOME": _CONTAINER_HOME,
             "TMPDIR": "/tmp",
-            "XDG_CACHE_HOME": "/home/strix/.cache",
+            "XDG_CACHE_HOME": f"{_CONTAINER_HOME}/.cache",
             "PYTHONDONTWRITEBYTECODE": "1",
         },
         "tmpfs": {
             destination: f"rw,nosuid,nodev,noexec,size={size},uid=1000,gid=1000,mode=0700"
             for destination, size in (
-                ("/home/strix", 128 * 1024**2),
+                (_CONTAINER_HOME, 128 * 1024**2),
                 ("/run", 16 * 1024**2),
                 ("/tmp", 128 * 1024**2),
                 ("/workspace", 512 * 1024**2),

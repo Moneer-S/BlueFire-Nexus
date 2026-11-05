@@ -458,9 +458,7 @@ class FakeTransport:
             relay_lifecycle=(
                 self.running_relay_lifecycle
                 if self.running_relay_lifecycle is not None
-                else "active"
-                if self.lifecycle == "running"
-                else self.lifecycle
+                else "active" if self.lifecycle == "running" else self.lifecycle
             ),
             operation_lifecycle=self.running_operation_lifecycle,
         )

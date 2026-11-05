@@ -30,7 +30,9 @@ from typing import Any, Awaitable, Callable, Literal, Mapping, Protocol, cast
 from .util import content_hash
 
 BACKEND_NAME = "bluefire-controlled"
-STRIX_SOURCE_REVISION = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"
+STRIX_SOURCE_REVISION = (
+    "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"  # pragma: allowlist secret -- public Git commit
+)
 STRIX_PACKAGE_VERSION = "1.7.0"
 AGENTS_PACKAGE_VERSION = "0.19.0"
 CAIDO_PORT = 48080

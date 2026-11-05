@@ -107,21 +107,21 @@ def test_v12_upgrade_preserves_history_without_synthesizing_macos_attempt_receip
 
     upgraded = ProductStore(path)
 
-    assert upgraded.schema_version == 13
+    assert upgraded.schema_version == module.SCHEMA_VERSION
     assert upgraded.get_job(job["job_id"]) == job
     assert _snapshot(path) == before
     with upgraded._connection() as connection:
         assert [
             row[0]
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ] == [12, 13]
+        ] == [12, module.SCHEMA_VERSION]
         assert all(
             connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
             for table in _NEW_TABLES
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     reopened = ProductStore(path)
-    assert reopened.schema_version == 13 and _snapshot(path) == before
+    assert reopened.schema_version == module.SCHEMA_VERSION and _snapshot(path) == before
     with reopened._connection() as connection:
         assert all(
             connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
@@ -154,7 +154,7 @@ def test_v13_ddl_failure_rolls_back_new_tables_and_version(version12, monkeypatc
     assert _schema(path) == schema_before and _snapshot(path) == before
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (12,)
-    assert ProductStore(path).schema_version == 13
+    assert ProductStore(path).schema_version == module.SCHEMA_VERSION
     assert _snapshot(path) == before
 
 

@@ -176,14 +176,18 @@ def _harness(tmp_path: Path, monkeypatch, action=EngineWorkspaceAction.START_BAS
             schema_version="bluefire.strix-runtime-authority.v1",
             generation=1,
             state="active",
-            qualification_manifest_ref=content_hash("controller-only")
-            if case.resolver.admission is None
-            else case.admission.runtime_qualification_ref,
+            qualification_manifest_ref=(
+                content_hash("controller-only")
+                if case.resolver.admission is None
+                else case.admission.runtime_qualification_ref
+            ),
             protected_artifact_key="qualification-" + "a" * 32,
             installed_bluefire_revision="a" * 40,
-            strix_build_digest=content_hash("controller-only")
-            if case.resolver.admission is None
-            else content_hash(case.admission.build.to_dict()),
+            strix_build_digest=(
+                content_hash("controller-only")
+                if case.resolver.admission is None
+                else content_hash(case.admission.build.to_dict())
+            ),
             threat_review_ref=content_hash({"review": "fixed"}),
             recorded_at=case.material.prepared_at,
             revocation_reason=None,

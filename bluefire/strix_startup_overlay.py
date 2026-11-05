@@ -10,10 +10,16 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-REVIEWED_SOURCE_REVISION = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"
-REVIEWED_STARTUP_SHA256 = "735ad8463f83256f049749a91c00f85cd6b58301c225244c7b6b798898cc7014"
-STARTUP_OVERLAY_SHA256 = "e86820ed36e72496f65c0133a367779332782a4b00814c8e6bea73ccc2885303"
-PATCHED_STARTUP_SHA256 = "db3294b351406479960f1f18cde51e58d48f2dd9d4c1c249004385510a6e4fbf"
+REVIEWED_SOURCE_REVISION = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"  # pragma: allowlist secret
+REVIEWED_STARTUP_SHA256 = (
+    "735ad8463f83256f049749a91c00f85cd6b58301c225244c7b6b798898cc7014"  # pragma: allowlist secret
+)
+STARTUP_OVERLAY_SHA256 = (
+    "e86820ed36e72496f65c0133a367779332782a4b00814c8e6bea73ccc2885303"  # pragma: allowlist secret
+)
+PATCHED_STARTUP_SHA256 = (
+    "db3294b351406479960f1f18cde51e58d48f2dd9d4c1c249004385510a6e4fbf"  # pragma: allowlist secret
+)
 
 _ORIGINAL = b"    check_docker_installed()\n    pull_docker_image()\n    validate_environment()\n"
 _REPLACEMENT = (

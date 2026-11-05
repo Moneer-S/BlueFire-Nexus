@@ -312,9 +312,7 @@ class EngineFileReadTargetPolicy:
         expected_phase = (
             HISTORICAL_BASELINE
             if attempt.role is AttemptRole.BASELINE
-            else CURRENT_HARDENED
-            if attempt.role is AttemptRole.ADAPTIVE_SEARCH
-            else None
+            else CURRENT_HARDENED if attempt.role is AttemptRole.ADAPTIVE_SEARCH else None
         )
         if (
             attempt.engine_id != "strix"

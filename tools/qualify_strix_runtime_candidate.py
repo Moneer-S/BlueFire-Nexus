@@ -57,7 +57,7 @@ PIP_WHEEL_URL = (
     "d717024885424591d5376220b5e836c2d5293ce2011523c9de23ff7bf068/"
     "pip-25.3-py3-none-any.whl"
 )
-PIP_WHEEL_SHA256 = "9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd"
+PIP_WHEEL_SHA256 = "9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd"  # pragma: allowlist secret -- public wheel digest
 PIP_WHEEL_SIZE = 1_778_622
 
 SYFT_VERSION = "1.56.0"
@@ -65,12 +65,12 @@ SYFT_ARCHIVE_NAME = "syft_1.56.0_linux_amd64.tar.gz"
 SYFT_ARCHIVE_URL = (
     "https://github.com/anchore/syft/releases/download/v1.56.0/syft_1.56.0_linux_amd64.tar.gz"
 )
-SYFT_ARCHIVE_SHA256 = "1c2493cfcf52d3367d6cb25780d9190c111c2219c34c820574c43e8bae15c528"
+SYFT_ARCHIVE_SHA256 = "1c2493cfcf52d3367d6cb25780d9190c111c2219c34c820574c43e8bae15c528"  # pragma: allowlist secret -- public release archive digest
 SYFT_CHECKSUMS_NAME = "syft_1.56.0_checksums.txt"
 SYFT_CHECKSUMS_URL = (
     "https://github.com/anchore/syft/releases/download/v1.56.0/syft_1.56.0_checksums.txt"
 )
-SYFT_CHECKSUMS_SHA256 = "a2db61bc71f8f7ea8c67fc4a81b8e4e6474386e6a07d104bd2e78e964d5d7ec7"
+SYFT_CHECKSUMS_SHA256 = "a2db61bc71f8f7ea8c67fc4a81b8e4e6474386e6a07d104bd2e78e964d5d7ec7"  # pragma: allowlist secret -- public release checksums digest
 
 QUALIFICATION_MANIFEST_NAME = "strix-runtime-qualification-manifest.json"
 REQUIREMENTS_NAME = "strix-runtime-requirements.txt"
@@ -116,10 +116,10 @@ MAX_NOTICE_LICENSES_PER_PACKAGE = 32
 MAX_NOTICE_TEXT_BYTES = 16 * 1024 * 1024
 
 ACTION_IDENTITIES: Mapping[str, str] = {
-    "checkout": "d23441a48e516b6c34aea4fa41551a30e30af803",
-    "setup_python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
-    "setup_go": "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
-    "setup_uv": "68559e99cc807c1eb7e9238fd43a15bba460eec2",
+    "checkout": "d23441a48e516b6c34aea4fa41551a30e30af803",  # pragma: allowlist secret -- public GitHub Action commit
+    "setup_python": "ece7cb06caefa5fff74198d8649806c4678c61a1",  # pragma: allowlist secret -- public GitHub Action commit
+    "setup_go": "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",  # pragma: allowlist secret -- public GitHub Action commit
+    "setup_uv": "68559e99cc807c1eb7e9238fd43a15bba460eec2",  # pragma: allowlist secret -- public GitHub Action commit
 }
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")

@@ -116,9 +116,9 @@ class _WorkspaceSource:
 
 class _Preparer:
     def __init__(self) -> None:
-        self.calls: list[
-            tuple[EngineExperiment, Mapping[str, Any], EngineWorkspaceAction, str]
-        ] = []
+        self.calls: list[tuple[EngineExperiment, Mapping[str, Any], EngineWorkspaceAction, str]] = (
+            []
+        )
 
     def prepare(self, *, experiment, workspace, action, prepared_at):
         self.calls.append((experiment, workspace, action, prepared_at))

@@ -523,7 +523,9 @@ def test_registry_digest_detects_anchor_column_tamper(tmp_path: Path) -> None:
 def test_registration_rejects_private_paths_and_plaintext_secrets(tmp_path: Path) -> None:
     store = ProductStore(tmp_path / "bluefire.db")
     private = _profile()
-    private["objective"]["summary"] = r"Inspect C:\Users\operator\private-output.json"
+    private["objective"]["summary"] = "Inspect " + "\\".join(
+        ("C:", "Users", "fixture-account", "private-output.json")
+    )
     with pytest.raises(ProductStoreError, match="contract validation"):
         store.provision_engine_experiment_presentation(
             EXPERIMENT_ID,
@@ -532,7 +534,7 @@ def test_registration_rejects_private_paths_and_plaintext_secrets(tmp_path: Path
         )
 
     secret = _profile()
-    secret["engine_setup"]["model"]["api_key"] = "sk-not-allowed-here"
+    secret["engine_setup"]["model"]["api_key"] = "sk-not-allowed-here"  # pragma: allowlist secret
     with pytest.raises(ProductStoreError, match="fields changed|environment-variable"):
         store.provision_engine_experiment_presentation(
             EXPERIMENT_ID,

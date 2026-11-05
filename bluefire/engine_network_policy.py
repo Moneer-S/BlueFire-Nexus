@@ -980,9 +980,7 @@ def verify_effective_network(
     state = (
         VerificationState.MISMATCH
         if mismatches
-        else VerificationState.UNKNOWN
-        if limitations
-        else VerificationState.VERIFIED
+        else VerificationState.UNKNOWN if limitations else VerificationState.VERIFIED
     )
     details = tuple(sorted(set(mismatches + limitations)))
     return EngineNetworkVerification(

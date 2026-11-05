@@ -1658,9 +1658,7 @@ class ProductStore(
                 else (
                     {"suspended", "revoked"}
                     if previous == "trusted"
-                    else {"revoked"}
-                    if previous == "suspended"
-                    else set()
+                    else {"revoked"} if previous == "suspended" else set()
                 )
             )
             if state not in allowed:

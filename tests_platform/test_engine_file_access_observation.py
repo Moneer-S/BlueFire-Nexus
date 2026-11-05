@@ -537,9 +537,7 @@ def _case(
     assessment = (
         "legitimate_use_succeeded"
         if reader == "owner"
-        else "unauthorized_disclosure"
-        if outcome == "allowed"
-        else "authorization_denied"
+        else "unauthorized_disclosure" if outcome == "allowed" else "authorization_denied"
     )
     content = {
         "schema_version": OBSERVATION_SCHEMA,

@@ -195,9 +195,7 @@ def parse_strix_run_bytes(
         exit_reason = (
             raw_exit_reason
             if raw_exit_reason in _PUBLIC_EXIT_REASONS
-            else "engine_reported_other"
-            if raw_exit_reason is not None
-            else None
+            else "engine_reported_other" if raw_exit_reason is not None else None
         )
         if raw_caveats:
             caveats.append("Strix reported scan coverage caveats.")

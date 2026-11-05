@@ -311,12 +311,12 @@ def test_v2_derived_image_cannot_reuse_the_upstream_repository() -> None:
 def test_v2_accepts_qualified_docker_media_roles_without_aliasing_them() -> None:
     row = _contract_document()
     for image_row in (row["upstream_image"], row["derived_image"]):
-        image_row["index"]["media_type"] = (
-            "application/vnd.docker.distribution.manifest.list.v2+json"
-        )
-        image_row["platform_child"]["media_type"] = (
-            "application/vnd.docker.distribution.manifest.v2+json"
-        )
+        image_row["index"][
+            "media_type"
+        ] = "application/vnd.docker.distribution.manifest.list.v2+json"
+        image_row["platform_child"][
+            "media_type"
+        ] = "application/vnd.docker.distribution.manifest.v2+json"
         image_row["config"]["media_type"] = "application/vnd.docker.container.image.v1+json"
     contract = image.StrixImageContractV2.from_mapping(row)
     assert contract.to_dict()["upstream_image"]["config"]["media_type"] == (

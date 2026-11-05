@@ -728,20 +728,10 @@ def test_v20_migration_preserves_every_existing_row_and_rolls_back(tmp_path, mon
             ).fetchone()
             is None
         )
-        assert (
-            connection.execute(
-                """SELECT 1 FROM sqlite_master
-                WHERE name='engine_attempt_pre_dispatch_settlements'"""
-            ).fetchone()
-            is None
-        )
-        assert (
-            connection.execute(
-                """SELECT 1 FROM sqlite_master
-                WHERE name='engine_attempt_reconciliation_intents'"""
-            ).fetchone()
-            is None
-        )
+        assert connection.execute("""SELECT 1 FROM sqlite_master
+                WHERE name='engine_attempt_pre_dispatch_settlements'""").fetchone() is None
+        assert connection.execute("""SELECT 1 FROM sqlite_master
+                WHERE name='engine_attempt_reconciliation_intents'""").fetchone() is None
         assert (
             connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='strix_runtime_issuance_records'"

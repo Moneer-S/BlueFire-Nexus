@@ -295,7 +295,9 @@ class Worker:
         self.run_calls += 1
         self.events.append("worker")
         environment = plan.exact_environment
-        assert environment["LLM_API_KEY"] == "attempt-scoped-controlled-provider-token"
+        assert environment["LLM_API_KEY"] == (
+            "attempt-scoped-controlled-provider-token"  # pragma: allowlist secret
+        )
         assert "attempt-scoped-controlled-provider-token" not in json.dumps(
             plan.public_launch_receipt()
         )
@@ -314,9 +316,11 @@ class Worker:
                     "targets_info": [
                         {
                             "type": "web_application",
-                            "details": {"target_url": plan.exact_environment["BF_TEST_TARGET"]}
-                            if "BF_TEST_TARGET" in plan.exact_environment
-                            else {"target_url": plan.argv[plan.argv.index("--target") + 1]},
+                            "details": (
+                                {"target_url": plan.exact_environment["BF_TEST_TARGET"]}
+                                if "BF_TEST_TARGET" in plan.exact_environment
+                                else {"target_url": plan.argv[plan.argv.index("--target") + 1]}
+                            ),
                             "original": plan.argv[plan.argv.index("--target") + 1],
                         }
                     ],

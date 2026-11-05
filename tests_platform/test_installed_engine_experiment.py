@@ -104,7 +104,7 @@ def _receipt() -> dict[str, object]:
     }
 
 
-def _wheel_fixture(tmp_path: Path) -> tuple[Path, Path]:
+def _wheel_fixture(tmp_path: Path, *, data_scheme: str | None = None) -> tuple[Path, Path]:
     purelib = tmp_path / "site"
     purelib.mkdir()
     prefix = "bluefire_nexus-1.2.3.dist-info/"
@@ -112,23 +112,32 @@ def _wheel_fixture(tmp_path: Path) -> tuple[Path, Path]:
         "bluefire/__init__.py": b'__version__ = "1.2.3"\n',
         "bluefire/controlled_strix_provider.py": b'PROVIDER_ID = "fixture"\n',
         prefix + "METADATA": (b"Metadata-Version: 2.1\nName: bluefire-nexus\nVersion: 1.2.3\n\n"),
-        prefix + "WHEEL": (
+        prefix
+        + "WHEEL": (
             b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
         ),
     }
     record = io.StringIO(newline="")
     writer = csv.writer(record, lineterminator="\n")
+    dist_data_prefix = "bluefire_nexus-1.2.3.data/"
+    wheel_payloads: dict[str, bytes] = {}
     for name, payload in payloads.items():
+        wheel_name = name
+        installed_name = name
+        if data_scheme is not None and name.startswith("bluefire/"):
+            wheel_name = dist_data_prefix + data_scheme + "/" + name
         encoded = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).rstrip(b"=")
-        writer.writerow([name, "sha256=" + encoded.decode("ascii"), str(len(payload))])
-        destination = purelib / Path(*name.split("/"))
+        writer.writerow([wheel_name, "sha256=" + encoded.decode("ascii"), str(len(payload))])
+        wheel_payloads[wheel_name] = payload
+        destination = purelib / Path(*installed_name.split("/"))
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(payload)
     record_name = prefix + "RECORD"
     writer.writerow([record_name, "", ""])
+    wheel_payloads[record_name] = record.getvalue().encode("utf-8")
     wheel = tmp_path / "bluefire_nexus-1.2.3-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, payload in {**payloads, record_name: record.getvalue().encode("utf-8")}.items():
+        for name, payload in wheel_payloads.items():
             info = zipfile.ZipInfo(name)
             info.external_attr = (stat.S_IFREG | 0o644) << 16
             archive.writestr(info, payload)
@@ -152,6 +161,19 @@ def test_installed_payload_is_bound_to_every_candidate_wheel_member(tmp_path: Pa
     binding = bind_installed_wheel(wheel, purelib=purelib, installed_version="1.2.3")
     assert binding["wheel_member_count"] == 4
     assert binding["wheel_payload_digest"] == binding["installed_payload_digest"]
+
+
+def test_wheel_purelib_data_members_bind_to_pip_relocated_files(tmp_path: Path) -> None:
+    wheel, purelib = _wheel_fixture(tmp_path, data_scheme="purelib")
+    binding = bind_installed_wheel(wheel, purelib=purelib, installed_version="1.2.3")
+    assert binding["wheel_member_count"] == 4
+    assert binding["wheel_payload_digest"] == binding["installed_payload_digest"]
+
+
+def test_wheel_binding_rejects_non_purelib_data_scheme(tmp_path: Path) -> None:
+    wheel, purelib = _wheel_fixture(tmp_path, data_scheme="platlib")
+    with pytest.raises(RuntimeError, match="unsupported .data scheme"):
+        bind_installed_wheel(wheel, purelib=purelib, installed_version="1.2.3")
 
 
 def test_wheel_binding_rejects_tampered_install_or_other_version(tmp_path: Path) -> None:

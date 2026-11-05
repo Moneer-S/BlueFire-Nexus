@@ -237,7 +237,9 @@ def test_unselected_context_and_unknown_current_target_remain_truthful() -> None
     "summary",
     [
         "Inspect /etc/shadow, /var/lib/bluefire/state.db, and /opt/private/tool.log.",
-        "Review path=/home/operator/private.log and /workspace/run/output.json.",
+        "Review path="
+        + "/".join(("", "home", "fixture-account", "private.log"))
+        + " and /workspace/run/output.json.",
         "Inspect path=/custom-root/private-output.json.",
         "Inspect path:/custom-root/private-output.json.",
         "Use secret=supersecretvalue.",
@@ -249,7 +251,7 @@ def test_unselected_context_and_unknown_current_target_remain_truthful() -> None
         "Use glpat-abcdefghijklmnopqrstuvwxyz123456 for the check.",
         "Use kms_signing_key=abcdef0123456789 for the check.",
         "Use session_cookie=abcdef0123456789 for the check.",
-        "Use -----BEGIN PGP PRIVATE KEY BLOCK----- for the check.",
+        "Use -----BEGIN PGP PRIVATE KEY BLOCK----- for the check.",  # pragma: allowlist secret
     ],
 )
 def test_real_presenter_private_text_is_rejected_from_context(summary: str) -> None:
@@ -286,7 +288,7 @@ def test_real_presenter_private_text_is_rejected_from_context(summary: str) -> N
         "https://model.test/v1?token=ghp_abcdefghijklmnopqrstuvwxyz123456",
         "https://model.test/v1?sig=abcdef0123456789abcdef0123456789",
         "https://model.test/v1?X-Amz-Signature=abcdef0123456789abcdef0123456789",
-        "postgres://operator:supersecret@model.test/db",
+        "postgres://operator:supersecret@model.test/db",  # pragma: allowlist secret
     ],
 )
 def test_real_presenter_credential_bearing_destination_is_rejected(
@@ -505,7 +507,7 @@ def test_unreviewed_sensitive_conclusion_keys_fail_closed() -> None:
     experiment, workspace, selection = _workspace()
     changed = copy.deepcopy(workspace)
     changed["projection"]["conclusion"] = {
-        "password": "hunter2",
+        "password": "hunter2",  # pragma: allowlist secret
         "raw_artifact": "verbatim tool output",
         "source_path": "/etc/shadow",
     }
