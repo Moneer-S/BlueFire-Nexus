@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 
 from bluefire.engine_attempt_contract import AttemptRole, EngineAttemptBinding
+from bluefire.engine_experiment import ENGINE_CAPABILITY_SCOPE_VERSION, EngineExperiment
 from bluefire.engine_file_access_snapshot import (
     CURRENT_HARDENED,
     HISTORICAL_BASELINE,
@@ -15,7 +16,7 @@ from bluefire.engine_file_access_snapshot import (
     FileAccessTargetSnapshot,
 )
 from bluefire.engine_file_access_target import (
-    SCOPE_VERSION,
+    TARGET_POLICY_VERSION,
     EngineFileReadTargetError,
     EngineFileReadTargetPolicy,
 )
@@ -88,7 +89,7 @@ def _attempt(
         environment_ref=_digest("2"),
         target_snapshot_ref=snapshot.target_snapshot_ref,
         scope_ref=mechanism.mechanism_ref,
-        scope_version=SCOPE_VERSION,
+        scope_version=ENGINE_CAPABILITY_SCOPE_VERSION,
         engine_id="strix",
         engine_version="1.7.0",
         engine_revision="4" * 40,
@@ -160,6 +161,8 @@ def test_policy_binds_one_fixed_read_and_round_trips_without_authority() -> None
     assert policy.snapshot.target_snapshot_ref == attempt.target_snapshot_ref
     assert policy.historical_snapshot.to_dict() == policy.snapshot.to_dict()
     assert policy.mechanism.mechanism_ref == attempt.scope_ref
+    assert policy.target_policy_version == TARGET_POLICY_VERSION
+    assert attempt.scope_version == ENGINE_CAPABILITY_SCOPE_VERSION
     assert EngineFileReadTargetPolicy.from_mapping(policy.to_dict()).to_dict() == policy.to_dict()
     policy.require_current(
         expected_policy_digest=policy.policy_digest,
@@ -173,6 +176,98 @@ def test_policy_binds_one_fixed_read_and_round_trips_without_authority() -> None
     )
     assert not hasattr(policy, "execute")
     assert not hasattr(policy, "dispatch")
+
+
+def test_policy_accepts_attempt_reserved_by_canonical_engine_experiment() -> None:
+    mechanism, snapshot, current = _current()
+    attempt = _attempt(mechanism, snapshot)
+    experiment = EngineExperiment.create(
+        experiment_id=attempt.experiment_id,
+        objective_ref=attempt.objective_ref,
+        environment_ref=attempt.environment_ref,
+        scope_ref=mechanism.mechanism_ref,
+        scope_version=ENGINE_CAPABILITY_SCOPE_VERSION,
+        target_snapshot_ref=snapshot.target_snapshot_ref,
+        created_at=attempt.created_at,
+    )
+    reserved = experiment.reserve_attempt(
+        attempt,
+        job_id="job-" + "a" * 32,
+        delegation_digest=_digest("a"),
+        execution_approval_digest=_digest("b"),
+        execution_approval_id="approval-" + "a" * 32,
+        timestamp=attempt.created_at,
+    )
+    reserved_attempt = reserved.attempts[0].record.binding
+
+    policy = EngineFileReadTargetPolicy.from_controller(
+        attempt=reserved_attempt,
+        mechanism=mechanism,
+        historical_snapshot=snapshot,
+        snapshot=snapshot,
+        historical_binding=current,
+        current_binding=current,
+        now_ms=NOW_MS,
+        request_budget=4,
+        deadline_ms=NOW_MS + 30_000,
+    )
+
+    assert reserved.scope_version == ENGINE_CAPABILITY_SCOPE_VERSION
+    assert reserved_attempt.scope_version == ENGINE_CAPABILITY_SCOPE_VERSION
+    assert policy.target_policy_version == TARGET_POLICY_VERSION
+    assert EngineFileReadTargetPolicy.from_mapping(policy.to_dict()).policy_digest == (
+        policy.policy_digest
+    )
+    policy.require_current(
+        expected_policy_digest=policy.policy_digest,
+        attempt=reserved_attempt,
+        current_mechanism=mechanism,
+        current_historical_snapshot=snapshot,
+        current_snapshot=snapshot,
+        historical_binding=current,
+        current_binding=current,
+        now_ms=NOW_MS + 1,
+    )
+
+
+@pytest.mark.parametrize(
+    "substituted_version",
+    [ENGINE_CAPABILITY_SCOPE_VERSION, "file-access.uid1002-write.v1", "tenant-record-service.v1"],
+)
+def test_target_policy_rejects_version_substitution(substituted_version: str) -> None:
+    policy, attempt, current = _policy()
+    substituted = policy.to_dict()
+    substituted["target_policy_version"] = substituted_version
+
+    assert content_hash(substituted) != policy.policy_digest
+    with pytest.raises(EngineFileReadTargetError, match="policy version"):
+        EngineFileReadTargetPolicy.from_mapping(substituted)
+    with pytest.raises(EngineFileReadTargetError, match="protected policy"):
+        policy.require_current(
+            expected_policy_digest=content_hash(substituted),
+            attempt=attempt,
+            current_mechanism=policy.mechanism,
+            current_historical_snapshot=policy.historical_snapshot,
+            current_snapshot=policy.snapshot,
+            historical_binding=current,
+            current_binding=current,
+            now_ms=NOW_MS,
+        )
+
+
+def test_target_policy_rejects_legacy_serialization_without_policy_version() -> None:
+    policy, _, _ = _policy()
+    legacy = policy.to_dict()
+    legacy["schema_version"] = "bluefire.engine-file-read-target.v1"
+    legacy.pop("target_policy_version")
+
+    with pytest.raises(EngineFileReadTargetError, match="fields"):
+        EngineFileReadTargetPolicy.from_mapping(legacy)
+
+    substituted = policy.to_dict()
+    substituted["scope_version"] = TARGET_POLICY_VERSION
+    with pytest.raises(EngineFileReadTargetError, match="fields"):
+        EngineFileReadTargetPolicy.from_mapping(substituted)
 
 
 def test_adaptive_policy_requires_exact_original_and_hardened_pair() -> None:
@@ -400,6 +495,7 @@ def test_controller_comparison_rejects_budget_deadline_and_scope_widening() -> N
     for changed_attempt in (
         replace(attempt, target_snapshot_ref=_digest("f")),
         replace(attempt, scope_ref=_digest("f")),
+        replace(attempt, scope_version=TARGET_POLICY_VERSION),
         replace(attempt, scope_version="tenant-record-service.v1"),
     ):
         with pytest.raises(EngineFileReadTargetError):

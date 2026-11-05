@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .engine_attempt_contract import AttemptRole, EngineAttemptBinding
+from .engine_experiment import ENGINE_CAPABILITY_SCOPE_VERSION
 from .engine_file_access_snapshot import (
     CURRENT_HARDENED,
     HISTORICAL_BASELINE,
@@ -35,13 +36,14 @@ from .file_access_contract import (
 )
 from .util import content_hash, json_clone, parse_iso8601_datetime
 
-SCHEMA = "bluefire.engine-file-read-target.v1"
-SCOPE_VERSION = "file-access.uid1002-read.v1"
+SCHEMA = "bluefire.engine-file-read-target.v2"
+TARGET_POLICY_VERSION = "file-access.uid1002-read.v1"
 _ATTEMPT_ID = re.compile(r"engine-attempt-[0-9a-f]{32}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _FIELDS = frozenset(
     {
         "schema_version",
+        "target_policy_version",
         "attempt_id",
         "attempt_binding_digest",
         "mechanism",
@@ -71,6 +73,7 @@ class EngineFileReadTargetPolicy:
     """One proposed UID 1002 read target, with no dispatch operation."""
 
     schema_version: str
+    target_policy_version: str
     attempt_id: str
     attempt_binding_digest: str
     mechanism: FileAccessReadMechanism
@@ -88,6 +91,8 @@ class EngineFileReadTargetPolicy:
     def _validate(self) -> None:
         if self.schema_version != SCHEMA:
             raise EngineFileReadTargetError("file-read target version is unsupported")
+        if self.target_policy_version != TARGET_POLICY_VERSION:
+            raise EngineFileReadTargetError("file-read target policy version is unsupported")
         if not isinstance(self.attempt_id, str) or _ATTEMPT_ID.fullmatch(self.attempt_id) is None:
             raise EngineFileReadTargetError("file-read target attempt is invalid")
         if (
@@ -141,6 +146,7 @@ class EngineFileReadTargetPolicy:
             raise EngineFileReadTargetError("file-read target identity is invalid") from exc
         return cls(
             schema_version=value["schema_version"],
+            target_policy_version=value["target_policy_version"],
             attempt_id=value["attempt_id"],
             attempt_binding_digest=value["attempt_binding_digest"],
             mechanism=mechanism,
@@ -179,6 +185,7 @@ class EngineFileReadTargetPolicy:
             raise EngineFileReadTargetError("file-read target attempt binding is invalid")
         policy = cls(
             schema_version=SCHEMA,
+            target_policy_version=TARGET_POLICY_VERSION,
             attempt_id=attempt.attempt_id,
             attempt_binding_digest=attempt.binding_digest,
             mechanism=mechanism,
@@ -313,7 +320,7 @@ class EngineFileReadTargetPolicy:
             attempt.engine_id != "strix"
             or expected_phase is None
             or reopened_snapshot.to_dict()["phase"] != expected_phase
-            or attempt.scope_version != SCOPE_VERSION
+            or attempt.scope_version != ENGINE_CAPABILITY_SCOPE_VERSION
             or attempt.scope_ref != reopened_mechanism.mechanism_ref
             or attempt.target_snapshot_ref != reopened_snapshot.target_snapshot_ref
             or attempt.attempt_id != self.attempt_id
@@ -336,6 +343,7 @@ class EngineFileReadTargetPolicy:
             json_clone(
                 {
                     "schema_version": self.schema_version,
+                    "target_policy_version": self.target_policy_version,
                     "attempt_id": self.attempt_id,
                     "attempt_binding_digest": self.attempt_binding_digest,
                     "mechanism": self.mechanism.to_dict(),
@@ -355,5 +363,5 @@ __all__ = [
     "EngineFileReadTargetError",
     "EngineFileReadTargetPolicy",
     "SCHEMA",
-    "SCOPE_VERSION",
+    "TARGET_POLICY_VERSION",
 ]
