@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { URL } from "node:url";
-import { retainedState, retainedPostAllowed, submitRetainedAttempt } from "./receiver-retained.mjs";
+import { retainedState, retainedPostAllowed, retainedSettlementPollBudget, submitRetainedAttempt } from "./receiver-retained.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
 import { retainedHash, assertRetainedSource, assertMetadataOnly, verifyRetainedOriginal, verifyRetainedContinuation, RETAINED_PACK, RETAINED_QUESTION, RETAINED_REVIEWER, RETAINED_METHOD } from "./receiver-retained-proof.mjs";
 
@@ -45,6 +45,18 @@ function submissionFixture() {
     onDiagnostic: value => diagnostics.push(value) };
   return { events, diagnostics, ui, response, page, options };
 }
+
+test("retained settlement polling is capped inside the shared work deadline", () => {
+  assert.equal(retainedSettlementPollBudget(475000), 150000);
+  assert.equal(retainedSettlementPollBudget(149999), 149999);
+  assert.equal(retainedSettlementPollBudget(0), 0);
+  assert.equal(retainedSettlementPollBudget(Number.NaN), 0);
+
+  const budget = createDeadlineBudget(0, 475000, 60000);
+  assert.equal(retainedSettlementPollBudget(budget.remaining(325000)), 150000);
+  assert.equal(retainedSettlementPollBudget(budget.remaining(425000)), 50000);
+  assert.equal(retainedSettlementPollBudget(budget.remaining(475000)), 0);
+});
 
 test("retained submission observes visible enabled action before arming and clicks exactly once", async () => {
   const fixture = submissionFixture();

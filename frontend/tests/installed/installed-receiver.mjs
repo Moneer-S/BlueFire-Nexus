@@ -1923,7 +1923,7 @@ try {
   }
   report.retained_execution = await runRetainedJourney(page, retained, {
     origin: ORIGIN, controlId: originalOwnerId, controlDigest: originalControlDigest, profileId: PROFILE, providerId: PROVIDER_ID, model: MODEL,
-    read: path => appApi(path), remainingMs, setStage: value => { stage = value; },
+    read: (path, requestedTimeout) => appApi(path, requestedTimeout), remainingMs, setStage: value => { stage = value; },
     onInteraction: value => { retainedInteraction = value; },
     onRevoked: () => { report.cleanup = { ...(report.cleanup ?? {}), retained_grant_revoked: true }; },
     capture: async (name, options = {}) => {

@@ -10,11 +10,19 @@ import { RETAINED_PACK, RETAINED_METHOD, RETAINED_PURPOSE_LABEL, RETAINED_QUESTI
 
 const submissionId = value => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 const jobId = value => `job-${value.replaceAll("-", "")}`;
+const RETAINED_SETTLEMENT_POLL_CAP_MS = 150_000;
 const reviewBody = controlId => ({ schema_version: "bluefire.composition-review-request.v2", pack: RETAINED_PACK,
   control_owner_id: controlId, question: RETAINED_QUESTION, limits: null });
 export const retainedState = () => ({ active: false, ownerId: undefined, proposals: [], attempts: [],
   initialContext: undefined, historyContext: undefined, review: undefined, first: undefined, source: undefined,
   knowledge: undefined, candidate: undefined, comparisonSubmitted: false, snapshotId: undefined });
+
+// The caller supplies work time only. Its separate cleanup reserve is not part
+// of this value, so a slow hosted transition can never borrow cleanup time.
+export function retainedSettlementPollBudget(remainingWorkMs) {
+  if (!Number.isFinite(remainingWorkMs) || remainingWorkMs <= 0) return 0;
+  return Math.min(remainingWorkMs, RETAINED_SETTLEMENT_POLL_CAP_MS);
+}
 
 // The rendered action must become ready before a response observer is armed.
 // Both local windows are inside the existing work budget, never its cleanup reserve.
@@ -199,7 +207,9 @@ export async function runRetainedJourney(page, state, options) {
   const wait = async (get, predicate, maximum) => {
     const until = Date.now() + Math.min(maximum, remainingMs());
     while (Date.now() < until) {
-      const value = await get();
+      const readBudget = Math.min(until - Date.now(), remainingMs());
+      if (readBudget <= 0) break;
+      const value = await get(readBudget);
       if (predicate(value)) return value;
       await delay(Math.min(400, remainingMs(), Math.max(1, until - Date.now())));
     }
@@ -243,7 +253,7 @@ export async function runRetainedJourney(page, state, options) {
     const response = await pending;
     assert.ok(response.ok());
     let value = await response.json();
-    value = await wait(() => read(`/composition/proposals/${value.job.job_id}`), item => item.job.state === "completed", 20000);
+    value = await wait(readBudget => read(`/composition/proposals/${value.job.job_id}`, readBudget), item => item.job.state === "completed", 20000);
     assert.equal(value.job.job_id, state.proposals[history ? 1 : 0]);
     assert.equal(value.job.request.owner_id, state.ownerId);
     assert.equal(value.proposal.owner_id, state.ownerId);
@@ -275,8 +285,10 @@ export async function runRetainedJourney(page, state, options) {
       remainingMs, setStage, onDiagnostic: options.onInteraction,
       captureFailure: capture ? (name, timeout) => capture(name, { failure: true, timeout }) : undefined });
     const id = state.attempts[index];
-    const current = await wait(() => read(`/composition/objectives/${state.ownerId}`), value => value.attempts.some(attempt =>
-      attempt.job_id === id && attempt.state === "completed" && attempt.progress.settlement === "settled" && attempt.progress.verified_result), 110000);
+    const settlementPollBudget = retainedSettlementPollBudget(remainingMs());
+    if (settlementPollBudget <= 0) throw new Error("The retained-result proof has no work time left");
+    const current = await wait(readBudget => read(`/composition/objectives/${state.ownerId}`, readBudget), value => value.attempts.some(attempt =>
+      attempt.job_id === id && attempt.state === "completed" && attempt.progress.settlement === "settled" && attempt.progress.verified_result), settlementPollBudget);
     const attempt = current.attempts.find(item => item.job_id === id);
     const run = await read(`/runs/${attempt.request.composition_attempt.run_id}`);
     assert.equal(run.profile.profile_id, options.profileId);

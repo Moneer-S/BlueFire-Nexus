@@ -1698,6 +1698,26 @@ def test_receiver_driver_paths_require_copied_driver_and_adjacent_modules(
         _resolve_receiver_driver(in_checkout_driver, checkout)
 
 
+def test_retained_settlement_poll_uses_a_capped_shared_work_budget() -> None:
+    driver = (
+        Path(__file__).parents[1] / "frontend" / "tests" / "installed" / "receiver-retained.mjs"
+    ).read_text(encoding="utf-8")
+    assert "retainedSettlementPollBudget(remainingMs())" in driver
+    assert "RETAINED_SETTLEMENT_POLL_CAP_MS = 150_000" in driver
+    assert "const value = await get(readBudget)" in driver
+    assert "readBudget => read(`/composition/objectives/${state.ownerId}`, readBudget)" in driver
+    assert "110000" not in driver
+
+    installed_driver = (
+        Path(__file__).parents[1]
+        / "frontend"
+        / "tests"
+        / "installed"
+        / "installed-receiver.mjs"
+    ).read_text(encoding="utf-8")
+    assert "read: (path, requestedTimeout) => appApi(path, requestedTimeout)" in installed_driver
+
+
 def test_missing_receiver_guard_fails_before_launch(tmp_path: Path) -> None:
     driver = tmp_path / "installed-receiver.mjs"
     driver.write_text("// driver\n", encoding="utf-8")
