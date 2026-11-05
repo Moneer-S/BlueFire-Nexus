@@ -148,4 +148,11 @@ export const engineExperimentApi = {
     const query = params.size ? `?${params}` : "";
     return checkedEngineExperiment(await request<unknown>(`/engine-experiments/${encodeURIComponent(experimentId)}/workspace${query}`), experimentId, selected ?? undefined);
   },
+  recover: async (experimentId: string, attemptId: string): Promise<EngineExperiment> => {
+    if (!engineExperimentId(experimentId)) throw new Error("The engine experiment identity is invalid.");
+    const selection = checkedSelection({ kind: "engine_attempt", id: attemptId });
+    if (!selection || selection.kind !== "engine_attempt") throw new Error("The engine attempt identity is invalid.");
+    const value = await request<unknown>(`/engine-experiments/${encodeURIComponent(experimentId)}/attempts/${encodeURIComponent(attemptId)}/recover`, { method: "POST", body: "{}" });
+    return checkedEngineExperiment(value, experimentId);
+  },
 };

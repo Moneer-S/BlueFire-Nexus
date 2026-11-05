@@ -25,6 +25,24 @@ it("loads and binds the exact selected workspace through a canonical API query",
   expect(checkedWorkspace).toHaveBeenCalledWith(raw, experimentId, { kind: "engine_attempt", id: attemptId });
 });
 
+it("reconciles only the exact saved attempt with an empty request", async () => {
+  const experimentId = `experiment-${"a".repeat(32)}`;
+  const attemptId = `engine-attempt-${"b".repeat(32)}`;
+  const raw = { experiment_id: experimentId, selected_context: null };
+  vi.mocked(request).mockResolvedValue(raw);
+
+  await expect(engineExperimentApi.recover(experimentId, attemptId)).resolves.toBe(raw);
+
+  expect(request).toHaveBeenCalledExactlyOnceWith(`/engine-experiments/${experimentId}/attempts/${attemptId}/recover`, { method: "POST", body: "{}" });
+  expect(checkedWorkspace).toHaveBeenCalledWith(raw, experimentId);
+});
+
+it("rejects malformed recovery identities before posting", async () => {
+  await expect(engineExperimentApi.recover("experiment-invalid", `engine-attempt-${"b".repeat(32)}`)).rejects.toThrow(/experiment identity/i);
+  await expect(engineExperimentApi.recover(`experiment-${"a".repeat(32)}`, "engine-attempt-invalid")).rejects.toThrow(/attempt identity/i);
+  expect(request).not.toHaveBeenCalled();
+});
+
 it("rejects malformed route identities before making a request", async () => {
   expect(engineExperimentPath(`experiment-${"a".repeat(32)}`, { kind: "controller_check", id: `controller-check-${"c".repeat(32)}` }))
     .toBe(`/composition?engine_experiment=experiment-${"a".repeat(32)}&check=controller-check-${"c".repeat(32)}`);

@@ -1,9 +1,9 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { EngineExperimentWorkspace } from "../components/EngineExperimentWorkspace";
-import { Callout, ErrorState, LoadingState } from "../components/Primitives";
-import { engineExperimentApi, engineExperimentId, engineExperimentPath } from "../lib/engine-experiment-api";
+import { Button, Callout, ErrorState, LoadingState } from "../components/Primitives";
+import { engineExperimentApi, engineExperimentId, engineExperimentJobLink, engineExperimentPath } from "../lib/engine-experiment-api";
 import { engineExperimentSelection } from "../lib/engine-assistance";
 import { usePublishEngineExperimentSelection } from "../state/AssistanceContext";
 import { useRememberDefensiveWork } from "../state/activeDefensiveWork";
@@ -15,11 +15,23 @@ import { api } from "../lib/api";
 
 const ATTEMPT_ID = /^engine-attempt-[0-9a-f]{32}$/;
 const CHECK_ID = /^controller-check-[0-9a-f]{32}$/;
+const ACTIVE_ATTEMPT_STATES = new Set(["queued", "preflight", "running", "stopping"]);
+const TERMINAL_ATTEMPT_STATES = new Set(["completed", "partial", "failed", "cancelled", "budget_exhausted", "unknown"]);
+const TERMINAL_JOB_STATES = new Set(["cancelled", "completed", "failed", "interrupted"]);
+const VALID_JOB_STATES = new Set(["queued", "planning", "awaiting_approval", "running", "paused", "cancelling", "cancelled", "completed", "failed", "interrupted"]);
+const NON_CANCELLABLE_JOB_STATES = new Set(["cancelling", ...TERMINAL_JOB_STATES]);
 
 export type EngineExperimentRouteSelection = { kind: "engine_attempt" | "controller_check"; id: string } | null;
 export type EngineExperimentRouteRequest = { experimentId: string; selection: EngineExperimentRouteSelection };
 
 type EngineCancellationRequest = { kind: "engine_attempt" | "controller_check"; id: string; jobId: string };
+
+const exactEngineAttemptJob = async (experimentId: string, attemptId: string, jobId: string) => {
+  const job = await api.job(jobId);
+  const expectedLink = engineExperimentPath(experimentId, { kind: "engine_attempt", id: attemptId });
+  if (job.job_id !== jobId || !VALID_JOB_STATES.has(job.state) || engineExperimentJobLink(job) !== expectedLink) throw new Error("The saved job does not belong to this engine attempt.");
+  return job;
+};
 
 const attemptSelection = (experiment: EngineExperiment, role: "baseline" | "adaptive_search"): EngineExperimentRouteSelection => {
   const attempt = experiment.projection.attempts.find(item => item.role === role);
@@ -98,6 +110,7 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
   const [reviewNotice, setReviewNotice] = useState<string>();
   const [accepted, setAccepted] = useState<EngineActionAcceptance>();
   const [pollUntil, setPollUntil] = useState(0);
+  const recoveryInFlight = useRef(false);
   const workspace = useQuery({ queryKey: ["engine-experiment-workspace", request.experimentId, request.selection?.kind ?? null, request.selection?.id ?? null], queryFn: () => engineExperimentApi.workspace(request.experimentId, request.selection), retry: false, refetchInterval: state => {
     const projection = state.state.data?.projection;
     return accepted && Date.now() < pollUntil || projection && ([...projection.attempts].some(item => ["queued", "preflight", "running", "stopping"].includes(item.state)) || projection.checks.some(item => item.state === "reserved")) ? 1500 : false;
@@ -105,6 +118,37 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
   const experiment = workspace.data;
   const selectedAttempt = request.selection?.kind === "engine_attempt" ? request.selection.id : null;
   const selectedCheck = request.selection?.kind === "controller_check" ? request.selection.id : null;
+  const selectedAttemptSummary = selectedAttempt ? experiment?.projection.attempts.find(item => item.attempt_id === selectedAttempt) : undefined;
+  const selectedAttemptNeedsCustody = Boolean(selectedAttemptSummary && (ACTIVE_ATTEMPT_STATES.has(selectedAttemptSummary.state) || selectedAttemptSummary.cleanup?.state !== "verified_absent"));
+  const activeAttemptSummary = experiment?.projection.attempts.find(item => ACTIVE_ATTEMPT_STATES.has(item.state));
+  const attemptJob = useQuery({
+    queryKey: ["engine-experiment-attempt-job", request.experimentId, selectedAttempt, selectedAttemptSummary?.job_id ?? null],
+    enabled: Boolean(selectedAttempt && selectedAttemptSummary?.job_id && selectedAttemptNeedsCustody),
+    retry: false,
+    queryFn: async () => {
+      if (!selectedAttempt || !selectedAttemptSummary) throw new Error("The selected engine attempt is unavailable.");
+      return exactEngineAttemptJob(request.experimentId, selectedAttempt, selectedAttemptSummary.job_id);
+    },
+    refetchInterval: query => {
+      const job = query.state.data;
+      const custodyStillNeedsWatching = selectedAttemptSummary
+        && (ACTIVE_ATTEMPT_STATES.has(selectedAttemptSummary.state) || selectedAttemptSummary.cleanup?.state !== "verified_absent");
+      return job && custodyStillNeedsWatching && !TERMINAL_JOB_STATES.has(job.state) ? 1500 : false;
+    },
+  });
+  const activeAttemptJob = useQuery({
+    queryKey: ["engine-experiment-attempt-job", request.experimentId, activeAttemptSummary?.attempt_id ?? null, activeAttemptSummary?.job_id ?? null],
+    enabled: Boolean(activeAttemptSummary?.job_id),
+    retry: false,
+    queryFn: async () => {
+      if (!activeAttemptSummary) throw new Error("The active engine attempt is unavailable.");
+      return exactEngineAttemptJob(request.experimentId, activeAttemptSummary.attempt_id, activeAttemptSummary.job_id);
+    },
+    refetchInterval: query => {
+      const job = query.state.data;
+      return job && !NON_CANCELLABLE_JOB_STATES.has(job.state) ? 1500 : false;
+    },
+  });
   const assistantSelection = useMemo(() => experiment ? engineExperimentSelection(experiment, selectedAttempt, selectedCheck) : undefined, [experiment, selectedAttempt, selectedCheck]);
   usePublishEngineExperimentSelection(assistantSelection, experiment?.objective.title);
   useRememberDefensiveWork("engine", experiment?.experiment_id);
@@ -113,11 +157,21 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
     mutationFn: (request: EngineCancellationRequest) => api.controlJob(request.jobId, "cancel"),
     onSuccess: () => { void workspace.refetch(); },
   });
+  const recovery = useMutation({
+    mutationFn: ({ experimentId, attemptId }: { experimentId: string; attemptId: string; jobId: string }) => engineExperimentApi.recover(experimentId, attemptId),
+    onSuccess: async (_value, variables) => {
+      if (variables.experimentId !== request.experimentId || variables.attemptId !== selectedAttempt) return;
+      await Promise.all([workspace.refetch(), attemptJob.refetch()]);
+    },
+    onSettled: () => { recoveryInFlight.current = false; },
+  });
   const cancel = (kind: EngineCancellationRequest["kind"], id: string) => {
     if (cancellation.isPending) return;
     const item = kind === "engine_attempt"
       ? experiment?.projection.attempts.find(candidate => candidate.attempt_id === id)
       : experiment?.projection.checks.find(candidate => candidate.check_id === id);
+    if (kind === "engine_attempt" && (id !== activeAttemptSummary?.attempt_id || activeAttemptJob.isPending || activeAttemptJob.isError
+      || activeAttemptJob.data?.job_id !== item?.job_id || NON_CANCELLABLE_JOB_STATES.has(activeAttemptJob.data.state))) return;
     if (item) cancellation.mutate({ kind, id, jobId: item.job_id });
   };
   useEffect(() => {
@@ -129,15 +183,43 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
   }, [experiment, accepted, navigate, request.experimentId]);
   if (workspace.isPending) return <div className="page"><LoadingState label="Loading engine experiment" /></div>;
   if (workspace.isError || !experiment) return <div className="page"><Link to="/composition">Composition workspace</Link><ErrorState title="Engine experiment unavailable" error={workspace.error ?? new Error("The engine experiment workspace is unavailable.")} retry={() => { void workspace.refetch(); }} /></div>;
+  const exactAttemptJob = attemptJob.data;
+  const attemptIsActive = Boolean(selectedAttemptSummary && ACTIVE_ATTEMPT_STATES.has(selectedAttemptSummary.state));
+  const attemptIsTerminal = Boolean(selectedAttemptSummary && TERMINAL_ATTEMPT_STATES.has(selectedAttemptSummary.state));
+  const canRecoverAttempt = Boolean(selectedAttemptSummary && exactAttemptJob && !attemptJob.isError
+    && (exactAttemptJob.state === "interrupted" && attemptIsActive
+      || attemptIsTerminal && selectedAttemptSummary.cleanup.state !== "verified_absent" && TERMINAL_JOB_STATES.has(exactAttemptJob.state)));
+  const recoveryRequest = selectedAttemptSummary
+    ? { experimentId: request.experimentId, attemptId: selectedAttemptSummary.attempt_id, jobId: selectedAttemptSummary.job_id }
+    : null;
+  const recoveryMatchesSelection = Boolean(recovery.variables && recoveryRequest && recovery.variables.experimentId === recoveryRequest.experimentId && recovery.variables.attemptId === recoveryRequest.attemptId && recovery.variables.jobId === recoveryRequest.jobId);
+  const anotherRecoveryIsPending = recovery.isPending && !recoveryMatchesSelection;
+  const showRecoveryCallout = Boolean(recoveryRequest && (canRecoverAttempt || recoveryMatchesSelection && (recovery.isPending || recovery.isError || recovery.isSuccess)));
+  const activeJobSharesSelectedQuery = Boolean(activeAttemptSummary && selectedAttemptSummary && activeAttemptSummary.attempt_id === selectedAttemptSummary.attempt_id && activeAttemptSummary.job_id === selectedAttemptSummary.job_id);
+  const suppressAttemptCancel = Boolean(!activeAttemptSummary || activeAttemptJob.isPending || activeAttemptJob.isError || !activeAttemptJob.data || NON_CANCELLABLE_JOB_STATES.has(activeAttemptJob.data.state));
+  const reconcile = () => {
+    if (!recoveryRequest || recoveryInFlight.current || recovery.isPending) return;
+    recoveryInFlight.current = true;
+    recovery.mutate(recoveryRequest);
+  };
   return <div className="page engine-experiment-route">
     <Link to="/composition">Composition workspace</Link>
     {reviewNotice ? <Callout tone="warning" title="Unconfirmed action acceptance"><p>{reviewNotice}</p></Callout> : null}
     {accepted ? <Callout title="Action accepted"><p>{accepted.job ? "The durable job was accepted. BlueFire is refreshing its saved status." : "The saved workspace transition was accepted and is being refreshed."}</p>{accepted.job ? <Link to={`/runs?job=${encodeURIComponent(accepted.job.job_id)}`}>Open saved job in Runs</Link> : null}<button type="button" className="button button-secondary button-small" onClick={() => { setPollUntil(Date.now() + 60_000); void workspace.refetch(); }}>Refresh action status</button></Callout> : null}
     {cancellation.variables ? <Callout tone={cancellation.isError ? "danger" : cancellation.isSuccess ? "success" : "info"} title={cancellation.isError ? "Cancellation was refused" : cancellation.isSuccess ? "Cancellation requested" : "Requesting cancellation"}><p>{cancellation.isError ? (cancellation.error instanceof Error ? cancellation.error.message : "The saved job could not be cancelled.") : cancellation.isSuccess ? "BlueFire accepted the cancellation request and is refreshing the saved work state." : "BlueFire is asking the saved job to stop and will preserve its recorded evidence."}</p><Link to={`/runs?job=${encodeURIComponent(cancellation.variables.jobId)}`}>Open saved job in Runs</Link><button type="button" className="button button-secondary button-small" onClick={() => { void workspace.refetch(); }}>Refresh saved state</button></Callout> : null}
+    {selectedAttemptNeedsCustody && attemptJob.isPending ? <p role="status">Checking the selected attempt's saved job…</p> : null}
+    {selectedAttemptNeedsCustody && attemptJob.isError ? <ErrorState title="Saved attempt job unavailable" error={attemptJob.error} retry={() => { void attemptJob.refetch(); }} /> : null}
+    {activeAttemptSummary && !activeJobSharesSelectedQuery && activeAttemptJob.isPending ? <p role="status">Checking the active attempt's saved job…</p> : null}
+    {activeAttemptSummary && !activeJobSharesSelectedQuery && activeAttemptJob.isError ? <ErrorState title="Active attempt job unavailable" error={activeAttemptJob.error} retry={() => { void activeAttemptJob.refetch(); }} /> : null}
+    {showRecoveryCallout && recoveryRequest ? <Callout tone={recoveryMatchesSelection && recovery.isError ? "danger" : recoveryMatchesSelection && recovery.isSuccess ? "success" : "warning"} title={recoveryMatchesSelection && recovery.isError ? "Attempt reconciliation was refused" : recoveryMatchesSelection && recovery.isSuccess ? "Saved attempt reconciled" : "Saved attempt needs reconciliation"}>
+      <p>{recoveryMatchesSelection && recovery.isError ? (recovery.error instanceof Error ? recovery.error.message : "The saved attempt could not be reconciled safely.") : recoveryMatchesSelection && recovery.isSuccess ? "BlueFire checked the saved attempt and refreshed its recorded state without starting new work." : "Inspect the saved attempt's retained execution and cleanup state. This does not start or replay the engine."}</p>
+      {canRecoverAttempt && !(recoveryMatchesSelection && recovery.isSuccess) ? <Button size="small" disabled={recovery.isPending} onClick={reconcile}>{recoveryMatchesSelection && recovery.isPending ? "Reconciling saved attempt…" : anotherRecoveryIsPending ? "Reconciliation in progress…" : recoveryMatchesSelection && recovery.isError ? "Retry saved attempt reconciliation" : "Reconcile saved attempt"}</Button> : null}
+      <Link to={`/runs?job=${encodeURIComponent(recoveryRequest.jobId)}`}>Open saved job in Runs</Link>
+    </Callout> : null}
     <EngineExperimentWorkspace experiment={experiment} selectedAttemptId={selectedAttempt} selectedCheckId={selectedCheck}
       onSelectAttempt={id => select({ kind: "engine_attempt", id })}
       onSelectCheck={id => select({ kind: "controller_check", id })}
-      onCancelAttempt={id => cancel("engine_attempt", id)}
+      onCancelAttempt={suppressAttemptCancel ? undefined : id => cancel("engine_attempt", id)}
       onCancelCheck={id => cancel("controller_check", id)}
       cancellingAttemptId={!cancellation.isError && cancellation.variables?.kind === "engine_attempt" ? cancellation.variables.id : null}
       cancellingCheckId={!cancellation.isError && cancellation.variables?.kind === "controller_check" ? cancellation.variables.id : null}
