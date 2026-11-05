@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
@@ -87,6 +87,59 @@ it("discards responses for a previous selection and keeps a closed panel closed"
   await act(async () => completions[1]!(knowledgeResponse(objective, [objective.attempts[1]!.request.composition_attempt.attempt_id])));
   expect(screen.queryByRole("region", { name: "Findings across attempts" })).not.toBeInTheDocument();
   expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("keeps a valid findings selection when the inspector is hidden and shown again", async () => {
+  const user = userEvent.setup();
+  const { objective, value } = knowledgeFixture();
+  const change = vi.fn();
+  const read = vi.spyOn(compositionKnowledgeApi, "read").mockResolvedValue(value);
+  render(<MemoryRouter><CompositionKnowledge objective={objective} onKnowledgeChange={change} /></MemoryRouter>);
+  await user.click(screen.getByRole("button", { name: "Findings across attempts" }));
+  await screen.findByRole("region", { name: "Findings from attempt 1" });
+  expect(change).toHaveBeenLastCalledWith(value);
+  change.mockClear();
+  await user.click(screen.getByRole("button", { name: "Hide findings" }));
+  expect(change).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Findings across attempts" }));
+  expect(await screen.findByRole("region", { name: "Findings from attempt 1" })).toBeVisible();
+  expect(read).toHaveBeenCalledOnce();
+  expect(change).not.toHaveBeenCalled();
+});
+
+it("invalidates retained findings when their saved attempt binding changes", async () => {
+  const user = userEvent.setup();
+  const { objective, value } = knowledgeFixture();
+  const change = vi.fn();
+  vi.spyOn(compositionKnowledgeApi, "read").mockResolvedValue(value);
+  const view = render(<MemoryRouter><CompositionKnowledge objective={objective} onKnowledgeChange={change} /></MemoryRouter>);
+  await user.click(screen.getByRole("button", { name: "Findings across attempts" }));
+  await screen.findByRole("region", { name: "Findings from attempt 1" });
+  change.mockClear();
+  const revised = structuredClone(objective);
+  revised.attempts[0]!.request.composition_attempt.run_id = "run-rebound";
+  view.rerender(<MemoryRouter><CompositionKnowledge objective={revised} onKnowledgeChange={change} /></MemoryRouter>);
+  await waitFor(() => expect(change).toHaveBeenCalledExactlyOnceWith(null));
+  expect(screen.queryByRole("region", { name: "Findings from attempt 1" })).not.toBeInTheDocument();
+  expect(screen.getByText("Load the selected attempts to inspect their findings together.")).toBeVisible();
+});
+
+it("keeps selected findings when unrelated objective history is appended", async () => {
+  const user = userEvent.setup();
+  const { objective } = knowledgeFixture(9);
+  const selected = objective.attempts.slice(-8).map(attempt => attempt.request.composition_attempt.attempt_id);
+  const value = knowledgeResponse(objective, selected);
+  const change = vi.fn();
+  vi.spyOn(compositionKnowledgeApi, "read").mockResolvedValue(value);
+  const view = render(<MemoryRouter><CompositionKnowledge objective={objective} onKnowledgeChange={change} /></MemoryRouter>);
+  await user.click(screen.getByRole("button", { name: "Findings across attempts" }));
+  await screen.findByRole("region", { name: "Findings from attempt 9" });
+  change.mockClear();
+  const revised = structuredClone(objective);
+  revised.attempts.push(knowledgeFixture(10).objective.attempts[9]!);
+  view.rerender(<MemoryRouter><CompositionKnowledge objective={revised} onKnowledgeChange={change} /></MemoryRouter>);
+  expect(screen.getByRole("region", { name: "Findings from attempt 9" })).toBeVisible();
+  expect(change).not.toHaveBeenCalled();
 });
 
 it("keeps transport errors, unavailable sources and empty evidence distinct", async () => {
