@@ -39,6 +39,24 @@ wheel into the same `wheels` subdirectory. Do not extract the `.whl` itself. The
 `SHA256SUMS` applies only to release assets, not development-build artifacts. Open a terminal in
 `bluefire-v3` and run the commands below.
 
+### External-engine development payloads
+
+Published RC2 wheels and ordinary development wheels contain no Strix package, dependency
+wheelhouse, qualified sandbox image, or admitted Strix runtime receipt. Installing `strix-agent`
+into the BlueFire virtual environment, moving an upstream virtual environment beside the
+application, or pulling the stock Strix image does not create a supported BlueFire engine
+installation. The stock Docker backend requests capabilities and connectivity that the first
+controlled profile refuses.
+
+The repository's candidate and qualification tooling currently processes pinned inputs only in
+ephemeral runner storage and publishes no reusable Strix bundle. Redistribution review and a
+private cross-job transport remain unresolved, so there is no supported external-engine install
+command. Use the ordinary BlueFire wheel for current product work. A future development candidate
+must carry its own exact runtime, image, dependency-lock, provenance, admission, and cleanup
+receipts; do not combine artifacts from different revisions. See
+[engine provenance](engine-provenance.md) and
+[runtime qualification](strix-runtime-qualification.md).
+
 ## Install and open
 
 Open a terminal in that `bluefire-v3` directory. On Windows PowerShell:

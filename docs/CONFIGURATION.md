@@ -34,6 +34,27 @@ The AWS identity lab follows the same rule: deterministic local Simulate and Exe
 use opaque lab handles, while a real-provider smoke requires explicitly supplied authorized lab
 credentials and remains outside offline acceptance.
 
+## External-engine development settings
+
+There is no supported operator setting that enables Strix in RC2 or in an ordinary development
+wheel. `STRIX_RUNTIME_BACKEND` is controller-owned launch material, not a user configuration
+escape hatch. The maintained adapter still selects the stock `docker` value, while the restricted
+`bluefire-controlled` backend and relay contracts are implemented but not yet selected by a
+concrete installed attempt factory. Changing that environment value, injecting a package path, or
+supplying a Docker image cannot create runtime admission.
+
+The controlled mechanics provider has the fixed label **Test provider**, the default fixture model
+`bluefire-controlled-strix-mechanics-v1`, and `live_model_proof: false`. It is suitable only for
+model-independent interaction and lifecycle tests. Do not relabel its output as live inference or
+put a real provider credential into its configuration.
+
+External-engine target inputs remain typed and scope-bound. A local-directory target must name a
+disposable copy; an API specification URL does not widen authority to referenced hosts; and MCP
+client configuration does not admit an arbitrary remote tool server. Backend choice, exact image,
+target and model relays, provider handle, budgets, cancellation, evidence retention, and cleanup
+must come from the controller's versioned admission and action material. Missing material is an
+unavailable readiness result, not a reason to fall back to the stock backend.
+
 ## Durable and browser-local settings
 
 Backend settings and resources are versioned, schema-validated records. Theme and the starting
