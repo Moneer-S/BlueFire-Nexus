@@ -6,6 +6,7 @@ candidate wheel installed in an isolated Linux virtual environment::
 
     python -I -B verify_installed_engine_mechanics.py \
       --forbid-root /path/to/checkout --wheel /path/to/candidate.whl \
+      --source-revision FULL_LOWERCASE_40_HEX_COMMIT \
       --fixture /outside/installed_engine_mechanics_fixture.py \
       --binding-helper /outside/verify_installed_engine_experiment.py \
       --output /outside/fresh-report-directory
@@ -34,6 +35,7 @@ from typing import Any, Mapping, cast
 _MAX_REPORT_BYTES = 64 * 1024
 _MAX_WHEEL_FILES = 4096
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_SOURCE_REVISION = re.compile(r"[0-9a-f]{40}\Z")
 _ERROR_TYPES = {None, "VerificationError", "RuntimeCleanupError", "ReceiptContractError"}
 _PHASE_KEYS = {
     "cancel_restart_reconcile": {
@@ -272,6 +274,7 @@ def public_summary_valid(value: object) -> bool:
             "comparison_mechanics_verified",
             "limitations",
             "artifact_identity",
+            "expected_source_revision",
             "verifier_assets",
             "phases",
             "cleanup",
@@ -284,6 +287,7 @@ def public_summary_valid(value: object) -> bool:
     cleanup = report.get("cleanup")
     identity = report.get("artifact_identity")
     assets = report.get("verifier_assets")
+    expected_revision = report.get("expected_source_revision")
     return (
         report.get("schema_version") == "bluefire.installed-engine-mechanics-verification.v1"
         and isinstance(report.get("status"), str)
@@ -308,7 +312,15 @@ def public_summary_valid(value: object) -> bool:
         and report.get("protected_v22_admission") is False
         and type(report.get("comparison_mechanics_verified")) is bool
         and report.get("limitations") == _LIMITATIONS
-        and (identity is None or _artifact_identity_valid(identity))
+        and isinstance(expected_revision, str)
+        and _SOURCE_REVISION.fullmatch(expected_revision) is not None
+        and (
+            identity is None
+            or (
+                _artifact_identity_valid(identity)
+                and cast(Mapping[str, object], identity).get("source_revision") == expected_revision
+            )
+        )
         and (
             assets is None
             or (
@@ -355,8 +367,8 @@ def _validated_phase(value: object, name: str) -> dict[str, Any]:
     return dict(cast(Mapping[str, Any], value))
 
 
-def _write_new(path: Path, value: Mapping[str, Any]) -> None:
-    if not public_summary_valid(value):
+def _write_new(path: Path, value: Mapping[str, Any], *, source_revision: str) -> None:
+    if not public_summary_valid(value) or value.get("expected_source_revision") != source_revision:
         raise RuntimeError("refusing to publish an invalid public summary")
     payload = json.dumps(value, sort_keys=True, indent=2, ensure_ascii=True).encode("ascii") + b"\n"
     if len(payload) > _MAX_REPORT_BYTES:
@@ -365,14 +377,36 @@ def _write_new(path: Path, value: Mapping[str, Any]) -> None:
         stream.write(payload)
 
 
-def main() -> int:
+def _source_revision_argument(value: str) -> str:
+    if _SOURCE_REVISION.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError(
+            "source revision must be a full lowercase 40-hex Git commit"
+        )
+    return value
+
+
+def _require_source_revision(actual: object, expected: str) -> None:
+    if (
+        not isinstance(actual, str)
+        or _SOURCE_REVISION.fullmatch(actual) is None
+        or actual != expected
+    ):
+        raise RuntimeError("installed source revision does not match the expected commit")
+
+
+def _parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--forbid-root", type=Path, required=True)
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--binding-helper", type=Path, required=True)
+    parser.add_argument("--source-revision", type=_source_revision_argument, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main() -> int:
+    args = _parse_arguments()
     if sys.platform != "linux" or not sys.flags.isolated:
         raise RuntimeError("Run with isolated installed Python on Linux")
     forbidden = args.forbid_root.resolve(strict=True)
@@ -414,6 +448,7 @@ def main() -> int:
         "comparison_mechanics_verified": False,
         "limitations": list(_LIMITATIONS),
         "artifact_identity": None,
+        "expected_source_revision": args.source_revision,
         "verifier_assets": None,
         "phases": {},
         "cleanup": {"fixture_workers_stopped": False, "temporary_runtime_removed": False},
@@ -450,6 +485,7 @@ def main() -> int:
         binding = helper.bind_installed_wheel(wheel, purelib=purelib, installed_version=version)
         info = build_info()
         source = cast(Mapping[str, object], info.get("source"))
+        _require_source_revision(source.get("revision"), args.source_revision)
         build = cast(Mapping[str, object], info.get("build"))
         ui = cast(Mapping[str, object], info.get("ui"))
         identity = {
@@ -471,6 +507,7 @@ def main() -> int:
         identity["architecture"] = platform.machine()
         if not _artifact_identity_valid(identity):
             raise RuntimeError("installed platform identity is inconsistent")
+        _require_source_revision(identity.get("source_revision"), args.source_revision)
         report["artifact_identity"] = identity
         assets = {
             "verifier_sha256": helper.digest(script),
@@ -520,7 +557,7 @@ def main() -> int:
         if report["status"] == "passed" and not receipt_passed(report):
             report["status"] = "failed_or_incomplete"
             report["error_type"] = "ReceiptContractError"
-        _write_new(output / "public-summary.json", report)
+        _write_new(output / "public-summary.json", report, source_revision=args.source_revision)
     return 0 if receipt_passed(report) else 1
 
 

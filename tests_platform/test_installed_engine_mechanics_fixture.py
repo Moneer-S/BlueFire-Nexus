@@ -14,7 +14,9 @@ from tools.installed_engine_mechanics_fixture import (
 from tools.verify_installed_engine_mechanics import (
     _LIMITATIONS,
     _artifact_identity_valid,
+    _parse_arguments,
     _phase_valid,
+    _require_source_revision,
     _validated_phase,
     _write_new,
     public_summary_valid,
@@ -47,6 +49,7 @@ def summary(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         "protected_v22_admission": False,
         "comparison_mechanics_verified": True,
         "limitations": list(_LIMITATIONS),
+        "expected_source_revision": "a" * 40,
         "artifact_identity": {
             "distribution": "bluefire-nexus",
             "version": "1.0.0",
@@ -104,13 +107,13 @@ def test_only_bounded_validated_public_summary_is_published(
 ) -> None:
     assert receipt_passed(summary)
     path = tmp_path / "public-summary.json"
-    _write_new(path, summary)
+    _write_new(path, summary, source_revision="a" * 40)
     assert path.stat().st_size <= 64 * 1024
     assert public_summary_valid(json.loads(path.read_text("ascii")))
     assert str(tmp_path).encode() not in path.read_bytes()
     assert list(tmp_path.iterdir()) == [path]
     with pytest.raises(FileExistsError):
-        _write_new(path, summary)
+        _write_new(path, summary, source_revision="a" * 40)
 
 
 @pytest.mark.parametrize(
@@ -124,7 +127,7 @@ def test_unexpected_nested_fields_are_rejected_before_publication(
     row["private_path"] = str(tmp_path / "private-token")
     assert not public_summary_valid(changed)
     with pytest.raises(RuntimeError, match="refusing to publish"):
-        _write_new(tmp_path / "public-summary.json", changed)
+        _write_new(tmp_path / "public-summary.json", changed, source_revision="a" * 40)
     assert not (tmp_path / "public-summary.json").exists()
 
 
@@ -207,3 +210,74 @@ def test_recursive_malformed_results_fail_closed(summary: dict[str, Any]) -> Non
     changed = deepcopy(summary)
     changed["phases"]["workflow_comparison"]["raw_payload"] = changed
     assert not public_summary_valid(changed)
+
+
+@pytest.mark.parametrize("actual", [None, "b" * 40, "A" * 40, "a" * 39, "a" * 40 + "\n"])
+def test_installed_source_revision_must_match_requested_commit(actual: object) -> None:
+    with pytest.raises(RuntimeError, match="expected commit"):
+        _require_source_revision(actual, "a" * 40)
+    _require_source_revision("a" * 40, "a" * 40)
+
+
+def test_source_mismatch_cannot_be_published(summary: dict[str, Any], tmp_path: Path) -> None:
+    changed = deepcopy(summary)
+    changed["artifact_identity"]["source_revision"] = "b" * 40
+    assert not public_summary_valid(changed)
+    with pytest.raises(RuntimeError, match="refusing to publish"):
+        _write_new(tmp_path / "public-summary.json", changed, source_revision="a" * 40)
+    assert not (tmp_path / "public-summary.json").exists()
+    with pytest.raises(RuntimeError, match="refusing to publish"):
+        _write_new(tmp_path / "public-summary.json", summary, source_revision="b" * 40)
+    assert not (tmp_path / "public-summary.json").exists()
+
+
+def test_cli_requires_expected_revision_and_binding_helper(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    arguments = [
+        "--forbid-root",
+        "/checkout",
+        "--wheel",
+        "/candidate.whl",
+        "--fixture",
+        "/fixture.py",
+        "--binding-helper",
+        "/binding.py",
+        "--output",
+        "/output",
+    ]
+    with pytest.raises(SystemExit) as missing:
+        _parse_arguments(arguments)
+    assert missing.value.code == 2
+    assert "--source-revision" in capsys.readouterr().err
+    complete = arguments + ["--source-revision", "a" * 40]
+    assert _parse_arguments(complete).source_revision == "a" * 40
+    without_helper = complete.copy()
+    helper_index = without_helper.index("--binding-helper")
+    del without_helper[helper_index : helper_index + 2]
+    with pytest.raises(SystemExit) as missing_helper:
+        _parse_arguments(without_helper)
+    assert missing_helper.value.code == 2
+    assert "--binding-helper" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("revision", ["", "A" * 40, "a" * 39, "a" * 40 + "\n", "/private/path"])
+def test_cli_rejects_noncanonical_source_revision(revision: str) -> None:
+    with pytest.raises(SystemExit) as invalid:
+        _parse_arguments(
+            [
+                "--forbid-root",
+                "/checkout",
+                "--wheel",
+                "/candidate.whl",
+                "--fixture",
+                "/fixture.py",
+                "--binding-helper",
+                "/binding.py",
+                "--output",
+                "/output",
+                "--source-revision",
+                revision,
+            ]
+        )
+    assert invalid.value.code == 2
