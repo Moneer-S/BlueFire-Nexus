@@ -88,6 +88,14 @@ def test_receiver_child_exit_diagnostic_retains_only_allowlisted_stack_location(
     assert "stderr_source" not in _receiver_child_exit_diagnostic(1, state)
 
 
+@pytest.mark.parametrize("name", ["receiver-knowledge.mjs", "receiver-evidence-proposal.mjs"])
+def test_history_helper_failure_keeps_only_its_shipped_basename_and_line(name: str) -> None:
+    state = {"prefix": f"    at inspect (C:\\private\\{name}:123:4)\n".encode(), "drained": True}
+    value = _receiver_child_exit_diagnostic(1, state)
+    assert value["stderr_source"] == {"file": name, "line": 123}
+    assert "private" not in repr(value)
+
+
 def receiver_report() -> dict[str, object]:
     return {
         "schema_version": "bluefire.installed-receiver-retained-redaction.v1",
@@ -108,8 +116,11 @@ def receiver_report() -> dict[str, object]:
             "finite_composed_attempt_settled_with_authenticated_policy_refusal_and_objective_false",
             "single_loopback_composition_proposal_reopened_and_applied_to_existing_attempt",
             "composed_attempt_grant_revoked_after_verified_cleanup",
-            "receiver_composition_model_authorization_revoked_after_one_proposal",
+            "receiver_distinct_model_authorizations_revoked_after_one_proposal_each",
+            "receiver_superseded_model_authorization_remained_revoked",
+            "history_proposal_reopened_with_original_records_and_no_additional_execution",
             "saved_composed_comparison_reopened_with_false_capability_objective_and_recorded_graph_result",
+            "failed_objective_findings_opened_from_verified_run_without_new_attempt",
         ],
         "blocked_requests": [],
         "errors": [],
@@ -135,11 +146,14 @@ def receiver_report() -> dict[str, object]:
             "composition_proposal_context": 2,
             "composition_proposal": 1,
             "composition_attempt": 1,
+            "composition_knowledge": 2,
+            "composition_evidence_context": 2,
+            "composition_evidence_proposal": 1,
             "composition_revoke": 1,
             "comparison": 1,
             "provider_save": 1,
             "provider_activate": 1,
-            "model_authorization": 1,
+            "model_authorization": 2,
             "model_authorization_revoke": 1,
         },
         "source_starter_scenario_id": "scenario.receiver-defense.redaction-validation.v1",
@@ -187,6 +201,26 @@ def receiver_report() -> dict[str, object]:
             "objective_established": False,
             "finalized_run_objective_reached": False,
             "graph_objective_reached": False,
+            "knowledge": {
+                "schema_version": "bluefire.installed-composition-knowledge.v1",
+                "owner_id": "job-33333333333333333333333333333333",
+                "attempt_id": "attempt-44444444444444444444444444444444",
+                "job_id": "job-44444444444444444444444444444444",
+                "run_id": "run-20261021T120007Z-2222222222222222",
+                "knowledge_digest": "sha256:" + "d" * 64,
+                "source_binding_digest": "sha256:" + "e" * 64,
+                "manifest_digest": "sha256:" + "f" * 64,
+                "evidence_digest": "sha256:" + "a" * 64,
+                "findings_count": 12,
+                "observed_findings_count": 3,
+                "source_status": "verified",
+                "historical_only": True,
+                "source_matches_run": True,
+                "objective_established": False,
+                "opened_through_ui": True,
+                "rendered_findings": True,
+                "unchanged_attempts": True,
+            },
             "model_proposal": {
                 "job_id": "job-55555555555555555555555555555555",
                 "proposal_digest": "sha256:" + "6" * 64,
@@ -196,6 +230,32 @@ def receiver_report() -> dict[str, object]:
                 "reopened": True,
                 "same_initial_graph": True,
                 "model_authorization_requests": 1,
+            },
+            "evidence_proposal": {
+                "schema_version": "bluefire.installed-evidence-proposal.v1",
+                "owner_id": "job-33333333333333333333333333333333",
+                "attempt_id": "attempt-44444444444444444444444444444444",
+                "source_run_id": "run-20261021T120007Z-2222222222222222",
+                "job_id": "job-66666666666666666666666666666666",
+                "proposal_digest": "sha256:" + "9" * 64,
+                "context_digest": "sha256:" + "8" * 64,
+                "knowledge_digest": "sha256:" + "d" * 64,
+                "purpose": "bluefire_receiver_evidence_composition_proposal",
+                "provider_id": "provider.installed-receiver-composition.v1",
+                "model_authorization_requests": 1,
+                "reconsidered_step_id": "transform_fixture",
+                "supporting_findings": 1,
+                "later_finding_reused": True,
+                "original_redact_values": False,
+                "proposed_redact_values": True,
+                "original_objective_established": False,
+                "candidate_ready": True,
+                "source_matches_run": True,
+                "historical_only": True,
+                "reopened": True,
+                "rendered_reasoning": True,
+                "unchanged_attempts": True,
+                "additional_executions": 0,
             },
             "comparison": {
                 "baseline_run_id": "run-20261021T120000Z-aaaaaaaaaaaaaaaa",
@@ -332,8 +392,11 @@ def clean_wrapper_report() -> dict[str, object]:
     return {
         **{key: True for key in _RUNTIME_PROCESS_CLEANUP_KEYS},
         "receiver_model_fixture": {
-            "request_count": 1,
-            "purposes": ["bluefire_composition_proposal"],
+            "request_count": 2,
+            "purposes": [
+                "bluefire_composition_proposal",
+                "bluefire_receiver_evidence_composition_proposal",
+            ],
             "request_bytes": 1024,
             "failed": False,
         },
@@ -650,6 +713,7 @@ def test_receiver_requires_exact_saved_model_proposal_proof(field: str, value: o
         ("composition_proposal", 0),
         ("model_authorization", 0),
         ("model_authorization_revoke", 0),
+        ("model_authorization_revoke", 2),
         ("provider_save", 2),
         ("provider_activate", 2),
     ],
@@ -682,15 +746,199 @@ def test_receiver_composition_list_bound_matches_installed_driver_limit() -> Non
             terminal_retained_record_count=8 - redacted,
         )
 
-    # The driver allowlist permits six objective-list reads; that exact ceiling
-    # is exercised by the current hosted report.
-    report["request_counts"]["composition_list"] = 6
+    # Three additional bounded reads cover history Settings return, proposal and reopening.
+    report["request_counts"]["composition_list"] = 9
     assert _receiver_driver_passed(report)
 
-    for invalid_count in (0, 7):
+    for invalid_count in (0, 10):
         changed = deepcopy(report)
         changed["request_counts"]["composition_list"] = invalid_count
         assert not _receiver_driver_passed(changed), invalid_count
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("owner_id", "job-" + "f" * 32),
+        ("attempt_id", "attempt-" + "f" * 32),
+        ("job_id", "job-" + "f" * 32),
+        ("run_id", "run-other"),
+        ("source_status", "unavailable"),
+        ("historical_only", False),
+        ("source_matches_run", False),
+        ("objective_established", True),
+        ("opened_through_ui", False),
+        ("rendered_findings", False),
+        ("unchanged_attempts", False),
+        ("findings_count", 0),
+        ("findings_count", 33),
+        ("findings_count", True),
+        ("observed_findings_count", 0),
+        ("observed_findings_count", 13),
+        ("knowledge_digest", "sha256:invalid"),
+    ],
+)
+def test_receiver_knowledge_proof_requires_actual_historical_source(field, value) -> None:
+    from tools.verify_installed_browser import _valid_receiver_composition
+
+    report = receiver_report()
+    assert _valid_receiver_composition(report)
+    report["composition"]["knowledge"][field] = value
+    assert not _valid_receiver_composition(report)
+
+
+def test_receiver_requires_two_explicit_knowledge_reads_across_settings_navigation() -> None:
+    from tools.verify_installed_browser import _valid_receiver_composition
+
+    for count in (0, 1, 3, True):
+        report = receiver_report()
+        report["request_counts"]["composition_knowledge"] = count
+        assert not _valid_receiver_composition(report)
+    report = receiver_report()
+    del report["composition"]["knowledge"]
+    assert not _valid_receiver_composition(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("owner_id", "job-" + "7" * 32),
+        ("attempt_id", "attempt-" + "7" * 32),
+        ("source_run_id", "run-other"),
+        ("job_id", "job-" + "5" * 32),
+        ("knowledge_digest", "sha256:" + "7" * 64),
+        ("purpose", "bluefire_composition_proposal"),
+        ("supporting_findings", 0),
+        ("supporting_findings", True),
+        ("supporting_findings", 17),
+        ("later_finding_reused", False),
+        ("original_redact_values", True),
+        ("proposed_redact_values", False),
+        ("original_objective_established", True),
+        ("historical_only", False),
+        ("source_matches_run", False),
+        ("reopened", False),
+        ("rendered_reasoning", False),
+        ("unchanged_attempts", False),
+        ("additional_executions", 1),
+        ("additional_executions", False),
+    ],
+)
+def test_history_proposal_requires_captured_source_and_no_execution(field, value) -> None:
+    from tools.verify_installed_browser import _valid_receiver_composition
+
+    report = receiver_report()
+    assert _valid_receiver_composition(report)
+    report["composition"]["evidence_proposal"][field] = value
+    assert not _valid_receiver_composition(report)
+
+
+def test_history_proposal_requires_distinct_finite_request_counts() -> None:
+    from tools.verify_installed_browser import _valid_receiver_composition
+
+    for name, expected in {
+        "composition_evidence_proposal": 1,
+        "model_authorization": 2,
+        "model_authorization_revoke": 1,
+    }.items():
+        for count in (0, expected + 1, True):
+            report = receiver_report()
+            report["request_counts"][name] = count
+            assert not _valid_receiver_composition(report)
+    for count in (2, 3):
+        report = receiver_report()
+        report["request_counts"]["composition_evidence_context"] = count
+        assert _valid_receiver_composition(report)
+    for count in (0, 1, 4, True):
+        report = receiver_report()
+        report["request_counts"]["composition_evidence_context"] = count
+        assert not _valid_receiver_composition(report)
+    report = receiver_report()
+    del report["composition"]["evidence_proposal"]
+    assert not _valid_receiver_composition(report)
+
+
+def test_receiver_authorization_persistence_supersedes_same_provider_with_one_final_revoke(
+    tmp_path: Path,
+) -> None:
+    from bluefire import product_store_ai_authorizations as authorization_store
+    from bluefire.ai_live_authorization import create_authorization
+    from bluefire.ai_wire import AIProviderTransportError
+    from bluefire.config import AIProviderConfig
+    from bluefire.product_store import ProductStore
+
+    provider = AIProviderConfig.from_mapping(
+        {
+            "id": "provider.installed-receiver-composition.v1",
+            "kind": "openai_responses",
+            "model": "bluefire-local-graph-fixture-v1",
+            "endpoint": "http://127.0.0.1:8080/v1/responses",
+            "api_key": None,
+            "timeout_seconds": 20,
+            "max_retries": 0,
+            "max_output_tokens": 1024,
+        }
+    )
+    context = {"kind": "direct", "binding_digest": "sha256:" + "a" * 64}
+    store = ProductStore(tmp_path / "authorizations.db")
+    purposes = [
+        ("bluefire_composition_proposal", 1),
+        ("bluefire_receiver_evidence_composition_proposal", 1),
+    ]
+    grants = []
+    reservation = {"requests": 1, "request_bytes": 128, "reserved_output_tokens": 64}
+    for purpose, requests in purposes:
+        grant = create_authorization(
+            {
+                "provider": provider.to_dict(),
+                "purposes": [purpose],
+                "data_scope": "reviewed_lab_context",
+                "limits": {
+                    "max_requests": requests,
+                    "max_request_bytes": requests * 262144,
+                    "max_reserved_output_tokens": requests * 1024,
+                },
+                "expires_in_seconds": 300,
+                "approved_by": "installed-receiver-persistence-test",
+                "usage_authorized": True,
+                "local_endpoint_authorized": True,
+            },
+            context,
+        )
+        authorization_store.save_authorization(store, grant)
+        rows = authorization_store.list_authorizations(store, context["binding_digest"])
+        assert {row["authorization_id"]: row["status"] for row in rows} == {
+            **{prior["authorization_id"]: "revoked" for prior in grants},
+            grant["authorization_id"]: "active",
+        }
+        for prior in grants:
+            with pytest.raises(AIProviderTransportError):
+                authorization_store.reserve(
+                    store, prior["authorization_id"], context["binding_digest"], reservation
+                )
+        for _ in range(requests):
+            authorization_store.reserve(
+                store, grant["authorization_id"], context["binding_digest"], reservation
+            )
+        grants.append(grant)
+
+    # Supersession already closed every older grant; only the latest needs a revoke.
+    authorization_store.revoke_authorization(
+        store, grants[-1]["authorization_id"], context["binding_digest"]
+    )
+    reopened = ProductStore(tmp_path / "authorizations.db")
+    rows = authorization_store.list_authorizations(reopened, context["binding_digest"])
+    assert len(rows) == len(grants)
+    for row, grant, (purpose, requests) in zip(reversed(rows), grants, purposes, strict=True):
+        assert row["authorization_id"] == grant["authorization_id"]
+        assert row["authorization_digest"] == grant["authorization_digest"]
+        assert row["purposes"] == [purpose]
+        assert row["status"] == "revoked"
+        assert row["usage"] == {
+            "requests": requests,
+            "request_bytes": requests * 128,
+            "reserved_output_tokens": requests * 64,
+        }
 
 
 def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
@@ -704,9 +952,16 @@ def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
             terminal_retained_record_count=8 - redacted,
         )
     assert _receiver_driver_passed(report)
-    report["checks"].remove("receiver_composition_model_authorization_revoked_after_one_proposal")
+    report["checks"].remove(
+        "receiver_distinct_model_authorizations_revoked_after_one_proposal_each"
+    )
     assert not _receiver_driver_passed(report)
-    report["checks"].append("receiver_composition_model_authorization_revoked_after_one_proposal")
+    report["checks"].append(
+        "receiver_distinct_model_authorizations_revoked_after_one_proposal_each"
+    )
+    report["checks"].remove("receiver_superseded_model_authorization_remained_revoked")
+    assert not _receiver_driver_passed(report)
+    report["checks"].append("receiver_superseded_model_authorization_remained_revoked")
     report["cleanup"]["model_authorization_revoked"] = False
     assert not _receiver_driver_passed(report)
 
@@ -715,12 +970,18 @@ def test_receiver_requires_observed_model_revocation_after_proposal() -> None:
     ("field", "value"),
     [
         ("request_count", 0),
-        ("request_count", 2),
+        ("request_count", 1),
+        ("request_count", 3),
         ("request_count", True),
         ("purposes", ["bluefire_ai_graph_draft"]),
+        ("purposes", ["bluefire_composition_proposal", "bluefire_composition_proposal"]),
+        (
+            "purposes",
+            ["bluefire_receiver_evidence_composition_proposal", "bluefire_composition_proposal"],
+        ),
         ("request_bytes", 0),
         ("request_bytes", True),
-        ("request_bytes", 262_145),
+        ("request_bytes", 524_289),
         ("failed", True),
     ],
 )
@@ -764,9 +1025,13 @@ def test_receiver_driver_paths_require_copied_driver_and_adjacent_modules(
     driver = copied / "installed-receiver.mjs"
     guard = copied / "receiver-guards.mjs"
     deadline = copied / "receiver-deadline.mjs"
+    knowledge = copied / "receiver-knowledge.mjs"
+    evidence = copied / "receiver-evidence-proposal.mjs"
     driver.write_text("// pinned browser driver\n", encoding="utf-8")
     guard.write_text("// pinned request contract\n", encoding="utf-8")
     deadline.write_text("// pinned driver deadline\n", encoding="utf-8")
+    knowledge.write_text("// historical findings proof\n", encoding="utf-8")
+    evidence.write_text("// historical proposal proof\n", encoding="utf-8")
     assert _resolve_receiver_driver(driver, checkout) == (
         driver.resolve(),
         guard.resolve(),
@@ -777,6 +1042,8 @@ def test_receiver_driver_paths_require_copied_driver_and_adjacent_modules(
     in_checkout_driver.write_text("// not an external copy\n", encoding="utf-8")
     (checkout / guard.name).write_text("// guard\n", encoding="utf-8")
     (checkout / deadline.name).write_text("// deadline\n", encoding="utf-8")
+    (checkout / knowledge.name).write_text("// knowledge\n", encoding="utf-8")
+    (checkout / evidence.name).write_text("// evidence\n", encoding="utf-8")
     with pytest.raises(RuntimeError):
         _resolve_receiver_driver(in_checkout_driver, checkout)
 
@@ -793,6 +1060,24 @@ def test_missing_receiver_deadline_fails_before_launch(tmp_path: Path) -> None:
     driver = tmp_path / "installed-receiver.mjs"
     driver.write_text("// driver\n", encoding="utf-8")
     (tmp_path / "receiver-guards.mjs").write_text("// guard\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        _resolve_receiver_driver(driver, tmp_path / "checkout")
+
+
+def test_missing_receiver_knowledge_helper_fails_before_launch(tmp_path: Path) -> None:
+    driver = tmp_path / "installed-receiver.mjs"
+    driver.write_text("// driver\n", encoding="utf-8")
+    (tmp_path / "receiver-guards.mjs").write_text("// guard\n", encoding="utf-8")
+    (tmp_path / "receiver-deadline.mjs").write_text("// deadline\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        _resolve_receiver_driver(driver, tmp_path / "checkout")
+
+
+def test_missing_receiver_evidence_helper_fails_before_launch(tmp_path: Path) -> None:
+    driver = tmp_path / "installed-receiver.mjs"
+    driver.write_text("// driver\n", encoding="utf-8")
+    for name in ("receiver-guards.mjs", "receiver-deadline.mjs", "receiver-knowledge.mjs"):
+        (tmp_path / name).write_text("// helper\n", encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         _resolve_receiver_driver(driver, tmp_path / "checkout")
 

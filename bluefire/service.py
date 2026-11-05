@@ -2725,6 +2725,11 @@ class BlueFireService(
     def composition_objective(self, owner_id: str) -> Mapping[str, Any]:
         return dict(self.composition.read(owner_id))
 
+    def composition_knowledge(self, owner_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        from .composition_knowledge import build_knowledge
+
+        return build_knowledge(self.composition, owner_id, request)
+
     def file_access_composed_retest_linkage(
         self, owner_id: str, attempt_id: str
     ) -> Mapping[str, Any]:
@@ -2764,6 +2769,11 @@ class BlueFireService(
     def composition_proposal_context(
         self, owner_id: str, request: Mapping[str, Any]
     ) -> Mapping[str, Any]:
+        if isinstance(request, dict) and "schema_version" in request:
+            from .composition_evidence_context import selection
+
+            selection(request)
+            return self.composition_ai.requested_context(owner_id, request)
         if not isinstance(request, dict) or set(request) != {"prior_attempt_id"}:
             raise ProductStoreError("Proposal context requires the exact prior attempt field.")
         return self.composition_ai.context(owner_id, prior_attempt_id=request["prior_attempt_id"])

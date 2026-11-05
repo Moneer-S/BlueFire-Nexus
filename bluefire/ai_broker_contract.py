@@ -36,6 +36,7 @@ _PURPOSES = {
     "bluefire_run_evidence_inspection",
     "bluefire_receiver_defense_inspection",
     "bluefire_composition_proposal",
+    "bluefire_receiver_evidence_composition_proposal",
     "bluefire_linux_file_access_composition_proposal",
     "bluefire_macos_file_access_composition_proposal",
 }

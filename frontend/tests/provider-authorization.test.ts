@@ -23,7 +23,12 @@ describe("exact live model review", () => {
     expect(authorizationStatus(row, snapshot([row]), Date.now())).toBe("budget_exhausted");
     expect(matchingAuthorization(provider, snapshot([row]), Date.now())).toBeUndefined();
   });
-  it("keeps all model purposes explicit, including each bounded composition pack", () => { expect(Object.keys(modelPurposes)).toHaveLength(13); expect(modelPurposes.bluefire_ai_graph_draft).toBe("Create an experiment graph"); expect(modelPurposes.bluefire_composition_proposal).toBe("Propose a bounded composition graph"); expect(modelPurposes.bluefire_linux_file_access_composition_proposal).toBe("Propose a Linux file-access verification graph"); expect(modelPurposes.bluefire_macos_file_access_composition_proposal).toBe("Propose a macOS file-access verification graph"); });
+  it("keeps all model purposes explicit, including each bounded composition pack", () => { expect(Object.keys(modelPurposes)).toHaveLength(14); expect(modelPurposes.bluefire_ai_graph_draft).toBe("Create an experiment graph"); expect(modelPurposes.bluefire_composition_proposal).toBe("Propose a bounded composition graph"); expect(modelPurposes.bluefire_receiver_evidence_composition_proposal).toBe("Reconsider receiver graph choices using selected historical findings"); expect(modelPurposes.bluefire_linux_file_access_composition_proposal).toBe("Propose a Linux file-access verification graph"); expect(modelPurposes.bluefire_macos_file_access_composition_proposal).toBe("Propose a macOS file-access verification graph"); });
+  it("does not extend an existing receiver grant to historical evidence", () => {
+    const rows = snapshot([authorization({ purposes: ["bluefire_composition_proposal"] })]);
+    expect(matchingAuthorization(provider, rows, Date.now(), "bluefire_composition_proposal")).toBeDefined();
+    expect(matchingAuthorization(provider, rows, Date.now(), "bluefire_receiver_evidence_composition_proposal")).toBeUndefined();
+  });
   it("normalizes public configuration exactly as the service before review and matching", () => {
     expect(publicProvider({ ...provider, id: ` ${provider.id} `, model: ` ${provider.model} `, endpoint: `${provider.endpoint}/// `, api_key: { env: " MODEL_API_KEY " } })).toEqual(provider);
     expect(providerErrors({ ...provider, id: "UnversionedName" })).not.toEqual([]);

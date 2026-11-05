@@ -73,3 +73,8 @@
   .composition-objective-list a { flex-direction: column; gap: 4px; }
   .composition-table th, .composition-table td { padding: 10px 8px; }
 }
+.composition-history-option, .composition-reconsideration { margin-block: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; }
+.composition-history-option p, .composition-reconsideration > p { color: var(--muted-strong); font-size: .85rem; }
+.composition-reconsideration > ul { padding-left: 1.25rem; }
+.composition-reconsideration li { margin-block: .75rem; }
+.composition-reconsideration code { overflow-wrap: anywhere; }

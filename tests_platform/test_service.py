@@ -1048,7 +1048,8 @@ def test_execute_job_requires_separate_exact_approval_before_callback(
         assert "nonce" not in approved["approval_request"]
 
         with diagnose_job_wait("service_terminal"):
-            settled = service.job_controller.wait(job_id, timeout=3)
+            # Allow bounded hosted-worker planning and durable-storage latency.
+            settled = service.job_controller.wait(job_id, timeout=30)
         assert settled["state"] == "completed"
         assert runner.execute_calls > 0
         approval_id = str(submission["approval_request"]["approval_id"])

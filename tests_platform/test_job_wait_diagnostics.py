@@ -631,7 +631,7 @@ def test_receiver_terminal_wait_preserves_deadlines_dispatch_and_private_real_sn
         order.append("approve")
 
     def terminal(job_id, *, timeout):
-        assert job_id == PRIVATE and timeout == 20
+        assert job_id == PRIVATE and timeout == 30
         order.append("terminal")
         if outcome != "completed":
             raise original

@@ -151,6 +151,7 @@ def test_both_dialects_enroll_exact_receiver_schema_and_keep_existing_purposes(p
         "bluefire_macos_file_access_composition_proposal",
         "bluefire_method_comparison",
         "bluefire_receiver_defense_inspection",
+        "bluefire_receiver_evidence_composition_proposal",
         "bluefire_run_evidence_inspection",
     )
     assert ("bluefire_experiment_assistance", content_hash(PLANNER_SCHEMA)) in enrollment.schemas
