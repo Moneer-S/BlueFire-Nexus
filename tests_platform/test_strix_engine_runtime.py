@@ -638,7 +638,7 @@ def _fixture(
     control = tmp_path / "controller"
     control.mkdir()
     artifact_root = tmp_path / "artifacts"
-    artifact_root.mkdir()
+    artifact_root.mkdir(mode=0o700)
     protected_roots = ProtectedRuntimeRootsReceipt(
         schema_version="bluefire.engine-protected-runtime-roots.v1",
         attempt_id=binding.attempt_id,

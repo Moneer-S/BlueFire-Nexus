@@ -466,8 +466,15 @@ def test_reopen_rejects_extra_top_level_and_portable_alias(
         return
     alias_store, _source, _seal, _binding, _reopened = publish_v2(tmp_path / "alias")
     raw = alias_store.root / ATTEMPT / "raw"
-    (raw / "Run.json").write_bytes(b"retained")
-    os.chmod(raw / "Run.json", 0o600)
+    canonical = raw / "run.json"
+    alias = raw / "Run.json"
+    if alias.exists() and alias.samefile(canonical):
+        # A case-insensitive filesystem cannot materialize the portable alias
+        # as a second entry. The exact case-fold collision remains exercised
+        # on case-sensitive POSIX filesystems.
+        return
+    alias.write_bytes(b"retained")
+    os.chmod(alias, 0o600)
     with pytest.raises(EngineArtifactStoreError, match="not exact"):
         alias_store.reopen_attempt(ATTEMPT)
 

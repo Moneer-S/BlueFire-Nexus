@@ -6,6 +6,7 @@ import os
 import shutil
 import tarfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -261,10 +262,15 @@ def test_transfer_rejects_wrong_ref_and_cleans_partial_write(
 
     real_open = os.open
 
-    def failing_open(path: os.PathLike[str] | str, flags: int, mode: int = 0o777) -> int:
+    def failing_open(
+        path: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        **kwargs: Any,
+    ) -> int:
         if flags & os.O_WRONLY:
             raise OSError("injected extraction failure")
-        return real_open(path, flags, mode)
+        return real_open(path, flags, mode, **kwargs)
 
     monkeypatch.setattr(transfer.os, "open", failing_open)
     with pytest.raises(OSError, match="injected"):
