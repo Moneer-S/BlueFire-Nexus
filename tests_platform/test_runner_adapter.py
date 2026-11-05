@@ -27,6 +27,7 @@ ACTION_IDS = {
     "sandbox.execution.process-tree-cancellation-witness.v1",
     "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",
+    "sandbox.collection.materialize-retained.v1",
     "sandbox.collection.records.v1",
     "sandbox.collection.archive.v1",
     "sandbox.collection.atomic-gzip.v1",

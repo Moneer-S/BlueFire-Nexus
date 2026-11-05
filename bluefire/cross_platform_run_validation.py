@@ -930,11 +930,17 @@ def validate_persisted_run(
         "run policy decisions do not match executed steps",
     )
     cleanup_step = step_by_id["cleanup_workspace"]
+    cleanup_value = cleanup_step.get("cleanup")
     cleanup_report = _exact(
-        cleanup_step.get("cleanup"),
+        cleanup_value,
         _fields(
             "requested_receipts removed_paths already_absent_receipts retained_paths errors "
             "verification_performed verified_removed_paths verified_absent_paths verified_receipts"
+        )
+        | (
+            {"verified_receipt_ids"}
+            if isinstance(cleanup_value, dict) and "verified_receipt_ids" in cleanup_value
+            else set()
         ),
         "runner cleanup report",
     )
@@ -942,6 +948,10 @@ def validate_persisted_run(
         cleanup_report == outer_by_step["cleanup_workspace"].content.get("output")
         and cleanup_report.get("requested_receipts") == len(all_receipts)
         and cleanup_report.get("verified_receipts") == len(all_receipts)
+        and (
+            "verified_receipt_ids" not in cleanup_report
+            or set(cleanup_report["verified_receipt_ids"]) == set(all_receipts)
+        )
         and cleanup_report.get("already_absent_receipts") == []
         and cleanup_report.get("retained_paths") == []
         and cleanup_report.get("errors") == []

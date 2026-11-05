@@ -202,15 +202,21 @@ def harness(saved, provider):
     state["now_ms"] = 5000
     controller = RunJobController(store, lambda *_: pytest.fail("No effects are permitted"))
     supplied = context(state)
+    repair_modes = []
 
-    def validate(owner, value, *, prior_attempt_id=None):
+    def validate(owner, value, *, prior_attempt_id=None, _repair=True):
+        repair_modes.append(("validate", _repair))
         if prior_attempt_id is None:
             return compile_initial_graph(value, **compiler_args(state))
         return compile_revision(value, **compiler_args(state), previous_semantic_digests=[])
 
+    def proposal_context(*_args, **kwargs):
+        repair_modes.append(("context", kwargs.get("_repair", True)))
+        return deepcopy(supplied)
+
     composition = SimpleNamespace(
         clock=lambda: state["now_ms"],
-        proposal_context=lambda *_args, **_kwargs: deepcopy(supplied),
+        proposal_context=proposal_context,
         validate_proposal=validate,
     )
     access = Access(value=candidate(state))
@@ -232,6 +238,7 @@ def harness(saved, provider):
         access=access,
         owner=state["parent_job_id"],
         provider=provider,
+        repair_modes=repair_modes,
     )
     controller.shutdown()
 
@@ -498,6 +505,8 @@ def test_durable_initial_candidate_has_one_provider_call_no_execution_and_exact_
     submitted = harness.jobs.submit(harness.owner, value)
     result = wait(harness.jobs, submitted["job"]["job_id"])
     assert result["job"]["kind"] == KIND and result["job"]["state"] == "completed"
+    assert ("context", False) in harness.repair_modes
+    assert ("validate", False) in harness.repair_modes
     assert result["candidate_ready"] and result["provider_outcome"] == "candidate"
     assert result["proposal"]["candidate"] == candidate(harness.state)
     assert harness.jobs.submit(harness.owner, value)["proposal"] == result["proposal"]

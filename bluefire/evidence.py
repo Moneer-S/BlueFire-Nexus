@@ -326,6 +326,13 @@ class SandboxObserver:
                             "sandbox observer root may not traverse links or junctions"
                         )
                     expected_root = os.path.normcase(os.path.normpath(str(resolved)))
+                    # RunStore uses extended-length roots; handle final paths
+                    # use DOS spelling. Compare the same namespace spelling
+                    # while retaining the original pinned path for opens.
+                    if expected_root.startswith("\\\\?\\unc\\"):
+                        expected_root = "\\\\" + expected_root[8:]
+                    elif expected_root.startswith("\\\\?\\"):
+                        expected_root = expected_root[4:]
                     opened_root = os.path.normcase(
                         os.path.normpath(_windows_handle_final_path(handle))
                     )
@@ -444,6 +451,8 @@ class SandboxObserver:
         parent_evidence_ids: Iterable[str] = (),
         deadline_monotonic: float | None = None,
         _content_analyzer: Callable[[bytes], Mapping[str, Any]] | None = None,
+        _validated_content_sink: Callable[[bytes], None] | None = None,
+        _max_content_bytes: int | None = None,
         include_permissions: bool = True,
     ) -> EvidenceRecord:
         if deadline_monotonic is not None and (
@@ -452,24 +461,37 @@ class SandboxObserver:
             raise EvidenceError("observer deadline is invalid")
         if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
             raise EvidenceError("observed file read exceeded the configured time limit")
+        if _max_content_bytes is not None and (
+            type(_max_content_bytes) is not int
+            or not 1 <= _max_content_bytes <= self.max_file_bytes
+        ):
+            raise EvidenceError("observer capture bound is invalid")
+        byte_limit = self.max_file_bytes if _max_content_bytes is None else _max_content_bytes
         parts = self._validated_parts(relative_path)
         descriptor = self._open_file(parts)
         try:
             before = os.fstat(descriptor)
             if not stat.S_ISREG(before.st_mode):
                 raise EvidenceError("observed path is not a regular file")
-            if before.st_size > self.max_file_bytes:
+            if before.st_size > byte_limit:
                 raise EvidenceError("observed file exceeds the configured byte limit")
             digest = hashlib.sha256()
-            captured = bytearray() if _content_analyzer is not None else None
+            captured = (
+                bytearray()
+                if _content_analyzer is not None or _validated_content_sink is not None
+                else None
+            )
             size = 0
             deadline = time.monotonic() + self.read_timeout_seconds
             if deadline_monotonic is not None:
                 deadline = min(deadline, deadline_monotonic)
             with os.fdopen(descriptor, "rb", closefd=False) as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                while True:
+                    chunk = handle.read(min(1024 * 1024, byte_limit + 1 - size))
+                    if not chunk:
+                        break
                     size += len(chunk)
-                    if size > self.max_file_bytes:
+                    if size > byte_limit:
                         raise EvidenceError("observed file exceeded the configured byte limit")
                     if time.monotonic() > deadline:
                         raise EvidenceError("observed file read exceeded the configured time limit")
@@ -496,6 +518,8 @@ class SandboxObserver:
             if _content_analyzer is not None and captured is not None
             else {}
         )
+        if _validated_content_sink is not None and captured is not None:
+            _validated_content_sink(bytes(captured))
         permission_fields = observed_permission_fields(after) if include_permissions else {}
         limitations = (
             (

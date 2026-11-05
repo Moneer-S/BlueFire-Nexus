@@ -5,16 +5,26 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping, cast
 
+from .retained_artifact_contract import MAX_BYTES as MAX_RETAINED_PAYLOAD_BYTES
 from .util import canonical_json_bytes, content_hash, file_hash, json_clone
-from .windows_owner_acl import _windows_extended_path
+from .windows_owner_acl import (
+    WindowsOwnerAclError,
+    _windows_extended_path,
+    _windows_open_descriptor,
+    apply_owner_private_acl,
+    verify_owner_private_acl,
+)
 
 RUN_ID_RE = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
 RECOVERY_ID_RE = re.compile(r"^recovery-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
@@ -29,8 +39,14 @@ SAFE_BUNDLE_NAMES = frozenset(
         "detections.json",
         "comparison.json",
         "manifest.json",
+        "artifacts.json",
     }
 )
+RETAINED_PAYLOAD_DIRECTORY = "retained"
+RETAINED_PAYLOAD_NAME = "bundle.jsonl"
+RETAINED_CAPTURE_NAME = "capture.json"
+_RETAINED_TEMP_PREFIX = ".retained-tmp-"
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x00000400)
 _ACCEPTANCE_BINDING_ENV = {
     "acceptance_id": "BLUEFIRE_ACCEPTANCE_ID",
     "gate_id": "BLUEFIRE_ACCEPTANCE_GATE_ID",
@@ -41,6 +57,10 @@ _ACCEPTANCE_BINDING_ENV = {
 }
 _UNSEALED_FINALIZATION_ERROR = "run finalization was not sealed by a manifest"
 _INTERRUPTED_RECOVERY_MESSAGE = "No finalized manifest was present after restart."
+
+
+def file_hash_bytes(payload: bytes) -> str:
+    return sha256(payload).hexdigest()
 
 
 class RunStoreError(ValueError):
@@ -87,10 +107,28 @@ class RunStore:
             # names and recovery directories, retain Win32 long-path support.
             # Resolve below still establishes the canonical containment root.
             candidate = _windows_extended_path(candidate)
-        candidate.mkdir(parents=True, exist_ok=True)
+        created = False
+        try:
+            if os.name == "nt":
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                self._windows_mkdir_private(candidate)
+            else:
+                candidate.mkdir(mode=0o700, parents=True, exist_ok=False)
+            created = True
+        except FileExistsError:
+            pass
         self.root = candidate.resolve(strict=True)
         if not self.root.is_dir():
             raise RunStoreError("run store root must be a directory")
+        if created:
+            try:
+                self._harden_retained_entry(self.root, directory=True)
+            except RunStoreError:
+                try:
+                    self.root.rmdir()
+                except OSError:
+                    pass
+                raise
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
 
@@ -114,11 +152,22 @@ class RunStore:
             run_id = _reserved_run_id or self._new_run_id()
             path = self.root / run_id
             try:
-                path.mkdir(mode=0o700, exist_ok=False)
+                if os.name == "nt":
+                    self._windows_mkdir_private(path)
+                else:
+                    path.mkdir(mode=0o700, exist_ok=False)
             except FileExistsError:
                 if _reserved_run_id is not None:
                     raise RunStoreError("reserved run identity already exists") from None
                 continue
+            try:
+                self._harden_retained_entry(path, directory=True)
+            except RunStoreError:
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+                raise
             handle = RunHandle(run_id=run_id, created_at=created_at, path=path)
             metadata = {
                 "schema_version": "1.0",
@@ -264,17 +313,235 @@ class RunStore:
                 mismatches.append(name)
         return {"valid": not mismatches, "mismatches": mismatches, "manifest": manifest}
 
-    def read_json(self, run_id: str, name: str) -> Mapping[str, Any]:
+    def read_json(
+        self, run_id: str, name: str, *, _max_bytes: int | None = None
+    ) -> Mapping[str, Any]:
         if name not in SAFE_BUNDLE_NAMES:
             raise RunStoreError(f"unsupported bundle file name: {name!r}")
         path = self._contained_child(self._run_path(run_id, must_exist=True), name)
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            if _max_bytes is None:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            else:
+                if type(_max_bytes) is not int or _max_bytes < 1:
+                    raise RunStoreError("bundle JSON byte bound is invalid")
+                with path.open("rb") as stream:
+                    payload = stream.read(_max_bytes + 1)
+                if len(payload) > _max_bytes:
+                    raise RunStoreError("bundle JSON exceeds its reviewed byte bound")
+                value = json.loads(payload.decode("utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RunStoreError(f"cannot read {name}: {exc}") from exc
         if not isinstance(value, dict):
             raise RunStoreError(f"{name} must contain a JSON object")
         return value
+
+    def publish_retained_capture(
+        self,
+        run_id: str,
+        *,
+        payload: bytes,
+        capture: Mapping[str, Any],
+        artifacts: Mapping[str, Any],
+        event: Mapping[str, Any],
+        _expected_run_identity: tuple[int, int, int] | None = None,
+    ) -> Mapping[str, Any]:
+        """Publish one immutable private capture and reconcile its public projections.
+
+        The payload and the exact reconciliation journal become visible together
+        through one no-replace directory rename.  ``artifacts.json`` and the
+        append-only event are projections of that private source of truth.  An
+        exact retry repairs a missing projection; conflicting or partial data is
+        preserved and refused.
+        """
+
+        if not isinstance(payload, bytes) or not 1 <= len(payload) <= MAX_RETAINED_PAYLOAD_BYTES:
+            raise RunStoreError("retained payload exceeds its reviewed byte bound")
+        journal = json_clone(capture)
+        artifacts_document = json_clone(artifacts)
+        event_document = json_clone(event)
+        if not all(
+            isinstance(value, dict) for value in (journal, artifacts_document, event_document)
+        ):
+            raise RunStoreError("retained capture documents must be JSON objects")
+        if (
+            journal.get("schema_version") != "bluefire.retained-capture-publication.v1"
+            or journal.get("run_id") != run_id
+            or journal.get("artifacts") != artifacts_document
+            or journal.get("event") != event_document
+            or journal.get("payload")
+            != {
+                "path": f"{RETAINED_PAYLOAD_DIRECTORY}/{RETAINED_PAYLOAD_NAME}",
+                "sha256": file_hash_bytes(payload),
+                "size_bytes": len(payload),
+            }
+            or journal.get("publication_digest")
+            != content_hash(
+                {key: value for key, value in journal.items() if key != "publication_digest"}
+            )
+        ):
+            raise RunStoreError("retained capture publication binding is invalid")
+        journal_bytes = canonical_json_bytes(journal) + b"\n"
+        artifacts_bytes = canonical_json_bytes(artifacts_document) + b"\n"
+        if len(journal_bytes) > 256 * 1024 or len(artifacts_bytes) > 256 * 1024:
+            raise RunStoreError("retained capture metadata exceeds its reviewed byte bound")
+        if (
+            event_document.get("event_type") != "artifact.retained"
+            or not isinstance(journal.get("receipt"), dict)
+            or event_document.get("capture_digest") != journal["receipt"].get("capture_digest")
+            or not isinstance(event_document.get("data"), dict)
+        ):
+            raise RunStoreError("retained capture event binding is invalid")
+
+        run_path = self._run_path(run_id, must_exist=True)
+        with self._lock(run_id):
+            with self._retained_parent_custody(run_path) as run_descriptor:
+                if (
+                    _expected_run_identity is not None
+                    and self._filesystem_identity(os.fstat(run_descriptor))
+                    != _expected_run_identity
+                ):
+                    raise RunStoreError("retained run namespace changed before reconciliation")
+                directory = self._contained_child(run_path, RETAINED_PAYLOAD_DIRECTORY)
+                if os.name == "nt":
+                    published = directory.exists()
+                else:
+                    try:
+                        os.stat(
+                            RETAINED_PAYLOAD_DIRECTORY,
+                            dir_fd=run_descriptor,
+                            follow_symlinks=False,
+                        )
+                        published = True
+                    except FileNotFoundError:
+                        published = False
+                if published:
+                    self._verify_retained_directory(
+                        directory,
+                        {
+                            RETAINED_PAYLOAD_NAME: payload,
+                            RETAINED_CAPTURE_NAME: journal_bytes,
+                        },
+                        run_descriptor=run_descriptor,
+                    )
+                else:
+                    self._publish_retained_directory(
+                        run_path,
+                        {
+                            RETAINED_PAYLOAD_NAME: payload,
+                            RETAINED_CAPTURE_NAME: journal_bytes,
+                        },
+                        run_descriptor=run_descriptor,
+                    )
+                self._publish_exact_file(
+                    run_path, "artifacts.json", artifacts_bytes, run_descriptor=run_descriptor
+                )
+                self._append_exact_retained_event(
+                    run_id, run_path, event_document, run_descriptor=run_descriptor
+                )
+                # Verify every component again after all public projections exist.
+                self._verify_retained_directory(
+                    directory,
+                    {
+                        RETAINED_PAYLOAD_NAME: payload,
+                        RETAINED_CAPTURE_NAME: journal_bytes,
+                    },
+                    run_descriptor=run_descriptor,
+                )
+                self._verify_exact_file(
+                    run_path / "artifacts.json", artifacts_bytes, run_descriptor=run_descriptor
+                )
+        return cast(Mapping[str, Any], journal)
+
+    def retained_capture(self, run_id: str, *, reconcile: bool = True) -> Mapping[str, Any]:
+        """Read and optionally reconcile one exact private capture journal."""
+
+        run_path = self._run_path(run_id, must_exist=True)
+        with self._retained_parent_custody(run_path) as run_descriptor:
+            run_identity = self._filesystem_identity(os.fstat(run_descriptor))
+            directory = self._contained_child(run_path, RETAINED_PAYLOAD_DIRECTORY)
+            capture_path = self._contained_child(directory, RETAINED_CAPTURE_NAME)
+            if os.name == "nt":
+                directory_descriptor, directory_details = self._open_verified_retained_entry(
+                    directory, directory=True
+                )
+            else:
+                directory_descriptor, directory_details = self._open_verified_retained_entry_at(
+                    run_descriptor, RETAINED_PAYLOAD_DIRECTORY, directory=True
+                )
+            try:
+                try:
+                    journal_bytes = self._read_private_retained_entry(
+                        capture_path,
+                        directory=False,
+                        parent_descriptor=directory_descriptor,
+                    )
+                    journal = json.loads(journal_bytes)
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise RunStoreError("retained capture journal is unavailable") from exc
+                if not isinstance(journal, dict):
+                    raise RunStoreError("retained capture journal must be a JSON object")
+                payload = self._read_private_retained_entry(
+                    self._contained_child(directory, RETAINED_PAYLOAD_NAME),
+                    directory=False,
+                    parent_descriptor=directory_descriptor,
+                )
+                if os.name != "nt":
+                    self._verify_pinned_retained_directory(
+                        run_descriptor,
+                        RETAINED_PAYLOAD_DIRECTORY,
+                        directory_descriptor,
+                        directory_details,
+                    )
+                else:
+                    current = directory.lstat()
+                    if self._stable_private_identity(current) != self._stable_private_identity(
+                        directory_details
+                    ) or self._is_link_or_reparse(current):
+                        raise RunStoreError("retained private directory changed")
+            finally:
+                os.close(directory_descriptor)
+        if reconcile:
+            self.publish_retained_capture(
+                run_id,
+                payload=payload,
+                capture=journal,
+                artifacts=journal.get("artifacts", {}),
+                event=journal.get("event", {}),
+                _expected_run_identity=run_identity,
+            )
+        return journal
+
+    def retained_capture_run_ids(self) -> list[str]:
+        """Return bounded run identities that contain a private capture journal."""
+
+        result: list[str] = []
+        for path in sorted(self.root.iterdir(), key=lambda item: item.name):
+            if not path.is_dir() or RUN_ID_RE.fullmatch(path.name) is None:
+                continue
+            capture = path / RETAINED_PAYLOAD_DIRECTORY / RETAINED_CAPTURE_NAME
+            if capture.is_file() and not capture.is_symlink():
+                result.append(path.name)
+        return result
+
+    def write_retained_payload(self, run_id: str, payload: bytes) -> None:
+        """Legacy refusal: retained bytes require their exact capture journal."""
+
+        raise RunStoreError("retained payload publication requires an exact capture journal")
+
+    def read_retained_payload(self, run_id: str) -> bytes:
+        """Read only the fixed private payload after custody verification."""
+        run_path = self._run_path(run_id, must_exist=True)
+        with self._retained_parent_custody(run_path) as run_descriptor:
+            directory = self._contained_child(run_path, RETAINED_PAYLOAD_DIRECTORY)
+            payload = self._read_private_retained_entry(
+                self._contained_child(directory, RETAINED_PAYLOAD_NAME),
+                directory=False,
+                run_descriptor=run_descriptor,
+            )
+        if not 1 <= len(payload) <= MAX_RETAINED_PAYLOAD_BYTES:
+            raise RunStoreError("retained payload exceeds its reviewed byte bound")
+        return payload
 
     def read_events(
         self,
@@ -630,14 +897,908 @@ class RunStore:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         return f"run-{timestamp}-{uuid.uuid4().hex[:16]}"
 
+    @staticmethod
+    def _filesystem_identity(details: os.stat_result) -> tuple[int, int, int]:
+        return int(details.st_dev), int(details.st_ino), stat.S_IFMT(details.st_mode)
+
+    @staticmethod
+    def _windows_mkdir_private(path: Path) -> None:
+        """Create a Windows directory with its private DACL at creation time."""
+
+        if os.name != "nt":
+            raise RunStoreError("Windows private directory creation is unavailable")
+        import ctypes
+        from ctypes import wintypes
+
+        from .windows_owner_acl import _configure_apis, _converted_descriptor, current_user_sid
+
+        class SecurityAttributes(ctypes.Structure):
+            _fields_ = (
+                ("length", wintypes.DWORD),
+                ("descriptor", ctypes.c_void_p),
+                ("inherit", wintypes.BOOL),
+            )
+
+        advapi32, kernel32 = _configure_apis()
+        descriptor = _converted_descriptor(advapi32, f"D:P(A;OICI;FA;;;{current_user_sid()})")
+        try:
+            create_directory = kernel32.CreateDirectoryW
+            create_directory.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(SecurityAttributes))
+            create_directory.restype = wintypes.BOOL
+            attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+            if not create_directory(str(_windows_extended_path(path)), ctypes.byref(attributes)):
+                error = cast(Any, ctypes).get_last_error()
+                if error in {80, 183}:
+                    raise FileExistsError(error, "private directory already exists", str(path))
+                raise OSError(error, "private directory creation failed", str(path))
+        finally:
+            kernel32.LocalFree(descriptor)
+
+    @classmethod
+    def _stable_private_identity(cls, details: os.stat_result) -> tuple[int, ...]:
+        return (
+            *cls._filesystem_identity(details),
+            int(details.st_nlink),
+            int(details.st_size),
+            int(details.st_mtime_ns),
+            int(details.st_ctime_ns),
+        )
+
+    @classmethod
+    def _cross_view_private_identity(cls, details: os.stat_result) -> tuple[int, ...]:
+        timestamp = int(details.st_ctime_ns)
+        if os.name == "nt":
+            # Windows path and handle stat views do not consistently expose
+            # the same meaning through the deprecated st_ctime_ns field.
+            # Creation time is the stable timestamp shared by both views.
+            timestamp = int(getattr(details, "st_birthtime_ns", timestamp))
+        return (
+            *cls._filesystem_identity(details),
+            int(details.st_nlink),
+            int(details.st_size),
+            int(details.st_mtime_ns),
+            timestamp,
+        )
+
+    @staticmethod
+    def _is_link_or_reparse(details: os.stat_result) -> bool:
+        return stat.S_ISLNK(details.st_mode) or bool(
+            int(getattr(details, "st_file_attributes", 0)) & _REPARSE_POINT
+        )
+
+    @staticmethod
+    def _posix_euid() -> int:
+        getter = getattr(os, "geteuid", None)
+        if not callable(getter):
+            raise RunStoreError("retained POSIX owner identity is unavailable")
+        return int(getter())
+
+    @staticmethod
+    def _posix_fchmod(descriptor: int, mode: int) -> None:
+        chmod = getattr(os, "fchmod", None)
+        if not callable(chmod):
+            raise RunStoreError("retained POSIX permission hardening is unavailable")
+        chmod(descriptor, mode)
+
+    def _harden_retained_entry(self, path: Path, *, directory: bool) -> None:
+        """Harden an exact object just created by this store, then verify it."""
+
+        if os.name == "nt":
+            descriptor: int | None = None
+            try:
+                details = path.lstat()
+                if (
+                    self._is_link_or_reparse(details)
+                    or stat.S_ISDIR(details.st_mode) is not directory
+                    or (not directory and details.st_nlink != 1)
+                ):
+                    raise RunStoreError("retained private object is unsafe")
+                descriptor = _windows_open_descriptor(
+                    path, directory=directory, write_dac=True, share_write=directory
+                )
+                if self._filesystem_identity(os.fstat(descriptor)) != self._filesystem_identity(
+                    details
+                ):
+                    raise RunStoreError("retained private object changed")
+                apply_owner_private_acl(descriptor, directory=directory)
+                verify_owner_private_acl(descriptor, directory=directory)
+            except (OSError, WindowsOwnerAclError):
+                raise RunStoreError("retained private permissions are unavailable") from None
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        else:
+            try:
+                os.chmod(path, 0o700 if directory else 0o600, follow_symlinks=False)
+            except (NotImplementedError, OSError):
+                raise RunStoreError("retained private permissions are unavailable") from None
+        self._verify_retained_entry(path, directory=directory)
+
+    def _verify_retained_entry(self, path: Path, *, directory: bool) -> os.stat_result:
+        descriptor, details = self._open_verified_retained_entry(path, directory=directory)
+        os.close(descriptor)
+        return details
+
+    def _open_verified_retained_entry(
+        self, path: Path, *, directory: bool
+    ) -> tuple[int, os.stat_result]:
+        """Open and verify one private object, returning its pinned descriptor."""
+
+        try:
+            details = path.lstat()
+        except OSError:
+            raise RunStoreError("retained private object is unavailable") from None
+        if (
+            self._is_link_or_reparse(details)
+            or stat.S_ISDIR(details.st_mode) is not directory
+            or (not directory and details.st_nlink != 1)
+        ):
+            raise RunStoreError("retained private object is unsafe")
+        descriptor: int | None = None
+        try:
+            if os.name == "nt":
+                descriptor = _windows_open_descriptor(path, directory=directory)
+                opened = os.fstat(descriptor)
+                verify_owner_private_acl(descriptor, directory=directory)
+                if self._filesystem_identity(opened) != self._filesystem_identity(details):
+                    raise RunStoreError("retained private object changed")
+            else:
+                flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                if directory:
+                    flags |= getattr(os, "O_DIRECTORY", 0)
+                descriptor = os.open(path, flags)
+                opened = os.fstat(descriptor)
+                get_effective_user = getattr(os, "geteuid", None)
+                if (
+                    self._filesystem_identity(opened) != self._filesystem_identity(details)
+                    or stat.S_IMODE(opened.st_mode) != (0o700 if directory else 0o600)
+                    or (callable(get_effective_user) and opened.st_uid != get_effective_user())
+                ):
+                    raise RunStoreError("retained private permissions are unsafe")
+            return descriptor, details
+        except RunStoreError:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise
+        except (OSError, WindowsOwnerAclError):
+            if descriptor is not None:
+                os.close(descriptor)
+            message = (
+                "retained private DACL is unsafe"
+                if os.name == "nt"
+                else "retained private permissions are unsafe"
+            )
+            raise RunStoreError(message) from None
+
+    def _open_verified_retained_entry_at(
+        self, parent_descriptor: int, name: str, *, directory: bool
+    ) -> tuple[int, os.stat_result]:
+        """POSIX openat verification relative to an already pinned directory."""
+
+        if os.name == "nt" or not name or Path(name).name != name:
+            raise RunStoreError("retained descriptor-relative path is invalid")
+        try:
+            details = os.stat(
+                name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError:
+            raise RunStoreError("retained private object is unavailable") from None
+        if (
+            self._is_link_or_reparse(details)
+            or stat.S_ISDIR(details.st_mode) is not directory
+            or (not directory and details.st_nlink != 1)
+        ):
+            raise RunStoreError("retained private object is unsafe")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        if directory:
+            flags |= getattr(os, "O_DIRECTORY", 0)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+            opened = os.fstat(descriptor)
+            get_effective_user = getattr(os, "geteuid", None)
+            if (
+                self._filesystem_identity(opened) != self._filesystem_identity(details)
+                or stat.S_IMODE(opened.st_mode) != (0o700 if directory else 0o600)
+                or (callable(get_effective_user) and opened.st_uid != get_effective_user())
+            ):
+                raise RunStoreError("retained private permissions are unsafe")
+            return descriptor, details
+        except RunStoreError:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise
+        except OSError:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise RunStoreError("retained private permissions are unsafe") from None
+
+    @contextmanager
+    def _retained_parent_custody(self, run_path: Path) -> Iterator[int]:
+        """Pin the verified root and run namespace for one private operation."""
+
+        if run_path.parent != self.root:
+            raise RunStoreError("retained run path escaped its storage root")
+        descriptors: list[int] = []
+        try:
+            if os.name == "nt":
+                root_descriptor, _ = self._open_verified_retained_entry(self.root, directory=True)
+                descriptors.append(root_descriptor)
+            else:
+                self._verify_posix_ancestor_custody()
+                try:
+                    root_details = self.root.lstat()
+                except OSError:
+                    raise RunStoreError("retained storage root is unavailable") from None
+                get_effective_user = getattr(os, "geteuid", None)
+                if (
+                    self._is_link_or_reparse(root_details)
+                    or not stat.S_ISDIR(root_details.st_mode)
+                    or root_details.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                    or (
+                        callable(get_effective_user) and root_details.st_uid != get_effective_user()
+                    )
+                ):
+                    raise RunStoreError("retained storage root permits replacement")
+                flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                flags |= getattr(os, "O_DIRECTORY", 0)
+                root_descriptor = os.open(self.root, flags)
+                descriptors.append(root_descriptor)
+                if self._filesystem_identity(
+                    os.fstat(root_descriptor)
+                ) != self._filesystem_identity(root_details):
+                    raise RunStoreError("retained storage root changed")
+            if os.name == "nt":
+                run_descriptor, run_details = self._open_verified_retained_entry(
+                    run_path, directory=True
+                )
+            else:
+                run_descriptor, run_details = self._open_verified_retained_entry_at(
+                    root_descriptor, run_path.name, directory=True
+                )
+            descriptors.append(run_descriptor)
+            yield run_descriptor
+            if os.name != "nt":
+                named_run = os.stat(run_path.name, dir_fd=root_descriptor, follow_symlinks=False)
+                opened_run = os.fstat(run_descriptor)
+                named_root = self.root.lstat()
+                if (
+                    self._filesystem_identity(named_run) != self._filesystem_identity(run_details)
+                    or self._filesystem_identity(opened_run)
+                    != self._filesystem_identity(run_details)
+                    or self._filesystem_identity(named_root)
+                    != self._filesystem_identity(root_details)
+                    or self._is_link_or_reparse(named_run)
+                    or self._is_link_or_reparse(named_root)
+                    or stat.S_IMODE(named_run.st_mode) != 0o700
+                    or named_run.st_uid != self._posix_euid()
+                ):
+                    raise RunStoreError("retained parent namespace changed")
+        except RunStoreError:
+            raise
+        except OSError:
+            raise RunStoreError("retained parent custody is unavailable") from None
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+
+    def _verify_posix_ancestor_custody(self) -> None:
+        """Reject an ancestor namespace replaceable by another POSIX principal."""
+
+        get_effective_user = getattr(os, "geteuid", None)
+        if not callable(get_effective_user):
+            return
+        effective_user = int(get_effective_user())
+        try:
+            child_details = self.root.lstat()
+            for parent in self.root.parents:
+                details = parent.lstat()
+                if self._is_link_or_reparse(details) or not stat.S_ISDIR(details.st_mode):
+                    raise RunStoreError("retained storage ancestor is unsafe")
+                if details.st_uid not in {0, effective_user}:
+                    raise RunStoreError("retained storage ancestor permits replacement")
+                writable_by_others = details.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                if writable_by_others and not (
+                    details.st_mode & stat.S_ISVTX and child_details.st_uid in {0, effective_user}
+                ):
+                    raise RunStoreError("retained storage ancestor permits replacement")
+                child_details = details
+        except RunStoreError:
+            raise
+        except OSError:
+            raise RunStoreError("retained storage ancestor is unavailable") from None
+
+    def _verify_retained_parent_custody(self, run_path: Path) -> None:
+        with self._retained_parent_custody(run_path):
+            pass
+
+    def _read_private_retained_entry(
+        self,
+        path: Path,
+        *,
+        directory: bool,
+        run_descriptor: int | None = None,
+        parent_descriptor: int | None = None,
+    ) -> bytes:
+        if directory:
+            raise RunStoreError("retained private directory cannot be read as bytes")
+        owned_parent_descriptor: int | None = None
+        descriptor: int | None = None
+        try:
+            if os.name != "nt" and parent_descriptor is not None:
+                descriptor, details = self._open_verified_retained_entry_at(
+                    parent_descriptor, path.name, directory=False
+                )
+
+                def named_after() -> os.stat_result:
+                    return os.stat(
+                        path.name,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+
+            elif os.name != "nt" and run_descriptor is not None:
+                owned_parent_descriptor, parent_details = self._open_verified_retained_entry_at(
+                    run_descriptor, path.parent.name, directory=True
+                )
+                descriptor, details = self._open_verified_retained_entry_at(
+                    owned_parent_descriptor, path.name, directory=False
+                )
+
+                def named_after() -> os.stat_result:
+                    return os.stat(
+                        path.name,
+                        dir_fd=owned_parent_descriptor,
+                        follow_symlinks=False,
+                    )
+
+            else:
+                owned_parent_descriptor, _ = self._open_verified_retained_entry(
+                    path.parent, directory=True
+                )
+                descriptor, details = self._open_verified_retained_entry(path, directory=False)
+
+                def named_after() -> os.stat_result:
+                    return path.lstat()
+
+            payload = self._read_pinned_private_entry(descriptor, details, named_after)
+            if (
+                os.name != "nt"
+                and run_descriptor is not None
+                and owned_parent_descriptor is not None
+            ):
+                self._verify_pinned_retained_directory(
+                    run_descriptor,
+                    path.parent.name,
+                    owned_parent_descriptor,
+                    parent_details,
+                )
+            return payload
+        except RunStoreError:
+            raise
+        except OSError:
+            raise RunStoreError("retained private object could not be read") from None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if owned_parent_descriptor is not None:
+                os.close(owned_parent_descriptor)
+
+    def _read_pinned_private_entry(
+        self,
+        descriptor: int,
+        details: os.stat_result,
+        named_after: Callable[[], os.stat_result],
+    ) -> bytes:
+        opened = os.fstat(descriptor)
+        chunks: list[bytes] = []
+        remaining = max(MAX_RETAINED_PAYLOAD_BYTES, 256 * 1024) + 1
+        while remaining > 0:
+            block = os.read(descriptor, min(remaining, 64 * 1024))
+            if not block:
+                break
+            chunks.append(block)
+            remaining -= len(block)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        named = named_after()
+        if len(payload) != details.st_size or remaining == 0:
+            raise RunStoreError("retained private object exceeds its reviewed bound")
+        if (
+            self._cross_view_private_identity(details) != self._cross_view_private_identity(opened)
+            or self._stable_private_identity(opened) != self._stable_private_identity(after)
+            or self._cross_view_private_identity(named) != self._cross_view_private_identity(after)
+            or self._is_link_or_reparse(named)
+            or named.st_nlink != 1
+        ):
+            raise RunStoreError("retained private object changed while it was read")
+        if os.name == "nt":
+            try:
+                verify_owner_private_acl(descriptor, directory=False)
+            except WindowsOwnerAclError:
+                raise RunStoreError("retained private DACL changed while it was read") from None
+        return payload
+
+    def _verify_pinned_retained_directory(
+        self, run_descriptor: int, name: str, descriptor: int, details: os.stat_result
+    ) -> None:
+        opened = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=run_descriptor, follow_symlinks=False)
+        if (
+            self._stable_private_identity(details) != self._stable_private_identity(opened)
+            or self._stable_private_identity(named) != self._stable_private_identity(opened)
+            or self._is_link_or_reparse(named)
+            or stat.S_IMODE(named.st_mode) != 0o700
+            or named.st_uid != self._posix_euid()
+        ):
+            raise RunStoreError("retained private directory changed")
+
+    def _verify_retained_directory(
+        self,
+        directory: Path,
+        expected: Mapping[str, bytes],
+        *,
+        run_descriptor: int | None = None,
+    ) -> None:
+        if os.name != "nt":
+            if run_descriptor is None:
+                raise RunStoreError("retained parent descriptor is unavailable")
+            descriptor, details = self._open_verified_retained_entry_at(
+                run_descriptor, directory.name, directory=True
+            )
+            try:
+                try:
+                    names = {entry.name for entry in os.scandir(descriptor)}
+                except OSError:
+                    raise RunStoreError("retained private inventory is unavailable") from None
+                if names != set(expected):
+                    raise RunStoreError("retained private inventory conflicts with this capture")
+                for name, payload in expected.items():
+                    if (
+                        self._read_private_retained_entry(
+                            directory / name, directory=False, parent_descriptor=descriptor
+                        )
+                        != payload
+                    ):
+                        raise RunStoreError("retained private capture is not byte-identical")
+                self._verify_pinned_retained_directory(
+                    run_descriptor, directory.name, descriptor, details
+                )
+            finally:
+                os.close(descriptor)
+            return
+        descriptor, _ = self._open_verified_retained_entry(directory, directory=True)
+        try:
+            try:
+                names = {entry.name for entry in os.scandir(directory)}
+            except OSError:
+                raise RunStoreError("retained private inventory is unavailable") from None
+            if names != set(expected):
+                raise RunStoreError("retained private inventory conflicts with this capture")
+            for name, payload in expected.items():
+                if self._read_private_retained_entry(directory / name, directory=False) != payload:
+                    raise RunStoreError("retained private capture is not byte-identical")
+        finally:
+            os.close(descriptor)
+
+    def _publish_retained_directory(
+        self,
+        run_path: Path,
+        payloads: Mapping[str, bytes],
+        *,
+        run_descriptor: int | None = None,
+    ) -> None:
+        if os.name != "nt":
+            if run_descriptor is None:
+                raise RunStoreError("retained parent descriptor is unavailable")
+            self._publish_retained_directory_at(run_path, run_descriptor, payloads)
+            return
+        temporary = Path(tempfile.mkdtemp(dir=run_path, prefix=_RETAINED_TEMP_PREFIX))
+        published = False
+        try:
+            self._harden_retained_entry(temporary, directory=True)
+            for name, payload in payloads.items():
+                target = temporary / name
+                self._atomic_write(target, payload)
+                self._harden_retained_entry(target, directory=False)
+            self._verify_retained_directory(temporary, payloads, run_descriptor=run_descriptor)
+            self._fsync_directory(temporary)
+            self._rename_retained_no_replace(
+                run_path, temporary, RETAINED_PAYLOAD_DIRECTORY, directory=True
+            )
+            published = True
+            self._fsync_directory(run_path)
+        except FileExistsError:
+            directory = run_path / RETAINED_PAYLOAD_DIRECTORY
+            self._verify_retained_directory(directory, payloads, run_descriptor=run_descriptor)
+        except RunStoreError:
+            raise
+        except OSError:
+            raise RunStoreError("retained private capture publication failed safely") from None
+        finally:
+            if not published and temporary.exists():
+                try:
+                    for name in payloads:
+                        child = temporary / name
+                        if child.is_file() and not child.is_symlink():
+                            child.unlink(missing_ok=True)
+                    temporary.rmdir()
+                except OSError:
+                    pass
+
+    def _publish_retained_directory_at(
+        self, run_path: Path, run_descriptor: int, payloads: Mapping[str, bytes]
+    ) -> None:
+        temporary_name = _RETAINED_TEMP_PREFIX + uuid.uuid4().hex
+        temporary_descriptor: int | None = None
+        published = False
+        try:
+            os.mkdir(temporary_name, 0o700, dir_fd=run_descriptor)
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+            temporary_descriptor = os.open(temporary_name, flags, dir_fd=run_descriptor)
+            self._posix_fchmod(temporary_descriptor, 0o700)
+            temporary = run_path / temporary_name
+            for name, payload in payloads.items():
+                self._write_retained_entry_at(temporary_descriptor, name, payload)
+            self._verify_retained_directory(temporary, payloads, run_descriptor=run_descriptor)
+            os.fsync(temporary_descriptor)
+            self._rename_retained_no_replace(
+                run_path,
+                temporary,
+                RETAINED_PAYLOAD_DIRECTORY,
+                directory=True,
+                parent_descriptor=run_descriptor,
+            )
+            published = True
+            os.fsync(run_descriptor)
+            self._verify_retained_directory(
+                run_path / RETAINED_PAYLOAD_DIRECTORY,
+                payloads,
+                run_descriptor=run_descriptor,
+            )
+        except FileExistsError:
+            self._verify_retained_directory(
+                run_path / RETAINED_PAYLOAD_DIRECTORY,
+                payloads,
+                run_descriptor=run_descriptor,
+            )
+        except RunStoreError:
+            raise
+        except OSError:
+            raise RunStoreError("retained private capture publication failed safely") from None
+        finally:
+            if not published and temporary_descriptor is not None:
+                for name in payloads:
+                    try:
+                        os.unlink(name, dir_fd=temporary_descriptor)
+                    except OSError:
+                        pass
+                try:
+                    os.rmdir(temporary_name, dir_fd=run_descriptor)
+                except OSError:
+                    pass
+            if temporary_descriptor is not None:
+                os.close(temporary_descriptor)
+
+    def _write_retained_entry_at(self, parent_descriptor: int, name: str, payload: bytes) -> None:
+        file_descriptor = os.open(
+            name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        with os.fdopen(file_descriptor, "wb") as handle:
+            self._posix_fchmod(handle.fileno(), 0o600)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def _rename_retained_no_replace(
+        self,
+        parent: Path,
+        source: Path,
+        target_name: str,
+        *,
+        directory: bool,
+        parent_descriptor: int | None = None,
+    ) -> None:
+        owned_parent_descriptor: int | None = None
+        try:
+            if os.name == "nt":
+                owned_parent_descriptor = _windows_open_descriptor(parent, directory=True)
+                # Windows ``rename`` is no-replace.  Holding the verified
+                # owner-private parent without share-delete pins its namespace
+                # for the operation; the source remains in that same parent.
+                os.rename(source, parent / target_name)
+            else:
+                if parent_descriptor is None:
+                    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+                    owned_parent_descriptor = os.open(parent, flags)
+                    parent_descriptor = owned_parent_descriptor
+                from .source_intake import _posix_rename_no_replace
+
+                _posix_rename_no_replace(parent_descriptor, source.name, target_name)
+        finally:
+            if owned_parent_descriptor is not None:
+                os.close(owned_parent_descriptor)
+
+    def _read_run_file_at(self, run_descriptor: int, name: str) -> bytes | None:
+        """Read a public run projection through the pinned POSIX run directory."""
+
+        try:
+            details = os.stat(name, dir_fd=run_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            raise RunStoreError("retained public projection is unavailable") from None
+        if (
+            self._is_link_or_reparse(details)
+            or not stat.S_ISREG(details.st_mode)
+            or details.st_nlink != 1
+        ):
+            raise RunStoreError("retained public projection is unsafe")
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=run_descriptor,
+            )
+            opened = os.fstat(descriptor)
+            chunks: list[bytes] = []
+            while block := os.read(descriptor, 64 * 1024):
+                chunks.append(block)
+            after = os.fstat(descriptor)
+            named = os.stat(name, dir_fd=run_descriptor, follow_symlinks=False)
+            if (
+                self._stable_private_identity(details) != self._stable_private_identity(opened)
+                or self._stable_private_identity(opened) != self._stable_private_identity(after)
+                or self._stable_private_identity(named) != self._stable_private_identity(after)
+                or self._is_link_or_reparse(named)
+                or len(b"".join(chunks)) != after.st_size
+            ):
+                raise RunStoreError("retained public projection changed while read")
+            return b"".join(chunks)
+        except RunStoreError:
+            raise
+        except OSError:
+            raise RunStoreError("retained public projection is unavailable") from None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _write_run_file_at(
+        self, run_descriptor: int, name: str, payload: bytes, *, replace: bool
+    ) -> None:
+        temporary_name = f".{name}.{uuid.uuid4().hex}.tmp"
+        temporary_created = False
+        try:
+            descriptor = os.open(
+                temporary_name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=run_descriptor,
+            )
+            temporary_created = True
+            with os.fdopen(descriptor, "wb") as handle:
+                self._posix_fchmod(handle.fileno(), 0o600)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if replace:
+                os.replace(
+                    temporary_name,
+                    name,
+                    src_dir_fd=run_descriptor,
+                    dst_dir_fd=run_descriptor,
+                )
+            else:
+                from .source_intake import _posix_rename_no_replace
+
+                _posix_rename_no_replace(run_descriptor, temporary_name, name)
+            temporary_created = False
+            os.fsync(run_descriptor)
+        finally:
+            if temporary_created:
+                try:
+                    os.unlink(temporary_name, dir_fd=run_descriptor)
+                except OSError:
+                    pass
+
+    def _publish_exact_file(
+        self,
+        parent: Path,
+        name: str,
+        payload: bytes,
+        *,
+        run_descriptor: int | None = None,
+    ) -> None:
+        if os.name != "nt":
+            if run_descriptor is None:
+                raise RunStoreError("retained parent descriptor is unavailable")
+            previous = self._read_run_file_at(run_descriptor, name)
+            if previous is not None:
+                if previous != payload:
+                    raise RunStoreError("retained public projection conflicts with this capture")
+                return
+            try:
+                self._write_run_file_at(run_descriptor, name, payload, replace=False)
+            except FileExistsError:
+                pass
+            self._verify_exact_file(parent / name, payload, run_descriptor=run_descriptor)
+            return
+        target = self._contained_child(parent, name)
+        if target.exists():
+            self._verify_exact_file(target, payload)
+            return
+        descriptor, temporary_name = tempfile.mkstemp(dir=parent, prefix=f".{name}.", suffix=".tmp")
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._rename_retained_no_replace(parent, temporary, name, directory=False)
+            self._fsync_directory(parent)
+        except FileExistsError:
+            self._verify_exact_file(target, payload)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._verify_exact_file(target, payload)
+
+    def _verify_exact_file(
+        self, path: Path, payload: bytes, *, run_descriptor: int | None = None
+    ) -> None:
+        if os.name != "nt":
+            if run_descriptor is None:
+                raise RunStoreError("retained parent descriptor is unavailable")
+            if self._read_run_file_at(run_descriptor, path.name) != payload:
+                raise RunStoreError("retained public projection conflicts with this capture")
+            return
+        try:
+            if path.is_symlink() or path.read_bytes() != payload:
+                raise RunStoreError("retained public projection conflicts with this capture")
+        except RunStoreError:
+            raise
+        except OSError:
+            raise RunStoreError("retained public projection is unavailable") from None
+
+    def _append_exact_retained_event(
+        self,
+        run_id: str,
+        run_path: Path,
+        event: Mapping[str, Any],
+        *,
+        run_descriptor: int | None = None,
+    ) -> None:
+        if os.name != "nt":
+            if run_descriptor is None:
+                raise RunStoreError("retained parent descriptor is unavailable")
+            self._append_exact_retained_event_at(run_descriptor, event)
+            return
+        expected_data = {
+            **event["data"],
+            "capture_digest": event["capture_digest"],
+        }
+        rows = self.read_events(run_id)
+        matches = [
+            row
+            for row in rows
+            if row.get("event_type") == event["event_type"]
+            and row.get("data", {}).get("capture_digest") == event["capture_digest"]
+        ]
+        if matches:
+            if len(matches) != 1 or matches[0].get("data") != expected_data:
+                raise RunStoreError("retained event projection conflicts with this capture")
+            return
+        target = self._contained_child(run_path, "events.jsonl")
+        previous_sequence, previous_hash = self._last_event_state(target)
+        body = {
+            "schema_version": "1.0",
+            "sequence": previous_sequence + 1,
+            "timestamp": utc_now(),
+            "event_type": event["event_type"],
+            "data": expected_data,
+            "previous_event_hash": previous_hash,
+        }
+        row = {**body, "event_hash": content_hash(body)}
+        try:
+            previous = target.read_bytes() if target.exists() else b""
+        except OSError:
+            raise RunStoreError("retained event projection is unavailable") from None
+        if previous and not previous.endswith(b"\n"):
+            raise RunStoreError("retained event projection is incomplete")
+        self._atomic_write(target, previous + canonical_json_bytes(row) + b"\n")
+        self._fsync_directory(run_path)
+        matches = [
+            item
+            for item in self.read_events(run_id)
+            if item.get("event_type") == event["event_type"]
+            and item.get("data", {}).get("capture_digest") == event["capture_digest"]
+        ]
+        if len(matches) != 1 or matches[0].get("data") != expected_data:
+            raise RunStoreError("retained event projection was not published exactly once")
+
+    def _append_exact_retained_event_at(
+        self, run_descriptor: int, event: Mapping[str, Any]
+    ) -> None:
+        expected_data = {**event["data"], "capture_digest": event["capture_digest"]}
+        previous = self._read_run_file_at(run_descriptor, "events.jsonl") or b""
+        if previous and not previous.endswith(b"\n"):
+            raise RunStoreError("retained event projection is incomplete")
+        rows: list[Mapping[str, Any]] = []
+        previous_hash: str | None = None
+        try:
+            lines = previous.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            raise RunStoreError("retained event projection is unavailable") from None
+        for line in lines:
+            if not line.strip():
+                continue
+            row = self._validated_event_row(
+                line, expected_sequence=len(rows) + 1, previous_hash=previous_hash
+            )
+            rows.append(row)
+            previous_hash = str(row["event_hash"])
+        matches = [
+            row
+            for row in rows
+            if row.get("event_type") == event["event_type"]
+            and row.get("data", {}).get("capture_digest") == event["capture_digest"]
+        ]
+        if matches:
+            if len(matches) != 1 or matches[0].get("data") != expected_data:
+                raise RunStoreError("retained event projection conflicts with this capture")
+            return
+        body = {
+            "schema_version": "1.0",
+            "sequence": len(rows) + 1,
+            "timestamp": utc_now(),
+            "event_type": event["event_type"],
+            "data": expected_data,
+            "previous_event_hash": previous_hash,
+        }
+        row = {**body, "event_hash": content_hash(body)}
+        if self._read_run_file_at(run_descriptor, "events.jsonl") != (previous or None):
+            raise RunStoreError("retained event projection changed before publication")
+        desired = previous + canonical_json_bytes(row) + b"\n"
+        self._write_run_file_at(run_descriptor, "events.jsonl", desired, replace=True)
+        if self._read_run_file_at(run_descriptor, "events.jsonl") != desired:
+            raise RunStoreError("retained event projection was not published exactly once")
+
     def _run_path(self, run_id: str, *, must_exist: bool) -> Path:
         if not RUN_ID_RE.fullmatch(run_id):
             raise RunStoreError("invalid run identifier")
         candidate = self.root / run_id
+        try:
+            details = candidate.lstat()
+        except FileNotFoundError:
+            details = None
+        except OSError:
+            raise RunStoreError("run path is unavailable") from None
+        if details is not None and self._is_link_or_reparse(details):
+            raise RunStoreError("run path escapes the configured output root")
+        if details is not None and not stat.S_ISDIR(details.st_mode):
+            raise RunStoreError("run path is not an exact directory")
         if must_exist and not candidate.is_dir():
             raise RunStoreError(f"unknown run: {run_id}")
         resolved = candidate.resolve(strict=must_exist)
-        if resolved.parent != self.root:
+        if resolved.parent != self.root or resolved.name != run_id:
             raise RunStoreError("run path escapes the configured output root")
         return resolved
 

@@ -33,6 +33,7 @@ EXPECTED_ACTION_IDS = {
     "sandbox.discovery.recursive.v1",
     "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",
+    "sandbox.collection.materialize-retained.v1",
     "sandbox.collection.records.v1",
     "sandbox.collection.archive.v1",
     "sandbox.collection.atomic-gzip.v1",

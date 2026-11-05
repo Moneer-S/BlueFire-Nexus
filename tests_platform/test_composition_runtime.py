@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bluefire import composition_context
+from bluefire import composition_context, retained_artifacts
 from bluefire.adaptive_dispatch import reviewed_operation
 from bluefire.capability_composition import compile_initial_graph
 from bluefire.capability_facts import seal_facts
@@ -25,6 +25,7 @@ from bluefire.job_runtime import JobCancelled
 from bluefire.orchestrator import Orchestrator
 from bluefire.planner import DeterministicPlanner
 from bluefire.policy import ApprovalState, GrantPolicyState, PolicyEngine
+from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ProductStoreError
 from bluefire.run_store import RunStore, RunStoreError
 from bluefire.runner_adapter import RunnerActionAdapter
@@ -237,9 +238,10 @@ def test_delegated_policy_is_exact_even_without_ordinary_approval_threshold(
     selected = replace(profile(), approval_required=approval_required)
     scope = {"scope_refs": ["sandbox.workspace"]}
     now = datetime.now(timezone.utc)
-    issued, expires = (now - timedelta(seconds=10)).isoformat(), (
-        now + timedelta(seconds=30)
-    ).isoformat()
+    issued, expires = (
+        (now - timedelta(seconds=10)).isoformat(),
+        (now + timedelta(seconds=30)).isoformat(),
+    )
     grant = GrantPolicyState(
         "capability_grant_attempt",
         issued,
@@ -392,6 +394,141 @@ def test_context_refuses_unadmitted_parent_before_provider_access(controller):
     jobs._publish(state["parent_job_id"], {"admission": {"accepted": False, "problem": "changed"}})
     with pytest.raises(ProductStoreError, match="not admitted"):
         jobs.proposal_context(state["parent_job_id"])
+
+
+@pytest.mark.parametrize(
+    "settlement_schema,projection",
+    [
+        ("bluefire.capability-attempt-settlement.v1", "settled"),
+        ("bluefire.capability-attempt-settlement.v2", "interrupted_unusable"),
+    ],
+)
+def test_fresh_validation_does_not_repair_an_already_projected_retained_settlement(
+    monkeypatch, settlement_schema, projection
+):
+    jobs = object.__new__(CompositionJobs)
+    verified = {"objective": {"established": False}}
+    settlement = {"schema_version": settlement_schema}
+    attempt = {
+        "lease": {"attempt_id": "attempt-1", "grant_id": "grant-1"},
+        "settlement": settlement,
+    }
+    child = {
+        "job_id": "job-child",
+        "request": {"composition_attempt": {"attempt_id": "attempt-1", "run_id": "run-1"}},
+        "progress": {
+            "settlement": projection,
+            "verified_result": verified,
+            "verified_result_digest": content_hash(verified),
+        },
+    }
+    grant = {
+        "schema_version": "bluefire.capability-grant.v2",
+        "grant_id": "grant-1",
+        "grant_digest": content_hash("grant"),
+        "environment": {"control_owner_id": "control-1"},
+        "pack": retained_artifacts.PACK,
+        "snapshot": {"pack": retained_artifacts.PACK},
+    }
+    grant_calls = []
+
+    def get_grant(grant_id, *, now_ms):
+        grant_calls.append((grant_id, now_ms))
+        return {"status": "active", "document": grant}
+
+    jobs.store = SimpleNamespace(
+        get_capability_attempt_for_run=lambda run_id: attempt,
+        get_capability_grant=get_grant,
+    )
+    jobs.service = SimpleNamespace()
+    jobs.clock = lambda: 2_000
+    jobs._children = lambda owner_id: [child]
+    jobs._verified_result = lambda value: verified
+    jobs._publish = lambda *_args, **_kwargs: pytest.fail(
+        "the already current projection must not be republished"
+    )
+    monkeypatch.setattr(
+        "bluefire.product_store_retained_recovery.repair_progress",
+        lambda *_args, **_kwargs: pytest.fail(
+            "the already current settlement must not open another write transaction"
+        ),
+    )
+    current = {"registry": None, "implementation_digests": {}, "current_environment": {}}
+    monkeypatch.setattr(composition_context, "resolve", lambda *_args, **_kwargs: current)
+    monkeypatch.setattr("bluefire.composition_jobs.validate_grant", lambda *_args, **_kwargs: None)
+    owner = {
+        "job_id": "job-owner",
+        "state": "completed",
+        "request": {"grant_id": "grant-1", "grant_digest": grant["grant_digest"]},
+        "progress": {"admission": {"accepted": True, "problem": None}},
+    }
+
+    assert jobs._current(owner, _repair=False) == (grant, current)
+    assert grant_calls == [("grant-1", 2_000), ("grant-1", 2_000)]
+
+
+@pytest.mark.parametrize("stale", ["settlement", "verified_result", "verified_result_digest"])
+def test_final_freshness_refuses_stale_retained_projection_inside_writer(
+    tmp_path, monkeypatch, stale
+):
+    jobs = object.__new__(CompositionJobs)
+    store = ProductStore(tmp_path / "product.db")
+    verified = {"objective": {"established": False}}
+    progress = {
+        "settlement": "settled",
+        "verified_result": verified,
+        "verified_result_digest": content_hash(verified),
+    }
+    if stale == "settlement":
+        progress.pop("settlement")
+    elif stale == "verified_result":
+        progress["verified_result"] = {"objective": {"established": False}, "stale": True}
+    else:
+        progress["verified_result_digest"] = content_hash("stale")
+    settlement = {"schema_version": "bluefire.capability-attempt-settlement.v1"}
+    attempt = {
+        "lease": {"attempt_id": "attempt-1", "grant_id": "grant-1"},
+        "settlement": settlement,
+    }
+    child = {
+        "job_id": "job-child",
+        "request": {"composition_attempt": {"attempt_id": "attempt-1", "run_id": "run-1"}},
+        "progress": progress,
+    }
+    grant = {
+        "schema_version": "bluefire.capability-grant.v2",
+        "pack": retained_artifacts.PACK,
+        "snapshot": {"pack": retained_artifacts.PACK},
+    }
+    monkeypatch.setattr(store, "get_capability_attempt_for_run", lambda run_id: attempt)
+    monkeypatch.setattr(
+        store,
+        "get_capability_grant",
+        lambda grant_id, *, now_ms: {"status": "active", "document": grant},
+    )
+    jobs.store = store
+    jobs.clock = lambda: 2_000
+    jobs._children = lambda owner_id: [child]
+    jobs._verified_result = lambda value: verified
+    jobs._publish = lambda *_args, **_kwargs: pytest.fail(
+        "read-only publication validation must not repair a stale result projection"
+    )
+    monkeypatch.setattr(
+        "bluefire.product_store_retained_recovery.repair_progress",
+        lambda *_args, **_kwargs: pytest.fail(
+            "read-only publication validation must not repair a stale settlement projection"
+        ),
+    )
+    owner = {
+        "job_id": "job-owner",
+        "state": "completed",
+        "request": {},
+        "progress": {"admission": {"accepted": True, "problem": None}},
+    }
+
+    with store._connection(write=True):
+        with pytest.raises(ProductStoreError, match="requires durable recovery"):
+            jobs._current(owner, _repair=False)
 
 
 @pytest.mark.parametrize("change", ["accepted", "cleanup", "count"])
@@ -703,8 +840,9 @@ def test_service_recovery_requires_one_canonical_original_attempt():
     calls = []
     service = SimpleNamespace(
         composition=SimpleNamespace(
-            recover_macos_attempt=lambda owner, attempt: calls.append((owner, attempt))
-            or {"attempts": []}
+            recover_macos_attempt=lambda owner, attempt: (
+                calls.append((owner, attempt)) or {"attempts": []}
+            )
         )
     )
     assert BlueFireService.control_composition(

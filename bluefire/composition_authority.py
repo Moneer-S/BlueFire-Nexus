@@ -34,6 +34,9 @@ class GrantExecution:
     before_task: Callable[..., None]
     after_task: Callable[..., None]
     cleanup_authority: Callable[..., Any]
+    materialize_retained: Callable[..., Any] | None = None
+    retain_output: Callable[..., Any] | None = None
+    before_dispatch: Callable[..., None] | None = None
 
     def document(self):
         if type(self.authority) is not VerifiedGrantAttempt:

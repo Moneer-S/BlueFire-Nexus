@@ -13,15 +13,15 @@ import yaml
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
-def _host_check_command():
+def _package_step(name: str):
     workflow = yaml.safe_load(
         (REPOSITORY / ".github/workflows/tests.yml").read_text(encoding="utf-8")
     )
-    step = next(
-        step
-        for step in workflow["jobs"]["package"]["steps"]
-        if step["name"] == "Verify macOS 26 arm64 SDK ABI"
-    )
+    return next(step for step in workflow["jobs"]["package"]["steps"] if step["name"] == name)
+
+
+def _host_check_command():
+    step = _package_step("Verify macOS 26 arm64 SDK ABI")
     checks = [
         line.strip()
         for line in step["run"].splitlines()
@@ -33,6 +33,29 @@ def _host_check_command():
 
 def test_macos_arm64_abi_host_check_uses_a_draining_exact_match():
     assert _host_check_command() == ("rustc -vV | grep -x 'host: aarch64-apple-darwin' >/dev/null")
+
+
+def test_package_installs_repository_pinned_rust_for_linux_and_macos():
+    step = _package_step("Install isolated pinned Rust toolchain")
+    command = step["run"]
+
+    assert step["if"] == "matrix.platform == 'linux' || matrix.platform == 'macos'"
+    assert "channel=\"$(grep -E '^channel' rust-toolchain.toml" in command
+    assert 'test -n "$channel"' in command
+    assert (
+        'rustup toolchain install "$channel" --profile minimal '
+        "--component cargo --component clippy --component rustfmt --force"
+    ) in command
+    assert 'rustup run "$channel" rustc -vV' in command
+    assert 'rustup run "$channel" cargo --version' in command
+
+    workflow = yaml.safe_load(
+        (REPOSITORY / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+    )
+    names = [item["name"] for item in workflow["jobs"]["package"]["steps"] if "name" in item]
+    install_index = names.index("Install isolated pinned Rust toolchain")
+    assert install_index < names.index("Verify macOS 26 arm64 SDK ABI")
+    assert install_index < names.index("Build native release runner")
 
 
 def test_macos_arm64_runs_and_uploads_installed_wheel_smoke():

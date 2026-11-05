@@ -8,7 +8,7 @@ import pytest
 from bluefire import product_store_receiver_defense as records
 from bluefire.application_errors import APIError
 from bluefire.config import ExecutionMode
-from bluefire.job_runtime import JobState
+from bluefire.job_runtime import JobState, JobWaitTimeout
 from bluefire.product_store_errors import ProductStoreError
 from bluefire.receiver_defense_jobs import ReceiverDefenseJobs
 from bluefire.receiver_defense_workflow import legitimate_semantics
@@ -18,6 +18,8 @@ from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.test_receiver_defense_jobs import ROOT, FixtureRunner, Session
 from tests_platform.test_receiver_defense_jobs import setup as setup
 from tests_platform.test_receiver_policy import public_records
+
+RETAINED_PHASE_WORK_BUDGET_SECONDS = 60.0
 
 
 def submit(service, request):
@@ -77,8 +79,17 @@ def execute(service, owner_id, phase, *, current=None):
         "protected": "receiver_protected_terminal",
         "legitimate": "receiver_legitimate_terminal",
     }.get(phase, "receiver_terminal")
-    with diagnose_job_wait(wait_stage):
-        terminal = service.job_controller.wait(execution["job_id"], timeout=30)
+    try:
+        with diagnose_job_wait(wait_stage):
+            terminal = service.job_controller.wait(
+                execution["job_id"], timeout=RETAINED_PHASE_WORK_BUDGET_SECONDS
+            )
+    except JobWaitTimeout:
+        # A loaded CI worker may legitimately spend more than 30 seconds in
+        # the retained phase. Keep the wait finite and cancel the exact owner
+        # so a timeout never leaves its receiver/session work behind.
+        service.cancel_job(execution["job_id"])
+        raise
     assert terminal["state"] == "completed", terminal
     return service.receiver_defense_job(owner_id)
 
@@ -153,6 +164,37 @@ def test_retained_control_blocks_original_and_accepts_fresh_redacted_use(setup):
         service.cancel_job(independent_id)
     assert all(session.closed for session in sessions)
     assert service.receiver_defense_job(owner_id)["control"] == envelope["control"]
+
+
+def test_retained_phase_timeout_cancels_the_exact_owner(setup, monkeypatch):
+    service, _, _, sessions, request, _ = retained_setup(setup)
+    owner_id = submit(service, request)
+    current = prepare(service, owner_id, "baseline")
+    original_wait = service.job_controller.wait
+    original_cancel = service.cancel_job
+    cancelled = []
+
+    def bounded_wait(job_id, *, timeout):
+        if timeout == RETAINED_PHASE_WORK_BUDGET_SECONDS:
+            raise JobWaitTimeout("forced retained-phase timeout")
+        return original_wait(job_id, timeout=timeout)
+
+    def cancel_exact_owner(job_id):
+        cancelled.append(job_id)
+        return original_cancel(job_id)
+
+    monkeypatch.setattr(service.job_controller, "wait", bounded_wait)
+    monkeypatch.setattr(service, "cancel_job", cancel_exact_owner)
+    with pytest.raises(JobWaitTimeout, match="forced retained-phase timeout"):
+        execute(service, owner_id, "baseline", current=current)
+
+    assert len(cancelled) == 1
+    assert original_wait(cancelled[0], timeout=RETAINED_PHASE_WORK_BUDGET_SECONDS)["state"] in {
+        "cancelled",
+        "failed",
+    }
+    assert not service.active_jobs()["jobs"]
+    assert sessions and all(session.closed for session in sessions)
 
 
 def test_restart_retains_policy_and_retest_executes_only_two_fresh_phases(setup, monkeypatch):

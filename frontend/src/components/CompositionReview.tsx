@@ -2,6 +2,8 @@ import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { ShieldCheck, RefreshCw } from "lucide-react";
 import { checkedCompositionReview, compositionApi, type CompositionPending, type CompositionReview, type CompositionReviewRequest, compositionJobId, compositionPack, FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, RECEIVER_PACK, type CompositionPack } from "../lib/composition";
+import { RECEIVER_RETAINED_PACK, RETAINED_MATERIALIZE_METHOD } from "../lib/composition-retained";
+import { CompositionRetentionPolicy } from "./CompositionRetainedSources";
 import { Button, DataList, ErrorState, Field } from "./Primitives";
 
 export const compositionLimitLabels: Record<string, string> = {
@@ -12,6 +14,7 @@ export const compositionLimitLabels: Record<string, string> = {
 export function CompositionCapabilities({ review }: { review: Pick<CompositionReview, "schema_version" | "pack" | "snapshot" | "environment" | "limits" | "objective"> }) {
   const macOS = compositionPack(review) === MACOS_FILE_ACCESS_PACK;
   const fileAccess = macOS || compositionPack(review) === FILE_ACCESS_PACK;
+  const retained = compositionPack(review) === RECEIVER_RETAINED_PACK;
   return <div className="composition-scope">
     <DataList items={fileAccess ? [
       { label: "Runner", value: review.environment.runner_id }, { label: "Control", value: "Retained file access" },
@@ -21,10 +24,11 @@ export function CompositionCapabilities({ review }: { review: Pick<CompositionRe
       ...(macOS ? [{ label: "Retained custody", value: "Original resource and workers remain retained. Attempt closure is not enrollment cleanup." }] : []),
     ] : [
       { label: "Runner", value: review.environment.runner_id }, { label: "Retained policy", value: String(review.environment.policy_id) },
-      { label: "Destination", value: `Loopback port ${String(review.environment.port)}` }, { label: "Data", value: "Fresh public synthetic JSONL" },
+      { label: "Destination", value: `Loopback port ${String(review.environment.port)}` }, { label: "Data", value: retained ? "Fresh or reviewed retained public synthetic JSONL" : "Fresh public synthetic JSONL" },
       { label: "Success condition", value: `All ${String(review.objective.predicate.record_count)} records delivered redacted; policy unchanged; native and receiver cleanup verified.` },
     ]} />
-    <div className="composition-table" role="region" aria-label="Authorized methods" tabIndex={0}><table><caption>Installed capabilities and finite parameter domains</caption><thead><tr><th>Version-bound method</th><th>Parameters</th><th>Capabilities and effects</th><th>Implementation</th></tr></thead><tbody>{review.snapshot.methods.map(method => <tr key={method.behavior_id}><th scope="row">{method.behavior.title}<small>{method.action_id}</small></th><td>{Object.entries(method.parameter_domains).map(([key, values]) => <div key={key}>{key}: {values.map(value => JSON.stringify(value)).join(", ")}</div>)}{!Object.keys(method.parameter_domains).length ? "No variable parameters" : null}</td><td>{method.action.capabilities.join(", ")}<small>Safety tier: {method.action.safety_tier}</small><small>Reads: {Array.isArray(method.cost.reads) ? method.cost.reads.join(", ") || "none" : "not reported"}</small><small>Writes: {Array.isArray(method.cost.writes) ? method.cost.writes.join(", ") || "none" : "not reported"}</small>{method.cost.removes ? <small>Removes: {String(method.cost.removes)}</small> : null}</td><td><code>{method.implementation_digest}</code></td></tr>)}</tbody></table></div>
+    {retained ? <CompositionRetentionPolicy /> : null}
+    <div className="composition-table" role="region" aria-label="Authorized methods" tabIndex={0}><table><caption>Installed capabilities and finite parameter domains</caption><thead><tr><th>Version-bound method</th><th>Parameters</th><th>Capabilities and effects</th><th>Implementation</th></tr></thead><tbody>{review.snapshot.methods.map(method => <tr key={method.behavior_id}><th scope="row">{method.behavior.title}<small>{method.action_id}</small></th><td>{Object.entries(method.parameter_domains).map(([key, values]) => <div key={key}>{key}: {method.behavior_id === RETAINED_MATERIALIZE_METHOD && key === "source_ref" ? values.length ? `${values.length} verified retained source${values.length === 1 ? "" : "s"}` : "Selected only from verified available results" : values.map(value => JSON.stringify(value)).join(", ")}</div>)}{!Object.keys(method.parameter_domains).length ? "No variable parameters" : null}</td><td>{method.action.capabilities.join(", ")}<small>Safety tier: {method.action.safety_tier}</small><small>Reads: {Array.isArray(method.cost.reads) ? method.cost.reads.join(", ") || "none" : "not reported"}</small><small>Writes: {Array.isArray(method.cost.writes) ? method.cost.writes.join(", ") || "none" : "not reported"}</small>{method.cost.removes ? <small>Removes: {String(method.cost.removes)}</small> : null}</td><td><code>{method.implementation_digest}</code></td></tr>)}</tbody></table></div>
     <dl className="composition-limits">{Object.entries(review.limits).map(([key, value]) => <div key={key}><dt>{compositionLimitLabels[key] ?? key}</dt><dd>{value.toLocaleString()}</dd></div>)}</dl>
     <p>{macOS ? "Both read requests are reserved before the first native read and are never refunded. Evidence is original-producer metadata, not independent telemetry. Separate attempt closure does not remove the resource or workers." : "Reservations are charged before effects. Metadata bytes are an admission estimate, not a total-storage hard cap. Cleanup remains receipt-scoped after business authority ends."}</p>
     <details><summary>Exact environment binding</summary><DataList items={Object.entries(review.environment).map(([key, value]) => ({ label: key.replaceAll("_", " "), value: <code>{String(value)}</code> }))} /></details>
@@ -34,6 +38,7 @@ export function CompositionCapabilities({ review }: { review: Pick<CompositionRe
 export function CompositionSetup({ control, disabled, onSubmit, initialRequest, pack = RECEIVER_PACK }: { control: string; disabled: boolean; onSubmit: (pending: CompositionPending) => void; initialRequest?: CompositionReviewRequest; pack?: CompositionPack }) {
   const macOS = pack === MACOS_FILE_ACCESS_PACK;
   const fileAccess = macOS || pack === FILE_ACCESS_PACK;
+  const [keepResults, setKeepResults] = useState(initialRequest?.pack === RECEIVER_RETAINED_PACK);
   const [question, setQuestion] = useState(initialRequest?.question ?? "");
   const [limits, setLimits] = useState<Record<string, number> | null>(initialRequest?.limits ?? null);
   const [actor, setActor] = useState("");
@@ -43,8 +48,9 @@ export function CompositionSetup({ control, disabled, onSubmit, initialRequest, 
   const reset = () => { review.reset(); setReviewedRequest(undefined); setAcknowledged(false); };
   return <section className="composition-section" aria-label="New composition objective">
     <h2>New objective</h2>
-    <form onSubmit={event => { event.preventDefault(); if (disabled || review.isPending || !question.trim()) return; setAcknowledged(false); const body = { control_owner_id: control, question: question.trim(), limits }; review.mutate(fileAccess ? { ...body, schema_version: "bluefire.composition-review-request.v2", pack: macOS ? MACOS_FILE_ACCESS_PACK : FILE_ACCESS_PACK } : body); }}>
+    <form onSubmit={event => { event.preventDefault(); if (disabled || review.isPending || !question.trim()) return; setAcknowledged(false); const body = { control_owner_id: control, question: question.trim(), limits }; review.mutate(fileAccess || keepResults ? { ...body, schema_version: "bluefire.composition-review-request.v2", pack: macOS ? MACOS_FILE_ACCESS_PACK : fileAccess ? FILE_ACCESS_PACK : RECEIVER_RETAINED_PACK } : body); }}>
       <Field label="Objective question"><textarea value={question} maxLength={2000} rows={3} required disabled={disabled || review.isPending} onChange={event => { setQuestion(event.target.value); reset(); }} placeholder={fileAccess ? "Does the retained control prevent a fresh non-owner read while preserving owner access?" : "What should this retained policy permit while preserving the records?"} /></Field>
+      {!fileAccess ? <div className="composition-retention-choice"><label className="check-row"><input type="checkbox" checked={keepResults} disabled={disabled || review.isPending} onChange={event => { setKeepResults(event.target.checked); reset(); }} /><span>Keep generated results for reuse within this objective</span></label>{keepResults ? <p>Keep one generated public JSONL result of up to 256 KiB per attempt until its source run bundle is deleted. Review the reuse and cleanup terms before issuing the grant.</p> : <p>Each attempt generates fresh records. Enable retention only when reviewing a new objective.</p>}</div> : null}
       {limits ? <details><summary>Requested limits</summary><div className="composition-budget-inputs">{Object.entries(limits).map(([key, value]) => <Field label={compositionLimitLabels[key] ?? key} key={key}><input type="number" min={key === "max_edges_per_attempt" ? 0 : 1} step={1} required disabled={disabled || review.isPending} value={value} onChange={event => { setLimits({ ...limits, [key]: Number(event.target.value) }); reset(); }} /></Field>)}</div></details> : null}
       <Button type="submit" disabled={disabled || review.isPending || !question.trim()}><RefreshCw />{review.isPending ? "Checking capabilities" : "Review finite delegation"}</Button>
     </form>

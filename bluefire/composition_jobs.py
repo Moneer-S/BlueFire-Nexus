@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime
 from typing import Any
 
 from . import (
@@ -14,9 +13,10 @@ from . import (
     composition_context,
     composition_file_access,
     composition_macos_file_access,
+    retained_artifacts,
 )
 from .capability_composition import compile_initial_graph, compile_revision
-from .capability_facts import seal_facts, validate_facts
+from .capability_facts import validate_facts
 from .capability_grant import validate_grant
 from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, grant_pack, review_pack
 from .composition_authority import GrantExecution, native_envelope
@@ -55,6 +55,7 @@ class CompositionJobs:
         self.controller = service.job_controller
         self.clock = clock
         self._authorization_lock = threading.Lock()
+        self._retained_recovery_lock = threading.Lock()
         self._macos_recovery_lock = threading.Lock()
         self._macos_recoveries: dict[str, dict[str, Any]] = {}
         self.owners = OwnedReceiverRegistry(
@@ -91,7 +92,7 @@ class CompositionJobs:
         with self._authorization_lock:
             return composition_admission.authorize(self, request)
 
-    def _current(self, owner, *, allow_exhausted=False):
+    def _current(self, owner, *, allow_exhausted=False, _repair=True):
         if (
             owner["state"] != "completed"
             or owner["progress"].get("admission") != {"accepted": True, "problem": None}
@@ -99,15 +100,65 @@ class CompositionJobs:
         ):
             raise ProductStoreError("The reviewed objective is not admitted for fresh work.")
         for child in self._children(owner["job_id"]):
+            marker = child["request"].get("composition_attempt", {})
+            attempt_id = marker.get("attempt_id")
+            run_id = marker.get("run_id")
+            if not isinstance(attempt_id, str) or not isinstance(run_id, str):
+                continue
+            attempt = self.store.get_capability_attempt_for_run(run_id)
+            if attempt is None:
+                continue
+            if attempt["lease"]["attempt_id"] != attempt_id:
+                raise ProductStoreError("Composition child has another retained attempt.")
             result = child["progress"].get("verified_result", {})
             if (
                 child["progress"].get("settlement") == "settled"
                 and result.get("objective", {}).get("established") is True
+                and self._verified_result(attempt)["objective"]["established"]
             ):
-                attempt = self.store.get_capability_attempt(
-                    child["request"]["composition_attempt"]["attempt_id"]
+                raise ProductStoreError(
+                    "This objective is established; new business work is closed."
                 )
-                if self._verified_result(attempt)["objective"]["established"]:
+            pack = grant_pack(
+                self.store.get_capability_grant(attempt["lease"]["grant_id"], now_ms=self.clock())[
+                    "document"
+                ]
+            )
+            settlement = attempt.get("settlement")
+            if pack != retained_artifacts.PACK:
+                continue
+            if settlement is None:
+                continue
+            from .product_store_retained_recovery import repair_progress
+
+            desired_settlement = (
+                "interrupted_unusable"
+                if settlement["schema_version"].endswith(".v2")
+                else "settled"
+            )
+            if child["progress"].get("settlement") != desired_settlement:
+                if not _repair:
+                    raise ProductStoreError(
+                        "Retained attempt settlement projection requires durable recovery."
+                    )
+                repair_progress(self.store, attempt_id, settlement)
+            if settlement.get("schema_version") == "bluefire.capability-attempt-settlement.v1":
+                verified = self._verified_result(attempt)
+                if child["progress"].get("verified_result") != verified or child["progress"].get(
+                    "verified_result_digest"
+                ) != content_hash(verified):
+                    if not _repair:
+                        raise ProductStoreError(
+                            "Retained attempt result projection requires durable recovery."
+                        )
+                    self._publish(
+                        child["job_id"],
+                        {
+                            "verified_result": verified,
+                            "verified_result_digest": content_hash(verified),
+                        },
+                    )
+                if verified["objective"]["established"]:
                     raise ProductStoreError(
                         "This objective is established; new business work is closed."
                     )
@@ -133,7 +184,7 @@ class CompositionJobs:
         )
         return grant, current
 
-    def _facts(self, grant, prior_attempt_id=None):
+    def _facts(self, grant, prior_attempt_id=None, *, owner_id=None):
         if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
             if prior_attempt_id is not None:
                 raise ProductStoreError(
@@ -146,83 +197,26 @@ class CompositionJobs:
                     "The fixed file-access route is exhausted; review the retained control explicitly."
                 )
             return capability_file_access.seal_facts(grant)
-        environment = grant["environment"]
+        return composition_context.receiver_facts(self, grant, prior_attempt_id, owner_id=owner_id)
 
-        def fact(identity, kind, source, value, observed=None):
-            return {
-                "fact_id": identity,
-                "kind": kind,
-                "provenance": "observed",
-                "source": source,
-                "observed_at_ms": grant["created_at_ms"] if observed is None else observed,
-                "valid_until_ms": grant["expires_at_ms"],
-                "environment_digest": content_hash(environment),
-                "control_digest": environment["control_digest"],
-                "attempt_id": None if kind == "retained_policy" else prior_attempt_id,
-                "value": value,
-            }
-
-        rows = [
-            fact(
-                "policy",
-                "retained_policy",
-                {
-                    "kind": "control_record",
-                    "id": environment["control_owner_id"],
-                    "digest": environment["control_digest"],
-                },
-                {"status": "retained", "policy_digest": environment["policy_digest"]},
-            )
-        ]
-        prior_graph = None
-        if prior_attempt_id is not None:
-            attempt = self.store.get_capability_attempt(prior_attempt_id)
-            prior_job = self.store.get_job(attempt["lease"]["job_id"])
-            marker = prior_job["request"].get("composition_attempt", {})
-            prior_owner = self._owner(marker.get("parent_job_id"))
-            if (
-                attempt["lease"]["grant_id"] != grant["grant_id"]
-                or attempt["lease"]["grant_digest"] != grant["grant_digest"]
-                or prior_job["kind"] != ATTEMPT_KIND
-                or marker.get("attempt_id") != prior_attempt_id
-                or prior_owner["request"]["grant_id"] != grant["grant_id"]
-                or prior_owner["request"]["grant_digest"] != grant["grant_digest"]
-            ):
-                raise ProductStoreError("Prior evidence belongs to another delegated objective.")
-            if attempt["state"] != "settled":
-                raise ProductStoreError("Prior owned effects must settle before a revision.")
-            result = self._verified_result(attempt)
-            source = {
-                "kind": "run_evidence",
-                "id": result["run_id"],
-                "digest": content_hash(result["source_binding"]),
-            }
-            finalized = result["source_binding"]["finalized_at"]
-            observed = int(
-                datetime.fromisoformat(finalized.replace("Z", "+00:00")).timestamp() * 1000
-            )
-            rows += [
-                fact("result", "receiver_result", source, result["receiver_result"], observed),
-                fact("cleanup", "cleanup", source, result["cleanup"], observed),
-            ]
-            prior_graph = attempt["compiled"]["semantic_digest"]
-        return seal_facts(
-            {
-                "schema_version": "bluefire.composition-facts.v1",
-                "environment_digest": content_hash(environment),
-                "control_digest": environment["control_digest"],
-                "prior_attempt_id": prior_attempt_id,
-                "prior_graph_digest": prior_graph,
-                "facts": rows,
-            }
-        )
-
-    def validate_proposal(self, owner_id, proposal, *, prior_attempt_id=None, _retry_job_id=None):
+    def validate_proposal(
+        self,
+        owner_id,
+        proposal,
+        *,
+        prior_attempt_id=None,
+        _retry_job_id=None,
+        _repair=True,
+    ):
         owner = self._owner(owner_id)
         if owner["state"] != "completed" or owner["progress"].get("stopped"):
             raise ProductStoreError("The reviewed objective is not admitted for fresh work.")
-        grant, current = self._current(owner)
-        facts = self._facts(grant, prior_attempt_id)
+        grant, current = self._current(owner, _repair=_repair)
+        facts = self._facts(
+            grant,
+            prior_attempt_id,
+            **({"owner_id": owner_id} if grant_pack(grant) == retained_artifacts.PACK else {}),
+        )
         compiler = compile_initial_graph if prior_attempt_id is None else compile_revision
         prior_graphs = []
         for job in self._children(owner_id):
@@ -253,6 +247,9 @@ class CompositionJobs:
             facts=facts,
             expected_facts_digest=facts["facts_digest"],
             now_ms=self.clock(),
+            retained_source_resolver=lambda source_ref: retained_artifacts.resolve_for_grant(
+                self, grant, source_ref, owner_id=owner_id
+            ),
             **({"previous_semantic_digests": prior_graphs} if prior_attempt_id is not None else {}),
         )
 
@@ -407,6 +404,18 @@ class CompositionJobs:
             _, fresh = self._current(self._owner(marker["parent_job_id"]), allow_exhausted=True)
             return fresh
 
+        materialize_retained, retain_output, publish_retained_capture = (
+            retained_artifacts.execution_callbacks(
+                self,
+                marker=marker,
+                compiled=compiled,
+                grant=grant,
+                current=current,
+                lease=lease,
+                check=check,
+            )
+        )
+
         def watch():
             while not done.wait(0.1):
                 observed = self.clock()
@@ -438,6 +447,15 @@ class CompositionJobs:
                 attempt_id,
                 runner_policy_digest=profile["policy_digest"],
                 workspace_path_digest=content_hash({"sandbox_root": profile["sandbox_root"]}),
+                **(
+                    {
+                        "workspace_path": profile["sandbox_root"],
+                        "runner_readiness": current["runner_readiness"],
+                        "runner_profile": profile,
+                    }
+                    if grant_pack(grant) == retained_artifacts.PACK
+                    else {}
+                ),
                 now_ms=self.clock(),
                 current_environment=fresh["current_environment"],
             )
@@ -553,6 +571,20 @@ class CompositionJobs:
                 registered.add(task_id)
                 return
             fresh = check()
+            if step.action_id == retained_artifacts.METHOD:
+                materialization = materialize_retained(step)
+                source = materialization["source"]
+                if manifest.get("params") != {
+                    "source_ref": source["source_ref"],
+                    "expected_sha256": source["sha256"],
+                    "expected_size": source["size_bytes"],
+                    "payload_hex_chunks": retained_artifacts.wire_chunks(
+                        materialization["payload"]
+                    ),
+                }:
+                    raise ProductStoreError(
+                        "Materialization dispatch differs from its sealed source."
+                    )
             material = (
                 None
                 if retained_file
@@ -603,6 +635,19 @@ class CompositionJobs:
                 )
                 raise
 
+        def before_dispatch(step, manifest, task_id):
+            if grant_pack(grant) != retained_artifacts.PACK or "grant_cleanup" in manifest:
+                return
+            from .execution_contracts import execution_task_identity
+
+            _, transport_hash = execution_task_identity(manifest, sealed_profile)
+            self.store.mark_capability_task_dispatch(
+                attempt_id,
+                task_id=task_id,
+                request_hash=manifest["request_hash"],
+                transport_request_hash=transport_hash,
+            )
+
         def after_task(step, manifest, task_id, result, *, observed_receipt_ids=None):
             nonlocal cleanup_result
             if task_id not in registered:
@@ -618,9 +663,23 @@ class CompositionJobs:
                 ):
                     cleanup_result = {"digest": terminal, "report": result["cleanup"]}
             else:
-                self.store.record_capability_task_terminal(
-                    task_id, request_hash=manifest["request_hash"], terminal_digest=terminal
-                )
+                if (
+                    grant_pack(grant) == retained_artifacts.PACK
+                    and result.get("schema_version") == "bluefire.task-not-sent.v1"
+                ):
+                    from .execution_contracts import execution_task_identity
+
+                    _, transport_hash = execution_task_identity(manifest, sealed_profile)
+                    self.store.record_capability_task_no_send(
+                        attempt_id,
+                        task_id=task_id,
+                        request_hash=manifest["request_hash"],
+                        transport_request_hash=transport_hash,
+                    )
+                else:
+                    self.store.record_capability_task_terminal(
+                        task_id, request_hash=manifest["request_hash"], terminal_digest=terminal
+                    )
                 if macos_file_access:
                     composition_macos_file_access.record_terminal(
                         self, ctx.job_id, attempt_id, current, step, manifest, task_id, result
@@ -646,6 +705,9 @@ class CompositionJobs:
             before_task,
             after_task,
             cleanup_authority,
+            materialize_retained if grant_pack(grant) == retained_artifacts.PACK else None,
+            retain_output if grant_pack(grant) == retained_artifacts.PACK else None,
+            before_dispatch=before_dispatch,
         )
         monitor = threading.Thread(
             target=watch, name="composition-deadline-" + attempt_id[-8:], daemon=True
@@ -672,6 +734,14 @@ class CompositionJobs:
                     attempt_id,
                     session_generation=session["receiver_session_id"],
                     review_digest=session["review_digest"],
+                    **(
+                        {
+                            "process_id": session["receiver_process_id"],
+                            "creation_identity": session["creation_identity"],
+                        }
+                        if grant_pack(grant) == retained_artifacts.PACK
+                        else {}
+                    ),
                 )
             current = check()
             workspace = (
@@ -703,6 +773,8 @@ class CompositionJobs:
                 cancel_event=ctx.cancellation_event,
                 checkpoint=ctx.checkpoint,
             )
+            if publish_retained_capture is not None:
+                publish_retained_capture()
             self.service._index_run(run_result)
             return JobResult(result_ref=marker["run_id"], progress={"phase": "attempt_completed"})
         finally:
@@ -720,6 +792,14 @@ class CompositionJobs:
                         )
                     finally:
                         closed = self.owners.close(ctx.job_id)
+                    if closed and grant_pack(grant) == retained_artifacts.PACK:
+                        from .product_store_retained_recovery import record_receiver_closure
+
+                        receipt = self.store.get_job(ctx.job_id)["progress"].get(
+                            "receiver_cleanup_receipt"
+                        )
+                        if receipt is not None:
+                            record_receiver_closure(self.store, attempt_id, receipt)
                     self._publish(
                         ctx.job_id, {"receiver_observation": observation, "receiver_closed": closed}
                     )
@@ -774,6 +854,18 @@ class CompositionJobs:
             )
         session = state.get("session")
         if (
+            grant_pack(
+                self.store.get_capability_grant(lease["grant_id"], now_ms=self.clock())["document"]
+            )
+            == retained_artifacts.PACK
+        ):
+            from .product_store_retained_recovery import snapshot
+
+            closure = snapshot(self.store, marker["attempt_id"])["receiver_closure"]
+            if run_result is None or closure is None:
+                self._publish(job_id, {"settlement": "pending_cleanup"})
+                return
+        if (
             session is None
             or state.get("receiver_closed") is not True
             or not state.get("receiver_cleanup_receipt")
@@ -813,6 +905,7 @@ class CompositionJobs:
         self.store.settle_capability_attempt(marker["attempt_id"], receipt)
         self._publish(job_id, {"settlement": "settled"})
         if run_result is not None:
+            retained_artifacts.publish_continuation(self, marker, job_id)
             try:
                 result = self._verified_result(
                     self.store.get_capability_attempt(marker["attempt_id"])
@@ -826,6 +919,17 @@ class CompositionJobs:
 
     def _verified_result(self, attempt):
         return verified_result(self, attempt, source=_source, verify=_verified_grant_attempt)
+
+    def recover_retained_captures(self):
+        """Repair exact custody projections after restart without replaying effects."""
+
+        return retained_artifacts.reconcile_captures(self)
+
+    def recover_retained_attempts(self, *, stop_event=None):
+        from .retained_attempt_recovery import recover_all
+
+        with self._retained_recovery_lock:
+            return recover_all(self, stop_event=stop_event)
 
     def read(self, owner_id):
         owner = self._owner(owner_id)
@@ -883,9 +987,15 @@ class CompositionJobs:
             and job["request"].get("composition_attempt", {}).get("parent_job_id") == owner_id
         ]
 
-    def proposal_context(self, owner_id, *, prior_attempt_id=None):
-        grant, current = self._current(self._owner(owner_id))
-        facts = self._facts(grant, prior_attempt_id)
+    def proposal_context(
+        self, owner_id: str, *, prior_attempt_id: str | None = None, _repair: bool = True
+    ) -> dict[str, Any]:
+        grant, current = self._current(self._owner(owner_id), _repair=_repair)
+        facts = self._facts(
+            grant,
+            prior_attempt_id,
+            **({"owner_id": owner_id} if grant_pack(grant) == retained_artifacts.PACK else {}),
+        )
         validate_facts(
             facts,
             expected_digest=facts["facts_digest"],
@@ -898,7 +1008,9 @@ class CompositionJobs:
         if prior_attempt_id is None:
             if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
                 initial = capability_macos_file_access.initial_proposal()
-                initial_scenario = self.validate_proposal(owner_id, initial)["scenario"]
+                initial_scenario = self.validate_proposal(owner_id, initial, _repair=_repair)[
+                    "scenario"
+                ]
                 return {
                     "schema_version": "bluefire.composition-proposal-context.v1",
                     "grant_id": grant["grant_id"],
@@ -910,9 +1022,13 @@ class CompositionJobs:
                 }
             elif grant_pack(grant) == FILE_ACCESS_PACK:
                 initial = capability_file_access.initial_proposal()
-                initial_scenario = self.validate_proposal(owner_id, initial)["scenario"]
-                return composition_file_access.proposal_context(
-                    grant, facts, initial, initial_scenario
+                initial_scenario = self.validate_proposal(owner_id, initial, _repair=_repair)[
+                    "scenario"
+                ]
+                return dict(
+                    composition_file_access.proposal_context(
+                        grant, facts, initial, initial_scenario
+                    )
                 )
             source = current["source_context"]["scenario"]
             scenario = ScenarioDefinition.from_mapping(source)
@@ -944,8 +1060,10 @@ class CompositionJobs:
                 "evidence_refs": ["policy"],
                 "rationale": "Exercise the saved material route under the retained receiver policy.",
             }
-            initial_scenario = self.validate_proposal(owner_id, initial)["scenario"]
-        return {
+            initial_scenario = self.validate_proposal(owner_id, initial, _repair=_repair)[
+                "scenario"
+            ]
+        body = {
             "schema_version": "bluefire.composition-proposal-context.v1",
             "grant_id": grant["grant_id"],
             "objective": grant["objective"],
@@ -954,6 +1072,11 @@ class CompositionJobs:
             "initial_proposal": initial,
             "initial_scenario": initial_scenario,
         }
+        return (
+            composition_context.retained_proposal_context(self, grant, body, owner_id=owner_id)
+            if grant_pack(grant) == retained_artifacts.PACK
+            else body
+        )
 
     def stop(self, owner_id, *, revoke=False):
         owner = self._owner(owner_id)

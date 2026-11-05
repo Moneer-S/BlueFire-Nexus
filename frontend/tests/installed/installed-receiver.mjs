@@ -26,11 +26,14 @@ import {
   receiverOwnerContextMatches,
   receiverApprovalAcknowledgementName,
   receiverCompositionCleanupState,
+  receiverCompositionSettledAttempt,
   sameJson as same,
 } from "./receiver-guards.mjs";
 import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
 import { inspectReceiverKnowledge, receiverKnowledgeRequestAllowed } from "./receiver-knowledge.mjs";
 import { EVIDENCE_PURPOSE, EVIDENCE_PURPOSE_LABEL, authorizeReceiverEvidence, inspectReceiverEvidenceProposal, receiverEvidenceRequestAllowed } from "./receiver-evidence-proposal.mjs";
+import { RETAINED_PURPOSE, RETAINED_PURPOSE_LABEL } from "./receiver-retained-proof.mjs";
+import { retainedState, retainedReadAllowed, retainedPostAllowed, retainedResponse, authorizeRetainedPurpose, runRetainedJourney } from "./receiver-retained.mjs";
 import { receiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
 import {
   receiverPreparationDiagnostic,
@@ -54,11 +57,13 @@ assert.match(capability ?? "", /^[A-Za-z0-9_-]{64}$/);
 assert.match(String(fixturePort ?? ""), /^\d{1,5}$/);
 assert.ok(Number(fixturePort) > 0 && Number(fixturePort) <= 65535);
 
-const JOURNEY_BUDGET_MS = 295_000;
+// Two additional reviewed native attempts may each use their existing 90-second limit.
+const JOURNEY_BUDGET_MS = 475_000;
 const CLEANUP_BUDGET_MS = 60_000;
 const deadlineBudget = createDeadlineBudget(Date.now(), JOURNEY_BUDGET_MS, CLEANUP_BUDGET_MS);
 
-const PROFILE = "sandbox-endpoint-deep-lab.v1";
+// Select this new profile for the whole fresh journey; saved v1 controls are not changed.
+const PROFILE = "sandbox-endpoint-deep-lab.v2";
 const STARTER = "scenario.receiver-defense.redaction-validation.v1";
 const STARTER_TITLE = "Validate receiver redaction and legitimate use";
 const FILESYSTEM_COLLECTOR = "collector.filesystem.sandbox.v1";
@@ -96,11 +101,21 @@ const ROUTE_LIMITS = {
   composition_evidence_context: 3, // Selection, optional stale completion refresh, fresh-document reopening.
   composition_evidence_proposal: 1,
   composition_revoke: 2,
+  retained_list: 8, // Open, grant, A proposal/attempt, B proposal, reopen, B attempt, revoke.
+  retained_review: 1,
+  retained_grant: 1,
+  retained_initial_context: 2,
+  retained_history_context: 4,
+  retained_proposal: 2,
+  retained_attempt: 2,
+  retained_knowledge: 1,
+  retained_revoke: 2,
+  retained_comparison: 1,
   comparison: 1,
   provider_save: 1,
   provider_activate: 1,
-  model_authorization: 2, // One request each under two distinct purposes.
-  model_authorization_revoke: 4, // At most two bounded reconciliation attempts per grant.
+  model_authorization: 3, // Two old one-request purposes plus one two-request retained purpose.
+  model_authorization_revoke: 6, // At most two bounded reconciliation attempts per grant.
 };
 const counts = Object.fromEntries(Object.keys(ROUTE_LIMITS).map((key) => [key, 0]));
 const report = {
@@ -186,6 +201,7 @@ const modelAuthorizationIds = new Map();
 const revokedModelPurposes = new Set();
 let evidenceProposalJobId;
 let latestEvidenceContext;
+const retained = retainedState();
 let expectedModelRevokeId;
 let proposalReadCount = 0;
 let modelAuthorizationReadCount = 0;
@@ -197,6 +213,12 @@ let prepareHttpDiagnostic;
 let pendingPreparationFailure;
 let compositionInteractionStep = "reconcile";
 let compositionInteractionUi;
+let compositionAttemptResponseStatus;
+let compositionAttemptResponseErrorCode;
+let compositionAttemptCheckpoint;
+let retainedInteraction;
+let retainedVerification;
+let retainedProposalVerification;
 const settingsReadAllowed = createReceiverSettingsReadPolicy();
 let activeOwnerRole = "original";
 const phaseOrders = { original: ["baseline", "protected", "legitimate"], linked: ["protected", "legitimate"] };
@@ -399,6 +421,10 @@ function wrapPage(target) {
 
 function allowedRead(url, method) {
   const path = url.pathname;
+  if (retainedReadAllowed(retained, url)) {
+    if (path.startsWith("/api/v1/composition/proposals/")) { proposalReadCount += 1; return proposalReadCount <= 160; }
+    return true;
+  }
   if (["/api/v1/settings", "/api/v1/build-info"].includes(path)) return settingsReadAllowed(url, method);
   if ([
     "/",
@@ -438,7 +464,7 @@ function allowedRead(url, method) {
   if (compositionOwnerId && path === `/api/v1/composition/objectives/${compositionOwnerId}`) return !url.search;
   if ([compositionProposalJobId, evidenceProposalJobId].filter(Boolean).some(id => path === `/api/v1/composition/proposals/${id}`)) {
     proposalReadCount += 1;
-    return !url.search && proposalReadCount <= 96;
+    return !url.search && proposalReadCount <= 160;
   }
   if (comparisonSubmitted && /^\/api\/v1\/comparison-snapshots\/run-comparison-[0-9a-f]{64}$/.test(path)) {
     return !url.search && (!compositionSnapshotId || path.endsWith(`/${compositionSnapshotId}`));
@@ -507,12 +533,14 @@ function authorizePost(url, body) {
     return count("provider_activate") && exactKeys(body, []);
   }
   if (path === "/api/v1/ai/authorizations") {
+    const purpose = [MODEL_PURPOSE, EVIDENCE_PURPOSE, RETAINED_PURPOSE][counts.model_authorization];
+    const retainedAuthorization = purpose === RETAINED_PURPOSE;
     return count("model_authorization") && providerConfig && exactKeys(body, ["provider", "purposes", "data_scope", "limits", "expires_in_seconds", "approved_by", "usage_authorized", "local_endpoint_authorized"])
-      && same(body.provider, providerConfig) && same(body.purposes, [counts.model_authorization === 1 ? MODEL_PURPOSE : EVIDENCE_PURPOSE])
+      && same(body.provider, providerConfig) && same(body.purposes, [purpose])
       && body.data_scope === "reviewed_lab_context"
       && exactKeys(body.limits, ["max_requests", "max_request_bytes", "max_reserved_output_tokens"])
-      && body.limits.max_requests === 1 && body.limits.max_request_bytes === 262_144
-      && body.limits.max_reserved_output_tokens === 1024 && body.expires_in_seconds === 300
+      && body.limits.max_requests === (retainedAuthorization ? 2 : 1) && body.limits.max_request_bytes === (retainedAuthorization ? 524_288 : 262_144)
+      && body.limits.max_reserved_output_tokens === (retainedAuthorization ? 2048 : 1024) && body.expires_in_seconds === 300
       && body.approved_by === MODEL_REVIEWER && body.usage_authorized === true
       && body.local_endpoint_authorized === true;
   }
@@ -534,6 +562,8 @@ function authorizePost(url, body) {
   if (path === "/api/v1/scenario-versions") {
     return count("save_scenario") && exactKeys(body, ["scenario"]) && validateScenarioCopy(body.scenario);
   }
+  const retainedAllowed = retainedPostAllowed(retained, url, body, { origin: ORIGIN, controlId: originalOwnerId, providerId: PROVIDER_ID, count });
+  if (retainedAllowed !== undefined) return retainedAllowed;
   if (path === "/api/v1/composition/objective-list") {
     return count("composition_list") && exactKeys(body, ["control_owner_id"])
       && body.control_owner_id === originalOwnerId && phaseIndexes.original === 3;
@@ -663,6 +693,30 @@ async function appApi(path, requestedTimeout = remainingMs()) {
   }, { apiPath: path, timeout });
 }
 
+async function appApiOutcome(path, requestedTimeout = remainingMs()) {
+  const timeout = boundedTimeout(requestedTimeout);
+  return page.evaluate(async ({ apiPath, timeout }) => {
+    const token = sessionStorage.getItem("bluefire.browser-session.v1");
+    if (!token) return { outcome: "session_unavailable" };
+    try {
+      const response = await fetch(`/api/v1${apiPath}`, {
+        method: "GET", redirect: "error", credentials: "omit",
+        headers: { "X-BlueFire-Session": token, Accept: "application/json" },
+        signal: AbortSignal.timeout(timeout),
+      });
+      const outcome = response.ok ? "ok" : response.status === 404 ? "not_found"
+        : response.status === 409 ? "conflict" : [401, 403].includes(response.status) ? "authorization_rejected"
+        : response.status >= 400 && response.status < 500 ? "client_error"
+        : response.status >= 500 && response.status < 600 ? "server_error" : "invalid_response";
+      if (outcome !== "ok") return { outcome };
+      try { return { outcome, run: await response.json() }; }
+      catch { return { outcome: "invalid_response" }; }
+    } catch (error) {
+      return { outcome: error?.name === "TimeoutError" ? "timeout" : "transport_error" };
+    }
+  }, { apiPath: path, timeout });
+}
+
 function evidenceExpectation() {
   return { origin: ORIGIN, ownerId: compositionOwnerId, attemptId: report.composition?.attempt_id,
     settlement: report.composition?.settlement, objectiveEstablished: report.composition?.objective_established,
@@ -712,7 +766,7 @@ async function revokeModelPurposeNormally(purpose) {
       assert.ok(counts.model_authorization_revoke < ROUTE_LIMITS.model_authorization_revoke);
       expectedModelRevokeId = row.authorization_id;
       await openReceiverSettingsForCleanup(page, ORIGIN, { waitUntil: "domcontentloaded", timeout: localTimeout() });
-      const label = purpose === MODEL_PURPOSE ? MODEL_PURPOSE_LABEL : EVIDENCE_PURPOSE_LABEL;
+      const label = purpose === MODEL_PURPOSE ? MODEL_PURPOSE_LABEL : purpose === EVIDENCE_PURPOSE ? EVIDENCE_PURPOSE_LABEL : RETAINED_PURPOSE_LABEL;
       const button = page.locator("article.provider-authorization-record").filter({ has: page.getByText(label, { exact: true }) })
         .getByRole("button", { name: `Revoke model usage for ${MODEL}`, exact: true });
       await button.waitFor({ state: "visible", timeout: localTimeout() });
@@ -743,7 +797,7 @@ async function revokeModelPurposeNormally(purpose) {
 }
 
 async function revokeModelAuthorizationNormally() {
-  const purposes = [MODEL_PURPOSE, EVIDENCE_PURPOSE].slice(0, Math.min(2, counts.model_authorization));
+  const purposes = [MODEL_PURPOSE, EVIDENCE_PURPOSE, RETAINED_PURPOSE].slice(0, Math.min(3, counts.model_authorization));
   for (const purpose of purposes) await revokeModelPurposeNormally(purpose);
   report.cleanup = { ...(report.cleanup ?? {}), model_authorization_revoked: purposes.length > 0
     && purposes.every(purpose => revokedModelPurposes.has(purpose)) };
@@ -784,8 +838,18 @@ function homeRecordProjection(value, ownerId) {
 }
 
 async function assertRecentOutcomeContexts(projection) {
+  const currentRuns = await appApi("/runs");
+  assert.ok(Array.isArray(currentRuns.runs));
+  const visibleRunIds = currentRuns.runs.slice(0, 4).map(run => run.run_id);
   const recentRows = page.locator(".recent-work-table tbody tr");
-  await recentRows.first().waitFor({ state: "visible" });
+  await page.waitForFunction(expected => {
+    const ids = [...document.querySelectorAll(".recent-work-table tbody tr .recent-work-name a")].map(anchor => {
+      const href = anchor.getAttribute("href");
+      const path = href?.startsWith("#") ? href.slice(1) : href;
+      return path?.startsWith("/runs/") ? decodeURIComponent(path.slice("/runs/".length)) : undefined;
+    });
+    return ids.length === expected.length && ids.every((id, index) => id === expected[index]);
+  }, visibleRunIds);
   const rows = await recentRows.evaluateAll(elements => elements.map(element => {
     const runHref = element.querySelector(".recent-work-name a")?.getAttribute("href");
     const runPath = runHref?.startsWith("#") ? runHref.slice(1) : runHref;
@@ -818,7 +882,10 @@ async function assertRecentOutcomeContexts(projection) {
     assert.equal(row.status, `Run status: ${homeRunStatusLabel(phase.run_status)}`,
       "Receiver context must leave the saved run status unchanged");
   }
-  assert.ok(matchedOwnerRows > 0, "At least one recent row must belong to the selected verified receiver workflow");
+  assert.deepEqual(rows.map(row => row.runId), visibleRunIds,
+    "Recent outcomes must retain the service's current four-run ordering");
+  assert.equal(matchedOwnerRows, visibleRunIds.filter(runId => expected.has(runId)).length,
+    "Only visible runs from the selected workflow may receive its phase context");
 }
 
 async function waitRememberedWork(ownerId) {
@@ -1026,8 +1093,8 @@ async function stopOwnerNormally() {
   }
 }
 
-async function revokeCompositionNormally() {
-  if (!compositionOwnerId || !connected || !page || page.isClosed()) return;
+async function revokeCompositionNormally(ownerId = compositionOwnerId, cleanupKey = "composition_grant_revoked") {
+  if (!ownerId || !connected || !page || page.isClosed()) return;
   try {
     const until = Date.now() + Math.min(30_000, remainingMs());
     let revokeRequested = false;
@@ -1035,19 +1102,19 @@ async function revokeCompositionNormally() {
       const timeout = boundedLocalTimeout(until, Date.now(), remainingMs());
       if (timeout <= 0) break;
       let current;
-      try { current = await appApi(`/composition/objectives/${compositionOwnerId}`, timeout); }
+      try { current = await appApi(`/composition/objectives/${ownerId}`, timeout); }
       catch {
         await delay(Math.min(500, Math.max(1, until - Date.now())));
         continue;
       }
-      assert.equal(current.owner?.job_id, compositionOwnerId);
+      assert.equal(current.owner?.job_id, ownerId);
       const cleanupState = receiverCompositionCleanupState(current);
       if (cleanupState === "settled") {
-        report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: true };
+        report.cleanup = { ...(report.cleanup ?? {}), [cleanupKey]: true };
         return;
       }
       if (cleanupState === "no_grant") {
-        report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: false, composition_no_grant_issued: true };
+        report.cleanup = { ...(report.cleanup ?? {}), [cleanupKey]: false, [`${cleanupKey}_not_issued`]: true };
         return;
       }
       if (current.grant && current.grant.status !== "revoked" && !revokeRequested) {
@@ -1063,14 +1130,14 @@ async function revokeCompositionNormally() {
               body: "{}", signal: AbortSignal.timeout(timeout),
             });
             return response.ok;
-          }, { owner: compositionOwnerId, timeout: postTimeout });
+          }, { owner: ownerId, timeout: postTimeout });
         } catch { /* A lost response is reconciled by exact saved status reads below. */ }
       }
       await delay(Math.min(500, Math.max(1, until - Date.now())));
     }
-    report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: false };
+    report.cleanup = { ...(report.cleanup ?? {}), [cleanupKey]: false };
   } catch {
-    report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: false };
+    report.cleanup = { ...(report.cleanup ?? {}), [cleanupKey]: false };
   }
 }
 
@@ -1263,6 +1330,7 @@ try {
         ? request.postDataJSON()
         : undefined;
       const data = await response.json();
+      if (response.ok() && retainedResponse(retained, path, request.method() === "POST" ? request.postDataJSON() : undefined, data)) return;
       if (failedPrepareResponse) {
         prepareHttpDiagnostic = receiverPrepareHttpDiagnostic(prepareStatus, data);
         if (pendingPreparationFailure?.prepare_http) {
@@ -1653,6 +1721,8 @@ try {
   assert.equal(latestCompositionObjective.grant?.status, "active");
   assert.equal(latestCompositionObjective.grant?.document?.environment?.control_owner_id, originalOwnerId);
   assert.equal(latestCompositionObjective.grant?.document?.objective?.predicate?.record_count, 8);
+  assert.equal(latestCompositionObjective.grant.document.schema_version, "bluefire.capability-grant.v1");
+  assert.deepEqual(latestCompositionObjective.grant.document.snapshot.methods, latestCompositionReview.snapshot.methods);
   assert.equal(latestCompositionObjective.attempts?.length, 0);
   const grantId = latestCompositionObjective.grant.document.grant_id;
   assert.match(grantId ?? "", /^grant-[0-9a-f]{32}$/);
@@ -1739,16 +1809,25 @@ try {
   compositionInteractionStep = "click";
   await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).click();
   compositionInteractionStep = "response";
-  latestCompositionObjective = await (await attemptResponse).json();
+  const completedResponse = await attemptResponse;
+  compositionAttemptResponseStatus = completedResponse.status();
+  compositionAttemptCheckpoint = "response_json";
+  latestCompositionObjective = await completedResponse.json();
+  compositionAttemptResponseErrorCode = latestCompositionObjective?.error?.code;
   compositionInteractionStep = "settlement";
+  compositionAttemptCheckpoint = "response_ok";
+  assert.equal(completedResponse.ok(), true);
+  compositionAttemptCheckpoint = "owner_binding";
   assert.equal(latestCompositionObjective.owner?.job_id, compositionOwnerId);
-  const settledComposition = await waitComposition(value => value.attempts?.some(attempt =>
-    attempt.job_id === compositionAttemptJobId && attempt.progress?.settlement === "settled"
-      && attempt.progress?.verified_result));
+  compositionAttemptCheckpoint = "wait_terminal";
+  const settledComposition = await waitComposition(value =>
+    receiverCompositionSettledAttempt(value, compositionAttemptJobId));
   const composedAttempt = settledComposition.attempts.find(attempt => attempt.job_id === compositionAttemptJobId);
   const binding = composedAttempt?.request?.composition_attempt;
   const verified = composedAttempt?.progress?.verified_result;
+  compositionAttemptCheckpoint = "child_state";
   assert.equal(composedAttempt?.state, "completed");
+  compositionAttemptCheckpoint = "verified_result";
   assert.equal(binding?.parent_job_id, compositionOwnerId);
   assert.equal(binding?.grant_id, grantId);
   assert.equal(binding?.grant_digest, settledComposition.grant.document.grant_digest);
@@ -1778,6 +1857,7 @@ try {
     run_cleaned: true, receiver_closed: true,
   });
   stage = "composition-finalized-run-read";
+  compositionAttemptCheckpoint = "run_binding";
   const finalizedComposedRun = await appApi(`/runs/${encodeURIComponent(binding.run_id)}`);
   stage = "composition-finalized-run-binding";
   assert.equal(finalizedComposedRun.schema_version, "bluefire.run-result.v1");
@@ -1857,6 +1937,43 @@ try {
   report.composition.grant_status = "revoked";
   report.cleanup = { ...(report.cleanup ?? {}), composition_grant_revoked: true };
   report.checks.push("composed_attempt_grant_revoked_after_verified_cleanup");
+
+  stage = "retained-model-authorization";
+  await authorizeRetainedPurpose(page, { origin: ORIGIN, model: MODEL, reviewer: MODEL_REVIEWER });
+  const retainedAuthorization = await readOwnedModelAuthorization(remainingMs(), RETAINED_PURPOSE);
+  assert.equal(retainedAuthorization.status, "active");
+  assert.equal(retainedAuthorization.usage.requests, 0);
+  assert.equal(retainedAuthorization.limits.max_requests, 2);
+  assert.equal(retainedAuthorization.limits.max_request_bytes, 524288);
+  assert.equal(retainedAuthorization.limits.max_reserved_output_tokens, 2048);
+  for (const purpose of [MODEL_PURPOSE, EVIDENCE_PURPOSE]) {
+    const superseded = await readOwnedModelAuthorization(remainingMs(), purpose);
+    assert.equal(superseded.status, "revoked");
+    assert.equal(superseded.usage.requests, 1);
+  }
+  report.retained_execution = await runRetainedJourney(page, retained, {
+    origin: ORIGIN, controlId: originalOwnerId, controlDigest: originalControlDigest, profileId: PROFILE, providerId: PROVIDER_ID, model: MODEL,
+    read: path => appApi(path), remainingMs, setStage: value => { stage = value; },
+    readObjective: ownerId => appApiOutcome(`/composition/objectives/${ownerId}`),
+    readOriginalRun: runId => appApiOutcome(`/runs/${runId}`),
+    onInteraction: value => { retainedInteraction = value; },
+    onVerification: value => { retainedVerification = value; },
+    onProposalVerification: value => { retainedProposalVerification = value; },
+    onRevoked: () => { report.cleanup = { ...(report.cleanup ?? {}), retained_grant_revoked: true }; },
+    capture: async (name, options = {}) => {
+      assert.ok(connected);
+      const viewport = { width: 1440, height: 900 };
+      if (!options.failure) {
+        await page.setViewportSize(viewport);
+        await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+      }
+      const bytes = await page.screenshot({ fullPage: false, animations: "disabled", mask: [page.locator('input[type="password"]')], ...(options.timeout ? { timeout: options.timeout } : {}) });
+      writeFileSync(join(output, `${name}.png`), bytes, { flag: "wx", mode: 0o600 });
+      report.screenshots.push({ name, sha256: createHash("sha256").update(bytes).digest("hex"), viewport, layout_verified: false });
+    },
+  });
+  assert.equal((await readOwnedModelAuthorization(remainingMs(), RETAINED_PURPOSE)).usage.requests, 2);
+  report.checks.push("retained_result_reused_in_fresh_successful_attempt_without_prefix_replay");
 
   stage = "linked-retest-setup";
   await page.goto(`${ORIGIN}/#/compare?receiver=1&receiver_job=${originalOwnerId}`);
@@ -2161,13 +2278,13 @@ try {
   await revokeModelAuthorizationNormally();
   assert.equal(report.cleanup.model_authorization_revoked, true);
   assert.equal(counts.model_authorization_revoke, 1);
-  for (const purpose of [MODEL_PURPOSE, EVIDENCE_PURPOSE]) {
+  for (const purpose of [MODEL_PURPOSE, EVIDENCE_PURPOSE, RETAINED_PURPOSE]) {
     const terminal = await readOwnedModelAuthorization(remainingMs(), purpose);
     assert.equal(terminal.status, "revoked");
-    assert.equal(terminal.usage.requests, 1);
+    assert.equal(terminal.usage.requests, purpose === RETAINED_PURPOSE ? 2 : 1);
   }
   report.checks.push("receiver_superseded_model_authorization_remained_revoked");
-  report.checks.push("receiver_distinct_model_authorizations_revoked_after_one_proposal_each");
+  report.checks.push("receiver_composition_and_history_authorizations_revoked_after_one_proposal_each");
 
   report.request_counts = counts;
   assert.equal(report.blocked_requests.length, 0);
@@ -2182,8 +2299,15 @@ try {
   for (const name of ["composition_context", "composition_grant", "composition_proposal", "composition_evidence_proposal", "composition_attempt", "composition_revoke", "comparison", "provider_save", "provider_activate"]) {
     assert.equal(counts[name], 1);
   }
-  for (const name of ["composition_knowledge", "model_authorization"]) assert.equal(counts[name], 2);
+  assert.equal(counts.composition_knowledge, 2);
+  assert.equal(counts.model_authorization, 3);
   assert.equal(counts.model_authorization_revoke, 1);
+  for (const name of ["retained_review", "retained_grant", "retained_knowledge", "retained_revoke", "retained_comparison"]) assert.equal(counts[name], 1);
+  for (const name of ["retained_proposal", "retained_attempt"]) assert.equal(counts[name], 2);
+  assert.ok(counts.retained_list >= 1 && counts.retained_list <= 8);
+  assert.ok(counts.retained_initial_context >= 1 && counts.retained_initial_context <= 2);
+  assert.ok(counts.retained_history_context >= 2 && counts.retained_history_context <= 4);
+  assert.equal(report.cleanup.retained_grant_revoked, true);
   assert.ok(counts.composition_evidence_context >= 2 && counts.composition_evidence_context <= ROUTE_LIMITS.composition_evidence_context);
   assert.ok(counts.composition_proposal_context >= 2 && counts.composition_proposal_context <= ROUTE_LIMITS.composition_proposal_context);
   assert.equal(report.cleanup.composition_grant_revoked, true);
@@ -2195,12 +2319,26 @@ try {
 } catch (error) {
   const errorType = ["AssertionError", "TimeoutError", "TypeError", "Error"].includes(error?.name) ? error.name : "other";
   const failure = { stage, kind: "journey_failed", error_type: errorType };
+  if (/^retained-(original|continuation)-(readiness|click|response|settlement)$/.test(stage) && retainedInteraction) {
+    failure.retained_interaction = retainedInteraction;
+  }
+  if (/^retained-(original|continuation)-settlement$/.test(stage) && retainedVerification) {
+    failure.retained_verification = retainedVerification;
+  }
+  if (/^retained-(original|continuation)-proposal$/.test(stage) && retainedProposalVerification) {
+    failure.retained_proposal_verification = retainedProposalVerification;
+  }
   if (stage === "composition-attempt" || stage === "composition-model-proposal-reopen") {
     // A spent journey budget must not delay the cleanup reserve for diagnostics.
     compositionInteractionUi = await compositionUiSnapshot("failure");
     failure.composition_interaction = receiverCompositionInteractionDiagnostic(
       compositionInteractionStep, compositionInteractionUi, latestCompositionObjective,
-      latestCompositionContext, latestCompositionProposal, Date.now(),
+      latestCompositionContext, latestCompositionProposal, Date.now(), {
+        job_id: compositionAttemptJobId,
+        response_status: compositionAttemptResponseStatus,
+        response_error_code: compositionAttemptResponseErrorCode,
+        checkpoint: compositionAttemptCheckpoint,
+      },
     );
   }
   if (stage.endsWith("-preparation") && currentPhase && receiverJobId) {
@@ -2226,6 +2364,7 @@ try {
   deadlineBudget.beginCleanup(Date.now());
   try { setPlaywrightBudget(); } catch { /* Cleanup still closes browser resources when the total budget is spent. */ }
   await revokeCompositionNormally();
+  await revokeCompositionNormally(retained.ownerId, "retained_grant_revoked");
   if (counts.model_authorization > 0 && report.cleanup?.model_authorization_revoked !== true) {
     await revokeModelAuthorizationNormally();
   }
@@ -2242,7 +2381,8 @@ try {
     recordCallbackFailure("observer_unsettled");
   }
   if (report.cleanup?.receiver_control_stopped === false || report.cleanup?.runner_stopped === false
-    || (counts.model_authorization > 0 && report.cleanup?.model_authorization_revoked !== true)) {
+    || (counts.model_authorization > 0 && report.cleanup?.model_authorization_revoked !== true)
+    || (retained.ownerId && report.cleanup?.retained_grant_revoked !== true)) {
     report.status = "failed_or_incomplete";
   }
   if (report.errors.length || report.blocked_requests.length) report.status = "failed_or_incomplete";

@@ -41,8 +41,9 @@ export function readReceiverCompositionUi(expected) {
   };
 }
 
-export function receiverCompositionInteractionDiagnostic(step, ui, objective, context, proposal, now) {
+export function receiverCompositionInteractionDiagnostic(step, ui, objective, context, proposal, now, attempt = {}) {
   const remaining = objective?.grant?.document?.expires_at_ms - now;
+  const child = objective?.attempts?.find(value => value?.job_id === attempt.job_id);
   return {
     schema_version: "bluefire.installed-receiver-composition-interaction.v1",
     step: ["reconcile", "click", "response", "settlement"].includes(step) ? step : "other",
@@ -63,6 +64,16 @@ export function receiverCompositionInteractionDiagnostic(step, ui, objective, co
     context_grant_matches: Boolean(context && context.grant_id === objective?.grant?.document?.grant_id),
     candidate_ready: proposal?.candidate_ready === true,
     context_digest_matches: Boolean(context && proposal?.proposal?.context_digest === context.context_digest),
+    response_status: Number.isInteger(attempt.response_status) && attempt.response_status >= 100 && attempt.response_status <= 599
+      ? attempt.response_status : null,
+    response_error_code: enumValue(attempt.response_error_code,
+      ["invalid_service_response", "service_error", "composition_refused", "conflict", "not_found"]),
+    checkpoint: enumValue(attempt.checkpoint,
+      ["response_json", "response_ok", "owner_binding", "wait_terminal", "child_state", "verified_result", "run_binding"]),
+    child_state: enumValue(child?.state,
+      ["queued", "planning", "running", "completed", "failed", "cancelled", "interrupted"]),
+    child_settlement: enumValue(child?.progress?.settlement,
+      ["settled", "pending_cleanup", "interrupted_unusable"]),
   };
 }
 

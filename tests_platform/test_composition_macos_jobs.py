@@ -14,6 +14,7 @@ from bluefire import (
     macos_file_access_peer,
 )
 from bluefire.util import content_hash
+from tests_platform.test_capability_macos_file_access import state as state
 
 
 class _Store:
@@ -110,13 +111,18 @@ def test_mac_proposal_context_uses_the_fixed_proposal_without_receiver_context(m
     facts = {"facts": [], "facts_digest": "sha256:" + "f" * 64}
     scenario = {"id": "fixed-mac-scenario"}
     checked = []
+    repair_modes = []
     jobs.clock = lambda: 2000
     jobs._owner = lambda owner_id: owner_id
-    jobs._current = lambda owner: (grant, {})
+    jobs._current = lambda owner, *, _repair=True: (
+        repair_modes.append(("current", _repair)) or (grant, {})
+    )
     jobs._facts = lambda document, prior: facts
-    jobs.validate_proposal = lambda owner, proposal: checked.append((owner, proposal)) or {
-        "scenario": scenario
-    }
+    jobs.validate_proposal = lambda owner, proposal, *, _repair=True: (
+        repair_modes.append(("validate", _repair))
+        or checked.append((owner, proposal))
+        or {"scenario": scenario}
+    )
     monkeypatch.setattr(composition_jobs, "validate_facts", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         composition_jobs, "grant_pack", lambda document: composition_jobs.MACOS_FILE_ACCESS_PACK
@@ -126,6 +132,7 @@ def test_mac_proposal_context_uses_the_fixed_proposal_without_receiver_context(m
 
     initial = composition_jobs.capability_macos_file_access.initial_proposal()
     assert checked == [("owner-1", initial)]
+    assert repair_modes == [("current", True), ("validate", True)]
     assert result == {
         "schema_version": "bluefire.composition-proposal-context.v1",
         "grant_id": "grant-1",
@@ -140,17 +147,25 @@ def test_mac_proposal_context_uses_the_fixed_proposal_without_receiver_context(m
 @pytest.mark.parametrize("allow_exhausted", [False, True])
 def test_established_mac_objective_closes_business_before_grant_lookup(allow_exhausted):
     jobs = object.__new__(composition_jobs.CompositionJobs)
-    attempt = {"compiled": {"macos_file_access": {}}}
+    attempt = {
+        "compiled": {"macos_file_access": {}},
+        "lease": {"attempt_id": "attempt-1"},
+    }
     verified = {"macos_file_access_result": {}, "objective": {"established": True}}
     checked = []
     jobs._children = lambda owner_id: [
         {
             "progress": {"settlement": "settled", "verified_result": verified},
-            "request": {"composition_attempt": {"attempt_id": "attempt-1"}},
+            "request": {
+                "composition_attempt": {
+                    "attempt_id": "attempt-1",
+                    "run_id": "run-1",
+                }
+            },
         }
     ]
     jobs.store = SimpleNamespace(
-        get_capability_attempt=lambda attempt_id: attempt,
+        get_capability_attempt_for_run=lambda run_id: attempt,
         get_capability_grant=lambda *args, **kwargs: pytest.fail("business gate did not close"),
     )
     jobs._verified_result = lambda value: checked.append(value) or verified
@@ -167,7 +182,7 @@ def test_established_mac_objective_closes_business_before_grant_lookup(allow_exh
 
 
 @pytest.mark.parametrize("failure", ["run", "monitor", "publish", "settle", "index"])
-def test_mac_guard_is_released_even_when_final_reporting_fails(monkeypatch, failure):
+def test_mac_guard_is_released_even_when_final_reporting_fails(monkeypatch, failure, state):
     released = []
 
     def fail():
@@ -216,7 +231,7 @@ def test_mac_guard_is_released_even_when_final_reporting_fails(monkeypatch, fail
         _index_run=lambda value: fail() if failure == "index" else None,
     )
     jobs._owner = lambda owner_id: owner_id
-    jobs._current = lambda *args, **kwargs: ({}, current)
+    jobs._current = lambda *args, **kwargs: (state["grant"], current)
     jobs._publish = lambda *args: fail() if failure == "publish" else None
     jobs._settle_attempt = lambda *args: fail() if failure == "settle" else None
     jobs._orchestrator = lambda *args, **kwargs: SimpleNamespace(
@@ -226,9 +241,6 @@ def test_mac_guard_is_released_even_when_final_reporting_fails(monkeypatch, fail
     monkeypatch.setattr(macos_file_access_peer, "darwin_clock_ns", lambda: 2000000000)
     monkeypatch.setattr(
         composition_jobs, "_verified_grant_attempt", lambda *args, **kwargs: object()
-    )
-    monkeypatch.setattr(
-        composition_jobs, "grant_pack", lambda grant: composition_jobs.MACOS_FILE_ACCESS_PACK
     )
     monkeypatch.setattr(composition_macos_file_access, "prepare", lambda *args: None)
     monkeypatch.setattr(
@@ -241,7 +253,7 @@ def test_mac_guard_is_released_even_when_final_reporting_fails(monkeypatch, fail
             ctx,
             {"attempt_id": "attempt-1", "parent_job_id": "owner-1", "run_id": "run-1"},
             {"action_implementations": {}},
-            {},
+            state["grant"],
             current,
             object(),
             {},

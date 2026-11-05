@@ -145,6 +145,7 @@ _ALLOWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, frozenset[str] | type[int]
             "sandbox.peer.handoff.v1": MappingProxyType({"method": frozenset({"POST"})}),
             "sandbox.archive.tar.v1": MappingProxyType({"archive_format": frozenset({"ustar"})}),
             "sandbox.cleanup.v1": MappingProxyType({}),
+            "sandbox.collection.materialize-retained.v1": MappingProxyType({}),
             "sandbox.collection.stage.v1": MappingProxyType({}),
             "sandbox.collection.records.v1": MappingProxyType({}),
             "sandbox.collection.archive.v1": MappingProxyType({}),

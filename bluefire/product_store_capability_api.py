@@ -10,9 +10,11 @@ from . import product_store_capability_cleanup as cleanup
 from . import product_store_capability_dependencies as dependencies
 from . import product_store_capability_grants as capability_grant_store
 from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, grant_pack, review_pack
+from .capability_resources import CapabilityContractError, digest, identifier
 from .product_store_contracts import safe_document
 from .product_store_errors import ProductStoreError
 from .product_store_serialization import canonical_json, utc_now
+from .retained_artifact_contract import source_reference
 from .util import content_hash
 
 _TABLES = {
@@ -28,14 +30,24 @@ _TABLES = {
     "capability_receiver_bindings": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_task_claims": "task_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), step_id TEXT NOT NULL, request_hash TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL, UNIQUE(attempt_id,step_id)",
     "capability_task_payloads": "task_id TEXT PRIMARY KEY REFERENCES capability_task_claims(task_id), payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL",
+    "capability_task_dispatch_intents": "task_id TEXT PRIMARY KEY REFERENCES capability_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_task_terminals": "task_id TEXT PRIMARY KEY REFERENCES capability_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_attempt_settlements": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_retained_capture_intents": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), job_id TEXT NOT NULL UNIQUE, run_id TEXT NOT NULL UNIQUE, document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_retained_capture_receipts": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), intent_digest TEXT NOT NULL UNIQUE, document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_workspace_bindings": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL, bound_at_ms INTEGER NOT NULL",
     "capability_cleanup_obligations": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_cleanup_claims": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL",
     "capability_cleanup_task_claims": "task_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL UNIQUE REFERENCES capability_attempts(attempt_id), request_hash TEXT NOT NULL, claim_digest TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL",
     "capability_cleanup_task_payloads": "task_id TEXT PRIMARY KEY REFERENCES capability_cleanup_task_claims(task_id), payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL",
     "capability_cleanup_terminals": "task_id TEXT PRIMARY KEY REFERENCES capability_cleanup_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_recovery_generations": "generation TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), created_at_ms INTEGER NOT NULL, UNIQUE(attempt_id,generation)",
+    "capability_recovery_obligations": "generation TEXT PRIMARY KEY REFERENCES capability_recovery_generations(generation), attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_recovery_claims": "generation TEXT PRIMARY KEY REFERENCES capability_recovery_generations(generation), attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL",
+    "capability_recovery_task_claims": "task_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), generation TEXT NOT NULL UNIQUE REFERENCES capability_recovery_claims(generation), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_recovery_terminals": "task_id TEXT PRIMARY KEY REFERENCES capability_recovery_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_receiver_closure_proofs": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_recovery_closures": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), generation TEXT NOT NULL REFERENCES capability_recovery_generations(generation), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
 }
 
 
@@ -53,6 +65,101 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS capability_attempts_owner ON capability_attempts(control_owner_id)"
     )
+
+
+def _retained_capture_intent(value: Mapping[str, Any]) -> dict[str, Any]:
+    document = safe_document(value, context="retained capture intent")
+    fields = {
+        "schema_version",
+        "job_id",
+        "run_id",
+        "attempt_id",
+        "lineage_id",
+        "step_id",
+        "source",
+        "artifacts_digest",
+        "producer_evidence_id",
+        "producer_record_hash",
+        "observation_evidence_id",
+        "observation_record_hash",
+        "intent_digest",
+    }
+    if (
+        not isinstance(document, dict)
+        or set(document) != fields
+        or document.get("schema_version") != "bluefire.retained-artifact-capture-intent.v1"
+        or document.get("intent_digest")
+        != content_hash({key: value for key, value in document.items() if key != "intent_digest"})
+    ):
+        raise ProductStoreError("Retained capture intent is invalid.")
+    try:
+        source = source_reference(document.get("source"))
+        digest(document.get("artifacts_digest"), "retained artifacts digest")
+        for field in ("producer_record_hash", "observation_record_hash"):
+            digest(document.get(field), "retained evidence digest")
+        for field in ("producer_evidence_id", "observation_evidence_id"):
+            identifier(document.get(field), "retained evidence identity")
+    except CapabilityContractError as exc:
+        raise ProductStoreError("Retained capture intent binding is invalid.") from exc
+    if (
+        source != document.get("source")
+        or source.get("run_id") != document["run_id"]
+        or source.get("attempt_id") != document["attempt_id"]
+        or source.get("lineage_id") != document["lineage_id"]
+        or source.get("step_id") != document["step_id"]
+        or any(
+            not isinstance(document.get(field), str)
+            for field in (
+                "job_id",
+                "run_id",
+                "attempt_id",
+                "lineage_id",
+                "step_id",
+                "producer_evidence_id",
+                "producer_record_hash",
+                "observation_evidence_id",
+                "observation_record_hash",
+            )
+        )
+    ):
+        raise ProductStoreError("Retained capture intent binding is invalid.")
+    return document
+
+
+def _retained_capture_intent_row(row: sqlite3.Row) -> dict[str, Any]:
+    document = _retained_capture_intent(capability_grant_store._document(row))
+    if (
+        row["attempt_id"] != document["attempt_id"]
+        or row["job_id"] != document["job_id"]
+        or row["run_id"] != document["run_id"]
+    ):
+        raise ProductStoreError("Retained capture intent row binding changed.")
+    return document
+
+
+def _retained_capture_receipt(
+    value: Mapping[str, Any], intent: Mapping[str, Any]
+) -> dict[str, Any]:
+    document = safe_document(value, context="retained capture receipt")
+    if (
+        not isinstance(document, dict)
+        or set(document)
+        != {
+            "schema_version",
+            "source",
+            "producer_record_hash",
+            "observation_record_hash",
+            "capture_digest",
+        }
+        or document.get("schema_version") != "bluefire.retained-artifact-capture.v1"
+        or document.get("source") != intent["source"]
+        or document.get("producer_record_hash") != intent["producer_record_hash"]
+        or document.get("observation_record_hash") != intent["observation_record_hash"]
+        or document.get("capture_digest")
+        != content_hash({key: value for key, value in document.items() if key != "capture_digest"})
+    ):
+        raise ProductStoreError("Retained capture receipt is invalid.")
+    return document
 
 
 class CapabilityStoreMixin:
@@ -249,6 +356,12 @@ class CapabilityStoreMixin:
         return cleanup.workspace_at(connection, attempt_id, lease)
 
     @staticmethod
+    def _capability_validate_interrupted_settlement(connection, attempt_id, lease, receipt):
+        from .product_store_retained_recovery import validate_interrupted_settlement
+
+        return validate_interrupted_settlement(connection, attempt_id, lease, receipt)
+
+    @staticmethod
     def _validate_capability_cleanup_settlement(connection, attempt_id, lease, native):
         cleanup.validate_settlement(connection, attempt_id, lease, native)
 
@@ -329,11 +442,178 @@ class CapabilityStoreMixin:
         """Read the unique persisted attempt for a run without granting new authority."""
         return capability_grant_store.get_attempt_for_run(self, run_id)
 
+    def begin_retained_artifact_capture(
+        self, job_id: str, intent: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Append one exact intent before private filesystem publication."""
+
+        store = cast(Any, self)
+        document = _retained_capture_intent(intent)
+        if document["job_id"] != job_id:
+            raise ProductStoreError("Retained capture intent job binding is invalid.")
+        with store._connection(write=True) as connection:
+            row, lease, _ = capability_grant_store._attempt_at(connection, document["attempt_id"])
+            child, request = capability_grant_store._submitted_job(
+                store, connection, job_id, "composition.attempt"
+            )
+            marker = request.get("composition_attempt")
+            task = connection.execute(
+                "SELECT * FROM capability_task_claims WHERE attempt_id=? AND step_id=?",
+                (document["attempt_id"], document["step_id"]),
+            ).fetchone()
+            terminal = (
+                None
+                if task is None
+                else connection.execute(
+                    "SELECT * FROM capability_task_terminals WHERE task_id=?",
+                    (task["task_id"],),
+                ).fetchone()
+            )
+            if (
+                row["job_id"] != job_id
+                or row["run_id"] != document["run_id"]
+                or row["lineage_id"] != document["lineage_id"]
+                or lease["attempt_id"] != document["attempt_id"]
+                or not isinstance(marker, dict)
+                or marker.get("attempt_id") != document["attempt_id"]
+                or marker.get("run_id") != document["run_id"]
+                or task is None
+                or terminal is None
+            ):
+                raise ProductStoreError("Retained capture intent is outside its claimed attempt.")
+            previous = connection.execute(
+                "SELECT * FROM capability_retained_capture_intents WHERE attempt_id=?",
+                (document["attempt_id"],),
+            ).fetchone()
+            if previous is not None:
+                if _retained_capture_intent_row(previous) != document:
+                    raise ProductStoreError("Retained capture intent is already immutable.")
+                return document
+            if child["state"] not in {"running", "interrupted", "failed"}:
+                raise ProductStoreError("Retained capture intent is outside its claimed attempt.")
+            connection.execute(
+                "INSERT INTO capability_retained_capture_intents VALUES(?,?,?,?,?)",
+                (
+                    document["attempt_id"],
+                    job_id,
+                    document["run_id"],
+                    canonical_json(document),
+                    content_hash(document),
+                ),
+            )
+            return document
+
+    def commit_retained_artifact_capture(
+        self, job_id: str, receipt: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Atomically append the receipt and mirror it into compatible job progress."""
+
+        store = cast(Any, self)
+        with store._connection(write=True) as connection:
+            intent_row = connection.execute(
+                "SELECT * FROM capability_retained_capture_intents WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if intent_row is None:
+                raise ProductStoreError("Retained capture has no durable intent.")
+            intent = _retained_capture_intent_row(intent_row)
+            document = _retained_capture_receipt(receipt, intent)
+            child, _ = capability_grant_store._submitted_job(
+                store, connection, job_id, "composition.attempt"
+            )
+            previous = connection.execute(
+                "SELECT * FROM capability_retained_capture_receipts WHERE attempt_id=?",
+                (intent["attempt_id"],),
+            ).fetchone()
+            if previous is None:
+                connection.execute(
+                    "INSERT INTO capability_retained_capture_receipts VALUES(?,?,?,?)",
+                    (
+                        intent["attempt_id"],
+                        intent["intent_digest"],
+                        canonical_json(document),
+                        content_hash(document),
+                    ),
+                )
+            elif (
+                previous["intent_digest"] != intent["intent_digest"]
+                or capability_grant_store._document(previous) != document
+            ):
+                raise ProductStoreError("Retained capture receipt is already immutable.")
+            existing = child["progress"].get("retained_artifact_capture")
+            if existing is not None and existing != document:
+                raise ProductStoreError("Retained capture progress mirror conflicts.")
+            if existing is None:
+                progress = {**child["progress"], "retained_artifact_capture": document}
+                connection.execute(
+                    "UPDATE jobs SET progress_json=?,updated_at=? WHERE job_id=?",
+                    (canonical_json(progress), utc_now(), job_id),
+                )
+            return document
+
+    def get_retained_artifact_capture(self, attempt_id: str) -> Mapping[str, Any] | None:
+        """Read the append-only receipt and require its compatibility mirror."""
+
+        store = cast(Any, self)
+        with store._connection() as connection:
+            intent_row = connection.execute(
+                "SELECT * FROM capability_retained_capture_intents WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            receipt_row = connection.execute(
+                "SELECT * FROM capability_retained_capture_receipts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            if intent_row is None and receipt_row is None:
+                return None
+            if intent_row is None:
+                raise ProductStoreError("Retained capture receipt lost its exact intent.")
+            if receipt_row is None:
+                return None
+            intent = _retained_capture_intent_row(intent_row)
+            receipt = _retained_capture_receipt(
+                capability_grant_store._document(receipt_row), intent
+            )
+            if (
+                receipt_row["attempt_id"] != intent["attempt_id"]
+                or receipt_row["intent_digest"] != intent["intent_digest"]
+            ):
+                raise ProductStoreError("Retained capture receipt intent changed.")
+            child, _ = capability_grant_store._submitted_job(
+                store, connection, intent["job_id"], "composition.attempt"
+            )
+            if child["progress"].get("retained_artifact_capture") != receipt:
+                raise ProductStoreError("Retained capture progress mirror changed.")
+            return receipt
+
+    def list_retained_artifact_capture_intents(self) -> list[Mapping[str, Any]]:
+        """Return pending intents, including rows beyond the first recovery page."""
+
+        store = cast(Any, self)
+        with store._connection() as connection:
+            rows = connection.execute(
+                """SELECT intent.* FROM capability_retained_capture_intents AS intent
+                LEFT JOIN capability_retained_capture_receipts AS receipt
+                  ON receipt.attempt_id=intent.attempt_id
+                WHERE receipt.attempt_id IS NULL
+                ORDER BY intent.rowid"""
+            ).fetchall()
+        return [_retained_capture_intent_row(row) for row in rows]
+
     def start_capability_preparation(self, attempt_id: str, **context: Any) -> None:
         capability_grant_store.start_preparation(self, attempt_id, **context)
 
     def register_capability_task(self, attempt_id: str, **context: Any) -> dict[str, Any]:
         return capability_grant_store.register_task(self, attempt_id, **context)
+
+    def mark_capability_task_dispatch(self, attempt_id: str, **context: Any) -> dict[str, Any]:
+        from .product_store_retained_recovery import mark_task_dispatch
+
+        return mark_task_dispatch(self, attempt_id, **context)
+
+    def record_capability_task_no_send(self, attempt_id: str, **context: Any) -> dict[str, Any]:
+        from .product_store_retained_recovery import record_task_no_send
+
+        return record_task_no_send(self, attempt_id, **context)
 
     def get_capability_task_payload(
         self, task_id: str, transport_request_hash: str

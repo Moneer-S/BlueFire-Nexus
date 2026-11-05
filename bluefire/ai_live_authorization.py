@@ -30,6 +30,7 @@ PURPOSES = frozenset(
         "bluefire_receiver_defense_inspection",
         "bluefire_composition_proposal",
         "bluefire_receiver_evidence_composition_proposal",
+        "bluefire_receiver_retained_composition_proposal",
         "bluefire_linux_file_access_composition_proposal",
         "bluefire_macos_file_access_composition_proposal",
     }
@@ -286,6 +287,7 @@ def _schemas() -> Mapping[str, str]:
         MACOS_FILE_ACCESS_OUTPUT_SCHEMA as macos_file_access_composition,
     )
     from .ai_composition_contract import OUTPUT_SCHEMA as composition
+    from .ai_composition_contract import RETAINED_OUTPUT_SCHEMA as retained_composition
     from .ai_detection_create import OUTPUT_SCHEMA as create
     from .ai_detection_revision import _OUTPUT_SCHEMA as revise
     from .ai_method_comparison import OUTPUT_SCHEMA as compare
@@ -297,6 +299,7 @@ def _schemas() -> Mapping[str, str]:
     return {
         "bluefire_composition_proposal": content_hash(composition),
         "bluefire_receiver_evidence_composition_proposal": content_hash(evidence_composition),
+        "bluefire_receiver_retained_composition_proposal": content_hash(retained_composition),
         "bluefire_linux_file_access_composition_proposal": content_hash(file_access_composition),
         "bluefire_macos_file_access_composition_proposal": content_hash(
             macos_file_access_composition
@@ -378,6 +381,10 @@ def request_reservation(
                 from .ai_composition_evidence_data import validate_model_context
 
                 validate_model_context(projected)
+            if purpose == "bluefire_receiver_retained_composition_proposal":
+                from .ai_composition_evidence_data import validate_retained_model_context
+
+                validate_retained_model_context(projected)
             if purpose == "bluefire_ai_graph_draft":
                 from .ai_drafts import AIGraphDraftRequest, graph_draft_json_schema
 

@@ -579,6 +579,8 @@ pub struct CleanupReport {
     pub verified_removed_paths: usize,
     pub verified_absent_paths: usize,
     pub verified_receipts: usize,
+    #[serde(default)]
+    pub verified_receipt_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

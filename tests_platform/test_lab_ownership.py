@@ -98,6 +98,25 @@ def test_native_file_information_requires_full_id_and_ordinary_handle(monkeypatc
     assert calls == ([18] if fault == "file_id" else [18, 9])
 
 
+def test_windows_identity_requires_the_windows_descriptor_boundary(monkeypatch):
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace())
+    monkeypatch.setattr(
+        descriptors.ctypes,
+        "WinDLL",
+        lambda *_a, **_k: pytest.fail("missing descriptor boundary reached Windows APIs"),
+        raising=False,
+    )
+
+    expected = (
+        "native Windows file identity is unavailable"
+        if sys.platform == "win32"
+        else "native Windows file identity is available only on Windows"
+    )
+    with pytest.raises(OSError) as caught:
+        ownership._windows_file_identity(17)
+    assert str(caught.value) == expected
+
+
 @pytest.mark.parametrize(
     ("mode", "links", "attributes", "directory"),
     [

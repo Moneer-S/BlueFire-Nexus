@@ -134,6 +134,10 @@ def payload_document(
         or workspace.get("runner_policy_digest") != profile_policy_digest
         or workspace.get("workspace_path_digest")
         != content_hash({"sandbox_root": profile_copy.get("sandbox_root")})
+        or (
+            workspace.get("schema_version") == "bluefire.capability-workspace-binding.v2"
+            and workspace.get("runner_profile") != profile_copy
+        )
         or attempt_claim.get("attempt_id") != attempt_id
         or attempt_claim.get("lease_digest") != lease.get("lease_digest")
         or attempt_claim.get("run_id") != lease.get("run_id")
@@ -235,8 +239,13 @@ def payload_document(
     if embedded_claim != expected_embedded_claim:
         raise ProductStoreError("The manifest does not carry the exact retained capability claim.")
 
+    recoverable = workspace.get("schema_version") == "bluefire.capability-workspace-binding.v2"
     document = {
-        "schema_version": "bluefire.capability-task-payload.v1",
+        "schema_version": (
+            "bluefire.capability-task-payload.v2"
+            if recoverable
+            else "bluefire.capability-task-payload.v1"
+        ),
         "purpose": purpose,
         "task_id": task_id,
         "attempt_id": attempt_id,
@@ -254,12 +263,26 @@ def payload_document(
         "dependency_digest": dependency_digest,
         "manifest": manifest_copy,
         "runner_profile": profile_copy,
+        **(
+            {
+                "runner_wal": {
+                    "schema_version": "bluefire.runner-wal-request.v1",
+                    "task_id": task_id,
+                    "request_hash": transport_hash,
+                    "recovery_operation": "recover",
+                }
+            }
+            if recoverable
+            else {}
+        ),
     }
     if purpose == "cleanup":
         document.update(
             cleanup_claim_digest=cleanup_claim_digest,
             cleanup_obligation_digest=cleanup_obligation_digest,
         )
+    if recoverable and purpose == "business":
+        document["dispatch_protocol"] = "bluefire.capability-task-dispatch-intent.v1"
     if purpose == "macos_cleanup":
         document["macos_cleanup_claim_digest"] = macos_cleanup_claim_digest
     return document
