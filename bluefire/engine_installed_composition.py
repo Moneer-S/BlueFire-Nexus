@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import threading
 from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 
 from .engine_action_preparation import EngineActionPreparationCoordinator
 from .engine_action_submission import EngineActionSubmissionCoordinator
@@ -24,6 +24,7 @@ from .engine_attempt_contract import EngineAttemptBinding, EngineAttemptRecord
 from .engine_controller_jobs import (
     ControllerCheckExecutor,
     DefenseOperationExecutor,
+    EngineControllerJobError,
     EngineControllerJobs,
 )
 from .engine_delegation import EngineCapabilityDelegation
@@ -33,7 +34,11 @@ from .engine_experiment_jobs import (
     EngineRuntimeSettlement,
     TransitionSink,
 )
-from .engine_experiment_service import EngineExperimentService, TrustedEngineController
+from .engine_experiment_service import (
+    EngineControllerJobAction,
+    EngineExperimentService,
+    TrustedEngineController,
+)
 from .job_runtime import JobContext
 from .strix_admission_issuer import (
     ControllerPrivateStrixAdmissionIssuer,
@@ -60,6 +65,8 @@ from .tenant_engine_action_preparer import (
 )
 
 if TYPE_CHECKING:
+    from .engine_experiment import EngineExperiment
+    from .engine_experiment_service import EngineControllerJobs as LegacyControllerJobs
     from .job_runtime import RunJobController
     from .product_store import ProductStore
     from .run_store import RunStore
@@ -71,6 +78,31 @@ class InstalledEngineCompositionError(RuntimeError):
 
 class InstalledEngineResource(Protocol):
     def close(self) -> None: ...
+
+
+class _LegacyControllerJobs:
+    """Keep unprepared generic work closed while preserving check cancellation."""
+
+    def __init__(self, prepared_jobs: EngineControllerJobs) -> None:
+        self._prepared_jobs = prepared_jobs
+
+    def submit(
+        self,
+        *,
+        action: EngineControllerJobAction,
+        experiment: EngineExperiment,
+        request_ref: str,
+        submission_id: str,
+        intent_digest: str,
+    ) -> Mapping[str, Any]:
+        raise EngineControllerJobError("a protected prepared controller request is required")
+
+    def settle_undispatched_check_cancellation(
+        self, *, experiment_id: str, check_id: str, job_id: str
+    ) -> Mapping[str, Any]:
+        return self._prepared_jobs.settle_undispatched_check_cancellation(
+            experiment_id=experiment_id, check_id=check_id, job_id=job_id
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,9 +280,10 @@ class _InstalledRuntime:
 class InstalledEngineComposition:
     """One service's shared owners, with an effect-free second binding phase.
 
-    Pass ``runtime``, ``controller``, and the three factory methods to the
-    existing service constructor. The controller-job factory runs first; the
-    preparation/submission factories bind after EngineExperimentService and
+    Pass this owner as ``BlueFireService(engine_workflow_composition=...)``.
+    Explicit ``runtime``, ``controller``, and factory injection remains available
+    for callers that manage their own lifecycle. The controller-job factory runs
+    first; the preparation/submission factories bind after EngineExperimentService and
     EngineExperimentJobs exist. Construction never reads a source or invokes a
     factory. The injected dependencies must already exist; none are synthesized.
     """
@@ -303,6 +336,8 @@ class InstalledEngineComposition:
         self._lock = threading.RLock()
         self._shutdown_lock = threading.Lock()
         self._controller_jobs: EngineControllerJobs | None = None
+        self._legacy_controller_jobs: _LegacyControllerJobs | None = None
+        self._service_claimed = False
         self._store: ProductStore | None = None
         self._run_store: RunStore | None = None
         self._job_controller: RunJobController | None = None
@@ -321,6 +356,18 @@ class InstalledEngineComposition:
         if self._closed or self._stopping:
             raise InstalledEngineCompositionError("installed engine composition is stopping")
 
+    def claim_service(self) -> None:
+        """Atomically transfer this unused owner before service resources exist."""
+        with self._lock:
+            self._require_open()
+            if (
+                self._service_claimed
+                or self._job_controller is not None
+                or self._binding is not None
+            ):
+                raise InstalledEngineCompositionError("composition belongs to another service")
+            self._service_claimed = True
+
     def _require_bound(self) -> None:
         self._require_open()
         if self._binding is None:
@@ -328,7 +375,7 @@ class InstalledEngineComposition:
 
     def controller_jobs_factory(
         self, store: ProductStore, run_store: RunStore, jobs: RunJobController
-    ) -> EngineControllerJobs:
+    ) -> _LegacyControllerJobs:
         with self._lock:
             self._require_open()
             if store is None or run_store is None or jobs is None:
@@ -342,13 +389,16 @@ class InstalledEngineComposition:
                     check_executor=self.adapters.check_executor,
                     clock=self._clock,
                 )
+                self._legacy_controller_jobs = _LegacyControllerJobs(self._controller_jobs)
             elif (
                 store is not self._store
                 or run_store is not self._run_store
                 or jobs is not self._job_controller
             ):
                 raise InstalledEngineCompositionError("composition belongs to another service")
-            return self._controller_jobs
+            if self._legacy_controller_jobs is None:
+                raise InstalledEngineCompositionError("installed controller jobs are unavailable")
+            return self._legacy_controller_jobs
 
     def bind(
         self, store: ProductStore, workspace: EngineExperimentService
@@ -367,7 +417,7 @@ class InstalledEngineComposition:
                 or workspace._jobs._repository is not store
                 or workspace._jobs._controller is not self._job_controller
                 or workspace._controller is not self.controller
-                or workspace._controller_jobs is not self._controller_jobs
+                or workspace._controller_jobs is not self._legacy_controller_jobs
                 or workspace._job_lifecycle is not self._job_controller
                 or self._controller_jobs is None
                 or (self._workspace is not None and self._workspace is not workspace)
@@ -421,9 +471,9 @@ class InstalledEngineComposition:
         store: ProductStore,
         workspace: EngineExperimentService,
         jobs: EngineExperimentJobs,
-        controller_jobs: EngineControllerJobs | None,
+        controller_jobs: LegacyControllerJobs | None,
     ) -> EngineActionSubmissionCoordinator:
-        if jobs is not workspace._jobs or controller_jobs is not self._controller_jobs:
+        if jobs is not workspace._jobs or controller_jobs is not self._legacy_controller_jobs:
             raise InstalledEngineCompositionError("prepared submission jobs binding changed")
         return self.bind(store, workspace).submission
 
@@ -436,14 +486,23 @@ class InstalledEngineComposition:
         with self._lock:
             self._resources.extend(components.resources)
 
-    def shutdown_jobs(self) -> None:
-        """Join the owning job controller before any relay/owner is closed."""
+    def shutdown_jobs(self, jobs: RunJobController | None = None) -> None:
+        """Join the exact service controller, including before factory binding."""
         with self._shutdown_lock:
             with self._lock:
+                if (
+                    jobs is not None
+                    and self._job_controller is not None
+                    and jobs is not self._job_controller
+                ):
+                    raise InstalledEngineCompositionError("composition belongs to another service")
                 if self._jobs_stopped or self._closed:
                     return
                 self._stopping = True
-                jobs = self._job_controller
+                # A service may fail before its first factory binds us. Its
+                # explicit controller still needs cancellation and joining.
+                jobs = self._job_controller if jobs is None else jobs
+                self._job_controller = jobs
             if jobs is not None:
                 jobs.shutdown(cancel_active=True)
             with self._lock:

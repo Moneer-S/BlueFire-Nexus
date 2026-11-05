@@ -195,7 +195,20 @@ class EngineActionPreparationHistory(Protocol):
         self, experiment_id: str, *, revision: int | None = None
     ) -> Mapping[str, Any]: ...
 
-    def create_engine_action_preparation(self, **values: Any) -> Mapping[str, Any]: ...
+    def create_engine_action_preparation(
+        self,
+        *,
+        experiment_id: str,
+        experiment_revision: int,
+        experiment_digest: str,
+        workspace_digest: str,
+        action: EngineWorkspaceAction,
+        limits: PreparedEngineActionLimits | Mapping[str, Any],
+        prepared_at: str,
+        expires_at: str,
+        protected_factory: ProtectedActionFactory,
+        approval_request: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]: ...
 
     def prepared_engine_action(self, request_ref: str) -> Mapping[str, Any]: ...
 

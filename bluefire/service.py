@@ -172,6 +172,7 @@ from .s3_access_service import S3AccessServiceMixin
 from .util import content_hash, file_hash
 
 if TYPE_CHECKING:
+    from .engine_installed_composition import InstalledEngineComposition
     from .file_access_control import FileAccessControl
 
 RunnerFactory = Callable[[RunnerProfile], tuple[RunnerTransport, Path]]
@@ -288,157 +289,203 @@ class BlueFireService(
         engine_experiment_presentation_source: EngineExperimentPresentationSource | None = None,
         engine_action_preparation_factory: EngineActionPreparationFactory | None = None,
         engine_action_submission_factory: EngineActionSubmissionFactory | None = None,
+        engine_workflow_composition: InstalledEngineComposition | None = None,
     ) -> None:
+        if engine_workflow_composition is not None:
+            if any(
+                value is not None
+                for value in (
+                    engine_attempt_runtime,
+                    engine_controller,
+                    engine_controller_jobs,
+                    engine_controller_jobs_factory,
+                    engine_action_preparation_factory,
+                    engine_action_submission_factory,
+                )
+            ):
+                raise ValueError(
+                    "Configure either an engine workflow composition or explicit engine adapters."
+                )
         if engine_controller_jobs is not None and engine_controller_jobs_factory is not None:
             raise ValueError(
                 "Configure either engine controller jobs or its service-owned factory, not both."
             )
-        root = (
-            Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
-        )
-        self.project_root = root.resolve()
-        self._built_in_registry = registry or load_builtin_registry()
-        self.registry = self._built_in_registry
-        self.config = config or self._load_default_config(config_path)
-        self._macos_workspace_endpoint: Any | None = None
-        self.store = RunStore(runs_dir or Path.cwd() / ".bluefire-runs")
-        self.recovered_runs = self.store.recover_interrupted_runs()
-        self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())
-        self.runner_factory = runner_factory or self._managed_runner
-        self._native_tool_setup_runner_factory = runner_factory
-        self.collector_registry_factory = (
-            collector_registry_factory or _default_collector_registry_factory
-        )
-        self.ai_provider_factory = ai_provider_factory or _default_ai_provider_factory
-        self.ai_draft_provider_factory = (
-            ai_draft_provider_factory or _default_ai_draft_provider_factory
-        )
-        self._provider_check_transport = ManagedAIJSONTransport()
-        provider_access = ai_provider_access or DirectAIProviderAccess(
-            transport=self._provider_check_transport
-        )
-        self._runtime_configuration_lock = threading.RLock()
-        self._action_catalog_lock = threading.RLock()
-        self._job_retry_lock = threading.RLock()
-        self._runtime_runner_profiles = self.config.runner_profiles
-        self._runtime_ai_config = self.config.ai
-        self.product_store = ProductStore(
-            product_db_path or self.store.root / "bluefire-product.sqlite3"
-        )
-        self._authorized_provider_access = AuthorizedAIProviderAccess(
-            provider_access, self.product_store
-        )
-        self._provider_access: AIProviderAccess = self._authorized_provider_access
-        self._catalog_snapshot = self._load_action_catalog_snapshot()
-        self.registry = self._catalog_snapshot.registry
-        self._scenarios = self._load_scenarios()
-        self.detection_lab = DetectionLabService(
-            product_store=self.product_store,
-            run_store=self.store,
-            registry=self.registry,
-        )
-        self.recovered_jobs = self.product_store.recover_interrupted_jobs()
-        self.job_controller = RunJobController(
-            self.product_store,
-            self._execute_job,
-            max_workers=2,
-            max_pending_jobs=8,
-            recover_on_start=False,
-        )
-        engine_presentation = (
-            engine_experiment_presentation_source
-            if engine_experiment_presentation_source is not None
-            else self.product_store
-        )
-        configured_engine_controller_jobs = (
-            engine_controller_jobs_factory(
-                self.product_store,
-                self.store,
-                self.job_controller,
+        self._engine_workflow_composition: InstalledEngineComposition | None = None
+        self._engine_workflow_acquired = False
+        self._engine_workflow_close_lock = threading.Lock()
+        self._engine_workflow_close_attempted = False
+        if engine_workflow_composition is not None:
+            engine_workflow_composition.claim_service()
+            self._engine_workflow_composition = engine_workflow_composition
+            self._engine_workflow_acquired = True
+        try:
+            if engine_workflow_composition is not None:
+                engine_attempt_runtime = engine_workflow_composition.runtime
+                engine_controller = engine_workflow_composition.controller
+                engine_controller_jobs_factory = engine_workflow_composition.controller_jobs_factory
+                engine_action_preparation_factory = (
+                    engine_workflow_composition.action_preparation_factory
+                )
+                engine_action_submission_factory = (
+                    engine_workflow_composition.action_submission_factory
+                )
+            root = (
+                Path(project_root)
+                if project_root is not None
+                else Path(__file__).resolve().parents[1]
             )
-            if engine_controller_jobs_factory is not None
-            else engine_controller_jobs
-        )
-        self.engine_attempt_jobs = EngineExperimentJobs(
-            controller=self.job_controller,
-            repository=self.product_store,
-            runtime=engine_attempt_runtime,
-            clock=_engine_service_clock,
-        )
-        self._engine_experiment_service = EngineExperimentService(
-            history=self.product_store,
-            run_source=self.store,
-            jobs=self.engine_attempt_jobs,
-            job_lifecycle=self.job_controller,
-            controller=engine_controller,
-            clock=_engine_service_clock,
-            presentation_source=engine_presentation,
-            controller_jobs=configured_engine_controller_jobs,
-        )
-        self.engine_experiment_service = self._engine_experiment_service
-        # Installed composition supplies pure factories after the shared workspace
-        # source exists.  The default service keeps both admission seams closed.
-        if engine_action_preparation_factory is not None:
-            self._engine_experiment_service._action_preparation = engine_action_preparation_factory(
-                self.product_store,
-                self._engine_experiment_service,
+            self.project_root = root.resolve()
+            self._built_in_registry = registry or load_builtin_registry()
+            self.registry = self._built_in_registry
+            self.config = config or self._load_default_config(config_path)
+            self._macos_workspace_endpoint: Any | None = None
+            self.store = RunStore(runs_dir or Path.cwd() / ".bluefire-runs")
+            self.recovered_runs = self.store.recover_interrupted_runs()
+            self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(
+                managed_product_root()
             )
-        if engine_action_submission_factory is not None:
-            self._engine_experiment_service._action_submission = engine_action_submission_factory(
-                self.product_store,
-                self._engine_experiment_service,
-                self.engine_attempt_jobs,
-                configured_engine_controller_jobs,
+            self.runner_factory = runner_factory or self._managed_runner
+            self._native_tool_setup_runner_factory = runner_factory
+            self.collector_registry_factory = (
+                collector_registry_factory or _default_collector_registry_factory
             )
-        self.detection_ai = DetectionAIJobs(
-            lab=self.detection_lab,
-            controller=self.job_controller,
-            ai_config=self._runtime_ai,
-            access=self._provider_access,
-        )
-        self.method_comparison = MethodComparisonJobs(self)
-        self.detection_create = DetectionCreateJobs(
-            lab=self.detection_lab,
-            controller=self.job_controller,
-            ai_config=self._runtime_ai,
-            access=self._provider_access,
-            configuration_lock=self._runtime_configuration_lock,
-            catalog=self._action_catalog_boundary,
-        )
-        self.graph_ai = GraphAIJobs(
-            store=self.product_store,
-            catalog=self._action_catalog_boundary,
-            controller=self.job_controller,
-            ai_config=self._runtime_ai,
-            access=self._provider_access,
-            configuration_lock=self._runtime_configuration_lock,
-        )
-        self.assistance_runs = AssistanceRunJobs(self)
-        self.receiver_defense = ReceiverDefenseJobs(self)
-        self.ad_smb = AdSmbJobs(self)
-        self.s3_access = S3AccessJobs(self, s3_access_executor or configured_executor(self))
-        from .composition_jobs import CompositionJobs, now_ms
+            self.ai_provider_factory = ai_provider_factory or _default_ai_provider_factory
+            self.ai_draft_provider_factory = (
+                ai_draft_provider_factory or _default_ai_draft_provider_factory
+            )
+            self._provider_check_transport = ManagedAIJSONTransport()
+            provider_access = ai_provider_access or DirectAIProviderAccess(
+                transport=self._provider_check_transport
+            )
+            self._runtime_configuration_lock = threading.RLock()
+            self._action_catalog_lock = threading.RLock()
+            self._job_retry_lock = threading.RLock()
+            self._runtime_runner_profiles = self.config.runner_profiles
+            self._runtime_ai_config = self.config.ai
+            self.product_store = ProductStore(
+                product_db_path or self.store.root / "bluefire-product.sqlite3"
+            )
+            self._authorized_provider_access = AuthorizedAIProviderAccess(
+                provider_access, self.product_store
+            )
+            self._provider_access: AIProviderAccess = self._authorized_provider_access
+            self._catalog_snapshot = self._load_action_catalog_snapshot()
+            self.registry = self._catalog_snapshot.registry
+            self._scenarios = self._load_scenarios()
+            self.detection_lab = DetectionLabService(
+                product_store=self.product_store,
+                run_store=self.store,
+                registry=self.registry,
+            )
+            self.recovered_jobs = self.product_store.recover_interrupted_jobs()
+            self.job_controller = RunJobController(
+                self.product_store,
+                self._execute_job,
+                max_workers=2,
+                max_pending_jobs=8,
+                recover_on_start=False,
+            )
+            engine_presentation = (
+                engine_experiment_presentation_source
+                if engine_experiment_presentation_source is not None
+                else self.product_store
+            )
+            configured_engine_controller_jobs = (
+                engine_controller_jobs_factory(
+                    self.product_store,
+                    self.store,
+                    self.job_controller,
+                )
+                if engine_controller_jobs_factory is not None
+                else engine_controller_jobs
+            )
+            self.engine_attempt_jobs = EngineExperimentJobs(
+                controller=self.job_controller,
+                repository=self.product_store,
+                runtime=engine_attempt_runtime,
+                clock=_engine_service_clock,
+            )
+            self._engine_experiment_service = EngineExperimentService(
+                history=self.product_store,
+                run_source=self.store,
+                jobs=self.engine_attempt_jobs,
+                job_lifecycle=self.job_controller,
+                controller=engine_controller,
+                clock=_engine_service_clock,
+                presentation_source=engine_presentation,
+                controller_jobs=configured_engine_controller_jobs,
+            )
+            self.engine_experiment_service = self._engine_experiment_service
+            # Installed composition supplies pure factories after the shared workspace
+            # source exists.  The default service keeps both admission seams closed.
+            if engine_action_preparation_factory is not None:
+                self._engine_experiment_service._action_preparation = (
+                    engine_action_preparation_factory(
+                        self.product_store,
+                        self._engine_experiment_service,
+                    )
+                )
+            if engine_action_submission_factory is not None:
+                self._engine_experiment_service._action_submission = (
+                    engine_action_submission_factory(
+                        self.product_store,
+                        self._engine_experiment_service,
+                        self.engine_attempt_jobs,
+                        configured_engine_controller_jobs,
+                    )
+                )
+            self.detection_ai = DetectionAIJobs(
+                lab=self.detection_lab,
+                controller=self.job_controller,
+                ai_config=self._runtime_ai,
+                access=self._provider_access,
+            )
+            self.method_comparison = MethodComparisonJobs(self)
+            self.detection_create = DetectionCreateJobs(
+                lab=self.detection_lab,
+                controller=self.job_controller,
+                ai_config=self._runtime_ai,
+                access=self._provider_access,
+                configuration_lock=self._runtime_configuration_lock,
+                catalog=self._action_catalog_boundary,
+            )
+            self.graph_ai = GraphAIJobs(
+                store=self.product_store,
+                catalog=self._action_catalog_boundary,
+                controller=self.job_controller,
+                ai_config=self._runtime_ai,
+                access=self._provider_access,
+                configuration_lock=self._runtime_configuration_lock,
+            )
+            self.assistance_runs = AssistanceRunJobs(self)
+            self.receiver_defense = ReceiverDefenseJobs(self)
+            self.ad_smb = AdSmbJobs(self)
+            self.s3_access = S3AccessJobs(self, s3_access_executor or configured_executor(self))
+            from .composition_jobs import CompositionJobs, now_ms
 
-        self.product_store.interrupt_active_capability_grants(now_ms=now_ms())
-        self.composition = CompositionJobs(self)
-        from .file_access_control import FileAccessControl
+            self.product_store.interrupt_active_capability_grants(now_ms=now_ms())
+            self.composition = CompositionJobs(self)
+            from .file_access_control import FileAccessControl
 
-        self._file_access = FileAccessControl(self)
-        self.assistance = ExperimentAssistance(self)
-        self.assistance_receiver = ReceiverAssistance(self)
-        self.detection_ai.on_application = self.assistance.application_committed
-        self.graph_ai.on_application = self.assistance.application_committed
-        self.detection_create.on_application = self.assistance.application_committed
-        self.cleanup_recovery = self._recover_interrupted_cleanup()
-        self.seed_counts = seed_product_metadata(
-            self.product_store,
-            registry=self.registry,
-            config=self.config,
-            scenarios=self._scenarios,
-            ai_provider_access=self._provider_access,
-        )
-        self._refresh_runtime_configuration()
-        self._synchronize_run_index()
+            self._file_access = FileAccessControl(self)
+            self.assistance = ExperimentAssistance(self)
+            self.assistance_receiver = ReceiverAssistance(self)
+            self.detection_ai.on_application = self.assistance.application_committed
+            self.graph_ai.on_application = self.assistance.application_committed
+            self.detection_create.on_application = self.assistance.application_committed
+            self.cleanup_recovery = self._recover_interrupted_cleanup()
+            self.seed_counts = seed_product_metadata(
+                self.product_store,
+                registry=self.registry,
+                config=self.config,
+                scenarios=self._scenarios,
+                ai_provider_access=self._provider_access,
+            )
+            self._refresh_runtime_configuration()
+            self._synchronize_run_index()
+        except BaseException:
+            self._rollback_initialization()
+            raise
 
     def _load_action_catalog_snapshot(
         self,
@@ -3975,6 +4022,59 @@ class BlueFireService(
                 )
             raise
 
+    def _close_engine_workflow(self) -> None:
+        composition = getattr(self, "_engine_workflow_composition", None)
+        jobs = getattr(self, "job_controller", None)
+        if composition is None:
+            if jobs is not None:
+                jobs.shutdown()
+            return
+        if not self._engine_workflow_acquired:
+            if jobs is not None:
+                jobs.shutdown()
+            return
+        with self._engine_workflow_close_lock:
+            if self._engine_workflow_close_attempted:
+                return
+            try:
+                composition.shutdown_jobs(jobs)
+            except Exception:
+                raise ProductStoreError("The owned engine jobs could not be stopped.") from None
+            self._engine_workflow_close_attempted = True
+            try:
+                composition.close()
+            except Exception:
+                raise ProductStoreError("The owned engine resources could not be closed.") from None
+
+    def _rollback_initialization(self) -> None:
+        """Release only owners that were acquired before initialization failed."""
+        for attribute in ("_provider_access", "_provider_check_transport"):
+            owner = getattr(self, attribute, None)
+            if owner is not None:
+                try:
+                    owner.close()
+                except Exception:
+                    pass
+        try:
+            self._close_engine_workflow()
+        except Exception:
+            # Preserve the initialization failure, including when cleanup fails.
+            pass
+        for attribute in ("receiver_defense", "composition"):
+            owner = getattr(self, attribute, None)
+            if owner is not None:
+                try:
+                    owner.owners.close_all()
+                except Exception:
+                    pass
+        control = getattr(self, "_file_access", None)
+        if control is not None:
+            for owner in (control.windows, control.windows_correction):
+                try:
+                    owner.close_all()
+                except Exception:
+                    pass
+
     def close(self) -> None:
         """Cooperatively stop locally managed workers."""
 
@@ -3985,7 +4085,7 @@ class BlueFireService(
                 self._provider_check_transport.close()
             finally:
                 try:
-                    self.job_controller.shutdown()
+                    self._close_engine_workflow()
                 finally:
                     closed = True
                     for owners in (

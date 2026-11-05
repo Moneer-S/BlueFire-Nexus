@@ -193,14 +193,14 @@ def test_binding_is_two_phase_inert_and_shares_every_owner():
     assert bound.preparer._materials is bound.material_source
     assert bound.preparer._issuer is bound.material_source
     assert bound.preparer._resolver is owner.resolver
-    assert bound.preparer._jobs is controller_jobs
+    assert bound.preparer._jobs is owner._controller_jobs
     assert bound.material_source._resolver is owner.resolver
     assert bound.material_source._authority is owner.sources.authority
     assert bound.material_source._generations is owner.sources.generations
     assert owner.issuer._registry is owner.sources.issuance_registry
     assert owner.controller_jobs_factory(config.store, config.runs, config.jobs) is controller_jobs
     assert submission._jobs is jobs
-    assert submission._controller_jobs is controller_jobs
+    assert submission._controller_jobs is owner._controller_jobs
     assert owner.live_provider_proof is False
     assert config.events == []
     owner.shutdown_jobs()
@@ -363,3 +363,52 @@ def test_shutdown_must_finish_before_reverse_order_exactly_once_close():
     assert len(events) == 2
     with pytest.raises(InstalledEngineCompositionError, match="stopping"):
         owner.controller_jobs_factory(config.store, config.runs, config.jobs)
+
+
+def test_shutdown_accepts_service_jobs_before_factory_binding_and_rejects_foreign_jobs():
+    config = _configured()
+    owner = config.composition
+    owner.shutdown_jobs(config.jobs)
+    owner.shutdown_jobs(config.jobs)
+    with pytest.raises(InstalledEngineCompositionError, match="another service"):
+        owner.shutdown_jobs(_JobController([]))
+    owner.close()
+    assert config.events == [("shutdown",)]
+
+
+def test_bound_shutdown_rejects_foreign_jobs_without_stopping_owners():
+    config = _configured()
+    _bind(config)
+    with pytest.raises(InstalledEngineCompositionError, match="another service"):
+        config.composition.shutdown_jobs(_JobController([]))
+    assert config.events == []
+    config.composition.shutdown_jobs(config.jobs)
+    config.composition.close()
+    assert config.events == [("shutdown",)]
+
+
+def test_composition_claim_is_atomic_and_does_not_touch_protected_sources():
+    import threading
+
+    config = _configured()
+    claims = []
+    gate = threading.Barrier(2)
+
+    def claim():
+        gate.wait(timeout=5)
+        try:
+            config.composition.claim_service()
+        except InstalledEngineCompositionError:
+            claims.append(False)
+        else:
+            claims.append(True)
+
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert sorted(claims) == [False, True]
+    assert config.events == []
+    config.composition.close()
