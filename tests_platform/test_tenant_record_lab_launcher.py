@@ -60,6 +60,18 @@ def _sealed(path: Path) -> SealedFile:
     )
 
 
+def _write_owner_private(path: Path, payload: bytes) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(payload)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    path.chmod(0o600)
+
+
 class Clock:
     def __init__(self) -> None:
         self.minute = 0
@@ -347,7 +359,7 @@ class FakeNativeSupervisor:
                 max_runtime_seconds=min(60, spec.max_runtime_seconds),
                 started_at="2026-11-04T12:00:00Z",
             )
-            ready_path.write_bytes(receipt.to_bytes())
+            _write_owner_private(ready_path, receipt.to_bytes())
         else:
             manifest_value = json.loads(spec.packet_source.path.read_text("utf-8"))
             manifest_canonical = json.dumps(
@@ -372,8 +384,9 @@ class FakeNativeSupervisor:
                 ),
                 "live_model_proof": False,
             }
-            ready_path.write_bytes(
-                json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+            _write_owner_private(
+                ready_path,
+                json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n",
             )
 
     @staticmethod
@@ -1165,9 +1178,10 @@ def test_system_supervisor_uses_platform_custody_before_fixed_child_runs(
 ) -> None:
     launcher, fake_backend, prepared, lifecycle = _prepared(tmp_path)
     running = launcher.start(prepared, lifecycle)
-    spec = fake_backend.specs[0]
-    if platform_name == "linux":
-        spec = replace(spec, custody_mode="posix_session")
+    spec = replace(
+        fake_backend.specs[0],
+        custody_mode=("windows_job_object" if platform_name == "win32" else "posix_session"),
+    )
     events: list[str] = []
     options: dict[str, object] = {}
 
@@ -1218,7 +1232,7 @@ def test_windows_launch_failure_releases_each_created_job_exactly_once(
 ) -> None:
     launcher, fake_backend, prepared, lifecycle = _prepared(tmp_path)
     running = launcher.start(prepared, lifecycle)
-    spec = fake_backend.specs[0]
+    spec = replace(fake_backend.specs[0], custody_mode="windows_job_object")
     events: list[str] = []
     custody = FailingWindowsCustody(
         events,
