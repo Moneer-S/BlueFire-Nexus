@@ -13,10 +13,10 @@ missing reviewed bootstrap contract or start a lab while preparing a request.
 
 from __future__ import annotations
 
-import re
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Protocol
 
 from .engine_action_preparation import EngineActionPreparationCoordinator
 from .engine_action_submission import EngineActionSubmissionCoordinator
@@ -33,13 +33,23 @@ from .engine_experiment_jobs import (
     EngineExperimentJobs,
     EngineRuntimeSettlement,
     TransitionSink,
+    installed_execution_claim_policy,
 )
 from .engine_experiment_service import (
     EngineControllerJobAction,
     EngineExperimentService,
     TrustedEngineController,
 )
+from .engine_reconciliation import EngineReconciliationError
 from .job_runtime import JobContext
+from .product_store_accepted_engine_jobs import (
+    AcceptedEngineJobError,
+    AcceptedEnginePreDispatchCancelled,
+    AcceptedPreparedEngineAttempt,
+    PreDispatchCancelledEngineAttempt,
+    ProductStoreAcceptedEngineJobs,
+    ProductStoreEngineReconciliationCoordinator,
+)
 from .strix_admission_issuer import (
     ControllerPrivateStrixAdmissionIssuer,
     IndependentStrixIssuanceVerifier,
@@ -70,6 +80,12 @@ if TYPE_CHECKING:
     from .job_runtime import RunJobController
     from .product_store import ProductStore
     from .run_store import RunStore
+
+
+_RECONCILIATION_POLICY = {
+    "schema_version": "bluefire.installed-attempt-reconciliation.v1",
+    "effects": "exact-reference-idempotent-no-launch",
+}
 
 
 class InstalledEngineCompositionError(RuntimeError):
@@ -106,48 +122,6 @@ class _LegacyControllerJobs:
 
 
 @dataclass(frozen=True, slots=True)
-class AcceptedPreparedEngineAttempt:
-    """Identity reopened and atomically consumed by the protected job owner.
-
-    This value is not authority by itself. Only ``accepted_jobs`` may supply it
-    after checking durable preparation, reviewer acceptance, job claim and the
-    exact still-active admission. The owner must refuse a second execution,
-    including after process restart or a lost acknowledgement.
-    """
-
-    job_id: str
-    preparation_ref: str
-    binding_digest: str
-    delegation_digest: str
-
-    def validate(
-        self, job_id: str, binding: EngineAttemptBinding, delegation: EngineCapabilityDelegation
-    ) -> None:
-        if (
-            not isinstance(self.job_id, str)
-            or re.fullmatch(r"job-[0-9a-f]{32}", self.job_id) is None
-            or self.job_id != job_id
-            or not isinstance(self.preparation_ref, str)
-            or re.fullmatch(r"sha256:[0-9a-f]{64}", self.preparation_ref) is None
-            or self.binding_digest != binding.binding_digest
-            or self.delegation_digest != delegation.delegation_digest
-        ):
-            raise InstalledEngineCompositionError("accepted prepared job binding changed")
-
-
-class AcceptedPreparedEngineJobs(Protocol):
-    def claim_for_execution(
-        self,
-        *,
-        job_id: str,
-        binding: EngineAttemptBinding,
-        delegation: EngineCapabilityDelegation,
-    ) -> AcceptedPreparedEngineAttempt | None:
-        """Durably consume exact accepted work before any runtime/lab effect."""
-        ...
-
-
-@dataclass(frozen=True, slots=True)
 class InstalledEngineSources:
     authority: AppendOnlyStrixRuntimeAuthoritySource
     manifests: StrixQualificationManifestSource
@@ -160,7 +134,6 @@ class InstalledEngineSources:
     generation_journal: TenantGenerationJournalReader
     material_candidates: RetainedTenantActionMaterialSource
     admission_identities: TenantRuntimeAdmissionIdentitySource
-    accepted_jobs: AcceptedPreparedEngineJobs
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +148,7 @@ class InstalledAttemptComponents:
 
     runtime: EngineAttemptRuntime
     resources: tuple[InstalledEngineResource, ...] = ()
+    runtime_resolution_ref: str | None = None
 
 
 class InstalledAttemptFactory(Protocol):
@@ -185,6 +159,11 @@ class InstalledAttemptFactory(Protocol):
     and return their lifecycle handles in ``InstalledAttemptComponents``.
     Dependency presence in this assembly is not transport custody verification.
     """
+
+    @property
+    def reconciliation_policy(self) -> Mapping[str, str]:
+        """Declare no-launch, exact-reference idempotent recovery support."""
+        ...
 
     def for_execution(
         self,
@@ -198,12 +177,20 @@ class InstalledAttemptFactory(Protocol):
     def for_reconciliation(
         self,
         *,
+        accepted: AcceptedPreparedEngineAttempt,
         binding: EngineAttemptBinding,
         delegation: EngineCapabilityDelegation,
         saved_record: EngineAttemptRecord,
+        reconciliation_ref: str,
         composition: InstalledEngineComposition,
     ) -> InstalledAttemptComponents:
-        """Reopen existing custody only; never allocate, start or reissue."""
+        """Reopen existing custody only; never allocate, start or reissue.
+
+        Every returned resource and its ``close`` path must use the exact
+        reconciliation reference idempotently. A crash may repeat the call
+        with that same reference after an external effect but before the
+        ProductStore settlement becomes visible.
+        """
         ...
 
 
@@ -224,9 +211,47 @@ class InstalledEngineBinding:
     preparer: ControllerOwnedTenantActionPreparer
 
 
+class _InstalledReconciliationCoordinator:
+    """Keep composition lifecycle ownership around the ProductStore OS session."""
+
+    def __init__(self, owner: InstalledEngineComposition) -> None:
+        self._owner = owner
+
+    @contextmanager
+    def session(self, *, experiment_id: str, attempt_id: str) -> Iterator[Any]:
+        owner = self._owner
+        # Enter lifecycle tracking before waiting on the purpose lock. Shutdown
+        # therefore refuses new work and joins a waiter as well as an active
+        # reconciliation through its final ProductStore CAS.
+        try:
+            with owner._reconciliation_lease(attempt_id):
+                with owner._lock:
+                    raw = owner._product_store_reconciliation
+                    owner._require_bound()
+                if raw is None:
+                    raise InstalledEngineCompositionError(
+                        "engine reconciliation coordinator is unavailable"
+                    )
+                with raw.session(
+                    experiment_id=experiment_id,
+                    attempt_id=attempt_id,
+                ) as session:
+                    yield session
+        except EngineReconciliationError:
+            raise
+        except InstalledEngineCompositionError as exc:
+            raise EngineReconciliationError(
+                "installed engine reconciliation lifecycle is unavailable"
+            ) from exc
+
+
 class _InstalledRuntime:
     def __init__(self, owner: InstalledEngineComposition) -> None:
         self._owner = owner
+
+    @property
+    def execution_claim_policy(self) -> Mapping[str, str]:
+        return installed_execution_claim_policy()
 
     def execute(
         self,
@@ -239,20 +264,52 @@ class _InstalledRuntime:
         delegation.validate_attempt_binding(binding)
         with owner._lock:
             owner._require_bound()
+            accepted_jobs = owner._accepted_jobs
             if binding.attempt_id in owner._dispatched:
                 raise InstalledEngineCompositionError("attempt execution was already consumed")
             # Consume locally before any protected call; errors never retry effects.
             owner._dispatched.add(binding.attempt_id)
-        accepted = owner.sources.accepted_jobs.claim_for_execution(
-            job_id=context.job_id, binding=binding, delegation=delegation
-        )
+        if accepted_jobs is None:
+            raise InstalledEngineCompositionError("accepted prepared jobs are unavailable")
+        try:
+            accepted = accepted_jobs.claim_for_execution(
+                job_id=context.job_id, binding=binding, delegation=delegation
+            )
+        except AcceptedEngineJobError as exc:
+            raise InstalledEngineCompositionError("accepted prepared job is unavailable") from exc
+        if isinstance(accepted, PreDispatchCancelledEngineAttempt):
+            accepted.validate(context.job_id, binding, delegation)
+            raise AcceptedEnginePreDispatchCancelled(accepted.pre_dispatch_ref)
         if not isinstance(accepted, AcceptedPreparedEngineAttempt):
             raise InstalledEngineCompositionError("accepted prepared job is unavailable")
-        accepted.validate(context.job_id, binding, delegation)
+        try:
+            accepted.validate(context.job_id, binding, delegation)
+        except AcceptedEngineJobError as exc:
+            raise InstalledEngineCompositionError("accepted prepared job binding changed") from exc
+        context.checkpoint(
+            {
+                "phase": "engine_execution_claimed",
+                "attempt_id": binding.attempt_id,
+                "execution_claim_ref": accepted.claim_ref,
+            }
+        )
+        # A checkpoint may pause long enough for admission to expire or be
+        # revoked. Reassert the exact claim-bound resolution immediately before
+        # the protected factory can allocate anything.
+        try:
+            accepted_jobs.require_current(
+                accepted=accepted,
+                binding=binding,
+                delegation=delegation,
+            )
+        except AcceptedEngineJobError as exc:
+            raise InstalledEngineCompositionError(
+                "accepted engine admission is no longer current"
+            ) from exc
         components = owner.adapters.attempts.for_execution(
             accepted=accepted, binding=binding, delegation=delegation, composition=owner
         )
-        owner._retain(components)
+        owner._retain(components, expected_resolution_ref=accepted.runtime_resolution_ref)
         return components.runtime.execute(context, binding, delegation, transition)
 
     def reconcile(
@@ -261,20 +318,103 @@ class _InstalledRuntime:
         delegation: EngineCapabilityDelegation,
         saved_record: EngineAttemptRecord,
     ) -> EngineRuntimeSettlement:
+        del binding, delegation, saved_record
+        raise InstalledEngineCompositionError(
+            "installed engine reconciliation requires its active claimed session"
+        )
+
+    def reconcile_claimed(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+        saved_record: EngineAttemptRecord,
+        *,
+        reconciliation_ref: str,
+    ) -> EngineRuntimeSettlement:
         owner = self._owner
         delegation.validate_attempt_binding(binding)
         if saved_record.binding != binding:
             raise InstalledEngineCompositionError("saved attempt binding changed")
         with owner._lock:
             owner._require_bound()
-        components = owner.adapters.attempts.for_reconciliation(
-            binding=binding,
-            delegation=delegation,
-            saved_record=saved_record,
-            composition=owner,
+            accepted_jobs = owner._accepted_jobs
+            coordinator = owner._product_store_reconciliation
+        if accepted_jobs is None or coordinator is None:
+            raise InstalledEngineCompositionError(
+                "installed reconciliation dependencies are unavailable"
+            )
+        try:
+            plan = coordinator.require_active_claimed(
+                binding=binding,
+                delegation=delegation,
+                reconciliation_ref=reconciliation_ref,
+            )
+            accepted = accepted_jobs.reopen_for_reconciliation(
+                binding=binding, delegation=delegation
+            )
+        except (AcceptedEngineJobError, EngineReconciliationError) as exc:
+            raise InstalledEngineCompositionError(
+                "accepted reconciliation intent is unavailable"
+            ) from exc
+        if not isinstance(accepted, AcceptedPreparedEngineAttempt):
+            raise InstalledEngineCompositionError("claimed reconciliation lost its execution claim")
+        try:
+            accepted.validate(accepted.job_id, binding, delegation)
+        except AcceptedEngineJobError as exc:
+            raise InstalledEngineCompositionError(
+                "accepted reconciliation binding changed"
+            ) from exc
+        if (
+            accepted.job_id != plan.job_id
+            or accepted.claim_ref != plan.claim_ref
+            or accepted.binding_digest != plan.binding_digest
+            or accepted.delegation_digest != plan.delegation_digest
+            or accepted.runtime_resolution_ref != plan.runtime_resolution_ref
+        ):
+            raise InstalledEngineCompositionError("accepted reconciliation intent binding changed")
+        owner._require_reconciliation_policy()
+        try:
+            components = owner.adapters.attempts.for_reconciliation(
+                accepted=accepted,
+                binding=binding,
+                delegation=delegation,
+                saved_record=saved_record,
+                reconciliation_ref=reconciliation_ref,
+                composition=owner,
+            )
+        except Exception as exc:
+            raise InstalledEngineCompositionError(
+                "installed attempt reconciliation factory failed"
+            ) from exc
+        reconcile = getattr(components.runtime, "reconcile_claimed", None)
+        if not callable(reconcile):
+            owner._discard_components(components)
+            raise InstalledEngineCompositionError(
+                "installed attempt runtime cannot reconcile claimed custody"
+            )
+        owner._retain(
+            components,
+            expected_resolution_ref=accepted.runtime_resolution_ref,
         )
-        owner._retain(components)
-        return components.runtime.reconcile(binding, delegation, saved_record)
+        try:
+            settlement = reconcile(
+                binding,
+                delegation,
+                saved_record,
+                reconciliation_ref=reconciliation_ref,
+            )
+        except Exception as exc:
+            raise InstalledEngineCompositionError(
+                "installed attempt reconciliation failed"
+            ) from exc
+        if (
+            not isinstance(settlement, EngineRuntimeSettlement)
+            or settlement.reconciliation_ref != reconciliation_ref
+        ):
+            raise InstalledEngineCompositionError(
+                "installed reconciliation settlement binding changed"
+            )
+        return settlement
 
 
 class InstalledEngineComposition:
@@ -309,6 +449,8 @@ class InstalledEngineComposition:
                     raise InstalledEngineCompositionError(
                         f"required dependency absent: {field.name}"
                     )
+        self.sources, self.adapters = sources, adapters
+        self._require_reconciliation_policy()
         if (
             not callable(clock)
             or not isinstance(reviewer, str)
@@ -317,7 +459,6 @@ class InstalledEngineComposition:
             or any(ord(character) < 32 or ord(character) == 127 for character in reviewer)
         ):
             raise InstalledEngineCompositionError("trusted clock and stable reviewer required")
-        self.sources, self.adapters = sources, adapters
         self.controller = adapters.controller
         self.resolver = ControllerQualifiedStrixAdmissionResolver(
             authority_source=sources.authority,
@@ -334,9 +475,15 @@ class InstalledEngineComposition:
         self.runtime = _InstalledRuntime(self)
         self._reviewer, self._clock = reviewer, clock
         self._lock = threading.RLock()
+        self._operation_condition = threading.Condition(self._lock)
         self._shutdown_lock = threading.Lock()
         self._controller_jobs: EngineControllerJobs | None = None
         self._legacy_controller_jobs: _LegacyControllerJobs | None = None
+        self._accepted_jobs: ProductStoreAcceptedEngineJobs | None = None
+        self._product_store_reconciliation: ProductStoreEngineReconciliationCoordinator | None = (
+            None
+        )
+        self._reconciliation_coordinator = _InstalledReconciliationCoordinator(self)
         self._service_claimed = False
         self._store: ProductStore | None = None
         self._run_store: RunStore | None = None
@@ -345,6 +492,7 @@ class InstalledEngineComposition:
         self._binding: InstalledEngineBinding | None = None
         self._dispatched: set[str] = set()
         self._resources = list(adapters.resources)
+        self._active_reconciliations: set[str] = set()
         self._stopping = self._jobs_stopped = self._closed = False
 
     @property
@@ -352,9 +500,32 @@ class InstalledEngineComposition:
         """Assembly and fake-provider output cannot establish live proof."""
         return False
 
+    @property
+    def reconciliation_coordinator(self) -> _InstalledReconciliationCoordinator:
+        """Return the exact lifecycle wrapper after ProductStore binding."""
+
+        with self._lock:
+            self._require_open()
+            if self._product_store_reconciliation is None:
+                raise InstalledEngineCompositionError(
+                    "engine reconciliation coordinator is not bound"
+                )
+            return self._reconciliation_coordinator
+
     def _require_open(self) -> None:
         if self._closed or self._stopping:
             raise InstalledEngineCompositionError("installed engine composition is stopping")
+
+    def _require_reconciliation_policy(self) -> None:
+        try:
+            policy = getattr(self.adapters.attempts, "reconciliation_policy", None)
+            valid = isinstance(policy, Mapping) and dict(policy) == _RECONCILIATION_POLICY
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise InstalledEngineCompositionError(
+                "attempt factory reconciliation policy is unavailable"
+            )
 
     def claim_service(self) -> None:
         """Atomically transfer this unused owner before service resources exist."""
@@ -390,6 +561,17 @@ class InstalledEngineComposition:
                     clock=self._clock,
                 )
                 self._legacy_controller_jobs = _LegacyControllerJobs(self._controller_jobs)
+                self._accepted_jobs = ProductStoreAcceptedEngineJobs(
+                    store=store,
+                    resolver=self.resolver,
+                    reviewer=self._reviewer,
+                    clock=self._clock,
+                )
+                self._product_store_reconciliation = ProductStoreEngineReconciliationCoordinator(
+                    store=store,
+                    reviewer=self._reviewer,
+                    clock=self._clock,
+                )
             elif (
                 store is not self._store
                 or run_store is not self._run_store
@@ -416,10 +598,13 @@ class InstalledEngineComposition:
                 or workspace._jobs._runtime is not self.runtime
                 or workspace._jobs._repository is not store
                 or workspace._jobs._controller is not self._job_controller
+                or workspace._jobs._reconciliation is not self._reconciliation_coordinator
                 or workspace._controller is not self.controller
                 or workspace._controller_jobs is not self._legacy_controller_jobs
                 or workspace._job_lifecycle is not self._job_controller
                 or self._controller_jobs is None
+                or self._accepted_jobs is None
+                or self._product_store_reconciliation is None
                 or (self._workspace is not None and self._workspace is not workspace)
             ):
                 raise InstalledEngineCompositionError("installed service binding changed")
@@ -440,6 +625,7 @@ class InstalledEngineComposition:
                     runtime_resolver=self.resolver,
                     controller_jobs=self._controller_jobs,
                     material_issuer=materials,
+                    execution_claim_policy=self.runtime.execution_claim_policy,
                 )
                 self._binding = InstalledEngineBinding(
                     preparation=EngineActionPreparationCoordinator(
@@ -477,14 +663,58 @@ class InstalledEngineComposition:
             raise InstalledEngineCompositionError("prepared submission jobs binding changed")
         return self.bind(store, workspace).submission
 
-    def _retain(self, components: InstalledAttemptComponents) -> None:
-        if (
-            not isinstance(components, InstalledAttemptComponents)
-            or components.runtime is self.runtime
-        ):
+    @contextmanager
+    def _reconciliation_lease(self, attempt_id: str) -> Iterator[None]:
+        with self._operation_condition:
+            self._require_bound()
+            if attempt_id in self._active_reconciliations:
+                raise InstalledEngineCompositionError(
+                    "engine attempt reconciliation is already active"
+                )
+            self._active_reconciliations.add(attempt_id)
+        try:
+            yield
+        finally:
+            with self._operation_condition:
+                self._active_reconciliations.discard(attempt_id)
+                self._operation_condition.notify_all()
+
+    def _retain(
+        self,
+        components: InstalledAttemptComponents,
+        *,
+        expected_resolution_ref: str,
+    ) -> None:
+        valid = isinstance(components, InstalledAttemptComponents) and (
+            components.runtime is not self.runtime
+            and components.runtime_resolution_ref == expected_resolution_ref
+        )
+        if not valid:
+            self._discard_components(components)
             raise InstalledEngineCompositionError("exact attempt components are unavailable")
         with self._lock:
-            self._resources.extend(components.resources)
+            unavailable = self._stopping or self._closed
+            if not unavailable:
+                self._resources.extend(components.resources)
+        if unavailable:
+            self._discard_components(components)
+            raise InstalledEngineCompositionError("installed engine composition is stopping")
+
+    def _discard_components(self, components: object) -> None:
+        if not isinstance(components, InstalledAttemptComponents):
+            return
+        with self._lock:
+            retained = {id(resource) for resource in self._resources}
+        seen: set[int] = set()
+        for resource in reversed(components.resources):
+            identity = id(resource)
+            if identity in seen or identity in retained:
+                continue
+            seen.add(identity)
+            try:
+                resource.close()
+            except Exception:
+                pass
 
     def shutdown_jobs(self, jobs: RunJobController | None = None) -> None:
         """Join the exact service controller, including before factory binding."""
@@ -505,7 +735,9 @@ class InstalledEngineComposition:
                 self._job_controller = jobs
             if jobs is not None:
                 jobs.shutdown(cancel_active=True)
-            with self._lock:
+            with self._operation_condition:
+                while self._active_reconciliations:
+                    self._operation_condition.wait()
                 self._jobs_stopped = True
 
     def close(self) -> None:
@@ -514,6 +746,10 @@ class InstalledEngineComposition:
                 return
             if self._job_controller is not None and not self._jobs_stopped:
                 raise InstalledEngineCompositionError("shutdown_jobs must finish before close")
+            if self._active_reconciliations:
+                raise InstalledEngineCompositionError(
+                    "engine reconciliation must finish before close"
+                )
             self._closed = True
             resources = tuple(reversed(self._resources))
         seen: set[int] = set()

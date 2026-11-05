@@ -31,7 +31,7 @@ from .engine_container_custody import ContainerCustodyPlan
 from .engine_controller_jobs import DefenseOperation, EngineControllerJobs
 from .engine_delegation import EngineCapabilityDelegation
 from .engine_experiment import ControllerCheckRole, EngineDefenseChange, EngineExperiment
-from .engine_experiment_jobs import EngineExperimentJobs
+from .engine_experiment_jobs import EngineExperimentJobs, installed_execution_claim_policy
 from .engine_network_policy import (
     EffectiveNetworkSnapshot,
     EngineNetworkPlan,
@@ -194,12 +194,19 @@ class ControllerOwnedTenantActionPreparer:
         runtime_resolver: StrixRuntimeAdmissionResolver,
         controller_jobs: EngineControllerJobs,
         material_issuer: TenantActionMaterialIssuer | None = None,
+        execution_claim_policy: Mapping[str, Any] | None = None,
     ) -> None:
         self._materials = material_source
         self._generations = generation_source
         self._resolver = runtime_resolver
         self._jobs = controller_jobs
         self._issuer = material_issuer
+        expected_policy = installed_execution_claim_policy()
+        if execution_claim_policy is not None and dict(execution_claim_policy) != expected_policy:
+            raise EngineActionPreparationError("engine execution claim policy changed")
+        self._execution_claim_policy = (
+            expected_policy if execution_claim_policy is not None else None
+        )
 
     def prepare(
         self,
@@ -338,6 +345,7 @@ class ControllerOwnedTenantActionPreparer:
                         delegation=delegation,
                         approval=exact_approval,
                         approval_id=approval_id,
+                        execution_claim_policy=self._execution_claim_policy,
                     ), _authority(
                         "engine_attempt",
                         {

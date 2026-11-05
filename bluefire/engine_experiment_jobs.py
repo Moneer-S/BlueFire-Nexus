@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
-from .domain_errors import JobCancelled
+from .domain_errors import EnginePreDispatchCancelled, JobCancelled
 from .engine_attempt_contract import (
     AttemptCompleteness,
     AttemptState,
@@ -33,6 +33,14 @@ from .engine_experiment import (
     EngineExperiment,
     EngineExperimentError,
     IndependentObservationRecord,
+)
+from .engine_reconciliation import (
+    ClaimedEngineReconciliation,
+    EngineReconciliationCoordinator,
+    EngineReconciliationError,
+    SettledClaimedEngineAttempt,
+    SettledNoDispatchEngineAttempt,
+    UnclaimedEngineReconciliation,
 )
 from .evidence import EvidenceProvenance
 from .job_runtime import JobContext, JobResult
@@ -63,6 +71,73 @@ _CLAIMED_APPROVAL_FIELDS = frozenset(
         "claimed_at",
     }
 )
+_EXECUTION_CLAIM_POLICY = {
+    "schema_version": "bluefire.engine-execution-claim-policy.v1",
+    "claim_protocol": "bluefire.engine-attempt-execution-claim.v1",
+    "accepted_jobs_adapter": "bluefire.product-store-accepted-engine-jobs.v1",
+}
+_JOB_REQUEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "experiment_id",
+        "attempt_id",
+        "binding_digest",
+        "delegation_digest",
+        "execution_approval_digest",
+        "execution_approval_id",
+    }
+)
+
+
+def installed_execution_claim_policy() -> dict[str, str]:
+    """Return the one exact immutable policy accepted by installed composition."""
+
+    return dict(_EXECUTION_CLAIM_POLICY)
+
+
+def _claim_policy(value: Any, *, allow_none: bool = True) -> dict[str, str] | None:
+    if value is None and allow_none:
+        return None
+    if not isinstance(value, Mapping) or dict(value) != _EXECUTION_CLAIM_POLICY:
+        raise EngineExperimentJobError("engine execution claim policy changed")
+    return dict(_EXECUTION_CLAIM_POLICY)
+
+
+def _runtime_claim_policy(runtime: EngineAttemptRuntime | None) -> dict[str, str] | None:
+    if runtime is None:
+        return None
+    return _claim_policy(getattr(runtime, "execution_claim_policy", None))
+
+
+def _job_request(
+    value: Mapping[str, Any], *, expected_policy: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    parsed = dict(value)
+    version = parsed.get("schema_version")
+    fields = set(parsed)
+    if version == "bluefire.engine-attempt-job.v1":
+        if fields != _JOB_REQUEST_FIELDS or expected_policy is not None:
+            raise EngineExperimentJobError("prepared engine request policy changed")
+    elif version == "bluefire.engine-attempt-job.v2":
+        if fields != _JOB_REQUEST_FIELDS | {"execution_claim_policy"}:
+            raise EngineExperimentJobError("prepared engine request fields changed")
+        policy = _claim_policy(parsed.get("execution_claim_policy"), allow_none=False)
+        if expected_policy is None or policy != dict(expected_policy):
+            raise EngineExperimentJobError("prepared engine request policy changed")
+        parsed["execution_claim_policy"] = policy
+    else:
+        raise EngineExperimentJobError("prepared engine request version changed")
+    for field, pattern in (
+        ("experiment_id", r"experiment-[0-9a-f]{32}"),
+        ("attempt_id", r"engine-attempt-[0-9a-f]{32}"),
+        ("execution_approval_id", r"approval-[0-9a-f]{32}"),
+        ("binding_digest", r"sha256:[0-9a-f]{64}"),
+        ("delegation_digest", r"sha256:[0-9a-f]{64}"),
+        ("execution_approval_digest", r"sha256:[0-9a-f]{64}"),
+    ):
+        if not isinstance(parsed[field], str) or re.fullmatch(pattern, parsed[field]) is None:
+            raise EngineExperimentJobError("prepared engine request identity changed")
+    return parsed
 
 
 class EngineJobController(Protocol):
@@ -135,6 +210,9 @@ class EngineExperimentRepository(Protocol):
         expected_revision: int,
         expected_experiment_digest: str,
         recovery: bool = False,
+        reconciliation_ref: str | None = None,
+        reconciliation_capability: object | None = None,
+        reconciled_at: str | None = None,
     ) -> Mapping[str, Any]: ...
 
     def reconcile_engine_attempt_cleanup(
@@ -147,7 +225,28 @@ class EngineExperimentRepository(Protocol):
         timestamp: str,
         expected_revision: int,
         expected_experiment_digest: str,
+        reconciliation_ref: str | None = None,
+        reconciliation_capability: object | None = None,
     ) -> Mapping[str, Any]: ...
+
+    def settle_unclaimed_engine_attempt_recovery(
+        self,
+        *,
+        experiment_id: str,
+        attempt_id: str,
+        job_id: str,
+        job_state: str,
+        binding_digest: str,
+        delegation_digest: str,
+        cleanup_evidence_ref: str,
+        timestamp: str,
+        expected_revision: int,
+        expected_experiment_digest: str,
+        reconciliation_capability: object,
+    ) -> Mapping[str, Any]:
+        """Atomically recheck no claim and settle ambiguous custody UNKNOWN."""
+
+        ...
 
     def settle_undispatched_engine_attempt_cancellation(
         self,
@@ -164,6 +263,22 @@ class EngineExperimentRepository(Protocol):
         """Atomically prove cancelled job/no custody and settle the queued attempt."""
 
         ...
+
+    def settle_engine_attempt_pre_dispatch(
+        self,
+        *,
+        experiment_id: str,
+        attempt_id: str,
+        job_id: str,
+        binding: Mapping[str, Any],
+        delegation: Mapping[str, Any],
+        record: Mapping[str, Any],
+        exit_reason: str,
+        adapter_pre_dispatch_ref: str | None,
+        settled_at: str,
+        expected_revision: int,
+        expected_experiment_digest: str,
+    ) -> Mapping[str, Any]: ...
 
 
 TransitionSink = Callable[[EngineAttemptRecord, str], None]
@@ -188,6 +303,27 @@ class EngineAttemptRuntime(Protocol):
     ) -> "EngineRuntimeSettlement": ...
 
 
+class ClaimedEngineAttemptRuntime(Protocol):
+    """Installed v2 recovery bound to one immutable idempotency reference."""
+
+    def reconcile_claimed(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+        saved_record: EngineAttemptRecord,
+        *,
+        reconciliation_ref: str,
+    ) -> "EngineRuntimeSettlement":
+        """Reopen custody only; never launch, allocate, or reissue execution.
+
+        A crash may cause another process to invoke this method again with the
+        same reference. Every effectful adapter below this boundary must use
+        that reference as an idempotency/fencing identity or fail closed.
+        """
+
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class EngineRuntimeSettlement:
     """One terminal runtime result ready for an atomic ProductStore append.
@@ -206,8 +342,14 @@ class EngineRuntimeSettlement:
     cleanup_evidence_ref: str
     settled_at: str
     independent_observations: tuple[IndependentObservationRecord, ...] = ()
+    reconciliation_ref: str | None = None
 
     def validate(self, binding: EngineAttemptBinding) -> None:
+        if self.reconciliation_ref is not None and (
+            not isinstance(self.reconciliation_ref, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", self.reconciliation_ref) is None
+        ):
+            raise EngineExperimentJobError("runtime settlement reconciliation changed")
         if (
             self.record.binding_digest != binding.binding_digest
             or self.record.binding.attempt_id != binding.attempt_id
@@ -307,10 +449,17 @@ class EngineExperimentJobs:
         repository: EngineExperimentRepository,
         runtime: EngineAttemptRuntime | None,
         clock: Callable[[], str],
+        reconciliation: EngineReconciliationCoordinator | None = None,
     ) -> None:
         self._controller = controller
         self._repository = repository
         self._runtime = runtime
+        self._execution_claim_policy = _runtime_claim_policy(runtime)
+        if (reconciliation is None) != (self._execution_claim_policy is None):
+            raise EngineExperimentJobError(
+                "engine reconciliation coordinator and installed claim policy must agree"
+            )
+        self._reconciliation = reconciliation
         self._clock = clock
 
     def submit_prepared(
@@ -328,30 +477,9 @@ class EngineExperimentJobs:
         from a caller-selected experiment head.
         """
 
-        fields = {
-            "schema_version",
-            "experiment_id",
-            "attempt_id",
-            "binding_digest",
-            "delegation_digest",
-            "execution_approval_digest",
-            "execution_approval_id",
-        }
-        if not isinstance(request, Mapping) or set(request) != fields:
+        if not isinstance(request, Mapping):
             raise EngineExperimentJobError("prepared engine request fields changed")
-        parsed = dict(request)
-        if parsed["schema_version"] != "bluefire.engine-attempt-job.v1":
-            raise EngineExperimentJobError("prepared engine request version changed")
-        for field, pattern in (
-            ("experiment_id", r"experiment-[0-9a-f]{32}"),
-            ("attempt_id", r"engine-attempt-[0-9a-f]{32}"),
-            ("execution_approval_id", r"approval-[0-9a-f]{32}"),
-            ("binding_digest", r"sha256:[0-9a-f]{64}"),
-            ("delegation_digest", r"sha256:[0-9a-f]{64}"),
-            ("execution_approval_digest", r"sha256:[0-9a-f]{64}"),
-        ):
-            if not isinstance(parsed[field], str) or re.fullmatch(pattern, parsed[field]) is None:
-                raise EngineExperimentJobError("prepared engine request identity changed")
+        parsed = _job_request(request, expected_policy=self._execution_claim_policy)
         try:
             canonical_submission = str(uuid.UUID(submission_id))
         except (TypeError, ValueError, AttributeError) as exc:
@@ -417,6 +545,7 @@ class EngineExperimentJobs:
             delegation=delegation,
             approval=checked_approval,
             approval_id=approval_id,
+            execution_claim_policy=self._execution_claim_policy,
         )
         if intent_digest != content_hash(request):
             raise EngineExperimentJobError("engine submission intent digest changed")
@@ -478,6 +607,7 @@ class EngineExperimentJobs:
             self._settle_without_dispatch(
                 experiment,
                 binding,
+                delegation,
                 state=AttemptState.CANCELLED,
                 exit_reason="controller_cancelled_before_dispatch",
             )
@@ -499,6 +629,7 @@ class EngineExperimentJobs:
             self._settle_without_dispatch(
                 experiment,
                 binding,
+                delegation,
                 state=AttemptState.CANCELLED,
                 exit_reason="authority_expired_before_dispatch",
                 settled_at=dispatch_at,
@@ -526,10 +657,35 @@ class EngineExperimentJobs:
                 transition,
             )
             settlement.validate(binding)
+        except EnginePreDispatchCancelled as exc:
+            proof_ref = exc.pre_dispatch_ref
+            if (
+                self._execution_claim_policy is None
+                or not isinstance(proof_ref, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", proof_ref) is None
+            ):
+                self._settle_runtime_error(
+                    experiment,
+                    binding,
+                    delegation,
+                    state=AttemptState.CANCELLED,
+                    exit_reason="controller_cancelled",
+                )
+            else:
+                self._settle_without_dispatch(
+                    experiment,
+                    binding,
+                    delegation,
+                    state=AttemptState.CANCELLED,
+                    exit_reason="controller_cancelled_before_execution_claim",
+                    pre_dispatch_ref=proof_ref,
+                )
+            raise
         except JobCancelled:
             experiment = self._settle_runtime_error(
                 experiment,
                 binding,
+                delegation,
                 state=AttemptState.CANCELLED,
                 exit_reason="controller_cancelled",
             )
@@ -541,6 +697,7 @@ class EngineExperimentJobs:
             experiment = self._settle_runtime_error(
                 experiment,
                 binding,
+                delegation,
                 state=AttemptState.FAILED,
                 exit_reason="engine_runtime_failed",
             )
@@ -563,6 +720,7 @@ class EngineExperimentJobs:
         self,
         experiment: EngineExperiment,
         binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
         *,
         state: AttemptState,
         exit_reason: str,
@@ -613,10 +771,12 @@ class EngineExperimentJobs:
         self,
         experiment: EngineExperiment,
         binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
         *,
         state: AttemptState,
         exit_reason: str,
         settled_at: str | None = None,
+        pre_dispatch_ref: str | None = None,
     ) -> EngineExperiment:
         """Settle a controller stop before any engine custody was allocated."""
 
@@ -629,16 +789,36 @@ class EngineExperimentJobs:
             exit_reason=exit_reason,
             limitations=("External-engine dispatch did not begin.",),
         )
-        cleanup_receipt = content_hash(
-            {
-                "schema_version": "bluefire.engine-prelaunch-settlement-receipt.v1",
-                "attempt_id": binding.attempt_id,
-                "binding_digest": binding.binding_digest,
-                "attempt_state": state.value,
-                "cleanup_state": CleanupState.VERIFIED_ABSENT.value,
-                "recorded_at": when,
-            }
+        receipt = {
+            "schema_version": "bluefire.engine-prelaunch-settlement-receipt.v1",
+            "attempt_id": binding.attempt_id,
+            "binding_digest": binding.binding_digest,
+            "attempt_state": state.value,
+            "cleanup_state": CleanupState.VERIFIED_ABSENT.value,
+            "recorded_at": when,
+        }
+        if pre_dispatch_ref is not None:
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", pre_dispatch_ref) is None:
+                raise EngineExperimentJobError("pre-dispatch proof reference is invalid")
+            receipt["pre_dispatch_ref"] = pre_dispatch_ref
+        cleanup_receipt = (
+            pre_dispatch_ref if pre_dispatch_ref is not None else content_hash(receipt)
         )
+        if self._execution_claim_policy is not None:
+            value = self._repository.settle_engine_attempt_pre_dispatch(
+                experiment_id=experiment.experiment_id,
+                attempt_id=binding.attempt_id,
+                job_id=current.job_id,
+                binding=binding.to_dict(),
+                delegation=delegation.to_dict(),
+                record=terminal.to_dict(),
+                exit_reason=exit_reason,
+                adapter_pre_dispatch_ref=pre_dispatch_ref,
+                settled_at=when,
+                expected_revision=experiment.revision,
+                expected_experiment_digest=experiment.digest,
+            )
+            return EngineExperiment._from_controller_mapping(value)
         return self._cas_settlement(
             experiment,
             EngineRuntimeSettlement(
@@ -659,6 +839,204 @@ class EngineExperimentJobs:
         runtime = self._runtime
         if runtime is None:
             raise EngineExperimentJobError("external engine runtime is unavailable")
+        if self._execution_claim_policy is not None:
+            coordinator = self._reconciliation
+            if coordinator is None:
+                raise EngineExperimentJobError(
+                    "installed engine reconciliation coordinator is unavailable"
+                )
+            try:
+                with coordinator.session(
+                    experiment_id=experiment_id,
+                    attempt_id=attempt_id,
+                ) as session:
+                    reconciliation_capability = session.reconciliation_capability
+                    # The fixed-purpose OS lock is already held here. This must
+                    # be a fresh snapshot, not a value loaded before admission.
+                    snapshot = self._repository.load_engine_attempt_execution(
+                        experiment_id,
+                        attempt_id,
+                    )
+                    experiment, binding, delegation, _approval, _approval_id, _claimed_at = (
+                        self._parse_execution_snapshot(snapshot)
+                    )
+                    _index, entry = experiment._attempt(attempt_id)
+                    plan = session.begin_or_reopen(
+                        binding=binding,
+                        delegation=delegation,
+                        saved_record=entry.record,
+                        expected_revision=experiment.revision,
+                        expected_experiment_digest=experiment.digest,
+                    )
+                    if (
+                        not isinstance(
+                            plan,
+                            (
+                                ClaimedEngineReconciliation,
+                                SettledClaimedEngineAttempt,
+                                SettledNoDispatchEngineAttempt,
+                                UnclaimedEngineReconciliation,
+                            ),
+                        )
+                        or plan.job_id != entry.job_id
+                    ):
+                        raise EngineReconciliationError(
+                            "engine reconciliation job identity changed"
+                        )
+                    if isinstance(plan, SettledNoDispatchEngineAttempt):
+                        plan.validate(binding, delegation, entry.record)
+                        if (
+                            entry.record.state is not AttemptState.CANCELLED
+                            or entry.record.upstream_session_id is not None
+                            or entry.record.started_at is not None
+                            or entry.record.exit_reason != plan.exit_reason
+                            or entry.cleanup_state is not CleanupState.VERIFIED_ABSENT
+                            or entry.cleanup_evidence_ref != plan.cleanup_evidence_ref
+                            or entry.settled_at is None
+                        ):
+                            raise EngineReconciliationError(
+                                "saved pre-dispatch cancellation proof changed"
+                            )
+                        return experiment.to_dict()
+                    if isinstance(plan, SettledClaimedEngineAttempt):
+                        plan.validate(binding, delegation, entry.record)
+                        if (
+                            entry.record.state
+                            not in {
+                                AttemptState.COMPLETED,
+                                AttemptState.PARTIAL,
+                                AttemptState.FAILED,
+                                AttemptState.CANCELLED,
+                                AttemptState.BUDGET_EXHAUSTED,
+                                AttemptState.UNKNOWN,
+                            }
+                            or entry.settled_at is None
+                            or entry.cleanup_state is not CleanupState.VERIFIED_ABSENT
+                            or entry.cleanup_evidence_ref != plan.cleanup_evidence_ref
+                        ):
+                            raise EngineReconciliationError(
+                                "saved claimed engine cleanup outcome changed"
+                            )
+                        return experiment.to_dict()
+                    if isinstance(plan, UnclaimedEngineReconciliation):
+                        plan.validate(binding, delegation, entry.record)
+                        recorded_at = self._now()
+                        receipt = content_hash(
+                            {
+                                "schema_version": "bluefire.engine-unclaimed-recovery.v1",
+                                "attempt_id": binding.attempt_id,
+                                "binding_digest": binding.binding_digest,
+                                "delegation_digest": delegation.delegation_digest,
+                                "job_id": plan.job_id,
+                                "job_state": plan.job_state,
+                                "recorded_at": recorded_at,
+                            }
+                        )
+                        # ProductStore rechecks claim absence and the terminal
+                        # bound job in this same atomic UNKNOWN settlement.
+                        return self._repository.settle_unclaimed_engine_attempt_recovery(
+                            experiment_id=experiment.experiment_id,
+                            attempt_id=attempt_id,
+                            job_id=plan.job_id,
+                            job_state=plan.job_state,
+                            binding_digest=binding.binding_digest,
+                            delegation_digest=delegation.delegation_digest,
+                            cleanup_evidence_ref=receipt,
+                            timestamp=recorded_at,
+                            expected_revision=experiment.revision,
+                            expected_experiment_digest=experiment.digest,
+                            reconciliation_capability=reconciliation_capability,
+                        )
+                    if not isinstance(plan, ClaimedEngineReconciliation):
+                        raise EngineReconciliationError("engine reconciliation plan is invalid")
+                    plan.validate(binding, delegation, entry.record)
+                    terminal_states = {
+                        AttemptState.COMPLETED,
+                        AttemptState.PARTIAL,
+                        AttemptState.FAILED,
+                        AttemptState.CANCELLED,
+                        AttemptState.BUDGET_EXHAUSTED,
+                        AttemptState.UNKNOWN,
+                    }
+                    if plan.job_state == "completed" and entry.record.state not in terminal_states:
+                        raise EngineReconciliationError(
+                            "completed engine job has no terminal attempt outcome"
+                        )
+                    if (
+                        entry.record.state in terminal_states
+                        and entry.settled_at is not None
+                        and entry.cleanup_state is CleanupState.VERIFIED_ABSENT
+                        and entry.cleanup_evidence_ref is not None
+                    ):
+                        # Lost acknowledgements after a successful recovery are
+                        # reads, not another external cleanup or experiment
+                        # revision. The exact claim/intent plan above has already
+                        # been reopened and validated under the purpose lock.
+                        return experiment.to_dict()
+                    try:
+                        reconcile_claimed = getattr(runtime, "reconcile_claimed", None)
+                        if not callable(reconcile_claimed):
+                            raise TypeError("installed engine runtime lacks claimed recovery")
+                        settlement = reconcile_claimed(
+                            binding,
+                            delegation,
+                            entry.record,
+                            reconciliation_ref=plan.reconciliation_ref,
+                        )
+                    except Exception:
+                        raise EngineReconciliationError(
+                            "installed engine reconciliation failed"
+                        ) from None
+                    if not isinstance(settlement, EngineRuntimeSettlement):
+                        raise EngineReconciliationError(
+                            "installed engine runtime returned an invalid settlement"
+                        )
+                    settlement.validate(binding)
+                    if settlement.reconciliation_ref != plan.reconciliation_ref:
+                        raise EngineReconciliationError(
+                            "runtime settlement reconciliation reference changed"
+                        )
+                    if entry.record.state in terminal_states:
+                        if settlement.record.to_dict() != entry.record.to_dict():
+                            raise EngineExperimentJobError(
+                                "recovery attempted to rewrite a settled engine outcome"
+                            )
+                        saved_observations = {
+                            item.evidence_id: item
+                            for item in experiment.independent_observations
+                            if item.attempt_id == attempt_id
+                        }
+                        if any(
+                            (saved := saved_observations.get(item.evidence_id)) is None
+                            or saved.to_dict() != item.to_dict()
+                            for item in settlement.independent_observations
+                        ):
+                            raise EngineExperimentJobError(
+                                "settled recovery observations require separate "
+                                "verified publication"
+                            )
+                        return self._repository.reconcile_engine_attempt_cleanup(
+                            experiment_id=experiment.experiment_id,
+                            attempt_id=attempt_id,
+                            cleanup_state=settlement.cleanup_state.value,
+                            cleanup_evidence_ref=settlement.cleanup_evidence_ref,
+                            timestamp=self._now(),
+                            expected_revision=experiment.revision,
+                            expected_experiment_digest=experiment.digest,
+                            reconciliation_ref=plan.reconciliation_ref,
+                            reconciliation_capability=reconciliation_capability,
+                        )
+                    return self._cas_settlement(
+                        experiment,
+                        settlement,
+                        recovery=True,
+                        reconciliation_ref=plan.reconciliation_ref,
+                        reconciliation_capability=reconciliation_capability,
+                    ).to_dict()
+            except EngineReconciliationError as exc:
+                raise EngineExperimentJobError(
+                    "installed engine reconciliation is unavailable"
+                ) from exc
         snapshot = self._repository.load_engine_attempt_execution(experiment_id, attempt_id)
         experiment, binding, delegation, _approval, _approval_id, _claimed_at = (
             self._parse_execution_snapshot(snapshot)
@@ -666,6 +1044,10 @@ class EngineExperimentJobs:
         _index, entry = experiment._attempt(attempt_id)
         settlement = runtime.reconcile(binding, delegation, entry.record)
         settlement.validate(binding)
+        if settlement.reconciliation_ref is not None:
+            raise EngineExperimentJobError(
+                "generic runtime returned installed reconciliation metadata"
+            )
         if entry.record.state in {
             AttemptState.COMPLETED,
             AttemptState.PARTIAL,
@@ -696,7 +1078,7 @@ class EngineExperimentJobs:
                 attempt_id=attempt_id,
                 cleanup_state=settlement.cleanup_state.value,
                 cleanup_evidence_ref=settlement.cleanup_evidence_ref,
-                timestamp=settlement.settled_at,
+                timestamp=self._now(),
                 expected_revision=experiment.revision,
                 expected_experiment_digest=experiment.digest,
             )
@@ -780,19 +1162,12 @@ class EngineExperimentJobs:
         str,
         str,
     ]:
-        expected_fields = {
-            "schema_version",
-            "experiment_id",
-            "attempt_id",
-            "binding_digest",
-            "delegation_digest",
-            "execution_approval_digest",
-            "execution_approval_id",
-        }
         request_document = dict(request)
         submission = request_document.pop("_submission", None)
-        if set(request_document) != expected_fields:
-            raise EngineExperimentJobError("engine job request fields changed")
+        request_document = _job_request(
+            request_document,
+            expected_policy=self._execution_claim_policy,
+        )
         if submission is not None:
             if (
                 not isinstance(submission, Mapping)
@@ -819,6 +1194,7 @@ class EngineExperimentJobs:
             delegation=delegation,
             approval=approval,
             approval_id=approval_id,
+            execution_claim_policy=self._execution_claim_policy,
         ):
             raise EngineExperimentJobError("saved engine job authority changed")
         return parsed
@@ -916,23 +1292,34 @@ class EngineExperimentJobs:
         settlement: EngineRuntimeSettlement,
         *,
         recovery: bool = False,
+        reconciliation_ref: str | None = None,
+        reconciliation_capability: object | None = None,
     ) -> EngineExperiment:
         settlement.validate(settlement.record.binding)
-        value = self._repository.compare_and_swap_engine_attempt_settlement(
-            experiment_id=experiment.experiment_id,
-            record=settlement.record.to_dict(),
-            engine_evidence=(item.to_dict() for item in settlement.engine_evidence),
-            independent_observations=(
+        if settlement.reconciliation_ref != reconciliation_ref:
+            raise EngineExperimentJobError("runtime settlement reconciliation reference changed")
+        values: dict[str, Any] = {
+            "experiment_id": experiment.experiment_id,
+            "record": settlement.record.to_dict(),
+            "engine_evidence": (item.to_dict() for item in settlement.engine_evidence),
+            "independent_observations": (
                 item.to_dict() for item in settlement.independent_observations
             ),
-            artifact_manifest_ref=settlement.artifact_manifest_ref,
-            cleanup_state=settlement.cleanup_state.value,
-            cleanup_evidence_ref=settlement.cleanup_evidence_ref,
-            settled_at=settlement.settled_at,
-            expected_revision=experiment.revision,
-            expected_experiment_digest=experiment.digest,
-            recovery=recovery,
-        )
+            "artifact_manifest_ref": settlement.artifact_manifest_ref,
+            "cleanup_state": settlement.cleanup_state.value,
+            "cleanup_evidence_ref": settlement.cleanup_evidence_ref,
+            "settled_at": settlement.settled_at,
+            "expected_revision": experiment.revision,
+            "expected_experiment_digest": experiment.digest,
+            "recovery": recovery,
+        }
+        if recovery:
+            values["reconciled_at"] = self._now()
+        if reconciliation_ref is not None:
+            values["reconciliation_ref"] = reconciliation_ref
+        if reconciliation_capability is not None:
+            values["reconciliation_capability"] = reconciliation_capability
+        value = self._repository.compare_and_swap_engine_attempt_settlement(**values)
         return EngineExperiment._from_controller_mapping(value)
 
     @staticmethod
@@ -943,11 +1330,17 @@ class EngineExperimentJobs:
         delegation: EngineCapabilityDelegation,
         approval: EngineExecutionApprovalBinding,
         approval_id: str,
-    ) -> dict[str, str]:
+        execution_claim_policy: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if binding.experiment_id != experiment.experiment_id:
             raise EngineExperimentJobError("engine binding belongs to another experiment")
-        return {
-            "schema_version": "bluefire.engine-attempt-job.v1",
+        policy = _claim_policy(execution_claim_policy)
+        request: dict[str, Any] = {
+            "schema_version": (
+                "bluefire.engine-attempt-job.v2"
+                if policy is not None
+                else "bluefire.engine-attempt-job.v1"
+            ),
             "experiment_id": experiment.experiment_id,
             "attempt_id": binding.attempt_id,
             "binding_digest": binding.binding_digest,
@@ -955,6 +1348,9 @@ class EngineExperimentJobs:
             "execution_approval_digest": content_hash(approval.to_dict()),
             "execution_approval_id": approval_id,
         }
+        if policy is not None:
+            request["execution_claim_policy"] = policy
+        return request
 
     @staticmethod
     def _require_current_authority(

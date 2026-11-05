@@ -602,12 +602,18 @@ def _protected_authority(
         }
         if limits.to_dict() != expected_limits:
             raise ProductStoreError("prepared limits differ from engine attempt authority")
+        request_policy = (
+            job_request.get("execution_claim_policy")
+            if job_request.get("schema_version") == "bluefire.engine-attempt-job.v2"
+            else None
+        )
         expected_request = EngineExperimentJobs._request(
             experiment=experiment,
             binding=binding,
             delegation=delegation,
             approval=approval,
             approval_id=approval_id,
+            execution_claim_policy=request_policy,
         )
         if dict(job_request) != expected_request:
             raise ProductStoreError("protected engine attempt job request changed")

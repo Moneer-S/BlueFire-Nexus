@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any, Mapping
 
 import pytest
 
-from bluefire.domain_errors import JobCancelled
+from bluefire.domain_errors import EnginePreDispatchCancelled, JobCancelled
 from bluefire.engine_attempt_contract import (
     AttemptCompleteness,
     AttemptRole,
@@ -22,6 +24,13 @@ from bluefire.engine_experiment_jobs import (
     EngineExperimentJobError,
     EngineExperimentJobs,
     EngineRuntimeSettlement,
+    installed_execution_claim_policy,
+)
+from bluefire.engine_reconciliation import (
+    ClaimedEngineReconciliation,
+    SettledClaimedEngineAttempt,
+    SettledNoDispatchEngineAttempt,
+    UnclaimedEngineReconciliation,
 )
 from bluefire.evidence import EvidenceRecord
 from bluefire.util import content_hash
@@ -227,6 +236,26 @@ class _Repository:
         )
         return self.experiment.to_dict()
 
+    def settle_engine_attempt_pre_dispatch(self, **values):
+        self._cas(values)
+        cleanup_ref = values["adapter_pre_dispatch_ref"] or content_hash(
+            {
+                "schema_version": "bluefire.test-engine-pre-dispatch.v1",
+                "attempt_id": values["attempt_id"],
+                "exit_reason": values["exit_reason"],
+                "settled_at": values["settled_at"],
+            }
+        )
+        self.experiment = self.experiment.settle_attempt(
+            EngineAttemptRecord.from_mapping(values["record"]),
+            engine_evidence=(),
+            artifact_manifest_ref=None,
+            cleanup_state=CleanupState.VERIFIED_ABSENT,
+            cleanup_evidence_ref=cleanup_ref,
+            settled_at=values["settled_at"],
+        )
+        return self.experiment.to_dict()
+
     def _cas(self, values) -> None:
         assert values["expected_revision"] == self.experiment.revision
         assert values["expected_experiment_digest"] == self.experiment.digest
@@ -302,6 +331,26 @@ class _Runtime:
         )
 
 
+class _ClaimRuntime(_Runtime):
+    execution_claim_policy = installed_execution_claim_policy()
+
+
+class _PreDispatchCancelledRuntime(_ClaimRuntime):
+    def execute(self, context, binding, delegation, transition):
+        del context, transition
+        self.execute_calls += 1
+        assert delegation.validate_attempt_binding(binding) == binding
+        raise EnginePreDispatchCancelled(_digest("9"))
+
+
+class _UnqualifiedPreDispatchCancelledRuntime(_Runtime):
+    def execute(self, context, binding, delegation, transition):
+        del context, transition
+        self.execute_calls += 1
+        assert delegation.validate_attempt_binding(binding) == binding
+        raise EnginePreDispatchCancelled(_digest("8"))
+
+
 class _Clock:
     def __init__(self, values: tuple[str, ...] | None = None) -> None:
         self.values = iter(
@@ -316,6 +365,145 @@ class _Clock:
 
     def __call__(self) -> str:
         return next(self.values)
+
+
+class _ReconciliationCoordinator:
+    def __init__(self) -> None:
+        self.active = False
+        self.events: list[tuple[Any, ...]] = []
+        self.plan = None
+        self._capability = object()
+
+    @property
+    def reconciliation_capability(self):
+        assert self.active
+        return self._capability
+
+    @contextmanager
+    def session(self, *, experiment_id, attempt_id):
+        assert not self.active
+        self.active = True
+        self.events.append(("enter", experiment_id, attempt_id))
+        try:
+            yield self
+        finally:
+            self.events.append(("exit", experiment_id, attempt_id))
+            self.active = False
+
+    def begin_or_reopen(
+        self,
+        *,
+        binding,
+        delegation,
+        saved_record,
+        expected_revision,
+        expected_experiment_digest,
+    ):
+        assert self.active
+        self.events.append(
+            (
+                "begin",
+                binding.attempt_id,
+                saved_record.state.value,
+                expected_revision,
+                expected_experiment_digest,
+            )
+        )
+        assert self.plan is not None
+        return self.plan
+
+
+class _CoordinatedRepository(_Repository):
+    def __init__(self, experiment, coordinator):
+        super().__init__(experiment)
+        self.coordinator = coordinator
+
+    def load_engine_attempt_execution(self, experiment_id, attempt_id):
+        assert self.coordinator.active
+        self.coordinator.events.append(("load", experiment_id, attempt_id))
+        return super().load_engine_attempt_execution(experiment_id, attempt_id)
+
+    def compare_and_swap_engine_attempt_settlement(self, **values):
+        if values.get("recovery"):
+            assert self.coordinator.active
+            assert values["reconciliation_capability"] is self.coordinator._capability
+            self.coordinator.events.append(("settle", values.get("reconciliation_ref")))
+        return super().compare_and_swap_engine_attempt_settlement(**values)
+
+    def reconcile_engine_attempt_cleanup(self, **values):
+        assert self.coordinator.active
+        assert values["reconciliation_capability"] is self.coordinator._capability
+        self.coordinator.events.append(("cleanup", values.get("reconciliation_ref")))
+        return super().reconcile_engine_attempt_cleanup(**values)
+
+    def settle_unclaimed_engine_attempt_recovery(self, **values):
+        assert self.coordinator.active
+        assert values["reconciliation_capability"] is self.coordinator._capability
+        self.coordinator.events.append(("unclaimed", values["job_id"], values["job_state"]))
+        self._cas(values)
+        _index, entry = self.experiment._attempt(values["attempt_id"])
+        if entry.record.state in {AttemptState.QUEUED, AttemptState.PREFLIGHT}:
+            terminal = entry.record.transition(
+                AttemptState.FAILED,
+                timestamp=values["timestamp"],
+                completeness=AttemptCompleteness.UNKNOWN,
+                exit_reason="installed_execution_claim_unknown",
+                limitations=("Prior engine custody remains unknown.",),
+            )
+            self.experiment = self.experiment.settle_attempt(
+                terminal,
+                engine_evidence=(),
+                artifact_manifest_ref=None,
+                cleanup_state=CleanupState.UNKNOWN,
+                cleanup_evidence_ref=values["cleanup_evidence_ref"],
+                settled_at=values["timestamp"],
+            )
+        return self.experiment.to_dict()
+
+
+class _CoordinatedClaimRuntime(_ClaimRuntime):
+    def __init__(
+        self,
+        coordinator,
+        *,
+        reconcile_terminal=False,
+        returned_ref=None,
+        fail=False,
+        cancel_reconciliation=False,
+    ):
+        super().__init__(reconcile_terminal=reconcile_terminal)
+        self.coordinator = coordinator
+        self.returned_ref = returned_ref
+        self.reconcile_failure = fail
+        self.reconcile_cancellation = cancel_reconciliation
+
+    def reconcile_claimed(
+        self,
+        binding,
+        delegation,
+        saved_record,
+        *,
+        reconciliation_ref,
+    ):
+        assert self.coordinator.active
+        self.coordinator.events.append(("runtime", reconciliation_ref))
+        if self.reconcile_failure:
+            raise RuntimeError(r"C:\private\reconciliation-token.txt")
+        if self.reconcile_cancellation:
+            raise JobCancelled(r"C:\private\reconciliation-cancel-token.txt")
+        settlement = super().reconcile(binding, delegation, saved_record)
+        return replace(
+            settlement,
+            reconciliation_ref=(
+                reconciliation_ref if self.returned_ref is None else self.returned_ref
+            ),
+        )
+
+
+class _DescriptorFailureClaimRuntime(_CoordinatedClaimRuntime):
+    @property
+    def reconcile_claimed(self):
+        raise RuntimeError(r"C:\private\reconciliation-descriptor-token.txt")
 
 
 def _authority():
@@ -373,15 +561,21 @@ def _independent_observation(*, timestamp: str = "2026-11-04T12:03:30Z"):
     )
 
 
-def _jobs(runtime=None, *, controller=None, clock=None):
+def _jobs(runtime=None, *, controller=None, clock=None, reconciliation=None):
     selected_controller = _Controller() if controller is None else controller
     repository = _Repository(_new_experiment())
     selected_runtime = _Runtime() if runtime is None else runtime
+    if (
+        reconciliation is None
+        and getattr(selected_runtime, "execution_claim_policy", None) is not None
+    ):
+        reconciliation = _ReconciliationCoordinator()
     jobs = EngineExperimentJobs(
         controller=selected_controller,
         repository=repository,
         runtime=selected_runtime,
         clock=_Clock() if clock is None else clock,
+        reconciliation=reconciliation,
     )
     return jobs, selected_controller, repository, selected_runtime
 
@@ -394,6 +588,7 @@ def _submit(jobs, binding, delegation, approval):
         delegation=delegation,
         approval=approval,
         approval_id="approval-" + "1" * 32,
+        execution_claim_policy=jobs._execution_claim_policy,
     )
     return jobs.submit(
         experiment_id=EXPERIMENT_ID,
@@ -406,6 +601,48 @@ def _submit(jobs, binding, delegation, approval):
         submission_id=SUBMISSION_ID,
         intent_digest=content_hash(request),
     )
+
+
+def _coordinated_recovery(
+    *,
+    reconcile_terminal=True,
+    returned_ref=None,
+    fail=False,
+    cancel_reconciliation=False,
+    runtime_type=_CoordinatedClaimRuntime,
+):
+    coordinator = _ReconciliationCoordinator()
+    repository = _CoordinatedRepository(_new_experiment(), coordinator)
+    controller = _Controller(run_callback=False)
+    runtime = runtime_type(
+        coordinator,
+        reconcile_terminal=reconcile_terminal,
+        returned_ref=returned_ref,
+        fail=fail,
+        cancel_reconciliation=cancel_reconciliation,
+    )
+    jobs = EngineExperimentJobs(
+        controller=controller,
+        repository=repository,
+        runtime=runtime,
+        clock=_Clock(
+            (
+                "2026-11-04T12:01:30Z",
+                "2026-11-04T12:04:30Z",
+                "2026-11-04T12:05:00Z",
+            )
+        ),
+        reconciliation=coordinator,
+    )
+    binding, delegation, approval = _authority()
+    _submit(jobs, binding, delegation, approval)
+    queued = repository.experiment.attempts[0].record
+    preflight = queued.transition(AttemptState.PREFLIGHT)
+    repository.experiment = repository.experiment.update_attempt_record(
+        preflight,
+        timestamp="2026-11-04T12:02:30Z",
+    )
+    return jobs, repository, runtime, coordinator, binding, delegation
 
 
 def test_idempotent_submission_executes_once_and_persists_cas_state() -> None:
@@ -426,6 +663,142 @@ def test_idempotent_submission_executes_once_and_persists_cas_state() -> None:
     assert entry.execution_approval_digest == content_hash(approval.to_dict())
     assert entry.execution_approval_id == "approval-" + "1" * 32
     assert repository.settlement_recoveries == [False]
+
+
+def test_claim_runtime_binds_v2_policy_into_job_intent() -> None:
+    runtime = _ClaimRuntime()
+    jobs, controller, _repository, _runtime = _jobs(runtime)
+    binding, delegation, approval = _authority()
+
+    _submit(jobs, binding, delegation, approval)
+
+    saved = controller.jobs[(EngineExperimentJobs.JOB_KIND, SUBMISSION_ID)]
+    assert saved["request"] == jobs._request(
+        experiment=_new_experiment(),
+        binding=binding,
+        delegation=delegation,
+        approval=approval,
+        approval_id="approval-" + "1" * 32,
+        execution_claim_policy=installed_execution_claim_policy(),
+    )
+    assert saved["request"]["schema_version"] == "bluefire.engine-attempt-job.v2"
+    assert saved["request"]["execution_claim_policy"] == installed_execution_claim_policy()
+
+
+@pytest.mark.parametrize(
+    ("runtime", "reconciliation"),
+    [(_ClaimRuntime(), None), (_Runtime(), _ReconciliationCoordinator())],
+)
+def test_runtime_claim_policy_and_reconciliation_coordinator_are_one_contract(
+    runtime, reconciliation
+) -> None:
+    with pytest.raises(EngineExperimentJobError, match="must agree"):
+        EngineExperimentJobs(
+            controller=_Controller(),
+            repository=_Repository(_new_experiment()),
+            runtime=runtime,
+            clock=_Clock(),
+            reconciliation=reconciliation,
+        )
+
+
+def test_runtime_policy_refuses_cross_protocol_prepared_request() -> None:
+    binding, delegation, approval = _authority()
+    v1 = EngineExperimentJobs._request(
+        experiment=_new_experiment(),
+        binding=binding,
+        delegation=delegation,
+        approval=approval,
+        approval_id="approval-" + "1" * 32,
+    )
+    v2 = EngineExperimentJobs._request(
+        experiment=_new_experiment(),
+        binding=binding,
+        delegation=delegation,
+        approval=approval,
+        approval_id="approval-" + "1" * 32,
+        execution_claim_policy=installed_execution_claim_policy(),
+    )
+    generic, _controller, repository, _runtime = _jobs(_Runtime())
+    claimed, _controller2, claimed_repository, _runtime2 = _jobs(_ClaimRuntime())
+
+    with pytest.raises(EngineExperimentJobError, match="policy changed"):
+        generic.submit_prepared(
+            request=v2,
+            submission_id=SUBMISSION_ID,
+            intent_digest=content_hash(v2),
+            submission_factory=lambda: ({}, True),
+        )
+    with pytest.raises(EngineExperimentJobError, match="policy changed"):
+        claimed.submit_prepared(
+            request=v1,
+            submission_id=SUBMISSION_ID,
+            intent_digest=content_hash(v1),
+            submission_factory=lambda: ({}, True),
+        )
+
+    assert repository.reserve_calls == claimed_repository.reserve_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("reserved_runtime", "reopened_runtime"),
+    ((_Runtime(), _ClaimRuntime()), (_ClaimRuntime(), _Runtime())),
+)
+def test_saved_job_cannot_cross_runtime_claim_protocol(reserved_runtime, reopened_runtime) -> None:
+    controller = _Controller(run_callback=False)
+    jobs, _controller, repository, _runtime = _jobs(
+        reserved_runtime,
+        controller=controller,
+    )
+    binding, delegation, approval = _authority()
+    saved = _submit(jobs, binding, delegation, approval)
+    reopened = EngineExperimentJobs(
+        controller=controller,
+        repository=repository,
+        runtime=reopened_runtime,
+        clock=_Clock(),
+        reconciliation=(
+            _ReconciliationCoordinator()
+            if getattr(reopened_runtime, "execution_claim_policy", None) is not None
+            else None
+        ),
+    )
+
+    with pytest.raises(EngineExperimentJobError, match="policy changed"):
+        reopened._execute(_Context(), saved["request"])
+
+    assert reopened_runtime.execute_calls == 0
+    assert repository.experiment.attempts[0].record.state is AttemptState.QUEUED
+
+
+def test_claim_runtime_predispatch_cancellation_is_verified_absent() -> None:
+    runtime = _PreDispatchCancelledRuntime()
+    jobs, _controller, repository, _runtime = _jobs(runtime)
+    binding, delegation, approval = _authority()
+
+    with pytest.raises(EnginePreDispatchCancelled):
+        _submit(jobs, binding, delegation, approval)
+
+    entry = repository.experiment.attempts[0]
+    assert runtime.execute_calls == 1
+    assert entry.record.state is AttemptState.CANCELLED
+    assert entry.record.upstream_session_id is None
+    assert entry.record.exit_reason == "controller_cancelled_before_execution_claim"
+    assert entry.cleanup_state is CleanupState.VERIFIED_ABSENT
+
+
+def test_generic_runtime_cannot_turn_typed_marker_into_absence_proof() -> None:
+    runtime = _UnqualifiedPreDispatchCancelledRuntime()
+    jobs, _controller, repository, _runtime = _jobs(runtime)
+    binding, delegation, approval = _authority()
+
+    with pytest.raises(EnginePreDispatchCancelled):
+        _submit(jobs, binding, delegation, approval)
+
+    entry = repository.experiment.attempts[0]
+    assert entry.record.state is AttemptState.CANCELLED
+    assert entry.record.exit_reason == "controller_cancelled"
+    assert entry.cleanup_state is CleanupState.UNKNOWN
 
 
 def test_runtime_settlement_atomically_persists_controller_observation() -> None:
@@ -515,6 +888,393 @@ def test_interrupted_reconciliation_marks_settlement_as_recovery() -> None:
     assert recovered["attempts"][0]["record"]["state"] == "failed"
     assert repository.experiment.independent_observations
     assert repository.settlement_recoveries == [True]
+
+
+def test_installed_recovery_session_spans_snapshot_runtime_and_settlement() -> None:
+    jobs, repository, runtime, coordinator, binding, delegation = _coordinated_recovery()
+    expected_revision = repository.experiment.revision
+    expected_digest = repository.experiment.digest
+    reconciliation_ref = _digest("4")
+    coordinator.plan = ClaimedEngineReconciliation(
+        job_id=JOB_ID,
+        job_state="interrupted",
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+        claim_ref=_digest("1"),
+        runtime_resolution_ref=_digest("2"),
+        reconciliation_ref=reconciliation_ref,
+    )
+
+    recovered = jobs.reconcile_interrupted_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=BASELINE_ATTEMPT,
+    )
+
+    assert recovered["attempts"][0]["record"]["state"] == "failed"
+    assert runtime.reconcile_calls == 1
+    assert coordinator.events == [
+        ("enter", EXPERIMENT_ID, BASELINE_ATTEMPT),
+        ("load", EXPERIMENT_ID, BASELINE_ATTEMPT),
+        ("begin", BASELINE_ATTEMPT, "preflight", expected_revision, expected_digest),
+        ("runtime", reconciliation_ref),
+        ("settle", reconciliation_ref),
+        ("exit", EXPERIMENT_ID, BASELINE_ATTEMPT),
+    ]
+    assert not coordinator.active
+
+
+def test_installed_recovery_session_spans_terminal_cleanup_cas() -> None:
+    jobs, repository, runtime, coordinator, binding, delegation = _coordinated_recovery(
+        reconcile_terminal=False
+    )
+    _index, entry = repository.experiment._attempt(BASELINE_ATTEMPT)
+    running = entry.record.transition(
+        AttemptState.RUNNING,
+        upstream_session_id="strix-session-recovery",
+        timestamp="2026-11-04T12:03:00Z",
+    )
+    failed = running.transition(
+        AttemptState.FAILED,
+        timestamp="2026-11-04T12:04:00Z",
+        completeness=AttemptCompleteness.UNKNOWN,
+        exit_reason="interrupted",
+    )
+    repository.experiment = repository.experiment.update_attempt_record(
+        running,
+        timestamp="2026-11-04T12:03:00Z",
+    ).settle_attempt(
+        failed,
+        engine_evidence=(),
+        artifact_manifest_ref=None,
+        cleanup_state=CleanupState.UNKNOWN,
+        cleanup_evidence_ref=_digest("8"),
+        settled_at="2026-11-04T12:04:00Z",
+    )
+    reconciliation_ref = _digest("5")
+    coordinator.plan = ClaimedEngineReconciliation(
+        job_id=JOB_ID,
+        job_state="failed",
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+        claim_ref=_digest("1"),
+        runtime_resolution_ref=_digest("2"),
+        reconciliation_ref=reconciliation_ref,
+    )
+
+    recovered = jobs.reconcile_interrupted_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=BASELINE_ATTEMPT,
+    )
+
+    assert recovered["attempts"][0]["cleanup_state"] == "verified_absent"
+    assert runtime.reconcile_calls == 1
+    assert coordinator.events[-3:] == [
+        ("runtime", reconciliation_ref),
+        ("cleanup", reconciliation_ref),
+        ("exit", EXPERIMENT_ID, BASELINE_ATTEMPT),
+    ]
+
+
+def test_installed_unclaimed_recovery_is_atomic_unknown_without_runtime() -> None:
+    jobs, repository, runtime, coordinator, binding, delegation = _coordinated_recovery()
+    expected_revision = repository.experiment.revision
+    expected_digest = repository.experiment.digest
+    coordinator.plan = UnclaimedEngineReconciliation(
+        job_id=JOB_ID,
+        job_state="interrupted",
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+    )
+
+    recovered = jobs.reconcile_interrupted_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=BASELINE_ATTEMPT,
+    )
+
+    assert recovered["attempts"][0]["record"]["state"] == "failed"
+    assert recovered["attempts"][0]["cleanup_state"] == "unknown"
+    assert runtime.reconcile_calls == 0
+    assert coordinator.events == [
+        ("enter", EXPERIMENT_ID, BASELINE_ATTEMPT),
+        ("load", EXPERIMENT_ID, BASELINE_ATTEMPT),
+        ("begin", BASELINE_ATTEMPT, "preflight", expected_revision, expected_digest),
+        ("unclaimed", JOB_ID, "interrupted"),
+        ("exit", EXPERIMENT_ID, BASELINE_ATTEMPT),
+    ]
+
+
+@pytest.mark.parametrize(
+    "exit_reason",
+    [
+        "authority_expired_before_dispatch",
+        "controller_cancelled_before_dispatch",
+        "controller_cancelled_before_execution_claim",
+    ],
+)
+def test_installed_saved_no_dispatch_outcome_reopens_without_runtime(exit_reason) -> None:
+    jobs, repository, runtime, coordinator, binding, delegation = _coordinated_recovery()
+    _index, entry = repository.experiment._attempt(BASELINE_ATTEMPT)
+    terminal = entry.record.transition(
+        AttemptState.CANCELLED,
+        timestamp="2026-11-04T12:03:00Z",
+        completeness=AttemptCompleteness.UNKNOWN,
+        exit_reason=exit_reason,
+        limitations=("External-engine dispatch did not begin.",),
+    )
+    cleanup_ref = _digest("7")
+    repository.experiment = repository.experiment.settle_attempt(
+        terminal,
+        engine_evidence=(),
+        artifact_manifest_ref=None,
+        cleanup_state=CleanupState.VERIFIED_ABSENT,
+        cleanup_evidence_ref=cleanup_ref,
+        settled_at="2026-11-04T12:03:00Z",
+    )
+    coordinator.plan = SettledNoDispatchEngineAttempt(
+        job_id=JOB_ID,
+        job_state="interrupted",
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+        exit_reason=exit_reason,
+        cleanup_evidence_ref=cleanup_ref,
+    )
+
+    recovered = jobs.reconcile_interrupted_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=BASELINE_ATTEMPT,
+    )
+
+    assert recovered == repository.experiment.to_dict()
+    assert runtime.reconcile_calls == 0
+    assert coordinator.events[-1] == ("exit", EXPERIMENT_ID, BASELINE_ATTEMPT)
+    assert all(event[0] not in {"settle", "cleanup", "unclaimed"} for event in coordinator.events)
+
+
+@pytest.mark.parametrize(
+    ("job_state", "attempt_state", "reconciliation_ref"),
+    [
+        ("completed", AttemptState.COMPLETED, None),
+        ("failed", AttemptState.FAILED, _digest("4")),
+        ("interrupted", AttemptState.FAILED, _digest("5")),
+    ],
+)
+def test_installed_saved_claimed_cleanup_reopens_without_runtime(
+    job_state, attempt_state, reconciliation_ref
+) -> None:
+    jobs, repository, runtime, coordinator, binding, delegation = _coordinated_recovery()
+    _index, entry = repository.experiment._attempt(BASELINE_ATTEMPT)
+    running = entry.record.transition(
+        AttemptState.RUNNING,
+        upstream_session_id="strix-session-recovery",
+        timestamp="2026-11-04T12:03:00Z",
+    )
+    terminal = running.transition(
+        attempt_state,
+        timestamp="2026-11-04T12:04:00Z",
+        exit_code=0 if attempt_state is AttemptState.COMPLETED else None,
+        completeness=(
+            AttemptCompleteness.COMPLETE
+            if attempt_state is AttemptState.COMPLETED
+            else AttemptCompleteness.UNKNOWN
+        ),
+        exit_reason="completed" if attempt_state is AttemptState.COMPLETED else "interrupted",
+    )
+    cleanup_ref = _digest("7")
+    repository.experiment = repository.experiment.update_attempt_record(
+        running,
+        timestamp="2026-11-04T12:03:00Z",
+    ).settle_attempt(
+        terminal,
+        engine_evidence=(),
+        artifact_manifest_ref=None,
+        cleanup_state=CleanupState.VERIFIED_ABSENT,
+        cleanup_evidence_ref=cleanup_ref,
+        settled_at="2026-11-04T12:04:00Z",
+    )
+    coordinator.plan = SettledClaimedEngineAttempt(
+        job_id=JOB_ID,
+        job_state=job_state,
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+        claim_ref=_digest("1"),
+        runtime_resolution_ref=_digest("2"),
+        cleanup_evidence_ref=cleanup_ref,
+        reconciliation_ref=reconciliation_ref,
+    )
+
+    recovered = jobs.reconcile_interrupted_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=BASELINE_ATTEMPT,
+    )
+
+    assert recovered == repository.experiment.to_dict()
+    assert runtime.reconcile_calls == 0
+    assert coordinator.events[-1] == ("exit", EXPERIMENT_ID, BASELINE_ATTEMPT)
+    assert all(
+        event[0] not in {"runtime", "settle", "cleanup", "unclaimed"}
+        for event in coordinator.events
+    )
+
+
+def test_installed_saved_claimed_cleanup_requires_exact_evidence_ref() -> None:
+    jobs, repository, runtime, coordinator, binding, delegation = _coordinated_recovery()
+    _index, entry = repository.experiment._attempt(BASELINE_ATTEMPT)
+    running = entry.record.transition(
+        AttemptState.RUNNING,
+        upstream_session_id="strix-session-recovery",
+        timestamp="2026-11-04T12:03:00Z",
+    )
+    failed = running.transition(
+        AttemptState.FAILED,
+        timestamp="2026-11-04T12:04:00Z",
+        completeness=AttemptCompleteness.UNKNOWN,
+        exit_reason="interrupted",
+    )
+    repository.experiment = repository.experiment.update_attempt_record(
+        running,
+        timestamp="2026-11-04T12:03:00Z",
+    ).settle_attempt(
+        failed,
+        engine_evidence=(),
+        artifact_manifest_ref=None,
+        cleanup_state=CleanupState.VERIFIED_ABSENT,
+        cleanup_evidence_ref=_digest("7"),
+        settled_at="2026-11-04T12:04:00Z",
+    )
+    coordinator.plan = SettledClaimedEngineAttempt(
+        job_id=JOB_ID,
+        job_state="interrupted",
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+        claim_ref=_digest("1"),
+        runtime_resolution_ref=_digest("2"),
+        cleanup_evidence_ref=_digest("8"),
+        reconciliation_ref=_digest("4"),
+    )
+
+    with pytest.raises(EngineExperimentJobError, match="reconciliation is unavailable"):
+        jobs.reconcile_interrupted_attempt(
+            experiment_id=EXPERIMENT_ID,
+            attempt_id=BASELINE_ATTEMPT,
+        )
+
+    assert runtime.reconcile_calls == 0
+    assert all(
+        event[0] not in {"runtime", "settle", "cleanup", "unclaimed"}
+        for event in coordinator.events
+    )
+
+
+def test_installed_unclaimed_recovery_lost_ack_reopens_without_runtime() -> None:
+    jobs, repository, runtime, coordinator, binding, delegation = _coordinated_recovery()
+    coordinator.plan = UnclaimedEngineReconciliation(
+        job_id=JOB_ID,
+        job_state="interrupted",
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+    )
+
+    first = jobs.reconcile_interrupted_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=BASELINE_ATTEMPT,
+    )
+    second = jobs.reconcile_interrupted_attempt(
+        experiment_id=EXPERIMENT_ID,
+        attempt_id=BASELINE_ATTEMPT,
+    )
+
+    assert second == first == repository.experiment.to_dict()
+    assert runtime.reconcile_calls == 0
+    assert [event[0] for event in coordinator.events].count("unclaimed") == 2
+    assert all(event[0] not in {"runtime", "settle", "cleanup"} for event in coordinator.events)
+
+
+def test_installed_recovery_ref_mismatch_refuses_before_store_cas_and_releases() -> None:
+    jobs, _repository, runtime, coordinator, binding, delegation = _coordinated_recovery(
+        returned_ref=_digest("9")
+    )
+    coordinator.plan = ClaimedEngineReconciliation(
+        job_id=JOB_ID,
+        job_state="interrupted",
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+        claim_ref=_digest("1"),
+        runtime_resolution_ref=_digest("2"),
+        reconciliation_ref=_digest("4"),
+    )
+
+    with pytest.raises(EngineExperimentJobError, match="reconciliation is unavailable"):
+        jobs.reconcile_interrupted_attempt(
+            experiment_id=EXPERIMENT_ID,
+            attempt_id=BASELINE_ATTEMPT,
+        )
+
+    assert runtime.reconcile_calls == 1
+    assert all(event[0] not in {"settle", "cleanup"} for event in coordinator.events)
+    assert coordinator.events[-1] == ("exit", EXPERIMENT_ID, BASELINE_ATTEMPT)
+    assert not coordinator.active
+
+
+def test_completed_job_without_terminal_attempt_refuses_before_runtime() -> None:
+    jobs, _repository, runtime, coordinator, binding, delegation = _coordinated_recovery()
+    coordinator.plan = ClaimedEngineReconciliation(
+        job_id=JOB_ID,
+        job_state="completed",
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+        claim_ref=_digest("1"),
+        runtime_resolution_ref=_digest("2"),
+        reconciliation_ref=_digest("4"),
+    )
+
+    with pytest.raises(EngineExperimentJobError, match="reconciliation is unavailable"):
+        jobs.reconcile_interrupted_attempt(
+            experiment_id=EXPERIMENT_ID,
+            attempt_id=BASELINE_ATTEMPT,
+        )
+
+    assert runtime.reconcile_calls == 0
+    assert all(event[0] != "runtime" for event in coordinator.events)
+    assert coordinator.events[-1] == ("exit", EXPERIMENT_ID, BASELINE_ATTEMPT)
+
+
+@pytest.mark.parametrize("failure_kind", ["runtime", "descriptor", "cancel"])
+def test_installed_recovery_sanitizes_adapter_failures_and_releases_session_without_cas(
+    failure_kind,
+) -> None:
+    jobs, _repository, runtime, coordinator, binding, delegation = _coordinated_recovery(
+        fail=failure_kind == "runtime",
+        cancel_reconciliation=failure_kind == "cancel",
+        runtime_type=(
+            _DescriptorFailureClaimRuntime
+            if failure_kind == "descriptor"
+            else _CoordinatedClaimRuntime
+        ),
+    )
+    coordinator.plan = ClaimedEngineReconciliation(
+        job_id=JOB_ID,
+        job_state="interrupted",
+        binding_digest=binding.binding_digest,
+        delegation_digest=delegation.delegation_digest,
+        claim_ref=_digest("1"),
+        runtime_resolution_ref=_digest("2"),
+        reconciliation_ref=_digest("4"),
+    )
+
+    with pytest.raises(
+        EngineExperimentJobError, match="installed engine reconciliation is unavailable"
+    ) as caught:
+        jobs.reconcile_interrupted_attempt(
+            experiment_id=EXPERIMENT_ID,
+            attempt_id=BASELINE_ATTEMPT,
+        )
+
+    assert "private" not in str(caught.value)
+    assert "token" not in str(caught.value)
+    assert runtime.reconcile_calls == 0
+    assert all(event[0] not in {"settle", "cleanup"} for event in coordinator.events)
+    assert coordinator.events[-1] == ("exit", EXPERIMENT_ID, BASELINE_ATTEMPT)
+    assert not coordinator.active
 
 
 def test_settled_reconciliation_accepts_only_exact_saved_observation_replay() -> None:

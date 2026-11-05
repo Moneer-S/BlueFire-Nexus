@@ -5,7 +5,7 @@ import subprocess
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 
@@ -28,6 +28,7 @@ from bluefire.engine_experiment import (
     EngineExperiment,
     _controller_observation_record,
 )
+from bluefire.engine_experiment_jobs import installed_execution_claim_policy
 from bluefire.product_store_engine_actions import _protected_authority, _tenant_plan
 from bluefire.strix_engine_runtime import StrixEngineRuntime, StrixRuntimeAdmission
 from bluefire.tenant_engine_action_preparer import (
@@ -317,7 +318,13 @@ class _Case:
         )
 
 
-def _case(tmp_path: Path, action: EngineWorkspaceAction, monkeypatch) -> _Case:
+def _case(
+    tmp_path: Path,
+    action: EngineWorkspaceAction,
+    monkeypatch,
+    *,
+    execution_claim_policy: Mapping[str, Any] | None = None,
+) -> _Case:
     experiment, plan, mechanism = _stage(action)
     prepared_at = _ACTION_TIMES[action]
     config = (
@@ -435,6 +442,7 @@ def _case(tmp_path: Path, action: EngineWorkspaceAction, monkeypatch) -> _Case:
         generation_source=generations,
         runtime_resolver=resolver,
         controller_jobs=jobs,
+        execution_claim_policy=execution_claim_policy,
     )
     workspace = {
         "schema_version": "bluefire.engine-experiment-workspace.v1",
@@ -553,6 +561,36 @@ def test_all_supported_actions_are_exact_inert_and_stable(
             assert request["experiment_digest"] == case.experiment.digest
             assert request["experiment_revision"] == case.experiment.revision
             assert case.repository.reads == 4
+
+
+def test_installed_preparer_binds_exact_execution_claim_policy(tmp_path: Path, monkeypatch) -> None:
+    policy = installed_execution_claim_policy()
+    case = _case(
+        tmp_path,
+        EngineWorkspaceAction.START_BASELINE,
+        monkeypatch,
+        execution_claim_policy=policy,
+    )
+
+    request, authority = _materialize(case.prepare())
+
+    assert request["schema_version"] == "bluefire.engine-attempt-job.v2"
+    assert request["execution_claim_policy"] == policy
+    assert authority["document_digest"] == content_hash(authority["document"])
+
+
+def test_installed_preparer_rejects_changed_execution_claim_policy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    policy = {**installed_execution_claim_policy(), "accepted_jobs_adapter": "changed"}
+
+    with pytest.raises(EngineActionPreparationError, match="claim policy changed"):
+        _case(
+            tmp_path,
+            EngineWorkspaceAction.START_BASELINE,
+            monkeypatch,
+            execution_claim_policy=policy,
+        )
 
 
 @pytest.mark.parametrize(

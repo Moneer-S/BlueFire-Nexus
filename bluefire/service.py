@@ -404,6 +404,11 @@ class BlueFireService(
                 repository=self.product_store,
                 runtime=engine_attempt_runtime,
                 clock=_engine_service_clock,
+                reconciliation=(
+                    engine_workflow_composition.reconciliation_coordinator
+                    if engine_workflow_composition is not None
+                    else None
+                ),
             )
             self._engine_experiment_service = EngineExperimentService(
                 history=self.product_store,

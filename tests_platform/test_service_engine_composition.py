@@ -37,6 +37,7 @@ def test_supplied_composition_wires_exact_shared_owners_and_inert_factories(tmp_
         workspace = service.engine_experiment_service
         bound = owner.bind(service.product_store, workspace)
         assert service.engine_attempt_jobs._runtime is owner.runtime
+        assert service.engine_attempt_jobs._reconciliation is owner.reconciliation_coordinator
         assert workspace._controller is owner.controller
         assert workspace._history is service.product_store
         assert workspace._run_source is service.store

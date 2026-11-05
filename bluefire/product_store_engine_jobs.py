@@ -46,6 +46,11 @@ _CHECK_DISPATCH_SCHEMA = "bluefire.engine-controller-check-dispatch.v1"
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _APPROVAL_ID = re.compile(r"^approval-[0-9a-f]{32}$")
 _MAX_CONTEXT_DOCUMENT_BYTES = 128 * 1024
+_EXECUTION_CLAIM_POLICY = {
+    "schema_version": "bluefire.engine-execution-claim-policy.v1",
+    "claim_protocol": "bluefire.engine-attempt-execution-claim.v1",
+    "accepted_jobs_adapter": "bluefire.product-store-accepted-engine-jobs.v1",
+}
 _DEFENSE_OPERATIONS = frozenset(
     {"apply", "reconcile_application", "rollback", "reconcile_rollback"}
 )
@@ -78,6 +83,37 @@ class EngineJobProductStore(Protocol):
     def _approval_row(self, connection: sqlite3.Connection, approval_id: str) -> sqlite3.Row: ...
 
     def _approval_from_row(self, row: sqlite3.Row) -> Any: ...
+
+    def _require_engine_attempt_execution_claim_at(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        experiment_id: str,
+        attempt_id: str,
+        binding_digest: str,
+        delegation_digest: str,
+        job_request: Mapping[str, Any],
+        reconciliation_ref: str | None = None,
+        reconciliation_time: str | None = None,
+        reconciliation_capability: object | None = None,
+    ) -> Mapping[str, Any] | None: ...
+
+    def settle_engine_attempt_pre_dispatch(
+        self,
+        *,
+        experiment_id: str,
+        attempt_id: str,
+        job_id: str,
+        binding: Mapping[str, Any],
+        delegation: Mapping[str, Any],
+        record: Mapping[str, Any],
+        exit_reason: str,
+        adapter_pre_dispatch_ref: str | None,
+        settled_at: str,
+        expected_revision: int,
+        expected_experiment_digest: str,
+    ) -> Mapping[str, Any]: ...
 
 
 def _engine_document(value: Any) -> EngineExperiment:
@@ -139,9 +175,20 @@ def _request_for(
     delegation: EngineCapabilityDelegation,
     approval: EngineExecutionApprovalBinding,
     approval_id: str,
-) -> dict[str, str]:
-    return {
-        "schema_version": "bluefire.engine-attempt-job.v1",
+    execution_claim_policy: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if execution_claim_policy is not None:
+        if (
+            not isinstance(execution_claim_policy, Mapping)
+            or dict(execution_claim_policy) != _EXECUTION_CLAIM_POLICY
+        ):
+            raise ProductStoreError("engine execution claim policy changed")
+    request: dict[str, Any] = {
+        "schema_version": (
+            "bluefire.engine-attempt-job.v2"
+            if execution_claim_policy is not None
+            else "bluefire.engine-attempt-job.v1"
+        ),
         "experiment_id": experiment.experiment_id,
         "attempt_id": binding.attempt_id,
         "binding_digest": binding.binding_digest,
@@ -149,6 +196,45 @@ def _request_for(
         "execution_approval_digest": content_hash(approval.to_dict()),
         "execution_approval_id": approval_id,
     }
+    if execution_claim_policy is not None:
+        request["execution_claim_policy"] = dict(execution_claim_policy)
+    return request
+
+
+def _validate_saved_attempt_request(
+    request: Mapping[str, Any],
+    *,
+    experiment_id: str,
+    attempt_id: str,
+    binding_digest: str,
+    delegation_digest: str,
+    execution_approval_digest: str,
+    execution_approval_id: str,
+) -> None:
+    policy = (
+        request.get("execution_claim_policy")
+        if request.get("schema_version") == "bluefire.engine-attempt-job.v2"
+        else None
+    )
+    expected: dict[str, Any] = {
+        "schema_version": (
+            "bluefire.engine-attempt-job.v2"
+            if policy is not None
+            else "bluefire.engine-attempt-job.v1"
+        ),
+        "experiment_id": experiment_id,
+        "attempt_id": attempt_id,
+        "binding_digest": binding_digest,
+        "delegation_digest": delegation_digest,
+        "execution_approval_digest": execution_approval_digest,
+        "execution_approval_id": execution_approval_id,
+    }
+    if policy is not None:
+        if not isinstance(policy, Mapping) or dict(policy) != _EXECUTION_CLAIM_POLICY:
+            raise ProductStoreError("saved engine execution claim policy changed")
+        expected["execution_claim_policy"] = dict(policy)
+    if dict(request) != expected:
+        raise ProductStoreError("saved engine attempt job request changed")
 
 
 def _context_for(
@@ -550,14 +636,20 @@ def reserve_engine_attempt_submission_at(
         raise ProductStoreError("engine execution authority is invalid") from exc
     if parsed_binding.experiment_id != experiment_id:
         raise ProductStoreError("engine binding belongs to another experiment")
+    request = safe_document(job_request, context="engine attempt job request")
+    request_policy = (
+        request.get("execution_claim_policy")
+        if request.get("schema_version") == "bluefire.engine-attempt-job.v2"
+        else None
+    )
     expected_request = _request_for(
         _active_experiment_at(connection, experiment_id),
         parsed_binding,
         parsed_delegation,
         parsed_approval,
         approval_id,
+        request_policy,
     )
-    request = safe_document(job_request, context="engine attempt job request")
     if request != expected_request or content_hash(request) != intent_digest:
         raise ProductStoreError("engine job intent differs from its exact authority")
     job_id, submission_binding = store._job_submission_binding(submission_id, intent_digest)
@@ -601,6 +693,7 @@ def reserve_engine_attempt_submission_at(
             parsed_delegation,
             parsed_approval,
             approval_id,
+            request_policy,
         )
         != request
     ):
@@ -961,13 +1054,23 @@ class EngineExperimentJobStoreMixin:
             or approval_record.get("approval_id") != entry.execution_approval_id
         ):
             raise ProductStoreError("saved engine execution context changed")
-        expected_request = _request_for(
-            experiment, binding, delegation, approval, entry.execution_approval_id
-        )
         saved_request = json.loads(str(job["request_json"]))
         if not isinstance(saved_request, dict):
             raise ProductStoreError("saved engine job request is invalid")
         submission = saved_request.pop("_submission", None)
+        request_policy = (
+            saved_request.get("execution_claim_policy")
+            if saved_request.get("schema_version") == "bluefire.engine-attempt-job.v2"
+            else None
+        )
+        expected_request = _request_for(
+            experiment,
+            binding,
+            delegation,
+            approval,
+            entry.execution_approval_id,
+            request_policy,
+        )
         if (
             saved_request != expected_request
             or not isinstance(submission, Mapping)
@@ -1005,6 +1108,37 @@ class EngineExperimentJobStoreMixin:
                 expected_revision=expected_revision,
                 expected_digest=expected_experiment_digest,
             )
+            try:
+                _index, current = experiment._attempt(parsed.binding.attempt_id)
+            except EngineExperimentError as exc:
+                raise ProductStoreError("engine attempt record was not found") from exc
+            job = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (current.job_id,)
+            ).fetchone()
+            if job is None or job["kind"] != _ENGINE_JOB_KIND:
+                raise ProductStoreError("engine attempt record lacks its bound job")
+            if job["state"] not in {"running", "cancelling"}:
+                raise ResourceConflictError("engine attempt record requires its live bound job")
+            request, _submission = _saved_job_request(self, job)
+            _validate_saved_attempt_request(
+                request,
+                experiment_id=experiment.experiment_id,
+                attempt_id=current.record.binding.attempt_id,
+                binding_digest=current.record.binding_digest,
+                delegation_digest=current.delegation_digest,
+                execution_approval_digest=current.execution_approval_digest,
+                execution_approval_id=current.execution_approval_id,
+            )
+            if parsed.state.value not in {"queued", "preflight"}:
+                self._require_engine_attempt_execution_claim_at(
+                    connection,
+                    job_id=current.job_id,
+                    experiment_id=experiment.experiment_id,
+                    attempt_id=current.record.binding.attempt_id,
+                    binding_digest=current.record.binding_digest,
+                    delegation_digest=current.delegation_digest,
+                    job_request=request,
+                )
             updated = experiment.update_attempt_record(parsed, timestamp=timestamp)
             return _append_experiment_at(connection, experiment, updated)
 
@@ -1022,6 +1156,9 @@ class EngineExperimentJobStoreMixin:
         expected_revision: int,
         expected_experiment_digest: str,
         recovery: bool = False,
+        reconciliation_ref: str | None = None,
+        reconciliation_capability: object | None = None,
+        reconciled_at: str | None = None,
     ) -> Mapping[str, Any]:
         """Persist one exact terminal attempt and its preverified observations.
 
@@ -1075,16 +1212,39 @@ class EngineExperimentJobStoreMixin:
             if job is None or job["kind"] != _ENGINE_JOB_KIND or job["state"] not in allowed_states:
                 raise ProductStoreError("engine settlement lacks its bound job in the exact state")
             request, _submission = _saved_job_request(self, job)
-            expected_request = {
-                "schema_version": "bluefire.engine-attempt-job.v1",
-                "experiment_id": experiment.experiment_id,
-                "attempt_id": current.record.binding.attempt_id,
-                "binding_digest": current.record.binding_digest,
-                "delegation_digest": current.delegation_digest,
-                "execution_approval_digest": current.execution_approval_digest,
-                "execution_approval_id": current.execution_approval_id,
-            }
-            if current.job_id != job["job_id"] or request != expected_request:
+            _validate_saved_attempt_request(
+                request,
+                experiment_id=experiment.experiment_id,
+                attempt_id=current.record.binding.attempt_id,
+                binding_digest=current.record.binding_digest,
+                delegation_digest=current.delegation_digest,
+                execution_approval_digest=current.execution_approval_digest,
+                execution_approval_id=current.execution_approval_id,
+            )
+            installed_v2 = request.get("schema_version") == "bluefire.engine-attempt-job.v2"
+            if installed_v2 and recovery != (reconciliation_ref is not None):
+                raise ProductStoreError(
+                    "installed engine recovery settlement requires its exact intent"
+                )
+            if not installed_v2 and reconciliation_ref is not None:
+                raise ProductStoreError(
+                    "generic engine settlement cannot use installed reconciliation"
+                )
+            if recovery != (reconciled_at is not None):
+                raise ProductStoreError("engine recovery settlement time does not match its origin")
+            self._require_engine_attempt_execution_claim_at(
+                connection,
+                job_id=current.job_id,
+                experiment_id=experiment.experiment_id,
+                attempt_id=current.record.binding.attempt_id,
+                binding_digest=current.record.binding_digest,
+                delegation_digest=current.delegation_digest,
+                job_request=request,
+                reconciliation_ref=reconciliation_ref,
+                reconciliation_time=reconciled_at,
+                reconciliation_capability=reconciliation_capability,
+            )
+            if current.job_id != job["job_id"]:
                 raise ProductStoreError("engine settlement job differs from its exact attempt")
             if observations:
                 if parsed_record.started_at is None or parsed_record.ended_at is None:
@@ -1194,16 +1354,25 @@ class EngineExperimentJobStoreMixin:
             ):
                 raise ProductStoreError("engine observation lacks its terminal bound job")
             request, _submission = _saved_job_request(self, job)
-            if (
-                request.get("schema_version") != "bluefire.engine-attempt-job.v1"
-                or request.get("experiment_id") != experiment.experiment_id
-                or request.get("attempt_id") != binding.attempt_id
-                or request.get("binding_digest") != binding.binding_digest
-                or request.get("delegation_digest") != entry.delegation_digest
-                or request.get("execution_approval_digest") != entry.execution_approval_digest
-                or request.get("execution_approval_id") != entry.execution_approval_id
-                or entry.job_id != job["job_id"]
-            ):
+            _validate_saved_attempt_request(
+                request,
+                experiment_id=experiment.experiment_id,
+                attempt_id=binding.attempt_id,
+                binding_digest=binding.binding_digest,
+                delegation_digest=entry.delegation_digest,
+                execution_approval_digest=entry.execution_approval_digest,
+                execution_approval_id=entry.execution_approval_id,
+            )
+            self._require_engine_attempt_execution_claim_at(
+                connection,
+                job_id=entry.job_id,
+                experiment_id=experiment.experiment_id,
+                attempt_id=binding.attempt_id,
+                binding_digest=binding.binding_digest,
+                delegation_digest=entry.delegation_digest,
+                job_request=request,
+            )
+            if entry.job_id != job["job_id"]:
                 raise ProductStoreError("engine observation job differs from its exact attempt")
             existing = next(
                 (
@@ -1238,6 +1407,8 @@ class EngineExperimentJobStoreMixin:
         timestamp: str,
         expected_revision: int,
         expected_experiment_digest: str,
+        reconciliation_ref: str | None = None,
+        reconciliation_capability: object | None = None,
     ) -> Mapping[str, Any]:
         try:
             cleanup = CleanupState(cleanup_state)
@@ -1264,17 +1435,40 @@ class EngineExperimentJobStoreMixin:
             ):
                 raise ProductStoreError("engine cleanup lacks its terminal bound job")
             request, _submission = _saved_job_request(self, job)
-            expected_request = {
-                "schema_version": "bluefire.engine-attempt-job.v1",
-                "experiment_id": experiment.experiment_id,
-                "attempt_id": current.record.binding.attempt_id,
-                "binding_digest": current.record.binding_digest,
-                "delegation_digest": current.delegation_digest,
-                "execution_approval_digest": current.execution_approval_digest,
-                "execution_approval_id": current.execution_approval_id,
-            }
-            if current.job_id != job["job_id"] or request != expected_request:
+            _validate_saved_attempt_request(
+                request,
+                experiment_id=experiment.experiment_id,
+                attempt_id=current.record.binding.attempt_id,
+                binding_digest=current.record.binding_digest,
+                delegation_digest=current.delegation_digest,
+                execution_approval_digest=current.execution_approval_digest,
+                execution_approval_id=current.execution_approval_id,
+            )
+            installed_v2 = request.get("schema_version") == "bluefire.engine-attempt-job.v2"
+            if installed_v2 != (reconciliation_ref is not None):
+                raise ProductStoreError(
+                    "engine cleanup reconciliation intent does not match its protocol"
+                )
+            self._require_engine_attempt_execution_claim_at(
+                connection,
+                job_id=current.job_id,
+                experiment_id=experiment.experiment_id,
+                attempt_id=current.record.binding.attempt_id,
+                binding_digest=current.record.binding_digest,
+                delegation_digest=current.delegation_digest,
+                job_request=request,
+                reconciliation_ref=reconciliation_ref,
+                reconciliation_time=timestamp,
+                reconciliation_capability=reconciliation_capability,
+            )
+            if current.job_id != job["job_id"]:
                 raise ProductStoreError("engine cleanup job differs from its exact attempt")
+            if cleanup is current.cleanup_state:
+                if cleanup_evidence_ref == current.cleanup_evidence_ref:
+                    return cast(Mapping[str, Any], experiment.to_dict())
+                raise ResourceConflictError("engine cleanup evidence cannot be replaced")
+            if current.cleanup_state is CleanupState.VERIFIED_ABSENT:
+                raise ResourceConflictError("verified engine cleanup cannot regress")
             updated = experiment.reconcile_attempt_cleanup(
                 attempt_id,
                 cleanup_state=cleanup,
@@ -1296,15 +1490,58 @@ class EngineExperimentJobStoreMixin:
         expected_experiment_digest: str,
     ) -> Mapping[str, Any]:
         parsed_record = _attempt_record(record)
+        expected_cleanup = content_hash(
+            {
+                "schema_version": "bluefire.engine-undispatched-cancellation-receipt.v1",
+                "experiment_id": experiment_id,
+                "attempt_id": attempt_id,
+                "job_id": job_id,
+                "binding_digest": parsed_record.binding_digest,
+                "job_state": "cancelled",
+                "custody_state": "never_dispatched",
+                "recorded_at": settled_at,
+            }
+        )
         if (
             parsed_record.state.value != "cancelled"
             or parsed_record.upstream_session_id is not None
             or parsed_record.completeness.value != "unknown"
             or parsed_record.exit_code is not None
             or parsed_record.exit_reason != "controller_cancelled_before_dispatch"
+            or cleanup_evidence_ref != expected_cleanup
         ):
             raise ProductStoreError(
                 "undispatched engine cancellation requires the exact no-custody outcome"
+            )
+        with self._connection() as connection:
+            job = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if job is None or job["kind"] != _ENGINE_JOB_KIND:
+                raise ResourceConflictError("engine job is unavailable")
+            request, _submission = _saved_job_request(self, job)
+            if request.get("schema_version") == "bluefire.engine-attempt-job.v2":
+                if request.get("execution_claim_policy") != _EXECUTION_CLAIM_POLICY:
+                    raise ProductStoreError("saved engine execution claim policy changed")
+                progress = json.loads(str(job["progress_json"]))
+                _context, delegation, _approval = _parse_context(
+                    progress.get("_engine_execution") if isinstance(progress, dict) else None
+                )
+                binding = delegation.validate_attempt_binding(parsed_record.binding)
+            else:
+                binding = None
+                delegation = None
+        if binding is not None and delegation is not None:
+            return self.settle_engine_attempt_pre_dispatch(
+                experiment_id=experiment_id,
+                attempt_id=attempt_id,
+                job_id=job_id,
+                binding=binding.to_dict(),
+                delegation=delegation.to_dict(),
+                record=parsed_record.to_dict(),
+                exit_reason="controller_cancelled_before_dispatch",
+                adapter_pre_dispatch_ref=None,
+                settled_at=settled_at,
+                expected_revision=expected_revision,
+                expected_experiment_digest=expected_experiment_digest,
             )
         with self._connection(write=True) as connection:
             experiment = _active_experiment_at(
@@ -1332,6 +1569,16 @@ class EngineExperimentJobStoreMixin:
                 raise ResourceConflictError(
                     "engine attempt dispatch or resource custody already began"
                 )
+            request, _submission = _saved_job_request(self, job)
+            _validate_saved_attempt_request(
+                request,
+                experiment_id=experiment.experiment_id,
+                attempt_id=entry.record.binding.attempt_id,
+                binding_digest=entry.record.binding_digest,
+                delegation_digest=entry.delegation_digest,
+                execution_approval_digest=entry.execution_approval_digest,
+                execution_approval_id=entry.execution_approval_id,
+            )
             updated = experiment.settle_attempt(
                 parsed_record,
                 engine_evidence=(),

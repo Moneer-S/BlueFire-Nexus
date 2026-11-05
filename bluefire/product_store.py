@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -29,6 +30,7 @@ from . import product_store_capability_api as capability_store_api
 from . import product_store_detection_evaluations as detection_evaluation_store
 from . import product_store_engine_action_submissions as engine_action_submission_store
 from . import product_store_engine_actions as engine_action_store
+from . import product_store_engine_execution_claims as engine_execution_claim_store
 from . import product_store_engine_experiments as engine_experiment_store
 from . import product_store_engine_jobs as engine_job_store
 from . import product_store_engine_presentations as engine_presentation_store
@@ -40,6 +42,10 @@ from . import product_store_tenant_action_materials as tenant_action_material_st
 from . import product_store_tenant_generation_journals as tenant_generation_journal_store
 from .comparison_snapshot_store import list_legacy_resources, reject_generic_resource_write
 from .contracts import ScenarioDefinition
+from .engine_reconciliation_lock import (
+    EngineReconciliationLock,
+    EngineReconciliationLockError,
+)
 from .local_lock import (
     LocalLockError,
     owner_private_database_lock,
@@ -79,7 +85,30 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
+_ENGINE_RECONCILIATION_SESSION_GUARD = threading.Lock()
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _EngineReconciliationMutationCapability:
+    process_id: int
+    database_identity: tuple[int, int]
+    thread_id: int
+
+
+_ENGINE_RECONCILIATION_SESSIONS: dict[
+    tuple[int, tuple[int, int], int], _EngineReconciliationMutationCapability
+] = {}
+
+
+def _reset_engine_reconciliation_sessions_after_fork() -> None:
+    global _ENGINE_RECONCILIATION_SESSION_GUARD, _ENGINE_RECONCILIATION_SESSIONS
+    _ENGINE_RECONCILIATION_SESSION_GUARD = threading.Lock()
+    _ENGINE_RECONCILIATION_SESSIONS = {}
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_engine_reconciliation_sessions_after_fork)
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -270,6 +299,7 @@ class ProductStore(
     strix_runtime_store.StrixRuntimeStoreMixin,
     tenant_action_material_store.TenantActionMaterialStoreMixin,
     tenant_generation_journal_store.TenantGenerationJournalStoreMixin,
+    engine_execution_claim_store.EngineExecutionClaimStoreMixin,
     engine_job_store.EngineExperimentJobStoreMixin,
     engine_presentation_store.EngineExperimentPresentationStoreMixin,
     engine_action_store.EngineActionPreparationStoreMixin,
@@ -338,6 +368,67 @@ class ProductStore(
                 expected_catalog_digest,
             )
             yield snapshot
+
+    @contextmanager
+    def engine_attempt_reconciliation_session(
+        self,
+        *,
+        cancel_event: threading.Event | None = None,
+        deadline: float | None = None,
+    ) -> Iterator[object]:
+        """Hold the fixed-purpose crash-released lock through recovery CAS."""
+
+        session_key = (os.getpid(), self._database_identity, threading.get_ident())
+        with _ENGINE_RECONCILIATION_SESSION_GUARD:
+            if session_key in _ENGINE_RECONCILIATION_SESSIONS:
+                raise ProductStoreError("engine reconciliation session is already active")
+        try:
+            guard = EngineReconciliationLock(
+                self.path,
+                expected=self._database_identity,
+            ).session(cancel_event=cancel_event, deadline=deadline)
+            guard.__enter__()
+        except EngineReconciliationLockError as exc:
+            raise ProductStoreError("engine reconciliation session is unavailable") from exc
+        token = _EngineReconciliationMutationCapability(
+            process_id=session_key[0],
+            database_identity=session_key[1],
+            thread_id=session_key[2],
+        )
+        with _ENGINE_RECONCILIATION_SESSION_GUARD:
+            if session_key in _ENGINE_RECONCILIATION_SESSIONS:
+                guard.__exit__(None, None, None)
+                raise ProductStoreError("engine reconciliation session is already active")
+            _ENGINE_RECONCILIATION_SESSIONS[session_key] = token
+
+        def revoke() -> None:
+            with _ENGINE_RECONCILIATION_SESSION_GUARD:
+                if _ENGINE_RECONCILIATION_SESSIONS.get(session_key) is token:
+                    del _ENGINE_RECONCILIATION_SESSIONS[session_key]
+
+        try:
+            yield token
+        except BaseException as exc:
+            revoke()
+            if not guard.__exit__(type(exc), exc, exc.__traceback__):
+                raise
+        else:
+            revoke()
+            guard.__exit__(None, None, None)
+
+    def _require_engine_attempt_reconciliation_session(self, capability: object) -> None:
+        """Require this thread's active purpose-lock capability."""
+
+        session_key = (os.getpid(), self._database_identity, threading.get_ident())
+        with _ENGINE_RECONCILIATION_SESSION_GUARD:
+            if (
+                not isinstance(capability, _EngineReconciliationMutationCapability)
+                or capability.process_id != session_key[0]
+                or capability.database_identity != session_key[1]
+                or capability.thread_id != session_key[2]
+                or _ENGINE_RECONCILIATION_SESSIONS.get(session_key) is not capability
+            ):
+                raise ProductStoreError("engine reconciliation session is not active")
 
     @contextmanager
     def _connection(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
@@ -869,6 +960,7 @@ class ProductStore(
             engine_presentation_store.initialize_schema(connection)
             engine_action_store.initialize_schema(connection)
             engine_action_submission_store.initialize_schema(connection)
+            engine_execution_claim_store.initialize_schema(connection)
             tenant_generation_journal_store.initialize_schema(connection)
             tenant_action_material_store.initialize_schema(connection)
             strix_runtime_store.initialize_schema(connection)

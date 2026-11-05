@@ -717,6 +717,9 @@ def test_dropped_trigger_tampering_is_detected_on_read(tmp_path: Path, tamper: s
 def _as_v19(store: ProductStore) -> None:
     with sqlite3.connect(store.path) as connection:
         for table in (
+            "engine_attempt_reconciliation_intents",
+            "engine_attempt_pre_dispatch_settlements",
+            "engine_attempt_execution_claims",
             "strix_runtime_issuance_records",
             "strix_runtime_admission_heads",
             "strix_runtime_admission_events",
@@ -741,6 +744,12 @@ def _non_v20_data(path: Path) -> dict[str, list[tuple[Any, ...]]]:
             name: sorted(connection.execute(f'SELECT * FROM "{name}"').fetchall(), key=repr)
             for (name,) in names
             if not name.startswith("strix_runtime_")
+            and name
+            not in {
+                "engine_attempt_execution_claims",
+                "engine_attempt_pre_dispatch_settlements",
+                "engine_attempt_reconciliation_intents",
+            }
             and not name.startswith("sqlite_")
             and name != "schema_migrations"
         }
@@ -755,7 +764,7 @@ def test_v19_to_v20_preserves_existing_data_and_migration_rolls_back(
     _as_v19(store)
     before = _non_v20_data(store.path)
     upgraded = ProductStore(store.path)
-    assert SCHEMA_VERSION == upgraded.schema_version == 21
+    assert SCHEMA_VERSION == upgraded.schema_version == 22
     assert _non_v20_data(store.path) == before
 
     _as_v19(upgraded)
@@ -812,7 +821,7 @@ def test_future_schema_refuses_before_v20_ddl(tmp_path: Path) -> None:
     path = tmp_path / "future.db"
     ProductStore(path)
     with sqlite3.connect(path) as connection:
-        connection.execute("INSERT INTO schema_migrations VALUES(22,'2026-11-04T00:00:00Z')")
+        connection.execute("INSERT INTO schema_migrations VALUES(23,'2026-11-04T00:00:00Z')")
         for table in (
             "strix_runtime_issuance_records",
             "strix_runtime_admission_heads",

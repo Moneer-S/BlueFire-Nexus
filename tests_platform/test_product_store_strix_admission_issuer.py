@@ -231,7 +231,7 @@ def advance(previous, state, *, pending_kind=None, resources=None, evidence=None
 
 
 def test_product_store_and_private_adapter_import_smoke():
-    assert SCHEMA_VERSION == 21
+    assert SCHEMA_VERSION == 22
     assert issuance.ProductStoreStrixAdmissionIssuerPersistence is not None
 
 
@@ -678,7 +678,14 @@ def _snapshot(path):
         return {
             name: connection.execute(f'SELECT * FROM "{name}"').fetchall()
             for (name,) in tables
-            if name != "schema_migrations" and name != "strix_runtime_issuance_records"
+            if name
+            not in {
+                "schema_migrations",
+                "strix_runtime_issuance_records",
+                "engine_attempt_execution_claims",
+                "engine_attempt_pre_dispatch_settlements",
+                "engine_attempt_reconciliation_intents",
+            }
         }
 
 
@@ -688,15 +695,21 @@ def test_v20_migration_preserves_every_existing_row_and_rolls_back(tmp_path, mon
     retain_verified(store, current)
     with sqlite3.connect(store.path) as connection:
         connection.execute("DROP TABLE strix_runtime_issuance_records")
-        connection.execute("DELETE FROM schema_migrations WHERE version=21")
+        connection.execute("DROP TABLE engine_attempt_reconciliation_intents")
+        connection.execute("DROP TABLE engine_attempt_pre_dispatch_settlements")
+        connection.execute("DROP TABLE engine_attempt_execution_claims")
+        connection.execute("DELETE FROM schema_migrations WHERE version=22")
         connection.execute("INSERT INTO schema_migrations VALUES(20,'2026-11-04T00:00:00Z')")
     before = _snapshot(store.path)
     upgraded = ProductStore(store.path)
-    assert upgraded.schema_version == 21 and _snapshot(store.path) == before
-    assert ProductStore(store.path).schema_version == 21
+    assert upgraded.schema_version == 22 and _snapshot(store.path) == before
+    assert ProductStore(store.path).schema_version == 22
     with sqlite3.connect(store.path) as connection:
         connection.execute("DROP TABLE strix_runtime_issuance_records")
-        connection.execute("DELETE FROM schema_migrations WHERE version=21")
+        connection.execute("DROP TABLE engine_attempt_reconciliation_intents")
+        connection.execute("DROP TABLE engine_attempt_pre_dispatch_settlements")
+        connection.execute("DROP TABLE engine_attempt_execution_claims")
+        connection.execute("DELETE FROM schema_migrations WHERE version=22")
     original = issuance.initialize_schema
 
     def interrupted(connection):
@@ -709,6 +722,26 @@ def test_v20_migration_preserves_every_existing_row_and_rolls_back(tmp_path, mon
     assert _snapshot(store.path) == before
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 20
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='engine_attempt_execution_claims'"
+            ).fetchone()
+            is None
+        )
+        assert (
+            connection.execute(
+                """SELECT 1 FROM sqlite_master
+                WHERE name='engine_attempt_pre_dispatch_settlements'"""
+            ).fetchone()
+            is None
+        )
+        assert (
+            connection.execute(
+                """SELECT 1 FROM sqlite_master
+                WHERE name='engine_attempt_reconciliation_intents'"""
+            ).fetchone()
+            is None
+        )
         assert (
             connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='strix_runtime_issuance_records'"
