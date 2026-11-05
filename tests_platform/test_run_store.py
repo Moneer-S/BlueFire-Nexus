@@ -4,10 +4,35 @@ import json
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from bluefire.run_store import RunStore, RunStoreError
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows stat timestamp contract")
+def test_windows_private_identity_uses_stable_birth_time() -> None:
+    common = {
+        "st_dev": 3,
+        "st_ino": 5,
+        "st_mode": 0o100600,
+        "st_nlink": 1,
+        "st_size": 17,
+        "st_mtime_ns": 19,
+        "st_birthtime_ns": 23,
+    }
+    named = SimpleNamespace(**common, st_ctime_ns=29)
+    opened = SimpleNamespace(**common, st_ctime_ns=31)
+
+    assert RunStore._cross_view_private_identity(named) == RunStore._cross_view_private_identity(
+        opened
+    )
+    assert RunStore._stable_private_identity(named) != RunStore._stable_private_identity(opened)
+    changed = SimpleNamespace(**{**common, "st_birthtime_ns": 37}, st_ctime_ns=31)
+    assert RunStore._cross_view_private_identity(named) != RunStore._cross_view_private_identity(
+        changed
+    )
 
 
 def _create(store: RunStore):

@@ -116,9 +116,9 @@ def test_available_custody_and_failed_route_are_separate_from_actual_use(provide
         },
         *[row for row in graph["steps"] if row["id"] != "seed"],
     ]
-    next(row for row in graph["steps"] if row["id"] == "prepare")["parameters"]["redact_values"] = (
-        True
-    )
+    next(row for row in graph["steps"] if row["id"] == "prepare")["parameters"][
+        "redact_values"
+    ] = True
     graph["edges"] = [
         {"from_step": "reuse", "outcome": "success", "to_step": "prepare"},
         *[row for row in graph["edges"] if row["from_step"] != "seed"],

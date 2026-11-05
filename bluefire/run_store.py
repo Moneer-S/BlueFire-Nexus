@@ -944,6 +944,22 @@ class RunStore:
             int(details.st_ctime_ns),
         )
 
+    @classmethod
+    def _cross_view_private_identity(cls, details: os.stat_result) -> tuple[int, ...]:
+        timestamp = int(details.st_ctime_ns)
+        if os.name == "nt":
+            # Windows path and handle stat views do not consistently expose
+            # the same meaning through the deprecated st_ctime_ns field.
+            # Creation time is the stable timestamp shared by both views.
+            timestamp = int(getattr(details, "st_birthtime_ns", timestamp))
+        return (
+            *cls._filesystem_identity(details),
+            int(details.st_nlink),
+            int(details.st_size),
+            int(details.st_mtime_ns),
+            timestamp,
+        )
+
     @staticmethod
     def _is_link_or_reparse(details: os.stat_result) -> bool:
         return stat.S_ISLNK(details.st_mode) or bool(
@@ -1291,9 +1307,11 @@ class RunStore:
         if len(payload) != details.st_size or remaining == 0:
             raise RunStoreError("retained private object exceeds its reviewed bound")
         if (
-            self._stable_private_identity(details) != self._stable_private_identity(opened)
+            self._cross_view_private_identity(details)
+            != self._cross_view_private_identity(opened)
             or self._stable_private_identity(opened) != self._stable_private_identity(after)
-            or self._stable_private_identity(named) != self._stable_private_identity(after)
+            or self._cross_view_private_identity(named)
+            != self._cross_view_private_identity(after)
             or self._is_link_or_reparse(named)
             or named.st_nlink != 1
         ):

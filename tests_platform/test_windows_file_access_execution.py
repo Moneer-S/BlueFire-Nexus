@@ -43,6 +43,8 @@ def connected(pair_observed, tmp_path, monkeypatch):
     # This test does not exercise unrelated service initialization facilities.
     # Its actual property/API/shutdown methods use one long-lived controller.
     service = object.__new__(BlueFireService)
+    service._retained_recovery_stop = threading.Event()
+    service._retained_recovery_thread = None
     service.product_store = store
     service.job_controller = RunJobController(store, recover_on_start=False, max_workers=1)
     service._file_access = FileAccessControl(service, clock=lambda: clocks["wall"])
@@ -528,6 +530,7 @@ def test_long_lived_service_controller_closes_exact_registry_at_shutdown(connect
     _, _, job = submit(state)
     assert job["state"] == "completed", job.get("error")
     state.service.close()
+    assert state.service._retained_recovery_stop.is_set()
     assert state.closed == ["provider", "transport"]
     assert state.control.windows._closing and not state.control.windows._owners
     assert len(state.harness.popen_calls) == 1
