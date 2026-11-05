@@ -92,7 +92,7 @@ class CompositionJobs:
         with self._authorization_lock:
             return composition_admission.authorize(self, request)
 
-    def _current(self, owner, *, allow_exhausted=False):
+    def _current(self, owner, *, allow_exhausted=False, _repair=True):
         if (
             owner["state"] != "completed"
             or owner["progress"].get("admission") != {"accepted": True, "problem": None}
@@ -110,6 +110,15 @@ class CompositionJobs:
                 continue
             if attempt["lease"]["attempt_id"] != attempt_id:
                 raise ProductStoreError("Composition child has another retained attempt.")
+            result = child["progress"].get("verified_result", {})
+            if (
+                child["progress"].get("settlement") == "settled"
+                and result.get("objective", {}).get("established") is True
+                and self._verified_result(attempt)["objective"]["established"]
+            ):
+                raise ProductStoreError(
+                    "This objective is established; new business work is closed."
+                )
             pack = grant_pack(
                 self.store.get_capability_grant(attempt["lease"]["grant_id"], now_ms=self.clock())[
                     "document"
@@ -117,26 +126,31 @@ class CompositionJobs:
             )
             settlement = attempt.get("settlement")
             if pack != retained_artifacts.PACK:
-                result = child["progress"].get("verified_result", {})
-                if (
-                    child["progress"].get("settlement") == "settled"
-                    and result.get("objective", {}).get("established") is True
-                    and self._verified_result(attempt)["objective"]["established"]
-                ):
-                    raise ProductStoreError(
-                        "This objective is established; new business work is closed."
-                    )
                 continue
             if settlement is None:
                 continue
             from .product_store_retained_recovery import repair_progress
 
-            repair_progress(self.store, attempt_id, settlement)
+            desired_settlement = (
+                "interrupted_unusable"
+                if settlement["schema_version"].endswith(".v2")
+                else "settled"
+            )
+            if child["progress"].get("settlement") != desired_settlement:
+                if not _repair:
+                    raise ProductStoreError(
+                        "Retained attempt settlement projection requires durable recovery."
+                    )
+                repair_progress(self.store, attempt_id, settlement)
             if settlement.get("schema_version") == "bluefire.capability-attempt-settlement.v1":
                 verified = self._verified_result(attempt)
                 if child["progress"].get("verified_result") != verified or child["progress"].get(
                     "verified_result_digest"
                 ) != content_hash(verified):
+                    if not _repair:
+                        raise ProductStoreError(
+                            "Retained attempt result projection requires durable recovery."
+                        )
                     self._publish(
                         child["job_id"],
                         {
@@ -185,11 +199,19 @@ class CompositionJobs:
             return capability_file_access.seal_facts(grant)
         return composition_context.receiver_facts(self, grant, prior_attempt_id, owner_id=owner_id)
 
-    def validate_proposal(self, owner_id, proposal, *, prior_attempt_id=None, _retry_job_id=None):
+    def validate_proposal(
+        self,
+        owner_id,
+        proposal,
+        *,
+        prior_attempt_id=None,
+        _retry_job_id=None,
+        _repair=True,
+    ):
         owner = self._owner(owner_id)
         if owner["state"] != "completed" or owner["progress"].get("stopped"):
             raise ProductStoreError("The reviewed objective is not admitted for fresh work.")
-        grant, current = self._current(owner)
+        grant, current = self._current(owner, _repair=_repair)
         facts = self._facts(
             grant,
             prior_attempt_id,
@@ -966,9 +988,9 @@ class CompositionJobs:
         ]
 
     def proposal_context(
-        self, owner_id: str, *, prior_attempt_id: str | None = None
+        self, owner_id: str, *, prior_attempt_id: str | None = None, _repair: bool = True
     ) -> dict[str, Any]:
-        grant, current = self._current(self._owner(owner_id))
+        grant, current = self._current(self._owner(owner_id), _repair=_repair)
         facts = self._facts(
             grant,
             prior_attempt_id,
@@ -986,7 +1008,9 @@ class CompositionJobs:
         if prior_attempt_id is None:
             if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
                 initial = capability_macos_file_access.initial_proposal()
-                initial_scenario = self.validate_proposal(owner_id, initial)["scenario"]
+                initial_scenario = self.validate_proposal(owner_id, initial, _repair=_repair)[
+                    "scenario"
+                ]
                 return {
                     "schema_version": "bluefire.composition-proposal-context.v1",
                     "grant_id": grant["grant_id"],
@@ -998,7 +1022,9 @@ class CompositionJobs:
                 }
             elif grant_pack(grant) == FILE_ACCESS_PACK:
                 initial = capability_file_access.initial_proposal()
-                initial_scenario = self.validate_proposal(owner_id, initial)["scenario"]
+                initial_scenario = self.validate_proposal(owner_id, initial, _repair=_repair)[
+                    "scenario"
+                ]
                 return dict(
                     composition_file_access.proposal_context(
                         grant, facts, initial, initial_scenario
@@ -1034,7 +1060,9 @@ class CompositionJobs:
                 "evidence_refs": ["policy"],
                 "rationale": "Exercise the saved material route under the retained receiver policy.",
             }
-            initial_scenario = self.validate_proposal(owner_id, initial)["scenario"]
+            initial_scenario = self.validate_proposal(owner_id, initial, _repair=_repair)[
+                "scenario"
+            ]
         body = {
             "schema_version": "bluefire.composition-proposal-context.v1",
             "grant_id": grant["grant_id"],

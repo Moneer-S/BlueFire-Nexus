@@ -789,11 +789,11 @@ def _settlement(store, connection, attempt_id, receipt):
 
     _, grant, _ = _grant_at(connection, lease["grant_id"])
     if receipt.get("schema_version") == "bluefire.capability-attempt-settlement.v2":
-        from .product_store_retained_recovery import validate_interrupted_settlement
-
         if grant_pack(grant) != "bluefire.receiver-composition-pack.v2":
             raise ProductStoreError("Interrupted settlement is outside the retained pack.")
-        return validate_interrupted_settlement(connection, attempt_id, lease, receipt)
+        return store._capability_validate_interrupted_settlement(
+            connection, attempt_id, lease, receipt
+        )
     if grant_pack(grant) == "bluefire.receiver-composition-pack.v2":
         receiver_binding = connection.execute(
             "SELECT * FROM capability_receiver_bindings WHERE attempt_id=?",

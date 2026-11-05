@@ -12,6 +12,11 @@ from .product_store_capability_cleanup import workspace_at
 from .product_store_capability_transport import cleanup_step_id
 from .product_store_errors import ProductStoreError
 from .product_store_serialization import canonical_json, utc_now
+from .runner_result_contract import (
+    RunnerResultContractError,
+    validate_cleanup_result_contract,
+    validate_runner_result_identity,
+)
 from .util import content_hash, json_clone
 
 
@@ -686,11 +691,11 @@ def record_cleanup_terminal(
             or any(not isinstance(row, dict) for row in remaining_receipts)
         ):
             raise ProductStoreError("Recovery terminal has another survivor list.")
-        from .execution_progress import validate_cleanup_result
-        from .orchestrator import Orchestrator
-
-        Orchestrator._validate_runner_result(task["manifest"], task["runner_profile"], result)
-        validate_cleanup_result(task["manifest"], result)
+        try:
+            validate_runner_result_identity(task["manifest"], task["runner_profile"], result)
+            validate_cleanup_result_contract(task["manifest"], result)
+        except RunnerResultContractError as exc:
+            raise ProductStoreError(str(exc)) from None
         report = result.get("cleanup")
         removed_count = len(expected) - len(remaining_receipts)
         removed_ids = set(expected) - {row["receipt_id"] for row in remaining_receipts}

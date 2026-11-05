@@ -1307,11 +1307,9 @@ class RunStore:
         if len(payload) != details.st_size or remaining == 0:
             raise RunStoreError("retained private object exceeds its reviewed bound")
         if (
-            self._cross_view_private_identity(details)
-            != self._cross_view_private_identity(opened)
+            self._cross_view_private_identity(details) != self._cross_view_private_identity(opened)
             or self._stable_private_identity(opened) != self._stable_private_identity(after)
-            or self._cross_view_private_identity(named)
-            != self._cross_view_private_identity(after)
+            or self._cross_view_private_identity(named) != self._cross_view_private_identity(after)
             or self._is_link_or_reparse(named)
             or named.st_nlink != 1
         ):
@@ -1444,21 +1442,7 @@ class RunStore:
             self._posix_fchmod(temporary_descriptor, 0o700)
             temporary = run_path / temporary_name
             for name, payload in payloads.items():
-                file_descriptor = os.open(
-                    name,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_CLOEXEC", 0)
-                    | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                    dir_fd=temporary_descriptor,
-                )
-                with os.fdopen(file_descriptor, "wb") as handle:
-                    self._posix_fchmod(handle.fileno(), 0o600)
-                    handle.write(payload)
-                    handle.flush()
-                    os.fsync(handle.fileno())
+                self._write_retained_entry_at(temporary_descriptor, name, payload)
             self._verify_retained_directory(temporary, payloads, run_descriptor=run_descriptor)
             os.fsync(temporary_descriptor)
             self._rename_retained_no_replace(
@@ -1498,6 +1482,23 @@ class RunStore:
                     pass
             if temporary_descriptor is not None:
                 os.close(temporary_descriptor)
+
+    def _write_retained_entry_at(self, parent_descriptor: int, name: str, payload: bytes) -> None:
+        file_descriptor = os.open(
+            name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        with os.fdopen(file_descriptor, "wb") as handle:
+            self._posix_fchmod(handle.fileno(), 0o600)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
 
     def _rename_retained_no_replace(
         self,

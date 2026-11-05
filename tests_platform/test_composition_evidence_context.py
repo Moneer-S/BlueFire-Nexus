@@ -36,6 +36,7 @@ from bluefire.composition_evidence_context import (
     QUERY_SCHEMA,
     REQUEST_SCHEMA,
     RESULT_SCHEMA,
+    RETAINED_CONTEXT_SCHEMA,
     selection,
     validate_reconsideration,
 )
@@ -516,10 +517,11 @@ def test_invalid_existing_attempt_is_not_treated_as_an_unused_admission(history,
         historical_context(h.jobs, h.owner, selected, history.context)
 
 
+@pytest.mark.parametrize("context_schema", [CONTEXT_SCHEMA, RETAINED_CONTEXT_SCHEMA])
 @pytest.mark.parametrize("pack", [FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK])
-def test_new_history_purpose_cannot_be_used_with_other_packs(provider, pack):
+def test_new_history_purpose_cannot_be_used_with_other_packs(provider, pack, context_schema):
     current = file_access_context(pack)
-    current["schema_version"] = CONTEXT_SCHEMA
+    current["schema_version"] = context_schema
     with pytest.raises(CapabilityContractError, match="only the receiver"):
         format_request(provider, current)
 

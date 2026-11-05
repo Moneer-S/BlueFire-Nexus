@@ -356,6 +356,12 @@ class CapabilityStoreMixin:
         return cleanup.workspace_at(connection, attempt_id, lease)
 
     @staticmethod
+    def _capability_validate_interrupted_settlement(connection, attempt_id, lease, receipt):
+        from .product_store_retained_recovery import validate_interrupted_settlement
+
+        return validate_interrupted_settlement(connection, attempt_id, lease, receipt)
+
+    @staticmethod
     def _validate_capability_cleanup_settlement(connection, attempt_id, lease, native):
         cleanup.validate_settlement(connection, attempt_id, lease, native)
 

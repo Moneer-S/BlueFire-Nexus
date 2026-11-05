@@ -147,6 +147,11 @@ from .runner_receipt_validation import (
     _safe_receipt_path,
     discover_runner_receipts,
 )
+from .runner_result_contract import (
+    RunnerResultContractError,
+    validate_runner_result_identity,
+    validated_receipt_ids,
+)
 from .runner_transport_errors import transport_failure_reason
 from .runtime_proposals import (
     RuntimeProposalError,
@@ -3971,39 +3976,17 @@ class Orchestrator:
         profile: Mapping[str, Any],
         result: Mapping[str, Any],
     ) -> None:
-        expected = {
-            "schema_version": "bluefire.runner-result.v1",
-            "request_id": manifest["request_id"],
-            "run_id": manifest["run_id"],
-            "step_id": manifest["step_id"],
-            "behavior_id": manifest["behavior_id"],
-            "action_id": manifest["action_id"],
-            "runner_id": manifest["runner_id"],
-            "runner_profile_id": manifest["runner_profile_id"],
-            "platform": profile["platform"],
-            "request_hash": manifest["request_hash"],
-            "policy_digest": profile["policy_digest"],
-        }
-        for field, value in expected.items():
-            if result.get(field) != value:
-                raise RunnerTransportError(f"runner result {field} does not match its request")
+        try:
+            validate_runner_result_identity(manifest, profile, result)
+        except RunnerResultContractError as exc:
+            raise RunnerTransportError(str(exc)) from None
 
     @staticmethod
     def _validated_receipt_ids(value: Any) -> tuple[str, ...]:
-        if not isinstance(value, list):
-            raise RunnerTransportError("runner result receipt_ids must be a list")
-        result: list[str] = []
-        for receipt_id in value:
-            if (
-                not isinstance(receipt_id, str)
-                or len(receipt_id) != 64
-                or any(character not in "0123456789abcdef" for character in receipt_id)
-            ):
-                raise RunnerTransportError("runner returned an invalid receipt ID")
-            if receipt_id in result:
-                raise RunnerTransportError("runner returned duplicate receipt IDs")
-            result.append(receipt_id)
-        return tuple(result)
+        try:
+            return validated_receipt_ids(value)
+        except RunnerResultContractError as exc:
+            raise RunnerTransportError(str(exc)) from None
 
     _discover_runner_receipts = staticmethod(discover_runner_receipts)
 

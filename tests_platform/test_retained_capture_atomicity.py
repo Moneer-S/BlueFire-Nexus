@@ -172,17 +172,29 @@ def test_each_publication_boundary_recovers_exactly_after_reopen(tmp_path, monke
     store = RunStore(tmp_path / "runs")
     run_id, payload, prepared = _capture(store)
     if boundary == "payload":
-        original = store._atomic_write
         failed = False
+        if os.name == "nt":
+            original = store._atomic_write
 
-        def fail_once(path, value):
-            nonlocal failed
-            if not failed and path.name == "bundle.jsonl":
-                failed = True
-                raise OSError("injected payload failure")
-            return original(path, value)
+            def fail_once(path, value):
+                nonlocal failed
+                if not failed and path.name == "bundle.jsonl":
+                    failed = True
+                    raise OSError("injected payload failure")
+                return original(path, value)
 
-        monkeypatch.setattr(store, "_atomic_write", fail_once)
+            monkeypatch.setattr(store, "_atomic_write", fail_once)
+        else:
+            original_at = store._write_retained_entry_at
+
+            def fail_once_at(parent_descriptor, name, value):
+                nonlocal failed
+                if not failed and name == "bundle.jsonl":
+                    failed = True
+                    raise OSError("injected payload failure")
+                return original_at(parent_descriptor, name, value)
+
+            monkeypatch.setattr(store, "_write_retained_entry_at", fail_once_at)
     else:
         name = {
             "directory_ack": "_publish_retained_directory",

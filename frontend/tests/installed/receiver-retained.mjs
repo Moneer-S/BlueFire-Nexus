@@ -203,6 +203,16 @@ const retainedAttemptErrorTypes = new Set(["APIError", "AssertionError", "Capabi
   "RunStoreError", "TimeoutError", "TypeError", "ValueError"]);
 const retainedAttemptErrorCode = value => retainedAttemptErrorCodes.has(value) ? value : "unknown";
 const retainedAttemptErrorType = value => retainedAttemptErrorTypes.has(value) ? value : "other";
+const retainedProposalErrorCodes = new Set(["execution_callback_failed"]);
+const retainedProposalErrorTypes = new Set([
+  "APIError", "AssertionError", "CapabilityContractError", "ConfigError", "DatabaseError",
+  "IntegrityError", "JobCancelled", "KeyError", "LocalLockError", "OperationalError",
+  "OSError", "PayloadUnavailable", "PermissionError", "ProductStoreError", "ProgrammingError",
+  "RecursionError", "RunStoreError", "RuntimeError", "TimeoutError", "TypeError", "UnicodeError",
+  "ValueError",
+]);
+const retainedProposalErrorCode = value => retainedProposalErrorCodes.has(value) ? value : "unknown";
+const retainedProposalErrorType = value => retainedProposalErrorTypes.has(value) ? value : "other";
 
 export async function waitForRetainedSavedAttempt({ readObjective, attemptId, remainingMs,
   maximum = 110000, onVerification }) {
@@ -383,6 +393,10 @@ export async function runRetainedJourney(page, state, options) {
         ? value.provider_outcome : "unreported",
       candidate_ready: value.candidate_ready === true,
       proposal_present: Boolean(value.proposal),
+      ...(value.job?.state === "failed" && value.job?.error ? {
+        job_error_code: retainedProposalErrorCode(value.job.error.code),
+        job_error_type: retainedProposalErrorType(value.job.error.exception_type),
+      } : {}),
     } : {}),
   });
   const requestProposal = async (history) => {

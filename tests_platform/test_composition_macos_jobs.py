@@ -141,17 +141,25 @@ def test_mac_proposal_context_uses_the_fixed_proposal_without_receiver_context(m
 @pytest.mark.parametrize("allow_exhausted", [False, True])
 def test_established_mac_objective_closes_business_before_grant_lookup(allow_exhausted):
     jobs = object.__new__(composition_jobs.CompositionJobs)
-    attempt = {"compiled": {"macos_file_access": {}}}
+    attempt = {
+        "compiled": {"macos_file_access": {}},
+        "lease": {"attempt_id": "attempt-1"},
+    }
     verified = {"macos_file_access_result": {}, "objective": {"established": True}}
     checked = []
     jobs._children = lambda owner_id: [
         {
             "progress": {"settlement": "settled", "verified_result": verified},
-            "request": {"composition_attempt": {"attempt_id": "attempt-1"}},
+            "request": {
+                "composition_attempt": {
+                    "attempt_id": "attempt-1",
+                    "run_id": "run-1",
+                }
+            },
         }
     ]
     jobs.store = SimpleNamespace(
-        get_capability_attempt=lambda attempt_id: attempt,
+        get_capability_attempt_for_run=lambda run_id: attempt,
         get_capability_grant=lambda *args, **kwargs: pytest.fail("business gate did not close"),
     )
     jobs._verified_result = lambda value: checked.append(value) or verified

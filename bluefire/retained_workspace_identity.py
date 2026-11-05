@@ -7,7 +7,7 @@ import sys
 from contextlib import ExitStack
 from pathlib import Path
 
-from .runner_descriptor_io import descriptor_identity, identity_format
+from .native_filesystem_identity import descriptor_identity, identity_format
 from .windows_owner_acl import _windows_open_descriptor
 
 

@@ -207,6 +207,12 @@ def format_request(config, context):
         raise CapabilityContractError("composition context lacks its capability snapshot")
     pack = snapshot.get("pack")
     purpose, schema = proposal_contract(pack)
+    history_envelope = context.get("schema_version") in {
+        evidence_context.CONTEXT_SCHEMA,
+        evidence_context.RETAINED_CONTEXT_SCHEMA,
+    }
+    if history_envelope and pack not in (RECEIVER_PACK, RECEIVER_RETAINED_PACK):
+        raise CapabilityContractError("Historical proposals support only the receiver packs.")
     # The retained context schema is also used for an initial proposal where no
     # prior attempt was selected.  Only validated historical content enables
     # the reconsideration dialect; the envelope schema alone is not evidence
@@ -341,7 +347,9 @@ class CompositionAIJobs:
         self.store = service.product_store
         self.controller = service.job_controller
 
-    def context(self, owner_id, *, prior_attempt_id=None, history_selection=None) -> dict[str, Any]:
+    def context(
+        self, owner_id, *, prior_attempt_id=None, history_selection=None, _repair=True
+    ) -> dict[str, Any]:
         owner = self.store.get_job(owner_id)
         if (
             owner["kind"] != "composition.objective"
@@ -359,7 +367,7 @@ class CompositionAIJobs:
             ):
                 raise ProductStoreError("Prior evidence belongs to another composition objective.")
         current = self.service.composition.proposal_context(
-            owner_id, prior_attempt_id=prior_attempt_id
+            owner_id, prior_attempt_id=prior_attempt_id, _repair=_repair
         )
         grant = self.store.get_capability_grant(
             current["grant_id"], now_ms=self.service.composition.clock()
@@ -379,12 +387,17 @@ class CompositionAIJobs:
             )
         return {**current, "context_digest": context_digest(current)}
 
-    def requested_context(self, owner_id, request, *, submission=False) -> dict[str, Any]:
+    def requested_context(
+        self, owner_id, request, *, submission=False, _repair=True
+    ) -> dict[str, Any]:
         selected = None
         if isinstance(request, Mapping) and "schema_version" in request:
             selected = evidence_context.selection(request, submission=submission)
         return self.context(
-            owner_id, prior_attempt_id=request["prior_attempt_id"], history_selection=selected
+            owner_id,
+            prior_attempt_id=request["prior_attempt_id"],
+            history_selection=selected,
+            _repair=_repair,
         )
 
     def _job(self, job_id):
@@ -393,10 +406,12 @@ class CompositionAIJobs:
             raise ProductStoreError("The selected job is not a composition proposal.")
         return job
 
-    def _fresh(self, job):
+    def _fresh(self, job, *, _repair=True):
         request = job["request"]
         submitted = request["submitted_request"]
-        current = self.requested_context(request["owner_id"], submitted, submission=True)
+        current = self.requested_context(
+            request["owner_id"], submitted, submission=True, _repair=_repair
+        )
         if current["context_digest"] != submitted["context_digest"]:
             raise ProductStoreError(
                 "Composition context changed; review the current objective and evidence."
@@ -500,13 +515,14 @@ class CompositionAIJobs:
                 self.store._connection(write=True) as connection,
             ):
                 job = job_at(self.store, connection, ctx.job_id)
-                self._fresh(job)
+                self._fresh(job, _repair=False)
                 if job["state"] in {"cancelling", "cancelled"} or job["progress"].get("stopped"):
                     raise JobCancelled("Composition proposal stopped before publication.")
                 final = self.service.composition.validate_proposal(
                     request["owner_id"],
                     result["candidate"],
                     prior_attempt_id=submitted["prior_attempt_id"],
+                    _repair=False,
                 )
                 if final["scenario"] != proposal["scenario"]:
                     raise ProductStoreError(
