@@ -12,8 +12,10 @@ reservation/outcome and reconciles custody without calling ``run``.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
+import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -22,8 +24,13 @@ from typing import Any, Callable, Mapping, Protocol
 from .domain_errors import JobCancelled
 from .engine_artifact_store import (
     MAX_SOURCE_TREE_ENTRIES,
+    PUBLICATION_REF_SCHEMA,
+    V2_MANIFEST_SCHEMA,
+    EngineArtifactPublicationBinding,
+    EngineArtifactPublicationUnknown,
     EngineArtifactStore,
     EngineArtifactStoreError,
+    ReopenedEngineArtifactAttempt,
     SourceCollectionSeal,
     _is_reparse,
     _safe_name,
@@ -53,6 +60,7 @@ from .engine_worker_runtime import (
     EngineResourceCustody,
     EngineWorkerOutcome,
     EngineWorkerRuntime,
+    ResourceCustodySnapshot,
     ResourceCustodyState,
     read_launch_reservation,
     read_worker_outcome,
@@ -64,12 +72,11 @@ from .strix_adapter import (
     StrixBuildIdentity,
     StrixLaunchPlan,
     StrixModelGateway,
-    StrixRunSnapshot,
     StrixRuntimeLimits,
     StrixScope,
     build_launch_plan,
-    discover_run_snapshot,
 )
+from .strix_run_bytes import StrixRunByteSnapshot, parse_strix_run_bytes
 from .util import content_hash, parse_iso8601_datetime
 
 
@@ -86,7 +93,12 @@ _OPTIONAL_STRIX_RUN_FILES = (
 
 
 class ModelGatewayLease(Protocol):
-    """Attempt-scoped credential held only in the trusted controller process."""
+    """Attempt-scoped credential held only in the trusted controller process.
+
+    Revocation returns the stable receipt for this exact attempt, including
+    when claimed recovery finishes the same revocation after an acknowledgement
+    is lost.
+    """
 
     @property
     def authorization_ref(self) -> str: ...
@@ -109,6 +121,22 @@ class ModelGatewayCredentialProvider(Protocol):
         delegation: EngineCapabilityDelegation,
     ) -> str | None: ...
 
+    def reconcile_revocation_claimed(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+        *,
+        reconciliation_ref: str,
+        timeout_seconds: float,
+    ) -> str | None:
+        """Finish ref-fenced revocation without acquiring a lease.
+
+        Return the same receipt as live ``ModelGatewayLease.revoke`` and every
+        retry for the exact attempt, so cleanup evidence keeps one identity.
+        """
+
+        ...
+
 
 class SourceCollectionController(Protocol):
     """Issue a seal only after process/container stop and write revocation."""
@@ -121,13 +149,29 @@ class SourceCollectionController(Protocol):
         worker_outcome: EngineWorkerOutcome,
     ) -> SourceCollectionSeal: ...
 
+    def reconcile_seal(
+        self,
+        *,
+        reconciliation_ref: str,
+        attempt_id: str,
+        source_run_dir: Path,
+        worker_outcome: EngineWorkerOutcome | None,
+        timeout_seconds: float,
+    ) -> SourceCollectionSeal:
+        """Ref-fenced process stop and source-write revocation, even without an outcome."""
+
+        ...
+
 
 class StrixRuntimeAdmissionResolver(Protocol):
     def resolve(
         self,
         binding: EngineAttemptBinding,
         delegation: EngineCapabilityDelegation,
-    ) -> "StrixRuntimeAdmission": ...
+    ) -> "StrixRuntimeAdmission":
+        """Read an accepted admission without launch or new resource allocation."""
+
+        ...
 
     def resolve_for_launch(
         self,
@@ -313,6 +357,9 @@ class _ArtifactResult:
     limitation: str | None
 
 
+_RECOVERY_BUDGET_SECONDS = 15.0
+
+
 class StrixEngineRuntime:
     """Implement ``EngineAttemptRuntime`` without adding execution authority."""
 
@@ -325,10 +372,14 @@ class StrixEngineRuntime:
         credential_provider: ModelGatewayCredentialProvider,
         source_controller: SourceCollectionController,
         clock: Callable[[], str],
-        expected_resolution_ref: str | None = None,
+        expected_claim_ref: str,
+        expected_resolution_ref: str,
+        expected_launch_digest: str | None = None,
     ) -> None:
-        if expected_resolution_ref is not None:
-            _require_digest(expected_resolution_ref, "expected Strix runtime resolution")
+        _require_digest(expected_claim_ref, "expected execution claim")
+        _require_digest(expected_resolution_ref, "expected Strix runtime resolution")
+        if expected_launch_digest is not None:
+            _require_digest(expected_launch_digest, "expected claim-bound launch")
         self._resolver = resolver
         self._worker = worker
         self._artifact_store = artifact_store
@@ -336,6 +387,8 @@ class StrixEngineRuntime:
         self._source_controller = source_controller
         self._clock = clock
         self._expected_resolution_ref = expected_resolution_ref
+        self._expected_claim_ref = expected_claim_ref
+        self._expected_launch_digest = expected_launch_digest
 
     def execute(
         self,
@@ -566,298 +619,431 @@ class StrixEngineRuntime:
         delegation: EngineCapabilityDelegation,
         saved_record: EngineAttemptRecord,
     ) -> EngineRuntimeSettlement:
-        """Reconcile durable state without calling the worker launch method."""
+        """Historical v1 entry point cannot settle an installed claimed attempt."""
 
-        try:
-            checked_binding, checked_delegation, prepared = self._prepare(binding, delegation)
-        except Exception:
-            # Recovery must still revoke credentials and stop exact delegated
-            # custody when launch-only inputs have been removed or quarantined.
-            return self._reconcile_without_launch_prerequisites(binding, delegation, saved_record)
-        saved = EngineAttemptRecord.from_mapping(saved_record.to_dict())
-        if saved.binding_digest != checked_binding.binding_digest:
-            raise StrixEngineRuntimeError("saved Strix attempt binding changed")
-        reservation = read_launch_reservation(
-            prepared.admission.control_root, checked_binding.attempt_id
-        )
-        outcome = read_worker_outcome(prepared.admission.control_root, checked_binding.attempt_id)
-        expected_reservation = self._worker_plan(
-            prepared, checked_binding, "redacted"
-        ).public_launch_receipt()
-        recovery_observed_at: str | None = None
-        if outcome is None:
-            recovery_observed_at = _require_timestamp(self._clock(), "Strix recovery time")
-        reservation_matches = _reservation_matches(
-            reservation,
-            expected_reservation,
-            not_before=saved.started_at or checked_delegation.created_at,
-            not_after=(
-                outcome.completed_at
-                if outcome is not None
-                else saved.ended_at or recovery_observed_at
-            ),
-        )
-        try:
-            revocation_ref = self._credentials.reconcile_revocation(
-                checked_binding, checked_delegation
-            )
-            if revocation_ref is not None:
-                revocation_ref = _require_digest(revocation_ref, "model gateway revocation receipt")
-        except (OSError, RuntimeError, TypeError, ValueError):
-            revocation_ref = None
-
-        if outcome is None:
-            if reservation is None:
-                issue = "launch_reservation_unavailable"
-            elif not reservation_matches:
-                issue = "launch_reservation_mismatch"
-            else:
-                issue = "launch_outcome_unavailable"
-            self._stop_external_custody(prepared)
-            assert recovery_observed_at is not None
-            settled_at = recovery_observed_at
-            cleanup_ref = content_hash(
-                {
-                    "schema_version": "bluefire.strix-recovery-unknown.v1",
-                    "attempt_id": checked_binding.attempt_id,
-                    "binding_digest": checked_binding.binding_digest,
-                    "launch_plan_digest": prepared.launch_plan_digest,
-                    "issue": issue,
-                    "gateway_revocation_ref": revocation_ref,
-                    "recorded_at": settled_at,
-                }
-            )
-            if saved.state in _TERMINAL_STATES:
-                record = saved
-            elif saved.state in {AttemptState.RUNNING, AttemptState.STOPPING}:
-                record = saved.transition(
-                    AttemptState.UNKNOWN,
-                    timestamp=settled_at,
-                    completeness=AttemptCompleteness.UNKNOWN,
-                    exit_reason="recovery_outcome_unavailable",
-                    limitations=(
-                        "Launch was not replayed; process or external-resource custody remains unknown.",
-                    ),
-                )
-            else:
-                record = saved.transition(
-                    AttemptState.FAILED,
-                    timestamp=settled_at,
-                    completeness=AttemptCompleteness.UNKNOWN,
-                    exit_reason="recovery_outcome_unavailable",
-                    limitations=(
-                        "Launch was not replayed; process or external-resource custody remains unknown.",
-                    ),
-                )
-            return EngineRuntimeSettlement(
-                record=record,
-                engine_evidence=(),
-                artifact_manifest_ref=None,
-                cleanup_state=CleanupState.UNKNOWN,
-                cleanup_evidence_ref=cleanup_ref,
-                settled_at=settled_at,
-            )
-
-        if not reservation_matches:
-            issue = (
-                "launch_reservation_unavailable"
-                if reservation is None
-                else "launch_reservation_mismatch"
-            )
-            self._stop_external_custody(prepared)
-            settled_at = _require_timestamp(self._clock(), "Strix recovery time")
-            cleanup_ref = content_hash(
-                {
-                    "schema_version": "bluefire.strix-recovery-unknown.v1",
-                    "attempt_id": checked_binding.attempt_id,
-                    "binding_digest": checked_binding.binding_digest,
-                    "launch_plan_digest": prepared.launch_plan_digest,
-                    "retained_outcome_digest": content_hash(outcome.to_dict()),
-                    "issue": issue,
-                    "gateway_revocation_ref": revocation_ref,
-                    "recorded_at": settled_at,
-                }
-            )
-            if saved.state in _TERMINAL_STATES:
-                record = saved
-            elif saved.state in {AttemptState.RUNNING, AttemptState.STOPPING}:
-                record = saved.transition(
-                    AttemptState.UNKNOWN,
-                    timestamp=settled_at,
-                    completeness=AttemptCompleteness.UNKNOWN,
-                    exit_reason="recovery_launch_identity_unknown",
-                    limitations=(
-                        "The retained outcome is not bound to the expected launch reservation; "
-                        "launch was not replayed.",
-                    ),
-                )
-            else:
-                record = saved.transition(
-                    AttemptState.FAILED,
-                    timestamp=settled_at,
-                    completeness=AttemptCompleteness.UNKNOWN,
-                    exit_reason="recovery_launch_identity_unknown",
-                    limitations=(
-                        "The retained outcome is not bound to the expected launch reservation; "
-                        "launch was not replayed.",
-                    ),
-                )
-            return EngineRuntimeSettlement(
-                record=record,
-                engine_evidence=(),
-                artifact_manifest_ref=None,
-                cleanup_state=CleanupState.UNKNOWN,
-                cleanup_evidence_ref=cleanup_ref,
-                settled_at=settled_at,
-            )
-        if saved.state in _TERMINAL_STATES:
-            if not _terminal_outcome_matches(saved, outcome):
-                self._stop_external_custody(prepared)
-                settled_at = _require_timestamp(self._clock(), "Strix recovery time")
-                return EngineRuntimeSettlement(
-                    record=saved,
-                    engine_evidence=(),
-                    artifact_manifest_ref=None,
-                    cleanup_state=CleanupState.UNKNOWN,
-                    cleanup_evidence_ref=content_hash(
-                        {
-                            "schema_version": "bluefire.strix-recovery-unknown.v1",
-                            "attempt_id": checked_binding.attempt_id,
-                            "binding_digest": checked_binding.binding_digest,
-                            "launch_plan_digest": prepared.launch_plan_digest,
-                            "retained_outcome_digest": content_hash(outcome.to_dict()),
-                            "issue": "terminal_outcome_identity_mismatch",
-                            "gateway_revocation_ref": revocation_ref,
-                            "recorded_at": settled_at,
-                        }
-                    ),
-                    settled_at=settled_at,
-                )
-            cleanup_state = _cleanup_state(outcome, revocation_ref)
-            settled_at = _require_timestamp(self._clock(), "Strix recovery time")
-            return EngineRuntimeSettlement(
-                record=saved,
-                engine_evidence=(),
-                artifact_manifest_ref=None,
-                cleanup_state=cleanup_state,
-                cleanup_evidence_ref=_cleanup_receipt(
-                    checked_binding,
-                    prepared,
-                    outcome,
-                    revocation_ref,
-                    None,
-                    None,
-                    cleanup_state,
-                    settled_at,
-                ),
-                settled_at=settled_at,
-            )
-        if saved.state not in {AttemptState.RUNNING, AttemptState.STOPPING}:
-            # The canonical store never durably observed the RUNNING transition.
-            # Recovery may inspect and clean up the retained worker outcome, but
-            # it must not synthesize an intermediate transition that the caller
-            # cannot persist atomically or promote that outcome to product proof.
-            settled_at = _require_timestamp(self._clock(), "Strix recovery time")
-            cleanup_state = _cleanup_state(outcome, revocation_ref)
-            record = saved.transition(
-                AttemptState.FAILED,
-                timestamp=settled_at,
-                completeness=AttemptCompleteness.UNKNOWN,
-                exit_reason="recovery_session_not_durable",
-                limitations=(
-                    "A retained worker outcome exists, but the upstream session was not "
-                    "durably recorded; launch was not replayed.",
-                ),
-            )
-            return EngineRuntimeSettlement(
-                record=record,
-                engine_evidence=(),
-                artifact_manifest_ref=None,
-                cleanup_state=cleanup_state,
-                cleanup_evidence_ref=_cleanup_receipt(
-                    checked_binding,
-                    prepared,
-                    outcome,
-                    revocation_ref,
-                    None,
-                    None,
-                    cleanup_state,
-                    settled_at,
-                ),
-                settled_at=settled_at,
-            )
-        return self._settlement(
-            checked_binding,
-            checked_delegation,
-            prepared,
-            saved,
-            outcome,
-            revocation_ref=revocation_ref,
+        del binding, delegation, saved_record
+        raise StrixEngineRuntimeError(
+            "Strix recovery requires an exact claimed reconciliation reference"
         )
 
-    def _reconcile_without_launch_prerequisites(
+    def reconcile_claimed(
         self,
         binding: EngineAttemptBinding,
         delegation: EngineCapabilityDelegation,
         saved_record: EngineAttemptRecord,
+        *,
+        reconciliation_ref: str,
     ) -> EngineRuntimeSettlement:
+        """Reopen exact v2 bytes and ref-fenced custody without launch authority."""
+
+        _require_digest(reconciliation_ref, "claimed reconciliation")
         checked_delegation = EngineCapabilityDelegation.from_mapping(delegation.to_dict())
         checked_binding = checked_delegation.validate_attempt_binding(binding)
         saved = EngineAttemptRecord.from_mapping(saved_record.to_dict())
-        if saved.binding_digest != checked_binding.binding_digest:
+        if (
+            saved.binding != checked_binding
+            or saved.binding_digest != checked_binding.binding_digest
+        ):
             raise StrixEngineRuntimeError("saved Strix attempt binding changed")
-        admission = self._resolver.resolve(checked_binding, checked_delegation)
-        if not isinstance(admission, StrixRuntimeAdmission):
-            raise StrixEngineRuntimeError("Strix runtime admission is invalid")
-        if (
-            admission.objective_ref != checked_binding.objective_ref
-            or admission.environment_ref != checked_binding.environment_ref
-        ):
-            raise StrixEngineRuntimeError("Strix recovery admission belongs to another objective")
-        custody_plan = ContainerCustodyPlan.from_mapping(admission.custody_plan.to_dict())
-        if (
-            custody_plan.attempt_id != checked_binding.attempt_id
-            or custody_plan.plan_digest != checked_delegation.custody_plan_digest
-            or custody_plan.network_policy_digest != checked_delegation.network_policy_digest
-        ):
-            raise StrixEngineRuntimeError("Strix recovery custody differs from the delegation")
+
+        # A final publication is inspected before any saved source admission.
+        # A partial publication remains untouched through every retry.
+        publication_issue: str | None = None
         try:
-            revocation_ref = self._credentials.reconcile_revocation(
-                checked_binding, checked_delegation
+            reopened = self._artifact_store.reopen_attempt(checked_binding.attempt_id)
+        except EngineArtifactPublicationUnknown:
+            reopened = None
+            publication_issue = "artifact_publication_pending"
+        except EngineArtifactStoreError as exc:
+            reopened = None
+            publication_issue = (
+                "artifact_publication_missing"
+                if str(exc) == "artifact publication is unavailable"
+                else "artifact_publication_invalid"
             )
-            if revocation_ref is not None:
-                revocation_ref = _require_digest(revocation_ref, "model gateway revocation receipt")
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            reopened = None
+            publication_issue = "artifact_publication_invalid"
+        if reopened is None and publication_issue is None:
+            publication_issue = "artifact_publication_invalid"
+        if reopened is not None and (
+            not isinstance(reopened, ReopenedEngineArtifactAttempt)
+            or not reopened.recovery_eligible
+            or reopened.schema_version != V2_MANIFEST_SCHEMA
+        ):
+            reopened = None
+            publication_issue = "artifact_publication_legacy_or_invalid"
+
+        deadline = time.monotonic() + _RECOVERY_BUDGET_SECONDS
+        revoke = getattr(self._credentials, "reconcile_revocation_claimed", None)
+        revocation_ref: str | None = None
+        effect_issue: str | None = None
+        if callable(revoke):
+            try:
+                revocation_ref = _require_digest(
+                    revoke(
+                        checked_binding,
+                        checked_delegation,
+                        reconciliation_ref=reconciliation_ref,
+                        timeout_seconds=_remaining_recovery_budget(deadline),
+                    ),
+                    "claimed model gateway revocation receipt",
+                )
+                _remaining_recovery_budget(deadline)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                effect_issue = "ref_fenced_revocation_unavailable"
+        else:
+            effect_issue = "missing_ref_fenced_revocation_adapter"
+
+        # resolve() only reopens the saved admission. It does not issue launch
+        # authority or allocate a worker, credential, or listener.
+        try:
+            admission = self._resolver.resolve(checked_binding, checked_delegation)
+            if not isinstance(admission, StrixRuntimeAdmission):
+                raise StrixEngineRuntimeError("claimed recovery admission is invalid")
+            custody_plan = ContainerCustodyPlan.from_mapping(admission.custody_plan.to_dict())
+            if (
+                admission.objective_ref != checked_binding.objective_ref
+                or admission.environment_ref != checked_binding.environment_ref
+                or admission.workspace.attempt_id != _adapter_attempt_id(checked_binding.attempt_id)
+                or admission.scope.target_snapshot_digest != checked_binding.target_snapshot_ref
+                or admission.scope.scope_digest != checked_binding.scope_ref
+                or custody_plan.attempt_id != checked_binding.attempt_id
+                or custody_plan.plan_digest != checked_delegation.custody_plan_digest
+                or custody_plan.network_policy_digest != checked_delegation.network_policy_digest
+            ):
+                raise StrixEngineRuntimeError("claimed recovery admission changed")
+        except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                "recovery_admission_unavailable",
+            )
+
+        # Receipt damage must not bypass stop and source-write revocation.
+        reservation: Mapping[str, Any] | None = None
+        outcome: EngineWorkerOutcome | None = None
+        receipt_issue: str | None = None
+        try:
+            reservation = read_launch_reservation(
+                admission.control_root, checked_binding.attempt_id
+            )
         except (OSError, RuntimeError, TypeError, ValueError):
-            revocation_ref = None
-        self._stop_recovery_custody(
-            admission,
-            custody_plan,
-            checked_delegation.network_policy_digest,
+            receipt_issue = "launch_reservation_unavailable"
+        try:
+            outcome = read_worker_outcome(admission.control_root, checked_binding.attempt_id)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            receipt_issue = receipt_issue or "worker_outcome_unavailable"
+
+        stop = getattr(admission.custody, "reconcile_stop_owned", None)
+        source_revoke = getattr(self._source_controller, "reconcile_seal", None)
+        custody: ResourceCustodySnapshot | None = None
+        seal: SourceCollectionSeal | None = None
+        if callable(stop):
+            try:
+                custody = stop(
+                    checked_binding.attempt_id,
+                    reconciliation_ref=reconciliation_ref,
+                    custody_identity_digest=custody_plan.plan_digest,
+                    network_policy_digest=checked_delegation.network_policy_digest,
+                    timeout_seconds=_remaining_recovery_budget(deadline),
+                )
+                _remaining_recovery_budget(deadline)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                effect_issue = effect_issue or "ref_fenced_custody_stop_unavailable"
+        else:
+            effect_issue = effect_issue or "missing_ref_fenced_custody_adapter"
+        if reopened is None:
+            if callable(source_revoke):
+                try:
+                    seal = source_revoke(
+                        reconciliation_ref=reconciliation_ref,
+                        attempt_id=checked_binding.attempt_id,
+                        source_run_dir=admission.workspace.cwd,
+                        worker_outcome=outcome,
+                        timeout_seconds=_remaining_recovery_budget(deadline),
+                    )
+                    seal.to_dict()
+                    _remaining_recovery_budget(deadline)
+                    if (
+                        seal.attempt_id != checked_binding.attempt_id
+                        or seal.worker_state != "stopped"
+                        or seal.write_access_revoked is not True
+                    ):
+                        raise StrixEngineRuntimeError("claimed source revocation is unverified")
+                except (
+                    AttributeError,
+                    EngineArtifactStoreError,
+                    OSError,
+                    RuntimeError,
+                    TypeError,
+                    ValueError,
+                ):
+                    effect_issue = effect_issue or "ref_fenced_source_revocation_unavailable"
+                    seal = None
+            else:
+                effect_issue = effect_issue or "missing_ref_fenced_source_revocation_adapter"
+
+        if receipt_issue is not None:
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                receipt_issue,
+                outcome=outcome,
+            )
+        if publication_issue is not None and publication_issue != "artifact_publication_missing":
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                publication_issue,
+                outcome=outcome,
+            )
+        if outcome is None or outcome.attempt_id != checked_binding.attempt_id:
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                effect_issue or "worker_outcome_unavailable",
+                outcome=outcome,
+            )
+        if (
+            effect_issue is not None
+            or revocation_ref is None
+            or not isinstance(custody, ResourceCustodySnapshot)
+            or custody.state is not ResourceCustodyState.VERIFIED_ABSENT
+            or _cleanup_state(outcome, revocation_ref) is not CleanupState.VERIFIED_ABSENT
+        ):
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                effect_issue or "process_or_external_custody_unverified",
+                outcome=outcome,
+            )
+        launch_digest = _retained_launch_digest(
+            reservation,
+            binding=checked_binding,
+            delegation=checked_delegation,
+            not_before=saved.started_at or checked_delegation.created_at,
+            not_after=outcome.completed_at,
         )
-        settled_at = _require_timestamp(self._clock(), "Strix recovery time")
+        if launch_digest is None:
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                "launch_identity_unavailable",
+                outcome=outcome,
+            )
+        if (
+            self._expected_launch_digest is not None
+            and launch_digest != self._expected_launch_digest
+        ):
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                "claim_bound_launch_identity_changed",
+                outcome=outcome,
+            )
+        if reopened is None and self._expected_launch_digest is None:
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                "missing_claim_bound_launch_receipt_for_new_publication",
+                outcome=outcome,
+            )
+        expected_publication_binding = EngineArtifactPublicationBinding(
+            attempt_id=checked_binding.attempt_id,
+            binding_digest=checked_binding.binding_digest,
+            delegation_digest=checked_delegation.delegation_digest,
+            launch_digest=launch_digest,
+            runtime_resolution_ref=self._expected_resolution_ref,
+            execution_claim_ref=self._expected_claim_ref,
+            worker_outcome_digest=content_hash(outcome.to_dict()),
+        )
+        if reopened is not None and reopened.publication_binding != expected_publication_binding:
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                "artifact_publication_binding_changed",
+                outcome=outcome,
+            )
+        if reopened is None:
+            if seal is None:
+                return self._claimed_unknown(
+                    checked_binding,
+                    checked_delegation,
+                    saved,
+                    reconciliation_ref,
+                    "ref_fenced_source_revocation_unavailable",
+                    outcome=outcome,
+                )
+            try:
+                names = _source_artifact_selection(
+                    admission.workspace.cwd,
+                    max_files=self._artifact_store.max_files,
+                    max_file_bytes=self._artifact_store.max_file_bytes,
+                )
+                reopened = self._artifact_store.import_or_reopen(
+                    attempt_id=checked_binding.attempt_id,
+                    source_run_dir=admission.workspace.cwd,
+                    source_seal=seal,
+                    allowed_names=names,
+                    publication_binding=expected_publication_binding,
+                )
+                _remaining_recovery_budget(deadline)
+            except (EngineArtifactStoreError, OSError, RuntimeError, TypeError, ValueError):
+                return self._claimed_unknown(
+                    checked_binding,
+                    checked_delegation,
+                    saved,
+                    reconciliation_ref,
+                    "artifact_recovery_unavailable",
+                    outcome=outcome,
+                )
+        try:
+            snapshot, artifacts = _reopened_artifact_result(
+                reopened,
+                expected_binding=expected_publication_binding,
+                expected_target=admission.scope.target,
+                expected_instruction_sha256=admission.workspace.objective_sha256,
+                outcome=outcome,
+                run_id=checked_binding.run_id,
+                max_file_bytes=self._artifact_store.max_file_bytes,
+                max_total_bytes=self._artifact_store.max_total_bytes,
+                max_files=self._artifact_store.max_files,
+            )
+        except (EngineArtifactStoreError, OSError, RuntimeError, TypeError, ValueError):
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                "retained_strix_bytes_invalid",
+                outcome=outcome,
+            )
+        if saved.state in _TERMINAL_STATES:
+            projected_state, projected_completeness, projected_reason = _terminal_projection(
+                outcome, snapshot
+            )
+            if (
+                not _terminal_outcome_matches(saved, outcome)
+                or saved.state is not projected_state
+                or saved.completeness is not projected_completeness
+                or saved.exit_reason != projected_reason
+            ):
+                return self._claimed_unknown(
+                    checked_binding,
+                    checked_delegation,
+                    saved,
+                    reconciliation_ref,
+                    "saved_terminal_outcome_changed",
+                    outcome=outcome,
+                )
+            return EngineRuntimeSettlement(
+                record=saved,
+                engine_evidence=artifacts.evidence,
+                artifact_manifest_ref=artifacts.manifest_ref,
+                cleanup_state=CleanupState.VERIFIED_ABSENT,
+                cleanup_evidence_ref=_v2_cleanup_receipt(
+                    checked_binding,
+                    checked_delegation,
+                    launch_digest,
+                    self._expected_resolution_ref,
+                    self._expected_claim_ref,
+                    outcome,
+                    revocation_ref,
+                    artifacts.seal_ref,
+                    artifacts.manifest_ref,
+                    CleanupState.VERIFIED_ABSENT,
+                ),
+                settled_at=outcome.completed_at,
+                reconciliation_ref=reconciliation_ref,
+            )
+        if saved.state not in {AttemptState.RUNNING, AttemptState.STOPPING}:
+            return self._claimed_unknown(
+                checked_binding,
+                checked_delegation,
+                saved,
+                reconciliation_ref,
+                "recovery_session_not_durable",
+                outcome=outcome,
+            )
+        return self._build_v2_settlement(
+            checked_binding,
+            checked_delegation,
+            saved,
+            outcome,
+            snapshot=snapshot,
+            artifact_result=artifacts,
+            snapshot_limitation=None,
+            cleanup_state=CleanupState.VERIFIED_ABSENT,
+            revocation_ref=revocation_ref,
+            launch_digest=launch_digest,
+            resolution_ref=self._expected_resolution_ref,
+            reconciliation_ref=reconciliation_ref,
+        )
+
+    def _claimed_unknown(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+        saved: EngineAttemptRecord,
+        reconciliation_ref: str,
+        issue: str,
+        *,
+        outcome: EngineWorkerOutcome | None = None,
+    ) -> EngineRuntimeSettlement:
+        settled_at = saved.ended_at or (
+            outcome.completed_at
+            if outcome is not None
+            else saved.started_at or delegation.created_at
+        )
+        limitation = {
+            "artifact_publication_pending": (
+                "A partial artifact publication remains untouched; claimed cleanup is unverified."
+            ),
+            "missing_ref_fenced_revocation_or_custody_adapter": (
+                "Claimed recovery requires reconcile_revocation_claimed and "
+                "reconcile_stop_owned adapters fenced by the reconciliation reference."
+            ),
+            "missing_ref_fenced_source_revocation_adapter": (
+                "Claimed recovery requires a reconcile_seal adapter that proves process stop "
+                "and source write revocation."
+            ),
+            "missing_claim_bound_launch_receipt_for_new_publication": (
+                "New recovery publication requires an exact claim-bound launch digest."
+            ),
+        }.get(issue, "Claimed Strix recovery could not verify stopped custody or exact bytes.")
         if saved.state in _TERMINAL_STATES:
             record = saved
-        elif saved.state in {AttemptState.RUNNING, AttemptState.STOPPING}:
-            record = saved.transition(
-                AttemptState.UNKNOWN,
-                timestamp=settled_at,
-                completeness=AttemptCompleteness.UNKNOWN,
-                exit_reason="recovery_launch_prerequisites_unavailable",
-                limitations=(
-                    "Launch prerequisites changed after dispatch; launch was not replayed and "
-                    "external custody requires operator review.",
-                ),
-            )
         else:
+            state = (
+                AttemptState.UNKNOWN
+                if saved.state in {AttemptState.RUNNING, AttemptState.STOPPING}
+                else AttemptState.FAILED
+            )
             record = saved.transition(
-                AttemptState.FAILED,
+                state,
                 timestamp=settled_at,
                 completeness=AttemptCompleteness.UNKNOWN,
-                exit_reason="recovery_launch_prerequisites_unavailable",
-                limitations=(
-                    "Launch prerequisites changed before a durable session could be recovered; "
-                    "launch was not replayed.",
-                ),
+                exit_reason="claimed_recovery_unverified",
+                limitations=(limitation,),
             )
         return EngineRuntimeSettlement(
             record=record,
@@ -866,16 +1052,20 @@ class StrixEngineRuntime:
             cleanup_state=CleanupState.UNKNOWN,
             cleanup_evidence_ref=content_hash(
                 {
-                    "schema_version": "bluefire.strix-recovery-unknown.v1",
-                    "attempt_id": checked_binding.attempt_id,
-                    "binding_digest": checked_binding.binding_digest,
-                    "custody_plan_digest": custody_plan.plan_digest,
-                    "issue": "launch_prerequisites_unavailable",
-                    "gateway_revocation_ref": revocation_ref,
-                    "recorded_at": settled_at,
+                    "schema_version": "bluefire.strix-claimed-recovery-unknown.v1",
+                    "binding_digest": binding.binding_digest,
+                    "delegation_digest": delegation.delegation_digest,
+                    "execution_claim_ref": self._expected_claim_ref,
+                    "runtime_resolution_ref": self._expected_resolution_ref,
+                    "reconciliation_ref": reconciliation_ref,
+                    "worker_outcome_digest": None
+                    if outcome is None
+                    else content_hash(outcome.to_dict()),
+                    "issue": issue,
                 }
             ),
             settled_at=settled_at,
+            reconciliation_ref=reconciliation_ref,
         )
 
     def _prepare(
@@ -883,6 +1073,17 @@ class StrixEngineRuntime:
         binding: EngineAttemptBinding,
         delegation: EngineCapabilityDelegation,
     ) -> tuple[EngineAttemptBinding, EngineCapabilityDelegation, _PreparedAdmission]:
+        if (
+            not callable(getattr(self._source_controller, "seal", None))
+            or not callable(getattr(self._source_controller, "reconcile_seal", None))
+            or not callable(getattr(self._credentials, "reconcile_revocation_claimed", None))
+            or not callable(getattr(self._artifact_store, "import_or_reopen", None))
+            or not callable(getattr(self._artifact_store, "reopen_attempt", None))
+        ):
+            raise StrixEngineRuntimeError(
+                "claimed Strix execution requires v2 artifact intake, source revocation, "
+                "and ref-fenced credential recovery adapters"
+            )
         checked_delegation = EngineCapabilityDelegation.from_mapping(delegation.to_dict())
         checked_binding = checked_delegation.validate_attempt_binding(binding)
         resolution = self._resolver.resolve_for_launch(checked_binding, checked_delegation)
@@ -898,6 +1099,10 @@ class StrixEngineRuntime:
         admission = resolution.admission
         if not isinstance(admission, StrixRuntimeAdmission):
             raise StrixEngineRuntimeError("Strix runtime admission is invalid")
+        if not callable(getattr(admission.custody, "reconcile_stop_owned", None)):
+            raise StrixEngineRuntimeError(
+                "claimed Strix execution requires ref-fenced external custody recovery"
+            )
         if (
             admission.objective_ref != checked_binding.objective_ref
             or admission.environment_ref != checked_binding.environment_ref
@@ -1093,6 +1298,11 @@ class StrixEngineRuntime:
                 "process_containment": containment.receipt_digest,
             }
         )
+        if (
+            self._expected_launch_digest is not None
+            and launch_plan_digest != self._expected_launch_digest
+        ):
+            raise StrixEngineRuntimeError("Strix launch differs from the accepted claim")
         return (
             checked_binding,
             checked_delegation,
@@ -1147,35 +1357,60 @@ class StrixEngineRuntime:
         *,
         revocation_ref: str | None,
     ) -> EngineRuntimeSettlement:
-        del delegation
         if outcome.attempt_id != binding.attempt_id:
             raise StrixEngineRuntimeError("worker outcome belongs to another attempt")
         cleanup_state = _cleanup_state(outcome, revocation_ref)
-        snapshot: StrixRunSnapshot | None = None
+        if cleanup_state is CleanupState.VERIFIED_ABSENT and not self._custody_absent(
+            prepared.admission.custody,
+            attempt_id=binding.attempt_id,
+            custody_plan_digest=prepared.custody_plan.plan_digest,
+            network_policy_digest=prepared.network_plan.policy_digest,
+        ):
+            cleanup_state = CleanupState.UNKNOWN
+        snapshot: StrixRunByteSnapshot | None = None
         snapshot_limitation: str | None = None
-        if outcome.started:
-            try:
-                snapshot = discover_run_snapshot(
-                    prepared.admission.workspace.cwd,
-                    expected_target=prepared.strix_plan.target,
-                    expected_instruction_sha256=prepared.admission.workspace.objective_sha256,
-                    process_exit_code=outcome.exit_code,
-                    cancellation_requested=(
-                        outcome.execution_state is EngineExecutionState.CANCELLED
-                    ),
-                    cessation_verified=(cleanup_state is CleanupState.VERIFIED_ABSENT),
-                )
-            except (OSError, RuntimeError, TypeError, ValueError):
-                snapshot_limitation = "Strix run artifacts could not be validated."
         artifact_result = _ArtifactResult(None, (), None, None)
         if (
-            snapshot is not None
+            outcome.started
             and cleanup_state is CleanupState.VERIFIED_ABSENT
             and revocation_ref is not None
         ):
-            artifact_result = self._collect_artifacts(binding, prepared, outcome, snapshot)
+            snapshot, artifact_result = self._collect_artifacts(
+                binding, delegation, prepared, outcome
+            )
         if artifact_result.limitation is not None:
             snapshot_limitation = artifact_result.limitation
+
+        return self._build_v2_settlement(
+            binding,
+            delegation,
+            base_record,
+            outcome,
+            snapshot=snapshot,
+            artifact_result=artifact_result,
+            snapshot_limitation=snapshot_limitation,
+            cleanup_state=cleanup_state,
+            revocation_ref=revocation_ref,
+            launch_digest=prepared.launch_plan_digest,
+            resolution_ref=prepared.resolution_ref,
+        )
+
+    def _build_v2_settlement(
+        self,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+        base_record: EngineAttemptRecord,
+        outcome: EngineWorkerOutcome,
+        *,
+        snapshot: StrixRunByteSnapshot | None,
+        artifact_result: _ArtifactResult,
+        snapshot_limitation: str | None,
+        cleanup_state: CleanupState,
+        revocation_ref: str | None,
+        launch_digest: str,
+        resolution_ref: str,
+        reconciliation_ref: str | None = None,
+    ) -> EngineRuntimeSettlement:
 
         terminal_state, completeness, exit_reason = _terminal_projection(outcome, snapshot)
         limitations = list(outcome.issues)
@@ -1183,7 +1418,7 @@ class StrixEngineRuntime:
             limitations.extend(snapshot.caveats)
         if snapshot_limitation is not None:
             limitations.append(snapshot_limitation)
-            if terminal_state in {AttemptState.COMPLETED, AttemptState.PARTIAL}:
+            if outcome.started:
                 terminal_state = AttemptState.UNKNOWN
                 completeness = AttemptCompleteness.UNKNOWN
                 exit_reason = "engine_artifacts_unavailable"
@@ -1199,15 +1434,17 @@ class StrixEngineRuntime:
             exit_reason=exit_reason,
             limitations=tuple(limitations),
         )
-        cleanup_ref = _cleanup_receipt(
+        cleanup_ref = _v2_cleanup_receipt(
             binding,
-            prepared,
+            delegation,
+            launch_digest,
+            resolution_ref,
+            self._expected_claim_ref,
             outcome,
             revocation_ref,
             artifact_result.seal_ref,
             artifact_result.manifest_ref,
             cleanup_state,
-            ended_at,
         )
         return EngineRuntimeSettlement(
             record=record,
@@ -1216,86 +1453,89 @@ class StrixEngineRuntime:
             cleanup_state=cleanup_state,
             cleanup_evidence_ref=cleanup_ref,
             settled_at=ended_at,
+            reconciliation_ref=reconciliation_ref,
         )
 
     def _collect_artifacts(
         self,
         binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
         prepared: _PreparedAdmission,
         outcome: EngineWorkerOutcome,
-        snapshot: StrixRunSnapshot,
-    ) -> _ArtifactResult:
+    ) -> tuple[StrixRunByteSnapshot | None, _ArtifactResult]:
         try:
+            # The trusted worker retained its process-stop outcome and external
+            # custody was independently re-inspected before source sealing.
             seal = self._source_controller.seal(
                 attempt_id=binding.attempt_id,
                 source_run_dir=prepared.admission.workspace.cwd,
                 worker_outcome=outcome,
             )
-            seal_document = seal.to_dict()
+            seal.to_dict()
             if (
                 seal.attempt_id != binding.attempt_id
                 or seal.worker_state != "stopped"
                 or seal.write_access_revoked is not True
             ):
                 raise StrixEngineRuntimeError("artifact source is not stopped and write-revoked")
-            prefix = f"strix_runs/{snapshot.upstream_run_id}"
-            names = [f"{prefix}/run.json"]
-            if snapshot.coverage_sha256 is not None:
-                names.append(f"{prefix}/coverage.json")
-            names.extend(
-                _optional_strix_artifact_names(
-                    snapshot.run_directory,
-                    prefix=prefix,
-                    max_files=self._artifact_store.max_files,
-                    max_file_bytes=self._artifact_store.max_file_bytes,
-                    required_count=len(names),
-                )
+            names = _source_artifact_selection(
+                prepared.admission.workspace.cwd,
+                max_files=self._artifact_store.max_files,
+                max_file_bytes=self._artifact_store.max_file_bytes,
             )
-            manifest = self._artifact_store.import_attempt(
+            publication_binding = EngineArtifactPublicationBinding(
+                attempt_id=binding.attempt_id,
+                binding_digest=binding.binding_digest,
+                delegation_digest=delegation.delegation_digest,
+                launch_digest=prepared.launch_plan_digest,
+                runtime_resolution_ref=prepared.resolution_ref,
+                execution_claim_ref=self._expected_claim_ref,
+                worker_outcome_digest=content_hash(outcome.to_dict()),
+            )
+            reopened = self._artifact_store.import_or_reopen(
                 attempt_id=binding.attempt_id,
                 source_run_dir=prepared.admission.workspace.cwd,
                 source_seal=seal,
-                allowed_names=tuple(names),
+                allowed_names=names,
+                publication_binding=publication_binding,
             )
-            expected_digests = {f"{prefix}/run.json": snapshot.run_record_sha256}
-            if snapshot.coverage_sha256 is not None:
-                expected_digests[f"{prefix}/coverage.json"] = snapshot.coverage_sha256
-            _validate_artifact_manifest(
-                manifest,
-                attempt_id=binding.attempt_id,
-                source_receipt=seal.controller_receipt_digest,
-                selected_names=tuple(names),
-                expected_digests=expected_digests,
+            return _reopened_artifact_result(
+                reopened,
+                expected_binding=publication_binding,
+                expected_target=prepared.strix_plan.target,
+                expected_instruction_sha256=prepared.admission.workspace.objective_sha256,
+                outcome=outcome,
+                run_id=binding.run_id,
                 max_file_bytes=self._artifact_store.max_file_bytes,
                 max_total_bytes=self._artifact_store.max_total_bytes,
                 max_files=self._artifact_store.max_files,
             )
-            manifest_ref = content_hash(manifest)
-            evidence = EngineEvidenceItem.create(
-                attempt_id=binding.attempt_id,
-                run_id=binding.run_id,
-                category=EvidenceCategory.ENGINE_ASSERTION,
-                producer="strix",
-                observed_at=outcome.completed_at,
-                content=snapshot.to_dict(),
-                source_artifact_digest=snapshot.run_record_sha256,
-                limitations=(
-                    "Engine-reported result; independent target observation is required.",
-                ),
-            )
-            return _ArtifactResult(
-                manifest_ref=manifest_ref,
-                evidence=(evidence,),
-                seal_ref=content_hash(seal_document),
-                limitation=None,
-            )
         except (EngineArtifactStoreError, OSError, RuntimeError, TypeError, ValueError):
-            return _ArtifactResult(
-                manifest_ref=None,
-                evidence=(),
-                seal_ref=None,
-                limitation="Stopped Strix artifacts could not be retained safely.",
+            return None, _ArtifactResult(
+                None, (), None, "Stopped Strix artifacts could not be retained safely."
             )
+
+    @staticmethod
+    def _custody_absent(
+        custody: EngineResourceCustody,
+        *,
+        attempt_id: str,
+        custody_plan_digest: str,
+        network_policy_digest: str,
+    ) -> bool:
+        try:
+            snapshot = custody.inspect(
+                attempt_id,
+                custody_identity_digest=custody_plan_digest,
+                network_policy_digest=network_policy_digest,
+                timeout_seconds=5.0,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+        return (
+            isinstance(snapshot, ResourceCustodySnapshot)
+            and snapshot.state is ResourceCustodyState.VERIFIED_ABSENT
+        )
 
     @staticmethod
     def _stop_external_custody(prepared: _PreparedAdmission) -> None:
@@ -1482,6 +1722,156 @@ def _optional_strix_artifact_names(
     return tuple(sorted(selected))
 
 
+def _source_artifact_selection(
+    source_run_dir: Path,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+) -> tuple[str, ...]:
+    """Select names only after the controller has stopped and sealed the source."""
+
+    runs_root = source_run_dir / "strix_runs"
+    _ordinary_artifact_directory(runs_root)
+    with os.scandir(runs_root) as entries:
+        run_entries: list[os.DirEntry[str]] = []
+        for entry in entries:
+            if len(run_entries) >= 2:
+                raise StrixEngineRuntimeError("Strix attempt has more than one upstream run")
+            run_entries.append(entry)
+    if len(run_entries) != 1:
+        raise StrixEngineRuntimeError("Strix attempt has no unique upstream run")
+    upstream = run_entries[0].name
+    _safe_name(f"strix_runs/{upstream}/run.json")
+    run_directory = Path(run_entries[0].path)
+    _ordinary_artifact_directory(run_directory)
+    prefix = f"strix_runs/{upstream}"
+    run_record = run_directory / "run.json"
+    if not run_record.exists():
+        raise StrixEngineRuntimeError("Strix run artifact is unavailable")
+    names = [f"{prefix}/run.json"]
+    if (run_directory / "coverage.json").exists():
+        names.append(f"{prefix}/coverage.json")
+    names.extend(
+        _optional_strix_artifact_names(
+            run_directory,
+            prefix=prefix,
+            max_files=max_files,
+            max_file_bytes=max_file_bytes,
+            required_count=len(names),
+        )
+    )
+    return tuple(sorted(names))
+
+
+def _reopened_artifact_result(
+    reopened: ReopenedEngineArtifactAttempt,
+    *,
+    expected_binding: EngineArtifactPublicationBinding,
+    expected_target: str,
+    expected_instruction_sha256: str,
+    outcome: EngineWorkerOutcome,
+    run_id: str,
+    max_file_bytes: int,
+    max_total_bytes: int,
+    max_files: int,
+) -> tuple[StrixRunByteSnapshot, _ArtifactResult]:
+    if (
+        not isinstance(reopened, ReopenedEngineArtifactAttempt)
+        or not reopened.recovery_eligible
+        or reopened.schema_version != V2_MANIFEST_SCHEMA
+        or reopened.attempt_id != expected_binding.attempt_id
+        or reopened.publication_binding != expected_binding
+        or reopened.source_collection_seal is None
+        or reopened.source_collection_seal.worker_state != "stopped"
+        or reopened.source_collection_seal.write_access_revoked is not True
+        or reopened.source_collection_receipt
+        != reopened.source_collection_seal.controller_receipt_digest
+        or reopened.source_tree_digest != reopened.source_collection_seal.source_tree_digest
+        or reopened.source_collection_seal_ref
+        != content_hash(reopened.source_collection_seal.to_dict())
+        or reopened.manifest_ref != content_hash(reopened.to_manifest())
+    ):
+        raise StrixEngineRuntimeError("reopened Strix publication is not an exact v2 attempt")
+    if not reopened.artifacts:
+        raise StrixEngineRuntimeError("reopened Strix publication has no run")
+    names = tuple(artifact.name for artifact in reopened.artifacts)
+    if names != tuple(sorted(set(names))) or len(names) > max_files:
+        raise StrixEngineRuntimeError("reopened Strix publication names are not canonical")
+    total_bytes = 0
+    for artifact in reopened.artifacts:
+        _safe_name(artifact.name)
+        if (
+            not isinstance(artifact.payload, bytes)
+            or not 1 <= artifact.size_bytes <= max_file_bytes
+            or len(artifact.payload) != artifact.size_bytes
+            or artifact.sha256 != "sha256:" + hashlib.sha256(artifact.payload).hexdigest()
+        ):
+            raise StrixEngineRuntimeError("reopened Strix artifact bytes are unverified")
+        total_bytes += artifact.size_bytes
+    if total_bytes != reopened.total_bytes or total_bytes > max_total_bytes:
+        raise StrixEngineRuntimeError("reopened Strix artifact total changed")
+    publication_identity = {
+        "schema_version": PUBLICATION_REF_SCHEMA,
+        "attempt_id": reopened.attempt_id,
+        "source_collection_receipt": reopened.source_collection_receipt,
+        "source_tree_digest": reopened.source_tree_digest,
+        "source_collection_seal_ref": reopened.source_collection_seal_ref,
+        "source_collection_seal": reopened.source_collection_seal.to_dict(),
+        "publication_binding": expected_binding.to_dict(),
+        "artifact_count": len(reopened.artifacts),
+        "total_bytes": reopened.total_bytes,
+        "artifacts": [artifact.to_manifest_row() for artifact in reopened.artifacts],
+    }
+    if reopened.artifact_publication_ref != content_hash(publication_identity):
+        raise StrixEngineRuntimeError("reopened Strix publication identity changed")
+    parsed_names = [name.split("/") for name in names]
+    if any(len(parts) < 3 or parts[0] != "strix_runs" for parts in parsed_names):
+        raise StrixEngineRuntimeError("reopened Strix publication has an unrelated artifact")
+    upstream_ids = {parts[1] for parts in parsed_names}
+    if len(upstream_ids) != 1:
+        raise StrixEngineRuntimeError("reopened Strix publication has multiple runs")
+    upstream = next(iter(upstream_ids))
+    prefix = f"strix_runs/{upstream}/"
+    accepted_root = frozenset((*_OPTIONAL_STRIX_RUN_FILES, "run.json", "coverage.json"))
+    for parts in parsed_names:
+        if len(parts) == 3 and parts[2] in accepted_root:
+            continue
+        if len(parts) == 4 and parts[2] == "vulnerabilities" and parts[3].endswith(".md"):
+            continue
+        raise StrixEngineRuntimeError("reopened Strix publication has an unreviewed artifact")
+    by_name = {artifact.name: artifact for artifact in reopened.artifacts}
+    run_artifact = by_name.get(prefix + "run.json")
+    if run_artifact is None:
+        raise StrixEngineRuntimeError("reopened Strix publication has no run record")
+    coverage_artifact = by_name.get(prefix + "coverage.json")
+    snapshot = parse_strix_run_bytes(
+        run_artifact.payload,
+        None if coverage_artifact is None else coverage_artifact.payload,
+        upstream_run_id=upstream,
+        expected_target=expected_target,
+        expected_instruction_sha256=expected_instruction_sha256,
+        process_exit_code=outcome.exit_code,
+        cancellation_requested=outcome.execution_state is EngineExecutionState.CANCELLED,
+        cessation_verified=True,
+    )
+    evidence = EngineEvidenceItem.create(
+        attempt_id=expected_binding.attempt_id,
+        run_id=run_id,
+        category=EvidenceCategory.ENGINE_ASSERTION,
+        producer="strix",
+        observed_at=outcome.completed_at,
+        content=snapshot.to_dict(),
+        source_artifact_digest=run_artifact.sha256,
+        limitations=("Engine-reported result; independent target observation is required.",),
+    )
+    return snapshot, _ArtifactResult(
+        manifest_ref=reopened.manifest_ref,
+        evidence=(evidence,),
+        seal_ref=content_hash(reopened.publication_seal()),
+        limitation=None,
+    )
+
+
 def _validate_artifact_manifest(
     manifest: Any,
     *,
@@ -1567,6 +1957,61 @@ def _reservation_matches(
     return lower <= reserved_at <= upper and all(
         reservation.get(name) == value for name, value in expected.items()
     )
+
+
+def _retained_launch_digest(
+    reservation: Mapping[str, Any] | None,
+    *,
+    binding: EngineAttemptBinding,
+    delegation: EngineCapabilityDelegation,
+    not_before: str,
+    not_after: str,
+) -> str | None:
+    """Read a protected reservation identity without reconstructing launch inputs."""
+
+    fields = {
+        "schema_version",
+        "attempt_id",
+        "plan_digest",
+        "argv_sha256",
+        "environment_names",
+        "sensitive_environment_names",
+        "requires_resource_custody",
+        "custody_identity_digest",
+        "network_policy_digest",
+        "wall_time_seconds",
+        "reserved_at",
+    }
+    if not isinstance(reservation, Mapping) or set(reservation) != fields:
+        return None
+    try:
+        if (
+            reservation["schema_version"] != "bluefire.engine-launch-reservation.v1"
+            or reservation["attempt_id"] != binding.attempt_id
+            or reservation["requires_resource_custody"] is not True
+            or reservation["custody_identity_digest"] != delegation.custody_plan_digest
+            or reservation["network_policy_digest"] != delegation.network_policy_digest
+            or reservation["wall_time_seconds"] != binding.wall_clock_seconds
+            or reservation["sensitive_environment_names"] != ["LLM_API_KEY"]
+            or not isinstance(reservation["environment_names"], list)
+            or "LLM_API_KEY" not in reservation["environment_names"]
+            or _require_digest(reservation["argv_sha256"], "retained launch arguments")
+            != reservation["argv_sha256"]
+            or not parse_iso8601_datetime(not_before)
+            <= parse_iso8601_datetime(reservation["reserved_at"])
+            <= parse_iso8601_datetime(not_after)
+        ):
+            return None
+        return _require_digest(reservation["plan_digest"], "retained launch plan")
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _remaining_recovery_budget(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise StrixEngineRuntimeError("claimed recovery deadline expired")
+    return remaining
 
 
 def _terminal_outcome_matches(
@@ -1656,7 +2101,7 @@ def _portable_exit_code(value: int | None) -> bool:
 
 def _terminal_projection(
     outcome: EngineWorkerOutcome,
-    snapshot: StrixRunSnapshot | None,
+    snapshot: StrixRunByteSnapshot | None,
 ) -> tuple[AttemptState, AttemptCompleteness, str]:
     if outcome.execution_state is EngineExecutionState.CANCELLED:
         return AttemptState.CANCELLED, AttemptCompleteness.PARTIAL, "controller_cancelled"
@@ -1689,6 +2134,35 @@ def _terminal_projection(
         "unknown": AttemptCompleteness.UNKNOWN,
     }[snapshot.completeness]
     return states[snapshot.attempt_state], completeness, "strix_" + snapshot.attempt_state
+
+
+def _v2_cleanup_receipt(
+    binding: EngineAttemptBinding,
+    delegation: EngineCapabilityDelegation,
+    launch_digest: str,
+    resolution_ref: str,
+    claim_ref: str,
+    outcome: EngineWorkerOutcome,
+    revocation_ref: str | None,
+    publication_seal_ref: str | None,
+    manifest_ref: str | None,
+    cleanup_state: CleanupState,
+) -> str:
+    return content_hash(
+        {
+            "schema_version": "bluefire.strix-runtime-settlement.v2",
+            "binding_digest": binding.binding_digest,
+            "delegation_digest": delegation.delegation_digest,
+            "launch_digest": launch_digest,
+            "runtime_resolution_ref": resolution_ref,
+            "execution_claim_ref": claim_ref,
+            "worker_outcome_digest": content_hash(outcome.to_dict()),
+            "gateway_revocation_ref": revocation_ref,
+            "artifact_publication_seal_ref": publication_seal_ref,
+            "artifact_manifest_ref": manifest_ref,
+            "cleanup_state": cleanup_state.value,
+        }
+    )
 
 
 def _cleanup_receipt(

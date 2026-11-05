@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -14,7 +15,11 @@ import pytest
 from bluefire.engine_artifact_store import (
     _CONTROLLER_SOURCE_AUTHORITY,
     MAX_SOURCE_TREE_ENTRIES,
+    EngineArtifactPublicationUnknown,
     EngineArtifactStore,
+    EngineArtifactStoreError,
+    ReopenedEngineArtifact,
+    ReopenedEngineArtifactAttempt,
     SourceCollectionSeal,
     source_collection_tree_digest,
 )
@@ -113,6 +118,10 @@ class Custody:
         self.stop_calls += 1
         return ResourceCustodySnapshot(ResourceCustodyState.VERIFIED_ABSENT)
 
+    def reconcile_stop_owned(self, attempt_id: str, **values: Any) -> ResourceCustodySnapshot:
+        assert values["reconciliation_ref"] == digest("b")
+        return self.stop_owned(attempt_id, **values)
+
 
 class Lease:
     def __init__(
@@ -163,6 +172,10 @@ class Credentials:
         self.events.append("reconciled-revocation")
         return digest("e")
 
+    def reconcile_revocation_claimed(self, binding, delegation, **values: Any) -> str:
+        assert values["reconciliation_ref"] == digest("b")
+        return self.reconcile_revocation(binding, delegation)
+
 
 class FakeArtifactStore:
     max_file_bytes = 1024 * 1024
@@ -174,42 +187,77 @@ class FakeArtifactStore:
         self.root = root
         self.drift_digest = drift_digest
         self.names: tuple[str, ...] = ()
+        self.reopened: ReopenedEngineArtifactAttempt | None = None
 
-    def import_attempt(self, **values: Any) -> dict[str, Any]:
+    def import_or_reopen(self, **values: Any) -> ReopenedEngineArtifactAttempt:
         assert self.events[-1] == "sealed"
         self.events.append("imported")
         self.names = tuple(values["allowed_names"])
         seal = cast(SourceCollectionSeal, values["source_seal"])
         source = cast(Path, values["source_run_dir"])
-        artifacts = [
-            {
-                "name": name,
-                "size_bytes": (source / name).stat().st_size,
-                "sha256": file_hash(source / name),
-            }
+        artifacts = tuple(
+            ReopenedEngineArtifact(
+                name=name,
+                size_bytes=len(payload),
+                sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
+                payload=payload,
+            )
             for name in self.names
-        ]
+            for payload in ((source / name).read_bytes(),)
+        )
         if self.drift_digest:
-            artifacts[0]["sha256"] = digest("f")
-        return {
-            "schema_version": "bluefire.engine-artifacts.v1",
+            artifacts = (replace(artifacts[0], sha256=digest("f")), *artifacts[1:])
+        publication_binding = values["publication_binding"]
+        seal_document = seal.to_dict()
+        seal_ref = content_hash(seal_document)
+        total_bytes = sum(item.size_bytes for item in artifacts)
+        identity = {
+            "schema_version": "bluefire.engine-artifact-publication-ref.v1",
             "attempt_id": values["attempt_id"],
-            "storage_boundary": "contained_exclusive_protected_root",
             "source_collection_receipt": seal.controller_receipt_digest,
-            "artifact_count": len(self.names),
-            "total_bytes": sum(item["size_bytes"] for item in artifacts),
-            "artifacts": artifacts,
+            "source_tree_digest": seal.source_tree_digest,
+            "source_collection_seal_ref": seal_ref,
+            "source_collection_seal": seal_document,
+            "publication_binding": publication_binding.to_dict(),
+            "artifact_count": len(artifacts),
+            "total_bytes": total_bytes,
+            "artifacts": [item.to_manifest_row() for item in artifacts],
         }
+        reopened = ReopenedEngineArtifactAttempt(
+            schema_version="bluefire.engine-artifacts.v2",
+            attempt_id=values["attempt_id"],
+            storage_boundary="contained_exclusive_protected_root",
+            source_collection_receipt=seal.controller_receipt_digest,
+            source_tree_digest=seal.source_tree_digest,
+            source_collection_seal_ref=seal_ref,
+            source_collection_seal=seal,
+            artifact_publication_ref=content_hash(identity),
+            publication_binding=publication_binding,
+            artifacts=artifacts,
+            total_bytes=total_bytes,
+            manifest_ref=digest("0"),
+            recovery_eligible=True,
+        )
+        self.reopened = replace(reopened, manifest_ref=content_hash(reopened.to_manifest()))
+        return self.reopened
+
+    def reopen_attempt(self, attempt_id: str) -> ReopenedEngineArtifactAttempt:
+        if self.reopened is None:
+            raise EngineArtifactStoreError("artifact publication is unavailable")
+        assert self.reopened.attempt_id == attempt_id
+        return self.reopened
 
 
 class SourceController:
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self.reconcile_calls = 0
 
     def seal(self, *, attempt_id: str, source_run_dir: Path, worker_outcome):
-        assert worker_outcome.cleanup_state is EngineCleanupState.VERIFIED
-        assert worker_outcome.custody_after.state is ResourceCustodyState.VERIFIED_ABSENT
-        assert self.events[-1] == "revoked"
+        if worker_outcome is not None:
+            assert worker_outcome.cleanup_state is EngineCleanupState.VERIFIED
+            assert worker_outcome.custody_after.state is ResourceCustodyState.VERIFIED_ABSENT
+        assert self.events[-1] in {"revoked", "reconciled-revocation"}
         details = source_run_dir.lstat()
         document = {
             "schema_version": "bluefire.engine-source-collection-seal.v1",
@@ -227,6 +275,12 @@ class SourceController:
             document,
             _controller_authority=_CONTROLLER_SOURCE_AUTHORITY,
         )
+
+    def reconcile_seal(self, *, reconciliation_ref: str, timeout_seconds: float, **values: Any):
+        assert reconciliation_ref == digest("b")
+        assert timeout_seconds > 0
+        self.reconcile_calls += 1
+        return self.seal(**values)
 
 
 class Worker:
@@ -655,6 +709,8 @@ def _runtime(tmp_path: Path):
         credential_provider=credentials,
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
     return runtime, binding, delegation, admission, worker, artifacts, credentials, events
 
@@ -707,6 +763,8 @@ def _output_runtime(
             else SourceController(events)
         ),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
     return runtime, binding, delegation, admission, worker, artifacts, events
 
@@ -739,8 +797,8 @@ def test_execute_binds_exact_plan_revokes_before_intake_and_retains_only_engine_
         "not_independently_established"
     )
     assert artifacts.names == (
-        "strix_runs/upstream-run-1/run.json",
         "strix_runs/upstream-run-1/coverage.json",
+        "strix_runs/upstream-run-1/run.json",
     )
 
 
@@ -774,8 +832,21 @@ def test_retains_present_findings_and_reports_without_private_state(tmp_path: Pa
     }
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows test sandbox denies temp-root publication")
-def test_real_store_preserves_optional_raw_bytes_and_excludes_private_state(tmp_path: Path) -> None:
+def test_real_store_preserves_optional_raw_bytes_and_excludes_private_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name == "nt":
+        # The ephemeral test root has an AppContainer ACL. The store still
+        # exercises its real publication, inventory, hash and reopen logic.
+        monkeypatch.setattr(
+            EngineArtifactStore,
+            "_verify_protected_root",
+            staticmethod(lambda _path: None),
+        )
+        monkeypatch.setattr(
+            "bluefire.engine_artifact_store.verify_owner_private_acl",
+            lambda _descriptor, *, directory: None,
+        )
     outputs = {
         "vulnerabilities.json": b'[{"id":"finding-one"}]',
         "vulnerabilities/finding-one.md": b"# Engine finding\n",
@@ -790,7 +861,7 @@ def test_real_store_preserves_optional_raw_bytes_and_excludes_private_state(tmp_
             root, max_file_bytes=1024 * 1024, max_total_bytes=4 * 1024 * 1024
         )
 
-    runtime, binding, delegation, _admission, _worker, store, _events = _output_runtime(
+    runtime, binding, delegation, admission, _worker, store, _events = _output_runtime(
         tmp_path, outputs=outputs, artifact_store_factory=store_factory
     )
 
@@ -807,6 +878,46 @@ def test_real_store_preserves_optional_raw_bytes_and_excludes_private_state(tmp_
             assert not retained.exists()
         else:
             assert retained.read_bytes() == payload
+
+    class RecoveryOnlyResolver(Resolver):
+        def resolve_for_launch(self, binding, delegation):
+            pytest.fail("claimed recovery called the launch resolver")
+
+        def require_current(self, binding, delegation, *, expected_resolution_ref):
+            pytest.fail("claimed recovery rechecked launch authority")
+
+    shutil.rmtree(admission.workspace.cwd)
+    recovery_worker = Worker([])
+    restarted_store = EngineArtifactStore(
+        store.root,
+        max_file_bytes=store.max_file_bytes,
+        max_total_bytes=store.max_total_bytes,
+        max_files=store.max_files,
+    )
+    recovered_runtime = StrixEngineRuntime(
+        resolver=RecoveryOnlyResolver(admission),
+        worker=cast(Any, recovery_worker),
+        artifact_store=restarted_store,
+        credential_provider=Credentials(binding.model_authorization_ref, []),
+        source_controller=SourceController([]),
+        clock=lambda: "2026-11-05T00:00:00Z",
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
+    )
+    recovered = recovered_runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
+    repeated = recovered_runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
+    assert recovery_worker.run_calls == 0
+    assert recovered.cleanup_evidence_ref == settlement.cleanup_evidence_ref
+    assert repeated.cleanup_evidence_ref == settlement.cleanup_evidence_ref
+    assert recovered.artifact_manifest_ref == settlement.artifact_manifest_ref
+    assert repeated.artifact_manifest_ref == settlement.artifact_manifest_ref
+    assert [item.to_dict() for item in recovered.engine_evidence] == [
+        item.to_dict() for item in settlement.engine_evidence
+    ]
 
 
 def test_optional_selector_bounds_ignored_entries_before_store_intake(
@@ -929,6 +1040,7 @@ def test_claimed_resolution_drift_refuses_before_allocation_or_launch(tmp_path: 
         credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
         expected_resolution_ref=claimed_resolution_ref,
     )
 
@@ -966,6 +1078,7 @@ def test_unavailable_claimed_resolution_refuses_before_allocation_or_launch(
         credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
         expected_resolution_ref=resolver.resolution_ref,
     )
 
@@ -992,6 +1105,7 @@ def test_claimed_resolution_is_rechecked_unchanged_at_launch_boundaries(
         credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
         expected_resolution_ref=resolver.resolution_ref,
     )
 
@@ -1114,6 +1228,8 @@ def test_execute_requires_exact_durable_reservation_and_outcome(tmp_path: Path) 
         credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
 
     settlement = runtime.execute(
@@ -1143,6 +1259,8 @@ def test_imported_artifact_digest_drift_cannot_become_engine_evidence(tmp_path: 
         credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
 
     settlement = runtime.execute(
@@ -1228,10 +1346,13 @@ def test_extra_output_added_after_seal_is_rejected_by_store(
 
 def test_forged_optional_manifest_row_cannot_become_engine_evidence(tmp_path: Path) -> None:
     class ForgedArtifactStore(FakeArtifactStore):
-        def import_attempt(self, **values: Any) -> dict[str, Any]:
-            manifest = super().import_attempt(**values)
-            manifest["artifacts"][-1]["name"] = "strix_runs/upstream-run-1/.state/agents.db"
-            return manifest
+        def import_or_reopen(self, **values: Any) -> ReopenedEngineArtifactAttempt:
+            reopened = super().import_or_reopen(**values)
+            forged = replace(
+                reopened.artifacts[-1],
+                name="strix_runs/upstream-run-1/.state/agents.db",
+            )
+            return replace(reopened, artifacts=(*reopened.artifacts[:-1], forged))
 
     runtime, binding, delegation, _admission, _worker, _artifacts, _events = _output_runtime(
         tmp_path,
@@ -1250,11 +1371,10 @@ def test_forged_optional_manifest_row_cannot_become_engine_evidence(tmp_path: Pa
 
 def test_forged_optional_manifest_size_cannot_become_engine_evidence(tmp_path: Path) -> None:
     class ForgedArtifactStore(FakeArtifactStore):
-        def import_attempt(self, **values: Any) -> dict[str, Any]:
-            manifest = super().import_attempt(**values)
-            manifest["artifacts"][-1]["size_bytes"] = self.max_file_bytes + 1
-            manifest["total_bytes"] = sum(row["size_bytes"] for row in manifest["artifacts"])
-            return manifest
+        def import_or_reopen(self, **values: Any) -> ReopenedEngineArtifactAttempt:
+            reopened = super().import_or_reopen(**values)
+            forged = replace(reopened.artifacts[-1], size_bytes=self.max_file_bytes + 1)
+            return replace(reopened, artifacts=(*reopened.artifacts[:-1], forged))
 
     runtime, binding, delegation, _admission, _worker, _artifacts, _events = _output_runtime(
         tmp_path,
@@ -1304,49 +1424,8 @@ def test_cancelled_attempt_retains_outputs_only_after_verified_cessation(
         assert settlement.engine_evidence == ()
 
 
-def test_reconcile_reads_retained_outcome_without_relaunching(tmp_path: Path) -> None:
-    runtime, binding, delegation, _admission, worker, _artifacts, credentials, _events = _runtime(
-        tmp_path
-    )
-    first = runtime.execute(
-        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
-    )
-
-    reconciled = runtime.reconcile(binding, delegation, first.record)
-
-    assert worker.run_calls == 1
-    assert credentials.reconcile_calls == 1
-    assert reconciled.record.to_dict() == first.record.to_dict()
-    assert reconciled.cleanup_state is CleanupState.VERIFIED_ABSENT
-    assert reconciled.engine_evidence == ()
-
-
-def test_reconcile_terminal_outcome_drift_cannot_upgrade_cleanup(tmp_path: Path) -> None:
-    runtime, binding, delegation, _admission, worker, _artifacts, _credentials, _events = _runtime(
-        tmp_path
-    )
-    first = runtime.execute(
-        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
-    )
-    outcome_path = tmp_path / "controller" / ENGINE_ATTEMPT / "outcome.json"
-    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
-    outcome["execution_state"] = "cancelled"
-    outcome_path.write_text(json.dumps(outcome), encoding="utf-8")
-
-    reconciled = runtime.reconcile(binding, delegation, first.record)
-
-    assert worker.run_calls == 1
-    assert reconciled.record.to_dict() == first.record.to_dict()
-    assert reconciled.cleanup_state is CleanupState.UNKNOWN
-    assert reconciled.engine_evidence == ()
-
-
-def test_reconcile_cancelled_record_rejects_retained_exited_outcome(tmp_path: Path) -> None:
-    runtime, binding, delegation, _admission, worker, _artifacts, _credentials, _events = _runtime(
-        tmp_path
-    )
-    runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
-    cancelled = (
+def _durable_running(binding: EngineAttemptBinding) -> EngineAttemptRecord:
+    return (
         EngineAttemptRecord.create(binding)
         .transition(AttemptState.PREFLIGHT)
         .transition(
@@ -1354,157 +1433,306 @@ def test_reconcile_cancelled_record_rejects_retained_exited_outcome(tmp_path: Pa
             upstream_session_id=ADAPTER_ATTEMPT,
             timestamp=STARTED,
         )
-        .transition(
-            AttemptState.CANCELLED,
-            timestamp=COMPLETED,
-            exit_code=0,
-            completeness=AttemptCompleteness.PARTIAL,
-            exit_reason="controller_cancelled",
-        )
     )
 
-    reconciled = runtime.reconcile(binding, delegation, cancelled)
 
-    assert worker.run_calls == 1
-    assert reconciled.record.to_dict() == cancelled.to_dict()
-    assert reconciled.cleanup_state is CleanupState.UNKNOWN
-    assert reconciled.engine_evidence == ()
+def test_legacy_reconcile_cannot_settle_claimed_execution(tmp_path: Path) -> None:
+    runtime, binding, delegation, _admission, worker, _store, credentials, _events = _runtime(
+        tmp_path
+    )
+    with pytest.raises(StrixEngineRuntimeError, match="claimed reconciliation"):
+        runtime.reconcile(binding, delegation, _durable_running(binding))
+    assert worker.run_calls == 0
+    assert credentials.reconcile_calls == 0
 
 
-def test_reconcile_missing_executable_still_stops_custody_without_replay(
+def test_claimed_recovery_reopens_final_after_source_removal_with_stable_refs(
     tmp_path: Path,
 ) -> None:
-    runtime, binding, delegation, admission, worker, _artifacts, credentials, _events = _runtime(
-        tmp_path
+    runtime, binding, delegation, admission, worker, store, events = _output_runtime(
+        tmp_path, outputs={"vulnerabilities.json": b"[]"}
     )
-    runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
-    (tmp_path / "strix").unlink()
-    running = (
-        EngineAttemptRecord.create(binding)
-        .transition(AttemptState.PREFLIGHT)
-        .transition(
-            AttemptState.RUNNING,
-            upstream_session_id=ADAPTER_ATTEMPT,
-            timestamp=STARTED,
-        )
+    first = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
     )
+    assert first.record.state is AttemptState.COMPLETED
+    resolver = cast(Resolver, runtime._resolver)
+    current_checks = resolver.require_current_calls
+    shutil.rmtree(admission.workspace.cwd)
+    before = tuple(events)
 
-    reconciled = runtime.reconcile(binding, delegation, running)
+    recovered = runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
+    again = runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
 
     assert worker.run_calls == 1
+    assert resolver.require_current_calls == current_checks
+    assert events.count("lease") == 1
+    assert events.count("secret") == 1
+    assert events.count("sealed") == 1
+    assert events.count("imported") == 1
+    assert tuple(events[: len(before)]) == before
+    assert recovered.record.to_dict() == first.record.to_dict()
+    assert recovered.cleanup_state is CleanupState.VERIFIED_ABSENT
+    assert (
+        recovered.artifact_manifest_ref
+        == first.artifact_manifest_ref
+        == again.artifact_manifest_ref
+    )
+    assert (
+        recovered.cleanup_evidence_ref == first.cleanup_evidence_ref == again.cleanup_evidence_ref
+    )
+    assert [item.to_dict() for item in recovered.engine_evidence] == [
+        item.to_dict() for item in first.engine_evidence
+    ]
+    assert [item.to_dict() for item in again.engine_evidence] == [
+        item.to_dict() for item in first.engine_evidence
+    ]
+    assert recovered.independent_observations == ()
+    assert store.reopened is not None
+
+
+def test_claimed_recovery_rejects_publication_claim_drift(tmp_path: Path) -> None:
+    runtime, binding, delegation, _admission, worker, store, _events = _output_runtime(
+        tmp_path, outputs={"vulnerabilities.json": b"[]"}
+    )
+    runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
+    assert store.reopened is not None
+    assert store.reopened.publication_binding is not None
+    store.reopened = replace(
+        store.reopened,
+        publication_binding=replace(
+            store.reopened.publication_binding,
+            execution_claim_ref=digest("d"),
+        ),
+    )
+
+    recovered = runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
+
+    assert worker.run_calls == 1
+    assert recovered.record.state is AttemptState.UNKNOWN
+    assert recovered.cleanup_state is CleanupState.UNKNOWN
+    assert recovered.engine_evidence == ()
+    assert recovered.artifact_manifest_ref is None
+
+
+def test_claimed_recovery_rejects_saved_terminal_state_changed_from_verified_bytes(
+    tmp_path: Path,
+) -> None:
+    runtime, binding, delegation, _admission, worker, _store, _events = _output_runtime(
+        tmp_path, outputs={"vulnerabilities.json": b"[]"}
+    )
+    runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
+    drifted = _durable_running(binding).transition(
+        AttemptState.FAILED,
+        timestamp=COMPLETED,
+        exit_code=0,
+        completeness=AttemptCompleteness.UNKNOWN,
+        exit_reason="strix_failed",
+    )
+
+    recovered = runtime.reconcile_claimed(
+        binding, delegation, drifted, reconciliation_ref=digest("b")
+    )
+
+    assert worker.run_calls == 1
+    assert recovered.record.to_dict() == drifted.to_dict()
+    assert recovered.cleanup_state is CleanupState.UNKNOWN
+    assert recovered.engine_evidence == ()
+    assert recovered.artifact_manifest_ref is None
+
+
+@pytest.mark.parametrize(
+    "publication_error",
+    [
+        EngineArtifactPublicationUnknown("artifact publication is incomplete"),
+        EngineArtifactStoreError("artifact publication is invalid"),
+        OSError("artifact publication cannot be read"),
+    ],
+    ids=("pending", "invalid", "read-error"),
+)
+def test_claimed_recovery_unavailable_publication_runs_cleanup_without_import(
+    tmp_path: Path, publication_error: Exception
+) -> None:
+    runtime, binding, delegation, admission, worker, store, credentials, events = _runtime(tmp_path)
+
+    def unavailable(_attempt_id: str) -> ReopenedEngineArtifactAttempt:
+        raise publication_error
+
+    store.reopen_attempt = unavailable  # type: ignore[method-assign]
+    resolver = cast(Resolver, runtime._resolver)
+
+    first = runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
+    second = runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
+
+    assert first.record.state is AttemptState.UNKNOWN
+    assert first.cleanup_state is CleanupState.UNKNOWN
+    assert first.cleanup_evidence_ref == second.cleanup_evidence_ref
+    assert first.engine_evidence == ()
+    assert first.artifact_manifest_ref is None
+    assert worker.run_calls == 0
+    assert credentials.reconcile_calls == 2
+    assert resolver.require_current_calls == 0
+    assert cast(Custody, cast(Resolver, runtime._resolver).admission.custody).stop_calls == 2
+    assert cast(SourceController, runtime._source_controller).reconcile_calls == 2
+    assert store.reopened is None
+    assert store.names == ()
+    assert events == [
+        "reconciled-revocation",
+        "sealed",
+        "reconciled-revocation",
+        "sealed",
+    ]
+
+
+@pytest.mark.parametrize("receipt_reader", ["read_launch_reservation", "read_worker_outcome"])
+def test_claimed_recovery_receipt_read_error_still_revokes_owned_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, receipt_reader: str
+) -> None:
+    runtime, binding, delegation, admission, worker, store, credentials, events = _runtime(tmp_path)
+
+    def unreadable(*_args: Any) -> None:
+        raise OSError("retained receipt is unreadable")
+
+    monkeypatch.setattr("bluefire.strix_engine_runtime." + receipt_reader, unreadable)
+    recovered = runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
+
+    assert recovered.record.state is AttemptState.UNKNOWN
+    assert recovered.cleanup_state is CleanupState.UNKNOWN
+    assert recovered.engine_evidence == ()
+    assert recovered.artifact_manifest_ref is None
+    assert worker.run_calls == 0
     assert credentials.reconcile_calls == 1
-    assert reconciled.record.state is AttemptState.UNKNOWN
-    assert reconciled.record.exit_reason == "recovery_launch_prerequisites_unavailable"
-    assert reconciled.cleanup_state is CleanupState.UNKNOWN
-    assert reconciled.engine_evidence == ()
     assert cast(Custody, admission.custody).stop_calls == 1
+    assert cast(SourceController, runtime._source_controller).reconcile_calls == 1
+    assert store.names == ()
+    assert events == ["reconciled-revocation", "sealed"]
 
 
-def test_reconcile_does_not_promote_outcome_when_running_was_not_durable(
+def test_claimed_recovery_missing_final_cannot_publish_without_claim_bound_launch(
     tmp_path: Path,
 ) -> None:
-    runtime, binding, delegation, _admission, worker, _artifacts, credentials, _events = _runtime(
-        tmp_path
-    )
+    runtime, binding, delegation, admission, worker, store, credentials, events = _runtime(tmp_path)
     runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
-    preflight = EngineAttemptRecord.create(binding).transition(AttemptState.PREFLIGHT)
+    store.reopened = None
+    before = tuple(events)
 
-    reconciled = runtime.reconcile(binding, delegation, preflight)
+    recovered = runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
 
+    assert recovered.record.state is AttemptState.UNKNOWN
+    assert recovered.cleanup_state is CleanupState.UNKNOWN
+    assert recovered.artifact_manifest_ref is None
+    assert recovered.engine_evidence == ()
     assert worker.run_calls == 1
     assert credentials.reconcile_calls == 1
-    assert reconciled.record.state is AttemptState.FAILED
-    assert reconciled.record.upstream_session_id is None
-    assert reconciled.record.exit_reason == "recovery_session_not_durable"
-    assert reconciled.engine_evidence == ()
-    assert reconciled.artifact_manifest_ref is None
-    assert reconciled.cleanup_state is CleanupState.VERIFIED_ABSENT
+    assert cast(Custody, admission.custody).stop_calls == 1
+    assert cast(SourceController, runtime._source_controller).reconcile_calls == 1
+    assert tuple(events[: len(before)]) == before
+    assert events.count("imported") == 1
 
 
-def test_reconcile_drifted_public_reservation_preserves_unknown_without_replay(
+def test_claimed_recovery_imports_only_with_exact_claim_bound_launch_digest(
     tmp_path: Path,
 ) -> None:
-    runtime, binding, delegation, _admission, worker, _artifacts, _credentials, _events = _runtime(
+    runtime, binding, delegation, admission, worker, store, _credentials, events = _runtime(
         tmp_path
     )
-    runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
-    control = tmp_path / "controller" / ENGINE_ATTEMPT
-    reservation_path = control / "launch.json"
-    reservation = json.loads(reservation_path.read_text(encoding="utf-8"))
-    reservation["wall_time_seconds"] = 301
-    reservation_path.write_text(json.dumps(reservation), encoding="utf-8")
-    running = (
-        EngineAttemptRecord.create(binding)
-        .transition(AttemptState.PREFLIGHT)
-        .transition(
-            AttemptState.RUNNING,
-            upstream_session_id=ADAPTER_ATTEMPT,
-            timestamp=STARTED,
-        )
+    first = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
     )
-
-    reconciled = runtime.reconcile(binding, delegation, running)
-
-    assert worker.run_calls == 1
-    assert reconciled.record.state is AttemptState.UNKNOWN
-    assert reconciled.record.exit_reason == "recovery_launch_identity_unknown"
-    assert reconciled.engine_evidence == ()
-    assert reconciled.artifact_manifest_ref is None
-    assert reconciled.cleanup_state is CleanupState.UNKNOWN
-
-
-def test_reconcile_reservation_outside_attempt_chronology_is_unknown(
-    tmp_path: Path,
-) -> None:
-    runtime, binding, delegation, _admission, worker, _artifacts, _credentials, _events = _runtime(
-        tmp_path
+    reservation = json.loads(
+        (admission.control_root / binding.attempt_id / "launch.json").read_text(encoding="utf-8")
     )
-    runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
-    reservation_path = tmp_path / "controller" / ENGINE_ATTEMPT / "launch.json"
-    reservation = json.loads(reservation_path.read_text(encoding="utf-8"))
-    reservation["reserved_at"] = "2026-11-04T11:59:59Z"
-    reservation_path.write_text(json.dumps(reservation), encoding="utf-8")
-    running = (
-        EngineAttemptRecord.create(binding)
-        .transition(AttemptState.PREFLIGHT)
-        .transition(
-            AttemptState.RUNNING,
-            upstream_session_id=ADAPTER_ATTEMPT,
-            timestamp=STARTED,
-        )
-    )
-
-    reconciled = runtime.reconcile(binding, delegation, running)
-
-    assert worker.run_calls == 1
-    assert reconciled.record.state is AttemptState.UNKNOWN
-    assert reconciled.record.exit_reason == "recovery_launch_identity_unknown"
-    assert reconciled.cleanup_state is CleanupState.UNKNOWN
-
-
-def test_reconcile_missing_outcome_never_replays_and_preserves_unknown_cleanup(
-    tmp_path: Path,
-) -> None:
-    binding, delegation, admission = _fixture(tmp_path)
-    events: list[str] = []
-    worker = Worker(events, retain_outcome=False)
-    credentials = Credentials(binding.model_authorization_ref, events)
-    runtime = StrixEngineRuntime(
+    store.reopened = None
+    recovery_worker = Worker(events)
+    recovered_runtime = StrixEngineRuntime(
         resolver=Resolver(admission),
-        worker=cast(Any, worker),
-        artifact_store=cast(Any, FakeArtifactStore(events, tmp_path / "artifacts")),
-        credential_provider=credentials,
+        worker=cast(Any, recovery_worker),
+        artifact_store=cast(Any, store),
+        credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
-        clock=lambda: COMPLETED,
+        clock=lambda: "2026-11-05T00:00:00Z",
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
+        expected_launch_digest=reservation["plan_digest"],
     )
-    preflight = EngineAttemptRecord.create(binding).transition(AttemptState.PREFLIGHT)
 
-    settlement = runtime.reconcile(binding, delegation, preflight)
+    recovered = recovered_runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
+
+    assert worker.run_calls == 1
+    assert recovery_worker.run_calls == 0
+    assert recovered.record.to_dict() == first.record.to_dict()
+    assert recovered.artifact_manifest_ref == first.artifact_manifest_ref
+    assert recovered.cleanup_evidence_ref == first.cleanup_evidence_ref
+    assert [item.to_dict() for item in recovered.engine_evidence] == [
+        item.to_dict() for item in first.engine_evidence
+    ]
+
+
+def test_claimed_recovery_without_ref_fenced_adapter_fails_closed(tmp_path: Path) -> None:
+    runtime, binding, delegation, admission, worker, _store, credentials, _events = _runtime(
+        tmp_path
+    )
+    runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
+    cast(Any, admission.custody).reconcile_stop_owned = None
+
+    recovered = runtime.reconcile_claimed(
+        binding, delegation, _durable_running(binding), reconciliation_ref=digest("b")
+    )
+
+    assert recovered.cleanup_state is CleanupState.UNKNOWN
+    assert recovered.engine_evidence == ()
+    assert recovered.artifact_manifest_ref is None
+    assert worker.run_calls == 1
+    assert credentials.reconcile_calls == 1
+
+
+def test_live_execution_refuses_missing_recovery_custody_before_lease(tmp_path: Path) -> None:
+    runtime, binding, delegation, admission, worker, _store, credentials, events = _runtime(
+        tmp_path
+    )
+    cast(Any, admission.custody).reconcile_stop_owned = None
+
+    with pytest.raises(StrixEngineRuntimeError, match="ref-fenced external custody"):
+        runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
 
     assert worker.run_calls == 0
-    assert settlement.record.state is AttemptState.FAILED
-    assert settlement.cleanup_state is CleanupState.UNKNOWN
-    assert cast(Custody, admission.custody).stop_calls == 1
+    assert events == []
+    assert credentials.reconcile_calls == 0
+
+
+@pytest.mark.parametrize("missing_adapter", ["credential", "source"])
+def test_live_execution_refuses_missing_claimed_cleanup_adapter_before_lease(
+    tmp_path: Path, missing_adapter: str
+) -> None:
+    runtime, binding, delegation, _admission, worker, _store, credentials, events = _runtime(
+        tmp_path
+    )
+    if missing_adapter == "credential":
+        cast(Any, credentials).reconcile_revocation_claimed = None
+    else:
+        cast(Any, runtime._source_controller).reconcile_seal = None
+
+    with pytest.raises(StrixEngineRuntimeError, match="claimed Strix execution requires"):
+        runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
+
+    assert worker.run_calls == 0
+    assert events == []
 
 
 def test_unverified_or_drifted_outer_boundary_refuses_before_lease_or_worker(
@@ -1526,6 +1754,8 @@ def test_unverified_or_drifted_outer_boundary_refuses_before_lease_or_worker(
         credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
 
     with pytest.raises(StrixEngineRuntimeError, match="not qualified"):
@@ -1551,6 +1781,8 @@ def test_drifted_sandbox_limits_refuse_before_lease_or_worker(tmp_path: Path) ->
         credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
 
     with pytest.raises(StrixEngineRuntimeError, match="sandbox resources"):
@@ -1585,6 +1817,8 @@ def test_unprotected_controller_root_refuses_before_lease_or_worker(tmp_path: Pa
         credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
 
     with pytest.raises(StrixEngineRuntimeError, match="not externally protected"):
@@ -1609,6 +1843,8 @@ def test_predelegation_network_snapshot_refuses_before_lease_or_worker(tmp_path:
         credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
 
     with pytest.raises(StrixEngineRuntimeError, match="network proof is stale"):
@@ -1633,6 +1869,8 @@ def test_precreated_plan_accepts_fresh_postdelegation_snapshot(tmp_path: Path) -
         credential_provider=Credentials(binding.model_authorization_ref, events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
 
     settlement = runtime.execute(
@@ -1654,6 +1892,8 @@ def test_gateway_authorization_mismatch_never_starts_worker(tmp_path: Path) -> N
         credential_provider=Credentials(digest("0"), events),
         source_controller=SourceController(events),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
 
     with pytest.raises(StrixEngineRuntimeError, match="another authorization"):
@@ -1674,6 +1914,8 @@ def test_objective_hash_remains_bound_to_exact_workspace_bytes(tmp_path: Path) -
         credential_provider=Credentials(binding.model_authorization_ref, []),
         source_controller=SourceController([]),
         clock=lambda: STARTED,
+        expected_claim_ref=digest("c"),
+        expected_resolution_ref=digest("e"),
     )
     with pytest.raises(ValueError, match="objective changed"):
         runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
