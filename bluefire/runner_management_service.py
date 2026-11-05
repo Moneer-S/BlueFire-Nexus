@@ -159,10 +159,15 @@ class RunnerManagementServiceMixin:
     def start_runner(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
         selected = self._runner_lifecycle_profile(profile_id)
         try:
-            return self.runner_lifecycle.start(
+            started = self.runner_lifecycle.start(
                 profile_id=selected.id if selected is not None else None,
                 profile_budget_seconds=self._managed_host_profile_budget(),
             )
+            stop_event = getattr(self, "_retained_recovery_stop", None)
+            self.retained_attempt_recovery = self.composition.recover_retained_attempts(
+                **({"stop_event": stop_event} if stop_event is not None else {})
+            )
+            return started
         except RunnerLifecycleError as exc:
             raise APIError(
                 HTTPStatus.CONFLICT,

@@ -17,6 +17,7 @@ from bluefire import receiver_defense_control
 from bluefire.capability_composition import compile_initial_graph
 from bluefire.capability_facts import seal_facts
 from bluefire.capability_grant import create_grant
+from bluefire.capability_packs import RECEIVER_PACK, grant_pack
 from bluefire.capability_resources import CapabilityContractError
 from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ProductStoreError
@@ -99,6 +100,7 @@ def saved(state, tmp_path):
     )
     grant = state["grant"]
     state["grant"] = create_grant(
+        **({"pack": grant_pack(grant)} if grant_pack(grant) != RECEIVER_PACK else {}),
         registry=state["registry"],
         implementation_digests=state["implementation_digests"],
         **{
@@ -1123,6 +1125,7 @@ def test_authority_history_tables_are_append_only(saved, table, operation):
         "capability_file_access_bindings": lease["attempt_id"],
         "capability_file_access_terminals": "task-one",
         "capability_task_payloads": "task-one",
+        "capability_task_dispatch_intents": "task-one",
         "capability_cleanup_task_payloads": "cleanup-one",
     }
     if table in {
@@ -1160,6 +1163,61 @@ def test_authority_history_tables_are_append_only(saved, table, operation):
             connection.execute(
                 f"INSERT INTO {table} VALUES(?,?,?)",
                 (identity, canonical_json(document), content_hash(document)),
+            )
+    if table in {
+        "capability_recovery_generations",
+        "capability_recovery_obligations",
+        "capability_recovery_claims",
+        "capability_recovery_task_claims",
+        "capability_recovery_terminals",
+        "capability_receiver_closure_proofs",
+        "capability_recovery_closures",
+    }:
+        # Seed the append-only recovery chain solely to exercise its SQL triggers.
+        document = {"schema_only_fixture": lease["attempt_id"]}
+        serialized = canonical_json(document)
+        document_digest = content_hash(document)
+        with store._connection(write=True) as connection:
+            connection.execute(
+                "INSERT INTO capability_recovery_generations VALUES(?,?,?)",
+                ("recovery-schema-fixture", lease["attempt_id"], 2000),
+            )
+            connection.execute(
+                "INSERT INTO capability_recovery_obligations VALUES(?,?,?,?)",
+                ("recovery-schema-fixture", lease["attempt_id"], serialized, document_digest),
+            )
+            connection.execute(
+                "INSERT INTO capability_recovery_claims VALUES(?,?,?,?,?,?)",
+                (
+                    "recovery-schema-fixture",
+                    lease["attempt_id"],
+                    serialized,
+                    document_digest,
+                    2000,
+                    3000,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO capability_recovery_task_claims VALUES(?,?,?,?,?)",
+                (
+                    "recovery-schema-task",
+                    lease["attempt_id"],
+                    "recovery-schema-fixture",
+                    serialized,
+                    document_digest,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO capability_recovery_terminals VALUES(?,?,?)",
+                ("recovery-schema-task", serialized, document_digest),
+            )
+            connection.execute(
+                "INSERT INTO capability_receiver_closure_proofs VALUES(?,?,?)",
+                (lease["attempt_id"], serialized, document_digest),
+            )
+            connection.execute(
+                "INSERT INTO capability_recovery_closures VALUES(?,?,?,?)",
+                (lease["attempt_id"], "recovery-schema-fixture", serialized, document_digest),
             )
     with store._connection() as connection:
         before = connection.execute(f"SELECT * FROM {table}").fetchall()

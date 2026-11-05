@@ -55,6 +55,7 @@ class CompositionJobs:
         self.controller = service.job_controller
         self.clock = clock
         self._authorization_lock = threading.Lock()
+        self._retained_recovery_lock = threading.Lock()
         self._macos_recovery_lock = threading.Lock()
         self._macos_recoveries: dict[str, dict[str, Any]] = {}
         self.owners = OwnedReceiverRegistry(
@@ -99,15 +100,51 @@ class CompositionJobs:
         ):
             raise ProductStoreError("The reviewed objective is not admitted for fresh work.")
         for child in self._children(owner["job_id"]):
-            result = child["progress"].get("verified_result", {})
-            if (
-                child["progress"].get("settlement") == "settled"
-                and result.get("objective", {}).get("established") is True
-            ):
-                attempt = self.store.get_capability_attempt(
-                    child["request"]["composition_attempt"]["attempt_id"]
-                )
-                if self._verified_result(attempt)["objective"]["established"]:
+            marker = child["request"].get("composition_attempt", {})
+            attempt_id = marker.get("attempt_id")
+            run_id = marker.get("run_id")
+            if not isinstance(attempt_id, str) or not isinstance(run_id, str):
+                continue
+            attempt = self.store.get_capability_attempt_for_run(run_id)
+            if attempt is None:
+                continue
+            if attempt["lease"]["attempt_id"] != attempt_id:
+                raise ProductStoreError("Composition child has another retained attempt.")
+            pack = grant_pack(
+                self.store.get_capability_grant(attempt["lease"]["grant_id"], now_ms=self.clock())[
+                    "document"
+                ]
+            )
+            settlement = attempt.get("settlement")
+            if pack != retained_artifacts.PACK:
+                result = child["progress"].get("verified_result", {})
+                if (
+                    child["progress"].get("settlement") == "settled"
+                    and result.get("objective", {}).get("established") is True
+                    and self._verified_result(attempt)["objective"]["established"]
+                ):
+                    raise ProductStoreError(
+                        "This objective is established; new business work is closed."
+                    )
+                continue
+            if settlement is None:
+                continue
+            from .product_store_retained_recovery import repair_progress
+
+            repair_progress(self.store, attempt_id, settlement)
+            if settlement.get("schema_version") == "bluefire.capability-attempt-settlement.v1":
+                verified = self._verified_result(attempt)
+                if child["progress"].get("verified_result") != verified or child["progress"].get(
+                    "verified_result_digest"
+                ) != content_hash(verified):
+                    self._publish(
+                        child["job_id"],
+                        {
+                            "verified_result": verified,
+                            "verified_result_digest": content_hash(verified),
+                        },
+                    )
+                if verified["objective"]["established"]:
                     raise ProductStoreError(
                         "This objective is established; new business work is closed."
                     )
@@ -388,6 +425,15 @@ class CompositionJobs:
                 attempt_id,
                 runner_policy_digest=profile["policy_digest"],
                 workspace_path_digest=content_hash({"sandbox_root": profile["sandbox_root"]}),
+                **(
+                    {
+                        "workspace_path": profile["sandbox_root"],
+                        "runner_readiness": current["runner_readiness"],
+                        "runner_profile": profile,
+                    }
+                    if grant_pack(grant) == retained_artifacts.PACK
+                    else {}
+                ),
                 now_ms=self.clock(),
                 current_environment=fresh["current_environment"],
             )
@@ -567,6 +613,19 @@ class CompositionJobs:
                 )
                 raise
 
+        def before_dispatch(step, manifest, task_id):
+            if grant_pack(grant) != retained_artifacts.PACK or "grant_cleanup" in manifest:
+                return
+            from .execution_contracts import execution_task_identity
+
+            _, transport_hash = execution_task_identity(manifest, sealed_profile)
+            self.store.mark_capability_task_dispatch(
+                attempt_id,
+                task_id=task_id,
+                request_hash=manifest["request_hash"],
+                transport_request_hash=transport_hash,
+            )
+
         def after_task(step, manifest, task_id, result, *, observed_receipt_ids=None):
             nonlocal cleanup_result
             if task_id not in registered:
@@ -582,9 +641,23 @@ class CompositionJobs:
                 ):
                     cleanup_result = {"digest": terminal, "report": result["cleanup"]}
             else:
-                self.store.record_capability_task_terminal(
-                    task_id, request_hash=manifest["request_hash"], terminal_digest=terminal
-                )
+                if (
+                    grant_pack(grant) == retained_artifacts.PACK
+                    and result.get("schema_version") == "bluefire.task-not-sent.v1"
+                ):
+                    from .execution_contracts import execution_task_identity
+
+                    _, transport_hash = execution_task_identity(manifest, sealed_profile)
+                    self.store.record_capability_task_no_send(
+                        attempt_id,
+                        task_id=task_id,
+                        request_hash=manifest["request_hash"],
+                        transport_request_hash=transport_hash,
+                    )
+                else:
+                    self.store.record_capability_task_terminal(
+                        task_id, request_hash=manifest["request_hash"], terminal_digest=terminal
+                    )
                 if macos_file_access:
                     composition_macos_file_access.record_terminal(
                         self, ctx.job_id, attempt_id, current, step, manifest, task_id, result
@@ -612,6 +685,7 @@ class CompositionJobs:
             cleanup_authority,
             materialize_retained if grant_pack(grant) == retained_artifacts.PACK else None,
             retain_output if grant_pack(grant) == retained_artifacts.PACK else None,
+            before_dispatch=before_dispatch,
         )
         monitor = threading.Thread(
             target=watch, name="composition-deadline-" + attempt_id[-8:], daemon=True
@@ -638,6 +712,14 @@ class CompositionJobs:
                     attempt_id,
                     session_generation=session["receiver_session_id"],
                     review_digest=session["review_digest"],
+                    **(
+                        {
+                            "process_id": session["receiver_process_id"],
+                            "creation_identity": session["creation_identity"],
+                        }
+                        if grant_pack(grant) == retained_artifacts.PACK
+                        else {}
+                    ),
                 )
             current = check()
             workspace = (
@@ -688,6 +770,14 @@ class CompositionJobs:
                         )
                     finally:
                         closed = self.owners.close(ctx.job_id)
+                    if closed and grant_pack(grant) == retained_artifacts.PACK:
+                        from .product_store_retained_recovery import record_receiver_closure
+
+                        receipt = self.store.get_job(ctx.job_id)["progress"].get(
+                            "receiver_cleanup_receipt"
+                        )
+                        if receipt is not None:
+                            record_receiver_closure(self.store, attempt_id, receipt)
                     self._publish(
                         ctx.job_id, {"receiver_observation": observation, "receiver_closed": closed}
                     )
@@ -741,6 +831,18 @@ class CompositionJobs:
                 self, marker, job_id, lease, run_result, cleanup_result
             )
         session = state.get("session")
+        if (
+            grant_pack(
+                self.store.get_capability_grant(lease["grant_id"], now_ms=self.clock())["document"]
+            )
+            == retained_artifacts.PACK
+        ):
+            from .product_store_retained_recovery import snapshot
+
+            closure = snapshot(self.store, marker["attempt_id"])["receiver_closure"]
+            if run_result is None or closure is None:
+                self._publish(job_id, {"settlement": "pending_cleanup"})
+                return
         if (
             session is None
             or state.get("receiver_closed") is not True
@@ -800,6 +902,12 @@ class CompositionJobs:
         """Repair exact custody projections after restart without replaying effects."""
 
         return retained_artifacts.reconcile_captures(self)
+
+    def recover_retained_attempts(self, *, stop_event=None):
+        from .retained_attempt_recovery import recover_all
+
+        with self._retained_recovery_lock:
+            return recover_all(self, stop_event=stop_event)
 
     def read(self, owner_id):
         owner = self._owner(owner_id)

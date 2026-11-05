@@ -3000,6 +3000,9 @@ class Orchestrator:
                         service_kwargs = service_grant_kwargs(self.runner, execute_task, None)
                     except ContractError as exc:
                         raise OrchestrationError(str(exc)) from exc
+                composition_dispatch.before_dispatch(
+                    task_lifecycle or self.grant_execution, step, manifest, task_id
+                )
                 dispatch_requested = True
                 runner_result = execute_task(
                     manifest,

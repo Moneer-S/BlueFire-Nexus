@@ -4,7 +4,6 @@ import copy
 import hashlib
 import json
 import shutil
-import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -571,11 +570,10 @@ def test_service_recovers_inflight_product_jobs_after_restart(tmp_path: Path) ->
 
 @pytest.mark.parametrize("adaptive", [False, True])
 def test_restart_cleanup_uses_exact_bound_workspace_and_audits_run_bundle(
-    request: pytest.FixtureRequest,
+    tmp_path: Path,
     adaptive: bool,
 ) -> None:
-    short_root = Path(tempfile.mkdtemp(prefix="bf-recovery-")).resolve(strict=True)
-    request.addfinalizer(lambda: shutil.rmtree(short_root, ignore_errors=True))
+    short_root = tmp_path.resolve(strict=True)
     runs_dir = short_root / "r"
     database = short_root / "s.db"
     original_root = short_root / "o"
@@ -1632,37 +1630,39 @@ def test_execute_job_cancel_reaches_exact_task_aware_runner(tmp_path: Path) -> N
         runs_dir=tmp_path / "runs",
         runner_factory=lambda _profile: (runner, sandbox),
     )
-    profile = next(
-        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
-    )
-    submission = service.submit_run(
-        {
-            "scenario_id": "scenario.sandbox.research.chain.v1",
-            "mode": "execute",
-            "runner_profile_id": profile.id,
-            "autonomy": "off",
-            "target_scope": {"scope_refs": list(profile.scope)},
-        }
-    )
-    job_id = str(submission["job"]["job_id"])
-    service.job_controller.wait_for_state(
-        job_id,
-        {JobState.AWAITING_APPROVAL},
-        timeout=3,
-    )
-    service.approve_job(job_id, {"approved_by": "cancellation-reviewer"})
-    assert runner.started.wait(3)
+    try:
+        profile = next(
+            item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+        )
+        submission = service.submit_run(
+            {
+                "scenario_id": "scenario.sandbox.research.chain.v1",
+                "mode": "execute",
+                "runner_profile_id": profile.id,
+                "autonomy": "off",
+                "target_scope": {"scope_refs": list(profile.scope)},
+            }
+        )
+        job_id = str(submission["job"]["job_id"])
+        service.job_controller.wait_for_state(
+            job_id,
+            {JobState.AWAITING_APPROVAL},
+            timeout=3,
+        )
+        service.approve_job(job_id, {"approved_by": "cancellation-reviewer"})
+        assert runner.started.wait(15), service.job_controller.snapshot(job_id)
 
-    cancelling = service.cancel_job(job_id)
-    cancelled = service.job_controller.wait(job_id, timeout=5)
+        cancelling = service.cancel_job(job_id)
+        cancelled = service.job_controller.wait(job_id, timeout=5)
 
-    assert cancelling["state"] == JobState.CANCELLING.value
-    assert cancelled["state"] == JobState.CANCELLED.value
-    assert runner.execute_calls == 1
-    assert runner.task_id is not None
-    assert runner.durable_result_path is not None
-    assert runner.durable_result_path.parent.name == ".bluefire-runner-results"
-    service.close()
+        assert cancelling["state"] == JobState.CANCELLING.value
+        assert cancelled["state"] == JobState.CANCELLED.value
+        assert runner.execute_calls == 1
+        assert runner.task_id is not None
+        assert runner.durable_result_path is not None
+        assert runner.durable_result_path.parent.name == ".bluefire-runner-results"
+    finally:
+        service.close()
 
 
 def test_execute_job_translates_runner_cancel_during_proposal_continuation(

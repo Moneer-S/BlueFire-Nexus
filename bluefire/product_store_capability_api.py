@@ -30,6 +30,7 @@ _TABLES = {
     "capability_receiver_bindings": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_task_claims": "task_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), step_id TEXT NOT NULL, request_hash TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL, UNIQUE(attempt_id,step_id)",
     "capability_task_payloads": "task_id TEXT PRIMARY KEY REFERENCES capability_task_claims(task_id), payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL",
+    "capability_task_dispatch_intents": "task_id TEXT PRIMARY KEY REFERENCES capability_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_task_terminals": "task_id TEXT PRIMARY KEY REFERENCES capability_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_attempt_settlements": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
     "capability_retained_capture_intents": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), job_id TEXT NOT NULL UNIQUE, run_id TEXT NOT NULL UNIQUE, document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
@@ -40,6 +41,13 @@ _TABLES = {
     "capability_cleanup_task_claims": "task_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL UNIQUE REFERENCES capability_attempts(attempt_id), request_hash TEXT NOT NULL, claim_digest TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL",
     "capability_cleanup_task_payloads": "task_id TEXT PRIMARY KEY REFERENCES capability_cleanup_task_claims(task_id), payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL",
     "capability_cleanup_terminals": "task_id TEXT PRIMARY KEY REFERENCES capability_cleanup_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_recovery_generations": "generation TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), created_at_ms INTEGER NOT NULL, UNIQUE(attempt_id,generation)",
+    "capability_recovery_obligations": "generation TEXT PRIMARY KEY REFERENCES capability_recovery_generations(generation), attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_recovery_claims": "generation TEXT PRIMARY KEY REFERENCES capability_recovery_generations(generation), attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL",
+    "capability_recovery_task_claims": "task_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES capability_attempts(attempt_id), generation TEXT NOT NULL UNIQUE REFERENCES capability_recovery_claims(generation), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_recovery_terminals": "task_id TEXT PRIMARY KEY REFERENCES capability_recovery_task_claims(task_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_receiver_closure_proofs": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
+    "capability_recovery_closures": "attempt_id TEXT PRIMARY KEY REFERENCES capability_attempts(attempt_id), generation TEXT NOT NULL REFERENCES capability_recovery_generations(generation), document_json TEXT NOT NULL, document_digest TEXT NOT NULL",
 }
 
 
@@ -572,7 +580,7 @@ class CapabilityStoreMixin:
             return receipt
 
     def list_retained_artifact_capture_intents(self) -> list[Mapping[str, Any]]:
-        """Return one bounded batch of intents that still lack trusted receipts."""
+        """Return pending intents, including rows beyond the first recovery page."""
 
         store = cast(Any, self)
         with store._connection() as connection:
@@ -581,7 +589,7 @@ class CapabilityStoreMixin:
                 LEFT JOIN capability_retained_capture_receipts AS receipt
                   ON receipt.attempt_id=intent.attempt_id
                 WHERE receipt.attempt_id IS NULL
-                ORDER BY intent.rowid LIMIT 256"""
+                ORDER BY intent.rowid"""
             ).fetchall()
         return [_retained_capture_intent_row(row) for row in rows]
 
@@ -590,6 +598,16 @@ class CapabilityStoreMixin:
 
     def register_capability_task(self, attempt_id: str, **context: Any) -> dict[str, Any]:
         return capability_grant_store.register_task(self, attempt_id, **context)
+
+    def mark_capability_task_dispatch(self, attempt_id: str, **context: Any) -> dict[str, Any]:
+        from .product_store_retained_recovery import mark_task_dispatch
+
+        return mark_task_dispatch(self, attempt_id, **context)
+
+    def record_capability_task_no_send(self, attempt_id: str, **context: Any) -> dict[str, Any]:
+        from .product_store_retained_recovery import record_task_no_send
+
+        return record_task_no_send(self, attempt_id, **context)
 
     def get_capability_task_payload(
         self, task_id: str, transport_request_hash: str

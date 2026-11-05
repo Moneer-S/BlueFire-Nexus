@@ -208,6 +208,7 @@ def trusted_jobs(store, source, grant):
     }
     attempt = {
         "state": "settled",
+        "settlement": {"schema_version": "bluefire.capability-attempt-settlement.v1"},
         "lease": {**claim, "lineage_id": "lineage-1", "job_id": "job-source"},
         "compiled": {"scenario": {}, "semantic_digest": content_hash("earlier-prefix")},
         "claim": {"document": claim, "document_digest": content_hash(claim)},
@@ -433,6 +434,20 @@ def test_source_requires_trusted_capture_anchor_and_settled_same_lineage(state, 
     attempt["state"] = "settled"
     child["progress"]["retained_artifact_capture"]["source"] = {**source, "lineage_id": "other"}
     with pytest.raises(CapabilityContractError, match="integrity"):
+        retained.resolve_for_grant(
+            jobs, v2_state(state)["grant"], source["source_ref"], owner_id=OWNER_ID
+        )
+
+
+def test_interrupted_unusable_settlement_never_supplies_retained_source(state, tmp_path):
+    store, source, _ = sealed_source(tmp_path)
+    jobs, attempt, _child = trusted_jobs(store, source, v2_state(state)["grant"])
+    attempt["settlement"] = {
+        "schema_version": "bluefire.capability-attempt-settlement.v2",
+        "disposition": "interrupted_unusable",
+    }
+    assert retained.available_sources(jobs, v2_state(state)["grant"], owner_id=OWNER_ID) == []
+    with pytest.raises(CapabilityContractError, match="unavailable"):
         retained.resolve_for_grant(
             jobs, v2_state(state)["grant"], source["source_ref"], owner_id=OWNER_ID
         )
@@ -726,9 +741,11 @@ def test_real_execution_path_dispatches_only_new_materialization_and_records_bot
         "expires_at": (now + timedelta(seconds=60)).isoformat(),
     }
     calls = []
+    dispatch_intents = []
 
     class Runner:
         def execute_task(self, manifest, runner_profile, **kwargs):
+            assert dispatch_intents == [(kwargs["task_id"], manifest["request_hash"])]
             calls.append(manifest["action_id"])
             assert manifest["params"]["payload_hex_chunks"] == retained.wire_chunks(payload)
             assert manifest["grant_attempt"]["attempt_id"] != source["attempt_id"]
@@ -816,6 +833,9 @@ def test_real_execution_path_dispatches_only_new_materialization_and_records_bot
             "source": source,
             "payload": retained.resolve(store, source),
         },
+        before_dispatch=lambda _step, manifest, task_id: dispatch_intents.append(
+            (task_id, manifest["request_hash"])
+        ),
     )
     engine = Orchestrator(params["registry"], store, runner=Runner(), grant_execution=execution)
     row, records, _, receipts = engine._execute_step(

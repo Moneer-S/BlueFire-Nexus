@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -35,6 +36,8 @@ def bare_service(*, failures=None, windows=None, correction=None):
     failures = failures or {}
     events = []
     instance = service.BlueFireService.__new__(service.BlueFireService)
+    instance._retained_recovery_stop = threading.Event()
+    instance._retained_recovery_thread = None
     instance._provider_access = ClosingBoundary(events, "provider", failures.get("provider"))
     instance._provider_check_transport = ClosingBoundary(
         events, "transport", failures.get("transport")
@@ -56,17 +59,25 @@ def bare_service(*, failures=None, windows=None, correction=None):
 
 def test_real_service_initialization_keeps_one_file_access_controller(monkeypatch, tmp_path):
     registry = object()
+    startup = []
     store = SimpleNamespace(
-        recover_interrupted_jobs=lambda: [], interrupt_active_capability_grants=lambda **_: None
+        recover_interrupted_jobs=lambda: (startup.append("jobs") or []),
+        interrupt_active_capability_grants=lambda **_: startup.append("grants"),
     )
 
     def quiet(*_, **__):
-        return SimpleNamespace(application_committed=lambda *_: None)
+        return SimpleNamespace(
+            application_committed=lambda *_: None,
+            recover_retained_captures=lambda: startup.append("captures"),
+            recover_retained_attempts=lambda: startup.append("attempts"),
+        )
 
     monkeypatch.setattr(
         service,
         "RunStore",
-        lambda root: SimpleNamespace(root=root, recover_interrupted_runs=lambda: []),
+        lambda root: SimpleNamespace(
+            root=root, recover_interrupted_runs=lambda: (startup.append("runs") or [])
+        ),
     )
     monkeypatch.setattr(service, "ProductStore", lambda _: store)
     monkeypatch.setattr(service, "ManagedAIJSONTransport", quiet)
@@ -97,9 +108,11 @@ def test_real_service_initialization_keeps_one_file_access_controller(monkeypatc
     for name in (
         "_recover_interrupted_cleanup",
         "_refresh_runtime_configuration",
-        "_synchronize_run_index",
     ):
         monkeypatch.setattr(service.BlueFireService, name, lambda _: None)
+    monkeypatch.setattr(
+        service.BlueFireService, "_synchronize_run_index", lambda _: startup.append("ready")
+    )
     controls = []
     actual = file_access_control.FileAccessControl
 
@@ -123,6 +136,7 @@ def test_real_service_initialization_keeps_one_file_access_controller(monkeypatc
     assert instance.file_access is instance.file_access is controls[0]
     assert instance.file_access.windows.control is controls[0]
     assert instance.file_access.windows.store is store
+    assert startup == ["runs", "jobs", "grants", "captures", "attempts", "ready"]
     assert instance.file_access.windows_correction.control is controls[0]
     assert instance.file_access.windows_correction.store is store
     assert instance.file_access.windows_correction._control_owners == {}

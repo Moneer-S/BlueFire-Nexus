@@ -24,17 +24,28 @@ def workspace_at(connection, attempt_id, lease):
         connection, "SELECT * FROM capability_workspace_bindings WHERE attempt_id=?", attempt_id
     )
     document = records._document(row)
+    common = {
+        "schema_version",
+        "attempt_id",
+        "lease_digest",
+        "runner_policy_digest",
+        "workspace_path_digest",
+        "bound_at_ms",
+    }
+    version = document.get("schema_version")
     if (
         set(document)
-        != {
-            "schema_version",
-            "attempt_id",
-            "lease_digest",
-            "runner_policy_digest",
-            "workspace_path_digest",
-            "bound_at_ms",
+        != (
+            common
+            if version == "bluefire.capability-workspace-binding.v1"
+            else common
+            | {"workspace_path", "filesystem_identity", "runner_readiness", "runner_profile"}
+        )
+        or version
+        not in {
+            "bluefire.capability-workspace-binding.v1",
+            "bluefire.capability-workspace-binding.v2",
         }
-        or document["schema_version"] != "bluefire.capability-workspace-binding.v1"
         or document["attempt_id"] != attempt_id
         or document["lease_digest"] != lease["lease_digest"]
         or document["bound_at_ms"] != row["bound_at_ms"]
@@ -43,11 +54,39 @@ def workspace_at(connection, attempt_id, lease):
         raise ProductStoreError("Capability workspace binding changed.")
     digest(document["runner_policy_digest"], "sealed runner policy")
     digest(document["workspace_path_digest"], "owned workspace path")
+    if version == "bluefire.capability-workspace-binding.v2":
+        from .retained_workspace_identity import workspace_identity
+
+        path = document["workspace_path"]
+        if (
+            not isinstance(path, str)
+            or content_hash({"sandbox_root": path}) != document["workspace_path_digest"]
+            or not isinstance(document["runner_readiness"], dict)
+            or not isinstance(document["runner_profile"], dict)
+            or document["runner_profile"].get("sandbox_root") != path
+            or document["runner_profile"].get("policy_digest") != document["runner_policy_digest"]
+            or not isinstance(document["filesystem_identity"], dict)
+        ):
+            raise ProductStoreError("Capability workspace recovery binding changed.")
+        try:
+            if workspace_identity(path) != document["filesystem_identity"]:
+                raise ProductStoreError("Capability workspace identity changed.")
+        except OSError as exc:
+            raise ProductStoreError("Capability workspace identity is unavailable.") from exc
     return document
 
 
 def bind_workspace(
-    store, attempt_id, *, runner_policy_digest, workspace_path_digest, now_ms, current_environment
+    store,
+    attempt_id,
+    *,
+    runner_policy_digest,
+    workspace_path_digest,
+    now_ms,
+    current_environment,
+    workspace_path=None,
+    runner_readiness=None,
+    runner_profile=None,
 ) -> dict[str, Any]:
     digest(runner_policy_digest, "sealed runner policy")
     digest(workspace_path_digest, "owned workspace path")
@@ -63,13 +102,41 @@ def bind_workspace(
             "SELECT 1 FROM capability_workspace_bindings WHERE attempt_id=?", (attempt_id,)
         ).fetchone():
             raise ProductStoreError("The capability workspace is already bound; do not replay.")
+        if len(
+            [
+                value
+                for value in (workspace_path, runner_readiness, runner_profile)
+                if value is not None
+            ]
+        ) not in {0, 3}:
+            raise ProductStoreError("Exact workspace recovery binding is incomplete.")
+        recovery = {}
+        if workspace_path is not None:
+            from .retained_workspace_identity import workspace_identity
+
+            if content_hash({"sandbox_root": str(workspace_path)}) != workspace_path_digest:
+                raise ProductStoreError("Owned workspace path differs from its sealed profile.")
+            try:
+                recovery = {
+                    "workspace_path": str(workspace_path),
+                    "filesystem_identity": workspace_identity(workspace_path),
+                    "runner_readiness": json_clone(runner_readiness),
+                    "runner_profile": json_clone(runner_profile),
+                }
+            except OSError as exc:
+                raise ProductStoreError("Owned workspace identity is unavailable.") from exc
         document = {
-            "schema_version": "bluefire.capability-workspace-binding.v1",
+            "schema_version": (
+                "bluefire.capability-workspace-binding.v2"
+                if recovery
+                else "bluefire.capability-workspace-binding.v1"
+            ),
             "attempt_id": attempt_id,
             "lease_digest": lease["lease_digest"],
             "runner_policy_digest": runner_policy_digest,
             "workspace_path_digest": workspace_path_digest,
             "bound_at_ms": now_ms,
+            **recovery,
         }
         connection.execute(
             "INSERT INTO capability_workspace_bindings VALUES(?,?,?,?)",

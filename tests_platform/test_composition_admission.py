@@ -253,11 +253,23 @@ def test_later_verified_success_closes_older_refusal_context_and_reservation(
             "settlement": "settled",
             "verified_result": {"objective": {"established": True}},
         },
-        "request": {"composition_attempt": {"attempt_id": "attempt-" + "b" * 32}},
+        "request": {
+            "composition_attempt": {
+                "attempt_id": "attempt-" + "b" * 32,
+                "run_id": "run-settled-later",
+            }
+        },
     }
     monkeypatch.setattr(jobs, "_children", lambda _: [child])
     monkeypatch.setattr(
-        jobs.store, "get_capability_attempt", lambda _: {"test": "settled-later-attempt"}
+        jobs.store,
+        "get_capability_attempt_for_run",
+        lambda _: {
+            "lease": {
+                "attempt_id": "attempt-" + "b" * 32,
+                "grant_id": state["grant"]["grant_id"],
+            },
+        },
     )
     monkeypatch.setattr(jobs, "_verified_result", lambda _: {"objective": {"established": True}})
     monkeypatch.setattr(

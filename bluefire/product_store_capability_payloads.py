@@ -108,6 +108,10 @@ def read_payload(
             macos_cleanup_claim=macos_cleanup_claim,
             macos_cleanup_claim_digest=macos_cleanup_claim_digest,
         )
+        # Older retained payloads predate the CAS send boundary. Their exact
+        # provenance remains readable, but absence of an intent proves nothing.
+        if "dispatch_protocol" not in payload:
+            expected.pop("dispatch_protocol", None)
         if (
             row["attempt_id"] != payload["attempt_id"]
             or payload != expected

@@ -370,7 +370,11 @@ def historical_sources(jobs, grant, *, owner_id):
     result = []
     for row in rows:
         attempt = jobs.store.get_capability_attempt(row["attempt_id"])
-        if attempt["state"] != "settled":
+        if (
+            attempt["state"] != "settled"
+            or (attempt.get("settlement") or {}).get("schema_version")
+            != "bluefire.capability-attempt-settlement.v1"
+        ):
             continue
         lease = attempt["lease"]
         child = jobs.store.get_job(lease["job_id"])
@@ -509,7 +513,7 @@ def reconcile_captures(jobs):
     ]
     intents_by_run = {intent["run_id"]: intent for intent in intents}
     available_run_ids = run_store.retained_capture_run_ids()
-    prioritized_run_ids = list(dict.fromkeys(pending_run_ids + available_run_ids))[:256]
+    prioritized_run_ids = list(dict.fromkeys(pending_run_ids + available_run_ids))
     for run_id in prioritized_run_ids:
         summary["examined"] += 1
         try:
