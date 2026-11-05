@@ -882,7 +882,12 @@ def test_interrupted_simulate_retry_clones_request_and_records_lineage(tmp_path:
 
     retry = service.retry_job(str(interrupted["job_id"]))
     retry_job_id = str(retry["job"]["job_id"])
-    completed = service.job_controller.wait(retry_job_id, timeout=5)
+    # The controller wait is condition-driven. Give the simulated retry the
+    # same bounded service-job work budget used by the surrounding installed
+    # workflow checks so a loaded CI partition does not turn scheduler delay
+    # into a false lineage failure.
+    with diagnose_job_wait("service_terminal"):
+        completed = service.job_controller.wait(retry_job_id, timeout=15)
 
     assert retry["schema_version"] == "bluefire.job-retry.v1"
     assert retry["retry_of_job_id"] == interrupted["job_id"]
