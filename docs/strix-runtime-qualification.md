@@ -6,7 +6,10 @@ does not qualify Strix for use. It does not import or launch Strix, execute its 
 the sandbox image, contact a target or model, publish a package, or change BlueFire's execution
 authority.
 
-The workflow is manual and has not been dispatched merely by adding it to the repository.
+The pull request workflow checks the exact candidate source and build at the
+checked-out synthetic merge commit, prepares the offline Python closure, and
+inventories the pinned image without running it. A trigger or passing check does
+not establish runtime qualification or admission.
 
 ## Exact inputs
 

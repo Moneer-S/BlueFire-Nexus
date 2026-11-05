@@ -92,7 +92,11 @@ boundaries, not in the prompt or this startup branch.
 
 ## Controlled candidate build
 
-The manual or reusable `Strix engine candidate` workflow uses:
+The `Strix engine candidate` workflow is available only for reuse by another
+workflow. In a pull request, the `Strix runtime qualification preparation`
+workflow rebuilds the exact candidate at the checked-out synthetic merge commit
+before preparing the offline dependency closure and non-executed image inventory.
+The reusable candidate workflow uses:
 
 - a standard `ubuntu-24.04` GitHub-hosted runner with a 30-minute job limit;
 - Python 3.12.14, Go 1.24.10, and uv 0.13.6 from commit-pinned setup actions;

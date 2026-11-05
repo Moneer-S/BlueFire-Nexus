@@ -1,7 +1,6 @@
 name: Strix engine candidate
 
 on:
-  workflow_dispatch:
   workflow_call:
 
 permissions:

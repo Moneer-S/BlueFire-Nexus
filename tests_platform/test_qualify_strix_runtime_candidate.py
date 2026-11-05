@@ -826,14 +826,26 @@ def test_installed_launcher_must_bind_runtime_interpreter(tmp_path: Path) -> Non
         )
 
 
-def test_workflow_is_manual_read_only_pinned_and_non_executing() -> None:
+def test_workflow_is_single_pr_trigger_read_only_pinned_and_non_executing() -> None:
     raw = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(raw)
     triggers = workflow.get("on", workflow.get(True))
-    assert triggers == {"workflow_dispatch": None}
+    assert triggers == {"pull_request": {"types": ["opened", "reopened", "synchronize"]}}
     assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["concurrency"] == {
+        "group": "strix-runtime-qualification-${{ github.event.pull_request.number }}",
+        "cancel-in-progress": True,
+    }
+    assert set(workflow["jobs"]) == {"prepare"}
     assert workflow["jobs"]["prepare"]["runs-on"] == "ubuntu-24.04"
     assert workflow["jobs"]["prepare"]["timeout-minutes"] == 60
+    steps = workflow["jobs"]["prepare"]["steps"]
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"]["ref"] == "${{ github.sha }}"
+    commands = [step["run"] for step in steps if "run" in step]
+    assert sum("python -m tools.build_strix_engine_candidate" in run for run in commands) == 1
+    assert sum("python -m tools.qualify_strix_runtime_candidate" in run for run in commands) == 1
+    assert all('--bluefire-source-revision "${{ github.sha }}"' in run for run in commands)
     assert "upload-artifact" not in raw
     assert "persist-credentials: false" in raw
     for identity in qualification.ACTION_IDENTITIES.values():
@@ -854,6 +866,6 @@ def test_documentation_does_not_claim_runtime_qualification() -> None:
     text = DOC.read_text(encoding="utf-8")
     assert "does not qualify Strix for use" in text
     assert "runtime_qualified: false" in text
-    assert "not been dispatched" in text
+    assert "pull request" in text
     assert "license review" in text
     assert "second clean build" in text

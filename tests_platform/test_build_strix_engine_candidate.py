@@ -382,9 +382,9 @@ def test_root_license_attribution_does_not_clear_bundled_components() -> None:
         assert component["redistribution_rights_confirmed"] is None
 
 
-def test_workflow_is_manual_read_only_bounded_and_commit_pinned() -> None:
+def test_workflow_is_reusable_only_read_only_bounded_and_commit_pinned() -> None:
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-    assert set(workflow["on"]) == {"workflow_dispatch", "workflow_call"}
+    assert workflow["on"] == {"workflow_call": ""}
     assert workflow["permissions"] == {"contents": "read"}
     assert set(workflow["jobs"]) == {"build"}
     job = workflow["jobs"]["build"]
