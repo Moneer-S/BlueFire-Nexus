@@ -218,6 +218,7 @@ let compositionAttemptResponseErrorCode;
 let compositionAttemptCheckpoint;
 let retainedInteraction;
 let retainedVerification;
+let retainedProposalVerification;
 const settingsReadAllowed = createReceiverSettingsReadPolicy();
 let activeOwnerRole = "original";
 const phaseOrders = { original: ["baseline", "protected", "legitimate"], linked: ["protected", "legitimate"] };
@@ -1957,6 +1958,7 @@ try {
     readOriginalRun: runId => appApiOutcome(`/runs/${runId}`),
     onInteraction: value => { retainedInteraction = value; },
     onVerification: value => { retainedVerification = value; },
+    onProposalVerification: value => { retainedProposalVerification = value; },
     onRevoked: () => { report.cleanup = { ...(report.cleanup ?? {}), retained_grant_revoked: true }; },
     capture: async (name, options = {}) => {
       assert.ok(connected);
@@ -2322,6 +2324,9 @@ try {
   }
   if (/^retained-(original|continuation)-settlement$/.test(stage) && retainedVerification) {
     failure.retained_verification = retainedVerification;
+  }
+  if (/^retained-(original|continuation)-proposal$/.test(stage) && retainedProposalVerification) {
+    failure.retained_proposal_verification = retainedProposalVerification;
   }
   if (stage === "composition-attempt" || stage === "composition-model-proposal-reopen") {
     // A spent journey budget must not delay the cleanup reserve for diagnostics.

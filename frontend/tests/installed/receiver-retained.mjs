@@ -372,31 +372,56 @@ export async function runRetainedJourney(page, state, options) {
   assert.equal(grant.snapshot.artifact_context.retention.max_artifacts_per_attempt, 1);
   assert.ok(grant.snapshot.methods.some(item => item.behavior_id === RETAINED_METHOD));
   const workspace = `${origin}/#/composition?${new URLSearchParams({ control: controlId, objective: state.ownerId })}`;
+  const recordProposalVerification = (historyAware, checkpoint, value) => options.onProposalVerification?.({
+    schema_version: "bluefire.installed-retained-proposal-verification.v1",
+    history_aware: historyAware,
+    checkpoint,
+    ...(value ? {
+      job_state: ["queued", "planning", "running", "completed", "failed", "cancelled", "interrupted"].includes(value.job?.state)
+        ? value.job.state : "unreported",
+      provider_outcome: ["pending", "requesting", "candidate", "refused", "unknown", "unavailable", "invalid", "context_refused", "cancelled"].includes(value.provider_outcome)
+        ? value.provider_outcome : "unreported",
+      candidate_ready: value.candidate_ready === true,
+      proposal_present: Boolean(value.proposal),
+    } : {}),
+  });
   const requestProposal = async (history) => {
+    const proposalDiagnostic = (checkpoint, value) => recordProposalVerification(history, checkpoint, value);
+    proposalDiagnostic("selection");
     await page.getByRole("combobox", { name: "Configured model provider", exact: true }).selectOption(providerId);
     const pending = postResponse(`/composition/objectives/${state.ownerId}/proposals`);
     await page.getByRole("button", { name: history ? "Request history-aware revision" : "Request AI graph", exact: true }).click();
     const response = await pending;
+    proposalDiagnostic("response");
     assert.ok(response.ok());
     let value = await response.json();
-    value = await wait(() => read(`/composition/proposals/${value.job.job_id}`), item => item.job.state === "completed", 20000);
+    proposalDiagnostic("accepted", value);
+    value = await wait(() => read(`/composition/proposals/${value.job.job_id}`), item =>
+      ["completed", "failed", "cancelled", "interrupted"].includes(item.job?.state), 20000);
+    proposalDiagnostic("terminal", value);
+    assert.equal(value.job.state, "completed");
+    proposalDiagnostic("job-binding", value);
     assert.equal(value.job.job_id, state.proposals[history ? 1 : 0]);
     assert.equal(value.job.request.owner_id, state.ownerId);
     assert.equal(value.proposal.owner_id, state.ownerId);
     assert.equal(value.proposal.proposal_job_id, value.job.job_id);
+    proposalDiagnostic("context-binding", value);
     assert.equal(value.job.request.context.grant_id, grant.grant_id);
     assert.equal(value.proposal.context_digest, value.job.request.context.context_digest);
     assert.equal(value.job.request.submitted_request.context_digest, value.proposal.context_digest);
     assert.equal(value.proposal.prior_attempt_id, history ? state.first.attempt_id : null);
     assert.equal(value.proposal.schema_version, "bluefire.composition-ai-result.v3");
+    proposalDiagnostic("provider-binding", value);
     assert.equal(value.proposal.provider.provider_id, providerId);
     assert.equal(value.proposal.provider.model, model);
     assert.equal(value.proposal.provider.attempts, 1);
     assert.equal(value.proposal.provider.used_fallback, false);
     assert.equal(value.candidate_ready, true);
     assert.equal(value.provider_outcome, "candidate");
+    proposalDiagnostic("metadata-bound", value);
     assertMetadataOnly(value.job.request.context);
     state.candidate = value.proposal.candidate;
+    proposalDiagnostic("verified", value);
     return value;
   };
   setStage("retained-original-proposal");
@@ -438,30 +463,41 @@ export async function runRetainedJourney(page, state, options) {
   await page.getByRole("checkbox", { name: "Use selected historical findings to reconsider earlier choices", exact: true }).check();
   setStage("retained-continuation-proposal");
   const secondProposal = await requestProposal(true);
+  recordProposalVerification(true, "history-schema");
   const captured = secondProposal.job.request.context;
   assert.equal(captured.schema_version, "bluefire.retained-composition-evidence-context.v1");
+  recordProposalVerification(true, "history-knowledge");
   assert.equal(captured.historical_context.knowledge_digest, state.knowledge.knowledge_digest);
+  recordProposalVerification(true, "history-fact");
   assert.equal(captured.facts.facts.find(fact => fact.kind === "receiver_result")?.value.decision, "policy_refused");
+  recordProposalVerification(true, "history-attempts");
   assert.deepEqual(captured.historical_context.attempts, state.knowledge.attempts);
+  recordProposalVerification(true, "retained-source-list");
   assert.deepEqual(captured.retained_artifacts.available_sources, [state.source]);
+  recordProposalVerification(true, "retained-source-shape");
   assertRetainedSource(captured.retained_artifacts.available_sources[0]);
+  recordProposalVerification(true, "revised-graph-prefix");
   const revised = secondProposal.proposal;
   assert.equal(revised.candidate.steps[0].id, "reuse_retained_bundle");
   assert.equal(revised.candidate.steps[0].behavior_id, RETAINED_METHOD);
   assert.deepEqual(revised.candidate.steps[0].parameters, { source_ref: state.source.source_ref });
+  recordProposalVerification(true, "revised-graph-shape");
   const priorSteps = firstProposal.proposal.candidate.steps;
   const after = revised.candidate.steps;
   assert.equal(after.length, priorSteps.length);
   assert.deepEqual(after.slice(1).map(step => step.behavior_id), priorSteps.slice(1).map(step => step.behavior_id));
   assert.equal(after.find(step => step.behavior_id === "sandbox.fixture.transform.v1").parameters.redact_values, true);
   assert.ok(!after.some(step => step.behavior_id === "sandbox.fixture.create.v1"));
+  recordProposalVerification(true, "reasoning-shape");
   const reasoning = revised.reconsideration.reconsidered_choices;
   assert.equal(reasoning.length, 1);
   assert.equal(reasoning[0].attempt_id, state.first.attempt_id);
   assert.equal(reasoning[0].compiled_digest, first.attempt.request.composition_attempt.compiled_digest);
   assert.equal(reasoning[0].step_id, "transform_fixture");
+  recordProposalVerification(true, "reasoning-citation");
   assert.ok(reasoning[0].finding_refs.some(ref => state.knowledge.attempts[0].findings.some(finding =>
     finding.finding_id === ref.finding_id && same(finding.record_ref, ref.record_ref) && finding.step_id === state.source.step_id)));
+  recordProposalVerification(true, "verified");
   const inspectSources = async () => {
     const panel = page.getByRole("region", { name: "Captured available results", exact: true });
     await panel.waitFor({ state: "visible" });

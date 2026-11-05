@@ -1599,7 +1599,10 @@ fn cleanup_recovers_a_valid_object_left_in_receipt_bound_quarantine() {
         .join(format!("{receipt_id}.json"))
         .exists());
     assert_eq!(result.cleanup.as_ref().unwrap().verified_receipts, 1);
-    assert_eq!(result.cleanup.as_ref().unwrap().verified_receipt_ids, vec![receipt_id]);
+    assert_eq!(
+        result.cleanup.as_ref().unwrap().verified_receipt_ids,
+        vec![receipt_id]
+    );
 }
 
 #[test]

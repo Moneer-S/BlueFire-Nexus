@@ -23,10 +23,57 @@ def _retained(connection, attempt_id):
     return row, lease, compiled
 
 
+_OPTIONAL_QUERIES = {
+    ("capability_attempt_settlements", "attempt_id"): (
+        "SELECT * FROM capability_attempt_settlements WHERE attempt_id=?"
+    ),
+    ("capability_cleanup_task_payloads", "task_id"): (
+        "SELECT * FROM capability_cleanup_task_payloads WHERE task_id=?"
+    ),
+    ("capability_cleanup_terminals", "task_id"): (
+        "SELECT * FROM capability_cleanup_terminals WHERE task_id=?"
+    ),
+    ("capability_receiver_bindings", "attempt_id"): (
+        "SELECT * FROM capability_receiver_bindings WHERE attempt_id=?"
+    ),
+    ("capability_receiver_closure_proofs", "attempt_id"): (
+        "SELECT * FROM capability_receiver_closure_proofs WHERE attempt_id=?"
+    ),
+    ("capability_recovery_claims", "generation"): (
+        "SELECT * FROM capability_recovery_claims WHERE generation=?"
+    ),
+    ("capability_recovery_closures", "attempt_id"): (
+        "SELECT * FROM capability_recovery_closures WHERE attempt_id=?"
+    ),
+    ("capability_recovery_obligations", "generation"): (
+        "SELECT * FROM capability_recovery_obligations WHERE generation=?"
+    ),
+    ("capability_recovery_task_claims", "generation"): (
+        "SELECT * FROM capability_recovery_task_claims WHERE generation=?"
+    ),
+    ("capability_recovery_task_claims", "task_id"): (
+        "SELECT * FROM capability_recovery_task_claims WHERE task_id=?"
+    ),
+    ("capability_recovery_terminals", "task_id"): (
+        "SELECT * FROM capability_recovery_terminals WHERE task_id=?"
+    ),
+    ("capability_task_dispatch_intents", "task_id"): (
+        "SELECT * FROM capability_task_dispatch_intents WHERE task_id=?"
+    ),
+    ("capability_task_payloads", "task_id"): (
+        "SELECT * FROM capability_task_payloads WHERE task_id=?"
+    ),
+    ("capability_task_terminals", "task_id"): (
+        "SELECT * FROM capability_task_terminals WHERE task_id=?"
+    ),
+}
+
+
 def _optional(connection, table, key, value, *, payload=False):
-    row = connection.execute(
-        f"SELECT * FROM {table} WHERE {key}=?", (value,)
-    ).fetchone()  # nosec B608
+    query = _OPTIONAL_QUERIES.get((table, key))
+    if query is None:
+        raise ProductStoreError("Retained recovery lookup is invalid.")
+    row = connection.execute(query, (value,)).fetchone()
     return (
         None
         if row is None
