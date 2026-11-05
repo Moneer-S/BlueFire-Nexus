@@ -1,7 +1,7 @@
-"""No public artifact channel exists while the component review is blocked.
+"""Only a bounded uv metadata receipt may use a public artifact channel.
 
-A future publication exception needs a separately reviewed clearance contract and
-an explicit policy change; operator strings and short retention are not one.
+Candidate, source, dependency, and runtime payloads remain blocked while the
+component review is incomplete.
 """
 
 import os
@@ -29,12 +29,30 @@ SETUP_ACTIONS = {
     "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
     "astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2",
 }
+DIAGNOSTIC_UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+DIAGNOSTIC_UPLOAD_SETTINGS = {
+    "name": "strix-uv-version-evidence-${{ github.run_id }}-${{ github.run_attempt }}",
+    "path": "${{ runner.temp }}/bluefire-uv-version-evidence.json",
+    "if-no-files-found": "error",
+    "retention-days": 1,
+    "compression-level": 0,
+    "overwrite": False,
+    "include-hidden-files": False,
+}
+UV_EVIDENCE_COMMAND = (
+    "python",
+    "-m",
+    "tools.capture_uv_version_evidence",
+    "--output",
+    "$RUNNER_TEMP/bluefire-uv-version-evidence.json",
+)
 
 # This is an allowlist, not a blacklist of upload verbs or sensitive filenames.
 # Fixed module arguments prevent aliases, renamed staging paths, shell expansion,
 # and indirect publication from evading a path/keyword scanner. A new command
 # needs explicit review even if it appears unrelated to upstream material.
 APPROVED_COMMANDS = {
+    UV_EVIDENCE_COMMAND,
     (
         "python",
         "-m",
@@ -135,12 +153,33 @@ def _assert_no_public_artifact_channel(workflow: dict) -> None:
                         _normalized_shell_commands(step["run"]) in APPROVED_COMMANDS
                     ), "No reviewed shell-publication contract"
             if "uses" in step:
+                if step["uses"] == DIAGNOSTIC_UPLOAD_ACTION:
+                    assert (
+                        job_id == "prepare"
+                    ), "No reviewed redistribution-clearance contract exists"
+                    assert step.get("name") == "Upload bounded uv version evidence"
+                    assert step.get("if") == "${{ always() }}"
+                    assert step.get("with") == DIAGNOSTIC_UPLOAD_SETTINGS
+                    continue
                 assert (
                     step["uses"] in SETUP_ACTIONS
                 ), "No reviewed redistribution-clearance contract exists"
                 settings = step.get("with", {})
                 assert "cache" not in settings or settings["cache"] is False
                 assert "enable-cache" not in settings or settings["enable-cache"] is False
+        if job_id == "prepare":
+            capture_positions = [
+                index
+                for index, step in enumerate(job["steps"])
+                if "run" in step and _normalized_shell_commands(step["run"]) == UV_EVIDENCE_COMMAND
+            ]
+            upload_positions = [
+                index
+                for index, step in enumerate(job["steps"])
+                if step.get("uses") == DIAGNOSTIC_UPLOAD_ACTION
+            ]
+            assert len(capture_positions) == 1 and len(upload_positions) == 1
+            assert upload_positions[0] == capture_positions[0] + 1
 
 
 @pytest.mark.parametrize("filename", WORKFLOWS)
@@ -189,6 +228,70 @@ def test_upload_is_rejected_even_when_named_short_lived_or_operator_cleared(
         }
     )
     with pytest.raises(AssertionError, match="No reviewed redistribution-clearance contract"):
+        _assert_no_public_artifact_channel(workflow)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("path", "${{ runner.temp }}/bluefire-strix-candidate-output"),
+        ("name", "renamed-evidence"),
+        ("retention-days", 2),
+        ("compression-level", 6),
+        ("overwrite", True),
+        ("include-hidden-files", True),
+    ],
+)
+def test_uv_diagnostic_upload_contract_is_exact(field: str, value: object) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/strix-runtime-qualification.yml").read_text(encoding="utf-8")
+    )
+    upload = next(
+        step
+        for step in workflow["jobs"]["prepare"]["steps"]
+        if step.get("uses") == DIAGNOSTIC_UPLOAD_ACTION
+    )
+    upload["with"][field] = value
+    with pytest.raises(AssertionError):
+        _assert_no_public_artifact_channel(workflow)
+
+
+def test_uv_diagnostic_upload_requires_always_and_exact_action_pin() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/strix-runtime-qualification.yml").read_text(encoding="utf-8")
+    )
+    upload = next(
+        step
+        for step in workflow["jobs"]["prepare"]["steps"]
+        if step.get("uses") == DIAGNOSTIC_UPLOAD_ACTION
+    )
+    upload["if"] = "${{ success() }}"
+    with pytest.raises(AssertionError):
+        _assert_no_public_artifact_channel(workflow)
+
+    upload["if"] = "${{ always() }}"
+    upload["uses"] = "actions/upload-artifact@" + "0" * 40
+    with pytest.raises(AssertionError, match="redistribution-clearance"):
+        _assert_no_public_artifact_channel(workflow)
+
+
+def test_uv_diagnostic_upload_is_single_and_immediately_follows_capture() -> None:
+    path = ROOT / ".github/workflows/strix-runtime-qualification.yml"
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["prepare"]["steps"]
+    upload_index = next(
+        index for index, step in enumerate(steps) if step.get("uses") == DIAGNOSTIC_UPLOAD_ACTION
+    )
+    upload = steps.pop(upload_index)
+    steps.append(upload)
+    with pytest.raises(AssertionError):
+        _assert_no_public_artifact_channel(workflow)
+
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["prepare"]["steps"]
+    upload = next(step for step in steps if step.get("uses") == DIAGNOSTIC_UPLOAD_ACTION)
+    steps.insert(steps.index(upload) + 1, deepcopy(upload))
+    with pytest.raises(AssertionError):
         _assert_no_public_artifact_channel(workflow)
 
 

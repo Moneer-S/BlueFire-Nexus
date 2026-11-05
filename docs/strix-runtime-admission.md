@@ -4,7 +4,9 @@ The GitHub workflow currently fails closed before checkout, preparation, transfe
 Its former cross-job transfer was configured to publish an unreviewed candidate and dependency bundle through
 public-repository Actions artifacts. Repository readers can retrieve those artifacts, and short
 retention does not provide access control. The component redistribution review remains blocked;
-no reviewed public sanitized-receipt contract or private cross-job transport is available.
+no reviewed public transport for the candidate bundle or private cross-job transport is available.
+The preparation workflow's bounded uv version receipt contains no Strix material and supplies no
+candidate transport or redistribution authority.
 
 The retained tooling below describes the requirements for a future reviewed private qualification
 path. It can establish `runtime_qualified: true` for one exact Linux x86-64

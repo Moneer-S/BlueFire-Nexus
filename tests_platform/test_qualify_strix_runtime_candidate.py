@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from bluefire.strix_redistribution_review import strix_redistribution_review
+from tools import capture_uv_version_evidence as uv_evidence
 from tools import qualify_strix_runtime_candidate as qualification
 from tools import reconstruct_strix_runtime_admission_source as reconstruction
 
@@ -845,8 +846,15 @@ def test_workflow_is_single_pr_trigger_read_only_pinned_and_non_executing() -> N
     version_selector = next(step for step in steps if step.get("id") == "uv-version")
     assert version_selector["name"] == "Read reviewed uv build version"
     assert "UV_VERSION" in version_selector["run"]
+    capture = next(
+        step for step in steps if step.get("name") == "Capture bounded uv version evidence"
+    )
+    assert capture["run"] == (
+        "python -m tools.capture_uv_version_evidence "
+        '--output "$RUNNER_TEMP/bluefire-uv-version-evidence.json"'
+    )
     execution_commands = [
-        step["run"] for step in steps if "run" in step and step is not version_selector
+        step["run"] for step in steps if "run" in step and step not in (version_selector, capture)
     ]
     commands = [step["run"] for step in steps if "run" in step]
     assert sum("python -m tools.build_strix_engine_candidate" in run for run in commands) == 1
@@ -854,7 +862,26 @@ def test_workflow_is_single_pr_trigger_read_only_pinned_and_non_executing() -> N
     assert all(
         '--bluefire-source-revision "${{ github.sha }}"' in run for run in execution_commands
     )
-    assert "upload-artifact" not in raw
+    upload = next(
+        step for step in steps if step.get("name") == "Upload bounded uv version evidence"
+    )
+    assert steps.index(upload) == steps.index(capture) + 1
+    rebuild = next(
+        step for step in steps if step.get("name") == "Rebuild the provenance-bound candidate"
+    )
+    assert steps.index(upload) < steps.index(rebuild)
+    assert upload["if"] == "${{ always() }}"
+    assert upload["uses"] == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    assert upload["with"] == {
+        "name": "strix-uv-version-evidence-${{ github.run_id }}-${{ github.run_attempt }}",
+        "path": "${{ runner.temp }}/bluefire-uv-version-evidence.json",
+        "if-no-files-found": "error",
+        "retention-days": 1,
+        "compression-level": 0,
+        "overwrite": False,
+        "include-hidden-files": False,
+    }
+    assert uv_evidence.OUTPUT_NAME == "bluefire-uv-version-evidence.json"
     assert "persist-credentials: false" in raw
     for identity in qualification.ACTION_IDENTITIES.values():
         assert f"@{identity}" in raw

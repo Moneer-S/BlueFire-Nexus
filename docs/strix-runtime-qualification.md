@@ -108,10 +108,12 @@ limit, and no retained checkout credential. It has no scheduled,
 push, package, release, container, target, or model step.
 
 Successful preparation keeps the rebuilt candidate and bounded preparation directory only in
-ephemeral runner-temp. It publishes no Actions artifact or cache. Public-repository Actions
-artifacts are retrievable by repository readers; short retention does not restrict access. No
-reviewed public evidence-receipt contract exists, so raw inventory or receipts are not uploaded
-either. The preparation directory contains:
+ephemeral runner-temp and publishes no cache. Public-repository Actions artifacts are retrievable
+by repository readers; short retention does not restrict access. The sole public artifact is a
+one-day, bounded uv version receipt. It contains only the pinned tool's human version plus
+allowlisted version-metadata values and key/type information; unknown or unsafe values are omitted.
+It contains no candidate, source, dependency, OCI, host path, credential, or runtime payload. The
+preparation directory contains:
 
 - the frozen hashed requirements and offline dependency wheelhouse;
 - a Python runtime installation receipt;

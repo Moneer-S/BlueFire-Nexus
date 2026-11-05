@@ -131,8 +131,11 @@ Successful output contains:
 - `SHA256SUMS`, which covers the payloads and manifest but intentionally does not hash itself.
 
 The workflow has read-only repository permission and does not retain checkout credentials. All
-candidate payloads remain ephemeral under runner-temp; no Actions artifact, cache, package, or
-release is published. Successful CI processing does not grant publication or redistribution rights.
+candidate payloads remain ephemeral under runner-temp; no candidate artifact, cache, package, or
+release is published. Runtime preparation publishes only a one-day, bounded uv version receipt
+containing safe tool metadata and key/type information. It cannot contain the candidate, source,
+dependencies, OCI data, host paths, or credentials. Successful CI processing does not grant
+publication or redistribution rights.
 
 The wheel is not a standalone installation artifact. Its broad upstream dependency metadata must
 not be resolved later against a moving package index. Runtime installation remains refused until
@@ -165,12 +168,13 @@ image. Their license expressions, notice completeness, and confirmed redistribut
 remain `null` (unknown), rather than inheriting either project's root license.
 
 Public-repository Actions artifacts are retrievable by repository readers; short retention is
-not access control. The candidate and preparation workflows therefore publish no artifact, including
-raw manifests, SBOMs, source archives, wheels, wheelhouses, or OCI inventory. No reviewed sanitized
-public evidence-receipt contract exists, so this change does not invent one. Admission is blocked
-until a separately reviewed private cross-job transport can preserve the fresh-runner boundary
-without publishing its input bundle. A threat-review ref does not clear redistribution. Strix
-payloads remain excluded from normal BlueFire wheels and releases.
+not access control. The candidate and preparation workflows therefore publish no candidate payload,
+raw manifest, SBOM, source archive, wheel, wheelhouse, or OCI inventory. The only exception is the
+preparation workflow's reviewed, bounded uv version receipt, which contains safe tool metadata and
+key/type information but no Strix material or host data. Admission remains blocked until a separately
+reviewed private cross-job transport can preserve the fresh-runner boundary without publishing its
+input bundle. A threat-review ref does not clear redistribution. Strix payloads remain excluded from
+normal BlueFire wheels and releases.
 
 Downstream validation rejects an omitted or altered blocked review, including a root-license-only
 claim. Existing receipts without this gate must be rebuilt; checksum consistency, an SBOM, and

@@ -69,6 +69,24 @@ jobs:
           version: ${{ steps.uv-version.outputs.version }}
           enable-cache: false
 
+      - name: Capture bounded uv version evidence
+        shell: bash
+        run: >-
+          python -m tools.capture_uv_version_evidence
+          --output "$RUNNER_TEMP/bluefire-uv-version-evidence.json"
+
+      - name: Upload bounded uv version evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: strix-uv-version-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bluefire-uv-version-evidence.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
       - name: Rebuild the provenance-bound candidate
         shell: bash
         run: >-
@@ -87,5 +105,5 @@ jobs:
           --output-root "$RUNNER_TEMP/bluefire-strix-qualification-output"
           --bluefire-source-revision "${{ github.sha }}"
 
-      # No Actions artifacts: the component redistribution review remains blocked.
-      # Wheel, modified source, dependencies, and OCI inventory stay in runner-temp.
+      # Only the bounded uv metadata receipt is published. Candidate, wheel,
+      # source, dependency, OCI, and qualification payloads stay in runner-temp.
