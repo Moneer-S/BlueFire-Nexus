@@ -1008,28 +1008,26 @@ def validate_uv_release_identity(payload: str) -> dict[str, Any]:
     }:
         raise StrixCandidateBuildError("uv release identity has an invalid shape")
     commit_distance = commit["commits_since_last_tag"]
+    last_tag = commit["last_tag"]
     if (
         any(
             not isinstance(commit[name], str)
             for name in ("short_commit_hash", "commit_hash", "commit_date")
         )
-        or commit["last_tag"] is not None
+        or (last_tag is not None and not isinstance(last_tag, str))
         or not isinstance(commit_distance, int)
         or isinstance(commit_distance, bool)
     ):
         raise StrixCandidateBuildError("uv release identity has an invalid shape")
-    expected_commit = {
-        "short_commit_hash": UV_RELEASE_COMMIT[:9],
-        "commit_hash": UV_RELEASE_COMMIT,
-        "commit_date": UV_RELEASE_DATE,
-        "last_tag": None,
-        "commits_since_last_tag": 0,
-    }
     if (
         document["package_name"] != "uv"
         or document["version"] != UV_VERSION
         or document["target_triple"] != UV_TARGET_TRIPLE
-        or commit != expected_commit
+        or commit["short_commit_hash"] != UV_RELEASE_COMMIT[:9]
+        or commit["commit_hash"] != UV_RELEASE_COMMIT
+        or commit["commit_date"] != UV_RELEASE_DATE
+        or last_tag not in (None, UV_VERSION)
+        or commit_distance != 0
     ):
         raise StrixCandidateBuildError("uv release identity is not the reviewed build")
     return document

@@ -388,6 +388,30 @@ def test_uv_release_identity_refuses_non_integer_commit_distance(value: Any) -> 
         candidate.validate_uv_release_identity(json.dumps(document))
 
 
+def test_uv_release_identity_accepts_only_the_exact_optional_release_tag() -> None:
+    document = {
+        "package_name": "uv",
+        "version": candidate.UV_VERSION,
+        "commit_info": {
+            "short_commit_hash": candidate.UV_RELEASE_COMMIT[:9],
+            "commit_hash": candidate.UV_RELEASE_COMMIT,
+            "commit_date": candidate.UV_RELEASE_DATE,
+            "last_tag": candidate.UV_VERSION,
+            "commits_since_last_tag": 0,
+        },
+        "target_triple": candidate.UV_TARGET_TRIPLE,
+    }
+    assert candidate.validate_uv_release_identity(json.dumps(document)) == document
+
+    document["commit_info"]["last_tag"] = "0.13.5"
+    with pytest.raises(candidate.StrixCandidateBuildError, match="reviewed build"):
+        candidate.validate_uv_release_identity(json.dumps(document))
+
+    document["commit_info"]["last_tag"] = False
+    with pytest.raises(candidate.StrixCandidateBuildError, match="invalid shape"):
+        candidate.validate_uv_release_identity(json.dumps(document))
+
+
 def test_candidate_builder_uses_project_toml_compatibility_dependency() -> None:
     source = (ROOT / "tools/build_strix_engine_candidate.py").read_text(encoding="utf-8")
     assert (
