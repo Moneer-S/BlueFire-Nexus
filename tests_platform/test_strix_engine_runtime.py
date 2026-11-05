@@ -646,6 +646,95 @@ def test_execute_binds_exact_plan_revokes_before_intake_and_retains_only_engine_
     )
 
 
+def test_claimed_resolution_drift_refuses_before_allocation_or_launch(tmp_path: Path) -> None:
+    binding, delegation, admission = _fixture(tmp_path)
+    events: list[str] = []
+    worker = Worker(events)
+    resolver = Resolver(admission)
+    claimed_resolution_ref = digest("d")
+    assert resolver.resolution_ref != claimed_resolution_ref
+    runtime = StrixEngineRuntime(
+        resolver=resolver,
+        worker=cast(Any, worker),
+        artifact_store=cast(Any, FakeArtifactStore(events, tmp_path / "artifacts")),
+        credential_provider=Credentials(binding.model_authorization_ref, events),
+        source_controller=SourceController(events),
+        clock=lambda: STARTED,
+        expected_resolution_ref=claimed_resolution_ref,
+    )
+
+    with pytest.raises(
+        StrixEngineRuntimeError,
+        match="differs from the accepted execution claim",
+    ):
+        runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
+
+    assert events == []
+    assert worker.run_calls == 0
+    assert resolver.require_current_calls == 0
+    assert list(admission.control_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("reason", ["expired", "revoked"])
+def test_unavailable_claimed_resolution_refuses_before_allocation_or_launch(
+    tmp_path: Path,
+    reason: str,
+) -> None:
+    binding, delegation, admission = _fixture(tmp_path)
+    events: list[str] = []
+    worker = Worker(events)
+
+    class UnavailableResolver(Resolver):
+        def resolve_for_launch(self, binding, delegation):
+            del binding, delegation
+            raise RuntimeError(f"runtime admission {reason}")
+
+    resolver = UnavailableResolver(admission)
+    runtime = StrixEngineRuntime(
+        resolver=resolver,
+        worker=cast(Any, worker),
+        artifact_store=cast(Any, FakeArtifactStore(events, tmp_path / "artifacts")),
+        credential_provider=Credentials(binding.model_authorization_ref, events),
+        source_controller=SourceController(events),
+        clock=lambda: STARTED,
+        expected_resolution_ref=resolver.resolution_ref,
+    )
+
+    with pytest.raises(RuntimeError, match=f"runtime admission {reason}"):
+        runtime.execute(cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None)
+
+    assert events == []
+    assert worker.run_calls == 0
+    assert resolver.require_current_calls == 0
+    assert list(admission.control_root.iterdir()) == []
+
+
+def test_claimed_resolution_is_rechecked_unchanged_at_launch_boundaries(
+    tmp_path: Path,
+) -> None:
+    binding, delegation, admission = _fixture(tmp_path)
+    events: list[str] = []
+    worker = Worker(events)
+    resolver = Resolver(admission)
+    runtime = StrixEngineRuntime(
+        resolver=resolver,
+        worker=cast(Any, worker),
+        artifact_store=cast(Any, FakeArtifactStore(events, tmp_path / "artifacts")),
+        credential_provider=Credentials(binding.model_authorization_ref, events),
+        source_controller=SourceController(events),
+        clock=lambda: STARTED,
+        expected_resolution_ref=resolver.resolution_ref,
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert resolver.require_current_calls == 2
+    assert worker.run_calls == 1
+    assert settlement.record.state is AttemptState.COMPLETED
+
+
 @pytest.mark.parametrize(
     ("drift_on_check", "expected_events"),
     [

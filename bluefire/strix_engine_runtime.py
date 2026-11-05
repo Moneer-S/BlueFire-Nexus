@@ -312,13 +312,17 @@ class StrixEngineRuntime:
         credential_provider: ModelGatewayCredentialProvider,
         source_controller: SourceCollectionController,
         clock: Callable[[], str],
+        expected_resolution_ref: str | None = None,
     ) -> None:
+        if expected_resolution_ref is not None:
+            _require_digest(expected_resolution_ref, "expected Strix runtime resolution")
         self._resolver = resolver
         self._worker = worker
         self._artifact_store = artifact_store
         self._credentials = credential_provider
         self._source_controller = source_controller
         self._clock = clock
+        self._expected_resolution_ref = expected_resolution_ref
 
     def execute(
         self,
@@ -871,6 +875,13 @@ class StrixEngineRuntime:
         resolution = self._resolver.resolve_for_launch(checked_binding, checked_delegation)
         if not isinstance(resolution, StrixRuntimeAdmissionResolution):
             raise StrixEngineRuntimeError("Strix runtime resolution is invalid")
+        if (
+            self._expected_resolution_ref is not None
+            and resolution.resolution_ref != self._expected_resolution_ref
+        ):
+            raise StrixEngineRuntimeError(
+                "Strix runtime resolution differs from the accepted execution claim"
+            )
         admission = resolution.admission
         if not isinstance(admission, StrixRuntimeAdmission):
             raise StrixEngineRuntimeError("Strix runtime admission is invalid")
