@@ -64,7 +64,18 @@ function KnowledgeWorkspace({ objective, onKnowledgeChange }: { objective: Compo
   useEffect(() => () => { requestGeneration.current += 1; }, []);
   const available = new Map(objective.attempts.map((attempt, index) => [attempt.request.composition_attempt.attempt_id, { attempt, number: index + 1 }]));
   const selected = selection.filter(id => available.has(id));
-  const currentBinding = JSON.stringify(objective.attempts.map(attempt => [attempt.request.composition_attempt.attempt_id, attempt.job_id, attempt.request.composition_attempt.run_id]));
+  const currentBinding = JSON.stringify(selected.map(id => {
+    const attempt = available.get(id)!.attempt;
+    return [id, attempt.job_id, attempt.request.composition_attempt.run_id];
+  }));
+  const retainedBinding = useRef(currentBinding);
+  useEffect(() => {
+    if (retainedBinding.current === currentBinding) return;
+    retainedBinding.current = currentBinding;
+    requestGeneration.current += 1;
+    setRead({ status: "idle" });
+    onKnowledgeChange?.(null);
+  }, [currentBinding, onKnowledgeChange]);
   const loaded = read.status === "ready" && read.binding === currentBinding ? read.data : undefined;
   const load = async () => {
     if (!selected.length || selected.length > 8) return;
@@ -80,9 +91,11 @@ function KnowledgeWorkspace({ objective, onKnowledgeChange }: { objective: Compo
     }
   };
   const toggle = () => {
-    if (open) { requestGeneration.current += 1; setRead({ status: "idle" }); onKnowledgeChange?.(null); }
-    else void load();
-    setOpen(!open);
+    if (open) setOpen(false);
+    else {
+      setOpen(true);
+      if (!loaded && read.status !== "loading") void load();
+    }
   };
   const changeSelection = (id: string, checked: boolean) => {
     requestGeneration.current += 1;

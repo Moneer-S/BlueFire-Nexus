@@ -52,6 +52,34 @@ const count = (value: unknown): value is number => Number.isSafeInteger(value) &
 const attemptId = (value: unknown): value is string => typeof value === "string" && /^attempt-[0-9a-f]{32}$/.test(value);
 const kinds = new Set(["observed_filesystem", "observed_collection", "observed_process_snapshot", "observed_receiver_binding", "runner_result", "evidence_gap", "record_metadata"]);
 const provenances = new Set(["synthetic", "executed", "observed", "control_blocked", "counterfactual", "unknown"]);
+const summaryKeys: Record<CompositionFinding["semantic_kind"], ReadonlySet<string>> = {
+  observed_filesystem: new Set(["size_bytes", "sha256", "permission_status", "effective_access", "permission_mode_octal", "group_write_bit", "other_write_bit", "non_owner_write_bit"]),
+  observed_collection: new Set(["size_bytes", "sha256", "container", "record_count", "redacted_record_count", "retained_record_count", "empty_record_count"]),
+  observed_process_snapshot: new Set(["process_id", "parent_process_id", "platform"]),
+  observed_receiver_binding: new Set(["sha256", "bytes_received", "receiver_process_id"]),
+  runner_result: new Set(["runner_status", "reported_outcome", "reported_reader", "reported_mode", "reported_sha256", "reported_record_count", "reported_control_revision"]),
+  evidence_gap: new Set(["observation_available"]),
+  record_metadata: new Set(),
+};
+const summaryCounts = new Set(["size_bytes", "record_count", "redacted_record_count", "retained_record_count", "empty_record_count", "process_id", "parent_process_id", "bytes_received", "receiver_process_id", "reported_record_count", "reported_control_revision"]);
+const summaryBooleans = new Set(["group_write_bit", "other_write_bit", "non_owner_write_bit"]);
+const summaryEnums: Record<string, ReadonlySet<string>> = {
+  permission_status: new Set(["available", "unavailable_windows", "unsupported_platform"]),
+  effective_access: new Set(["not_evaluated"]),
+  container: new Set(["jsonl", "ustar", "gzip"]),
+  platform: new Set(["linux", "windows", "macos"]),
+  runner_status: new Set(["success", "partial", "failed", "refused", "control_blocked", "cancelled"]),
+  reported_outcome: new Set(["allowed", "permission_denied"]),
+  reported_reader: new Set(["owner", "non_owner"]),
+};
+const summaryValue = (key: string, value: unknown) => {
+  if (summaryCounts.has(key)) return count(value);
+  if (summaryBooleans.has(key)) return typeof value === "boolean";
+  if (key === "observation_available") return value === false;
+  if (key === "sha256" || key === "reported_sha256") return typeof value === "string" && /^(?:sha256:)?[0-9a-f]{64}$/.test(value);
+  if (key === "permission_mode_octal" || key === "reported_mode") return typeof value === "string" && /^0[0-7]{3}$/.test(value);
+  return typeof value === "string" && Boolean(summaryEnums[key]?.has(value));
+};
 
 export function checkedCompositionKnowledge(value: unknown, objective: { owner: { job_id: string }; attempts: Array<{ job_id: string; request: { composition_attempt: { attempt_id: string; run_id: string } } }> }, selected: string[]): CompositionKnowledge {
   if (!compositionJobValid(objective.owner.job_id) || selected.length < 1 || selected.length > 8 || new Set(selected).size !== selected.length || !selected.every(attemptId)) throw invalid();
@@ -82,7 +110,8 @@ export function checkedCompositionKnowledge(value: unknown, objective: { owner: 
       const ref = object(finding.record_ref);
       if (!exact(ref, ["owner_id", "attempt_id", "job_id", "run_id", "evidence_id", "record_hash", "source_binding_digest"]) || ref.owner_id !== root.owner_id || ref.attempt_id !== row.attempt_id || ref.job_id !== row.job_id || ref.run_id !== row.run_id || ref.evidence_id !== finding.evidence_id || ref.record_hash !== finding.record_hash || !digest(ref.source_binding_digest)) throw invalid();
       const summary = object(finding.summary);
-      if (Object.keys(summary).length > 20 || !Object.entries(summary).every(([key, field]) => text(key, 80) && (typeof field === "boolean" || typeof field === "number" && Number.isFinite(field) || typeof field === "string" && field.length <= 500 && safeCharacters(field)))) throw invalid();
+      const allowedSummary = summaryKeys[finding.semantic_kind as CompositionFinding["semantic_kind"]];
+      if (!Object.entries(summary).every(([key, field]) => allowedSummary.has(key) && summaryValue(key, field))) throw invalid();
     }
   }
   return value as CompositionKnowledge;
