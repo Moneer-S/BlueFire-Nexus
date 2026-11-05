@@ -17,7 +17,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Protocol, cast
 
-from .engine_action_preparation import (
+from .engine_action_contract import (
     EngineWorkspaceAction,
     PreparedEngineActionLimits,
     ProtectedActionFactory,
@@ -102,8 +102,7 @@ def _scoped_read_connection(
 def initialize_schema(connection: sqlite3.Connection) -> None:
     if not connection.in_transaction:
         raise ProductStoreError("tenant material migration requires one transaction")
-    connection.execute(
-        """CREATE TABLE IF NOT EXISTS tenant_action_material_slots (
+    connection.execute("""CREATE TABLE IF NOT EXISTS tenant_action_material_slots (
           experiment_id TEXT NOT NULL,
           experiment_revision INTEGER NOT NULL CHECK(experiment_revision BETWEEN 1 AND 10000),
           experiment_digest TEXT NOT NULL CHECK(length(experiment_digest)=71
@@ -134,8 +133,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
           FOREIGN KEY(experiment_id,experiment_revision)
             REFERENCES engine_experiment_versions(experiment_id,revision),
           FOREIGN KEY(preparation_ref) REFERENCES engine_action_preparations(request_ref)
-        )"""
-    )
+        )""")
     for suffix, body in (
         (
             "insert",

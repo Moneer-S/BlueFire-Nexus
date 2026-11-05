@@ -5,14 +5,63 @@ The service Protocol is independent of concrete orchestration or HTTP handlers.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Mapping, Protocol, Sequence, runtime_checkable
-
-if TYPE_CHECKING:
-    from .engine_experiment_api import EngineExperimentAPIService
+from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 API_PREFIX = "/api/v1"
 JsonObject = Mapping[str, Any]
 JsonResult = Mapping[str, Any] | Sequence[Any]
+
+
+class EngineExperimentAPIService(Protocol):
+    """JSON-facing subset supplied by the controller-owned service."""
+
+    def list(self, *, limit: int = 100) -> Mapping[str, Any]: ...
+
+    def get(self, experiment_id: str) -> Mapping[str, Any]: ...
+
+    def workspace(
+        self,
+        experiment_id: str,
+        *,
+        selected_attempt_id: str | None = None,
+        selected_check_id: str | None = None,
+    ) -> Mapping[str, Any]: ...
+
+    def assistance_context_request(
+        self,
+        experiment_id: str,
+        selection: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
+    def prepare_action_request(
+        self,
+        experiment_id: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
+    def submit_prepared_action_request(
+        self,
+        experiment_id: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
+    def create_request(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    def submit_attempt_request(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    def recover_attempt(self, *, experiment_id: str, attempt_id: str) -> Mapping[str, Any]: ...
+
+    def perform_controller_transition_request(
+        self,
+        experiment_id: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
+    def submit_controller_operation_request(
+        self,
+        experiment_id: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
 
 
 @runtime_checkable

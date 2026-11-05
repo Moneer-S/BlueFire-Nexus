@@ -1,4 +1,4 @@
-"""Controller-owned one-shot bridge from accepted jobs to installed runtime."""
+"""Application-owned one-shot bridge from accepted jobs to installed runtime."""
 
 from __future__ import annotations
 

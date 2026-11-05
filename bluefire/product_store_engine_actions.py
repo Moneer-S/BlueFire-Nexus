@@ -20,7 +20,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Any, Mapping, Protocol, cast
 
-from .engine_action_preparation import (
+from .engine_action_contract import (
     EngineActionPreparationError,
     EnginePreparedActionKind,
     EnginePreparedApprovalState,
@@ -30,10 +30,12 @@ from .engine_action_preparation import (
     engine_action_contract,
 )
 from .engine_attempt_contract import AttemptRole, EngineAttemptBinding
-from .engine_controller_jobs import (
+from .engine_controller_job_contract import (
     DefenseOperation,
     EngineControllerJobError,
-    EngineControllerJobs,
+    exact_check_request,
+    exact_defense_request,
+    require_defense_operation,
 )
 from .engine_delegation import (
     EngineCapabilityDelegation,
@@ -47,11 +49,11 @@ from .engine_experiment import (
     EngineExperiment,
     EngineExperimentError,
 )
-from .engine_experiment_jobs import EngineExperimentJobs
+from .engine_experiment_job_contract import engine_attempt_job_request
 from .product_store_contracts import safe_document
 from .product_store_errors import ProductStoreError, ResourceConflictError
 from .product_store_serialization import canonical_json, utc_now
-from .tenant_record_experiment_controller import (
+from .tenant_record_controller_contract import (
     SCHEMA_MECHANISM,
     SCHEMA_PLAN,
     TenantDefensePlan,
@@ -607,7 +609,7 @@ def _protected_authority(
             if job_request.get("schema_version") == "bluefire.engine-attempt-job.v2"
             else None
         )
-        expected_request = EngineExperimentJobs._request(
+        expected_request = engine_attempt_job_request(
             experiment=experiment,
             binding=binding,
             delegation=delegation,
@@ -718,8 +720,8 @@ def _protected_authority(
                         "defense reconciliation preparation requires its terminal origin job"
                     )
                 try:
-                    parsed, operation = EngineControllerJobs._exact_defense_request(job_request)
-                    EngineControllerJobs._require_defense_operation(change, operation)
+                    parsed, operation = exact_defense_request(job_request)
+                    require_defense_operation(change, operation)
                 except EngineControllerJobError as exc:
                     raise ProductStoreError("protected defense job request is invalid") from exc
                 expected_operation = {
@@ -794,7 +796,7 @@ def _protected_authority(
         if change is None or change.mechanism_ref != content_hash(mechanism.to_dict()):
             raise ProductStoreError("protected controller mechanism differs from the experiment")
         try:
-            parsed = EngineControllerJobs._exact_check_request(job_request)
+            parsed = exact_check_request(job_request)
         except EngineControllerJobError as exc:
             raise ProductStoreError("protected controller check request is invalid") from exc
         expected_check_role = (

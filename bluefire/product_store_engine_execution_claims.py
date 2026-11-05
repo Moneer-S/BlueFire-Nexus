@@ -17,7 +17,7 @@ from typing import Any, Protocol, cast
 
 from . import product_store_engine_action_submissions as submissions
 from . import product_store_engine_jobs as jobs
-from .engine_action_preparation import EngineWorkspaceAction
+from .engine_action_contract import EngineWorkspaceAction
 from .engine_attempt_contract import AttemptCompleteness, AttemptState, EngineAttemptBinding
 from .engine_delegation import EngineCapabilityDelegation, EngineDelegationError
 from .engine_experiment import CleanupState, EngineExperimentError
@@ -215,8 +215,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         ):
             connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
         connection.execute("DROP TABLE engine_attempt_reconciliation_intents")
-    connection.execute(
-        """CREATE TABLE IF NOT EXISTS engine_attempt_execution_claims (
+    connection.execute("""CREATE TABLE IF NOT EXISTS engine_attempt_execution_claims (
         claim_ref TEXT PRIMARY KEY,
         job_id TEXT NOT NULL UNIQUE REFERENCES jobs(job_id),
         attempt_id TEXT NOT NULL UNIQUE,
@@ -241,10 +240,8 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         document_json TEXT NOT NULL CHECK(json_valid(document_json))
           CHECK(length(CAST(document_json AS BLOB)) BETWEEN 1 AND 8192),
         record_digest TEXT NOT NULL UNIQUE
-    )"""
-    )
-    connection.execute(
-        """CREATE TABLE IF NOT EXISTS engine_attempt_pre_dispatch_settlements (
+    )""")
+    connection.execute("""CREATE TABLE IF NOT EXISTS engine_attempt_pre_dispatch_settlements (
         settlement_ref TEXT PRIMARY KEY,
         job_id TEXT NOT NULL UNIQUE REFERENCES jobs(job_id),
         attempt_id TEXT NOT NULL UNIQUE,
@@ -278,10 +275,8 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         document_json TEXT NOT NULL CHECK(json_valid(document_json))
           CHECK(length(CAST(document_json AS BLOB)) BETWEEN 1 AND 8192),
         record_digest TEXT NOT NULL UNIQUE
-    )"""
-    )
-    connection.execute(
-        """CREATE TABLE IF NOT EXISTS engine_attempt_reconciliation_intents (
+    )""")
+    connection.execute("""CREATE TABLE IF NOT EXISTS engine_attempt_reconciliation_intents (
         reconciliation_ref TEXT PRIMARY KEY,
         claim_ref TEXT NOT NULL UNIQUE REFERENCES engine_attempt_execution_claims(claim_ref),
         job_id TEXT NOT NULL UNIQUE REFERENCES engine_attempt_execution_claims(job_id),
@@ -296,8 +291,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         document_json TEXT NOT NULL CHECK(json_valid(document_json))
           CHECK(length(CAST(document_json AS BLOB)) BETWEEN 1 AND 8192),
         record_digest TEXT NOT NULL UNIQUE
-    )"""
-    )
+    )""")
     if rebuilt_pre_dispatch:
         columns = (
             "settlement_ref,job_id,attempt_id,experiment_id,preparation_ref,"
@@ -313,16 +307,12 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             f"SELECT {columns} FROM engine_attempt_pre_dispatch_settlements_v22_draft"
         )
         connection.execute("DROP TABLE engine_attempt_pre_dispatch_settlements_v22_draft")
-    connection.execute(
-        """CREATE TRIGGER IF NOT EXISTS engine_attempt_execution_claims_no_update
+    connection.execute("""CREATE TRIGGER IF NOT EXISTS engine_attempt_execution_claims_no_update
         BEFORE UPDATE ON engine_attempt_execution_claims BEGIN
-          SELECT RAISE(ABORT, 'engine attempt execution claims are immutable'); END"""
-    )
-    connection.execute(
-        """CREATE TRIGGER IF NOT EXISTS engine_attempt_execution_claims_no_delete
+          SELECT RAISE(ABORT, 'engine attempt execution claims are immutable'); END""")
+    connection.execute("""CREATE TRIGGER IF NOT EXISTS engine_attempt_execution_claims_no_delete
         BEFORE DELETE ON engine_attempt_execution_claims BEGIN
-          SELECT RAISE(ABORT, 'engine attempt execution claims are append-only'); END"""
-    )
+          SELECT RAISE(ABORT, 'engine attempt execution claims are append-only'); END""")
     connection.execute(
         """CREATE TRIGGER IF NOT EXISTS engine_attempt_pre_dispatch_settlements_no_update
         BEFORE UPDATE ON engine_attempt_pre_dispatch_settlements BEGIN
@@ -347,8 +337,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
     # trigger after both v22 tables exist. This also upgrades databases opened
     # by an earlier development build of the unpublished v22 schema.
     connection.execute("DROP TRIGGER IF EXISTS engine_attempt_execution_claims_valid_insert")
-    connection.execute(
-        """CREATE TRIGGER engine_attempt_execution_claims_valid_insert
+    connection.execute("""CREATE TRIGGER engine_attempt_execution_claims_valid_insert
         BEFORE INSERT ON engine_attempt_execution_claims BEGIN
           SELECT CASE WHEN EXISTS(
             SELECT 1 FROM engine_attempt_execution_claims
@@ -418,13 +407,11 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
                  IS NOT NEW.preflight_experiment_digest
             OR json_extract(NEW.document_json, '$.claimed_at') IS NOT NEW.claimed_at
           THEN RAISE(ABORT, 'engine attempt execution claim document changed') END;
-        END"""
-    )
+        END""")
     connection.execute(
         "DROP TRIGGER IF EXISTS engine_attempt_pre_dispatch_settlements_valid_insert"
     )
-    connection.execute(
-        """CREATE TRIGGER engine_attempt_pre_dispatch_settlements_valid_insert
+    connection.execute("""CREATE TRIGGER engine_attempt_pre_dispatch_settlements_valid_insert
         BEFORE INSERT ON engine_attempt_pre_dispatch_settlements BEGIN
           SELECT CASE WHEN EXISTS(
             SELECT 1 FROM engine_attempt_pre_dispatch_settlements
@@ -501,11 +488,9 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
                  IS NOT NEW.terminal_record_digest
             OR json_extract(NEW.document_json, '$.settled_at') IS NOT NEW.settled_at
           THEN RAISE(ABORT, 'engine pre-dispatch settlement document changed') END;
-        END"""
-    )
+        END""")
     connection.execute("DROP TRIGGER IF EXISTS engine_attempt_reconciliation_intents_valid_insert")
-    connection.execute(
-        """CREATE TRIGGER engine_attempt_reconciliation_intents_valid_insert
+    connection.execute("""CREATE TRIGGER engine_attempt_reconciliation_intents_valid_insert
         BEFORE INSERT ON engine_attempt_reconciliation_intents BEGIN
           SELECT CASE WHEN EXISTS(
             SELECT 1 FROM engine_attempt_reconciliation_intents
@@ -549,13 +534,11 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
                  IS NOT NEW.runtime_resolution_ref
             OR json_extract(NEW.document_json, '$.created_at') IS NOT NEW.created_at
           THEN RAISE(ABORT, 'engine reconciliation intent document changed') END;
-        END"""
-    )
+        END""")
     connection.execute(
         "DROP TRIGGER IF EXISTS engine_attempt_reconciliation_intents_freeze_job_state"
     )
-    connection.execute(
-        """CREATE TRIGGER engine_attempt_reconciliation_intents_freeze_job_state
+    connection.execute("""CREATE TRIGGER engine_attempt_reconciliation_intents_freeze_job_state
         BEFORE UPDATE ON jobs
         WHEN OLD.kind='engine-attempt' AND EXISTS(
             SELECT 1 FROM engine_attempt_reconciliation_intents AS intent
@@ -563,8 +546,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
           )
         BEGIN
           SELECT RAISE(ABORT, 'engine reconciliation intent freezes its job');
-        END"""
-    )
+        END""")
 
 
 def _digest(value: Any, label: str) -> str:

@@ -31,7 +31,7 @@ from typing import Mapping, Protocol, Sequence, cast
 
 from .runner_descriptor_io import _descriptor_mount_identity
 from .runner_private_files import _PinnedPrivateDirectory
-from .tenant_record_experiment_controller import (
+from .tenant_record_controller_contract import (
     TenantDefensePlan,
     TenantFailureMechanism,
     TenantRoute,

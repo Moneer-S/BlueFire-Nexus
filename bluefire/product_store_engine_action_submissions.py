@@ -10,7 +10,7 @@ from typing import Any, Mapping, Protocol, cast
 
 from . import product_store_engine_actions as preparations
 from . import product_store_engine_jobs as jobs
-from .engine_action_preparation import (
+from .engine_action_contract import (
     EnginePreparedApprovalState,
     EngineWorkspaceAction,
     PreparedEngineAction,

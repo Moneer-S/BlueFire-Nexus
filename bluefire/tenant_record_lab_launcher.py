@@ -1577,9 +1577,7 @@ class _SystemNativeSupervisor:
                 cast(Any, containment).assign(job, cast(subprocess.Popen[bytes], process))
                 job_assigned = True
                 if self._windows_identity is None:
-                    from .cross_platform_recovery_witness import (
-                        capture_process_identity,
-                    )
+                    from .windows_process_identity import capture_process_identity
 
                     identity: object = dict(capture_process_identity(process.pid))
                 else:

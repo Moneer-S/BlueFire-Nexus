@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import re
 from http import HTTPStatus
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping
 from urllib.parse import parse_qsl, urlsplit
 
-from .api_context import API_PREFIX
+from .api_context import API_PREFIX, EngineExperimentAPIService
 from .application_errors import APIError
 from .engine_action_preparation import EngineWorkspaceAction
 from .engine_experiment_service import EngineExperimentServiceError
@@ -107,58 +107,6 @@ _SERVICE_STATUS = {
     "engine_action_submission_refused": HTTPStatus.CONFLICT,
     "engine_action_stale": HTTPStatus.CONFLICT,
 }
-
-
-class EngineExperimentAPIService(Protocol):
-    """JSON-facing subset supplied by the controller-owned service."""
-
-    def list(self, *, limit: int = 100) -> Mapping[str, Any]: ...
-
-    def get(self, experiment_id: str) -> Mapping[str, Any]: ...
-
-    def workspace(
-        self,
-        experiment_id: str,
-        *,
-        selected_attempt_id: str | None = None,
-        selected_check_id: str | None = None,
-    ) -> Mapping[str, Any]: ...
-
-    def assistance_context_request(
-        self,
-        experiment_id: str,
-        selection: Mapping[str, Any],
-    ) -> Mapping[str, Any]: ...
-
-    def prepare_action_request(
-        self,
-        experiment_id: str,
-        request: Mapping[str, Any],
-    ) -> Mapping[str, Any]: ...
-
-    def submit_prepared_action_request(
-        self,
-        experiment_id: str,
-        request: Mapping[str, Any],
-    ) -> Mapping[str, Any]: ...
-
-    def create_request(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
-
-    def submit_attempt_request(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
-
-    def recover_attempt(self, *, experiment_id: str, attempt_id: str) -> Mapping[str, Any]: ...
-
-    def perform_controller_transition_request(
-        self,
-        experiment_id: str,
-        request: Mapping[str, Any],
-    ) -> Mapping[str, Any]: ...
-
-    def submit_controller_operation_request(
-        self,
-        experiment_id: str,
-        request: Mapping[str, Any],
-    ) -> Mapping[str, Any]: ...
 
 
 def _request_error(handler: Any, message: str) -> None:

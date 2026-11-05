@@ -12,10 +12,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from typing import Any, Protocol
 
-from . import product_store_strix_runtime as runtime
+from . import product_store_strix_runtime_records as runtime
 from .product_store_errors import ProductStoreError, ResourceConflictError
 from .product_store_serialization import canonical_json, utc_now
-from .strix_admission_issuer import (
+from .strix_admission_contract import (
     RESOURCE_KINDS,
     ServerResolvedStrixAdmissionRequest,
     StrixAbsenceReceipt,

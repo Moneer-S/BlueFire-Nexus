@@ -20,7 +20,7 @@ from contextlib import AbstractContextManager
 from typing import Any, Mapping, Protocol, cast
 
 from .engine_experiment import EngineExperiment, EngineExperimentError
-from .engine_experiment_workspace import (
+from .engine_experiment_presentation import (
     EngineExperimentWorkspaceError,
     _checked_presentation,
     _public_text,
