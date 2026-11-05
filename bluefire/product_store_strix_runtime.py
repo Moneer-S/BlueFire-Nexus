@@ -760,7 +760,13 @@ def _read_admission_chain(connection: sqlite3.Connection, attempt_id: str) -> li
                 raise ProductStoreError("Strix admission initial lifecycle event is invalid")
         elif (
             document["previous_event_digest"] != previous["event_digest"]
-            or document["state"] not in _ADMISSION_TRANSITIONS[previous["document"]["state"]]
+            or (
+                document["state"] not in _ADMISSION_TRANSITIONS[previous["document"]["state"]]
+                and not (
+                    previous["document"]["state"] == "preparing"
+                    and _issuer_preparing_event(connection, document, event_digest)
+                )
+            )
             or parse_iso8601_datetime(document["recorded_at"])
             < parse_iso8601_datetime(previous["document"]["recorded_at"])
         ):
@@ -952,95 +958,9 @@ class StrixRuntimeStoreMixin:
         self: StrixRuntimeStore, document: Mapping[str, Any]
     ) -> Mapping[str, Any]:
         checked = _reservation(document)
-        attempt_id = checked["attempt_id"]
         with self._connection(write=True) as connection:
-            existing = _read_reservation(connection, attempt_id)
-            if existing is not None:
-                if existing["document"] != checked:
-                    raise ResourceConflictError("Strix admission reservation conflicts")
-                return existing
-            experiment = connection.execute(
-                """SELECT active_revision,active_digest FROM engine_experiment_heads
-                WHERE experiment_id=?""",
-                (checked["experiment_id"],),
-            ).fetchone()
-            if (
-                experiment is None
-                or experiment["active_revision"] != checked["experiment_revision"]
-                or experiment["active_digest"] != checked["experiment_digest"]
-            ):
-                raise ResourceConflictError("Strix admission experiment head changed")
-            authority = _read_authority_chain(connection, checked["authority_ref"])
-            if not authority:
-                raise ResourceConflictError("Strix runtime authority is missing")
-            current = authority[-1]
-            if (
-                current["authority"]["state"] != "active"
-                or current["authority"]["generation"] != checked["authority_generation"]
-                or current["authority_record_digest"] != checked["authority_record_digest"]
-                or current["authority"]["qualification_manifest_ref"]
-                != checked["qualification_ref"]
-                or parse_iso8601_datetime(current["authority"]["recorded_at"])
-                > parse_iso8601_datetime(checked["created_at"])
-            ):
-                raise ResourceConflictError("Strix runtime authority changed before reservation")
-            digest = content_hash(checked)
-            reference = content_hash(
-                {
-                    "schema_version": "bluefire.strix-runtime-admission-reservation-ref.v1",
-                    "attempt_id": attempt_id,
-                    "reservation_digest": digest,
-                }
-            )
-            connection.execute(
-                """INSERT INTO strix_runtime_admission_reservations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    attempt_id,
-                    checked["experiment_id"],
-                    checked["experiment_revision"],
-                    checked["experiment_digest"],
-                    checked["authority_ref"],
-                    checked["authority_generation"],
-                    checked["authority_record_digest"],
-                    checked["binding_digest"],
-                    checked["delegation_digest"],
-                    checked["qualification_ref"],
-                    canonical_json(checked),
-                    digest,
-                    reference,
-                    checked["created_at"],
-                    checked["expires_at"],
-                ),
-            )
-            event = _event_document(
-                attempt_id=attempt_id,
-                sequence=1,
-                state="reserved",
-                lifecycle_basis_ref=checked["request_digest"],
-                recorded_at=checked["created_at"],
-                previous_event_digest=None,
-                admission_record_ref=None,
-            )
-            event_digest = content_hash(event)
-            connection.execute(
-                "INSERT INTO strix_runtime_admission_events VALUES(?,?,?,?,?,?,?,?,?)",
-                (
-                    attempt_id,
-                    1,
-                    "reserved",
-                    canonical_json(event),
-                    event_digest,
-                    None,
-                    None,
-                    checked["request_digest"],
-                    checked["created_at"],
-                ),
-            )
-            connection.execute(
-                "INSERT INTO strix_runtime_admission_heads VALUES(?,?,?,?,NULL)",
-                (attempt_id, 1, "reserved", event_digest),
-            )
-            return cast(Mapping[str, Any], _read_reservation(connection, attempt_id))
+            _refuse_issuer_owned(connection, checked["attempt_id"])
+            return _reserve_strix_runtime_admission_at(connection, checked)
 
     def _append_strix_runtime_admission_event(
         self: StrixRuntimeStore,
@@ -1051,80 +971,16 @@ class StrixRuntimeStoreMixin:
         recorded_at: str,
         expected_head_digest: str,
     ) -> Mapping[str, Any]:
-        checked_recorded_at = _timestamp(recorded_at, "Strix admission lifecycle time")
         with self._connection(write=True) as connection:
-            reservation = _read_reservation(connection, attempt_id)
-            if reservation is None:
-                raise ProductStoreError("Strix admission reservation not found")
-            if state == "verified":
-                raise ProductStoreError(
-                    "verified Strix lifecycle requires exact admission retention"
-                )
-            chain = _read_admission_chain(connection, attempt_id)
-            previous = chain[-1]
-            checked_head = _digest(expected_head_digest, "Strix admission head")
-            if (
-                len(chain) >= 2
-                and previous["document"]["state"] == state
-                and previous["document"]["lifecycle_basis_ref"] == lifecycle_basis_ref
-                and previous["document"]["recorded_at"] == checked_recorded_at
-                and previous["document"]["previous_event_digest"] == checked_head
-            ):
-                return cast(Mapping[str, Any], previous)
-            if previous["event_digest"] != checked_head:
-                raise ResourceConflictError("Strix admission lifecycle head changed")
-            if state == "preparing" and not (
-                parse_iso8601_datetime(reservation["document"]["created_at"])
-                <= parse_iso8601_datetime(checked_recorded_at)
-                < parse_iso8601_datetime(reservation["document"]["expires_at"])
-            ):
-                raise ResourceConflictError("Strix admission preparation is outside its lifetime")
-            if state not in _ADMISSION_TRANSITIONS[previous["document"]["state"]]:
-                raise ResourceConflictError("Strix admission lifecycle transition is invalid")
-            admission = _read_admission(connection, attempt_id)
-            reference = None if admission is None else admission["admission_record_ref"]
-            if state == "verified" and admission is None:
-                raise ResourceConflictError("Strix verified lifecycle requires an admission")
-            document = _event_document(
+            _refuse_issuer_owned(connection, attempt_id)
+            _append_strix_runtime_admission_event_at(
+                connection,
                 attempt_id=attempt_id,
-                sequence=len(chain) + 1,
                 state=state,
                 lifecycle_basis_ref=lifecycle_basis_ref,
-                recorded_at=checked_recorded_at,
-                previous_event_digest=previous["event_digest"],
-                admission_record_ref=reference,
+                recorded_at=recorded_at,
+                expected_head_digest=expected_head_digest,
             )
-            digest = content_hash(document)
-            connection.execute(
-                "INSERT INTO strix_runtime_admission_events VALUES(?,?,?,?,?,?,?,?,?)",
-                (
-                    attempt_id,
-                    document["sequence"],
-                    state,
-                    canonical_json(document),
-                    digest,
-                    previous["event_digest"],
-                    reference,
-                    lifecycle_basis_ref,
-                    checked_recorded_at,
-                ),
-            )
-            updated = connection.execute(
-                """UPDATE strix_runtime_admission_heads SET active_sequence=?,active_state=?,
-                active_event_digest=?,admission_record_ref=? WHERE attempt_id=?
-                AND active_sequence=? AND active_event_digest=?""",
-                (
-                    document["sequence"],
-                    state,
-                    digest,
-                    reference,
-                    attempt_id,
-                    len(chain),
-                    previous["event_digest"],
-                ),
-            )
-            if updated.rowcount != 1:
-                raise ResourceConflictError("Strix admission lifecycle head changed")
             return cast(Mapping[str, Any], _read_admission_chain(connection, attempt_id)[-1])
 
     def _retain_verified_strix_runtime_admission(
@@ -1136,144 +992,14 @@ class StrixRuntimeStoreMixin:
         expected_head_digest: str,
     ) -> Mapping[str, Any]:
         checked = _admission(document)
-        checked_recorded_at = _timestamp(recorded_at, "Strix admission verification time")
-        attempt_id = checked["attempt_id"]
         with self._connection(write=True) as connection:
-            reservation = _read_reservation(connection, attempt_id)
-            if reservation is None:
-                raise ProductStoreError("Strix admission reservation not found")
-            for name in (
-                "attempt_id",
-                "experiment_id",
-                "experiment_revision",
-                "experiment_digest",
-                "binding_digest",
-                "delegation_digest",
-                "objective_ref",
-                "environment_ref",
-                "authority_ref",
-                "authority_generation",
-                "authority_record_digest",
-                "target_snapshot_digest",
-                "created_at",
-                "expires_at",
-            ):
-                if checked[name] != reservation["document"][name]:
-                    raise ResourceConflictError("Strix admission differs from its reservation")
-            if checked["qualification_ref"] != reservation["document"]["qualification_ref"]:
-                raise ResourceConflictError("Strix admission qualification changed")
-            chain = _read_admission_chain(connection, attempt_id)
-            previous = chain[-1]
-            existing = _read_admission(connection, attempt_id)
-            digest = content_hash(checked)
-            reference = content_hash(
-                {
-                    "schema_version": "bluefire.strix-runtime-admission-record-ref.v1",
-                    "attempt_id": attempt_id,
-                    "admission_record_digest": digest,
-                }
-            )
-            if existing is not None and existing["document"] != checked:
-                raise ResourceConflictError("Strix verified admission conflicts")
-            checked_head = _digest(expected_head_digest, "Strix admission head")
-            if (
-                existing is not None
-                and previous["document"]["state"] == "verified"
-                and previous["document"]["admission_record_ref"] == reference
-                and previous["document"]["previous_event_digest"] == checked_head
-                and previous["document"]["lifecycle_basis_ref"] == lifecycle_basis_ref
-                and previous["document"]["recorded_at"] == checked_recorded_at
-            ):
-                return cast(
-                    Mapping[str, Any], _read_strix_runtime_admission_state(connection, attempt_id)
-                )
-            if not (
-                parse_iso8601_datetime(reservation["document"]["created_at"])
-                <= parse_iso8601_datetime(checked_recorded_at)
-                < parse_iso8601_datetime(reservation["document"]["expires_at"])
-            ):
-                raise ResourceConflictError("Strix admission verification is outside its lifetime")
-            authority = _read_authority_chain(connection, checked["authority_ref"])
-            current = authority[-1] if authority else None
-            if (
-                current is None
-                or current["authority"]["state"] != "active"
-                or current["authority"]["generation"] != checked["authority_generation"]
-                or current["authority_record_digest"] != checked["authority_record_digest"]
-            ):
-                raise ResourceConflictError("Strix runtime authority changed before admission")
-            if current["authority"]["strix_build_digest"] != checked["build_digest"]:
-                raise ResourceConflictError("Strix admission build differs from runtime authority")
-            if previous["event_digest"] != checked_head:
-                raise ResourceConflictError("Strix admission lifecycle head changed")
-            if existing is None:
-                connection.execute(
-                    "INSERT INTO strix_runtime_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        attempt_id,
-                        canonical_json(checked),
-                        reference,
-                        digest,
-                        checked["custody_source_ref"],
-                        checked["custody_record_ref"],
-                        checked["custody_record_digest"],
-                        checked["workspace_ref"],
-                        checked["control_root_ref"],
-                        checked["artifact_root_ref"],
-                        checked["network_plan_ref"],
-                        checked["network_snapshot_ref"],
-                        checked["network_verification_ref"],
-                        checked["custody_plan_ref"],
-                        checked["protected_roots_ref"],
-                        checked["containment_ref"],
-                        checked["admission_proof_bundle_digest"],
-                        checked["created_at"],
-                        checked["expires_at"],
-                    ),
-                )
-            if "verified" not in _ADMISSION_TRANSITIONS[previous["document"]["state"]]:
-                raise ResourceConflictError("Strix admission cannot become verified")
-            event = _event_document(
-                attempt_id=attempt_id,
-                sequence=len(chain) + 1,
-                state="verified",
+            _refuse_issuer_owned(connection, checked["attempt_id"])
+            return _retain_verified_strix_runtime_admission_at(
+                connection,
+                document=checked,
                 lifecycle_basis_ref=lifecycle_basis_ref,
-                recorded_at=checked_recorded_at,
-                previous_event_digest=previous["event_digest"],
-                admission_record_ref=reference,
-            )
-            event_digest = content_hash(event)
-            connection.execute(
-                "INSERT INTO strix_runtime_admission_events VALUES(?,?,?,?,?,?,?,?,?)",
-                (
-                    attempt_id,
-                    event["sequence"],
-                    "verified",
-                    canonical_json(event),
-                    event_digest,
-                    previous["event_digest"],
-                    reference,
-                    lifecycle_basis_ref,
-                    checked_recorded_at,
-                ),
-            )
-            updated = connection.execute(
-                """UPDATE strix_runtime_admission_heads SET active_sequence=?,active_state='verified',
-                active_event_digest=?,admission_record_ref=? WHERE attempt_id=?
-                AND active_sequence=? AND active_event_digest=?""",
-                (
-                    event["sequence"],
-                    event_digest,
-                    reference,
-                    attempt_id,
-                    len(chain),
-                    previous["event_digest"],
-                ),
-            )
-            if updated.rowcount != 1:
-                raise ResourceConflictError("Strix admission lifecycle head changed")
-            return cast(
-                Mapping[str, Any], _read_strix_runtime_admission_state(connection, attempt_id)
+                recorded_at=recorded_at,
+                expected_head_digest=expected_head_digest,
             )
 
     def _read_strix_runtime_admission_envelope(
@@ -1282,8 +1008,14 @@ class StrixRuntimeStoreMixin:
         if not isinstance(attempt_id, str) or _ATTEMPT.fullmatch(attempt_id) is None:
             raise ProductStoreError("Strix admission attempt is invalid")
         with self._connection() as connection:
+            if not connection.in_transaction:
+                connection.execute("BEGIN")
             if _read_reservation(connection, attempt_id) is None:
                 return None
+            if _issuer_owned(connection, attempt_id):
+                from .product_store_strix_admission_issuer import _read_at
+
+                _read_at(connection, attempt_id)
             return _read_strix_runtime_admission_state(connection, attempt_id)
 
 
@@ -1330,3 +1062,379 @@ def _read_strix_runtime_admission_state(
         "lifecycle_head_digest": chain[-1]["event_digest"],
         "lifecycle_sequence": len(chain),
     }
+
+
+def _reserve_strix_runtime_admission_at(
+    connection: sqlite3.Connection, document: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    checked = _reservation(document)
+    attempt_id = checked["attempt_id"]
+    if not connection.in_transaction:
+        raise ProductStoreError("Strix admission write requires an owning transaction")
+    existing = _read_reservation(connection, attempt_id)
+    if existing is not None:
+        if existing["document"] != checked:
+            raise ResourceConflictError("Strix admission reservation conflicts")
+        return existing
+    experiment = connection.execute(
+        """SELECT active_revision,active_digest FROM engine_experiment_heads
+        WHERE experiment_id=?""",
+        (checked["experiment_id"],),
+    ).fetchone()
+    if (
+        experiment is None
+        or experiment["active_revision"] != checked["experiment_revision"]
+        or experiment["active_digest"] != checked["experiment_digest"]
+    ):
+        raise ResourceConflictError("Strix admission experiment head changed")
+    authority = _read_authority_chain(connection, checked["authority_ref"])
+    if not authority:
+        raise ResourceConflictError("Strix runtime authority is missing")
+    current = authority[-1]
+    if (
+        current["authority"]["state"] != "active"
+        or current["authority"]["generation"] != checked["authority_generation"]
+        or current["authority_record_digest"] != checked["authority_record_digest"]
+        or current["authority"]["qualification_manifest_ref"] != checked["qualification_ref"]
+        or parse_iso8601_datetime(current["authority"]["recorded_at"])
+        > parse_iso8601_datetime(checked["created_at"])
+    ):
+        raise ResourceConflictError("Strix runtime authority changed before reservation")
+    digest = content_hash(checked)
+    reference = content_hash(
+        {
+            "schema_version": "bluefire.strix-runtime-admission-reservation-ref.v1",
+            "attempt_id": attempt_id,
+            "reservation_digest": digest,
+        }
+    )
+    connection.execute(
+        """INSERT INTO strix_runtime_admission_reservations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            attempt_id,
+            checked["experiment_id"],
+            checked["experiment_revision"],
+            checked["experiment_digest"],
+            checked["authority_ref"],
+            checked["authority_generation"],
+            checked["authority_record_digest"],
+            checked["binding_digest"],
+            checked["delegation_digest"],
+            checked["qualification_ref"],
+            canonical_json(checked),
+            digest,
+            reference,
+            checked["created_at"],
+            checked["expires_at"],
+        ),
+    )
+    event = _event_document(
+        attempt_id=attempt_id,
+        sequence=1,
+        state="reserved",
+        lifecycle_basis_ref=checked["request_digest"],
+        recorded_at=checked["created_at"],
+        previous_event_digest=None,
+        admission_record_ref=None,
+    )
+    event_digest = content_hash(event)
+    connection.execute(
+        "INSERT INTO strix_runtime_admission_events VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            attempt_id,
+            1,
+            "reserved",
+            canonical_json(event),
+            event_digest,
+            None,
+            None,
+            checked["request_digest"],
+            checked["created_at"],
+        ),
+    )
+    connection.execute(
+        "INSERT INTO strix_runtime_admission_heads VALUES(?,?,?,?,NULL)",
+        (attempt_id, 1, "reserved", event_digest),
+    )
+    return cast(Mapping[str, Any], _read_reservation(connection, attempt_id))
+
+
+def _append_strix_runtime_admission_event_at(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    state: str,
+    lifecycle_basis_ref: str,
+    recorded_at: str,
+    expected_head_digest: str,
+    issuer_evidence: bool = False,
+) -> Mapping[str, Any]:
+    checked_recorded_at = _timestamp(recorded_at, "Strix admission lifecycle time")
+    if not connection.in_transaction:
+        raise ProductStoreError("Strix admission write requires an owning transaction")
+    reservation = _read_reservation(connection, attempt_id)
+    if reservation is None:
+        raise ProductStoreError("Strix admission reservation not found")
+    if state == "verified":
+        raise ProductStoreError("verified Strix lifecycle requires exact admission retention")
+    chain = _read_admission_chain(connection, attempt_id)
+    previous = chain[-1]
+    checked_head = _digest(expected_head_digest, "Strix admission head")
+    if (
+        len(chain) >= 2
+        and previous["document"]["state"] == state
+        and previous["document"]["lifecycle_basis_ref"] == lifecycle_basis_ref
+        and previous["document"]["recorded_at"] == checked_recorded_at
+        and previous["document"]["previous_event_digest"] == checked_head
+    ):
+        return cast(Mapping[str, Any], previous)
+    if previous["event_digest"] != checked_head:
+        raise ResourceConflictError("Strix admission lifecycle head changed")
+    if state == "preparing" and not (
+        parse_iso8601_datetime(reservation["document"]["created_at"])
+        <= parse_iso8601_datetime(checked_recorded_at)
+        < parse_iso8601_datetime(reservation["document"]["expires_at"])
+    ):
+        raise ResourceConflictError("Strix admission preparation is outside its lifetime")
+    if parse_iso8601_datetime(checked_recorded_at) < parse_iso8601_datetime(
+        previous["document"]["recorded_at"]
+    ):
+        raise ResourceConflictError("Strix admission lifecycle time precedes its head")
+    if state not in _ADMISSION_TRANSITIONS[previous["document"]["state"]] and not (
+        issuer_evidence and state == previous["document"]["state"] == "preparing"
+    ):
+        raise ResourceConflictError("Strix admission lifecycle transition is invalid")
+    admission = _read_admission(connection, attempt_id)
+    reference = None if admission is None else admission["admission_record_ref"]
+    if state == "verified" and admission is None:
+        raise ResourceConflictError("Strix verified lifecycle requires an admission")
+    document = _event_document(
+        attempt_id=attempt_id,
+        sequence=len(chain) + 1,
+        state=state,
+        lifecycle_basis_ref=lifecycle_basis_ref,
+        recorded_at=checked_recorded_at,
+        previous_event_digest=previous["event_digest"],
+        admission_record_ref=reference,
+    )
+    digest = content_hash(document)
+    connection.execute(
+        "INSERT INTO strix_runtime_admission_events VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            attempt_id,
+            document["sequence"],
+            state,
+            canonical_json(document),
+            digest,
+            previous["event_digest"],
+            reference,
+            lifecycle_basis_ref,
+            checked_recorded_at,
+        ),
+    )
+    updated = connection.execute(
+        """UPDATE strix_runtime_admission_heads SET active_sequence=?,active_state=?,
+        active_event_digest=?,admission_record_ref=? WHERE attempt_id=?
+        AND active_sequence=? AND active_event_digest=?""",
+        (
+            document["sequence"],
+            state,
+            digest,
+            reference,
+            attempt_id,
+            len(chain),
+            previous["event_digest"],
+        ),
+    )
+    if updated.rowcount != 1:
+        raise ResourceConflictError("Strix admission lifecycle head changed")
+    return {"document": document, "event_digest": digest}
+
+
+def _retain_verified_strix_runtime_admission_at(
+    connection: sqlite3.Connection,
+    *,
+    document: Mapping[str, Any],
+    lifecycle_basis_ref: str,
+    recorded_at: str,
+    expected_head_digest: str,
+) -> Mapping[str, Any]:
+    checked = _admission(document)
+    checked_recorded_at = _timestamp(recorded_at, "Strix admission verification time")
+    attempt_id = checked["attempt_id"]
+    if not connection.in_transaction:
+        raise ProductStoreError("Strix admission write requires an owning transaction")
+    reservation = _read_reservation(connection, attempt_id)
+    if reservation is None:
+        raise ProductStoreError("Strix admission reservation not found")
+    for name in (
+        "attempt_id",
+        "experiment_id",
+        "experiment_revision",
+        "experiment_digest",
+        "binding_digest",
+        "delegation_digest",
+        "objective_ref",
+        "environment_ref",
+        "authority_ref",
+        "authority_generation",
+        "authority_record_digest",
+        "target_snapshot_digest",
+        "created_at",
+        "expires_at",
+    ):
+        if checked[name] != reservation["document"][name]:
+            raise ResourceConflictError("Strix admission differs from its reservation")
+    if checked["qualification_ref"] != reservation["document"]["qualification_ref"]:
+        raise ResourceConflictError("Strix admission qualification changed")
+    chain = _read_admission_chain(connection, attempt_id)
+    previous = chain[-1]
+    existing = _read_admission(connection, attempt_id)
+    digest = content_hash(checked)
+    reference = content_hash(
+        {
+            "schema_version": "bluefire.strix-runtime-admission-record-ref.v1",
+            "attempt_id": attempt_id,
+            "admission_record_digest": digest,
+        }
+    )
+    if existing is not None and existing["document"] != checked:
+        raise ResourceConflictError("Strix verified admission conflicts")
+    checked_head = _digest(expected_head_digest, "Strix admission head")
+    if (
+        existing is not None
+        and previous["document"]["state"] == "verified"
+        and previous["document"]["admission_record_ref"] == reference
+        and previous["document"]["previous_event_digest"] == checked_head
+        and previous["document"]["lifecycle_basis_ref"] == lifecycle_basis_ref
+        and previous["document"]["recorded_at"] == checked_recorded_at
+    ):
+        return cast(Mapping[str, Any], _read_strix_runtime_admission_state(connection, attempt_id))
+    if not (
+        parse_iso8601_datetime(reservation["document"]["created_at"])
+        <= parse_iso8601_datetime(checked_recorded_at)
+        < parse_iso8601_datetime(reservation["document"]["expires_at"])
+    ):
+        raise ResourceConflictError("Strix admission verification is outside its lifetime")
+    authority = _read_authority_chain(connection, checked["authority_ref"])
+    current = authority[-1] if authority else None
+    if (
+        current is None
+        or current["authority"]["state"] != "active"
+        or current["authority"]["generation"] != checked["authority_generation"]
+        or current["authority_record_digest"] != checked["authority_record_digest"]
+    ):
+        raise ResourceConflictError("Strix runtime authority changed before admission")
+    if current["authority"]["strix_build_digest"] != checked["build_digest"]:
+        raise ResourceConflictError("Strix admission build differs from runtime authority")
+    if previous["event_digest"] != checked_head:
+        raise ResourceConflictError("Strix admission lifecycle head changed")
+    if existing is None:
+        connection.execute(
+            "INSERT INTO strix_runtime_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                attempt_id,
+                canonical_json(checked),
+                reference,
+                digest,
+                checked["custody_source_ref"],
+                checked["custody_record_ref"],
+                checked["custody_record_digest"],
+                checked["workspace_ref"],
+                checked["control_root_ref"],
+                checked["artifact_root_ref"],
+                checked["network_plan_ref"],
+                checked["network_snapshot_ref"],
+                checked["network_verification_ref"],
+                checked["custody_plan_ref"],
+                checked["protected_roots_ref"],
+                checked["containment_ref"],
+                checked["admission_proof_bundle_digest"],
+                checked["created_at"],
+                checked["expires_at"],
+            ),
+        )
+    if "verified" not in _ADMISSION_TRANSITIONS[previous["document"]["state"]]:
+        raise ResourceConflictError("Strix admission cannot become verified")
+    event = _event_document(
+        attempt_id=attempt_id,
+        sequence=len(chain) + 1,
+        state="verified",
+        lifecycle_basis_ref=lifecycle_basis_ref,
+        recorded_at=checked_recorded_at,
+        previous_event_digest=previous["event_digest"],
+        admission_record_ref=reference,
+    )
+    event_digest = content_hash(event)
+    connection.execute(
+        "INSERT INTO strix_runtime_admission_events VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            attempt_id,
+            event["sequence"],
+            "verified",
+            canonical_json(event),
+            event_digest,
+            previous["event_digest"],
+            reference,
+            lifecycle_basis_ref,
+            checked_recorded_at,
+        ),
+    )
+    updated = connection.execute(
+        """UPDATE strix_runtime_admission_heads SET active_sequence=?,active_state='verified',
+        active_event_digest=?,admission_record_ref=? WHERE attempt_id=?
+        AND active_sequence=? AND active_event_digest=?""",
+        (
+            event["sequence"],
+            event_digest,
+            reference,
+            attempt_id,
+            len(chain),
+            previous["event_digest"],
+        ),
+    )
+    if updated.rowcount != 1:
+        raise ResourceConflictError("Strix admission lifecycle head changed")
+    return cast(Mapping[str, Any], _read_strix_runtime_admission_state(connection, attempt_id))
+
+
+def _issuer_owned(connection: sqlite3.Connection, attempt_id: Any) -> bool:
+    if (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='strix_runtime_issuance_records'"
+        ).fetchone()
+        is None
+    ):
+        return False
+    return (
+        connection.execute(
+            "SELECT 1 FROM strix_runtime_issuance_records WHERE attempt_id=? LIMIT 1", (attempt_id,)
+        ).fetchone()
+        is not None
+    )
+
+
+def _refuse_issuer_owned(connection: sqlite3.Connection, attempt_id: Any) -> None:
+    if _issuer_owned(connection, attempt_id):
+        raise ResourceConflictError(
+            "Strix issuer-owned lifecycle requires atomic issuance persistence"
+        )
+
+
+def _issuer_preparing_event(
+    connection: sqlite3.Connection, document: Mapping[str, Any], event_digest: str
+) -> bool:
+    if document["state"] != "preparing" or not _issuer_owned(connection, document["attempt_id"]):
+        return False
+    return (
+        connection.execute(
+            "SELECT 1 FROM strix_runtime_issuance_records WHERE attempt_id=? AND sequence=? AND record_digest=? AND runtime_event_digest=?",
+            (
+                document["attempt_id"],
+                document["sequence"],
+                document["lifecycle_basis_ref"],
+                event_digest,
+            ),
+        ).fetchone()
+        is not None
+    )

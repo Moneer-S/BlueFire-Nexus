@@ -34,6 +34,7 @@ from . import product_store_engine_jobs as engine_job_store
 from . import product_store_engine_presentations as engine_presentation_store
 from . import product_store_file_access as file_access_store
 from . import product_store_proposal_reviews as proposal_review_store
+from . import product_store_strix_admission_issuer as strix_issuance_store
 from . import product_store_strix_runtime as strix_runtime_store
 from . import product_store_tenant_action_materials as tenant_action_material_store
 from . import product_store_tenant_generation_journals as tenant_generation_journal_store
@@ -78,7 +79,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -871,6 +872,7 @@ class ProductStore(
             tenant_generation_journal_store.initialize_schema(connection)
             tenant_action_material_store.initialize_schema(connection)
             strix_runtime_store.initialize_schema(connection)
+            strix_issuance_store.initialize_schema(connection)
             self._initialize_macos_workspace_schema(connection)
             if current is None or int(current) < 6:
                 self._migrate_legacy_plugin_metadata(connection)

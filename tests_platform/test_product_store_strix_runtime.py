@@ -433,6 +433,14 @@ def test_prepare_and_verify_require_reservation_chronology_and_unexpired_lifetim
                 expected_head_digest=preparing["event_digest"],
             )
     assert reserved["document"]["expires_at"] == EXPIRES
+    unchanged = store._read_strix_runtime_admission_envelope(ATTEMPT_ID)
+    assert unchanged is not None and unchanged["admission"] is None
+    if operation == "prepare":
+        assert unchanged == envelope
+    else:
+        assert unchanged["lifecycle_head_digest"] == preparing["event_digest"]
+        assert unchanged["lifecycle_state"] == "preparing"
+        assert unchanged["lifecycle_sequence"] == 2
 
 
 def test_revoked_authority_refuses_new_reservation_and_pending_admission(tmp_path: Path) -> None:
@@ -709,6 +717,7 @@ def test_dropped_trigger_tampering_is_detected_on_read(tmp_path: Path, tamper: s
 def _as_v19(store: ProductStore) -> None:
     with sqlite3.connect(store.path) as connection:
         for table in (
+            "strix_runtime_issuance_records",
             "strix_runtime_admission_heads",
             "strix_runtime_admission_events",
             "strix_runtime_admissions",
@@ -746,7 +755,7 @@ def test_v19_to_v20_preserves_existing_data_and_migration_rolls_back(
     _as_v19(store)
     before = _non_v20_data(store.path)
     upgraded = ProductStore(store.path)
-    assert SCHEMA_VERSION == upgraded.schema_version == 20
+    assert SCHEMA_VERSION == upgraded.schema_version == 21
     assert _non_v20_data(store.path) == before
 
     _as_v19(upgraded)
@@ -803,8 +812,9 @@ def test_future_schema_refuses_before_v20_ddl(tmp_path: Path) -> None:
     path = tmp_path / "future.db"
     ProductStore(path)
     with sqlite3.connect(path) as connection:
-        connection.execute("INSERT INTO schema_migrations VALUES(21,'2026-11-04T00:00:00Z')")
+        connection.execute("INSERT INTO schema_migrations VALUES(22,'2026-11-04T00:00:00Z')")
         for table in (
+            "strix_runtime_issuance_records",
             "strix_runtime_admission_heads",
             "strix_runtime_admission_events",
             "strix_runtime_admissions",
