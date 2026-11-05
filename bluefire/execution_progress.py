@@ -213,8 +213,24 @@ def validate_cleanup_result(
         "verified_absent_paths",
         "verified_receipts",
     }
-    if set(cleanup) != expected_cleanup_fields:
+    if set(cleanup) not in (
+        expected_cleanup_fields,
+        expected_cleanup_fields | {"verified_receipt_ids"},
+    ):
         raise RunnerTransportError("cleanup report shape is invalid")
+    verified_ids = cleanup.get("verified_receipt_ids")
+    if verified_ids is not None and (
+        not isinstance(verified_ids, list)
+        or any(
+            not isinstance(receipt_id, str)
+            or len(receipt_id) != 64
+            or any(character not in "0123456789abcdef" for character in receipt_id)
+            for receipt_id in verified_ids
+        )
+        or len(verified_ids) != len(set(verified_ids))
+        or len(verified_ids) != cleanup.get("verified_receipts")
+    ):
+        raise RunnerTransportError("cleanup verified receipt identities are invalid")
     for field in (
         "removed_paths",
         "already_absent_receipts",

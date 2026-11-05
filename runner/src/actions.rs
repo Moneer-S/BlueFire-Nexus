@@ -3670,7 +3670,10 @@ impl PreparedAction for CleanupPrepared {
                         .delete_receipt_with_deadline(receipt_id, cleanup_deadline)
                     {
                         Ok(()) => match context.root.load_receipt(receipt_id) {
-                            Ok(None) => verified_receipts += 1,
+                            Ok(None) => {
+                                verified_receipts += 1;
+                                report.verified_receipt_ids.push(receipt_id.clone());
+                            }
                             Ok(Some(_)) => report.errors.push(format!(
                                 "{receipt_id}: receipt remained after verified cleanup"
                             )),
@@ -3775,7 +3778,10 @@ impl PreparedAction for CleanupPrepared {
                     .delete_receipt_with_deadline(&receipt_id, cleanup_deadline)
                 {
                     Ok(()) => match context.root.load_receipt(&receipt_id) {
-                        Ok(None) => verified_receipts += 1,
+                        Ok(None) => {
+                            verified_receipts += 1;
+                            report.verified_receipt_ids.push(receipt_id.clone());
+                        }
                         Ok(Some(_)) => report.errors.push(format!(
                             "{receipt_id}: receipt remained after verified cleanup"
                         )),
