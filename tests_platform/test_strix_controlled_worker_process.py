@@ -91,6 +91,38 @@ def test_fixed_isolated_child_roundtrip_and_clean_environment(
     assert not any("SENSITIVE" in str(value) for value in options["env"].values())
 
 
+def test_only_bounded_darwin_runtime_environment_is_accepted() -> None:
+    environment = {
+        "LANG": "C.UTF-8",
+        "__CFBundleIdentifier": "org.python.python",
+        "__CF_USER_TEXT_ENCODING": "0x1F5:0x0:0x0",
+        "VERSIONER_PYTHON_VERSION": "3.12.14",
+        "VERSIONER_PYTHON_PREFER_32_BIT": "no",
+        "LC_CTYPE": "UTF-8",
+    }
+    assert process_module._fixture_environment_is_valid(environment, "darwin")
+    assert not process_module._fixture_environment_is_valid(environment, "linux")
+    assert not process_module._fixture_environment_is_valid(environment, "win32")
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("__CF_REPO_TOKEN", "bounded-but-unapproved"),
+        ("VERSIONER_OPENAI_API_KEY", "bounded-but-unapproved"),
+        ("__CFBundleIdentifier", "org.python.python\nOPENAI_API_KEY=secret"),
+        ("__CF_USER_TEXT_ENCODING", "0x1F5:0x0:not-hex"),
+        ("VERSIONER_PYTHON_VERSION", "3.12.release"),
+        ("VERSIONER_PYTHON_PREFER_32_BIT", "sometimes"),
+        ("LC_CTYPE", "en_US.UTF-8"),
+        ("__CFBundleIdentifier", "a" * 256),
+    ],
+)
+def test_darwin_environment_rejects_unapproved_or_unbounded_values(name: str, value: str) -> None:
+    environment = {"LANG": "C.UTF-8", name: value}
+    assert not process_module._fixture_environment_is_valid(environment, "darwin")
+
+
 @pytest.mark.parametrize(
     "mode",
     [

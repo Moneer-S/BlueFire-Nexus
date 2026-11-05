@@ -17,6 +17,7 @@ import asyncio
 import math
 import os
 import queue
+import re
 import secrets
 import signal
 import subprocess  # nosec B404 - fixed isolated Python fixture only
@@ -24,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
@@ -62,6 +64,13 @@ _FIXTURE_MODES = frozenset(
 )
 _PROFILE_FIELDS = frozenset(field.name for field in fields(backend.ControlledRuntimeProfile))
 _BINDING_FIELDS = frozenset(field.name for field in fields(channel.ControlledWorkerBinding))
+_FIXTURE_ENVIRONMENT_NAMES = frozenset({"LANG", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"})
+_DARWIN_CF_BUNDLE_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}\Z")
+_DARWIN_CF_TEXT_ENCODING_VALUE = re.compile(
+    r"0x[0-9A-Fa-f]{1,8}:0x[0-9A-Fa-f]{1,8}:0x[0-9A-Fa-f]{1,8}\Z"
+)
+_DARWIN_VERSIONER_PYTHON_VALUE = re.compile(r"[0-9]{1,3}(?:\.[0-9]{1,3}){0,3}\Z")
+_DARWIN_VERSIONER_PREFERENCE_VALUES = frozenset({"0", "1", "false", "no", "true", "yes"})
 
 
 class CancellationSignal(Protocol):
@@ -92,6 +101,34 @@ def _environment(private_directory: str, windows_root: str | None = None) -> dic
         result["TEMP"] = private_directory
         result["TMP"] = private_directory
     return result
+
+
+def _darwin_injected_environment_value_is_valid(name: str, value: str) -> bool:
+    """Recognize only bounded values injected by the Darwin process runtime."""
+
+    if not value or len(value) > 255 or not value.isascii():
+        return False
+    if name == "__CFBundleIdentifier":
+        return _DARWIN_CF_BUNDLE_VALUE.fullmatch(value) is not None
+    if name == "__CF_USER_TEXT_ENCODING":
+        return _DARWIN_CF_TEXT_ENCODING_VALUE.fullmatch(value) is not None
+    if name == "VERSIONER_PYTHON_VERSION":
+        return _DARWIN_VERSIONER_PYTHON_VALUE.fullmatch(value) is not None
+    if name == "VERSIONER_PYTHON_PREFER_32_BIT":
+        return value.lower() in _DARWIN_VERSIONER_PREFERENCE_VALUES
+    if name == "LC_CTYPE":
+        return value == "UTF-8"
+    return False
+
+
+def _fixture_environment_is_valid(environment: Mapping[str, str], platform: str) -> bool:
+    for name, value in environment.items():
+        if name.upper() in _FIXTURE_ENVIRONMENT_NAMES:
+            continue
+        if platform == "darwin" and _darwin_injected_environment_value_is_valid(name, value):
+            continue
+        return False
+    return True
 
 
 @contextmanager
@@ -621,9 +658,7 @@ def _fixture_main() -> int:
     # This entry is fixed and intentionally has no general command or import.
     if len(sys.argv) != 2 or sys.argv[1] not in _FIXTURE_MODES:
         return 2
-    if any(
-        name.upper() not in {"LANG", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"} for name in os.environ
-    ):
+    if not _fixture_environment_is_valid(os.environ, sys.platform):
         return 3
     try:
         bootstrap_frame = _read_frame(sys.stdin.fileno())
