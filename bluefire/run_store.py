@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 import uuid
@@ -14,8 +16,21 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .retained_artifact_contract import MAX_BYTES as MAX_RETAINED_PAYLOAD_BYTES
-from .util import canonical_json_bytes, content_hash, file_hash, json_clone
-from .windows_owner_acl import _windows_extended_path
+from .util import (
+    canonical_json_bytes,
+    content_hash,
+    file_hash,
+    json_clone,
+    parse_iso8601_datetime,
+)
+from .windows_owner_acl import (
+    WindowsOwnerAclError,
+    _windows_extended_path,
+    _windows_mark_delete_descriptor,
+    _windows_open_descriptor,
+    apply_owner_private_acl,
+    verify_owner_private_acl,
+)
 
 RUN_ID_RE = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
 RECOVERY_ID_RE = re.compile(r"^recovery-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
@@ -45,6 +60,12 @@ _ACCEPTANCE_BINDING_ENV = {
 }
 _UNSEALED_FINALIZATION_ERROR = "run finalization was not sealed by a manifest"
 _INTERRUPTED_RECOVERY_MESSAGE = "No finalized manifest was present after restart."
+_PUBLICATION_TEMP_PREFIX = ".run-publish-tmp-"
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_MAX_PUBLICATION_RECORDS = 512
+_MAX_PUBLICATION_RECORD_BYTES = 256 * 1024
+_MAX_PUBLICATION_FILE_BYTES = 4 * 1024 * 1024
+_MAX_PUBLICATION_TOTAL_BYTES = 16 * 1024 * 1024
 
 
 class RunStoreError(ValueError):
@@ -91,10 +112,21 @@ class RunStore:
             # names and recovery directories, retain Win32 long-path support.
             # Resolve below still establishes the canonical containment root.
             candidate = _windows_extended_path(candidate)
-        candidate.mkdir(parents=True, exist_ok=True)
+        candidate.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        created_root_identity: tuple[int, int, int] | None = None
+        try:
+            candidate.mkdir(mode=0o700, exist_ok=False)
+        except FileExistsError:
+            pass
+        else:
+            created = candidate.lstat()
+            if self._is_link_or_reparse(created) or not stat.S_ISDIR(created.st_mode):
+                raise RunStoreError("new run store root is unsafe")
+            created_root_identity = self._filesystem_identity(created)
         self.root = candidate.resolve(strict=True)
         if not self.root.is_dir():
             raise RunStoreError("run store root must be a directory")
+        self._publication_created_root_identity = created_root_identity
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
 
@@ -242,6 +274,147 @@ class RunStore:
         }
         self.write_json(run_id, "manifest.json", manifest)
         return manifest
+
+    def publish_finalized_run(
+        self,
+        run_id: str,
+        *,
+        created_at: str,
+        finalized_at: str,
+        scenario: Mapping[str, Any],
+        plan: Mapping[str, Any],
+        policy: Mapping[str, Any],
+        profile: Mapping[str, Any] | None,
+        result: Mapping[str, Any],
+        evidence: Iterable[Mapping[str, Any]],
+        detections: Iterable[Mapping[str, Any]],
+        replay: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        """Atomically publish one complete, deterministic, preassigned run bundle.
+
+        This is a narrow controller-side publication seam for work whose run
+        identity is already retained before independent evidence is available.
+        The complete bundle is staged and fsynced before one same-volume rename
+        makes it visible. A retry may only reopen the byte-identical finalized
+        bundle; an existing partial or conflicting directory is never adopted,
+        repaired, replaced, or deleted.
+        """
+
+        temporary: Path | None = None
+        temporary_identity: tuple[int, int, int] | None = None
+        root_identity: tuple[int, int, int] | None = None
+        staged_identities: dict[str, tuple[int, int, int]] = {}
+        root_guard_descriptor: int | None = None
+        try:
+            self._prepare_publication_root()
+            root_identity = self._validated_publication_root_identity()
+            if os.name == "nt":
+                root_guard_descriptor = _windows_open_descriptor(self.root, directory=True)
+                guarded_root = os.fstat(root_guard_descriptor)
+                verify_owner_private_acl(root_guard_descriptor, directory=True)
+                if self._filesystem_identity(guarded_root) != root_identity:
+                    raise RunStoreError("atomic run publication root changed during publication")
+            payloads, manifest = self._finalized_publication_payloads(
+                run_id,
+                created_at=created_at,
+                finalized_at=finalized_at,
+                scenario=scenario,
+                plan=plan,
+                policy=policy,
+                profile=profile,
+                result=result,
+                evidence=evidence,
+                detections=detections,
+                replay=replay,
+            )
+            temporary = Path(tempfile.mkdtemp(dir=self.root, prefix=_PUBLICATION_TEMP_PREFIX))
+            self._require_publication_root_identity(root_identity)
+            self._harden_publication_entry(temporary, directory=True)
+            temporary_details = temporary.lstat()
+            if self._is_link_or_reparse(temporary_details) or not stat.S_ISDIR(
+                temporary_details.st_mode
+            ):
+                raise RunStoreError("atomic run staging identity is unsafe")
+            temporary_identity = self._filesystem_identity(temporary_details)
+            for name, payload in payloads.items():
+                # On Windows the held root handle denies root replacement. On
+                # POSIX the owner-private root makes same-UID writers trusted
+                # cooperative peers; identity checks bracket every path write.
+                self._require_publication_root_identity(root_identity)
+                self._atomic_write(temporary / name, payload)
+                self._harden_publication_entry(temporary / name, directory=False)
+                staged = (temporary / name).lstat()
+                if (
+                    self._is_link_or_reparse(staged)
+                    or not stat.S_ISREG(staged.st_mode)
+                    or staged.st_nlink != 1
+                ):
+                    raise RunStoreError("atomic run staging inventory is unsafe")
+                staged_identities[name] = self._filesystem_identity(staged)
+                self._require_publication_root_identity(root_identity)
+            self._verify_publication_directory(
+                temporary,
+                payloads,
+                expected_directory_identity=temporary_identity,
+                expected_root_identity=root_identity,
+                staged_identities=staged_identities,
+            )
+            self._fsync_publication_directory(temporary, temporary_identity)
+            target = self._publication_target(run_id)
+            if target is not None:
+                self._verify_exact_publication(
+                    run_id,
+                    payloads,
+                    manifest,
+                    expected_root_identity=root_identity,
+                )
+                self._fsync_publication_directory(self.root, root_identity)
+                return dict(json_clone(manifest))
+            try:
+                published_root_identity = self._publish_directory_no_replace(
+                    temporary,
+                    self.root / run_id,
+                    temporary_identity=temporary_identity,
+                    expected_root_identity=root_identity,
+                    payloads=payloads,
+                    staged_identities=staged_identities,
+                )
+            except FileExistsError:
+                if self._publication_target(run_id) is not None:
+                    self._verify_exact_publication(
+                        run_id,
+                        payloads,
+                        manifest,
+                        expected_root_identity=root_identity,
+                    )
+                    self._fsync_publication_directory(self.root, root_identity)
+                    return dict(json_clone(manifest))
+                raise
+            temporary = None
+            temporary_identity = None
+            staged_identities = {}
+            self._fsync_publication_directory(self.root, published_root_identity)
+            self._verify_exact_publication(
+                run_id,
+                payloads,
+                manifest,
+                expected_root_identity=root_identity,
+            )
+            return dict(json_clone(manifest))
+        except RunStoreError:
+            raise
+        except Exception:
+            raise RunStoreError("atomic run publication failed safely") from None
+        finally:
+            if temporary is not None and temporary_identity is not None:
+                self._clean_publication_staging(
+                    temporary,
+                    temporary_identity,
+                    staged_identities,
+                    expected_root_identity=root_identity,
+                )
+            if root_guard_descriptor is not None:
+                os.close(root_guard_descriptor)
 
     def validate_bundle(self, run_id: str) -> Mapping[str, Any]:
         manifest = self.read_json(run_id, "manifest.json")
@@ -663,6 +836,891 @@ class RunStore:
             self.append_event(path.name, "run.interrupted", {"reason": "restart_recovery"})
             recovered += 1
         return recovered
+
+    def _finalized_publication_payloads(
+        self,
+        run_id: str,
+        *,
+        created_at: str,
+        finalized_at: str,
+        scenario: Mapping[str, Any],
+        plan: Mapping[str, Any],
+        policy: Mapping[str, Any],
+        profile: Mapping[str, Any] | None,
+        result: Mapping[str, Any],
+        evidence: Iterable[Mapping[str, Any]],
+        detections: Iterable[Mapping[str, Any]],
+        replay: Mapping[str, Any] | None,
+    ) -> tuple[dict[str, bytes], dict[str, Any]]:
+        if not isinstance(run_id, str) or RUN_ID_RE.fullmatch(run_id) is None:
+            raise RunStoreError("reserved run identity is invalid")
+        created = self._publication_timestamp(created_at, "run creation time")
+        finalized = self._publication_timestamp(finalized_at, "run finalization time")
+        if parse_iso8601_datetime(finalized) < parse_iso8601_datetime(created):
+            raise RunStoreError("run finalization predates its creation")
+
+        def document(value: Any, label: str) -> dict[str, Any]:
+            try:
+                copied = json_clone(value)
+            except Exception:
+                raise RunStoreError(f"{label} could not be read safely") from None
+            if not isinstance(copied, dict):
+                raise RunStoreError(f"{label} must contain a JSON object")
+            return copied
+
+        retained_record_bytes = 0
+        retained_record_count = 0
+
+        def records(values: Iterable[Mapping[str, Any]], label: str) -> list[dict[str, Any]]:
+            nonlocal retained_record_bytes, retained_record_count
+            copied: list[dict[str, Any]] = []
+            try:
+                iterator = iter(values)
+            except Exception:
+                raise RunStoreError(f"{label} input could not be read safely") from None
+            while True:
+                try:
+                    value = next(iterator)
+                except StopIteration:
+                    break
+                except Exception:
+                    raise RunStoreError(f"{label} input could not be read safely") from None
+                if retained_record_count >= _MAX_PUBLICATION_RECORDS:
+                    raise RunStoreError(f"{label} count exceeds its reviewed bound")
+                retained = document(value, label)
+                try:
+                    retained_bytes = len(canonical_json_bytes(retained))
+                except Exception:
+                    raise RunStoreError(f"{label} could not be serialized safely") from None
+                if retained_bytes > _MAX_PUBLICATION_RECORD_BYTES:
+                    raise RunStoreError(f"{label} exceeds its reviewed byte bound")
+                retained_record_bytes += retained_bytes
+                retained_record_count += 1
+                if retained_record_bytes > _MAX_PUBLICATION_TOTAL_BYTES:
+                    raise RunStoreError("publication records exceed their reviewed byte bound")
+                copied.append(retained)
+            return copied
+
+        scenario_value = document(scenario, "scenario")
+        plan_value = document(plan, "plan")
+        policy_value = document(policy, "policy")
+        profile_value = {} if profile is None else document(profile, "profile")
+        replay_value = None if not replay else document(replay, "replay")
+        result_value = document(result, "result")
+        for name, expected in (
+            ("run_id", run_id),
+            ("created_at", created),
+            ("finalized_at", finalized),
+        ):
+            supplied = result_value.get(name, expected)
+            if supplied != expected:
+                raise RunStoreError(f"run {name.replace('_', ' ')} changed before publication")
+            result_value[name] = expected
+
+        acceptance_binding = _acceptance_binding()
+        supplied_binding = result_value.get("acceptance_binding")
+        if acceptance_binding is None:
+            if supplied_binding is not None:
+                raise RunStoreError("acceptance run binding cannot be supplied by a caller")
+        else:
+            if supplied_binding not in (None, acceptance_binding):
+                raise RunStoreError("acceptance run binding changed before publication")
+            result_value["acceptance_binding"] = acceptance_binding
+
+        evidence_values = records(evidence, "evidence record")
+        detection_values = records(detections, "detection candidate")
+        created_data: dict[str, Any] = {
+            "schema_version": "1.0",
+            "run_id": run_id,
+            "created_at": created,
+            "status": "created",
+            "replay": replay_value,
+        }
+        if acceptance_binding is not None:
+            created_data["acceptance_binding"] = acceptance_binding
+        created_event = self._publication_event(
+            sequence=1,
+            timestamp=created,
+            event_type="run.created",
+            data=created_data,
+            previous_event_hash=None,
+        )
+        finalized_event = self._publication_event(
+            sequence=2,
+            timestamp=finalized,
+            event_type="run.finalized",
+            data=result_value,
+            previous_event_hash=str(created_event["event_hash"]),
+        )
+        payloads = {
+            "scenario.json": canonical_json_bytes(scenario_value) + b"\n",
+            "plan.json": canonical_json_bytes(plan_value) + b"\n",
+            "policy.json": canonical_json_bytes(policy_value) + b"\n",
+            "profile.json": canonical_json_bytes(profile_value) + b"\n",
+            "result.json": canonical_json_bytes(result_value) + b"\n",
+            "evidence.json": canonical_json_bytes(
+                {"schema_version": "1.0", "records": evidence_values}
+            )
+            + b"\n",
+            "detections.json": canonical_json_bytes(
+                {"schema_version": "1.0", "candidates": detection_values}
+            )
+            + b"\n",
+            "events.jsonl": b"".join(
+                canonical_json_bytes(event) + b"\n" for event in (created_event, finalized_event)
+            ),
+        }
+        files = {
+            name: {
+                "hash": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                "size_bytes": len(payload),
+            }
+            for name, payload in sorted(payloads.items())
+        }
+        manifest = {
+            "schema_version": "1.0",
+            "run_id": run_id,
+            "files": files,
+            "bundle_hash": content_hash(files),
+        }
+        payloads["manifest.json"] = canonical_json_bytes(manifest) + b"\n"
+        if (
+            any(
+                not 1 <= len(payload) <= _MAX_PUBLICATION_FILE_BYTES
+                for payload in payloads.values()
+            )
+            or sum(len(payload) for payload in payloads.values()) > _MAX_PUBLICATION_TOTAL_BYTES
+        ):
+            raise RunStoreError("atomic run publication exceeds its reviewed byte bound")
+        return payloads, manifest
+
+    @staticmethod
+    def _publication_timestamp(value: Any, label: str) -> str:
+        if not isinstance(value, str) or not value or len(value) > 40:
+            raise RunStoreError(f"{label} is invalid")
+        try:
+            parsed = parse_iso8601_datetime(value)
+        except ValueError as exc:
+            raise RunStoreError(f"{label} is invalid") from exc
+        if parsed.isoformat().replace("+00:00", "Z") != value:
+            raise RunStoreError(f"{label} is not canonical")
+        return value
+
+    @staticmethod
+    def _publication_event(
+        *,
+        sequence: int,
+        timestamp: str,
+        event_type: str,
+        data: Mapping[str, Any],
+        previous_event_hash: str | None,
+    ) -> dict[str, Any]:
+        body = {
+            "schema_version": "1.0",
+            "sequence": sequence,
+            "timestamp": timestamp,
+            "event_type": event_type,
+            "data": dict(json_clone(data)),
+            "previous_event_hash": previous_event_hash,
+        }
+        return {**body, "event_hash": content_hash(body)}
+
+    def _publication_target(self, run_id: str) -> Path | None:
+        if not isinstance(run_id, str) or RUN_ID_RE.fullmatch(run_id) is None:
+            raise RunStoreError("invalid run identifier")
+        target = self.root / run_id
+        try:
+            details = target.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            raise RunStoreError("existing run publication is unreadable") from None
+        if self._is_link_or_reparse(details) or not stat.S_ISDIR(details.st_mode):
+            raise RunStoreError("existing run publication path is unsafe")
+        try:
+            resolved = target.resolve(strict=True)
+        except OSError:
+            raise RunStoreError("existing run publication is unreadable") from None
+        if resolved.parent != self.root or resolved != target:
+            raise RunStoreError("existing run publication path is unsafe")
+        return resolved
+
+    def _verify_exact_publication(
+        self,
+        run_id: str,
+        payloads: Mapping[str, bytes],
+        expected_manifest: Mapping[str, Any],
+        *,
+        expected_root_identity: tuple[int, int, int],
+    ) -> None:
+        self._require_publication_root_identity(expected_root_identity)
+        run_path = self._publication_target(run_id)
+        if run_path is None:
+            raise RunStoreError("atomic run publication is unavailable")
+        directory_identity = self._filesystem_identity(run_path.lstat())
+        self._verify_publication_directory(
+            run_path,
+            payloads,
+            expected_directory_identity=directory_identity,
+            expected_root_identity=expected_root_identity,
+            staged_identities=None,
+        )
+        try:
+            manifest = json.loads(payloads["manifest.json"])
+        except (KeyError, UnicodeDecodeError, json.JSONDecodeError):
+            raise RunStoreError("existing run publication failed integrity validation") from None
+        if manifest != expected_manifest:
+            raise RunStoreError("existing run publication failed integrity validation")
+        self._require_publication_root_identity(expected_root_identity)
+
+    def _verify_publication_directory(
+        self,
+        directory: Path,
+        payloads: Mapping[str, bytes],
+        *,
+        expected_directory_identity: tuple[int, int, int],
+        expected_root_identity: tuple[int, int, int],
+        staged_identities: Mapping[str, tuple[int, int, int]] | None,
+    ) -> None:
+        self._require_publication_root_identity(expected_root_identity)
+        try:
+            directory_details = directory.lstat()
+        except OSError:
+            raise RunStoreError("existing run publication is unreadable") from None
+        if (
+            self._is_link_or_reparse(directory_details)
+            or not stat.S_ISDIR(directory_details.st_mode)
+            or self._filesystem_identity(directory_details) != expected_directory_identity
+        ):
+            raise RunStoreError("existing run publication path is unsafe")
+        expected_names = frozenset(payloads)
+        names: list[str] = []
+        try:
+            with os.scandir(directory) as entries:
+                for directory_entry in entries:
+                    if len(names) >= len(expected_names) + 1:
+                        raise RunStoreError("existing run publication is not byte-identical")
+                    names.append(directory_entry.name)
+        except RunStoreError:
+            raise
+        except OSError:
+            raise RunStoreError("existing run publication is unreadable") from None
+        if len(names) != len(expected_names) or frozenset(names) != expected_names:
+            raise RunStoreError("existing run publication is not byte-identical")
+        self._verify_private_publication_entry(directory, directory=True)
+        if staged_identities is not None and frozenset(staged_identities) != expected_names:
+            raise RunStoreError("atomic run staging inventory is incomplete")
+        for name in names:
+            expected_payload = payloads[name]
+            entry_path = directory / name
+            try:
+                details = entry_path.lstat()
+            except OSError:
+                raise RunStoreError("existing run publication is unreadable") from None
+            identity = self._filesystem_identity(details)
+            if (
+                self._is_link_or_reparse(details)
+                or not stat.S_ISREG(details.st_mode)
+                or details.st_nlink != 1
+                or (staged_identities is not None and staged_identities.get(name) != identity)
+            ):
+                raise RunStoreError("existing run publication inventory is unsafe")
+            if details.st_size != len(expected_payload):
+                raise RunStoreError("existing run publication is not byte-identical")
+            self._verify_private_publication_entry(entry_path, directory=False)
+            if (
+                self._read_exact_publication_entry(
+                    entry_path,
+                    expected_identity=identity,
+                    expected_bytes=len(expected_payload),
+                )
+                != expected_payload
+            ):
+                raise RunStoreError("existing run publication is not byte-identical")
+        if self._filesystem_identity(directory.lstat()) != expected_directory_identity:
+            raise RunStoreError("existing run publication path changed during verification")
+        self._require_publication_root_identity(expected_root_identity)
+
+    def _read_exact_publication_entry(
+        self,
+        path: Path,
+        *,
+        expected_identity: tuple[int, int, int],
+        expected_bytes: int,
+    ) -> bytes:
+        descriptor: int | None = None
+        try:
+            if os.name == "nt":
+                descriptor = _windows_open_descriptor(path, directory=False)
+            else:
+                flags = os.O_RDONLY
+                flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(path, flags)
+            opened = os.fstat(descriptor)
+            if (
+                self._is_link_or_reparse(opened)
+                or not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or opened.st_size != expected_bytes
+                or self._filesystem_identity(opened) != expected_identity
+            ):
+                raise RunStoreError("existing run publication inventory is unsafe")
+            chunks: list[bytes] = []
+            remaining = expected_bytes + 1
+            while remaining > 0:
+                chunk = os.read(descriptor, min(remaining, 64 * 1024))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            payload = b"".join(chunks)
+            if len(payload) != expected_bytes:
+                raise RunStoreError("existing run publication is not byte-identical")
+            return payload
+        except RunStoreError:
+            raise
+        except OSError:
+            raise RunStoreError("existing run publication is unreadable") from None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _is_link_or_reparse(details: os.stat_result) -> bool:
+        attributes = int(getattr(details, "st_file_attributes", 0))
+        return stat.S_ISLNK(details.st_mode) or bool(attributes & _REPARSE_POINT)
+
+    @staticmethod
+    def _filesystem_identity(details: os.stat_result) -> tuple[int, int, int]:
+        return int(details.st_dev), int(details.st_ino), stat.S_IFMT(details.st_mode)
+
+    def _require_publication_root_identity(self, expected_identity: tuple[int, int, int]) -> None:
+        if self._validated_publication_root_identity() != expected_identity:
+            raise RunStoreError("atomic run publication root changed during publication")
+
+    def _prepare_publication_root(self) -> None:
+        """Harden only an exact root created by this store for atomic publication."""
+
+        created_identity = self._publication_created_root_identity
+        if created_identity is None:
+            return
+        try:
+            current = self.root.lstat()
+        except OSError:
+            raise RunStoreError("new run store root changed before publication") from None
+        if self._filesystem_identity(current) != created_identity:
+            raise RunStoreError("new run store root changed before publication")
+        if os.name != "nt":
+            self._publication_created_root_identity = None
+            return
+        descriptor: int | None = None
+        try:
+            descriptor = _windows_open_descriptor(
+                self.root,
+                directory=True,
+                write_dac=True,
+            )
+            if self._filesystem_identity(os.fstat(descriptor)) != created_identity:
+                raise RunStoreError("new run store root changed before publication")
+            apply_owner_private_acl(descriptor, directory=True)
+            verify_owner_private_acl(descriptor, directory=True)
+        except (OSError, WindowsOwnerAclError):
+            raise RunStoreError("new run store root could not be made owner-private") from None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        self._publication_created_root_identity = None
+
+    def _validated_publication_root_identity(self) -> tuple[int, int, int]:
+        try:
+            details = self.root.lstat()
+        except OSError:
+            raise RunStoreError("atomic run publication root is unavailable") from None
+        if self._is_link_or_reparse(details) or not stat.S_ISDIR(details.st_mode):
+            raise RunStoreError("atomic run publication root is unsafe")
+        if os.name == "nt":
+            descriptor: int | None = None
+            try:
+                descriptor = _windows_open_descriptor(self.root, directory=True)
+                verify_owner_private_acl(descriptor, directory=True)
+            except (OSError, WindowsOwnerAclError):
+                raise RunStoreError(
+                    "atomic run publication root lacks an owner-private DACL"
+                ) from None
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        else:
+            get_effective_user = getattr(os, "geteuid", None)
+            if (
+                callable(get_effective_user)
+                and details.st_uid != get_effective_user()
+                or details.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            ):
+                raise RunStoreError("atomic run publication root is not owner-private")
+            self._validate_publication_ancestor_chain()
+        return self._filesystem_identity(details)
+
+    def _validate_publication_ancestor_chain(self) -> None:
+        """Prove another UID cannot rename the owner-private publication root."""
+
+        get_effective_user = getattr(os, "geteuid", None)
+        if not callable(get_effective_user):
+            raise RunStoreError("atomic run publication owner identity is unavailable")
+        owner = int(get_effective_user())
+        child = self.root
+        while True:
+            parent = child.parent
+            try:
+                child_details = child.lstat()
+                parent_details = parent.lstat()
+            except OSError:
+                raise RunStoreError(
+                    "atomic run publication ancestor chain is unavailable"
+                ) from None
+            if (
+                self._is_link_or_reparse(child_details)
+                or self._is_link_or_reparse(parent_details)
+                or not stat.S_ISDIR(child_details.st_mode)
+                or not stat.S_ISDIR(parent_details.st_mode)
+            ):
+                raise RunStoreError("atomic run publication ancestor chain is unsafe")
+            if parent_details.st_uid not in {0, owner}:
+                raise RunStoreError("atomic run publication ancestor owner is untrusted")
+            parent_writable = bool(parent_details.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+            if parent_writable and (
+                not parent_details.st_mode & stat.S_ISVTX or child_details.st_uid != owner
+            ):
+                raise RunStoreError("atomic run publication ancestor chain permits replacement")
+            if parent == child:
+                return
+            child = parent
+
+    def _harden_publication_entry(self, path: Path, *, directory: bool) -> None:
+        if os.name == "nt":
+            descriptor: int | None = None
+            try:
+                descriptor = _windows_open_descriptor(
+                    path,
+                    directory=directory,
+                    write_dac=True,
+                )
+                apply_owner_private_acl(descriptor, directory=directory)
+            except (OSError, WindowsOwnerAclError):
+                raise RunStoreError("atomic run staging permissions are unavailable") from None
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        self._verify_private_publication_entry(path, directory=directory)
+
+    def _verify_private_publication_entry(self, path: Path, *, directory: bool) -> None:
+        if os.name == "nt":
+            descriptor: int | None = None
+            try:
+                descriptor = _windows_open_descriptor(path, directory=directory)
+                verify_owner_private_acl(descriptor, directory=directory)
+            except (OSError, WindowsOwnerAclError):
+                raise RunStoreError("atomic run publication permissions are unsafe") from None
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+            return
+        try:
+            details = path.lstat()
+        except OSError:
+            raise RunStoreError("atomic run publication permissions are unavailable") from None
+        get_effective_user = getattr(os, "geteuid", None)
+        expected_mode = 0o700 if directory else 0o600
+        if (
+            self._is_link_or_reparse(details)
+            or stat.S_ISDIR(details.st_mode) is not directory
+            or stat.S_IMODE(details.st_mode) != expected_mode
+            or (callable(get_effective_user) and details.st_uid != get_effective_user())
+        ):
+            raise RunStoreError("atomic run publication permissions are unsafe")
+
+    def _publish_directory_no_replace(
+        self,
+        temporary: Path,
+        target: Path,
+        *,
+        temporary_identity: tuple[int, int, int],
+        expected_root_identity: tuple[int, int, int],
+        payloads: Mapping[str, bytes],
+        staged_identities: Mapping[str, tuple[int, int, int]],
+    ) -> tuple[int, int, int]:
+        root_descriptor: int | None = None
+        temporary_descriptor: int | None = None
+        try:
+            self._verify_publication_directory(
+                temporary,
+                payloads,
+                expected_directory_identity=temporary_identity,
+                expected_root_identity=expected_root_identity,
+                staged_identities=staged_identities,
+            )
+            root_details = self.root.lstat()
+            temporary_details = temporary.lstat()
+            root_identity = self._filesystem_identity(root_details)
+            if (
+                target.parent != self.root
+                or target.name != target.name.strip()
+                or not RUN_ID_RE.fullmatch(target.name)
+                or temporary.parent != self.root
+                or not temporary.name.startswith(_PUBLICATION_TEMP_PREFIX)
+                or self._is_link_or_reparse(root_details)
+                or not stat.S_ISDIR(root_details.st_mode)
+                or root_identity != expected_root_identity
+                or self._is_link_or_reparse(temporary_details)
+                or not stat.S_ISDIR(temporary_details.st_mode)
+                or self._filesystem_identity(temporary_details) != temporary_identity
+            ):
+                raise OSError("atomic run publication identity is unsafe")
+            if os.name == "nt":
+                root_descriptor = _windows_open_descriptor(
+                    self.root,
+                    directory=True,
+                )
+                temporary_descriptor = _windows_open_descriptor(
+                    temporary,
+                    directory=True,
+                    delete=True,
+                    share_delete=True,
+                )
+            else:
+                flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                root_descriptor = os.open(self.root, flags)
+                temporary_descriptor = os.open(
+                    temporary.name,
+                    flags,
+                    dir_fd=root_descriptor,
+                )
+            opened_root = os.fstat(root_descriptor)
+            opened_temporary = os.fstat(temporary_descriptor)
+            if (
+                self._is_link_or_reparse(opened_root)
+                or not stat.S_ISDIR(opened_root.st_mode)
+                or self._filesystem_identity(opened_root) != root_identity
+                or self._is_link_or_reparse(opened_temporary)
+                or not stat.S_ISDIR(opened_temporary.st_mode)
+                or self._filesystem_identity(opened_temporary) != temporary_identity
+                or self._filesystem_identity(self.root.lstat()) != root_identity
+                or self._filesystem_identity(temporary.lstat()) != temporary_identity
+            ):
+                raise OSError("atomic run publication identity changed")
+            if os.name == "nt":
+                self._windows_rename_directory_no_replace(temporary_descriptor, target)
+            else:
+                from .source_intake import _posix_rename_no_replace
+
+                _posix_rename_no_replace(root_descriptor, temporary.name, target.name)
+            published = target.lstat()
+            if (
+                self._is_link_or_reparse(published)
+                or not stat.S_ISDIR(published.st_mode)
+                or self._filesystem_identity(published) != temporary_identity
+                or self._filesystem_identity(os.fstat(temporary_descriptor)) != temporary_identity
+                or self._filesystem_identity(self.root.lstat()) != root_identity
+            ):
+                raise OSError("atomic run publication did not retain its identity")
+            try:
+                temporary.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise OSError("atomic run staging remained after publication")
+            return root_identity
+        finally:
+            for descriptor in (temporary_descriptor, root_descriptor):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+
+    @staticmethod
+    def _windows_rename_directory_no_replace(descriptor: int, target: Path) -> None:
+        """Rename an exact Windows directory handle without replacing a target.
+
+        The caller holds the destination root without FILE_SHARE_DELETE for the
+        whole operation, so the fully qualified target cannot be redirected by
+        renaming or replacing that root. The source descriptor carries DELETE
+        access and remains pinned through post-publication identity checks.
+        """
+
+        if os.name != "nt":
+            raise OSError("Windows run publication is unavailable")
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        target_name = os.path.abspath(os.fspath(target))
+        if not target.is_absolute() or not target_name or "\x00" in target_name:
+            raise OSError("atomic run publication target is invalid")
+
+        class _FileRenameInfo(ctypes.Structure):
+            _fields_ = [
+                ("ReplaceIfExists", wintypes.BOOL),
+                ("RootDirectory", wintypes.HANDLE),
+                ("FileNameLength", wintypes.DWORD),
+                ("FileName", wintypes.WCHAR * 1),
+            ]
+
+        encoded_name = target_name.encode("utf-16-le")
+        name_offset = _FileRenameInfo.FileName.offset
+        # SetFileInformationByHandle requires a terminating WCHAR even though
+        # FileNameLength excludes it. The exact-sized zeroed buffer avoids
+        # trailing structure padding being interpreted as part of the name.
+        rename_buffer = ctypes.create_string_buffer(name_offset + len(encoded_name) + 2)
+        rename = _FileRenameInfo.from_buffer(rename_buffer)
+        rename.ReplaceIfExists = False
+        rename.RootDirectory = None
+        rename.FileNameLength = len(encoded_name)
+        ctypes.memmove(
+            ctypes.addressof(rename_buffer) + name_offset,
+            encoded_name,
+            len(encoded_name),
+        )
+        rename_file = ctypes.WinDLL("kernel32", use_last_error=True).SetFileInformationByHandle
+        rename_file.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        )
+        rename_file.restype = wintypes.BOOL
+        if not rename_file(
+            wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
+            3,  # FileRenameInfo
+            rename_buffer,
+            len(rename_buffer),
+        ):
+            error = ctypes.get_last_error()
+            if error in {80, 183}:
+                raise FileExistsError(error, "atomic run publication target exists")
+            raise OSError(error, "atomic run publication rename failed")
+
+    def _fsync_publication_directory(
+        self,
+        path: Path,
+        expected_identity: tuple[int, int, int],
+    ) -> None:
+        """Strictly flush a pinned publication directory where supported."""
+
+        details = path.lstat()
+        if (
+            self._is_link_or_reparse(details)
+            or not stat.S_ISDIR(details.st_mode)
+            or self._filesystem_identity(details) != expected_identity
+        ):
+            raise OSError("atomic run publication directory identity changed")
+        if os.name == "nt":
+            # Every staged file is flushed by _atomic_write. Windows does not
+            # provide the POSIX directory-fsync durability contract; the
+            # handle-bound rename and identity verification remain strict.
+            return
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                self._is_link_or_reparse(opened)
+                or not stat.S_ISDIR(opened.st_mode)
+                or self._filesystem_identity(opened) != expected_identity
+            ):
+                raise OSError("atomic run publication directory identity changed")
+            os.fsync(descriptor)
+            current = path.lstat()
+            if (
+                self._is_link_or_reparse(current)
+                or self._filesystem_identity(current) != expected_identity
+            ):
+                raise OSError("atomic run publication directory identity changed")
+        finally:
+            os.close(descriptor)
+
+    def _clean_publication_staging(
+        self,
+        temporary: Path,
+        expected_identity: tuple[int, int, int],
+        staged_identities: Mapping[str, tuple[int, int, int]],
+        *,
+        expected_root_identity: tuple[int, int, int] | None,
+    ) -> None:
+        # POSIX unlinkat/rmdir remain name based. The root and staging directory
+        # are owner-private, so another process for the same OS principal is a
+        # cooperative peer; every observed entry must still match the identity
+        # captured immediately after this publisher wrote it.
+        root_descriptor: int | None = None
+        staging_descriptor: int | None = None
+        try:
+            try:
+                details = temporary.lstat()
+            except FileNotFoundError:
+                return
+            root_details = self.root.lstat()
+            root_identity = self._validated_publication_root_identity()
+            if (
+                expected_root_identity is None
+                or root_identity != expected_root_identity
+                or temporary.parent.resolve(strict=True) != self.root
+                or not temporary.name.startswith(_PUBLICATION_TEMP_PREFIX)
+                or self._is_link_or_reparse(root_details)
+                or not stat.S_ISDIR(root_details.st_mode)
+                or self._is_link_or_reparse(details)
+                or not stat.S_ISDIR(details.st_mode)
+                or self._filesystem_identity(details) != expected_identity
+            ):
+                return
+            if os.name == "nt":
+                root_descriptor = _windows_open_descriptor(self.root, directory=True)
+                staging_descriptor = _windows_open_descriptor(
+                    temporary,
+                    directory=True,
+                    delete=True,
+                )
+            else:
+                flags = os.O_RDONLY
+                flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+                flags |= getattr(os, "O_NOFOLLOW", 0)
+                root_descriptor = os.open(self.root, flags)
+                staging_descriptor = os.open(
+                    temporary.name,
+                    flags,
+                    dir_fd=root_descriptor,
+                )
+            if (
+                self._filesystem_identity(os.fstat(root_descriptor)) != root_identity
+                or self._filesystem_identity(os.fstat(staging_descriptor)) != expected_identity
+            ):
+                return
+
+            names: list[str] = []
+            if os.name == "nt":
+                with os.scandir(temporary) as entries:
+                    for entry in entries:
+                        if len(names) >= len(staged_identities) + 1:
+                            return
+                        names.append(entry.name)
+            else:
+                for name in os.listdir(staging_descriptor):
+                    if len(names) >= len(staged_identities) + 1:
+                        return
+                    names.append(name)
+            if len(names) != len(staged_identities) or set(names) != set(staged_identities):
+                return
+            for name in names:
+                if not name or Path(name).name != name or name in {".", ".."}:
+                    return
+                if os.name == "nt":
+                    child = temporary / name
+                    child_details = child.lstat()
+                    if (
+                        self._is_link_or_reparse(child_details)
+                        or not stat.S_ISREG(child_details.st_mode)
+                        or child_details.st_nlink != 1
+                    ):
+                        return
+                    child_identity = self._filesystem_identity(child_details)
+                    if staged_identities.get(name) != child_identity:
+                        return
+                    child_descriptor = _windows_open_descriptor(
+                        child,
+                        directory=False,
+                        delete=True,
+                    )
+                    try:
+                        opened_child = os.fstat(child_descriptor)
+                        current_child = child.lstat()
+                        if (
+                            self._is_link_or_reparse(opened_child)
+                            or not stat.S_ISREG(opened_child.st_mode)
+                            or opened_child.st_nlink != 1
+                            or self._filesystem_identity(opened_child) != child_identity
+                            or self._filesystem_identity(current_child) != child_identity
+                            or self._filesystem_identity(temporary.lstat()) != expected_identity
+                        ):
+                            return
+                        _windows_mark_delete_descriptor(child_descriptor)
+                    finally:
+                        os.close(child_descriptor)
+                    try:
+                        child.lstat()
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        return
+                    continue
+
+                child_details = os.stat(
+                    name,
+                    dir_fd=staging_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    self._is_link_or_reparse(child_details)
+                    or not stat.S_ISREG(child_details.st_mode)
+                    or child_details.st_nlink != 1
+                ):
+                    return
+                child_identity = self._filesystem_identity(child_details)
+                if staged_identities.get(name) != child_identity:
+                    return
+                child_flags = os.O_RDONLY
+                child_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                child_descriptor = os.open(name, child_flags, dir_fd=staging_descriptor)
+                try:
+                    opened_child = os.fstat(child_descriptor)
+                    current_child = os.stat(
+                        name,
+                        dir_fd=staging_descriptor,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        self._is_link_or_reparse(opened_child)
+                        or not stat.S_ISREG(opened_child.st_mode)
+                        or opened_child.st_nlink != 1
+                        or self._filesystem_identity(opened_child) != child_identity
+                        or self._filesystem_identity(current_child) != child_identity
+                        or self._filesystem_identity(os.fstat(staging_descriptor))
+                        != expected_identity
+                    ):
+                        return
+                    os.unlink(name, dir_fd=staging_descriptor)
+                    if os.fstat(child_descriptor).st_nlink != 0:
+                        return
+                finally:
+                    os.close(child_descriptor)
+
+            if (
+                self._filesystem_identity(temporary.lstat()) != expected_identity
+                or self._filesystem_identity(self.root.lstat()) != root_identity
+            ):
+                return
+            if os.name == "nt":
+                if any(temporary.iterdir()):
+                    return
+                _windows_mark_delete_descriptor(staging_descriptor)
+                os.close(staging_descriptor)
+                staging_descriptor = None
+            else:
+                if os.listdir(staging_descriptor):
+                    return
+                os.rmdir(temporary.name, dir_fd=root_descriptor)
+        except (OSError, RunStoreError):
+            # An owned staging directory can be retried/inspected; never broaden
+            # cleanup to an entry whose exact identity was not just verified.
+            return
+        finally:
+            for descriptor in (staging_descriptor, root_descriptor):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
 
     @staticmethod
     def _result_requires_manifest(result: Mapping[str, Any]) -> bool:
