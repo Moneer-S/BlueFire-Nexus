@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { URL } from "node:url";
-import { retainedState, retainedPostAllowed, retainedSettlementPollBudget, submitRetainedAttempt } from "./receiver-retained.mjs";
+import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, retainedSettlementPollBudget, submitRetainedAttempt } from "./receiver-retained.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
 import { retainedHash, assertRetainedSource, assertMetadataOnly, verifyRetainedOriginal, verifyRetainedContinuation, RETAINED_PACK, RETAINED_QUESTION, RETAINED_REVIEWER, RETAINED_METHOD } from "./receiver-retained-proof.mjs";
 
@@ -71,6 +71,22 @@ test("retained submission observes visible enabled action before arming and clic
     button_visible: true, button_enabled: true, readiness_error: "none",
     click_completed: true, response_received: true,
   });
+});
+
+test("retained saved-run proof binds both canonical persisted profile identities", () => {
+  const profileId = "sandbox-endpoint-deep-lab.v2";
+  assert.doesNotThrow(() => assertRetainedSavedRunProfile({
+    runner_profile_id: profileId,
+    profile: { id: profileId },
+  }, profileId));
+  assert.throws(() => assertRetainedSavedRunProfile({
+    runner_profile_id: profileId,
+    profile: { profile_id: profileId },
+  }, profileId));
+  assert.throws(() => assertRetainedSavedRunProfile({
+    runner_profile_id: "sandbox-endpoint-deep-lab.v1",
+    profile: { id: profileId },
+  }, profileId));
 });
 
 test.each(["action_disabled", "action_hidden", "route_mismatch"])("retained %s readiness failure submits nothing and preserves cleanup", async reason => {

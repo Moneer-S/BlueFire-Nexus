@@ -761,6 +761,7 @@ def test_receiver_receipt_preserves_bounded_composition_failure_categories() -> 
         "retained-original-click",
         "retained-original-response",
         "retained-original-settlement",
+        "retained-original-result-binding",
         "retained-history-selection",
         "retained-continuation-proposal",
         "retained-proposal-reopen",
@@ -769,6 +770,7 @@ def test_receiver_receipt_preserves_bounded_composition_failure_categories() -> 
         "retained-continuation-click",
         "retained-continuation-response",
         "retained-continuation-settlement",
+        "retained-continuation-result-binding",
         "retained-grant-revoke",
         "retained-result-comparison",
     ],
@@ -1706,6 +1708,10 @@ def test_retained_settlement_poll_uses_a_capped_shared_work_budget() -> None:
     assert "RETAINED_SETTLEMENT_POLL_CAP_MS = 150_000" in driver
     assert "const value = await get(readBudget)" in driver
     assert "readBudget => read(`/composition/objectives/${state.ownerId}`, readBudget)" in driver
+    assert "assertRetainedSavedRunProfile(run, options.profileId)" in driver
+    assert "assert.equal(run.profile.id, profileId)" in driver
+    assert "assert.equal(run.runner_profile_id, profileId)" in driver
+    assert "run.profile.profile_id" not in driver
     assert "110000" not in driver
 
     installed_driver = (

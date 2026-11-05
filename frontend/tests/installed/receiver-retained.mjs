@@ -187,6 +187,11 @@ export function retainedResponse(state, path, body, data) {
   return false;
 }
 
+export function assertRetainedSavedRunProfile(run, profileId) {
+  assert.equal(run.profile.id, profileId);
+  assert.equal(run.runner_profile_id, profileId);
+}
+
 export async function authorizeRetainedPurpose(page, { origin, model, reviewer }) {
   await page.goto(`${origin}/#/settings`, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: `Edit Responses API · ${model}`, exact: true }).click();
@@ -289,9 +294,10 @@ export async function runRetainedJourney(page, state, options) {
     if (settlementPollBudget <= 0) throw new Error("The retained-result proof has no work time left");
     const current = await wait(readBudget => read(`/composition/objectives/${state.ownerId}`, readBudget), value => value.attempts.some(attempt =>
       attempt.job_id === id && attempt.state === "completed" && attempt.progress.settlement === "settled" && attempt.progress.verified_result), settlementPollBudget);
+    setStage(`${index === 0 ? "retained-original" : "retained-continuation"}-result-binding`);
     const attempt = current.attempts.find(item => item.job_id === id);
     const run = await read(`/runs/${attempt.request.composition_attempt.run_id}`);
-    assert.equal(run.profile.profile_id, options.profileId);
+    assertRetainedSavedRunProfile(run, options.profileId);
     return { current, attempt, run };
   };
   const first = await execute(0);
