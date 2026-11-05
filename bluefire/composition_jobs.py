@@ -345,14 +345,16 @@ class CompositionJobs:
             _, fresh = self._current(self._owner(marker["parent_job_id"]), allow_exhausted=True)
             return fresh
 
-        materialize_retained, retain_output = retained_artifacts.execution_callbacks(
-            self,
-            marker=marker,
-            compiled=compiled,
-            grant=grant,
-            current=current,
-            lease=lease,
-            check=check,
+        materialize_retained, retain_output, publish_retained_capture = (
+            retained_artifacts.execution_callbacks(
+                self,
+                marker=marker,
+                compiled=compiled,
+                grant=grant,
+                current=current,
+                lease=lease,
+                check=check,
+            )
         )
 
         def watch():
@@ -667,6 +669,8 @@ class CompositionJobs:
                 cancel_event=ctx.cancellation_event,
                 checkpoint=ctx.checkpoint,
             )
+            if publish_retained_capture is not None:
+                publish_retained_capture()
             self.service._index_run(run_result)
             return JobResult(result_ref=marker["run_id"], progress={"phase": "attempt_completed"})
         finally:
@@ -791,6 +795,11 @@ class CompositionJobs:
 
     def _verified_result(self, attempt):
         return verified_result(self, attempt, source=_source, verify=_verified_grant_attempt)
+
+    def recover_retained_captures(self):
+        """Repair exact custody projections after restart without replaying effects."""
+
+        return retained_artifacts.reconcile_captures(self)
 
     def read(self, owner_id):
         owner = self._owner(owner_id)

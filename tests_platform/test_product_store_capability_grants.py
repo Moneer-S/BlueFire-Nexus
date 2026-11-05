@@ -1125,6 +1125,33 @@ def test_authority_history_tables_are_append_only(saved, table, operation):
         "capability_task_payloads": "task-one",
         "capability_cleanup_task_payloads": "cleanup-one",
     }
+    if table in {
+        "capability_retained_capture_intents",
+        "capability_retained_capture_receipts",
+    }:
+        intent = {"schema_only_fixture": lease["attempt_id"], "kind": "intent"}
+        with store._connection(write=True) as connection:
+            connection.execute(
+                "INSERT INTO capability_retained_capture_intents VALUES(?,?,?,?,?)",
+                (
+                    lease["attempt_id"],
+                    lease["job_id"],
+                    lease["run_id"],
+                    canonical_json(intent),
+                    content_hash(intent),
+                ),
+            )
+            if table == "capability_retained_capture_receipts":
+                receipt = {"schema_only_fixture": lease["attempt_id"], "kind": "receipt"}
+                connection.execute(
+                    "INSERT INTO capability_retained_capture_receipts VALUES(?,?,?,?)",
+                    (
+                        lease["attempt_id"],
+                        content_hash(intent),
+                        canonical_json(receipt),
+                        content_hash(receipt),
+                    ),
+                )
     if table in schema_only_identities:
         # These tables are empty in the receiver fixture; seed rows for their triggers.
         identity = schema_only_identities[table]

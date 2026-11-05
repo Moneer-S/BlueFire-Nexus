@@ -53,9 +53,20 @@ class PayloadUnavailable(CapabilityContractError):
     """Historical evidence is valid, but its separately retained bytes are unavailable."""
 
 
-def capture(
-    store, *, run_id, attempt_id, lineage_id, step, artifact, payload, evidence_id, observation_id
+def _capture_documents(
+    *,
+    run_id,
+    attempt_id,
+    lineage_id,
+    job_id,
+    step,
+    artifact,
+    payload,
+    producer_record,
+    observation_record,
 ):
+    from .evidence import EvidenceError, EvidenceRecord
+
     if (
         step.action_id != POLICY["producer"]
         or artifact.get("type") != "artifact.sandbox.bundle.v1"
@@ -67,6 +78,24 @@ def capture(
         or re.fullmatch(r"[0-9a-f]{64}", artifact["receipt_ids"][0]) is None
     ):
         raise CapabilityContractError("only the reviewed successful staging output can be retained")
+    try:
+        producer = EvidenceRecord.from_mapping(producer_record).to_dict()
+        observation = EvidenceRecord.from_mapping(observation_record).to_dict()
+    except (EvidenceError, KeyError, TypeError, ValueError) as exc:
+        raise CapabilityContractError(
+            "retained capture requires its exact evidence records"
+        ) from exc
+    if (
+        producer != dict(producer_record)
+        or observation != dict(observation_record)
+        or producer.get("evidence_id") is None
+        or observation.get("evidence_id") is None
+        or not isinstance(producer.get("record_hash"), str)
+        or not isinstance(observation.get("record_hash"), str)
+    ):
+        raise CapabilityContractError("retained capture requires its exact evidence records")
+    evidence_id = producer["evidence_id"]
+    observation_id = observation["evidence_id"]
     body = {
         "run_id": run_id,
         "attempt_id": attempt_id,
@@ -99,15 +128,146 @@ def capture(
     }
     if len(canonical_json_bytes(document)) + 1 > MAX_ENVELOPE_BYTES:
         raise CapabilityContractError("retained artifact envelope exceeds its reviewed byte bound")
-    # One publication only. Never overwrite a previously captured output.
-    if (store._run_path(run_id, must_exist=True) / "artifacts.json").exists():
-        raise CapabilityContractError("attempt retention count is exhausted")
-    store.write_retained_payload(run_id, payload)
-    store.write_json(run_id, "artifacts.json", document)
-    store.append_event(
-        run_id, "artifact.retained", {"source": reference, "disposition": POLICY["disposition"]}
+    receipt_body = {
+        "schema_version": "bluefire.retained-artifact-capture.v1",
+        "source": reference,
+        "producer_record_hash": producer["record_hash"],
+        "observation_record_hash": observation["record_hash"],
+    }
+    receipt = {**receipt_body, "capture_digest": content_hash(receipt_body)}
+    intent_body = {
+        "schema_version": "bluefire.retained-artifact-capture-intent.v1",
+        "job_id": job_id,
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "lineage_id": lineage_id,
+        "step_id": step.step_id,
+        "source": reference,
+        "artifacts_digest": content_hash(document),
+        "producer_evidence_id": evidence_id,
+        "producer_record_hash": producer["record_hash"],
+        "observation_evidence_id": observation_id,
+        "observation_record_hash": observation["record_hash"],
+    }
+    intent = {**intent_body, "intent_digest": content_hash(intent_body)}
+    event = {
+        "event_type": "artifact.retained",
+        "capture_digest": receipt["capture_digest"],
+        "data": {"source": reference, "disposition": POLICY["disposition"]},
+    }
+    publication = {
+        "schema_version": "bluefire.retained-capture-publication.v1",
+        "run_id": run_id,
+        "intent": intent,
+        "receipt": receipt,
+        "artifacts": document,
+        "event": event,
+        "evidence": {
+            "producer": producer,
+            "observation": observation,
+        },
+        "payload": {
+            "path": "retained/bundle.jsonl",
+            "sha256": reference["sha256"],
+            "size_bytes": reference["size_bytes"],
+        },
+    }
+    publication["publication_digest"] = content_hash(publication)
+    return {
+        "source": reference,
+        "intent": intent,
+        "receipt": receipt,
+        "artifacts": document,
+        "event": event,
+        "publication": publication,
+    }
+
+
+def capture(
+    store,
+    *,
+    run_id,
+    attempt_id,
+    lineage_id,
+    job_id,
+    step,
+    artifact,
+    payload,
+    producer_record,
+    observation_record,
+    _prepared=None,
+):
+    prepared = _prepared or _capture_documents(
+        run_id=run_id,
+        attempt_id=attempt_id,
+        lineage_id=lineage_id,
+        job_id=job_id,
+        step=step,
+        artifact=artifact,
+        payload=payload,
+        producer_record=producer_record,
+        observation_record=observation_record,
     )
-    return reference
+    try:
+        store.publish_retained_capture(
+            run_id,
+            payload=payload,
+            capture=prepared["publication"],
+            artifacts=prepared["artifacts"],
+            event=prepared["event"],
+        )
+    except (ValueError, OSError) as exc:
+        if "conflict" in str(exc) or "not byte-identical" in str(exc):
+            raise CapabilityContractError("attempt retention count is exhausted") from exc
+        raise CapabilityContractError("retained capture publication failed safely") from exc
+    return prepared["source"]
+
+
+def _verify_capture_evidence(run, publication):
+    """Bind the exact prepublication evidence to the sealed run before receipt."""
+
+    from .evidence import EvidenceError, EvidenceRecord
+
+    intent = publication.get("intent")
+    receipt = publication.get("receipt")
+    evidence = publication.get("evidence")
+    artifacts = publication.get("artifacts")
+    sealed_evidence = run.get("evidence", {})
+    records = sealed_evidence.get("records") if isinstance(sealed_evidence, Mapping) else None
+    if (
+        not isinstance(intent, Mapping)
+        or not isinstance(receipt, Mapping)
+        or not isinstance(evidence, Mapping)
+        or not isinstance(artifacts, Mapping)
+        or not isinstance(records, list)
+        or intent.get("artifacts_digest") != content_hash(artifacts)
+        or receipt.get("source") != intent.get("source")
+    ):
+        raise CapabilityContractError("retained capture sealed evidence binding changed")
+    for role, identity_key, hash_key in (
+        ("producer", "producer_evidence_id", "producer_record_hash"),
+        ("observation", "observation_evidence_id", "observation_record_hash"),
+    ):
+        document = evidence.get(role)
+        try:
+            record = EvidenceRecord.from_mapping(document).to_dict()
+            sealed = [
+                EvidenceRecord.from_mapping(item).to_dict()
+                for item in records
+                if isinstance(item, Mapping) and item.get("evidence_id") == intent.get(identity_key)
+            ]
+        except (EvidenceError, KeyError, TypeError, ValueError) as exc:
+            raise CapabilityContractError(
+                "retained capture sealed evidence binding changed"
+            ) from exc
+        if (
+            record != document
+            or record["evidence_id"] != intent.get(identity_key)
+            or record["record_hash"] != intent.get(hash_key)
+            or record["record_hash"] != receipt.get(hash_key)
+            or sealed != [record]
+        ):
+            raise CapabilityContractError("retained capture sealed evidence binding changed")
 
 
 def resolve_metadata(store, reference):
@@ -233,6 +393,9 @@ def historical_sources(jobs, grant, *, owner_id):
         if capture is None:
             continue
         try:
+            trusted_capture = jobs.store.get_retained_artifact_capture(lease["attempt_id"])
+            if trusted_capture != capture:
+                raise CapabilityContractError("trusted source capture anchor changed")
             run = jobs.service.detection_lab.run_store.get_run(
                 lease["run_id"], require_finalized=True
             )
@@ -322,6 +485,95 @@ def historical_sources(jobs, grant, *, owner_id):
                 "retained historical source evidence failed integrity validation"
             ) from exc
     return result
+
+
+def reconcile_captures(jobs):
+    """Reconcile exact retained journals without replaying native work."""
+
+    from .product_store_errors import ProductStoreError
+    from .run_store import RunStoreError
+
+    run_store = jobs.service.detection_lab.run_store
+    summary = {"examined": 0, "reconciled": 0, "pending": 0, "refused": 0}
+    journals: set[str] = set()
+    reconciled: set[str] = set()
+    try:
+        intents = jobs.store.list_retained_artifact_capture_intents()
+    except ProductStoreError:
+        intents = []
+        summary["refused"] += 1
+    pending_run_ids = [
+        intent["run_id"]
+        for intent in intents
+        if isinstance(intent, Mapping) and isinstance(intent.get("run_id"), str)
+    ]
+    intents_by_run = {intent["run_id"]: intent for intent in intents}
+    available_run_ids = run_store.retained_capture_run_ids()
+    prioritized_run_ids = list(dict.fromkeys(pending_run_ids + available_run_ids))[:256]
+    for run_id in prioritized_run_ids:
+        summary["examined"] += 1
+        try:
+            journal = run_store.retained_capture(run_id, reconcile=False)
+            intent = journal["intent"]
+            receipt = journal["receipt"]
+            if (
+                not isinstance(intent, Mapping)
+                or not isinstance(receipt, Mapping)
+                or intent.get("run_id") != run_id
+                or intent != intents_by_run.get(run_id)
+                or journal.get("publication_digest")
+                != content_hash(
+                    {key: value for key, value in journal.items() if key != "publication_digest"}
+                )
+            ):
+                raise CapabilityContractError("retained capture journal changed")
+            attempt = jobs.store.get_capability_attempt(intent["attempt_id"])
+            lease = attempt["lease"]
+            if any(
+                lease.get(key) != intent.get(key)
+                for key in ("attempt_id", "run_id", "lineage_id", "job_id")
+            ):
+                raise CapabilityContractError("retained capture attempt binding changed")
+            journals.add(intent["intent_digest"])
+            # Repair projections only after the independently persisted intent
+            # and claimed attempt have been matched to this private journal.
+            if run_store.retained_capture(run_id, reconcile=True) != journal:
+                raise CapabilityContractError("retained capture journal changed")
+            try:
+                run_store.get_run(run_id, require_finalized=True)
+            except RunStoreError:
+                result = run_store.read_json(run_id, "result.json")
+                if (
+                    result.get("status") == "interrupted"
+                    and not (
+                        run_store._run_path(run_id, must_exist=True) / "manifest.json"
+                    ).exists()
+                ):
+                    # Preserve the atomic capture, but never certify it as a
+                    # reusable source without a sealed run and cleanup result.
+                    continue
+                raise
+            sealed_run = resolve_metadata(run_store, receipt["source"])
+            _verify_capture_evidence(sealed_run, journal)
+            # A private journal cannot establish its own prepublication intent.
+            # This is only an exact retry of the already durable SQL row.
+            jobs.store.begin_retained_artifact_capture(intent["job_id"], intent)
+            jobs.store.commit_retained_artifact_capture(intent["job_id"], receipt)
+            reconciled.add(intent["intent_digest"])
+            summary["reconciled"] += 1
+        except (
+            CapabilityContractError,
+            ProductStoreError,
+            RunStoreError,
+            KeyError,
+            TypeError,
+            ValueError,
+            OSError,
+        ):
+            summary["refused"] += 1
+    known = {intent["intent_digest"] for intent in intents} | journals
+    summary["pending"] = len(known - reconciled)
+    return summary
 
 
 def available_sources(jobs, grant, *, owner_id):
@@ -487,13 +739,14 @@ def prior_failure(jobs, grant, attempt, child, *, owner_id):
 
 
 def execution_callbacks(jobs, *, marker, compiled, grant, current, lease, check):
-    """Build the two retained-output hooks on the existing claimed attempt."""
+    """Build retained materialization, capture, and sealed-receipt hooks."""
     from .capability_packs import grant_pack
     from .product_store_errors import ProductStoreError
 
     if grant_pack(grant) != PACK:
-        return None, None
+        return None, None, None
     attempt_id = marker["attempt_id"]
+    pending_capture = None
 
     def materialize_retained(step):
         check()
@@ -512,6 +765,7 @@ def execution_callbacks(jobs, *, marker, compiled, grant, current, lease, check)
         return {"source": source, "payload": payload}
 
     def retain_output(step, artifact, observer, executed_record):
+        nonlocal pending_capture
         check()
         evidence_id = executed_record.evidence_id
         captured = []
@@ -533,35 +787,73 @@ def execution_callbacks(jobs, *, marker, compiled, grant, current, lease, check)
             raise ProductStoreError(
                 "Pinned retention observation differs from the successful producer."
             )
-        source = capture(
-            jobs.service.detection_lab.run_store,
+        prepared = _capture_documents(
             run_id=lease["run_id"],
             attempt_id=attempt_id,
             lineage_id=lease["lineage_id"],
+            job_id=lease["job_id"],
             step=step,
             artifact=artifact,
             payload=captured[0],
-            evidence_id=evidence_id,
-            observation_id=observed.evidence_id,
+            producer_record=executed_record.to_dict(),
+            observation_record=observed.to_dict(),
         )
-        if (
-            jobs.store.get_job(lease["job_id"])["progress"].get("retained_artifact_capture")
-            is not None
-        ):
-            raise ProductStoreError("The attempt already has a retained capture receipt.")
-        receipt = {
-            "schema_version": "bluefire.retained-artifact-capture.v1",
-            "source": source,
-            "producer_record_hash": executed_record.record_hash,
-            "observation_record_hash": observed.record_hash,
-        }
-        jobs._publish(
-            lease["job_id"],
-            {"retained_artifact_capture": {**receipt, "capture_digest": content_hash(receipt)}},
-        )
+        # Persist the exact intent before publishing bytes so a process death
+        # at any later boundary remains discoverable.  This intent is not a
+        # trusted source receipt and cannot make an unsealed run reusable.
+        pending_capture = prepared
+        for attempt in range(2):
+            try:
+                jobs.store.begin_retained_artifact_capture(lease["job_id"], prepared["intent"])
+                break
+            except ProductStoreError:
+                if attempt:
+                    raise
+        # The private journal and run-bundle projections are then published
+        # while the observed bytes are pinned.  The trusted receipt remains
+        # delayed until the run manifest seals the evidence.
+        for attempt in range(2):
+            try:
+                source = capture(
+                    jobs.service.detection_lab.run_store,
+                    run_id=lease["run_id"],
+                    attempt_id=attempt_id,
+                    lineage_id=lease["lineage_id"],
+                    job_id=lease["job_id"],
+                    step=step,
+                    artifact=artifact,
+                    payload=captured[0],
+                    producer_record=executed_record.to_dict(),
+                    observation_record=observed.to_dict(),
+                    _prepared=prepared,
+                )
+                break
+            except CapabilityContractError:
+                if attempt:
+                    raise
         return observed, source
 
-    return materialize_retained, retain_output
+    def publish_capture_receipt():
+        if pending_capture is None:
+            return None
+        # Never certify a manifestless or mismatched run.  Startup recovery can
+        # repeat this exact publication after a lost database acknowledgement.
+        sealed_run = resolve_metadata(
+            jobs.service.detection_lab.run_store,
+            pending_capture["source"],
+        )
+        _verify_capture_evidence(sealed_run, pending_capture["publication"])
+        for attempt in range(2):
+            try:
+                return jobs.store.commit_retained_artifact_capture(
+                    lease["job_id"], pending_capture["receipt"]
+                )
+            except ProductStoreError:
+                if attempt:
+                    raise
+        return None
+
+    return materialize_retained, retain_output, publish_capture_receipt
 
 
 def publish_continuation(jobs, marker, job_id):

@@ -330,6 +330,7 @@ class BlueFireService(
 
         self.product_store.interrupt_active_capability_grants(now_ms=now_ms())
         self.composition = CompositionJobs(self)
+        self.retained_capture_recovery = self.composition.recover_retained_captures()
         from .file_access_control import FileAccessControl
 
         self._file_access = FileAccessControl(self)

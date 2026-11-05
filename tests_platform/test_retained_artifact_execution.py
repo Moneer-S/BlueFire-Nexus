@@ -138,11 +138,12 @@ def sealed_source(tmp_path):
         run_id=handle.run_id,
         attempt_id="attempt-" + "b" * 32,
         lineage_id="lineage-1",
+        job_id="job-source",
         step=step,
         artifact=artifact,
         payload=captured[0],
-        evidence_id=executed.evidence_id,
-        observation_id=observed.evidence_id,
+        producer_record=executed.to_dict(),
+        observation_record=observed.to_dict(),
     )
     # Source workspace cleanup does not remove the separately reviewed retention.
     path.unlink()
@@ -224,11 +225,31 @@ def trusted_jobs(store, source, grant):
             )
         )
 
+    capture_intents = {}
+
+    def begin_capture(job_id, intent):
+        previous = capture_intents.setdefault(job_id, deepcopy(intent))
+        if previous != intent:
+            raise ProductStoreError("conflicting capture intent")
+        return previous
+
+    def commit_capture(job_id, receipt):
+        if job_id not in capture_intents:
+            raise ProductStoreError("missing capture intent")
+        previous = child["progress"].get("retained_artifact_capture")
+        if previous is not None and previous != receipt:
+            raise ProductStoreError("conflicting capture receipt")
+        child["progress"]["retained_artifact_capture"] = deepcopy(receipt)
+        return receipt
+
     product = SimpleNamespace(
         _connection=connection,
         get_capability_grant=lambda *args, **kwargs: {"lineage_id": "lineage-1", "document": grant},
         get_capability_attempt=lambda _: attempt,
         get_job=lambda identifier: owner if identifier == OWNER_ID else child,
+        get_retained_artifact_capture=lambda _: child["progress"]["retained_artifact_capture"],
+        begin_retained_artifact_capture=begin_capture,
+        commit_retained_artifact_capture=commit_capture,
     )
     return (
         SimpleNamespace(
@@ -365,12 +386,16 @@ def test_new_node_is_the_real_typed_producer_and_has_no_prefix_replay(state, tmp
 
 def test_retention_count_and_non_generated_bytes_are_refused(tmp_path):
     store, source, payload = sealed_source(tmp_path)
+    records = store.get_run(source["run_id"])["evidence"]["records"]
+    producer = next(record for record in records if record["provenance"] == "executed")
+    observation = next(record for record in records if record["provenance"] == "observed")
     with pytest.raises(CapabilityContractError, match="count"):
         retained.capture(
             store,
             run_id=source["run_id"],
             attempt_id=source["attempt_id"],
             lineage_id=source["lineage_id"],
+            job_id="job-source",
             step=SimpleNamespace(step_id="stage", action_id=METHODS[4]),
             artifact={
                 "type": source["artifact_type"],
@@ -378,11 +403,11 @@ def test_retention_count_and_non_generated_bytes_are_refused(tmp_path):
                 "path": "staged/bundle.jsonl",
                 "sha256": source["sha256"],
                 "size": len(payload),
-                "receipt_ids": ["a" * 64],
+                "receipt_ids": ["b" * 64],
             },
             payload=payload,
-            evidence_id="evidence",
-            observation_id="observation",
+            producer_record=producer,
+            observation_record=observation,
         )
     arbitrary = b'{"unreviewed":"arbitrary"}\n'
     with pytest.raises(ValueError):

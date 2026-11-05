@@ -13,6 +13,7 @@ from typing import Any
 
 from .run_store import (
     RECOVERY_ID_RE,
+    RETAINED_CAPTURE_NAME,
     RETAINED_PAYLOAD_DIRECTORY,
     RETAINED_PAYLOAD_NAME,
     SAFE_BUNDLE_NAMES,
@@ -65,7 +66,10 @@ def _inventory(root: Path) -> dict[str, tuple[int, ...]]:
             # links and additional children never become silent omissions.
             _identity(entry, directory=True)
             for child in entry.iterdir():
-                _require(child.name == RETAINED_PAYLOAD_NAME, "Unexpected retained payload entry.")
+                _require(
+                    child.name in {RETAINED_PAYLOAD_NAME, RETAINED_CAPTURE_NAME},
+                    "Unexpected retained payload entry.",
+                )
                 _identity(child)
             continue
         if RECOVERY_ID_RE.fullmatch(entry.name):
