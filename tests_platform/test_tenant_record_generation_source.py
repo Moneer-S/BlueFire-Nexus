@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from bluefire.controlled_strix_provider import DEFAULT_MODEL_ID, MANIFEST_SCHEMA
 from bluefire.product_store import ProductStore
 from bluefire.product_store_errors import ResourceConflictError
 from bluefire.tenant_record_generation_source import (
@@ -41,6 +40,7 @@ from bluefire.tenant_record_target_adapter import (
 from bluefire.tenant_record_target_child import TargetReadyReceipt, TenantTargetPacket
 from bluefire.util import canonical_json_bytes, content_hash
 from bluefire.windows_owner_acl import apply_owner_private_acl_path
+from tests_platform.strix_provider_profile_fixture import synthetic_manifest
 from tests_platform.test_tenant_record_lab_launcher import FakeBackend
 
 NOW = "2026-11-04T15:00:00Z"
@@ -128,25 +128,9 @@ def _inputs(root: Path) -> ProtectedTenantGenerationInputs:
         created_at=NOW,
         max_runtime_seconds=600,
     )
-    manifest = {
-        "schema_version": MANIFEST_SCHEMA,
-        "attempt_id": packet.attempt_id,
-        "model_id": DEFAULT_MODEL_ID,
-        "max_requests": 4,
-        "max_request_bytes": 4096,
-        "max_response_bytes": 4096,
-        "max_messages": 16,
-        "max_tools": 8,
-        "max_schema_depth": 8,
-        "phases": [
-            {
-                "phase_id": "finish",
-                "tool_name": "finish_scan",
-                "tool_schema_digest": content_hash({"schema": "finish"}),
-                "arguments": {"summary": "fixed mechanics fixture"},
-            }
-        ],
-    }
+    # This test only exercises protected input custody. The synthetic profile
+    # is parseable offline but never enrolled for provider serving.
+    manifest = synthetic_manifest(attempt_id=packet.attempt_id)
     _write(root / "target-input.json", packet.to_bytes())
     _write(root / "provider-input.json", canonical_json_bytes(manifest))
     _write(root / "provider-input.txt", b"controller-owned-provider-material-000001")
@@ -160,12 +144,13 @@ def _setup(tmp_path: Path):
     _protect(scratch, directory=True)
     runtime_root = tmp_path / "runtime"
     runtime_root.mkdir()
-    for name in ("python.exe", "target.py", "provider.py"):
+    for name in ("python.exe", "target.py", "provider.py", "provider_conformance.py"):
         (runtime_root / name).write_bytes(name.encode("ascii"))
     runtime = RuntimeBinding.inspect_for_test(
         python_path=runtime_root / "python.exe",
         target_path=runtime_root / "target.py",
         provider_path=runtime_root / "provider.py",
+        provider_conformance_path=runtime_root / "provider_conformance.py",
     )
     clock = Clock()
     backend = Backend(clock)

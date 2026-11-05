@@ -480,9 +480,10 @@ class FakeLinuxCustody:
 
 
 def _packets() -> TenantLabPackets:
+    # Opaque bytes for launcher custody tests; no provider parses this packet.
     return TenantLabPackets(
         target_packet=b'{"schema_version":"bluefire.tenant-record-target-packet.v1"}\n',
-        provider_manifest=b'{"schema_version":"bluefire.controlled-strix-mechanics.v1"}\n',
+        provider_manifest=b'{"schema_version":"bluefire.controlled-strix-mechanics.v2"}\n',
         provider_token=b"t" * 48,
     )
 
@@ -491,13 +492,16 @@ def _launcher(tmp_path: Path) -> tuple[TenantRecordLabLauncher, FakeBackend, Clo
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     provider = tmp_path / "controlled_strix_provider.py"
+    conformance = tmp_path / "strix_tool_conformance.py"
     target = tmp_path / "tenant_record_target_child.py"
     provider.write_text("# fixed test provider\n", encoding="utf-8")
+    conformance.write_text("# fixed test conformance\n", encoding="utf-8")
     target.write_text("# fixed test target\n", encoding="utf-8")
     runtime = RuntimeBinding.inspect_for_test(
         python_path=Path(sys.executable),
         target_path=target,
         provider_path=provider,
+        provider_conformance_path=conformance,
     )
     clock = Clock()
     backend = FakeBackend(clock)
@@ -944,6 +948,7 @@ def test_runtime_and_root_protection_are_rechecked(tmp_path: Path) -> None:
         python_path=Path(sys.executable),
         target_path=tmp_path / "tenant_record_target_child.py",
         provider_path=provider_path,
+        provider_conformance_path=tmp_path / "strix_tool_conformance.py",
     )
     assert changed.digest != prepared.plan.runtime_digest
     with pytest.raises(TenantLabLaunchError, match="configured runtime"):
@@ -954,6 +959,24 @@ def test_runtime_and_root_protection_are_rechecked(tmp_path: Path) -> None:
             root_is_protected=lambda _path: True,
             clock=Clock(),
         ).start(prepared, lifecycle)
+
+
+def test_provider_conformance_code_is_sealed_before_launch(tmp_path: Path) -> None:
+    launcher, backend, prepared, lifecycle = _prepared(tmp_path)
+    conformance_path = tmp_path / "strix_tool_conformance.py"
+    conformance_path.write_text("# changed allowlist or tool policy\n", encoding="utf-8")
+
+    with pytest.raises(TenantLabLaunchError, match="runtime changed"):
+        launcher.start(prepared, lifecycle)
+    assert backend.events == []
+
+    changed = RuntimeBinding.inspect_for_test(
+        python_path=Path(sys.executable),
+        target_path=tmp_path / "tenant_record_target_child.py",
+        provider_path=tmp_path / "controlled_strix_provider.py",
+        provider_conformance_path=conformance_path,
+    )
+    assert changed.digest != prepared.plan.runtime_digest
 
 
 def test_cleanup_uncertainty_can_be_reconciled_without_process_replay(
@@ -982,13 +1005,16 @@ def _concrete_prepared(
     scratch = tmp_path / "concrete-scratch"
     scratch.mkdir()
     provider = tmp_path / "concrete-controlled-provider.py"
+    conformance = tmp_path / "concrete-provider-conformance.py"
     target = tmp_path / "concrete-target-child.py"
     provider.write_text("# fixed provider\n", encoding="utf-8")
+    conformance.write_text("# fixed conformance\n", encoding="utf-8")
     target.write_text("# fixed target\n", encoding="utf-8")
     runtime = RuntimeBinding.inspect_for_test(
         python_path=Path(sys.executable),
         target_path=target,
         provider_path=provider,
+        provider_conformance_path=conformance,
     )
     clock = Clock()
     native = FakeNativeSupervisor(
@@ -1344,13 +1370,16 @@ def test_root_protection_drift_blocks_cleanup_without_deleting_scratch(
     scratch = tmp_path / "protected-scratch"
     scratch.mkdir()
     provider = tmp_path / "protected-provider.py"
+    conformance = tmp_path / "protected-provider-conformance.py"
     target = tmp_path / "protected-target.py"
     provider.write_text("# provider\n", encoding="utf-8")
+    conformance.write_text("# conformance\n", encoding="utf-8")
     target.write_text("# target\n", encoding="utf-8")
     runtime = RuntimeBinding.inspect_for_test(
         python_path=Path(sys.executable),
         target_path=target,
         provider_path=provider,
+        provider_conformance_path=conformance,
     )
     protected = [True]
     clock = Clock()

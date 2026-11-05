@@ -58,7 +58,7 @@ def stream_documents(*, sequence: int = 1) -> list[dict[str, Any]]:
                                 "index": 0,
                                 "id": f"call_{sequence:04d}_0123456789abcdef",
                                 "type": "function",
-                                "function": {"name": "finish_scan", "arguments": "{}"},
+                                "function": {"name": "view_agent_graph", "arguments": "{}"},
                             }
                         ],
                     },
@@ -130,6 +130,7 @@ def binding() -> ControlledProviderBinding:
 
 
 def request(authority: ControlledProviderBinding) -> ModelForwardRequest:
+    # Forwarder/SSE correlation fixture, not an enrolled Strix wire profile.
     policy = authority.policy
     values = {
         item.name: getattr(policy, item.name)
@@ -153,8 +154,13 @@ def request(authority: ControlledProviderBinding) -> ModelForwardRequest:
                     {
                         "type": "function",
                         "function": {
-                            "name": "finish_scan",
-                            "parameters": {"type": "object"},
+                            "name": "view_agent_graph",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {},
+                                "required": [],
+                                "additionalProperties": False,
+                            },
                         },
                     }
                 ],

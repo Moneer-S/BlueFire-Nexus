@@ -45,8 +45,9 @@ supplying a Docker image cannot create runtime admission.
 
 The controlled mechanics provider has the fixed label **Test provider**, the default fixture model
 `bluefire-controlled-strix-mechanics-v1`, and `live_model_proof: false`. It is suitable only for
-model-independent interaction and lifecycle tests. Do not relabel its output as live inference or
-put a real provider credential into its configuration.
+model-independent interaction and lifecycle tests. Its current [tool conformance profile](strix-test-provider-conformance.md)
+validates offline candidates but has no enrolled wire-schema digest, so provider serving is unavailable.
+Do not relabel test output as live inference or put a real provider credential into its configuration.
 
 External-engine target inputs remain typed and scope-bound. A local-directory target must name a
 disposable copy; an API specification URL does not widen authority to referenced hosts; and MCP

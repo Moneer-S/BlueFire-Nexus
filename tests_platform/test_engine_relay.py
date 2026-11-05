@@ -342,6 +342,7 @@ def _gateway(
 
 
 def _controlled_stream_request_body(**overrides: Any) -> bytes:
+    # Generic relay grammar fixture, not a captured Strix root-tool roster.
     value: dict[str, Any] = {
         "model": "bluefire-controlled-v1",
         "messages": [{"role": "user", "content": "inspect the admitted lab"}],
@@ -349,12 +350,12 @@ def _controlled_stream_request_body(**overrides: Any) -> bytes:
             {
                 "type": "function",
                 "function": {
-                    "name": "observe_fixture",
-                    "description": "Observe the generated fixture.",
+                    "name": "view_agent_graph",
+                    "description": "Synthetic relay grammar descriptor for the pinned graph tool.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"observation": {"type": "string"}},
-                        "required": ["observation"],
+                        "properties": {},
+                        "required": [],
                         "additionalProperties": False,
                     },
                     "strict": True,
@@ -370,9 +371,7 @@ def _controlled_stream_request_body(**overrides: Any) -> bytes:
     return json.dumps(value, separators=(",", ":")).encode()
 
 
-def _controlled_stream_documents(
-    *, arguments: str = '{"observation":"fixture"}'
-) -> list[dict[str, Any]]:
+def _controlled_stream_documents(*, arguments: str = "{}") -> list[dict[str, Any]]:
     base: dict[str, Any] = {
         "id": f"chatcmpl-{ATTEMPT_ID[-12:]}-0001",
         "object": "chat.completion.chunk",
@@ -394,7 +393,7 @@ def _controlled_stream_documents(
                                 "id": "call_0001_0123456789abcdef",
                                 "type": "function",
                                 "function": {
-                                    "name": "observe_fixture",
+                                    "name": "view_agent_graph",
                                     "arguments": arguments,
                                 },
                             }
@@ -1744,8 +1743,7 @@ def test_controlled_sse_exact_fixture_succeeds_and_preserves_nonlive_truth() -> 
     forwarded = forwarder.calls[0]
     assert forwarded.max_response_bytes == _model_policy().max_response_bytes
     public = json.dumps(response.receipt.to_dict()) + json.dumps(record.to_dict())
-    assert "observe_fixture" not in public
-    assert "observation" not in public
+    assert "view_agent_graph" not in public
     assert TOKEN not in public
     assert PROTECTED_SECRET not in public
 
@@ -1849,7 +1847,7 @@ def test_controlled_sse_rejects_semantically_invalid_frames(case: str) -> None:
         documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] = "[]"
     elif case == "duplicate_arguments":
         documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] = (
-            '{"observation":"a","observation":"b"}'
+            '{"unexpected":"a","unexpected":"b"}'
         )
     elif case == "finish_drift":
         documents[1]["choices"][0]["finish_reason"] = "stop"

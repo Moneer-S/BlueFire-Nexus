@@ -25,10 +25,18 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
-PROVIDER_ID = "controlled-strix-mechanics.v1"
+from .strix_tool_conformance import (
+    MODEL_ID,
+    PROVIDER_ID,
+    OfflineRootToolProfile,
+    ToolConformanceError,
+    validate_finish_arguments,
+    validate_phase_parameters,
+)
+
 PROVIDER_LABEL = "Test provider"
-MANIFEST_SCHEMA = "bluefire.controlled-strix-mechanics.v1"
-DEFAULT_MODEL_ID = "bluefire-controlled-strix-mechanics-v1"
+MANIFEST_SCHEMA = "bluefire.controlled-strix-mechanics.v2"
+DEFAULT_MODEL_ID = MODEL_ID
 _ATTEMPT_ID = re.compile(r"^engine-attempt-[0-9a-f]{32}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,127}$")
@@ -318,12 +326,16 @@ class MechanicsPhase:
 class ControlledProviderManifest:
     attempt_id: str
     model_id: str
+    profile: OfflineRootToolProfile
     max_requests: int
     max_request_bytes: int
     max_response_bytes: int
     max_messages: int
     max_tools: int
     max_schema_depth: int
+    max_input_tokens: int
+    max_output_tokens: int
+    max_total_tokens: int
     phases: tuple[MechanicsPhase, ...]
     digest: str
 
@@ -333,22 +345,36 @@ class ControlledProviderManifest:
             "schema_version",
             "attempt_id",
             "model_id",
+            "profile",
             "max_requests",
             "max_request_bytes",
             "max_response_bytes",
             "max_messages",
             "max_tools",
             "max_schema_depth",
+            "max_input_tokens",
+            "max_output_tokens",
+            "max_total_tokens",
             "phases",
         }
-        if set(value) != expected or value.get("schema_version") != MANIFEST_SCHEMA:
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected
+            or value.get("schema_version") != MANIFEST_SCHEMA
+        ):
             raise ControlledProviderError(422, "invalid_manifest", "manifest fields are invalid")
         attempt_id = _bounded_text(value["attempt_id"], "attempt ID", maximum=47)
         if _ATTEMPT_ID.fullmatch(attempt_id) is None:
             raise ControlledProviderError(422, "invalid_manifest", "attempt ID is invalid")
         model_id = _bounded_text(value["model_id"], "model ID", maximum=160)
+        if model_id != DEFAULT_MODEL_ID:
+            raise ControlledProviderError(422, "invalid_manifest", "Test-provider model changed")
+        try:
+            profile = OfflineRootToolProfile.from_mapping(value["profile"])
+        except ToolConformanceError as exc:
+            raise ControlledProviderError(422, "invalid_profile", str(exc)) from exc
         raw_phases = value["phases"]
-        if not isinstance(raw_phases, list) or not 1 <= len(raw_phases) <= 8:
+        if not isinstance(raw_phases, list) or len(raw_phases) != 2:
             raise ControlledProviderError(422, "invalid_manifest", "manifest phases are invalid")
         phases: list[MechanicsPhase] = []
         phase_ids: set[str] = set()
@@ -357,6 +383,7 @@ class ControlledProviderManifest:
                 "phase_id",
                 "tool_name",
                 "tool_schema_digest",
+                "parameters_schema",
                 "arguments",
             }:
                 raise ControlledProviderError(422, "invalid_manifest", "manifest phase is invalid")
@@ -372,8 +399,21 @@ class ControlledProviderManifest:
             ):
                 raise ControlledProviderError(422, "invalid_manifest", "manifest phase is invalid")
             try:
+                validate_phase_parameters(tool_name, raw_phase["parameters_schema"])
+                schema_digest = _sha256(_canonical(raw_phase["parameters_schema"]))
+            except ToolConformanceError as exc:
+                raise ControlledProviderError(422, "invalid_manifest", str(exc)) from exc
+            except (RecursionError, TypeError, ValueError) as exc:
+                raise ControlledProviderError(
+                    422, "invalid_manifest", "phase schema is invalid"
+                ) from exc
+            if schema_digest != digest:
+                raise ControlledProviderError(
+                    422, "invalid_manifest", "phase schema digest changed"
+                )
+            try:
                 arguments_json = _canonical(raw_phase["arguments"]).decode("ascii")
-            except (TypeError, ValueError) as exc:
+            except (RecursionError, TypeError, ValueError) as exc:
                 raise ControlledProviderError(
                     422, "invalid_manifest", "tool arguments are invalid"
                 ) from exc
@@ -390,9 +430,28 @@ class ControlledProviderManifest:
                     arguments_json=arguments_json,
                 )
             )
-        if phases[-1].phase_id != "finish" or phases[-1].tool_name != "finish_scan":
+        if tuple((phase.phase_id, phase.tool_name) for phase in phases) != (
+            ("inspect_graph", "view_agent_graph"),
+            ("finish", "finish_scan"),
+        ):
             raise ControlledProviderError(
-                422, "invalid_manifest", "final manifest phase must use finish_scan"
+                422, "invalid_manifest", "manifest phase plan differs from pinned root mechanics"
+            )
+        if phases[0].arguments != {}:
+            raise ControlledProviderError(
+                422, "invalid_manifest", "graph inspection arguments changed"
+            )
+        try:
+            validate_finish_arguments(phases[-1].arguments)
+        except ToolConformanceError as exc:
+            raise ControlledProviderError(422, "invalid_manifest", str(exc)) from exc
+        phase_bindings = {binding.name: binding for binding in profile.tool_bindings}
+        if any(
+            phase.tool_schema_digest != phase_bindings[phase.tool_name].parameters_digest
+            for phase in phases
+        ):
+            raise ControlledProviderError(
+                422, "invalid_manifest", "phase schema differs from profile"
             )
         try:
             canonical = _canonical(value)
@@ -401,16 +460,31 @@ class ControlledProviderManifest:
         return cls(
             attempt_id=attempt_id,
             model_id=model_id,
-            max_requests=_bounded_int(value["max_requests"], "request limit", 1, 32),
+            profile=profile,
+            max_requests=_bounded_int(value["max_requests"], "request limit", 2, 2),
             max_request_bytes=_bounded_int(
-                value["max_request_bytes"], "request byte limit", 1_024, 1_048_576
+                value["max_request_bytes"], "request byte limit", 1_024, 131_072
             ),
             max_response_bytes=_bounded_int(
-                value["max_response_bytes"], "response byte limit", 1_024, 262_144
+                value["max_response_bytes"], "response byte limit", 1_024, 65_536
             ),
-            max_messages=_bounded_int(value["max_messages"], "message limit", 1, 256),
-            max_tools=_bounded_int(value["max_tools"], "tool limit", 1, 128),
-            max_schema_depth=_bounded_int(value["max_schema_depth"], "schema depth", 1, 64),
+            max_messages=_bounded_int(value["max_messages"], "message limit", 3, 64),
+            max_tools=_bounded_int(
+                value["max_tools"],
+                "tool limit",
+                len(profile.tool_bindings),
+                len(profile.tool_bindings),
+            ),
+            max_schema_depth=_bounded_int(value["max_schema_depth"], "schema depth", 1, 32),
+            max_input_tokens=_bounded_int(
+                value["max_input_tokens"], "input token limit", 1, 32_768
+            ),
+            max_output_tokens=_bounded_int(
+                value["max_output_tokens"], "output token limit", 1, 8_192
+            ),
+            max_total_tokens=_bounded_int(
+                value["max_total_tokens"], "total token limit", 2, 40_960
+            ),
             phases=tuple(phases),
             digest=_sha256(canonical),
         )
@@ -426,6 +500,15 @@ class ControlledProviderState:
         *,
         audit_path: Path | None = None,
     ) -> None:
+        if not isinstance(manifest, ControlledProviderManifest):
+            raise ValueError("provider manifest is invalid")
+        # Attempt-local input cannot approve its own captured wire schemas.
+        # No digest is enrolled until the exact installed SDK/Strix request is
+        # independently captured and reviewed, so deployed serving fails here.
+        try:
+            manifest.profile.require_enrolled()
+        except ToolConformanceError as exc:
+            raise ValueError(str(exc)) from exc
         if not isinstance(bearer_token, str) or not 32 <= len(bearer_token) <= 512:
             raise ValueError("bearer token is invalid")
         if bearer_token != bearer_token.strip() or any(
@@ -528,7 +611,7 @@ class ControlledProviderState:
             raise ControlledProviderError(422, "wrong_model", "model does not match the attempt")
         if request["stream"] is not True:
             raise ControlledProviderError(422, "stream_required", "streaming is required")
-        if request.get("parallel_tool_calls", False) is not False:
+        if request.get("parallel_tool_calls") is not False:
             raise ControlledProviderError(
                 422, "parallel_tools_unsupported", "parallel tool calls are unsupported"
             )
@@ -645,8 +728,7 @@ class ControlledProviderState:
             and function.get("arguments") == phase.arguments_json
         )
 
-    @staticmethod
-    def _validate_tuning(request: Mapping[str, Any]) -> None:
+    def _validate_tuning(self, request: Mapping[str, Any]) -> None:
         for name, minimum, maximum in (("temperature", 0.0, 2.0), ("top_p", 0.0, 1.0)):
             value = request.get(name)
             if value is not None and (
@@ -660,7 +742,9 @@ class ControlledProviderState:
         for name in ("max_tokens", "max_completion_tokens"):
             value = request.get(name)
             if value is not None and (
-                isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 100_000
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 1 <= value <= self.manifest.max_output_tokens
             ):
                 raise ControlledProviderError(
                     400, "unsupported_request", "request tuning is unsupported"
@@ -690,34 +774,15 @@ class ControlledProviderState:
             )
 
     def _tool_roster(self, value: Any) -> Mapping[str, Mapping[str, Any]]:
-        if not isinstance(value, list) or not 1 <= len(value) <= self.manifest.max_tools:
-            raise ControlledProviderError(422, "invalid_tools", "tool roster is invalid")
-        roster: dict[str, Mapping[str, Any]] = {}
-        for item in value:
-            if not isinstance(item, Mapping) or item.get("type") != "function":
-                raise ControlledProviderError(422, "invalid_tools", "tool roster is invalid")
-            function = item.get("function")
-            if not isinstance(function, Mapping) or set(function) - {
-                "name",
-                "description",
-                "parameters",
-                "strict",
-            }:
-                raise ControlledProviderError(422, "invalid_tools", "tool roster is invalid")
-            name = function.get("name")
-            parameters = function.get("parameters")
-            if (
-                not isinstance(name, str)
-                or _TOOL_NAME.fullmatch(name) is None
-                or name in roster
-                or not isinstance(parameters, Mapping)
-                or ("description" in function and not isinstance(function["description"], str))
-                or ("strict" in function and not isinstance(function["strict"], bool))
-            ):
-                raise ControlledProviderError(422, "invalid_tools", "tool roster is invalid")
-            _schema_depth(parameters, limit=self.manifest.max_schema_depth)
-            roster[name] = MappingProxyType(dict(function))
-        return MappingProxyType(roster)
+        try:
+            roster = self.manifest.profile.check_request_roster(value)
+        except ToolConformanceError as exc:
+            raise ControlledProviderError(422, "tool_roster_drift", str(exc)) from exc
+        for function in roster.values():
+            _schema_depth(function["parameters"], limit=self.manifest.max_schema_depth)
+        return MappingProxyType(
+            {name: MappingProxyType(dict(tool)) for name, tool in roster.items()}
+        )
 
     @staticmethod
     def _validate_tool_choice(value: Any, selected: str) -> None:
@@ -741,17 +806,15 @@ class ControlledProviderState:
 
     @staticmethod
     def _include_usage(value: Any) -> bool:
-        if value is None:
-            return False
         if (
             not isinstance(value, Mapping)
             or set(value) != {"include_usage"}
-            or not isinstance(value["include_usage"], bool)
+            or value["include_usage"] is not True
         ):
             raise ControlledProviderError(
                 400, "unsupported_request", "stream options are unsupported"
             )
-        return value["include_usage"]
+        return True
 
     def _sse_response(
         self,
@@ -800,6 +863,14 @@ class ControlledProviderState:
         if include_usage:
             prompt_tokens = max(1, (prompt_bytes + 3) // 4)
             completion_tokens = max(1, (len(arguments) + len(tool_name) + 3) // 4)
+            if (
+                prompt_tokens > self.manifest.max_input_tokens
+                or completion_tokens > self.manifest.max_output_tokens
+                or prompt_tokens + completion_tokens > self.manifest.max_total_tokens
+            ):
+                raise ControlledProviderError(
+                    422, "usage_limit", "estimated usage exceeds its bound"
+                )
             chunks.append(
                 {
                     **base,

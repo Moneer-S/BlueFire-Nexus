@@ -43,6 +43,7 @@ PLAN_SCHEMA = "bluefire.tenant-lab-launch-plan.v1"
 RECORD_SCHEMA = "bluefire.tenant-lab-lifecycle.v1"
 TARGET_MODULE = "bluefire.tenant_record_target_child"
 PROVIDER_MODULE = "bluefire.controlled_strix_provider"
+PROVIDER_CONFORMANCE_MODULE = "bluefire.strix_tool_conformance"
 MAX_PACKET_BYTES = 128 * 1024
 MAX_LOG_BYTES = 256 * 1024
 
@@ -326,9 +327,11 @@ class RuntimeBinding:
     python_path: Path
     target_path: Path
     provider_path: Path
+    provider_conformance_path: Path
     python_seal: SealedFile
     target_seal: SealedFile
     provider_seal: SealedFile
+    provider_conformance_seal: SealedFile
 
     @classmethod
     def current(cls) -> "RuntimeBinding":
@@ -336,26 +339,38 @@ class RuntimeBinding:
 
         target_spec = find_spec(TARGET_MODULE)
         provider_spec = find_spec(PROVIDER_MODULE)
+        conformance_spec = find_spec(PROVIDER_CONFORMANCE_MODULE)
         package_root = Path(__file__).resolve(strict=True).parent
         if target_spec is None or target_spec.origin is None:
             raise TenantLabLaunchError("packaged tenant target is unavailable")
         if provider_spec is None or provider_spec.origin is None:
             raise TenantLabLaunchError("packaged controlled provider is unavailable")
+        if conformance_spec is None or conformance_spec.origin is None:
+            raise TenantLabLaunchError("packaged provider conformance is unavailable")
         target = Path(target_spec.origin).resolve(strict=True)
         provider = Path(provider_spec.origin).resolve(strict=True)
+        conformance = Path(conformance_spec.origin).resolve(strict=True)
         if target.parent != package_root or target.name != "tenant_record_target_child.py":
             raise TenantLabLaunchError("tenant target is not package owned")
         if provider.parent != package_root or provider.name != "controlled_strix_provider.py":
             raise TenantLabLaunchError("controlled provider is not package owned")
+        if conformance.parent != package_root or conformance.name != "strix_tool_conformance.py":
+            raise TenantLabLaunchError("provider conformance is not package owned")
         return cls._inspect(
             python_path=Path(sys.executable),
             target_path=target,
             provider_path=provider,
+            provider_conformance_path=conformance,
         )
 
     @classmethod
     def inspect_for_test(
-        cls, *, python_path: Path, target_path: Path, provider_path: Path
+        cls,
+        *,
+        python_path: Path,
+        target_path: Path,
+        provider_path: Path,
+        provider_conformance_path: Path,
     ) -> "RuntimeBinding":
         """Inject fixed files for unit qualification; production uses ``current``."""
 
@@ -363,25 +378,34 @@ class RuntimeBinding:
             python_path=python_path,
             target_path=target_path,
             provider_path=provider_path,
+            provider_conformance_path=provider_conformance_path,
         )
 
     @classmethod
     def _inspect(
-        cls, *, python_path: Path, target_path: Path, provider_path: Path
+        cls,
+        *,
+        python_path: Path,
+        target_path: Path,
+        provider_path: Path,
+        provider_conformance_path: Path,
     ) -> "RuntimeBinding":
 
         python = python_path.resolve(strict=True)
         target = target_path.resolve(strict=True)
         provider = provider_path.resolve(strict=True)
-        if not python.is_file() or not target.is_file() or not provider.is_file():
+        conformance = provider_conformance_path.resolve(strict=True)
+        if not all(path.is_file() for path in (python, target, provider, conformance)):
             raise TenantLabLaunchError("fixed package runtime is unavailable")
         return cls(
             python_path=python,
             target_path=target,
             provider_path=provider,
+            provider_conformance_path=conformance,
             python_seal=_seal_file(python),
             target_seal=_seal_file(target),
             provider_seal=_seal_file(provider),
+            provider_conformance_seal=_seal_file(conformance),
         )
 
     def __post_init__(self) -> None:
@@ -389,6 +413,7 @@ class RuntimeBinding:
             (self.python_path, self.python_seal),
             (self.target_path, self.target_seal),
             (self.provider_path, self.provider_seal),
+            (self.provider_conformance_path, self.provider_conformance_seal),
         )
         for path, seal in expected:
             if not isinstance(path, Path) or not path.is_absolute() or path != seal.path:
@@ -409,14 +434,20 @@ class RuntimeBinding:
         return self.provider_seal.sha256
 
     @property
+    def provider_conformance_digest(self) -> str:
+        return self.provider_conformance_seal.sha256
+
+    @property
     def digest(self) -> str:
         return content_hash(
             {
                 "python_digest": self.python_digest,
                 "target_digest": self.target_digest,
                 "provider_digest": self.provider_digest,
+                "provider_conformance_digest": self.provider_conformance_digest,
                 "target_module": TARGET_MODULE,
                 "provider_module": PROVIDER_MODULE,
+                "provider_conformance_module": PROVIDER_CONFORMANCE_MODULE,
             }
         )
 
@@ -427,6 +458,7 @@ class RuntimeBinding:
             (self.python_path, self.python_seal),
             (self.target_path, self.target_seal),
             (self.provider_path, self.provider_seal),
+            (self.provider_conformance_path, self.provider_conformance_seal),
         ):
             if _seal_file(path) != seal:
                 raise TenantLabLaunchError("fixed package runtime changed")
@@ -2340,8 +2372,10 @@ class TenantRecordLabLauncher:
                 "python_digest": runtime.python_digest,
                 "target_digest": runtime.target_digest,
                 "provider_digest": runtime.provider_digest,
+                "provider_conformance_digest": runtime.provider_conformance_digest,
                 "target_module": TARGET_MODULE,
                 "provider_module": PROVIDER_MODULE,
+                "provider_conformance_module": PROVIDER_CONFORMANCE_MODULE,
             }
         ):
             raise TenantLabLaunchError("fixed runtime binding is invalid")

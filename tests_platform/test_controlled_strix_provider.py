@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+import bluefire.strix_tool_conformance as conformance
 from bluefire.controlled_strix_provider import (
     ControlledProviderError,
     ControlledProviderManifest,
@@ -19,105 +20,52 @@ from bluefire.controlled_strix_provider import (
     _write_private_exclusive,
     build_handler,
 )
-
-ATTEMPT_ID = "engine-attempt-" + "a" * 32
-TOKEN = "t" * 48
-MODEL = "bluefire-controlled-strix-mechanics-v1"
-
-
-def _canonical(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-
-
-def _digest(value: Any) -> str:
-    return "sha256:" + hashlib.sha256(_canonical(value)).hexdigest()
-
-
-def _schemas() -> dict[str, dict[str, Any]]:
-    return {
-        "observe_fixture": {
-            "type": "object",
-            "properties": {
-                "observation": {
-                    "type": "string",
-                    "enum": ["read generated fixture metadata"],
-                }
-            },
-            "required": ["observation"],
-            "additionalProperties": False,
-        },
-        "finish_scan": {
-            "type": "object",
-            "properties": {
-                "summary": {"type": "string", "maxLength": 120},
-                "critical_issues": {"type": "string", "maxLength": 120},
-                "coverage": {"type": "string", "maxLength": 120},
-                "next_steps": {"type": "string", "maxLength": 120},
-            },
-            "required": ["summary", "critical_issues", "coverage", "next_steps"],
-            "additionalProperties": False,
-        },
-    }
+from bluefire.strix_tool_conformance import (
+    BASE_TOOL_NAMES,
+    CONTROLLED_FINISH_ARGUMENTS,
+    OfflineRootToolProfile,
+    ToolConformanceError,
+    canonical_json,
+    digest_json,
+)
+from tests_platform.strix_provider_profile_fixture import (
+    ATTEMPT_ID,
+    TOKEN,
+    synthetic_manifest,
+    synthetic_profile,
+    synthetic_tools,
+)
 
 
-def _manifest_mapping(*, max_requests: int = 4) -> dict[str, Any]:
-    schemas = _schemas()
-    return {
-        "schema_version": "bluefire.controlled-strix-mechanics.v1",
-        "attempt_id": ATTEMPT_ID,
-        "model_id": MODEL,
-        "max_requests": max_requests,
-        "max_request_bytes": 64 * 1024,
-        "max_response_bytes": 64 * 1024,
-        "max_messages": 32,
-        "max_tools": 16,
-        "max_schema_depth": 16,
-        "phases": [
-            {
-                "phase_id": "inspect",
-                "tool_name": "observe_fixture",
-                "tool_schema_digest": _digest(schemas["observe_fixture"]),
-                "arguments": {"observation": "read generated fixture metadata"},
-            },
-            {
-                "phase_id": "finish",
-                "tool_name": "finish_scan",
-                "tool_schema_digest": _digest(schemas["finish_scan"]),
-                "arguments": {
-                    "summary": "Controlled mechanics fixture completed.",
-                    "critical_issues": "Not evaluated by a live model.",
-                    "coverage": "Finite test-provider path only.",
-                    "next_steps": "Run separate authorized live-model evaluation.",
-                },
-            },
-        ],
-    }
+def _enroll_for_protocol_test(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, Any]) -> None:
+    """Only tests replace the deliberately empty product enrollment set."""
+    digest = OfflineRootToolProfile.from_mapping(mapping["profile"]).profile_digest
+    monkeypatch.setattr(conformance, "APPROVED_PROFILE_DIGESTS", frozenset({digest}))
 
 
-def _tools(*, drift: bool = False) -> list[dict[str, Any]]:
-    schemas = _schemas()
-    if drift:
-        schemas["observe_fixture"]["properties"]["unexpected"] = {"type": "string"}
-    return [
-        {
-            "type": "function",
-            "function": {"name": name, "description": "Test fixture tool", "parameters": schema},
-        }
-        for name, schema in schemas.items()
-    ]
+def _state(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mapping: dict[str, Any] | None = None,
+    audit_path: Path | None = None,
+) -> ControlledProviderState:
+    candidate = synthetic_manifest() if mapping is None else mapping
+    _enroll_for_protocol_test(monkeypatch, candidate)
+    return ControlledProviderState(
+        ControlledProviderManifest.from_mapping(candidate), TOKEN, audit_path=audit_path
+    )
 
 
 def _request(
-    *,
-    messages: list[dict[str, Any]] | None = None,
-    tools: list[dict[str, Any]] | None = None,
-    model: str = MODEL,
+    *, messages: list[dict[str, Any]] | None = None, tools: list[dict[str, Any]] | None = None
 ) -> bytes:
-    return _canonical(
+    return canonical_json(
         {
-            "model": model,
-            "messages": messages or [{"role": "user", "content": "untrusted prompt secret"}],
-            "tools": tools or _tools(),
+            "model": conformance.MODEL_ID,
+            "messages": messages
+            if messages is not None
+            else [{"role": "user", "content": "prompt secret"}],
+            "tools": tools if tools is not None else synthetic_tools(),
             "stream": True,
             "parallel_tool_calls": False,
             "tool_choice": "auto",
@@ -126,205 +74,329 @@ def _request(
     )
 
 
-def _sse_payload(payload: bytes) -> list[dict[str, Any] | str]:
-    values: list[dict[str, Any] | str] = []
-    for row in payload.decode().splitlines():
-        if not row:
-            continue
-        assert row.startswith("data: ")
-        data = row.removeprefix("data: ")
-        values.append(data if data == "[DONE]" else json.loads(data))
-    return values
+def _sse(payload: bytes) -> list[dict[str, Any] | str]:
+    rows: list[dict[str, Any] | str] = []
+    for line in payload.decode("utf-8").splitlines():
+        if line:
+            assert line.startswith("data: ")
+            data = line.removeprefix("data: ")
+            rows.append(data if data == "[DONE]" else json.loads(data))
+    return rows
 
 
-def _tool_call(payload: bytes) -> dict[str, Any]:
-    values = _sse_payload(payload)
-    assert values[-1] == "[DONE]"
-    first = values[0]
+def _call(payload: bytes) -> dict[str, Any]:
+    rows = _sse(payload)
+    assert len(rows) == 4
+    assert rows[-1] == "[DONE]"
+    first = rows[0]
     assert isinstance(first, dict)
-    return first["choices"][0]["delta"]["tool_calls"][0]
+    return cast(dict[str, Any], first["choices"][0]["delta"]["tool_calls"][0])
 
 
-def test_manifest_requires_finish_scan_as_terminal_phase() -> None:
-    mapping = _manifest_mapping()
-    mapping["phases"][-1]["tool_name"] = "not_finish"
-    with pytest.raises(ControlledProviderError, match="final manifest phase"):
+def _history(first: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {"role": "user", "content": "prompt secret"},
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": first["id"], "type": "function", "function": first["function"]}],
+        },
+        {"role": "tool", "tool_call_id": first["id"], "content": "graph result secret"},
+    ]
+
+
+def test_pinned_factory_name_order_and_unsupported_sdk_capabilities() -> None:
+    assert len(BASE_TOOL_NAMES) == 43
+    assert BASE_TOOL_NAMES[:2] == ("think", "load_skill")
+    assert BASE_TOOL_NAMES[-2:] == ("create_agent", "stop_agent")
+    profile = OfflineRootToolProfile.from_mapping(synthetic_manifest()["profile"])
+    assert tuple(binding.name for binding in profile.tool_bindings) == (
+        *BASE_TOOL_NAMES,
+        "finish_scan",
+        "view_image",
+        "apply_patch",
+        "exec_command",
+    )
+    assert profile.unsupported_sandbox_tools == ("view_image", "apply_patch", "exec_command")
+
+
+@pytest.mark.parametrize("image_enabled,pty_enabled", [(True, True), (False, False)])
+def test_offline_profile_binds_supported_sdk_suffix_variants(
+    image_enabled: bool, pty_enabled: bool
+) -> None:
+    tools = synthetic_tools()
+    if not image_enabled:
+        tools = [tool for tool in tools if tool["function"]["name"] != "view_image"]
+    if pty_enabled:
+        shell = deepcopy(tools[-1])
+        shell["function"]["name"] = "write_stdin"
+        tools.append(shell)
+    profile = synthetic_profile(tools)
+    profile["supports_images"] = image_enabled
+    profile["unsupported_sandbox_tools"] = [
+        tool["function"]["name"] for tool in tools[len(BASE_TOOL_NAMES) + 1 :]
+    ]
+    parsed = OfflineRootToolProfile.from_mapping(profile)
+    assert parsed.unsupported_sandbox_tools == tuple(profile["unsupported_sandbox_tools"])
+
+
+def test_unreviewed_profile_cannot_start_provider() -> None:
+    assert not conformance.APPROVED_PROFILE_DIGESTS
+    manifest = ControlledProviderManifest.from_mapping(synthetic_manifest())
+    with pytest.raises(ValueError, match="not independently enrolled"):
+        ControlledProviderState(manifest, TOKEN)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda p: p.update(source_commit="0" * 40),
+        lambda p: p.update(is_root=1),
+        lambda p: p.update(interactive=0),
+        lambda p: p.update(strict_tool_schemas=False),
+        lambda p: p["tool_roster"][10].update(strict=False),
+        lambda p: p["tool_roster"].reverse(),
+        lambda p: p["tool_roster"].pop(),
+        lambda p: p["tool_roster"].append(deepcopy(p["tool_roster"][-1])),
+        lambda p: p["unsupported_sandbox_tools"].remove("exec_command"),
+    ],
+)
+def test_offline_profile_rejects_source_identity_order_and_capability_drift(mutation: Any) -> None:
+    profile = synthetic_manifest()["profile"]
+    mutation(profile)
+    with pytest.raises(ToolConformanceError):
+        OfflineRootToolProfile.from_mapping(profile)
+
+
+def test_self_consistent_nonstrict_descriptor_is_not_a_strict_profile() -> None:
+    tools = synthetic_tools()
+    tools[10]["function"]["strict"] = False
+    with pytest.raises(ToolConformanceError, match="binding"):
+        OfflineRootToolProfile.from_mapping(synthetic_profile(tools))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda m: m.update(schema_version="bluefire.controlled-strix-mechanics.v1"),
+        lambda m: m.update(model_id="different-model"),
+        lambda m: m.update(max_tools=16),
+        lambda m: m.update(max_requests=8),
+        lambda m: m.update(max_request_bytes=1_048_576),
+        lambda m: m.update(max_output_tokens=100_000),
+        lambda m: m["phases"][0].update(tool_name="exec_command"),
+        lambda m: m["phases"][-1].update(arguments={"summary": "fiction"}),
+        lambda m: m["phases"][-1]["arguments"].update(technical_analysis="A target was tested."),
+        lambda m: m["phases"].reverse(),
+    ],
+)
+def test_manifest_rejects_fictional_or_unbounded_phase_plan(mutation: Any) -> None:
+    mapping = synthetic_manifest()
+    mutation(mapping)
+    with pytest.raises(ControlledProviderError):
         ControlledProviderManifest.from_mapping(mapping)
 
 
-def test_state_emits_manifest_calls_and_pairs_exact_tool_result(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "phase_index,schema",
+    [
+        (0, {"type": "object", "properties": {}, "required": [], "additionalProperties": True}),
+        (1, {"type": "object", "properties": {}, "required": [], "additionalProperties": False}),
+        (1, {"type": "object"}),
+    ],
+)
+def test_phase_signature_rejects_self_consistent_permissive_digest(
+    phase_index: int, schema: dict[str, Any]
+) -> None:
+    mapping = synthetic_manifest()
+    phase = mapping["phases"][phase_index]
+    phase["parameters_schema"] = schema
+    phase["tool_schema_digest"] = digest_json(schema)
+    binding = next(
+        item for item in mapping["profile"]["tool_roster"] if item["name"] == phase["tool_name"]
+    )
+    binding["parameters_digest"] = digest_json(schema)
+    with pytest.raises(ControlledProviderError, match="pinned|require"):
+        ControlledProviderManifest.from_mapping(mapping)
+
+
+def test_manifest_rejects_nonmapping_input() -> None:
+    with pytest.raises(ControlledProviderError, match="manifest fields"):
+        ControlledProviderManifest.from_mapping([{"schema_version": "v2"}])  # type: ignore[arg-type]
+
+
+def test_streamed_tool_turns_pair_exact_history_and_audit_only_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     audit = tmp_path / "private" / "provider.jsonl"
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN, audit_path=audit
-    )
-
-    first_payload = state.respond(_request())
-    first_call = _tool_call(first_payload)
-    assert first_call["function"] == {
-        "name": "observe_fixture",
-        "arguments": '{"observation":"read generated fixture metadata"}',
+    state = _state(monkeypatch, audit_path=audit)
+    first = _call(state.respond(_request()))
+    assert first["function"] == {"name": "view_agent_graph", "arguments": "{}"}
+    assert state.pending_call_id == first["id"]
+    second = _call(state.respond(_request(messages=_history(first))))
+    assert second["function"] == {
+        "name": "finish_scan",
+        "arguments": canonical_json(CONTROLLED_FINISH_ARGUMENTS).decode("ascii"),
     }
-    assert state.pending_call_id == first_call["id"]
+    assert second["id"] != first["id"]
+    rows = audit.read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 2
+    assert TOKEN not in "".join(rows)
+    assert "prompt secret" not in "".join(rows)
+    assert "graph result secret" not in "".join(rows)
+    assert json.loads(rows[-1])["fixture_usage_estimate"] is True
 
-    messages = [
-        {"role": "user", "content": "untrusted prompt secret"},
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "id": first_call["id"],
-                    "type": "function",
-                    "function": first_call["function"],
-                }
-            ],
-        },
-        {
-            "role": "tool",
-            "tool_call_id": first_call["id"],
-            "content": "raw tool output secret",
-        },
-    ]
-    second_call = _tool_call(state.respond(_request(messages=messages)))
-    assert second_call["function"]["name"] == "finish_scan"
-    assert second_call["id"] != first_call["id"]
-
-    audit_bytes = audit.read_bytes()
-    assert b"\r\n" not in audit_bytes
-    assert audit_bytes.endswith(b"\n")
-    audit_text = audit_bytes.decode("utf-8")
-    assert len(audit_text.splitlines()) == 2
-    assert TOKEN not in audit_text
-    assert "untrusted prompt secret" not in audit_text
-    assert "raw tool output secret" not in audit_text
-    assert '"provider_label":"Test provider"' in audit_text
-    assert '"fixture_usage_estimate":true' in audit_text
+    replay_state = _state(monkeypatch)
+    replay_state.respond(_request())
+    with pytest.raises(ControlledProviderError) as replay:
+        replay_state.respond(_request())
+    assert replay.value.code == "unexpected_history"
 
 
-def test_pending_call_rejects_replay_without_result() -> None:
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    state.respond(_request())
+@pytest.mark.parametrize("drift", ["remove", "reorder", "schema", "description", "strict", "extra"])
+def test_full_ordered_roster_drift_fails_before_first_call(
+    monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    state = _state(monkeypatch)
+    tools = synthetic_tools()
+    if drift == "remove":
+        tools.pop(10)
+    elif drift == "reorder":
+        tools[0], tools[1] = tools[1], tools[0]
+    elif drift == "schema":
+        tools[10]["function"]["parameters"]["properties"]["extra"] = {"type": "string"}
+    elif drift == "description":
+        tools[10]["function"]["description"] = "changed"
+    elif drift == "strict":
+        tools[10]["function"]["strict"] = False
+    else:
+        tools.append(deepcopy(tools[-1]))
     with pytest.raises(ControlledProviderError) as error:
-        state.respond(_request())
-    assert (error.value.status, error.value.code) == (409, "unexpected_history")
-
-
-def test_tool_result_requires_exact_preceding_assistant_call() -> None:
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    first_call = _tool_call(state.respond(_request()))
-    messages = [
-        {"role": "user", "content": "fixture"},
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "id": first_call["id"],
-                    "type": "function",
-                    "function": {"name": "wrong_tool", "arguments": "{}"},
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": first_call["id"], "content": "result"},
-    ]
-    with pytest.raises(ControlledProviderError) as error:
-        state.respond(_request(messages=messages))
-    assert (error.value.status, error.value.code) == (409, "unexpected_history")
-    assert state.pending_call_id == first_call["id"]
-
-    messages[-2]["tool_calls"][0]["function"] = {
-        "name": "observe_fixture",
-        "arguments": '{"observation":"mutated"}',
-    }
-    with pytest.raises(ControlledProviderError) as arguments:
-        state.respond(_request(messages=messages))
-    assert (arguments.value.status, arguments.value.code) == (409, "unexpected_history")
-    assert state.pending_call_id == first_call["id"]
-
-
-def test_completed_tool_result_history_cannot_be_omitted() -> None:
-    mapping = _manifest_mapping(max_requests=5)
-    mapping["phases"].insert(
-        1,
-        {
-            "phase_id": "corroborate",
-            "tool_name": "observe_fixture",
-            "tool_schema_digest": _digest(_schemas()["observe_fixture"]),
-            "arguments": {"observation": "read generated fixture metadata"},
-        },
-    )
-    state = ControlledProviderState(ControlledProviderManifest.from_mapping(mapping), TOKEN)
-    first = _tool_call(state.respond(_request()))
-    first_message_call = {
-        "id": first["id"],
-        "type": "function",
-        "function": first["function"],
-    }
-    first_history = [
-        {"role": "user", "content": "fixture"},
-        {"role": "assistant", "tool_calls": [first_message_call]},
-        {"role": "tool", "tool_call_id": first["id"], "content": "first result"},
-    ]
-    second = _tool_call(state.respond(_request(messages=first_history)))
-    second_message_call = {
-        "id": second["id"],
-        "type": "function",
-        "function": second["function"],
-    }
-    incomplete_history = [
-        {"role": "user", "content": "fixture"},
-        {"role": "assistant", "tool_calls": [second_message_call]},
-        {"role": "tool", "tool_call_id": second["id"], "content": "second result"},
-    ]
-    with pytest.raises(ControlledProviderError) as error:
-        state.respond(_request(messages=incomplete_history))
-    assert (error.value.status, error.value.code) == (409, "unexpected_history")
-    assert state.pending_call_id == second["id"]
-
-
-def test_schema_drift_fails_without_emitting_a_call() -> None:
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    with pytest.raises(ControlledProviderError) as error:
-        state.respond(_request(tools=_tools(drift=True)))
-    assert (error.value.status, error.value.code) == (422, "tool_schema_drift")
+        state.respond(_request(tools=tools))
+    assert error.value.code == "tool_roster_drift"
     assert state.pending_call_id is None
 
 
-def test_request_limit_and_cancellation_are_distinct() -> None:
-    capped = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping(max_requests=1)), TOKEN
-    )
-    capped.respond(_request())
-    with pytest.raises(ControlledProviderError) as limited:
-        capped.respond(_request())
-    assert (limited.value.status, limited.value.code) == (429, "request_limit")
+def test_wrong_tool_result_and_request_usage_bounds_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch)
+    first = _call(state.respond(_request()))
+    wrong = _history(first)
+    wrong[-2]["tool_calls"][0]["function"]["name"] = "exec_command"
+    with pytest.raises(ControlledProviderError) as history:
+        state.respond(_request(messages=wrong))
+    assert history.value.code == "unexpected_history"
+    assert state.pending_call_id == first["id"]
 
-    cancelled = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    cancelled.cancel()
-    with pytest.raises(ControlledProviderError) as stopped:
-        cancelled.respond(_request())
-    assert (stopped.value.status, stopped.value.code) == (409, "attempt_cancelled")
+    state = _state(monkeypatch)
+    request = json.loads(_request())
+    request["max_tokens"] = 8_193
+    with pytest.raises(ControlledProviderError) as cap:
+        state.respond(canonical_json(request))
+    assert cap.value.code == "unsupported_request"
+
+    mapping = synthetic_manifest()
+    mapping["max_input_tokens"] = 1
+    state = _state(monkeypatch, mapping=mapping)
+    with pytest.raises(ControlledProviderError) as estimate:
+        state.respond(_request())
+    assert estimate.value.code == "usage_limit"
+    assert state.pending_call_id is None
 
 
-def test_tool_arguments_are_validated_against_dynamic_request_schema() -> None:
-    mapping = _manifest_mapping()
-    mapping["phases"][0]["arguments"] = {"observation": "not admitted"}
-    state = ControlledProviderState(ControlledProviderManifest.from_mapping(mapping), TOKEN)
+def test_rejection_after_pairing_does_not_publish_next_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch)
+    first = _call(state.respond(_request()))
+    request = json.loads(_request(messages=_history(first)))
+    request["stream_options"] = {"include_usage": False}
+    with pytest.raises(ControlledProviderError) as error:
+        state.respond(canonical_json(request))
+    assert error.value.code == "unsupported_request"
+    assert state.pending_call_id == first["id"]
+
+
+def test_audit_failure_does_not_publish_a_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit_directory = tmp_path / "audit-is-directory"
+    audit_directory.mkdir()
+    state = _state(monkeypatch, audit_path=audit_directory)
     with pytest.raises(ControlledProviderError) as error:
         state.respond(_request())
-    assert (error.value.status, error.value.code) == (422, "invalid_tool_arguments")
+    assert error.value.code == "audit_unavailable"
+    assert state.pending_call_id is None
 
 
-def test_http_endpoint_requires_exact_token_and_returns_sse() -> None:
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
+@pytest.mark.parametrize("drift", ["unknown", "conflicting_choice", "extra_choice"])
+def test_unknown_request_fields_and_tool_choice_conflicts_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    state = _state(monkeypatch)
+    request = json.loads(_request())
+    if drift == "unknown":
+        request["unreviewed"] = True
+    elif drift == "conflicting_choice":
+        request["tool_choice"] = {"type": "function", "function": {"name": "finish_scan"}}
+    else:
+        request["tool_choice"] = {
+            "type": "function",
+            "function": {"name": "view_agent_graph"},
+            "extra": True,
+        }
+    with pytest.raises(ControlledProviderError) as error:
+        state.respond(canonical_json(request))
+    assert error.value.code == (
+        "unsupported_request" if drift == "unknown" else "tool_choice_conflict"
     )
+    assert state.pending_call_id is None
+
+
+def test_preflight_is_not_a_streamed_tool_phase(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _state(monkeypatch)
+    request = json.loads(_request())
+    request["tools"] = []
+    request["stream"] = False
+    with pytest.raises(ControlledProviderError) as preflight:
+        state.respond(canonical_json(request))
+    assert preflight.value.code == "stream_required"
+    assert state.pending_call_id is None
+
+    streamed = json.loads(_request())
+    streamed["tools"] = []
+    with pytest.raises(ControlledProviderError) as no_tools:
+        state.respond(canonical_json(streamed))
+    assert no_tools.value.code == "tool_roster_drift"
+    assert state.pending_call_id is None
+
+
+def test_request_limit_cancellation_and_json_rejections(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _state(monkeypatch)
+    state.respond(_request())
+    with pytest.raises(ControlledProviderError) as invalid:
+        state.respond(b'{"model":NaN}')
+    assert invalid.value.code == "invalid_json"
+    with pytest.raises(ControlledProviderError) as capped:
+        state.respond(_request())
+    assert capped.value.code == "request_limit"
+
+    state = _state(monkeypatch)
+    state.cancel()
+    with pytest.raises(ControlledProviderError) as stopped:
+        state.respond(_request())
+    assert stopped.value.code == "attempt_cancelled"
+
+    state = _state(monkeypatch)
+    with pytest.raises(ControlledProviderError) as duplicate:
+        state.respond(b'{"model":"one","model":"two"}')
+    assert duplicate.value.code == "invalid_json"
+
+
+def test_http_handler_requires_bearer_and_emits_real_sse_grammar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch)
     server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(state))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -338,14 +410,13 @@ def test_http_endpoint_requires_exact_token_and_returns_sse() -> None:
         )
         try:
             with pytest.raises(urllib.error.HTTPError) as unauthorized:
-                urllib.request.urlopen(wrong, timeout=2)  # noqa: S310 - owned loopback fixture
+                urllib.request.urlopen(wrong, timeout=2)  # noqa: S310 - owned loopback
         except urllib.error.URLError as error:
             if isinstance(error.reason, PermissionError):
                 pytest.skip("sandbox blocks owned loopback connections")
             raise
         assert unauthorized.value.code == 401
-        error = json.loads(unauthorized.value.read())
-        assert error["error"]["code"] == "invalid_authorization"
+        assert json.loads(unauthorized.value.read())["error"]["code"] == "invalid_authorization"
 
         valid = urllib.request.Request(
             endpoint,
@@ -356,138 +427,25 @@ def test_http_endpoint_requires_exact_token_and_returns_sse() -> None:
         with urllib.request.urlopen(valid, timeout=2) as response:  # noqa: S310
             assert response.status == 200
             assert response.headers["X-BlueFire-Provider"] == "Test provider"
-            call = _tool_call(response.read())
-        assert call["function"]["name"] == "observe_fixture"
+            assert _call(response.read())["function"]["name"] == "view_agent_graph"
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
 
 
-def test_unknown_fields_and_tool_choice_conflicts_fail_closed() -> None:
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    unknown = json.loads(_request())
-    unknown["unreviewed"] = True
-    with pytest.raises(ControlledProviderError) as shape:
-        state.respond(_canonical(unknown))
-    assert (shape.value.status, shape.value.code) == (400, "unsupported_request")
-
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    conflict = json.loads(_request())
-    conflict["tool_choice"] = {"type": "function", "function": {"name": "finish_scan"}}
-    with pytest.raises(ControlledProviderError) as choice:
-        state.respond(_canonical(conflict))
-    assert (choice.value.status, choice.value.code) == (422, "tool_choice_conflict")
-
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    extra_choice = json.loads(_request())
-    extra_choice["tool_choice"] = {
-        "type": "function",
-        "function": {"name": "observe_fixture"},
-        "extra": True,
-    }
-    with pytest.raises(ControlledProviderError) as extra:
-        state.respond(_canonical(extra_choice))
-    assert (extra.value.status, extra.value.code) == (422, "tool_choice_conflict")
-
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    invalid_tuning = json.loads(_request())
-    invalid_tuning["temperature"] = "maximum"
-    with pytest.raises(ControlledProviderError) as tuning:
-        state.respond(_canonical(invalid_tuning))
-    assert (tuning.value.status, tuning.value.code) == (400, "unsupported_request")
-
-
-def test_failure_after_pairing_does_not_advance_state(tmp_path: Path) -> None:
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()),
-        TOKEN,
-        audit_path=tmp_path / "audit.jsonl",
-    )
-    first_call = _tool_call(state.respond(_request()))
-    messages = [
-        {"role": "user", "content": "fixture"},
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "id": first_call["id"],
-                    "type": "function",
-                    "function": first_call["function"],
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": first_call["id"], "content": "result"},
-    ]
-    invalid = json.loads(_request(messages=messages))
-    invalid["stream_options"] = {"include_usage": "yes"}
-    with pytest.raises(ControlledProviderError) as error:
-        state.respond(_canonical(invalid))
-    assert (error.value.status, error.value.code) == (400, "unsupported_request")
-    assert state.pending_call_id == first_call["id"]
-
-    next_call = _tool_call(state.respond(_request(messages=messages)))
-    assert next_call["function"]["name"] == "finish_scan"
-
-
-def test_audit_failure_does_not_publish_pending_call(tmp_path: Path) -> None:
-    audit_path = tmp_path / "audit-path-is-a-directory"
-    audit_path.mkdir()
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()),
-        TOKEN,
-        audit_path=audit_path,
-    )
-    with pytest.raises(ControlledProviderError) as error:
-        state.respond(_request())
-    assert (error.value.status, error.value.code) == (409, "audit_unavailable")
-    assert state.pending_call_id is None
-
-
-def test_nonfinite_json_is_rejected() -> None:
-    mapping = _manifest_mapping()
-    mapping["phases"][0]["arguments"] = {"observation": float("nan")}
-    with pytest.raises(ControlledProviderError, match="tool arguments are invalid"):
-        ControlledProviderManifest.from_mapping(mapping)
-
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    with pytest.raises(ControlledProviderError) as error:
-        state.respond(b'{"model":NaN}')
-    assert (error.value.status, error.value.code) == (400, "invalid_json")
-
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    with pytest.raises(ControlledProviderError) as duplicate:
-        state.respond(b'{"model":"one","model":"two"}')
-    assert (duplicate.value.status, duplicate.value.code) == (400, "invalid_json")
-
-
-def test_ready_file_is_exclusive_and_atomically_published(tmp_path: Path) -> None:
+def test_ready_publication_short_write_and_entrypoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ready = tmp_path / "ready.json"
-    payload = b'{"ready":true}\n'
     try:
-        _write_private_exclusive(ready, payload)
+        _write_private_exclusive(ready, b'{"ready":true}\n')
     except PermissionError:
         pytest.skip("sandbox blocks atomic file publication")
-    assert ready.read_bytes() == payload
     with pytest.raises(FileExistsError):
         _write_private_exclusive(ready, b'{"ready":false}\n')
-    assert ready.read_bytes() == payload
+    assert ready.read_bytes() == b'{"ready":true}\n'
     assert list(tmp_path.glob(".ready.json.*.tmp")) == []
-
-
-def test_write_all_rejects_a_short_write(monkeypatch: pytest.MonkeyPatch) -> None:
     writes = iter((2, 0))
     monkeypatch.setattr(
         "bluefire.controlled_strix_provider.os.write", lambda _fd, _data: next(writes)
@@ -495,20 +453,11 @@ def test_write_all_rejects_a_short_write(monkeypatch: pytest.MonkeyPatch) -> Non
     with pytest.raises(OSError, match="short write"):
         _write_all(123, b"abcd")
 
-
-def test_handler_applies_socket_deadline_before_request_parsing() -> None:
-    state = ControlledProviderState(
-        ControlledProviderManifest.from_mapping(_manifest_mapping()), TOKEN
-    )
-    handler_type = build_handler(state)
-    assert handler_type.request_deadline_seconds == 5.0
-    assert "setup" in handler_type.__dict__
-
-
-def test_package_module_is_the_entrypoint_and_tool_is_only_a_wrapper() -> None:
     import bluefire.controlled_strix_provider as installed_provider
-    import tools.controlled_strix_provider as compatibility_wrapper
+    import tools.controlled_strix_provider as wrapper
 
-    assert installed_provider.__file__ is not None
-    assert Path(installed_provider.__file__).parent.name == "bluefire"
-    assert compatibility_wrapper.main is installed_provider.main
+    assert wrapper.main is installed_provider.main
+    assert ATTEMPT_ID.startswith("engine-attempt-")
+    handler_type = build_handler(_state(monkeypatch))
+    assert handler_type.__dict__["request_deadline_seconds"] == 5.0
+    assert "setup" in handler_type.__dict__
