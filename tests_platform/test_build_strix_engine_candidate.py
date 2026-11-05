@@ -111,12 +111,7 @@ def test_reviewed_source_and_runtime_pins_are_immutable_and_distinct() -> None:
     assert candidate.DECLARED_PACKAGE_VERSION == "1.7.0"
     assert candidate.PYTHON_VERSION == "3.12.14"
     assert candidate.UV_VERSION == "0.13.6"
-    assert candidate.UV_VERSION_OUTPUT == (
-        "uv 0.13.6 (329bf9448 2026-10-26 x86_64-unknown-linux-gnu)"
-    )
-    assert candidate.UV_RELEASE_COMMIT == (
-        "329bf9448afd9f9088d14a4d57fbc61eb454f117"  # pragma: allowlist secret -- public uv release commit
-    )
+    assert candidate.UV_VERSION_OUTPUT == "uv 0.13.6 (x86_64-unknown-linux-gnu)"
     assert candidate.GO_VERSION == "1.24.10"
     assert candidate.SANDBOX_IMAGE.endswith(
         "@sha256:78df914f3029464c9d00580f531ec51025c251c422ec3b09c3f19c5fa6d80c30"
@@ -280,13 +275,7 @@ def test_toolchain_validation_binds_exact_uv_release_identity(
             {
                 "package_name": "uv",
                 "version": candidate.UV_VERSION,
-                "commit_info": {
-                    "short_commit_hash": candidate.UV_RELEASE_COMMIT[:9],
-                    "commit_hash": candidate.UV_RELEASE_COMMIT,
-                    "commit_date": candidate.UV_RELEASE_DATE,
-                    "last_tag": None,
-                    "commits_since_last_tag": 0,
-                },
+                "commit_info": None,
                 "target_triple": candidate.UV_TARGET_TRIPLE,
             }
         ),
@@ -326,18 +315,7 @@ def test_toolchain_validation_binds_exact_uv_release_identity(
         ({"version": "0.13.7"}, "reviewed build"),
         ({"target_triple": "x86_64-pc-windows-msvc"}, "reviewed build"),
         ({"package_name": "not-uv"}, "reviewed build"),
-        (
-            {
-                "commit_info": {
-                    "short_commit_hash": "0" * 9,
-                    "commit_hash": "0" * 40,
-                    "commit_date": candidate.UV_RELEASE_DATE,
-                    "last_tag": None,
-                    "commits_since_last_tag": 0,
-                }
-            },
-            "reviewed build",
-        ),
+        ({"commit_info": {}}, "invalid shape"),
     ],
 )
 def test_uv_release_identity_refuses_provenance_drift(
@@ -346,13 +324,7 @@ def test_uv_release_identity_refuses_provenance_drift(
     document: dict[str, Any] = {
         "package_name": "uv",
         "version": candidate.UV_VERSION,
-        "commit_info": {
-            "short_commit_hash": candidate.UV_RELEASE_COMMIT[:9],
-            "commit_hash": candidate.UV_RELEASE_COMMIT,
-            "commit_date": candidate.UV_RELEASE_DATE,
-            "last_tag": None,
-            "commits_since_last_tag": 0,
-        },
+        "commit_info": None,
         "target_triple": candidate.UV_TARGET_TRIPLE,
     }
     document.update(mutation)
@@ -365,51 +337,50 @@ def test_uv_release_identity_refuses_malformed_or_duplicate_json() -> None:
         "not-json",
         '{"package_name":"uv","package_name":"uv"}',
         "{}",
+        json.dumps(
+            {
+                "package_name": "uv",
+                "version": candidate.UV_VERSION,
+                "target_triple": candidate.UV_TARGET_TRIPLE,
+            }
+        ),
+        json.dumps(
+            {
+                "package_name": "uv",
+                "version": candidate.UV_VERSION,
+                "commit_info": None,
+                "target_triple": candidate.UV_TARGET_TRIPLE,
+                "unexpected": True,
+            }
+        ),
     ):
         with pytest.raises(candidate.StrixCandidateBuildError):
             candidate.validate_uv_release_identity(payload)
 
 
-@pytest.mark.parametrize("value", [False, 0.0])
-def test_uv_release_identity_refuses_non_integer_commit_distance(value: Any) -> None:
+@pytest.mark.parametrize(
+    "value",
+    [False, 0, "", [], {}, {"commits_since_last_tag": 0}],
+)
+def test_uv_release_identity_refuses_non_null_commit_info(value: Any) -> None:
     document = {
         "package_name": "uv",
         "version": candidate.UV_VERSION,
-        "commit_info": {
-            "short_commit_hash": candidate.UV_RELEASE_COMMIT[:9],
-            "commit_hash": candidate.UV_RELEASE_COMMIT,
-            "commit_date": candidate.UV_RELEASE_DATE,
-            "last_tag": None,
-            "commits_since_last_tag": value,
-        },
+        "commit_info": value,
         "target_triple": candidate.UV_TARGET_TRIPLE,
     }
     with pytest.raises(candidate.StrixCandidateBuildError, match="invalid shape"):
         candidate.validate_uv_release_identity(json.dumps(document))
 
 
-def test_uv_release_identity_accepts_only_the_exact_optional_release_tag() -> None:
+def test_uv_release_identity_accepts_only_the_exact_official_release_shape() -> None:
     document = {
         "package_name": "uv",
         "version": candidate.UV_VERSION,
-        "commit_info": {
-            "short_commit_hash": candidate.UV_RELEASE_COMMIT[:9],
-            "commit_hash": candidate.UV_RELEASE_COMMIT,
-            "commit_date": candidate.UV_RELEASE_DATE,
-            "last_tag": candidate.UV_VERSION,
-            "commits_since_last_tag": 0,
-        },
+        "commit_info": None,
         "target_triple": candidate.UV_TARGET_TRIPLE,
     }
     assert candidate.validate_uv_release_identity(json.dumps(document)) == document
-
-    document["commit_info"]["last_tag"] = "0.13.5"
-    with pytest.raises(candidate.StrixCandidateBuildError, match="reviewed build"):
-        candidate.validate_uv_release_identity(json.dumps(document))
-
-    document["commit_info"]["last_tag"] = False
-    with pytest.raises(candidate.StrixCandidateBuildError, match="invalid shape"):
-        candidate.validate_uv_release_identity(json.dumps(document))
 
 
 def test_candidate_builder_uses_project_toml_compatibility_dependency() -> None:

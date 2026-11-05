@@ -8,20 +8,12 @@ import pytest
 from tools import capture_uv_version_evidence as evidence
 
 
-def _official_payload(**commit_changes: object) -> str:
-    commit = {
-        "short_commit_hash": "329bf9448",
-        "commit_hash": "329bf9448afd9f9088d14a4d57fbc61eb454f117",  # pragma: allowlist secret -- public uv release commit
-        "commit_date": "2026-10-26",
-        "last_tag": "0.13.6",
-        "commits_since_last_tag": 0,
-        **commit_changes,
-    }
+def _official_payload() -> str:
     return json.dumps(
         {
             "package_name": "uv",
             "version": "0.13.6",
-            "commit_info": commit,
+            "commit_info": None,
             "target_triple": "x86_64-unknown-linux-gnu",
         }
     )
@@ -31,10 +23,8 @@ def test_capture_records_only_bounded_known_version_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     outputs = {
-        ("-V",): "uv 0.13.6 (329bf9448 2026-10-26 x86_64-unknown-linux-gnu)",
-        ("self", "version", "--output-format", "json"): _official_payload(
-            commits_since_last_tag=False
-        ),
+        ("-V",): "uv 0.13.6 (x86_64-unknown-linux-gnu)",
+        ("self", "version", "--output-format", "json"): _official_payload(),
     }
     monkeypatch.setattr(evidence, "_run_uv", lambda arguments: outputs[tuple(arguments)])
     destination = tmp_path / evidence.OUTPUT_NAME
@@ -47,8 +37,7 @@ def test_capture_records_only_bounded_known_version_metadata(
         "target_triple",
         "version",
     ]
-    distance = receipt["structured_output"]["commit_info"]["known_fields"]["commits_since_last_tag"]
-    assert distance == {"type": "boolean", "value": False}
+    assert receipt["structured_output"]["commit_info"] == {"type": "null", "value": None}
     assert json.loads(destination.read_text(encoding="utf-8")) == receipt
     assert destination.stat().st_size <= evidence.MAX_RECEIPT_BYTES
 
@@ -58,9 +47,9 @@ def test_unknown_or_unsafe_values_are_not_published(
 ) -> None:
     payload = json.loads(_official_payload())
     payload["unexpected_field"] = "C:/private/operator/path"
-    payload["commit_info"]["last_tag"] = "unsafe tag with spaces and /path"
+    payload["version"] = "unsafe version with spaces and /path"
     outputs = {
-        ("-V",): "uv 0.13.6 (329bf9448 2026-10-26 x86_64-unknown-linux-gnu)",
+        ("-V",): "uv 0.13.6 (x86_64-unknown-linux-gnu)",
         ("self", "version", "--output-format", "json"): json.dumps(payload),
     }
     monkeypatch.setattr(evidence, "_run_uv", lambda arguments: outputs[tuple(arguments)])
@@ -70,7 +59,7 @@ def test_unknown_or_unsafe_values_are_not_published(
 
     assert "unexpected_field" in published
     assert "C:/private/operator/path" not in published
-    assert "unsafe tag" not in published
+    assert "unsafe version" not in published
     assert '"value_omitted": true' in published
 
 

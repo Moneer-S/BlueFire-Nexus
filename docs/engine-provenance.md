@@ -115,6 +115,11 @@ wheel is inspected as bounded ZIP data rather than installed or imported. A sing
 establish byte-for-byte reproducibility; that remains an explicit qualification blocker until a
 second clean build is compared.
 
+The official Linux uv 0.13.6 release reports `commit_info: null` and the human identity
+`uv 0.13.6 (x86_64-unknown-linux-gnu)`. The builder requires exactly that release shape and target.
+It does not infer a source commit that uv does not report. The commit-pinned setup action, exact
+version selection, and recorded executable SHA-256 retain the build-tool integrity boundary.
+
 Packaging necessarily executes the separately blob-pinned Hatch build hook, which issues a fixed
 Go compile for the Bubble Tea sidecar. That build-time action is distinct from launching the Strix
 engine or sidecar. No built executable, Strix import path, target operation, model request, or

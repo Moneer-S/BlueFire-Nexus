@@ -68,10 +68,8 @@ SANDBOX_IMAGE = (
     "sha256:78df914f3029464c9d00580f531ec51025c251c422ec3b09c3f19c5fa6d80c30"
 )
 UV_VERSION = "0.13.6"
-UV_RELEASE_COMMIT = "329bf9448afd9f9088d14a4d57fbc61eb454f117"  # pragma: allowlist secret -- public uv release commit
-UV_RELEASE_DATE = "2026-10-26"
 UV_TARGET_TRIPLE = "x86_64-unknown-linux-gnu"
-UV_VERSION_OUTPUT = f"uv {UV_VERSION} (329bf9448 {UV_RELEASE_DATE} {UV_TARGET_TRIPLE})"
+UV_VERSION_OUTPUT = f"uv {UV_VERSION} ({UV_TARGET_TRIPLE})"
 GO_VERSION = "1.24.10"
 PYTHON_VERSION = "3.12.14"
 
@@ -998,36 +996,12 @@ def validate_uv_release_identity(payload: str) -> dict[str, Any]:
         not isinstance(document[name], str) for name in ("package_name", "version", "target_triple")
     ):
         raise StrixCandidateBuildError("uv release identity has an invalid shape")
-    commit = document["commit_info"]
-    if not isinstance(commit, dict) or set(commit) != {
-        "short_commit_hash",
-        "commit_hash",
-        "commit_date",
-        "last_tag",
-        "commits_since_last_tag",
-    }:
-        raise StrixCandidateBuildError("uv release identity has an invalid shape")
-    commit_distance = commit["commits_since_last_tag"]
-    last_tag = commit["last_tag"]
-    if (
-        any(
-            not isinstance(commit[name], str)
-            for name in ("short_commit_hash", "commit_hash", "commit_date")
-        )
-        or (last_tag is not None and not isinstance(last_tag, str))
-        or not isinstance(commit_distance, int)
-        or isinstance(commit_distance, bool)
-    ):
+    if document["commit_info"] is not None:
         raise StrixCandidateBuildError("uv release identity has an invalid shape")
     if (
         document["package_name"] != "uv"
         or document["version"] != UV_VERSION
         or document["target_triple"] != UV_TARGET_TRIPLE
-        or commit["short_commit_hash"] != UV_RELEASE_COMMIT[:9]
-        or commit["commit_hash"] != UV_RELEASE_COMMIT
-        or commit["commit_date"] != UV_RELEASE_DATE
-        or last_tag not in (None, UV_VERSION)
-        or commit_distance != 0
     ):
         raise StrixCandidateBuildError("uv release identity is not the reviewed build")
     return document
