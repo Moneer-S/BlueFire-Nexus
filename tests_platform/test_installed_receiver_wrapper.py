@@ -1709,11 +1709,7 @@ def test_retained_settlement_poll_uses_a_capped_shared_work_budget() -> None:
     assert "110000" not in driver
 
     installed_driver = (
-        Path(__file__).parents[1]
-        / "frontend"
-        / "tests"
-        / "installed"
-        / "installed-receiver.mjs"
+        Path(__file__).parents[1] / "frontend" / "tests" / "installed" / "installed-receiver.mjs"
     ).read_text(encoding="utf-8")
     assert "read: (path, requestedTimeout) => appApi(path, requestedTimeout)" in installed_driver
 
