@@ -631,11 +631,15 @@ def test_receiver_terminal_wait_preserves_deadlines_dispatch_and_private_real_sn
         order.append("approve")
 
     def terminal(job_id, *, timeout):
-        assert job_id == PRIVATE and timeout == 30
+        assert job_id == PRIVATE and timeout == receiver.RETAINED_PHASE_WORK_BUDGET_SECONDS
         order.append("terminal")
         if outcome != "completed":
             raise original
         return {"state": "completed"}
+
+    def cancel(job_id):
+        assert job_id == PRIVATE
+        order.append("cancel")
 
     def read(owner_id):
         assert owner_id == "owner"
@@ -649,6 +653,7 @@ def test_receiver_terminal_wait_preserves_deadlines_dispatch_and_private_real_sn
         review_receiver_defense=review,
         job_controller=SimpleNamespace(wait_for_state=awaiting, wait=terminal),
         approve_job=approve,
+        cancel_job=cancel,
         receiver_defense_job=read,
     )
     monkeypatch.setattr(receiver, "prepare", unexpected)
@@ -669,7 +674,7 @@ def test_receiver_terminal_wait_preserves_deadlines_dispatch_and_private_real_sn
         assert caught.value is original
     assert reads == [PRIVATE]
     assert order == ["review", "awaiting", "approve", "terminal"] + (
-        ["read"] if outcome == "completed" else []
+        ["read"] if outcome == "completed" else ["cancel"]
     )
     captured = capsys.readouterr()
     assert captured.err == "" and PRIVATE not in captured.out

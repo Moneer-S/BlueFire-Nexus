@@ -107,8 +107,14 @@ def test_windows_identity_requires_the_windows_descriptor_boundary(monkeypatch):
         raising=False,
     )
 
-    with pytest.raises(OSError, match="native Windows file identity is unavailable"):
+    expected = (
+        "native Windows file identity is unavailable"
+        if sys.platform == "win32"
+        else "native Windows file identity is available only on Windows"
+    )
+    with pytest.raises(OSError) as caught:
         ownership._windows_file_identity(17)
+    assert str(caught.value) == expected
 
 
 @pytest.mark.parametrize(
