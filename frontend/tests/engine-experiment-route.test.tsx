@@ -12,8 +12,9 @@ import type { RunJob } from "../src/types";
 
 vi.mock("../src/pages/Composition", () => ({ CompositionPage: () => <h1>Ordinary composition workspace</h1> }));
 vi.mock("../src/components/EngineExperimentWorkspace", () => ({
-  EngineExperimentWorkspace: ({ experiment, selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction, onCancelAttempt, onCancelCheck, cancellingAttemptId, cancellingCheckId }: any) => <section aria-label="Engine experiment witness">
+  EngineExperimentWorkspace: ({ experiment, workspaceEvidenceState, selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction, onCancelAttempt, onCancelCheck, cancellingAttemptId, cancellingCheckId }: any) => <section aria-label="Engine experiment witness">
     <h1>{experiment.objective.title}</h1>
+    <output aria-label="Workspace evidence state">{workspaceEvidenceState}</output>
     <output aria-label="Selected route item">{selectedAttemptId ?? selectedCheckId ?? "none"}</output>
     {experiment.projection.attempts[0] ? <button type="button" onClick={() => onSelectAttempt(experiment.projection.attempts[0].attempt_id)}>Select baseline</button> : null}
     {experiment.projection.attempts[1] ? <button type="button" onClick={() => onSelectAttempt(experiment.projection.attempts[1].attempt_id)}>Select adaptive</button> : null}
@@ -64,7 +65,8 @@ function Witness() {
 
 function mount(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><AssistanceProvider><Routes><Route path="/composition" element={<CompositionRoute />} /></Routes><Witness /></AssistanceProvider></MemoryRouter></QueryClientProvider>);
+  const view = render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><AssistanceProvider><Routes><Route path="/composition" element={<CompositionRoute />} /></Routes><Witness /></AssistanceProvider></MemoryRouter></QueryClientProvider>);
+  return { ...view, client };
 }
 
 function engineJob(jobId: string, engineAttemptId: string, state: RunJob["state"]): RunJob {
@@ -143,6 +145,50 @@ it("loads the strict workspace, captures Assistant context, and preserves select
   await user.click(screen.getByRole("button", { name: "Browser back" }));
   await waitFor(() => expect(screen.getByLabelText("Current location")).not.toHaveTextContent("attempt="));
   expect(screen.getByLabelText("Selected route item")).toHaveTextContent("none");
+});
+
+it("keeps saved evidence visible while an active refresh is pending", async () => {
+  workspace.mockResolvedValue(raw);
+  const { client } = mount(`/composition?engine_experiment=${experimentId}`);
+  expect(await screen.findByRole("heading", { name: raw.objective.title })).toBeVisible();
+
+  let settle: ((value: EngineExperiment) => void) | undefined;
+  workspace.mockReturnValueOnce(new Promise(resolve => { settle = resolve; }));
+  let refresh: Promise<void> | undefined;
+  await act(async () => {
+    refresh = client.refetchQueries({ queryKey: ["engine-experiment-workspace", experimentId, null, null], exact: true });
+    await Promise.resolve();
+  });
+
+  expect(await screen.findByText(/Refreshing saved evidence/i)).toBeVisible();
+  expect(screen.getByRole("heading", { name: raw.objective.title })).toBeVisible();
+  expect(screen.getByLabelText("Workspace evidence state")).toHaveTextContent("refreshing");
+  await act(async () => { settle?.(raw); await refresh; });
+  await waitFor(() => expect(screen.getByLabelText("Workspace evidence state")).toHaveTextContent("current"));
+});
+
+it("keeps recorded evidence visible when a refresh fails", async () => {
+  const user = userEvent.setup();
+  workspace.mockResolvedValue(raw);
+  const { client } = mount(`/composition?engine_experiment=${experimentId}`);
+  expect(await screen.findByRole("heading", { name: raw.objective.title })).toBeVisible();
+
+  workspace.mockRejectedValueOnce(new Error("fixture refresh unavailable"));
+  await act(async () => {
+    await client.refetchQueries({ queryKey: ["engine-experiment-workspace", experimentId, null, null], exact: true });
+  });
+
+  expect(await screen.findByText("Saved workspace could not refresh")).toBeVisible();
+  expect(screen.getByText(/Recorded evidence remains visible/i)).toBeVisible();
+  expect(screen.getByRole("heading", { name: raw.objective.title })).toBeVisible();
+  expect(screen.getByLabelText("Workspace evidence state")).toHaveTextContent("unavailable");
+  let settle: ((value: EngineExperiment) => void) | undefined;
+  workspace.mockReturnValueOnce(new Promise(resolve => { settle = resolve; }));
+  await user.click(screen.getByRole("button", { name: "Try refresh again" }));
+  expect(await screen.findByText(/Refreshing saved evidence/i)).toBeVisible();
+  expect(screen.getByLabelText("Workspace evidence state")).toHaveTextContent("refreshing");
+  await act(async () => { settle?.(raw); });
+  await waitFor(() => expect(screen.getByLabelText("Workspace evidence state")).toHaveTextContent("current"));
 });
 
 it("shows a recoverable error when the server cannot bind a requested selection", async () => {

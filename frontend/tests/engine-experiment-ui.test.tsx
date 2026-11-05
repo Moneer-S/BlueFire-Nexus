@@ -102,7 +102,59 @@ it("keeps the constrained phase path keyboard reachable and identifies the curre
   expect(phaseRail).toHaveAttribute("aria-describedby");
   phaseRail.focus();
   expect(phaseRail).toHaveFocus();
-  expect(within(phaseRail).getByText("Fresh adaptive search").closest("li")).toHaveAttribute("aria-current", "step");
+  const adaptive = within(phaseRail).getByText("Fresh adaptive search").closest("li");
+  expect(adaptive).toHaveAttribute("aria-current", "step");
+  expect(adaptive).toHaveTextContent("Active");
+  expect(within(phaseRail).getByText("Baseline exploration").closest("li")).toHaveTextContent("Current and verified");
+});
+
+it("marks a verified earlier snapshot as recorded history instead of current", () => {
+  const value = experiment();
+  value.projection.attempts = value.projection.attempts.map(item => item.role === "baseline" ? { ...item, target_snapshot_ref: digest("8") } : item);
+  renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} />);
+  const baseline = within(screen.getByRole("list", { name: "Experiment phases" })).getByText("Baseline exploration").closest("li");
+  expect(baseline).toHaveTextContent("Recorded history");
+  expect(baseline).toHaveAttribute("data-state", "recorded");
+});
+
+it("marks a terminal phase unavailable when its run integrity is unavailable", () => {
+  const value = experiment();
+  value.projection.run_integrity = value.projection.run_integrity.map(item => item.run_id === runId("01", "4") ? { ...item, state: "unavailable", detail: "Fixture run unavailable." } : item);
+  renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} />);
+  const baseline = within(screen.getByRole("list", { name: "Experiment phases" })).getByText("Baseline exploration").closest("li");
+  expect(baseline).toHaveTextContent("Run unavailable");
+  expect(baseline).toHaveAttribute("data-state", "unknown");
+});
+
+it("does not call independent verification complete while the baseline is incomplete", () => {
+  const partial = attemptSummary("baseline", "4", "partial");
+  const value = experiment({ attempts: [partial], checks: [] });
+  value.projection.observations = [{ evidence_id: `evidence-${"4".repeat(20)}`, run_id: partial.run_id, attempt_id: partial.attempt_id, check_id: null, mechanism_ref: digest("4"), target_snapshot_ref: digest("9"), assessment: "unauthorized_disclosure", record_hash: digest("5") }];
+  renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} />);
+  const verification = within(screen.getByRole("list", { name: "Experiment phases" })).getByText("Independent verification").closest("li");
+  expect(verification).toHaveTextContent("Incomplete");
+  expect(verification).toHaveAttribute("data-state", "unknown");
+});
+
+it("requires the defensive application receipt before calling the change current", () => {
+  const value = experiment();
+  value.projection.conclusion = { ...value.projection.conclusion, defense: { ...value.projection.conclusion.defense, application_receipt_ref: null } };
+  renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} />);
+  const defense = within(screen.getByRole("list", { name: "Experiment phases" })).getByText("Defensive change").closest("li");
+  expect(defense).toHaveTextContent("Application unverified");
+  expect(defense).toHaveAttribute("data-state", "unknown");
+});
+
+it("keeps absent later work explicitly not attempted", () => {
+  const value = experiment({ attempts: [attemptSummary("baseline", "4")], checks: [] });
+  value.defensive_change = null;
+  renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} />);
+  const phases = screen.getByRole("list", { name: "Experiment phases" });
+  for (const label of ["Defensive change", "Original mechanism retest", "Fresh adaptive search", "Legitimate-use check", "Comparison and disposition"]) {
+    const phase = within(phases).getByText(label).closest("li");
+    expect(phase).toHaveTextContent("Not attempted");
+    expect(phase).toHaveAttribute("data-state", "not_attempted");
+  }
 });
 
 it("does not silently substitute when a route-selected attempt is missing", () => {
@@ -201,7 +253,8 @@ it("leads a completed experiment with its established outcome and recorded dispo
   expect(screen.queryByText("Next action is not available here")).not.toBeInTheDocument();
   const phases = screen.getByRole("list", { name: "Experiment phases" });
   const disposition = within(phases).getByText("Comparison and disposition").closest("li");
-  expect(disposition).toHaveTextContent("Complete");
+  expect(disposition).toHaveTextContent("Conclusion incomplete");
+  expect(disposition).toHaveAttribute("data-state", "unknown");
   expect(disposition).not.toHaveAttribute("aria-current");
 
   const outcome = screen.getByLabelText("Established experiment outcome");

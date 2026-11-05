@@ -182,8 +182,8 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
     if (resolution.selection) navigate(engineExperimentPath(request.experimentId, resolution.selection));
     setAccepted(undefined);
   }, [experiment, accepted, navigate, request.experimentId]);
-  if (workspace.isPending) return <div className="page"><LoadingState label="Loading engine experiment" /></div>;
-  if (workspace.isError || !experiment) return <div className="page"><Link to="/composition">Composition workspace</Link><ErrorState title="Engine experiment unavailable" error={workspace.error ?? new Error("The engine experiment workspace is unavailable.")} retry={() => { void workspace.refetch(); }} /></div>;
+  if (workspace.isPending && !experiment) return <div className="page"><LoadingState label="Loading engine experiment" /></div>;
+  if (!experiment) return <div className="page"><Link to="/composition">Composition workspace</Link><ErrorState title="Engine experiment unavailable" error={workspace.error ?? new Error("The engine experiment workspace is unavailable.")} retry={() => { void workspace.refetch(); }} /></div>;
   const exactAttemptJob = attemptJob.data;
   const attemptIsActive = Boolean(selectedAttemptSummary && ACTIVE_ATTEMPT_STATES.has(selectedAttemptSummary.state));
   const attemptIsTerminal = Boolean(selectedAttemptSummary && TERMINAL_ATTEMPT_STATES.has(selectedAttemptSummary.state));
@@ -205,6 +205,7 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
   };
   return <div className="page engine-experiment-route">
     <nav className="engine-route-navigation" aria-label="Engine workspace"><Link to="/composition?engine_history=1">Saved defense experiments</Link><Link to="/composition">Composition workspace</Link></nav>
+    {workspace.isFetching ? <p role="status">Refreshing saved evidence. Recorded work remains visible while BlueFire verifies the latest state.</p> : workspace.isError ? <Callout tone="warning" title="Saved workspace could not refresh"><p>Recorded evidence remains visible, but BlueFire could not establish the latest saved state. Refresh before treating it as current.</p><Button size="small" variant="secondary" onClick={() => { void workspace.refetch(); }}>Try refresh again</Button></Callout> : null}
     {reviewNotice ? <Callout tone="warning" title="Unconfirmed action acceptance"><p>{reviewNotice}</p></Callout> : null}
     {accepted ? <Callout title="Action accepted"><p>{accepted.job ? "The durable job was accepted. BlueFire is refreshing its saved status." : "The saved workspace transition was accepted and is being refreshed."}</p>{accepted.job ? <Link to={`/runs?job=${encodeURIComponent(accepted.job.job_id)}`}>Open saved job in Runs</Link> : null}<button type="button" className="button button-secondary button-small" onClick={() => { setPollUntil(Date.now() + 60_000); void workspace.refetch(); }}>Refresh action status</button></Callout> : null}
     {cancellation.variables ? <Callout tone={cancellation.isError ? "danger" : cancellation.isSuccess ? "success" : "info"} title={cancellation.isError ? "Cancellation was refused" : cancellation.isSuccess ? "Cancellation requested" : "Requesting cancellation"}><p>{cancellation.isError ? (cancellation.error instanceof Error ? cancellation.error.message : "The saved job could not be cancelled.") : cancellation.isSuccess ? "BlueFire accepted the cancellation request and is refreshing the saved work state." : "BlueFire is asking the saved job to stop and will preserve its recorded evidence."}</p><Link to={`/runs?job=${encodeURIComponent(cancellation.variables.jobId)}`}>Open saved job in Runs</Link><button type="button" className="button button-secondary button-small" onClick={() => { void workspace.refetch(); }}>Refresh saved state</button></Callout> : null}
@@ -217,7 +218,7 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
       {canRecoverAttempt && !(recoveryMatchesSelection && recovery.isSuccess) ? <Button size="small" disabled={recovery.isPending} onClick={reconcile}>{recoveryMatchesSelection && recovery.isPending ? "Reconciling saved attempt…" : anotherRecoveryIsPending ? "Reconciliation in progress…" : recoveryMatchesSelection && recovery.isError ? "Retry saved attempt reconciliation" : "Reconcile saved attempt"}</Button> : null}
       <Link to={`/runs?job=${encodeURIComponent(recoveryRequest.jobId)}`}>Open saved job in Runs</Link>
     </Callout> : null}
-    <EngineExperimentWorkspace experiment={experiment} selectedAttemptId={selectedAttempt} selectedCheckId={selectedCheck}
+    <EngineExperimentWorkspace experiment={experiment} workspaceEvidenceState={workspace.isFetching ? "refreshing" : workspace.isError ? "unavailable" : "current"} selectedAttemptId={selectedAttempt} selectedCheckId={selectedCheck}
       onSelectAttempt={id => select({ kind: "engine_attempt", id })}
       onSelectCheck={id => select({ kind: "controller_check", id })}
       onCancelAttempt={suppressAttemptCancel ? undefined : id => cancel("engine_attempt", id)}

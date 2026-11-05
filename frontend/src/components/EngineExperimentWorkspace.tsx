@@ -12,7 +12,6 @@ import {
   type EngineProjectionAttempt,
   type EngineProjectionCheck,
   type EngineWorkspaceActionKind,
-  type EngineWorkflowState,
 } from "../lib/engine-experiment";
 import { Badge, Button, Callout, DataList, Panel, formatDate, sentence } from "./Primitives";
 import { EngineAttemptEvidence } from "./EngineAttemptEvidence";
@@ -21,6 +20,7 @@ import "./EngineExperimentWorkspace.css";
 
 export interface EngineExperimentWorkspaceProps {
   experiment: EngineExperiment;
+  workspaceEvidenceState?: "current" | "refreshing" | "unavailable";
   selectedAttemptId?: string | null;
   selectedCheckId?: string | null;
   onSelectAttempt: (attemptId: string) => void;
@@ -33,6 +33,11 @@ export interface EngineExperimentWorkspaceProps {
   runHref?: (runId: string) => string;
   comparisonHref?: string;
 }
+
+type EnginePhaseState = {
+  kind: "active" | "current" | "recorded" | "unknown" | "not_attempted";
+  label: string;
+};
 
 const activeAttemptState = (state: string) => ["queued", "preflight", "running", "stopping"].includes(state);
 const activeCheckState = (state: string) => state === "reserved";
@@ -80,17 +85,11 @@ function ControllerCheckCard({ check, detail, selected, detailId, runHref, onSel
   </Panel>;
 }
 
-const currentPhase = (workflow: EngineWorkflowState, phase: string): boolean => ({
-  baseline: ["ready_for_baseline", "baseline_active"],
-  verification: ["review_defense"],
-  defense: ["apply_defense", "reconcile_defense"],
-  reproducer: ["run_retained_reproducer", "retained_reproducer_active"],
-  adaptive: ["run_adaptive_search", "adaptive_search_active"],
-  legitimate: ["run_legitimate_use", "legitimate_use_active"],
-  comparison: ["choose_defense_disposition", "complete"],
-}[phase]?.includes(workflow) ?? false);
+const phaseState = (kind: EnginePhaseState["kind"], label: string): EnginePhaseState => ({ kind, label });
+const recordedOrCurrent = (workspaceEvidenceState: NonNullable<EngineExperimentWorkspaceProps["workspaceEvidenceState"]>, matchesCurrentSnapshot: boolean): EnginePhaseState =>
+  workspaceEvidenceState === "current" && matchesCurrentSnapshot ? phaseState("current", "Current and verified") : phaseState("recorded", "Recorded history");
 
-export function EngineExperimentWorkspace({ experiment, selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction, onCancelAttempt, onCancelCheck, cancellingAttemptId, cancellingCheckId, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: EngineExperimentWorkspaceProps) {
+export function EngineExperimentWorkspace({ experiment, workspaceEvidenceState = "current", selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction, onCancelAttempt, onCancelCheck, cancellingAttemptId, cancellingCheckId, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: EngineExperimentWorkspaceProps) {
   const titleId = useId();
   const attemptDetailId = `${titleId}-selected-attempt`;
   const checkDetailId = `${titleId}-selected-check`;
@@ -125,15 +124,121 @@ export function EngineExperimentWorkspace({ experiment, selectedAttemptId, selec
   const primaryAction = experiment.actions.find(action => action.primary);
   const dispositionActions = experiment.actions.filter(action => action.kind === "retain_defense" || action.kind === "rollback_defense");
   const baselineEvidence = baseline ? projection.observations.filter(item => item.attempt_id === baseline.attempt_id) : [];
-  const phaseState = (available: boolean, current: boolean, complete: boolean) => current ? "Current" : complete ? "Recorded" : available ? "Available" : "Pending";
+  const currentSnapshot = experiment.current_target?.snapshot_ref ?? null;
+  const integrityFor = (runId: string) => projection.run_integrity.find(item => item.run_id === runId);
+  const recordState = ({
+    exists,
+    active,
+    runId,
+    complete,
+    cleanup,
+    targetSnapshot,
+    outcomeKnown,
+  }: {
+    exists: boolean;
+    active: boolean;
+    runId?: string;
+    complete: boolean;
+    cleanup?: string;
+    targetSnapshot?: string | null;
+    outcomeKnown: boolean;
+  }): EnginePhaseState => {
+    if (!exists) return phaseState("not_attempted", "Not attempted");
+    if (active) {
+      if (workspaceEvidenceState === "unavailable") return phaseState("unknown", "State unavailable");
+      return phaseState("active", workspaceEvidenceState === "refreshing" ? "Active, refreshing" : "Active");
+    }
+    const integrity = runId ? integrityFor(runId) : undefined;
+    if (!integrity || integrity.state !== "verified") return phaseState("unknown", "Run unavailable");
+    if (!integrity.terminal || !complete || cleanup !== undefined && cleanup !== "verified_absent") return phaseState("unknown", "Incomplete");
+    if (!outcomeKnown) return phaseState("unknown", "Outcome unknown");
+    return recordedOrCurrent(workspaceEvidenceState, Boolean(currentSnapshot && targetSnapshot === currentSnapshot));
+  };
+  const baselineState = recordState({
+    exists: Boolean(baseline),
+    active: Boolean(baseline && activeAttemptState(baseline.state)),
+    runId: baseline?.run_id,
+    complete: Boolean(baseline && baseline.state === "completed" && baseline.completeness === "complete"),
+    cleanup: baseline?.cleanup.state,
+    targetSnapshot: baseline?.target_snapshot_ref,
+    outcomeKnown: projection.conclusion.original_mechanism.status !== "unknown" && projection.conclusion.original_mechanism.status !== "not_attempted",
+  });
+  const baselineIntegrity = baseline ? integrityFor(baseline.run_id) : undefined;
+  const baselineEvidenceIntegrity = baselineEvidence.map(item => integrityFor(item.run_id));
+  const verificationState = !baseline
+    ? phaseState("not_attempted", "Not attempted")
+    : activeAttemptState(baseline.state)
+      ? workspaceEvidenceState === "unavailable" ? phaseState("unknown", "State unavailable") : phaseState("active", workspaceEvidenceState === "refreshing" ? "Active, refreshing" : "Active")
+      : !baselineIntegrity || baselineIntegrity.state !== "verified" || baselineEvidenceIntegrity.some(item => !item || item.state !== "verified")
+        ? phaseState("unknown", "Run unavailable")
+        : !baselineIntegrity.terminal || baseline.state !== "completed" || baseline.completeness !== "complete" || baseline.cleanup.state !== "verified_absent"
+          ? phaseState("unknown", "Incomplete")
+          : !baselineEvidence.length || baselineEvidence.some(item => item.assessment === "unknown")
+            ? phaseState("unknown", "Outcome unknown")
+            : recordedOrCurrent(workspaceEvidenceState, Boolean(currentSnapshot && baselineEvidence.every(item => item.target_snapshot_ref === currentSnapshot)));
+  const defenseState = !experiment.defensive_change
+    ? phaseState("not_attempted", "Not attempted")
+    : experiment.defensive_change.state === "unknown" || experiment.current_target === null
+      ? phaseState("unknown", "Current state unknown")
+      : experiment.defensive_change.state === "applied" || experiment.defensive_change.state === "retained"
+        ? projection.conclusion.defense.application_receipt_ref
+          ? recordedOrCurrent(workspaceEvidenceState, experiment.defensive_change.after_target_snapshot_ref === currentSnapshot)
+          : phaseState("unknown", "Application unverified")
+        : phaseState("recorded", "Recorded history");
+  const reproducerState = recordState({
+    exists: Boolean(reproducer),
+    active: Boolean(reproducer && activeCheckState(reproducer.state)),
+    runId: reproducer?.run_id,
+    complete: Boolean(reproducer && reproducer.state === "completed" && reproducer.result_digest && reproducer.independent_evidence_refs.length),
+    cleanup: reproducer?.cleanup.state,
+    targetSnapshot: reproducer?.target_snapshot_ref,
+    outcomeKnown: ["blocked", "still_succeeds"].includes(projection.conclusion.retained_reproducer.status),
+  });
+  const adaptiveState = recordState({
+    exists: Boolean(adaptive),
+    active: Boolean(adaptive && activeAttemptState(adaptive.state)),
+    runId: adaptive?.run_id,
+    complete: Boolean(adaptive && adaptive.state === "completed" && adaptive.completeness === "complete"),
+    cleanup: adaptive?.cleanup.state,
+    targetSnapshot: adaptive?.target_snapshot_ref,
+    outcomeKnown: ["remaining_path_found", "no_path_observed_within_limits"].includes(projection.conclusion.adaptive_search.status),
+  });
+  const legitimateState = recordState({
+    exists: Boolean(legitimate),
+    active: Boolean(legitimate && activeCheckState(legitimate.state)),
+    runId: legitimate?.run_id,
+    complete: Boolean(legitimate && legitimate.state === "completed" && legitimate.result_digest && legitimate.independent_evidence_refs.length),
+    cleanup: legitimate?.cleanup.state,
+    targetSnapshot: legitimate?.target_snapshot_ref,
+    outcomeKnown: ["passed", "failed"].includes(projection.conclusion.legitimate_use.status),
+  });
+  const comparisonRunIds = [baseline?.run_id, reproducer?.run_id, adaptive?.run_id, legitimate?.run_id].filter((runId): runId is string => Boolean(runId));
+  const comparisonRunsVerified = comparisonRunIds.length === 4
+    && new Set(comparisonRunIds).size === 4
+    && comparisonRunIds.every(runId => {
+      const integrity = integrityFor(runId);
+      return integrity?.state === "verified" && integrity.terminal;
+    });
+  const comparisonKnown = projection.conclusion.telemetry_health.status === "complete"
+    && projection.conclusion.cleanup.status === "verified_absent"
+    && !["unknown", "not_attempted"].includes(projection.conclusion.original_mechanism.status)
+    && !["unknown", "not_attempted"].includes(projection.conclusion.retained_reproducer.status)
+    && !["pending", "inconclusive", "not_attempted"].includes(projection.conclusion.adaptive_search.status)
+    && !["unknown", "not_attempted"].includes(projection.conclusion.legitimate_use.status)
+    && comparisonRunsVerified;
+  const comparisonState = projection.workflow_state !== "complete"
+    ? phaseState("not_attempted", "Not attempted")
+    : !comparisonKnown || experiment.current_target === null
+      ? phaseState("unknown", "Conclusion incomplete")
+      : recordedOrCurrent(workspaceEvidenceState, true);
   const phases = [
-    { key: "baseline", label: "Baseline exploration", state: phaseState(Boolean(baseline), currentPhase(projection.workflow_state, "baseline"), Boolean(baseline && !activeAttemptState(baseline.state))), icon: FlaskConical },
-    { key: "verification", label: "Independent verification", state: phaseState(Boolean(baselineEvidence.length), currentPhase(projection.workflow_state, "verification"), Boolean(baselineEvidence.length)), icon: CircleCheck },
-    { key: "defense", label: "Defensive change", state: phaseState(Boolean(experiment.defensive_change), currentPhase(projection.workflow_state, "defense"), Boolean(experiment.defensive_change && ["applied", "retained", "rolled_back"].includes(experiment.defensive_change.state))), icon: ShieldCheck },
-    { key: "reproducer", label: "Original mechanism retest", state: phaseState(Boolean(reproducer), currentPhase(projection.workflow_state, "reproducer"), Boolean(reproducer && !activeCheckState(reproducer.state))), icon: RotateCcw },
-    { key: "adaptive", label: "Fresh adaptive search", state: phaseState(Boolean(adaptive), currentPhase(projection.workflow_state, "adaptive"), Boolean(adaptive && !activeAttemptState(adaptive.state))), icon: Bot },
-    { key: "legitimate", label: "Legitimate-use check", state: phaseState(Boolean(legitimate), currentPhase(projection.workflow_state, "legitimate"), Boolean(legitimate && !activeCheckState(legitimate.state))), icon: ShieldCheck },
-    { key: "comparison", label: "Comparison and disposition", state: projection.workflow_state === "complete" ? "Complete" : phaseState(true, currentPhase(projection.workflow_state, "comparison"), false), icon: Gauge },
+    { key: "baseline", label: "Baseline exploration", state: baselineState, icon: FlaskConical },
+    { key: "verification", label: "Independent verification", state: verificationState, icon: CircleCheck },
+    { key: "defense", label: "Defensive change", state: defenseState, icon: ShieldCheck },
+    { key: "reproducer", label: "Original mechanism retest", state: reproducerState, icon: RotateCcw },
+    { key: "adaptive", label: "Fresh adaptive search", state: adaptiveState, icon: Bot },
+    { key: "legitimate", label: "Legitimate-use check", state: legitimateState, icon: ShieldCheck },
+    { key: "comparison", label: "Comparison and disposition", state: comparisonState, icon: Gauge },
   ];
   const completed = projection.workflow_state === "complete";
   const comparison = <EngineRetestComparison conclusion={projection.conclusion} evidence={projection} defensiveChange={experiment.defensive_change} dispositionActions={dispositionActions} onDispositionAction={onPrimaryAction} sourceRuns={sourceRuns} runHref={runHref} comparisonHref={comparisonHref} />;
@@ -154,7 +259,7 @@ export function EngineExperimentWorkspace({ experiment, selectedAttemptId, selec
     {experiment.current_target === null ? <Callout tone="warning" title="Current target state is not established"><p>BlueFire preserved the earlier evidence, but it cannot treat that history as proof of the target’s current state. Reconcile the defensive operation before starting another effect or drawing a current-state conclusion.</p></Callout> : null}
     {activeCheck ? <span className="sr-only" role="status">Trusted check in progress: {engineControllerCheckLabel(activeCheck.role)}</span> : null}
     <span className="sr-only" id={phaseHintId}>This path scrolls horizontally when space is constrained. Focus it and use the arrow keys to review every phase.</span>
-    <ol className="engine-phase-rail" aria-label="Experiment phases" aria-describedby={phaseHintId} tabIndex={0}>{phases.map((phase, index) => <li className={phase.state === "Current" ? "is-current" : ["Recorded", "Complete"].includes(phase.state) ? "is-recorded" : undefined} aria-current={phase.state === "Current" ? "step" : undefined} key={phase.key}><span>{index + 1}</span><phase.icon aria-hidden="true" /><div><strong>{phase.label}</strong><small>{phase.state}</small></div></li>)}</ol>
+    <ol className="engine-phase-rail" aria-label="Experiment phases" aria-describedby={phaseHintId} tabIndex={0}>{phases.map((phase, index) => <li className={["active", "current"].includes(phase.state.kind) ? "is-current" : phase.state.kind === "recorded" ? "is-recorded" : undefined} data-state={phase.state.kind} aria-current={phase.state.kind === "active" ? "step" : undefined} key={phase.key}><span>{index + 1}</span><phase.icon aria-hidden="true" /><div><strong>{phase.label}</strong><small>{phase.state.label}</small></div></li>)}</ol>
     {completed ? <div className="engine-outcome-first" aria-label="Established experiment outcome">{comparison}</div> : null}
 
     <div className="engine-workspace-layout">
