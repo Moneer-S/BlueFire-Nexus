@@ -49,6 +49,7 @@ it("opens a retained defense experiment in the existing Composition workspace", 
   expect(screen.getByText("Disposable tenant lab / Complete")).toBeVisible();
   expect(engineExperimentApi.list).toHaveBeenCalledOnce();
   expect(engineExperimentApi.workspace).toHaveBeenCalledExactlyOnceWith(engineOwner);
+  expect(screen.getByRole("link", { name: "Browse saved defense experiments" })).toHaveAttribute("href", "/composition?engine_history=1");
   expect(api.receiverTests).not.toHaveBeenCalled();
 });
 

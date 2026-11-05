@@ -38,7 +38,7 @@ export function SavedDefensiveWork() {
         </li>)}</ul> : history.isSuccess && !history.data.more ? <div className="saved-work-empty"><WorkIcon aria-hidden="true"/><p>No saved {selected.label.toLowerCase()} work.</p></div> : null}
         {history.data?.more ? <p className="workspace-note">More saved records are available in this workflow.</p> : null}
       </>}
-      <Link className="saved-work-open" to={selected.href}>Open {selected.label.toLowerCase()} workspace <ArrowRight aria-hidden="true" /></Link>
+      <Link className="saved-work-open" to={selected.id === "engine" ? "/composition?engine_history=1" : selected.href}>{selected.id === "engine" ? "Browse saved defense experiments" : `Open ${selected.label.toLowerCase()} workspace`} <ArrowRight aria-hidden="true" /></Link>
     </div>
   </section>;
 }

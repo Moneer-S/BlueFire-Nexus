@@ -12,6 +12,7 @@ import { EngineActionReview } from "../components/EngineActionReview";
 import { engineActionLabels, type EngineActionAcceptance, type PreparedActionKind } from "../lib/engine-actions";
 import type { EngineExperiment } from "../lib/engine-experiment";
 import { api } from "../lib/api";
+import { EngineExperimentLibrary } from "../components/EngineExperimentLibrary";
 
 const ATTEMPT_ID = /^engine-attempt-[0-9a-f]{32}$/;
 const CHECK_ID = /^controller-check-[0-9a-f]{32}$/;
@@ -99,7 +100,7 @@ export function CompositionRoute() {
     catch (error) { return { request: undefined, error }; }
   }, [location.search]);
   if (parsed.error) return <div className="page"><Link to="/composition">Composition workspace</Link><ErrorState title="Engine experiment link unavailable" error={parsed.error} /></div>;
-  return parsed.request ? <EngineExperimentRoute key={parsed.request.experimentId} request={parsed.request} /> : <CompositionPage />;
+  return parsed.request ? <EngineExperimentRoute key={parsed.request.experimentId} request={parsed.request} /> : location.search === "?engine_history=1" ? <EngineExperimentLibrary /> : <CompositionPage />;
 }
 
 function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequest }) {
@@ -203,7 +204,7 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
     recovery.mutate(recoveryRequest);
   };
   return <div className="page engine-experiment-route">
-    <Link to="/composition">Composition workspace</Link>
+    <nav className="engine-route-navigation" aria-label="Engine workspace"><Link to="/composition?engine_history=1">Saved defense experiments</Link><Link to="/composition">Composition workspace</Link></nav>
     {reviewNotice ? <Callout tone="warning" title="Unconfirmed action acceptance"><p>{reviewNotice}</p></Callout> : null}
     {accepted ? <Callout title="Action accepted"><p>{accepted.job ? "The durable job was accepted. BlueFire is refreshing its saved status." : "The saved workspace transition was accepted and is being refreshed."}</p>{accepted.job ? <Link to={`/runs?job=${encodeURIComponent(accepted.job.job_id)}`}>Open saved job in Runs</Link> : null}<button type="button" className="button button-secondary button-small" onClick={() => { setPollUntil(Date.now() + 60_000); void workspace.refetch(); }}>Refresh action status</button></Callout> : null}
     {cancellation.variables ? <Callout tone={cancellation.isError ? "danger" : cancellation.isSuccess ? "success" : "info"} title={cancellation.isError ? "Cancellation was refused" : cancellation.isSuccess ? "Cancellation requested" : "Requesting cancellation"}><p>{cancellation.isError ? (cancellation.error instanceof Error ? cancellation.error.message : "The saved job could not be cancelled.") : cancellation.isSuccess ? "BlueFire accepted the cancellation request and is refreshing the saved work state." : "BlueFire is asking the saved job to stop and will preserve its recorded evidence."}</p><Link to={`/runs?job=${encodeURIComponent(cancellation.variables.jobId)}`}>Open saved job in Runs</Link><button type="button" className="button button-secondary button-small" onClick={() => { void workspace.refetch(); }}>Refresh saved state</button></Callout> : null}

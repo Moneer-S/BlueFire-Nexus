@@ -1,7 +1,7 @@
 import { ArrowRight, CircleHelp, ShieldAlert, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useId } from "react";
 import { Link } from "react-router-dom";
-import type { EngineDefenseChange, EngineExperimentConclusion, EngineWorkspaceAction, EngineWorkspaceActionKind } from "../lib/engine-experiment";
+import type { EngineDefenseChange, EngineExperimentConclusion, EngineExperimentProjection, EngineWorkspaceAction, EngineWorkspaceActionKind } from "../lib/engine-experiment";
 import { Badge, Button, Callout, DataList, Panel, sentence } from "./Primitives";
 
 export interface EngineComparisonConclusion {
@@ -71,10 +71,54 @@ const internalResultHref = (value: string): string | null => {
   if ([...value].some(character => character === "\\" || character.charCodeAt(0) <= 32)) return null;
   if (!/^\/(?:runs|compare)(?:[/?#]|$)/.test(value)) return null;
   const parsed = new URL(value, "https://bluefire.invalid");
-  return parsed.origin === "https://bluefire.invalid" ? `${parsed.pathname}${parsed.search}${parsed.hash}` : null;
+  return parsed.origin === "https://bluefire.invalid" && /^\/(?:runs|compare)(?:\/|$)/.test(parsed.pathname) ? `${parsed.pathname}${parsed.search}${parsed.hash}` : null;
 };
 
-export function EngineRetestComparison({ conclusion: value, defensiveChange, dispositionActions = [], onDispositionAction, sourceRuns, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: { conclusion: EngineExperimentConclusion; defensiveChange: EngineDefenseChange | null; dispositionActions?: EngineWorkspaceAction[]; onDispositionAction?: (action: EngineWorkspaceActionKind) => void; sourceRuns?: EngineSourceRunLink[]; runHref?: (runId: string) => string; comparisonHref?: string }) {
+type ComparisonEvidence = Pick<EngineExperimentProjection, "observations" | "run_integrity">;
+
+function EvidenceLineage({ conclusion, evidence, runHref }: { conclusion: EngineExperimentConclusion; evidence?: ComparisonEvidence; runHref: (runId: string) => string }) {
+  const roles = [
+    { label: "Independent baseline", value: conclusion.original_mechanism },
+    { label: "Exact mechanism retest", value: conclusion.retained_reproducer },
+    { label: "Fresh adaptive search", value: conclusion.adaptive_search },
+    { label: "Legitimate-use control", value: conclusion.legitimate_use },
+  ];
+  const observations = evidence?.observations ?? [];
+  const integrity = evidence?.run_integrity ?? [];
+  return <details className="engine-evidence-lineage">
+    <summary>Evidence and lineage <span>{observations.length} independent observations · {integrity.filter(item => item.state === "verified").length}/{integrity.length} runs verified</span></summary>
+    <p className="engine-evidence-note">Conclusion support comes from independent observations. Engine assertions and runner-reported tool results remain separate in the selected attempt.</p>
+    <div className="engine-lineage-roles">{roles.map(role => {
+      const run = integrity.find(item => item.run_id === role.value.run_id);
+      const href = role.value.run_id ? internalResultHref(runHref(role.value.run_id)) : null;
+      return <section key={role.label} aria-label={`${role.label} evidence`}>
+        <header><strong>{role.label}</strong><Badge tone={run?.state === "verified" ? "info" : "neutral"}>{run ? `Run integrity ${sentence(run.state).toLowerCase()}` : "Run integrity unavailable"}</Badge></header>
+        {run ? <p>{run.detail} · {run.terminal ? "Terminal run" : "Run not terminal"}</p> : null}
+        {href ? <Link to={href}>Inspect {role.label.toLowerCase()} run<ArrowRight aria-hidden="true" /></Link> : <p>No linked run recorded.</p>}
+        {role.value.support_refs.length ? <ul>{role.value.support_refs.map(reference => {
+          const observation = observations.find(item => item.evidence_id === reference && item.run_id === role.value.run_id);
+          return <li key={reference}><details><summary>{observation ? sentence(observation.assessment) : "Independent evidence reference"}</summary><DataList items={[
+            { label: "Evidence", value: <code>{reference}</code> },
+            { label: "Observation", value: observation ? "Independent observation" : "Details unavailable in this projection" },
+            ...(observation ? [
+              { label: "Mechanism", value: <code>{observation.mechanism_ref}</code> },
+              { label: "Target snapshot", value: <code>{observation.target_snapshot_ref}</code> },
+              { label: "Record hash", value: <code>{observation.record_hash}</code> },
+              { label: "Owner", value: <code>{observation.attempt_id ?? observation.check_id}</code> },
+            ] : []),
+          ]} /></details></li>;
+        })}</ul> : <p>No independent support recorded.</p>}
+      </section>;
+    })}</div>
+    <DataList items={[
+      { label: "Expected telemetry", value: conclusion.telemetry_health.expected_sources.map(sentence).join(", ") || "Not recorded" },
+      { label: "Verified telemetry", value: conclusion.telemetry_health.verified_sources.map(sentence).join(", ") || "None recorded" },
+      { label: "Missing telemetry", value: conclusion.telemetry_health.missing_sources.map(sentence).join(", ") || "None recorded" },
+    ]} />
+  </details>;
+}
+
+export function EngineRetestComparison({ conclusion: value, evidence, defensiveChange, dispositionActions = [], onDispositionAction, sourceRuns, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: { conclusion: EngineExperimentConclusion; evidence?: ComparisonEvidence; defensiveChange: EngineDefenseChange | null; dispositionActions?: EngineWorkspaceAction[]; onDispositionAction?: (action: EngineWorkspaceActionKind) => void; sourceRuns?: EngineSourceRunLink[]; runHref?: (runId: string) => string; comparisonHref?: string }) {
   const dispositionHeadingId = useId();
   const conclusion = engineComparisonConclusion(value);
   const runs = sourceRuns ?? conclusionSourceRuns(value);
@@ -97,20 +141,25 @@ export function EngineRetestComparison({ conclusion: value, defensiveChange, dis
       <article><span>Legitimate use</span><strong>{legitimateUseLabel(value.legitimate_use.status)}</strong><Badge tone={value.legitimate_use.status === "passed" ? "success" : value.legitimate_use.status === "failed" ? "danger" : "warning"}>Independent control</Badge></article>
     </div>
     {defensiveChange ? <div className="engine-defense-summary"><div><span>{sentence(defensiveChange.kind)} change</span><strong>{defensiveChange.summary}</strong></div><Badge tone={["applied", "retained"].includes(defensiveChange.state) ? "success" : defensiveChange.state === "unknown" ? "warning" : "neutral"}>{sentence(defensiveChange.state)}</Badge></div> : <Callout tone="warning" title="Defensive change unavailable"><p>No reviewed change is linked to this comparison.</p></Callout>}
-    {dispositionActions.length ? <section className="engine-disposition-actions" aria-labelledby={dispositionHeadingId}><div><span>Defensive change disposition</span><h3 id={dispositionHeadingId}>Choose what happens to the applied change</h3><p>This choice does not stop workers, remove artifacts, or reset the lab.</p></div><div>{dispositionActions.map(action => <article key={action.kind}><strong>{action.label}</strong><p>{action.kind === "retain_defense" ? "Keep the currently applied change. This does not establish remediation or cleanup." : "Run the reviewed rollback against the authorized target. Rollback is separate from cleanup and lab reset."}</p>{action.reason ? <small>{action.reason}</small> : null}<Button type="button" variant={action.kind === "rollback_defense" ? "danger" : "primary"} disabled={!action.enabled || !onDispositionAction} onClick={() => onDispositionAction?.(action.kind)}>{action.label}</Button></article>)}</div></section> : null}
+    <div className="engine-disposition-state" aria-label="Separate cleanup and defense states"><span>Defensive change <Badge>{sentence(value.defense.state)}</Badge></span><span>Worker / target cleanup <Badge tone={value.cleanup.status === "verified_absent" ? "info" : "warning"}>{sentence(value.cleanup.status)}</Badge></span></div>
+    {dispositionActions.length ? <section className="engine-disposition-actions" aria-labelledby={dispositionHeadingId}><div><span>Defensive change disposition</span><h3 id={dispositionHeadingId}>Choose what happens to the applied change</h3><p>Worker and target cleanup is tracked separately from the applied defense. Disposition does not reset the lab.</p></div><div>{dispositionActions.map(action => <article key={action.kind}><strong>{action.label}</strong><p>{action.kind === "retain_defense" ? "Keep the reviewed change on the current target." : "Restore the reviewed prior target configuration."}</p>{action.reason ? <small>{action.reason}</small> : null}<Button type="button" variant={action.kind === "rollback_defense" ? "danger" : "primary"} disabled={!action.enabled || !onDispositionAction} onClick={() => onDispositionAction?.(action.kind)}>{action.label}</Button></article>)}</div></section> : null}
     {value.unknowns.length ? <details className="engine-comparison-unknowns" open><summary>Unknowns and unattempted work</summary><ul>{value.unknowns.map(item => <li key={item}>{item}</li>)}</ul></details> : null}
     {runLinks.length || fullComparisonHref ? <nav className="engine-comparison-links" aria-label="Comparison source runs">{runLinks.map(source => <Link to={source.href} key={source.runId}>{source.label}<ArrowRight aria-hidden="true" /></Link>)}{fullComparisonHref ? <Link to={fullComparisonHref}>Open full comparison<ArrowRight aria-hidden="true" /></Link> : null}</nav> : <Callout tone="warning" title="Supporting runs unavailable"><p>The conclusion has no linked run route to inspect.</p></Callout>}
+    <EvidenceLineage conclusion={value} evidence={evidence} runHref={runHref} />
     <details><summary>Recorded change and proof boundary</summary><DataList items={[
       { label: "Defensive state", value: sentence(value.defense.state) },
       { label: "Telemetry health", value: sentence(value.telemetry_health.status) },
       { label: "Cleanup", value: sentence(value.cleanup.status) },
       { label: "Change identity", value: defensiveChange?.change_id ?? value.defense.change_id ?? "Not recorded" },
+      { label: "Exact retained mechanism", value: value.defense.mechanism_ref ? <code>{value.defense.mechanism_ref}</code> : "Not recorded" },
+      { label: "Before change snapshot", value: <code>{value.defense.before_target_snapshot_ref}</code> },
+      { label: "After change snapshot", value: value.defense.after_target_snapshot_ref ? <code>{value.defense.after_target_snapshot_ref}</code> : "Not recorded" },
       { label: "Rollback plan", value: defensiveChange?.rollback_digest ? <code>{defensiveChange.rollback_digest}</code> : "Not recorded" },
       { label: "Application receipt", value: value.defense.application_receipt_ref ? <code>{value.defense.application_receipt_ref}</code> : "Not recorded" },
       { label: "Reconciliation receipt", value: value.defense.reconciliation_receipt_ref ? <code>{value.defense.reconciliation_receipt_ref}</code> : "Not recorded" },
       { label: "Rollback operation", value: value.defense.rollback_operation_ref ? <code>{value.defense.rollback_operation_ref}</code> : "Not recorded" },
       { label: "Rollback receipt", value: value.defense.rollback_receipt_ref ? <code>{value.defense.rollback_receipt_ref}</code> : "Not recorded" },
-      { label: "Current target snapshot", value: value.defense.current_target_snapshot_ref ?? "Not established" },
-    ]} /></details>
+      { label: "Current target snapshot", value: value.defense.current_target_snapshot_ref ? <code>{value.defense.current_target_snapshot_ref}</code> : "Not established" },
+    ]} />{value.cleanup.items.length ? <ul className="engine-cleanup-receipts">{value.cleanup.items.map(item => <li key={item.id}><span>{sentence(item.kind)}: {sentence(item.state)}</span><code>{item.id}</code><span>Cleanup receipt: {item.receipt_ref ? <code>{item.receipt_ref}</code> : "Not recorded"}</span></li>)}</ul> : null}</details>
   </Panel>;
 }
