@@ -724,6 +724,7 @@ def test_receiver_receipt_preserves_bounded_composition_failure_categories() -> 
             "composition_interaction": {
                 "schema_version": "bluefire.installed-receiver-composition-interaction.v1",
                 "step": "click",
+                "settlement_checkpoint": "receiver_counts",
                 "button_enabled": False,
                 "pending_kind": "proposal",
                 "context_digest_matches": True,
@@ -738,6 +739,7 @@ def test_receiver_receipt_preserves_bounded_composition_failure_categories() -> 
     assert errors[0]["stage"] == "composition-attempt"
     assert errors[0]["error_type"] == "TimeoutError"
     assert errors[0]["composition_interaction"]["step"] == "click"
+    assert errors[0]["composition_interaction"]["settlement_checkpoint"] == "receiver_counts"
     assert errors[0]["composition_interaction"]["button_enabled"] is False
     assert errors[1]["method"] == "waitForResponse"
     assert errors[2] == {"kind": "other", "error_type": "other"}
@@ -1644,6 +1646,7 @@ def test_receiver_browser_driver_uses_authenticated_readiness_and_safe_diagnosti
     assert 'assert.equal(ready.process, "authenticated")' in driver
     assert 'assert.equal(ready.process, "running")' not in driver
     assert '"/ui/fonts/InterVariable.woff2"' in driver
+    assert '"/api/v1/engine-experiments"' in driver
     assert "report.runner_status_diagnostic" in driver
     assert "profile_matches: ready.profile_id === PROFILE" in driver
     assert (

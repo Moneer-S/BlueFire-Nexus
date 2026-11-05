@@ -21,8 +21,10 @@ test("composition interaction retains finite button, pending and context facts w
     const result = receiverCompositionInteractionDiagnostic("click", ui,
       { grant: { status: "active", document: { grant_id: "g", expires_at_ms: 90_001 } } },
       { grant_id: "g", context_digest: "c", private: "private context" },
-      { candidate_ready: true, proposal: { context_digest: "c", candidate: "private graph" } }, 1);
+      { candidate_ready: true, proposal: { context_digest: "c", candidate: "private graph" } }, 1,
+      "receiver_counts");
     assert.equal(result.step, "click");
+    assert.equal(result.settlement_checkpoint, "receiver_counts");
     assert.equal(result.context_grant_matches, true);
     assert.equal(result.context_digest_matches, true);
     assert.equal(result.grant_time, "over_30_seconds");
@@ -37,8 +39,10 @@ test("composition interaction retains finite button, pending and context facts w
 
 test("composition diagnostics distinguish response wait and collapse unknown values", () => {
   const result = receiverCompositionInteractionDiagnostic("response", { pending_kind: "/private/path", button_enabled: "true" },
-    { grant: { status: "private status", document: { expires_at_ms: 10 } } }, undefined, undefined, 10);
+    { grant: { status: "private status", document: { expires_at_ms: 10 } } }, undefined, undefined, 10,
+    "/private/checkpoint");
   assert.equal(result.step, "response");
+  assert.equal(result.settlement_checkpoint, "other");
   assert.equal(result.button_enabled, null);
   assert.equal(result.pending_kind, "other");
   assert.equal(result.grant_status, "other");

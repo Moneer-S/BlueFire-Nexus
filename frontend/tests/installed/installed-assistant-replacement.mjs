@@ -473,11 +473,18 @@ try {
   assert.notEqual(replacementId, originalId);
   assert.equal(replacement.submitted.context_digest, phaseOne.context_digest);
   assert.equal(replacement.submitted.message, prompt);
-  const completed = await poll(() => api(`/assistance/turns/${replacementId}`), value => ["completed", "blocked"].includes(value.turn?.status), 30000);
+  const completed = await poll(
+    () => api(`/assistance/turns/${replacementId}`),
+    value => ["completed", "failed", "cancelled", "interrupted"].includes(value.job?.state),
+    30000,
+  );
+  report.observed_states.replacement = {
+    job: completed.job?.state ?? "missing",
+    turn: completed.turn?.status ?? "missing",
+  };
   assert.equal(completed.job.state, "completed");
   assert.equal(completed.turn.status, "completed");
   await replacementPanel.getByRole("heading", { name: "Work completed", exact: true }).waitFor();
-  report.observed_states.replacement = { job: "completed", turn: "completed" };
   assert.deepEqual(completed.turn.plan, []);
   assert.deepEqual(completed.turn.results, []);
   assert.equal((await fixtureState()).request_count, 2);

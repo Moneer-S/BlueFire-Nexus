@@ -41,11 +41,37 @@ export function readReceiverCompositionUi(expected) {
   };
 }
 
-export function receiverCompositionInteractionDiagnostic(step, ui, objective, context, proposal, now) {
+const COMPOSITION_SETTLEMENT_CHECKPOINTS = [
+  "not_started",
+  "owner_binding",
+  "settlement_wait",
+  "attempt_state",
+  "parent_binding",
+  "grant_id_binding",
+  "grant_digest_binding",
+  "attempt_id_binding",
+  "run_id_binding",
+  "verified_run_binding",
+  "verified_source_binding",
+  "result_digest",
+  "observation_state",
+  "observation_authenticated",
+  "observation_decision",
+  "process_exit",
+  "receiver_closed",
+  "receiver_counts",
+  "cleanup",
+  "objective_established",
+  "objective_checks",
+  "verified",
+];
+
+export function receiverCompositionInteractionDiagnostic(step, ui, objective, context, proposal, now, settlementCheckpoint) {
   const remaining = objective?.grant?.document?.expires_at_ms - now;
   return {
     schema_version: "bluefire.installed-receiver-composition-interaction.v1",
     step: ["reconcile", "click", "response", "settlement"].includes(step) ? step : "other",
+    settlement_checkpoint: enumValue(settlementCheckpoint, COMPOSITION_SETTLEMENT_CHECKPOINTS),
     observation: enumValue(ui?.observation, ["before_click", "failure"]),
     center_hit: enumValue(ui?.center_hit, ["self", "descendant", "other", "out_of_view"]),
     route_matches: ui?.route_matches === true,

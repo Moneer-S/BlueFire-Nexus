@@ -212,6 +212,7 @@ let prepareHttpDiagnostic;
 let pendingPreparationFailure;
 let compositionInteractionStep = "reconcile";
 let compositionInteractionUi;
+let compositionSettlementCheckpoint = "not_started";
 let retainedInteraction;
 const settingsReadAllowed = createReceiverSettingsReadPolicy();
 let activeOwnerRole = "original";
@@ -437,6 +438,7 @@ function allowedRead(url, method) {
     "/api/v1/receiver-defense/jobs",
     "/api/v1/jobs",
     "/api/v1/runs",
+    "/api/v1/engine-experiments",
     "/api/v1/detections",
     "/api/v1/comparison-snapshots",
   ].includes(path)) return !url.search;
@@ -1768,28 +1770,45 @@ try {
   compositionInteractionStep = "response";
   latestCompositionObjective = await (await attemptResponse).json();
   compositionInteractionStep = "settlement";
+  compositionSettlementCheckpoint = "owner_binding";
   assert.equal(latestCompositionObjective.owner?.job_id, compositionOwnerId);
+  compositionSettlementCheckpoint = "settlement_wait";
   const settledComposition = await waitComposition(value => value.attempts?.some(attempt =>
     attempt.job_id === compositionAttemptJobId && attempt.progress?.settlement === "settled"
       && attempt.progress?.verified_result));
   const composedAttempt = settledComposition.attempts.find(attempt => attempt.job_id === compositionAttemptJobId);
   const binding = composedAttempt?.request?.composition_attempt;
   const verified = composedAttempt?.progress?.verified_result;
+  compositionSettlementCheckpoint = "attempt_state";
   assert.equal(composedAttempt?.state, "completed");
+  compositionSettlementCheckpoint = "parent_binding";
   assert.equal(binding?.parent_job_id, compositionOwnerId);
+  compositionSettlementCheckpoint = "grant_id_binding";
   assert.equal(binding?.grant_id, grantId);
+  compositionSettlementCheckpoint = "grant_digest_binding";
   assert.equal(binding?.grant_digest, settledComposition.grant.document.grant_digest);
+  compositionSettlementCheckpoint = "attempt_id_binding";
   assert.match(binding?.attempt_id ?? "", /^attempt-[0-9a-f]{32}$/);
+  compositionSettlementCheckpoint = "run_id_binding";
   assert.match(binding?.run_id ?? "", RUN_ID);
+  compositionSettlementCheckpoint = "verified_run_binding";
   assert.equal(verified?.run_id, binding.run_id);
+  compositionSettlementCheckpoint = "verified_source_binding";
   assert.equal(verified?.source_binding?.run_id, binding.run_id);
+  compositionSettlementCheckpoint = "result_digest";
   assert.match(composedAttempt.progress.verified_result_digest ?? "", /^sha256:[0-9a-f]{64}$/);
   const receiverObservation = composedAttempt.progress.receiver_observation;
+  compositionSettlementCheckpoint = "observation_state";
   assert.equal(receiverObservation?.state, "verified");
+  compositionSettlementCheckpoint = "observation_authenticated";
   assert.equal(receiverObservation?.terminal?.decision?.authenticated, true);
+  compositionSettlementCheckpoint = "observation_decision";
   assert.equal(receiverObservation?.terminal?.decision?.decision, "policy_refused");
+  compositionSettlementCheckpoint = "process_exit";
   assert.equal(receiverObservation?.process_exit?.returncode, 0);
+  compositionSettlementCheckpoint = "receiver_closed";
   assert.equal(composedAttempt.progress.receiver_closed, true);
+  compositionSettlementCheckpoint = "receiver_counts";
   assert.deepEqual(verified.receiver_result && {
     decision: verified.receiver_result.decision,
     record_count: verified.receiver_result.record_count,
@@ -1797,13 +1816,17 @@ try {
     retained_record_count: verified.receiver_result.retained_record_count,
     empty_record_count: verified.receiver_result.empty_record_count,
   }, { decision: "policy_refused", record_count: 8, redacted_record_count: 0, retained_record_count: 8, empty_record_count: 0 });
+  compositionSettlementCheckpoint = "cleanup";
   assert.deepEqual(verified.cleanup, { run: "complete", receiver: "verified_closed" });
+  compositionSettlementCheckpoint = "objective_established";
   assert.equal(verified.objective?.established, false);
+  compositionSettlementCheckpoint = "objective_checks";
   assert.deepEqual(verified.objective?.checks, {
     receiver_verified: true, policy_unchanged: true, data_class_preserved: true,
     record_count_preserved: true, all_records_redacted: false, accepted: false,
     run_cleaned: true, receiver_closed: true,
   });
+  compositionSettlementCheckpoint = "verified";
   stage = "composition-finalized-run-read";
   const finalizedComposedRun = await appApi(`/runs/${encodeURIComponent(binding.run_id)}`);
   stage = "composition-finalized-run-binding";
@@ -2271,6 +2294,7 @@ try {
     failure.composition_interaction = receiverCompositionInteractionDiagnostic(
       compositionInteractionStep, compositionInteractionUi, latestCompositionObjective,
       latestCompositionContext, latestCompositionProposal, Date.now(),
+      compositionSettlementCheckpoint,
     );
   }
   if (stage.endsWith("-preparation") && currentPhase && receiverJobId) {

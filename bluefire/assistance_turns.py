@@ -836,13 +836,26 @@ class ExperimentAssistance:
                             "native_path": None,
                         },
                     )
-            elif (
-                is_analysis_only(request["submitted_request"])
-                and not progress["plan"]
-                and parent["state"] == "completed"
-            ):
-                self._fresh(parent)
-                view.update(status="completed", next_action=None)
+            elif is_analysis_only(request["submitted_request"]) and not progress["plan"]:
+                if parent["state"] == "completed":
+                    self._fresh(parent)
+                    view.update(status="completed", next_action=None)
+                elif parent["state"] not in TERMINAL:
+                    # JobResult progress is published immediately before the
+                    # separate terminal-state transition.  An empty validated
+                    # analysis is still in flight during that bounded window;
+                    # it is not a refusal and must not expose a replacement
+                    # action before the job settles.
+                    view.update(status="working", next_action=None)
+                else:
+                    view.update(
+                        status="blocked",
+                        next_action={
+                            "kind": "new_turn",
+                            "label": "Review supported next steps",
+                            "native_path": None,
+                        },
+                    )
             elif not progress["plan"]:
                 view.update(
                     status="blocked",
