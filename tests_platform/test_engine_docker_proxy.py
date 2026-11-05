@@ -5,13 +5,18 @@ import hashlib
 import json
 import struct
 import threading
-from typing import Callable
+from typing import Any, Callable, cast
 from urllib.parse import quote, urlencode
 
 import pytest
 
 from bluefire.engine_container_custody import ContainerCustodyPlan
-from bluefire.engine_docker_control import DockerApiPolicy, DockerOwnership
+from bluefire.engine_docker_control import (
+    DockerApiPolicy,
+    DockerApiPolicyV2,
+    DockerOwnership,
+    DockerPolicy,
+)
 from bluefire.engine_docker_proxy import (
     DockerDaemonExchange,
     DockerPolicyProxy,
@@ -29,6 +34,7 @@ from bluefire.strix_policy_overlay import (
     REVIEWED_SOURCE_REVISION,
 )
 from bluefire.util import content_hash
+from tests_platform.test_engine_docker_control import create_body_v2, policy_v2
 
 ATTEMPT_ID = "engine-attempt-0123456789abcdef0123456789abcdef"
 CONTAINER_ID = "1" * 64
@@ -271,6 +277,42 @@ def inspect_body(*, container_id: str = CONTAINER_ID) -> dict[str, object]:
     }
 
 
+def inspect_body_v2(item: DockerApiPolicyV2) -> dict[str, Any]:
+    """One synthetic Docker observation for the qualified V2 profile."""
+
+    row = cast(dict[str, Any], inspect_body())
+    profile = item.image_runtime_profile
+    row["Image"] = item.image_config_digest
+    row["Name"] = "/" + item.container_name
+    config = row["Config"]
+    config["Image"] = item.image_reference
+    config["Labels"] = dict(item.required_labels)
+    config["User"] = profile["user"]
+    config["Entrypoint"] = profile["entrypoint"]
+    config["Cmd"] = profile["command"]
+    config["WorkingDir"] = profile["working_directory"]
+    environment = profile["environment"]
+    config["Env"] = [f"{key}={environment[key]}" for key in sorted(environment)]
+    host = row["HostConfig"]
+    host["Memory"] = profile["memory_bytes"]
+    host["MemorySwap"] = profile["memory_swap_bytes"]
+    host["NanoCpus"] = profile["nano_cpus"]
+    host["PidsLimit"] = profile["pids_limit"]
+    host["CapAdd"] = profile["cap_add"]
+    host["Tmpfs"] = profile["tmpfs"]
+    host["NetworkMode"] = item.network_name
+    host["CgroupParent"] = item.cgroup_parent
+    row["NetworkSettings"] = {
+        "Networks": {item.network_name: {"NetworkID": item.network_id}},
+        "Ports": {},
+    }
+    row["Mounts"] = [
+        {"Type": "tmpfs", "Destination": destination, "Source": "", "RW": True}
+        for destination in sorted(profile["tmpfs"])
+    ]
+    return row
+
+
 def raw_request(
     method: str,
     target: str,
@@ -411,6 +453,7 @@ class Transport:
 def proxy(
     transport: Transport,
     *,
+    policy_value: DockerPolicy | None = None,
     owned: DockerOwnership | None = None,
     audit: Audit | None = None,
     clock: Clock | None = None,
@@ -419,7 +462,7 @@ def proxy(
     actual_clock = clock or Clock()
     return (
         DockerPolicyProxy(
-            policy=policy(),
+            policy=policy_value or policy(),
             ownership=owned or ownership(),
             transport=transport,
             audit=actual_audit,
@@ -977,6 +1020,186 @@ def test_image_inspect_proves_exact_preloaded_digest() -> None:
         Transport(raw_response(200, {"Id": IMAGE_DIGEST, "RepoDigests": IMAGE_REFERENCE}))
     )
     assert substituted.handle(raw_request("GET", target), Cancel()).status_code == 503
+
+
+def test_v2_create_requires_one_use_positive_preloaded_image_inspect() -> None:
+    item_policy = policy_v2()
+    transport = Transport(
+        raw_response(
+            200,
+            {"Id": item_policy.image_config_digest, "RepoDigests": [item_policy.image_reference]},
+        )
+    )
+    item, audit, _clock = proxy(transport, policy_value=item_policy)
+    create = create_body_v2(item_policy)
+    create_request = raw_request(
+        "POST", f"/v1.47/containers/create?name={item_policy.container_name}", create
+    )
+    assert item.handle(create_request, Cancel()).status_code == 503
+    assert transport.seen == []
+
+    target = f"/v1.47/images/{quote(item_policy.image_reference, safe='')}/json"
+    inspected = item.handle(raw_request("GET", target), Cancel())
+    assert inspected.status_code == 200
+    assert json.loads(inspected.body) == {
+        "Id": item_policy.image_config_digest,
+        "RepoDigests": [item_policy.image_reference],
+    }
+    assert audit.records[-1].policy_digest == item_policy.policy_digest
+    transport.response = raw_response(201, {"Id": CONTAINER_ID, "Warnings": []})
+    assert item.handle(create_request, Cancel()).status_code == 201
+    assert item.snapshot().ownership.pending_container_ids == (CONTAINER_ID,)
+    assert item.handle(create_request, Cancel()).status_code == 503
+    assert len(transport.seen) == 2
+
+
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["index_as_config", "child_as_config", "wrong_preloaded_reference"],
+)
+def test_v2_image_inspect_rejects_index_child_or_wrong_preloaded_reference(
+    failure_kind: str,
+) -> None:
+    item_policy = policy_v2()
+    observed: dict[str, object] = {
+        "Id": item_policy.image_config_digest,
+        "RepoDigests": [item_policy.image_reference],
+    }
+    if failure_kind == "index_as_config":
+        observed["Id"] = item_policy.image_reference.rsplit("@", 1)[-1]
+    elif failure_kind == "child_as_config":
+        observed["Id"] = item_policy.platform_child_manifest_digest
+    else:
+        observed["RepoDigests"] = [IMAGE_REFERENCE]
+    item, _audit, _clock = proxy(Transport(raw_response(200, observed)), policy_value=item_policy)
+    target = f"/v1.47/images/{quote(item_policy.image_reference, safe='')}/json"
+    assert item.handle(raw_request("GET", target), Cancel()).status_code == 503
+    assert item.snapshot().reconciliation_required is True
+
+
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["child_as_config", "index_as_config", "wrong_configured_reference"],
+)
+def test_v2_container_inspect_requires_config_id_and_exact_requested_reference(
+    failure_kind: str,
+) -> None:
+    item_policy = policy_v2()
+    row = inspect_body_v2(item_policy)
+    if failure_kind == "wrong_configured_reference":
+        row["Config"]["Image"] = IMAGE_REFERENCE
+    elif failure_kind == "child_as_config":
+        row["Image"] = item_policy.platform_child_manifest_digest
+    else:
+        row["Image"] = item_policy.image_reference.rsplit("@", 1)[-1]
+    item, _audit, _clock = proxy(
+        Transport(raw_response(200, row)),
+        policy_value=item_policy,
+        owned=ownership(pending=True),
+    )
+    result = item.handle(raw_request("GET", f"/v1.47/containers/{CONTAINER_ID}/json"), Cancel())
+    assert result.status_code == 503
+    assert item.snapshot().ownership.container_ids == ()
+
+
+def test_v2_container_inspect_promotes_only_exact_config_and_reference() -> None:
+    item_policy = policy_v2()
+    row = inspect_body_v2(item_policy)
+    item, _audit, _clock = proxy(
+        Transport(raw_response(200, row)),
+        policy_value=item_policy,
+        owned=ownership(pending=True),
+    )
+    result = item.handle(raw_request("GET", f"/v1.47/containers/{CONTAINER_ID}/json"), Cancel())
+    assert result.status_code == 200
+    assert json.loads(result.body)["Image"] == item_policy.image_config_digest
+    assert item.snapshot().ownership.container_ids == (CONTAINER_ID,)
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        ("Config.Entrypoint", ["/bin/sh"]),
+        ("Config.Cmd", ["tail", "-f", "/dev/null"]),
+        ("Config.Env", []),
+        ("Config.Tty", 0),
+        ("Config.WorkingDir", "/"),
+        ("HostConfig.MemorySwap", 4 * 1024**3),
+        ("HostConfig.MemorySwap", "<missing>"),
+        ("HostConfig.Memory", 1024**3),
+        ("HostConfig.NanoCpus", 1_000_000_000),
+        ("HostConfig.PidsLimit", 512),
+        ("HostConfig.CapAdd", ["NET_ADMIN"]),
+        ("HostConfig.ReadonlyRootfs", 1),
+        ("HostConfig.RestartPolicy", {"MaximumRetryCount": False, "Name": "no"}),
+        ("HostConfig.Tmpfs", {"/workspace": TMPFS_OPTIONS}),
+        ("HostConfig.SecurityOpt", []),
+        ("HostConfig.NetworkMode", "host"),
+    ],
+)
+def test_v2_container_inspect_refuses_qualified_profile_drift(path: str, value: object) -> None:
+    item_policy = policy_v2()
+    row = inspect_body_v2(item_policy)
+    scope, field = path.split(".", 1)
+    section = row[scope]
+    if value == "<missing>":
+        section.pop(field)
+    else:
+        section[field] = value
+    item, _audit, _clock = proxy(
+        Transport(raw_response(200, row)),
+        policy_value=item_policy,
+        owned=ownership(pending=True),
+    )
+    result = item.handle(raw_request("GET", f"/v1.47/containers/{CONTAINER_ID}/json"), Cancel())
+    assert result.status_code == 503
+    assert item.snapshot().ownership.container_ids == ()
+
+
+def test_v2_container_inspect_requires_all_four_observed_tmpfs_mountpoints() -> None:
+    item_policy = policy_v2()
+    row = inspect_body_v2(item_policy)
+    row["Mounts"].pop()
+    item, _audit, _clock = proxy(
+        Transport(raw_response(200, row)),
+        policy_value=item_policy,
+        owned=ownership(pending=True),
+    )
+    result = item.handle(raw_request("GET", f"/v1.47/containers/{CONTAINER_ID}/json"), Cancel())
+    assert result.status_code == 503
+    assert item.snapshot().ownership.container_ids == ()
+
+
+def test_v2_container_inspect_rejects_read_only_effective_tmpfs() -> None:
+    item_policy = policy_v2()
+    row = inspect_body_v2(item_policy)
+    row["Mounts"][0]["RW"] = False
+    item, _audit, _clock = proxy(
+        Transport(raw_response(200, row)),
+        policy_value=item_policy,
+        owned=ownership(pending=True),
+    )
+    result = item.handle(raw_request("GET", f"/v1.47/containers/{CONTAINER_ID}/json"), Cancel())
+    assert result.status_code == 503
+    assert item.snapshot().ownership.container_ids == ()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("Mode", "ro"), ("Propagation", "rshared")],
+)
+def test_v2_container_inspect_rejects_contradictory_mount_metadata(field: str, value: str) -> None:
+    item_policy = policy_v2()
+    row = inspect_body_v2(item_policy)
+    row["Mounts"][0][field] = value
+    item, _audit, _clock = proxy(
+        Transport(raw_response(200, row)),
+        policy_value=item_policy,
+        owned=ownership(pending=True),
+    )
+    result = item.handle(raw_request("GET", f"/v1.47/containers/{CONTAINER_ID}/json"), Cancel())
+    assert result.status_code == 503
+    assert item.snapshot().ownership.container_ids == ()
 
 
 def test_initial_clock_failure_is_sanitized() -> None:

@@ -15,14 +15,32 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import InitVar, asdict, dataclass, fields, replace
+from dataclasses import field as dataclass_field
 from enum import Enum
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
-from .engine_container_custody import ContainerCustodyPlan
-from .engine_network_policy import EngineNetworkPlan
+from .engine_container_custody import (
+    V2_RUNTIME_PLATFORM,
+    ContainerCustodyPlan,
+    ContainerCustodyPlanV2,
+    EngineContainerCustodyError,
+    container_image_identity_digest,
+)
+from .engine_network_policy import EngineNetworkPlan, EngineNetworkPlanV2, EngineNetworkPolicyError
 from .strix_adapter import StrixBuildIdentity
+from .strix_controlled_execution_identity import (
+    StrixControlledExecutionIdentityError,
+    StrixControlledExecutionIdentityV2,
+)
+from .strix_image_contract import (
+    StrixImageAdmissionDecisionV2,
+    StrixImageContractError,
+    StrixImageContractV2,
+    proposed_image_runtime_profile,
+    validate_v2_image_reference,
+)
 from .util import content_hash, json_clone
 
 
@@ -79,6 +97,7 @@ _USER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 _TMPFS_OPTION = re.compile(
     r"^(?:rw|ro|nodev|nosuid|noexec|exec|size=[1-9][0-9]{0,11}[kmg]?|mode=0[0-7]{3})$"
 )
+_V1_PROJECTION_TMPFS_OPTIONS = "nodev,nosuid,rw,size=512m"
 _PERCENT_ESCAPE = re.compile(r"%[0-9A-F]{2}")
 _BODY_LIMIT = 64 * 1024
 _TARGET_LIMIT = 2048
@@ -255,6 +274,50 @@ class DockerTmpfs:
             options_digest=digest,
             size_bytes=size_bytes,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DockerTmpfsV2:
+    """One V2 tmpfs. Exact options are checked against the reopened profile."""
+
+    destination: str
+    options: str
+    options_digest: str
+    size_bytes: int
+
+    def __post_init__(self) -> None:
+        _text(self.destination, "V2 Docker tmpfs destination", maximum=260)
+        if not isinstance(self.options, str) or len(self.options) > 128:
+            raise EngineDockerPolicyError("V2 Docker tmpfs options are invalid")
+        if _digest(self.options_digest, "V2 Docker tmpfs options") != content_hash(
+            {"options": self.options}
+        ):
+            raise EngineDockerPolicyError("V2 Docker tmpfs options digest does not match")
+        size_match = re.search(r"(?:^|,)size=([1-9][0-9]*)(?:,|$)", self.options)
+        if (
+            size_match is None
+            or isinstance(self.size_bytes, bool)
+            or not isinstance(self.size_bytes, int)
+            or self.size_bytes != int(size_match.group(1))
+        ):
+            raise EngineDockerPolicyError("V2 Docker tmpfs size is invalid")
+
+    @classmethod
+    def create(cls, *, destination: str, options: str, options_digest: str) -> "DockerTmpfsV2":
+        if not isinstance(options, str):
+            raise EngineDockerPolicyError("V2 Docker tmpfs options are invalid")
+        match = re.search(r"(?:^|,)size=([1-9][0-9]*)(?:,|$)", options)
+        if match is None:
+            raise EngineDockerPolicyError("V2 Docker tmpfs size is missing")
+        return cls(destination, options, options_digest, int(match.group(1)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "destination": self.destination,
+            "options": self.options,
+            "options_digest": self.options_digest,
+            "size_bytes": self.size_bytes,
+        }
 
 
 def _tmpfs_values(destination: Any, options: Any, options_digest: Any) -> tuple[str, str, str, int]:
@@ -567,8 +630,676 @@ class DockerApiPolicy:
         return content_hash(self.to_dict())
 
 
+@dataclass(frozen=True, slots=True)
+class ControllerVerifiedImageRelation:
+    """Exact result of a controller verifier; construction alone grants no trust."""
+
+    image_reference: str
+    runtime_platform: str
+    platform_child_manifest_digest: str
+    image_config_digest: str
+    image_relation_receipt_ref: str
+
+    def __post_init__(self) -> None:
+        container_image_identity_digest(
+            image_reference=self.image_reference,
+            runtime_platform=self.runtime_platform,
+            platform_child_manifest_digest=self.platform_child_manifest_digest,
+            image_config_digest=self.image_config_digest,
+            image_relation_receipt_ref=self.image_relation_receipt_ref,
+        )
+
+
+class ControllerImageRelationVerifier(Protocol):
+    """Controller-owned capability, never supplied from engine or operator input."""
+
+    def verify_image_relation(
+        self,
+        *,
+        image_reference: str,
+        runtime_platform: str,
+        platform_child_manifest_digest: str,
+        image_config_digest: str,
+        image_relation_receipt_ref: str,
+    ) -> ControllerVerifiedImageRelation: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerVerifiedImageAdmission:
+    """Exact controller result; constructing it directly does not authenticate input."""
+
+    image_contract_digest: str
+    image_admission_decision_ref: str
+    execution_identity_digest: str
+    protected_execution_identity_digest: str
+    runtime_qualification_ref: str
+    runtime_qualification_admitted: bool
+    image_admitted_for_runtime: bool
+    missing_checks: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for value in (
+            self.image_contract_digest,
+            self.image_admission_decision_ref,
+            self.execution_identity_digest,
+            self.protected_execution_identity_digest,
+            self.runtime_qualification_ref,
+        ):
+            _digest(value, "controller image admission identity")
+        if (
+            self.execution_identity_digest != self.protected_execution_identity_digest
+            or self.runtime_qualification_admitted is not True
+            or self.image_admitted_for_runtime is not True
+            or self.missing_checks != ()
+        ):
+            raise EngineDockerPolicyError("controller image admission result is not qualified")
+
+
+class ControllerImageAdmissionVerifier(Protocol):
+    """Controller-owned capability for authenticated image and runtime qualification."""
+
+    def verify_image_admission(
+        self,
+        *,
+        image_contract_digest: str,
+        image_admission_decision_ref: str,
+        execution_identity_digest: str,
+        protected_execution_identity_digest: str,
+        runtime_qualification_ref: str,
+    ) -> ControllerVerifiedImageAdmission: ...
+
+
+def _v2_admission_decision_ref(decision: StrixImageAdmissionDecisionV2) -> str:
+    if type(decision) is not StrixImageAdmissionDecisionV2:
+        raise EngineDockerPolicyError("V2 image admission decision is unavailable")
+    if (
+        decision.image_admitted_for_runtime is not True
+        or decision.local_build_qualified is not True
+        or decision.hosted_qualification_complete is not True
+        or decision.missing_checks != ()
+        or decision.notices_complete is not False
+        or decision.license_review_complete is not False
+        or decision.production_runtime_admitted is not False
+        or decision.live_execution_proven is not False
+        or decision.redistribution_authorized is not False
+        or decision.redistribution_rights_confirmed is not None
+    ):
+        raise EngineDockerPolicyError("V2 image admission decision is not qualified")
+    return content_hash(
+        {
+            "schema_version": "bluefire.strix-image-admission-decision-ref.v2",
+            "decision": asdict(decision),
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DockerApiPolicyV2:
+    """V2 policy requiring an exact controller-verified image relation.
+
+    This module checks the verifier's binding; it does not implement receipt
+    authentication or produce a proof. Production composition must inject the
+    trusted verifier, and there is no permissive default.
+    """
+
+    _common_values: tuple[tuple[str, Any], ...]
+    image_reference: str
+    platform_child_manifest_digest: str
+    image_config_digest: str
+    image_relation_receipt_ref: str
+    tmpfs: tuple[DockerTmpfsV2, ...]
+    memory_swap_bytes: int
+    upstream_build_ref: str
+    upstream_image_reference: str
+    image_contract_digest: str
+    execution_identity_digest: str
+    custody_plan_digest: str
+    image_runtime_profile_digest: str
+    controlled_runtime_profile_ref: str
+    runtime_qualification_ref: str
+    image_admission_decision_ref: str
+    controller_relation_verifier: InitVar[ControllerImageRelationVerifier]
+    controller_admission_verifier: InitVar[ControllerImageAdmissionVerifier]
+    network: InitVar[EngineNetworkPlanV2]
+    custody: InitVar[ContainerCustodyPlanV2]
+    image_contract: InitVar[StrixImageContractV2]
+    execution_identity: InitVar[StrixControlledExecutionIdentityV2]
+    protected_execution_identity_digest: InitVar[str]
+    image_admission_decision: InitVar[StrixImageAdmissionDecisionV2]
+    verified_relation: ControllerVerifiedImageRelation = dataclass_field(init=False, repr=False)
+    verified_admission: ControllerVerifiedImageAdmission = dataclass_field(init=False, repr=False)
+
+    def _v1_projection(self) -> DockerApiPolicy:
+        """Validate shared policy settings without retaining a usable v1 policy."""
+
+        expected = frozenset(DockerApiPolicy.__dataclass_fields__) - {
+            "schema_version",
+            "image_reference",
+            "image_digest",
+            "tmpfs",
+        }
+        if (
+            not isinstance(self._common_values, tuple)
+            or any(not isinstance(item, tuple) or len(item) != 2 for item in self._common_values)
+            or tuple(sorted(self._common_values, key=lambda item: item[0])) != self._common_values
+        ):
+            raise EngineDockerPolicyError("v2 Docker common policy is not canonical")
+        values = dict(self._common_values)
+        if len(values) != len(self._common_values) or set(values) != expected:
+            raise EngineDockerPolicyError("v2 Docker common policy fields do not match")
+        try:
+            reference = validate_v2_image_reference(
+                self.image_reference, "derived Docker image reference"
+            )
+        except StrixImageContractError as exc:
+            raise EngineDockerPolicyError("derived Docker image reference is invalid") from exc
+        return DockerApiPolicy(
+            schema_version="bluefire.engine-docker-api-policy.v1",
+            image_reference=reference,
+            image_digest=reference.rsplit("@", 1)[-1],
+            tmpfs=(
+                DockerTmpfs.create(
+                    destination="/workspace",
+                    options=_V1_PROJECTION_TMPFS_OPTIONS,
+                    options_digest=content_hash({"options": _V1_PROJECTION_TMPFS_OPTIONS}),
+                ),
+            ),
+            **values,
+        )
+
+    def _verify_contract_identity_and_profile(
+        self,
+        *,
+        image_contract: StrixImageContractV2,
+        execution_identity: StrixControlledExecutionIdentityV2,
+        protected_execution_identity_digest: str,
+        image_admission_decision: StrixImageAdmissionDecisionV2,
+    ) -> None:
+        if (
+            type(image_contract) is not StrixImageContractV2
+            or type(execution_identity) is not StrixControlledExecutionIdentityV2
+        ):
+            raise EngineDockerPolicyError("V2 Docker image contract or identity is unavailable")
+        try:
+            contract = StrixImageContractV2(image_contract.canonical_bytes)
+            identity = StrixControlledExecutionIdentityV2(execution_identity.canonical_bytes)
+            identity.require_expected_digest(protected_execution_identity_digest)
+            identity.verify_image_contract(contract)
+            upstream_reference = validate_v2_image_reference(
+                self.upstream_image_reference, "upstream Docker image reference"
+            )
+            expected_profile = proposed_image_runtime_profile(
+                network_id=self.network_id,
+                network_name=self.network_name,
+                network_policy_digest=self.network_policy_digest,
+            )
+        except (
+            StrixImageContractError,
+            StrixControlledExecutionIdentityError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise EngineDockerPolicyError(
+                "V2 Docker image contract or identity is invalid"
+            ) from exc
+        contract_row = contract.to_dict()
+        identity_row = identity.to_dict()
+        derived = contract_row["derived_image"]
+        upstream = contract_row["upstream_image"]
+        runtime_profile = contract_row["runtime_profile"]
+        embedded_profile = identity_row["controlled_runtime_profile"]
+        decision_ref = _v2_admission_decision_ref(image_admission_decision)
+        expected_bindings = (
+            (self.image_contract_digest, contract.contract_digest),
+            (self.execution_identity_digest, identity.identity_digest),
+            (self.upstream_build_ref, identity_row["startup_build_ref"]),
+            (upstream_reference, upstream["index_reference"]),
+            (upstream_reference, identity_row["upstream_oci_index_reference"]),
+            (self.image_reference, derived["index_reference"]),
+            (self.image_reference, identity_row["derived_image_reference"]),
+            (self.platform_child_manifest_digest, derived["platform_child"]["digest"]),
+            (self.image_config_digest, derived["config"]["digest"]),
+            (self.image_relation_receipt_ref, identity_row["image_relation_receipt_ref"]),
+            (self.image_runtime_profile_digest, contract.runtime_profile_digest),
+            (self.controlled_runtime_profile_ref, identity_row["controlled_runtime_profile_ref"]),
+            (self.runtime_qualification_ref, identity_row["runtime_qualification_ref"]),
+            (self.image_admission_decision_ref, decision_ref),
+            (decision_ref, identity_row["derived_image_decision_ref"]),
+            (image_admission_decision.contract_digest, contract.contract_digest),
+            (self.attempt_id, identity_row["attempt_id"]),
+            (self.upstream_build_ref, embedded_profile["build_digest"]),
+            (self.image_reference, embedded_profile["image_reference"]),
+        )
+        if any(actual != expected for actual, expected in expected_bindings):
+            raise EngineDockerPolicyError("V2 Docker contract, identity, or decision differs")
+        if runtime_profile != expected_profile:
+            raise EngineDockerPolicyError("V2 Docker runtime profile network differs")
+        if (
+            runtime_profile["runtime_installs"] is not False
+            or runtime_profile["runtime_image_pulls"] is not False
+            or runtime_profile["preloaded_image_required"] is not True
+        ):
+            raise EngineDockerPolicyError("V2 Docker runtime requires an offline preloaded image")
+        if (
+            embedded_profile["sandbox_uid"],
+            embedded_profile["sandbox_gid"],
+        ) != (1000, 1000):
+            raise EngineDockerPolicyError("V2 Docker sandbox user differs from controlled profile")
+        if (
+            self.expected_user != runtime_profile["user"]
+            or self.expected_capabilities != tuple(runtime_profile["cap_add"])
+            or self.memory_bytes != runtime_profile["memory_bytes"]
+            or self.memory_swap_bytes != runtime_profile["memory_swap_bytes"]
+            or self.nano_cpus != runtime_profile["nano_cpus"]
+            or self.pids_limit != runtime_profile["pids_limit"]
+            or self.exec_working_directory != runtime_profile["working_directory"]
+        ):
+            raise EngineDockerPolicyError(
+                "V2 Docker custody differs from qualified runtime profile"
+            )
+        _expect_int(
+            self.memory_swap_bytes,
+            "V2 Docker memory swap",
+            runtime_profile["memory_swap_bytes"],
+        )
+        if (
+            not isinstance(self.tmpfs, tuple)
+            or len(self.tmpfs) != 4
+            or any(type(item) is not DockerTmpfsV2 for item in self.tmpfs)
+            or tuple(item.destination for item in self.tmpfs)
+            != tuple(sorted(runtime_profile["tmpfs"]))
+            or {item.destination: item.options for item in self.tmpfs} != runtime_profile["tmpfs"]
+            or sum(item.size_bytes for item in self.tmpfs) > self.memory_bytes
+        ):
+            raise EngineDockerPolicyError("V2 Docker tmpfs differs from qualified runtime profile")
+
+    def __post_init__(
+        self,
+        controller_relation_verifier: ControllerImageRelationVerifier,
+        controller_admission_verifier: ControllerImageAdmissionVerifier,
+        network: EngineNetworkPlanV2,
+        custody: ContainerCustodyPlanV2,
+        image_contract: StrixImageContractV2,
+        execution_identity: StrixControlledExecutionIdentityV2,
+        protected_execution_identity_digest: str,
+        image_admission_decision: StrixImageAdmissionDecisionV2,
+    ) -> None:
+        base_policy = self._v1_projection()
+        if type(network) is not EngineNetworkPlanV2:
+            raise EngineDockerPolicyError("V2 Docker network plan is unavailable")
+        try:
+            reopened_network = EngineNetworkPlanV2.from_mapping(network.to_dict())
+        except (EngineNetworkPolicyError, TypeError, ValueError) as exc:
+            raise EngineDockerPolicyError("V2 Docker network plan is invalid") from exc
+        if (
+            self.attempt_id != reopened_network.attempt_id
+            or self.network_name != reopened_network.network_name
+            or self.network_id != reopened_network.network_id
+            or self.network_policy_digest != reopened_network.policy_digest
+        ):
+            raise EngineDockerPolicyError("V2 Docker network plan differs from policy")
+        if type(custody) is not ContainerCustodyPlanV2:
+            raise EngineDockerPolicyError("V2 Docker custody plan is unavailable")
+        try:
+            reopened_custody = ContainerCustodyPlanV2.from_mapping(custody.to_dict())
+        except (EngineContainerCustodyError, TypeError, ValueError) as exc:
+            raise EngineDockerPolicyError("V2 Docker custody plan is invalid") from exc
+        custody_bindings = (
+            (self.custody_plan_digest, reopened_custody.plan_digest),
+            (self.attempt_id, reopened_custody.attempt_id),
+            (self.daemon_instance_digest, reopened_custody.daemon_instance_digest),
+            (self.disposable_boundary_ref, reopened_custody.disposable_boundary_ref),
+            (self.baseline_inventory_digest, reopened_custody.baseline_inventory_digest),
+            (self.required_labels, reopened_custody.required_labels),
+            (self.image_reference, reopened_custody.image_reference),
+            (V2_RUNTIME_PLATFORM, reopened_custody.runtime_platform),
+            (
+                self.platform_child_manifest_digest,
+                reopened_custody.platform_child_manifest_digest,
+            ),
+            (self.image_config_digest, reopened_custody.image_config_digest),
+            (self.image_relation_receipt_ref, reopened_custody.image_relation_receipt_ref),
+            (self.network_id, reopened_custody.network_id),
+            (self.network_policy_digest, reopened_custody.network_policy_digest),
+            (self.expected_capabilities, reopened_custody.expected_capabilities),
+            (self.expected_user, reopened_custody.expected_user),
+            (self.memory_bytes, reopened_custody.memory_bytes),
+            (self.nano_cpus, reopened_custody.nano_cpus),
+            (self.pids_limit, reopened_custody.pids_limit),
+            (self.expected_container_count, reopened_custody.expected_container_count),
+        )
+        if any(actual != expected for actual, expected in custody_bindings):
+            raise EngineDockerPolicyError("V2 Docker custody plan differs from policy")
+        if tuple(item.destination for item in self.tmpfs) != tuple(
+            item.destination for item in reopened_custody.expected_mounts
+        ) or any(
+            mount.mount_type != "tmpfs"
+            or mount.source
+            or mount.read_only
+            or mount.options_digest != tmpfs.options_digest
+            for mount, tmpfs in zip(reopened_custody.expected_mounts, self.tmpfs, strict=True)
+        ):
+            raise EngineDockerPolicyError("V2 Docker tmpfs differs from custody plan")
+        child = _digest(self.platform_child_manifest_digest, "platform child manifest")
+        config = _digest(self.image_config_digest, "image config")
+        receipt = _digest(self.image_relation_receipt_ref, "image relation receipt reference")
+        try:
+            identity_digest = container_image_identity_digest(
+                image_reference=self.image_reference,
+                runtime_platform=V2_RUNTIME_PLATFORM,
+                platform_child_manifest_digest=child,
+                image_config_digest=config,
+                image_relation_receipt_ref=receipt,
+            )
+        except ValueError as exc:
+            raise EngineDockerPolicyError("v2 Docker image identity is invalid") from exc
+        if (
+            dict(base_policy.required_labels).get("bluefire.engine.image-identity")
+            != identity_digest
+        ):
+            raise EngineDockerPolicyError("Docker create labels do not bind v2 image identity")
+        self._verify_contract_identity_and_profile(
+            image_contract=image_contract,
+            execution_identity=execution_identity,
+            protected_execution_identity_digest=protected_execution_identity_digest,
+            image_admission_decision=image_admission_decision,
+        )
+        if not callable(getattr(controller_admission_verifier, "verify_image_admission", None)):
+            raise EngineDockerPolicyError("controller image admission verifier is unavailable")
+        try:
+            admitted = controller_admission_verifier.verify_image_admission(
+                image_contract_digest=self.image_contract_digest,
+                image_admission_decision_ref=self.image_admission_decision_ref,
+                execution_identity_digest=self.execution_identity_digest,
+                protected_execution_identity_digest=protected_execution_identity_digest,
+                runtime_qualification_ref=self.runtime_qualification_ref,
+            )
+        except Exception as exc:
+            raise EngineDockerPolicyError("controller image admission verification failed") from exc
+        expected_admission = ControllerVerifiedImageAdmission(
+            image_contract_digest=self.image_contract_digest,
+            image_admission_decision_ref=self.image_admission_decision_ref,
+            execution_identity_digest=self.execution_identity_digest,
+            protected_execution_identity_digest=protected_execution_identity_digest,
+            runtime_qualification_ref=self.runtime_qualification_ref,
+            runtime_qualification_admitted=True,
+            image_admitted_for_runtime=True,
+            missing_checks=(),
+        )
+        if type(admitted) is not ControllerVerifiedImageAdmission or admitted != expected_admission:
+            raise EngineDockerPolicyError(
+                "controller image admission verification does not bind image"
+            )
+        object.__setattr__(self, "verified_admission", admitted)
+        if not callable(getattr(controller_relation_verifier, "verify_image_relation", None)):
+            raise EngineDockerPolicyError("controller image relation verifier is unavailable")
+        try:
+            verified = controller_relation_verifier.verify_image_relation(
+                image_reference=self.image_reference,
+                runtime_platform=V2_RUNTIME_PLATFORM,
+                platform_child_manifest_digest=child,
+                image_config_digest=config,
+                image_relation_receipt_ref=receipt,
+            )
+        except Exception as exc:
+            raise EngineDockerPolicyError("controller image relation verification failed") from exc
+        expected_relation = ControllerVerifiedImageRelation(
+            image_reference=self.image_reference,
+            runtime_platform=V2_RUNTIME_PLATFORM,
+            platform_child_manifest_digest=child,
+            image_config_digest=config,
+            image_relation_receipt_ref=receipt,
+        )
+        if type(verified) is not ControllerVerifiedImageRelation or verified != expected_relation:
+            raise EngineDockerPolicyError(
+                "controller image relation verification does not bind image"
+            )
+        object.__setattr__(self, "verified_relation", verified)
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        build: StrixBuildIdentity,
+        derived_image_reference: str,
+        network: EngineNetworkPlanV2,
+        custody: ContainerCustodyPlanV2,
+        image_contract: StrixImageContractV2,
+        execution_identity: StrixControlledExecutionIdentityV2,
+        protected_execution_identity_digest: str,
+        image_admission_decision: StrixImageAdmissionDecisionV2,
+        controller_relation_verifier: ControllerImageRelationVerifier,
+        controller_admission_verifier: ControllerImageAdmissionVerifier,
+        api_version: str,
+        tmpfs_options: Mapping[str, str],
+    ) -> "DockerApiPolicyV2":
+        if type(network) is not EngineNetworkPlanV2:
+            raise EngineDockerPolicyError("v2 Docker policy requires v2 network plan")
+        if type(custody) is not ContainerCustodyPlanV2:
+            raise EngineDockerPolicyError("v2 Docker policy requires v2 custody")
+        if (
+            type(image_contract) is not StrixImageContractV2
+            or type(execution_identity) is not StrixControlledExecutionIdentityV2
+        ):
+            raise EngineDockerPolicyError(
+                "v2 Docker policy requires reopened contract and identity"
+            )
+        try:
+            network = EngineNetworkPlanV2.from_mapping(network.to_dict())
+            contract = StrixImageContractV2(image_contract.canonical_bytes)
+            identity = StrixControlledExecutionIdentityV2(execution_identity.canonical_bytes)
+            identity.require_expected_digest(protected_execution_identity_digest)
+            identity.verify_image_contract(contract)
+            derived_reference = validate_v2_image_reference(
+                derived_image_reference, "derived Docker image reference"
+            )
+        except (
+            StrixImageContractError,
+            StrixControlledExecutionIdentityError,
+            TypeError,
+            ValueError,
+            EngineNetworkPolicyError,
+        ) as exc:
+            raise EngineDockerPolicyError(
+                "V2 Docker contract, identity, or network is invalid"
+            ) from exc
+        parsed = ContainerCustodyPlanV2.from_mapping(custody.to_dict())
+        if parsed.image_reference != derived_reference:
+            raise EngineDockerPolicyError("Docker plans bind different image references")
+        identity_row = identity.to_dict()
+        contract_row = contract.to_dict()
+        if (
+            type(build) is not StrixBuildIdentity
+            or build.to_dict() != identity_row["startup_build_identity"]
+            or content_hash(build.to_dict()) != identity_row["startup_build_ref"]
+            or build.image_reference != contract_row["upstream_image"]["index_reference"]
+        ):
+            raise EngineDockerPolicyError("V2 Docker upstream build differs from identity")
+        runtime_profile = contract_row["runtime_profile"]
+        try:
+            network.validate_runtime_profile_network(runtime_profile["network"])
+        except EngineNetworkPolicyError as exc:
+            raise EngineDockerPolicyError("V2 Docker runtime profile network differs") from exc
+        if (
+            network.attempt_id != parsed.attempt_id
+            or parsed.network_id != network.network_id
+            or parsed.network_policy_digest != network.policy_digest
+            or runtime_profile["network"]
+            != {
+                "id": network.network_id,
+                "name": network.network_name,
+                "policy_digest": network.policy_digest,
+                "internal": True,
+                "attach_additional_networks": False,
+            }
+            or parsed.expected_user != runtime_profile["user"]
+            or list(parsed.expected_capabilities) != runtime_profile["cap_add"]
+            or parsed.memory_bytes != runtime_profile["memory_bytes"]
+            or parsed.nano_cpus != runtime_profile["nano_cpus"]
+            or parsed.pids_limit != runtime_profile["pids_limit"]
+            or parsed.expected_container_count != 1
+        ):
+            raise EngineDockerPolicyError("V2 Docker custody differs from qualified profile")
+        expected_tmpfs = runtime_profile["tmpfs"]
+        if not isinstance(tmpfs_options, Mapping) or dict(tmpfs_options) != expected_tmpfs:
+            raise EngineDockerPolicyError("V2 Docker tmpfs options differ from qualified profile")
+        if tuple(item.destination for item in parsed.expected_mounts) != tuple(
+            sorted(expected_tmpfs)
+        ):
+            raise EngineDockerPolicyError(
+                "V2 Docker custody tmpfs set differs from qualified profile"
+            )
+        mounts: list[DockerTmpfsV2] = []
+        for item in parsed.expected_mounts:
+            options = expected_tmpfs[item.destination]
+            if (
+                item.mount_type != "tmpfs"
+                or item.source
+                or item.read_only
+                or item.options_digest != content_hash({"options": options})
+            ):
+                raise EngineDockerPolicyError(
+                    "V2 Docker custody tmpfs differs from qualified profile"
+                )
+            mounts.append(
+                DockerTmpfsV2.create(
+                    destination=item.destination,
+                    options=options,
+                    options_digest=item.options_digest,
+                )
+            )
+        decision_ref = _v2_admission_decision_ref(image_admission_decision)
+        common = parsed.to_dict()
+        for field in (
+            "image_reference",
+            "runtime_platform",
+            "platform_child_manifest_digest",
+            "image_config_digest",
+            "image_relation_receipt_ref",
+        ):
+            common.pop(field)
+        common["schema_version"] = "bluefire.engine-container-custody.v1"
+        common["sandbox_image_digest"] = parsed.image_reference.rsplit("@", 1)[-1]
+        common["expected_mounts"] = [
+            {
+                "mount_type": "tmpfs",
+                "source": "",
+                "destination": "/workspace",
+                "read_only": False,
+                "options_digest": content_hash({"options": _V1_PROJECTION_TMPFS_OPTIONS}),
+            }
+        ]
+        base_policy = DockerApiPolicy.create(
+            # V1's common constructor uses build.image_reference as its image
+            # input. This temporary projection validates common policy fields;
+            # the original build remains bound to the upstream index above.
+            build=replace(build, image_reference=derived_reference),
+            # The V1 projection validates only fields shared with this V2 plan.
+            network=network,  # type: ignore[arg-type]
+            custody=ContainerCustodyPlan.from_mapping(common),
+            api_version=api_version,
+            tmpfs_options={"/workspace": _V1_PROJECTION_TMPFS_OPTIONS},
+        )
+        common_values = tuple(
+            sorted(
+                (item.name, getattr(base_policy, item.name))
+                for item in fields(DockerApiPolicy)
+                if item.name not in {"schema_version", "image_reference", "image_digest", "tmpfs"}
+            )
+        )
+        return cls(
+            _common_values=common_values,
+            image_reference=derived_reference,
+            platform_child_manifest_digest=parsed.platform_child_manifest_digest,
+            image_config_digest=parsed.image_config_digest,
+            image_relation_receipt_ref=parsed.image_relation_receipt_ref,
+            tmpfs=tuple(mounts),
+            memory_swap_bytes=runtime_profile["memory_swap_bytes"],
+            upstream_build_ref=identity_row["startup_build_ref"],
+            upstream_image_reference=build.image_reference,
+            image_contract_digest=contract.contract_digest,
+            execution_identity_digest=identity.identity_digest,
+            custody_plan_digest=parsed.plan_digest,
+            image_runtime_profile_digest=contract.runtime_profile_digest,
+            controlled_runtime_profile_ref=identity_row["controlled_runtime_profile_ref"],
+            runtime_qualification_ref=identity_row["runtime_qualification_ref"],
+            image_admission_decision_ref=decision_ref,
+            controller_relation_verifier=controller_relation_verifier,
+            controller_admission_verifier=controller_admission_verifier,
+            network=network,
+            custody=parsed,
+            image_contract=contract,
+            execution_identity=identity,
+            protected_execution_identity_digest=protected_execution_identity_digest,
+            image_admission_decision=image_admission_decision,
+        )
+
+    @property
+    def schema_version(self) -> str:
+        return "bluefire.engine-docker-api-policy.v2"
+
+    @property
+    def image_identity_digest(self) -> str:
+        return container_image_identity_digest(
+            image_reference=self.image_reference,
+            runtime_platform=V2_RUNTIME_PLATFORM,
+            platform_child_manifest_digest=self.platform_child_manifest_digest,
+            image_config_digest=self.image_config_digest,
+            image_relation_receipt_ref=self.image_relation_receipt_ref,
+        )
+
+    @property
+    def image_runtime_profile(self) -> Mapping[str, Any]:
+        """The exact reviewed profile verified against the reopened contract."""
+
+        return proposed_image_runtime_profile(
+            network_id=self.network_id,
+            network_name=self.network_name,
+            network_policy_digest=self.network_policy_digest,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "image_digest":
+            raise AttributeError("v2 Docker policy has no ambiguous image_digest")
+        values = dict(self._common_values)
+        if name not in values:
+            raise AttributeError(name)
+        return values[name]
+
+    def to_dict(self) -> dict[str, Any]:
+        row = self._v1_projection().to_dict()
+        row.pop("image_digest")
+        row["schema_version"] = self.schema_version
+        row["runtime_platform"] = V2_RUNTIME_PLATFORM
+        row["platform_child_manifest_digest"] = self.platform_child_manifest_digest
+        row["image_config_digest"] = self.image_config_digest
+        row["image_relation_receipt_ref"] = self.image_relation_receipt_ref
+        row["tmpfs"] = [item.to_dict() for item in self.tmpfs]
+        row["memory_swap_bytes"] = self.memory_swap_bytes
+        row["upstream_build_ref"] = self.upstream_build_ref
+        row["upstream_image_reference"] = self.upstream_image_reference
+        row["image_contract_digest"] = self.image_contract_digest
+        row["execution_identity_digest"] = self.execution_identity_digest
+        row["custody_plan_digest"] = self.custody_plan_digest
+        row["protected_execution_identity_digest"] = (
+            self.verified_admission.protected_execution_identity_digest
+        )
+        row["image_runtime_profile_digest"] = self.image_runtime_profile_digest
+        row["controlled_runtime_profile_ref"] = self.controlled_runtime_profile_ref
+        row["runtime_qualification_ref"] = self.runtime_qualification_ref
+        row["image_admission_decision_ref"] = self.image_admission_decision_ref
+        return row
+
+    @property
+    def policy_digest(self) -> str:
+        return content_hash(self.to_dict())
+
+
+DockerPolicy = DockerApiPolicy | DockerApiPolicyV2
+
+
 def validate_docker_container_namespace_proof(
-    policy: DockerApiPolicy, host_config: Mapping[str, Any]
+    policy: DockerPolicy, host_config: Mapping[str, Any]
 ) -> None:
     """Verify Moby's exact private namespace representation.
 
@@ -579,7 +1310,9 @@ def validate_docker_container_namespace_proof(
     another container's namespaces.
     """
 
-    if not isinstance(policy, DockerApiPolicy) or not isinstance(host_config, Mapping):
+    if not isinstance(policy, (DockerApiPolicy, DockerApiPolicyV2)) or not isinstance(
+        host_config, Mapping
+    ):
         raise EngineDockerPolicyError("Docker container namespace proof is invalid")
     expected = {
         "IpcMode": policy.expected_ipc_mode,
@@ -779,7 +1512,7 @@ class DockerApiDecision:
 
 
 def _decision(
-    policy: DockerApiPolicy,
+    policy: DockerPolicy,
     operation: DockerApiOperation,
     response: DockerResponseContract,
     *,
@@ -817,7 +1550,9 @@ def _required_owned_exec(resource_id: str, ownership: DockerOwnership) -> str:
     return owner
 
 
-def _validate_create(policy: DockerApiPolicy, request: DockerApiRequest) -> Mapping[str, Any]:
+def _validate_create(policy: DockerPolicy, request: DockerApiRequest) -> Mapping[str, Any]:
+    if isinstance(policy, DockerApiPolicyV2):
+        return _validate_create_v2(policy, request)
     row = _exact(
         _json_object(request.body, "Docker container create"),
         frozenset(
@@ -961,7 +1696,164 @@ def _validate_create(policy: DockerApiPolicy, request: DockerApiRequest) -> Mapp
     return row
 
 
-def _validate_exec(policy: DockerApiPolicy, request: DockerApiRequest) -> Mapping[str, Any]:
+def _validate_create_v2(policy: DockerApiPolicyV2, request: DockerApiRequest) -> Mapping[str, Any]:
+    """Require the reopened V2 image contract's exact Docker create settings."""
+
+    profile = policy.image_runtime_profile
+    row = _exact(
+        _json_object(request.body, "V2 Docker container create"),
+        frozenset(
+            {
+                "AttachStderr",
+                "AttachStdin",
+                "AttachStdout",
+                "Cmd",
+                "Entrypoint",
+                "Env",
+                "HostConfig",
+                "Image",
+                "Labels",
+                "NetworkDisabled",
+                "NetworkingConfig",
+                "OpenStdin",
+                "StdinOnce",
+                "Tty",
+                "User",
+                "WorkingDir",
+            }
+        ),
+        "V2 Docker container create",
+    )
+    environment = [f"{key}={profile['environment'][key]}" for key in sorted(profile["environment"])]
+    for field_name, expected in (
+        ("Image", policy.image_reference),
+        ("User", profile["user"]),
+        ("Cmd", profile["command"]),
+        ("Entrypoint", profile["entrypoint"]),
+        ("Env", environment),
+        ("WorkingDir", profile["working_directory"]),
+        ("Labels", dict(policy.required_labels)),
+    ):
+        if row[field_name] != expected:
+            raise EngineDockerPolicyError(
+                f"V2 Docker create {field_name} differs from runtime profile"
+            )
+    for key in (
+        "AttachStderr",
+        "AttachStdin",
+        "AttachStdout",
+        "NetworkDisabled",
+        "OpenStdin",
+        "StdinOnce",
+        "Tty",
+    ):
+        _expect_bool(row[key], f"V2 Docker create {key}", False)
+    host = _exact(
+        row["HostConfig"],
+        frozenset(
+            {
+                "AutoRemove",
+                "Binds",
+                "CapAdd",
+                "CapDrop",
+                "CgroupParent",
+                "DeviceRequests",
+                "Devices",
+                "Dns",
+                "DnsOptions",
+                "DnsSearch",
+                "ExtraHosts",
+                "IpcMode",
+                "LogConfig",
+                "Memory",
+                "MemorySwap",
+                "Mounts",
+                "NanoCpus",
+                "NetworkMode",
+                "OomKillDisable",
+                "PidMode",
+                "PidsLimit",
+                "PortBindings",
+                "Privileged",
+                "PublishAllPorts",
+                "ReadonlyRootfs",
+                "RestartPolicy",
+                "SecurityOpt",
+                "Tmpfs",
+                "UTSMode",
+            }
+        ),
+        "V2 Docker create HostConfig",
+    )
+    for key in ("AutoRemove", "OomKillDisable", "Privileged", "PublishAllPorts"):
+        _expect_bool(host[key], f"V2 Docker {key}", False)
+    _expect_bool(host["ReadonlyRootfs"], "V2 Docker ReadonlyRootfs", True)
+    for key in (
+        "Binds",
+        "DeviceRequests",
+        "Devices",
+        "Dns",
+        "DnsOptions",
+        "DnsSearch",
+        "ExtraHosts",
+        "Mounts",
+    ):
+        if host[key] != []:
+            raise EngineDockerPolicyError("V2 Docker create includes a prohibited host attachment")
+    if host["PortBindings"] != {}:
+        raise EngineDockerPolicyError("V2 Docker create must not publish ports")
+    if host["CapAdd"] != profile["cap_add"] or host["CapDrop"] != profile["cap_drop"]:
+        raise EngineDockerPolicyError("V2 Docker create capabilities differ from runtime profile")
+    if host["SecurityOpt"] != profile["security_options"]:
+        raise EngineDockerPolicyError(
+            "V2 Docker create security options differ from runtime profile"
+        )
+    if host["NetworkMode"] != policy.network_name:
+        raise EngineDockerPolicyError("V2 Docker create network differs from runtime profile")
+    validate_docker_container_namespace_proof(policy, host)
+    if host["CgroupParent"] != policy.cgroup_parent:
+        raise EngineDockerPolicyError("V2 Docker create cgroup parent is not attempt-bound")
+    for key, expected in (
+        ("Memory", policy.memory_bytes),
+        ("MemorySwap", policy.memory_swap_bytes),
+        ("NanoCpus", policy.nano_cpus),
+        ("PidsLimit", policy.pids_limit),
+    ):
+        _expect_int(host[key], f"V2 Docker create {key}", expected)
+    restart = _exact(
+        host["RestartPolicy"],
+        frozenset({"MaximumRetryCount", "Name"}),
+        "V2 Docker restart policy",
+    )
+    _expect_int(restart["MaximumRetryCount"], "V2 Docker restart count", 0)
+    if restart["Name"] != profile["restart_policy"]:
+        raise EngineDockerPolicyError(
+            "V2 Docker create restart policy differs from runtime profile"
+        )
+    if host["LogConfig"] != {
+        "Config": {"max-file": "1", "max-size": "10m"},
+        "Type": "json-file",
+    }:
+        raise EngineDockerPolicyError("V2 Docker create log policy is not fixed")
+    if host["Tmpfs"] != profile["tmpfs"]:
+        raise EngineDockerPolicyError("V2 Docker create tmpfs differs from runtime profile")
+    networking = _exact(
+        row["NetworkingConfig"], frozenset({"EndpointsConfig"}), "V2 Docker NetworkingConfig"
+    )
+    endpoints = networking["EndpointsConfig"]
+    if not isinstance(endpoints, Mapping) or set(endpoints) != {policy.network_name}:
+        raise EngineDockerPolicyError("V2 Docker create endpoint set differs from runtime profile")
+    endpoint = _exact(
+        endpoints[policy.network_name],
+        frozenset({"Aliases", "NetworkID"}),
+        "V2 Docker endpoint",
+    )
+    if endpoint != {"Aliases": [], "NetworkID": policy.network_id}:
+        raise EngineDockerPolicyError("V2 Docker create endpoint is not exact")
+    return row
+
+
+def _validate_exec(policy: DockerPolicy, request: DockerApiRequest) -> Mapping[str, Any]:
     row = _exact(
         _json_object(request.body, "Docker exec create"),
         frozenset(
@@ -1007,7 +1899,7 @@ def _validate_exec(policy: DockerApiPolicy, request: DockerApiRequest) -> Mappin
     return row
 
 
-def _archive_path(value: str, policy: DockerApiPolicy) -> str:
+def _archive_path(value: str, policy: DockerPolicy) -> str:
     if (
         not isinstance(value, str)
         or value != policy.exec_working_directory
@@ -1022,7 +1914,7 @@ def _archive_path(value: str, policy: DockerApiPolicy) -> str:
 
 
 def authorize_docker_api_request(
-    policy: DockerApiPolicy,
+    policy: DockerPolicy,
     request: DockerApiRequest,
     ownership: DockerOwnership,
 ) -> DockerApiDecision:
@@ -1127,6 +2019,8 @@ def authorize_docker_api_request(
                 resource_id=container_id,
             )
         if request.method == "POST" and action == "exec":
+            if isinstance(policy, DockerApiPolicyV2):
+                raise EngineDockerPolicyError("V2 Docker exec is not admitted for runtime installs")
             _no_query(query)
             body = _validate_exec(policy, request)
             return _decision(
@@ -1216,6 +2110,8 @@ def authorize_docker_api_request(
 
     exec_match = re.fullmatch(rf"{re.escape(prefix)}/exec/([0-9a-f]{{64}})/(start|json)", path)
     if exec_match:
+        if isinstance(policy, DockerApiPolicyV2):
+            raise EngineDockerPolicyError("V2 Docker exec is not admitted for runtime installs")
         exec_id, action = exec_match.groups()
         container_id = _required_owned_exec(exec_id, ownership)
         _no_query(query)
@@ -1251,13 +2147,19 @@ def authorize_docker_api_request(
 
 
 __all__ = [
+    "ControllerImageAdmissionVerifier",
+    "ControllerImageRelationVerifier",
+    "ControllerVerifiedImageAdmission",
+    "ControllerVerifiedImageRelation",
     "DockerApiDecision",
     "DockerApiOperation",
     "DockerApiPolicy",
+    "DockerApiPolicyV2",
     "DockerApiRequest",
     "DockerOwnership",
     "DockerResponseContract",
     "DockerTmpfs",
+    "DockerTmpfsV2",
     "EngineDockerPolicyError",
     "authorize_docker_api_request",
     "validate_docker_container_namespace_proof",

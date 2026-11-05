@@ -515,19 +515,30 @@ _CONTROLLER_RECEIPT_PUBLIC_KEYS_V2: tuple[bytes, ...] = ()
 _RECEIPT_SIGNATURE_DOMAIN_V2 = b"bluefire.strix-image-controller-receipt.v2\x00"
 
 
-def _v2_reference(value: Any, label: str) -> str:
+def validate_v2_image_reference(value: Any, label: str = "image reference") -> str:
+    """Return one canonical, fully qualified V2 digest-pinned image reference.
+
+    The same validator is used by the V2 image contract and downstream Docker
+    policy. Registry ports, tags, implicit registries, and URL forms are not
+    canonical here. This is syntax validation, not image admission.
+    """
+
     if not isinstance(value, str) or len(value) > 256:
         raise StrixImageContractError(f"{label} is not a canonical digest reference")
     match = _V2_REFERENCE.fullmatch(value)
     if match is None:
         raise StrixImageContractError(f"{label} is not a canonical digest reference")
     registry = match.group("registry")
-    host, separator, port = registry.partition(":")
+    host, separator, _port = registry.partition(":")
     if "." not in host and host != "localhost":
         raise StrixImageContractError(f"{label} registry is not fully qualified")
-    if separator and (int(port) > 65535 or int(port) in {80, 443}):
+    if separator:
         raise StrixImageContractError(f"{label} registry port is invalid")
-    return match.group("digest")
+    return value
+
+
+def _v2_reference(value: Any, label: str) -> str:
+    return validate_v2_image_reference(value, label).rsplit("@", 1)[-1]
 
 
 def _v2_oci_descriptor(value: Any, *, role: str, platform: bool) -> dict[str, Any]:

@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
 import pytest
 
 from bluefire.engine_container_custody import (
+    V2_RUNTIME_PLATFORM,
     ContainerCustodyPlan,
+    ContainerCustodyPlanV2,
     CustodySettlement,
     DaemonInventory,
+    DaemonInventoryV2,
     EngineContainerCustodyError,
     assess_container_custody,
+    container_image_identity_digest,
     settle_container_custody,
 )
 
@@ -18,6 +23,8 @@ ATTEMPT_ID = "engine-attempt-" + "a" * 32
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
 DIGEST_C = "sha256:" + "c" * 64
+DIGEST_D = "sha256:" + "d" * 64
+IMAGE_REFERENCE_V2 = "ghcr.io/usestrix/sandbox@" + DIGEST_A
 NETWORK_ID = "1" * 64
 PREEXISTING_ID = "2" * 64
 OWNED_ID = "3" * 64
@@ -129,6 +136,53 @@ def plan(baseline: DaemonInventory) -> dict[str, Any]:
     }
 
 
+def plan_v2(baseline: DaemonInventoryV2) -> dict[str, Any]:
+    common = plan(DaemonInventory.from_mapping(inventory()))
+    common["schema_version"] = "bluefire.engine-container-custody.v2"
+    common["baseline_inventory_digest"] = baseline.inventory_digest
+    common.pop("sandbox_image_digest")
+    identity = {
+        "image_reference": IMAGE_REFERENCE_V2,
+        "runtime_platform": V2_RUNTIME_PLATFORM,
+        "platform_child_manifest_digest": DIGEST_B,
+        "image_config_digest": DIGEST_C,
+        "image_relation_receipt_ref": DIGEST_D,
+    }
+    common.update(identity)
+    common["required_labels"] = {
+        "bluefire.engine.attempt": ATTEMPT_ID,
+        "bluefire.engine.image-identity": container_image_identity_digest(**identity),
+    }
+    return common
+
+
+def inventory_v2(*, containers: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {
+        **inventory(containers=containers),
+        "schema_version": "bluefire.engine-daemon-inventory.v2",
+    }
+
+
+def container_v2(*, config: str = DIGEST_C, reference: str = IMAGE_REFERENCE_V2) -> dict[str, Any]:
+    row = container(
+        OWNED_ID,
+        labels={
+            "bluefire.engine.attempt": ATTEMPT_ID,
+            "bluefire.engine.image-identity": container_image_identity_digest(
+                image_reference=IMAGE_REFERENCE_V2,
+                runtime_platform=V2_RUNTIME_PLATFORM,
+                platform_child_manifest_digest=DIGEST_B,
+                image_config_digest=DIGEST_C,
+                image_relation_receipt_ref=DIGEST_D,
+            ),
+        },
+    )
+    row.pop("image_digest")
+    row["image_config_digest"] = config
+    row["configured_image_reference"] = reference
+    return row
+
+
 def attempt_labels() -> dict[str, str]:
     return {"bluefire.engine.attempt": ATTEMPT_ID}
 
@@ -168,6 +222,122 @@ def test_canonical_round_trip_and_plan_digest() -> None:
     assert DaemonInventory.from_mapping(baseline.to_dict()) == baseline
     assert parsed.plan_digest.startswith("sha256:")
     assert baseline.inventory_digest.startswith("sha256:")
+
+
+def test_v2_custody_binds_distinct_image_roles_and_observes_config_and_reference() -> None:
+    baseline = DaemonInventoryV2.from_mapping(inventory_v2())
+    custody = ContainerCustodyPlanV2.from_mapping(plan_v2(baseline))
+    current = DaemonInventoryV2.from_mapping(inventory_v2(containers=[container_v2()]))
+    assert ContainerCustodyPlanV2.from_mapping(custody.to_dict()) == custody
+    assert DaemonInventoryV2.from_mapping(current.to_dict()) == current
+    assert (
+        custody.plan_digest
+        != ContainerCustodyPlan.from_mapping(
+            plan(DaemonInventory.from_mapping(inventory()))
+        ).plan_digest
+    )
+    assert assess_container_custody(custody, baseline, current).qualified
+    for field, replacement in (
+        ("image_reference", "ghcr.io/bluefire/other@" + DIGEST_A),
+        ("platform_child_manifest_digest", DIGEST_D),
+        ("image_config_digest", DIGEST_D),
+        ("image_relation_receipt_ref", "sha256:" + "e" * 64),
+    ):
+        changed = plan_v2(baseline)
+        changed[field] = replacement
+        identity = {
+            key: changed[key]
+            for key in (
+                "image_reference",
+                "runtime_platform",
+                "platform_child_manifest_digest",
+                "image_config_digest",
+                "image_relation_receipt_ref",
+            )
+        }
+        changed["required_labels"]["bluefire.engine.image-identity"] = (
+            container_image_identity_digest(**identity)
+        )
+        assert ContainerCustodyPlanV2.from_mapping(changed).plan_digest != custody.plan_digest
+
+    wrong_config = DaemonInventoryV2.from_mapping(
+        inventory_v2(containers=[container_v2(config=DIGEST_B)])
+    )
+    wrong_reference = DaemonInventoryV2.from_mapping(
+        inventory_v2(containers=[container_v2(reference="ghcr.io/other/repo@" + DIGEST_A)])
+    )
+    assert any(
+        item.endswith(":image_config_digest")
+        for item in assess_container_custody(custody, baseline, wrong_config).policy_violations
+    )
+    assert any(
+        item.endswith(":configured_image_reference")
+        for item in assess_container_custody(custody, baseline, wrong_reference).policy_violations
+    )
+
+
+def test_v2_custody_rejects_legacy_fields_mixed_snapshots_and_role_substitution() -> None:
+    baseline = DaemonInventoryV2.from_mapping(inventory_v2())
+    value = plan_v2(baseline)
+    for field, replacement in (
+        ("platform_child_manifest_digest", DIGEST_A),
+        ("image_config_digest", DIGEST_B),
+        ("image_relation_receipt_ref", ""),
+    ):
+        changed = deepcopy(value)
+        changed[field] = replacement
+        with pytest.raises(EngineContainerCustodyError):
+            ContainerCustodyPlanV2.from_mapping(changed)
+    changed = deepcopy(value)
+    changed["sandbox_image_digest"] = DIGEST_C
+    with pytest.raises(EngineContainerCustodyError, match="fields"):
+        ContainerCustodyPlanV2.from_mapping(changed)
+    legacy = plan(DaemonInventory.from_mapping(inventory()))
+    legacy["image_config_digest"] = DIGEST_C
+    with pytest.raises(EngineContainerCustodyError, match="fields"):
+        ContainerCustodyPlan.from_mapping(legacy)
+    custody = ContainerCustodyPlanV2.from_mapping(value)
+    malformed_direct_plan = replace(
+        custody, required_labels=(("bluefire.engine.attempt", ATTEMPT_ID),)
+    )
+    with pytest.raises(EngineContainerCustodyError, match="v2 custody inputs"):
+        assess_container_custody(malformed_direct_plan, baseline, baseline)
+    malformed_direct_inventory = replace(
+        baseline, schema_version="bluefire.engine-daemon-inventory.v1"
+    )
+    with pytest.raises(EngineContainerCustodyError, match="v2 custody inputs"):
+        assess_container_custody(custody, malformed_direct_inventory, baseline)
+    with pytest.raises(EngineContainerCustodyError, match="v2 daemon inventories"):
+        assess_container_custody(
+            custody,
+            DaemonInventory.from_mapping(inventory()),
+            DaemonInventory.from_mapping(inventory()),
+        )
+    changed_inventory = inventory_v2(containers=[container_v2()])
+    changed_inventory["containers"][0]["image_digest"] = DIGEST_C
+    with pytest.raises(EngineContainerCustodyError, match="fields"):
+        DaemonInventoryV2.from_mapping(changed_inventory)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "repo/image@" + DIGEST_A,
+        "ghcr.io/repo:tag@" + DIGEST_A,
+        "ghcr.io:5000/repo@" + DIGEST_A,
+        "ghcr.io//repo@" + DIGEST_A,
+        "https://ghcr.io/repo@" + DIGEST_A,
+        "GHCR.io/repo@" + DIGEST_A,
+    ],
+)
+def test_v2_custody_and_observations_use_strict_contract_reference(reference: str) -> None:
+    baseline = DaemonInventoryV2.from_mapping(inventory_v2())
+    value = plan_v2(baseline)
+    value["image_reference"] = reference
+    with pytest.raises(EngineContainerCustodyError, match="image reference"):
+        ContainerCustodyPlanV2.from_mapping(value)
+    with pytest.raises(EngineContainerCustodyError, match="image reference"):
+        DaemonInventoryV2.from_mapping(inventory_v2(containers=[container_v2(reference=reference)]))
 
 
 def test_plan_requires_attempt_bound_labels_and_pinned_image() -> None:

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping, Protocol, Sequence
 
+from .strix_image_contract import StrixImageContractError, validate_v2_image_reference
 from .util import content_hash, json_clone
 
 
@@ -37,6 +38,7 @@ _CONTAINER_PATH = re.compile(r"^/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$")
 _LABEL_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-/]{0,127}$")
 _CAPABILITY = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _USER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
+V2_RUNTIME_PLATFORM = "linux/amd64"
 
 
 def _exact(value: Any, fields: frozenset[str], label: str) -> Mapping[str, Any]:
@@ -272,6 +274,90 @@ class ContainerResource:
 
 
 @dataclass(frozen=True, slots=True)
+class ContainerResourceV2:
+    """A Docker container observation with distinct config and requested reference."""
+
+    resource_id: str
+    name: str
+    labels: tuple[tuple[str, str], ...]
+    image_config_digest: str
+    configured_image_reference: str
+    network_ids: tuple[str, ...]
+    mounts: tuple[MountSpec, ...]
+    capabilities: tuple[str, ...]
+    user: str
+    privileged: bool
+    devices: tuple[str, ...]
+    network_mode: str
+    pid_mode: str
+    ipc_mode: str
+    uts_mode: str
+    memory_bytes: int
+    nano_cpus: int
+    pids_limit: int
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "ContainerResourceV2":
+        row = _exact(value, frozenset(cls.__dataclass_fields__), "container resource v2")
+        config = _digest(row["image_config_digest"], "container image config")
+        try:
+            reference = validate_v2_image_reference(
+                row["configured_image_reference"], "container configured image reference"
+            )
+        except StrixImageContractError as exc:
+            raise EngineContainerCustodyError(
+                "container configured image reference is invalid"
+            ) from exc
+        common = dict(row)
+        common.pop("image_config_digest")
+        common.pop("configured_image_reference")
+        common["image_digest"] = config
+        parsed = ContainerResource.from_mapping(common)
+        return cls(
+            resource_id=parsed.resource_id,
+            name=parsed.name,
+            labels=parsed.labels,
+            image_config_digest=config,
+            configured_image_reference=reference,
+            network_ids=parsed.network_ids,
+            mounts=parsed.mounts,
+            capabilities=parsed.capabilities,
+            user=parsed.user,
+            privileged=parsed.privileged,
+            devices=parsed.devices,
+            network_mode=parsed.network_mode,
+            pid_mode=parsed.pid_mode,
+            ipc_mode=parsed.ipc_mode,
+            uts_mode=parsed.uts_mode,
+            memory_bytes=parsed.memory_bytes,
+            nano_cpus=parsed.nano_cpus,
+            pids_limit=parsed.pids_limit,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "resource_id": self.resource_id,
+            "name": self.name,
+            "labels": _labels_dict(self.labels),
+            "image_config_digest": self.image_config_digest,
+            "configured_image_reference": self.configured_image_reference,
+            "network_ids": list(self.network_ids),
+            "mounts": [item.to_dict() for item in self.mounts],
+            "capabilities": list(self.capabilities),
+            "user": self.user,
+            "privileged": self.privileged,
+            "devices": list(self.devices),
+            "network_mode": self.network_mode,
+            "pid_mode": self.pid_mode,
+            "ipc_mode": self.ipc_mode,
+            "uts_mode": self.uts_mode,
+            "memory_bytes": self.memory_bytes,
+            "nano_cpus": self.nano_cpus,
+            "pids_limit": self.pids_limit,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class VolumeResource:
     resource_id: str
     name: str
@@ -355,6 +441,55 @@ class DaemonInventory:
             containers=parse_rows(row["containers"], "container", ContainerResource.from_mapping),
             networks=parse_rows(row["networks"], "network", NetworkResource.from_mapping),
             volumes=parse_rows(row["volumes"], "volume", VolumeResource.from_mapping),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "daemon_instance_digest": self.daemon_instance_digest,
+            "containers": [item.to_dict() for item in self.containers],
+            "networks": [item.to_dict() for item in self.networks],
+            "volumes": [item.to_dict() for item in self.volumes],
+        }
+
+    @property
+    def inventory_digest(self) -> str:
+        return content_hash(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class DaemonInventoryV2:
+    schema_version: str
+    daemon_instance_digest: str
+    containers: tuple[ContainerResourceV2, ...]
+    networks: tuple[NetworkResource, ...]
+    volumes: tuple[VolumeResource, ...]
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "DaemonInventoryV2":
+        row = _exact(value, frozenset(cls.__dataclass_fields__), "daemon inventory v2")
+        if row["schema_version"] != "bluefire.engine-daemon-inventory.v2":
+            raise EngineContainerCustodyError("daemon inventory schema is unsupported")
+        raw_containers = row["containers"]
+        if not isinstance(raw_containers, list) or len(raw_containers) > 512:
+            raise EngineContainerCustodyError("container inventory is invalid")
+        containers = tuple(ContainerResourceV2.from_mapping(item) for item in raw_containers)
+        common = dict(row)
+        common["schema_version"] = "bluefire.engine-daemon-inventory.v1"
+        common_containers = []
+        for item in containers:
+            resource = item.to_dict()
+            resource["image_digest"] = resource.pop("image_config_digest")
+            resource.pop("configured_image_reference")
+            common_containers.append(resource)
+        common["containers"] = common_containers
+        parsed = DaemonInventory.from_mapping(common)
+        return cls(
+            schema_version="bluefire.engine-daemon-inventory.v2",
+            daemon_instance_digest=parsed.daemon_instance_digest,
+            containers=containers,
+            networks=parsed.networks,
+            volumes=parsed.volumes,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -462,6 +597,163 @@ class ContainerCustodyPlan:
         return content_hash(self.to_dict())
 
 
+def container_image_identity_digest(
+    *,
+    image_reference: str,
+    runtime_platform: str,
+    platform_child_manifest_digest: str,
+    image_config_digest: str,
+    image_relation_receipt_ref: str,
+) -> str:
+    """Bind the v2 image roles, runtime platform, and relation ref into a label."""
+
+    try:
+        reference = validate_v2_image_reference(image_reference, "image reference")
+    except StrixImageContractError as exc:
+        raise EngineContainerCustodyError("v2 image reference is invalid") from exc
+    if runtime_platform != V2_RUNTIME_PLATFORM:
+        raise EngineContainerCustodyError("v2 runtime platform is unsupported")
+    child = _digest(platform_child_manifest_digest, "platform child manifest")
+    config = _digest(image_config_digest, "image config")
+    receipt = _digest(image_relation_receipt_ref, "image relation receipt reference")
+    reference_digest = reference.rsplit("@", 1)[-1]
+    if len({reference_digest, child, config}) != 3:
+        raise EngineContainerCustodyError("v2 image index, child manifest, and config must differ")
+    return content_hash(
+        {
+            "schema_version": "bluefire.engine-container-image-identity.v2",
+            "image_reference": reference,
+            "runtime_platform": runtime_platform,
+            "platform_child_manifest_digest": child,
+            "image_config_digest": config,
+            "image_relation_receipt_ref": receipt,
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ContainerCustodyPlanV2:
+    """V2 custody with a controller-verified index-to-child-to-config receipt ref.
+
+    The receipt content and its verification belong to the controller. This
+    value binds the controller's proof; its digest syntax alone proves nothing.
+    """
+
+    schema_version: str
+    attempt_id: str
+    daemon_instance_digest: str
+    disposable_boundary_ref: str
+    baseline_inventory_digest: str
+    required_labels: tuple[tuple[str, str], ...]
+    image_reference: str
+    runtime_platform: str
+    platform_child_manifest_digest: str
+    image_config_digest: str
+    image_relation_receipt_ref: str
+    network_id: str
+    network_policy_digest: str
+    expected_mounts: tuple[MountSpec, ...]
+    expected_capabilities: tuple[str, ...]
+    expected_user: str
+    memory_bytes: int
+    nano_cpus: int
+    pids_limit: int
+    expected_container_count: int
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "ContainerCustodyPlanV2":
+        row = _exact(value, frozenset(cls.__dataclass_fields__), "container custody plan v2")
+        if row["schema_version"] != "bluefire.engine-container-custody.v2":
+            raise EngineContainerCustodyError("container custody schema is unsupported")
+        identity_digest = container_image_identity_digest(
+            image_reference=row["image_reference"],
+            runtime_platform=row["runtime_platform"],
+            platform_child_manifest_digest=row["platform_child_manifest_digest"],
+            image_config_digest=row["image_config_digest"],
+            image_relation_receipt_ref=row["image_relation_receipt_ref"],
+        )
+        # Reuse only the unchanged, non-image v1 validation. The v2 wire form
+        # never contains the legacy sandbox_image_digest field.
+        common = dict(row)
+        for field in (
+            "image_reference",
+            "runtime_platform",
+            "platform_child_manifest_digest",
+            "image_config_digest",
+            "image_relation_receipt_ref",
+        ):
+            common.pop(field)
+        common["schema_version"] = "bluefire.engine-container-custody.v1"
+        common["sandbox_image_digest"] = row["image_config_digest"]
+        parsed = ContainerCustodyPlan.from_mapping(common)
+        if dict(parsed.required_labels).get("bluefire.engine.image-identity") != identity_digest:
+            raise EngineContainerCustodyError("required labels do not bind v2 image identity")
+        return cls(
+            schema_version="bluefire.engine-container-custody.v2",
+            attempt_id=parsed.attempt_id,
+            daemon_instance_digest=parsed.daemon_instance_digest,
+            disposable_boundary_ref=parsed.disposable_boundary_ref,
+            baseline_inventory_digest=parsed.baseline_inventory_digest,
+            required_labels=parsed.required_labels,
+            image_reference=row["image_reference"],
+            runtime_platform=row["runtime_platform"],
+            platform_child_manifest_digest=row["platform_child_manifest_digest"],
+            image_config_digest=row["image_config_digest"],
+            image_relation_receipt_ref=row["image_relation_receipt_ref"],
+            network_id=parsed.network_id,
+            network_policy_digest=parsed.network_policy_digest,
+            expected_mounts=parsed.expected_mounts,
+            expected_capabilities=parsed.expected_capabilities,
+            expected_user=parsed.expected_user,
+            memory_bytes=parsed.memory_bytes,
+            nano_cpus=parsed.nano_cpus,
+            pids_limit=parsed.pids_limit,
+            expected_container_count=parsed.expected_container_count,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(
+            json_clone(
+                {
+                    "schema_version": self.schema_version,
+                    "attempt_id": self.attempt_id,
+                    "daemon_instance_digest": self.daemon_instance_digest,
+                    "disposable_boundary_ref": self.disposable_boundary_ref,
+                    "baseline_inventory_digest": self.baseline_inventory_digest,
+                    "required_labels": _labels_dict(self.required_labels),
+                    "image_reference": self.image_reference,
+                    "runtime_platform": self.runtime_platform,
+                    "platform_child_manifest_digest": self.platform_child_manifest_digest,
+                    "image_config_digest": self.image_config_digest,
+                    "image_relation_receipt_ref": self.image_relation_receipt_ref,
+                    "network_id": self.network_id,
+                    "network_policy_digest": self.network_policy_digest,
+                    "expected_mounts": [item.to_dict() for item in self.expected_mounts],
+                    "expected_capabilities": list(self.expected_capabilities),
+                    "expected_user": self.expected_user,
+                    "memory_bytes": self.memory_bytes,
+                    "nano_cpus": self.nano_cpus,
+                    "pids_limit": self.pids_limit,
+                    "expected_container_count": self.expected_container_count,
+                }
+            )
+        )
+
+    @property
+    def image_identity_digest(self) -> str:
+        return container_image_identity_digest(
+            image_reference=self.image_reference,
+            runtime_platform=self.runtime_platform,
+            platform_child_manifest_digest=self.platform_child_manifest_digest,
+            image_config_digest=self.image_config_digest,
+            image_relation_receipt_ref=self.image_relation_receipt_ref,
+        )
+
+    @property
+    def plan_digest(self) -> str:
+        return content_hash(self.to_dict())
+
+
 @dataclass(frozen=True, slots=True)
 class CustodyAssessment:
     owned_container_ids: tuple[str, ...]
@@ -510,11 +802,28 @@ def _has_required_labels(
 
 
 def assess_container_custody(
-    plan: ContainerCustodyPlan,
-    baseline: DaemonInventory,
-    current: DaemonInventory,
+    plan: ContainerCustodyPlan | ContainerCustodyPlanV2,
+    baseline: DaemonInventory | DaemonInventoryV2,
+    current: DaemonInventory | DaemonInventoryV2,
 ) -> CustodyAssessment:
     """Identify attempt resources and verify their effective Docker settings."""
+
+    if isinstance(plan, ContainerCustodyPlanV2):
+        if not isinstance(baseline, DaemonInventoryV2) or not isinstance(
+            current, DaemonInventoryV2
+        ):
+            raise EngineContainerCustodyError("v2 custody requires v2 daemon inventories")
+        try:
+            if ContainerCustodyPlanV2.from_mapping(plan.to_dict()) != plan:
+                raise EngineContainerCustodyError("v2 custody plan is not canonical")
+            if DaemonInventoryV2.from_mapping(baseline.to_dict()) != baseline:
+                raise EngineContainerCustodyError("v2 baseline inventory is not canonical")
+            if DaemonInventoryV2.from_mapping(current.to_dict()) != current:
+                raise EngineContainerCustodyError("v2 current inventory is not canonical")
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise EngineContainerCustodyError("v2 custody inputs are invalid") from exc
+    elif not isinstance(baseline, DaemonInventory) or not isinstance(current, DaemonInventory):
+        raise EngineContainerCustodyError("v1 custody requires v1 daemon inventories")
 
     if baseline.daemon_instance_digest != plan.daemon_instance_digest:
         raise EngineContainerCustodyError("baseline belongs to another daemon")
@@ -587,7 +896,14 @@ def assess_container_custody(
         violations.append("unexpected_volume_created")
     for container in owned_containers:
         prefix = f"container:{container.resource_id}:"
-        if container.image_digest != plan.sandbox_image_digest:
+        if isinstance(plan, ContainerCustodyPlanV2):
+            if not isinstance(container, ContainerResourceV2):
+                raise EngineContainerCustodyError("v2 container observation is required")
+            if container.image_config_digest != plan.image_config_digest:
+                violations.append(prefix + "image_config_digest")
+            if container.configured_image_reference != plan.image_reference:
+                violations.append(prefix + "configured_image_reference")
+        elif container.image_digest != plan.sandbox_image_digest:
             violations.append(prefix + "image_digest")
         if container.network_ids != (plan.network_id,):
             violations.append(prefix + "network")
@@ -627,8 +943,8 @@ def assess_container_custody(
 
 
 def settle_container_custody(
-    plan: ContainerCustodyPlan,
-    baseline: DaemonInventory,
+    plan: ContainerCustodyPlan | ContainerCustodyPlanV2,
+    baseline: DaemonInventory | DaemonInventoryV2,
     control: FixedDockerControl,
 ) -> CustodySettlementResult:
     """Stop positively owned resources and prove their absence.
@@ -639,7 +955,10 @@ def settle_container_custody(
     """
 
     try:
-        current = DaemonInventory.from_mapping(control.snapshot())
+        inventory_parser = (
+            DaemonInventoryV2 if isinstance(plan, ContainerCustodyPlanV2) else DaemonInventory
+        )
+        current = inventory_parser.from_mapping(control.snapshot())
         assessment = assess_container_custody(plan, baseline, current)
     except (EngineContainerCustodyError, OSError, RuntimeError, TypeError, ValueError) as exc:
         return CustodySettlementResult(
@@ -655,7 +974,7 @@ def settle_container_custody(
             network_ids=assessment.owned_network_ids,
             volume_ids=assessment.owned_volume_ids,
         )
-        final = DaemonInventory.from_mapping(control.snapshot())
+        final = inventory_parser.from_mapping(control.snapshot())
         final_assessment = assess_container_custody(plan, baseline, final)
     except (EngineContainerCustodyError, OSError, RuntimeError, TypeError, ValueError) as exc:
         return CustodySettlementResult(

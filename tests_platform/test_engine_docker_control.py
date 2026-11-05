@@ -2,15 +2,24 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
+from typing import Any
 from urllib.parse import quote, urlencode
 
 import pytest
 
-from bluefire.engine_container_custody import ContainerCustodyPlan
+from bluefire.engine_container_custody import (
+    V2_RUNTIME_PLATFORM,
+    ContainerCustodyPlan,
+    ContainerCustodyPlanV2,
+    container_image_identity_digest,
+)
 from bluefire.engine_docker_control import (
+    ControllerVerifiedImageAdmission,
+    ControllerVerifiedImageRelation,
     DockerApiOperation,
     DockerApiPolicy,
+    DockerApiPolicyV2,
     DockerApiRequest,
     DockerOwnership,
     DockerResponseContract,
@@ -18,8 +27,14 @@ from bluefire.engine_docker_control import (
     authorize_docker_api_request,
     validate_docker_container_namespace_proof,
 )
-from bluefire.engine_network_policy import EngineNetworkPlan
+from bluefire.engine_network_policy import EngineNetworkPlan, EngineNetworkPlanV2
 from bluefire.strix_adapter import StrixBuildIdentity
+from bluefire.strix_controlled_execution_identity import StrixControlledExecutionIdentityV2
+from bluefire.strix_image_contract import (
+    StrixImageAdmissionDecisionV2,
+    StrixImageContractV2,
+    proposed_image_runtime_profile,
+)
 from bluefire.strix_policy_overlay import (
     OVERLAY_SHA256,
     PATCHED_PROMPT_SHA256,
@@ -27,6 +42,11 @@ from bluefire.strix_policy_overlay import (
     REVIEWED_SOURCE_REVISION,
 )
 from bluefire.util import content_hash
+from tests_platform.test_strix_controlled_execution_identity import (
+    _bind_contract,
+    _identity,
+    _public_image_contract,
+)
 
 ATTEMPT_ID = "engine-attempt-0123456789abcdef0123456789abcdef"
 CONTAINER_ID = "1" * 64
@@ -35,6 +55,10 @@ EXEC_ID = "3" * 64
 NETWORK_ID = "4" * 64
 IMAGE_DIGEST = "sha256:" + "c" * 64
 IMAGE_REFERENCE = "ghcr.io/usestrix/sandbox@" + IMAGE_DIGEST
+DERIVED_IMAGE_REFERENCE = "ghcr.io/bluefire/derived-sandbox@sha256:" + "9" * 64
+CHILD_MANIFEST = "sha256:" + "d" * 64
+IMAGE_CONFIG = "sha256:" + "e" * 64
+RELATION_RECEIPT = "sha256:" + "f" * 64
 TMPFS_OPTIONS = "nodev,nosuid,rw,size=512m"
 DAEMON_DIGEST = "sha256:" + "1" * 64
 NOW = "2026-11-04T12:00:00Z"
@@ -111,6 +135,196 @@ def policy() -> DockerApiPolicy:
         api_version="v1.47",
         tmpfs_options={"/workspace": TMPFS_OPTIONS},
     )
+
+
+class FakeControllerRelationVerifier:
+    """Test-only injected controller capability; it does not authenticate receipts."""
+
+    def __init__(self, *, outcome: str = "exact") -> None:
+        self.outcome = outcome
+
+    def verify_image_relation(
+        self,
+        *,
+        image_reference: str,
+        runtime_platform: str,
+        platform_child_manifest_digest: str,
+        image_config_digest: str,
+        image_relation_receipt_ref: str,
+    ) -> ControllerVerifiedImageRelation:
+        if self.outcome == "false":
+            return False  # type: ignore[return-value]
+        if self.outcome == "raise":
+            raise RuntimeError("receipt unavailable")
+        return ControllerVerifiedImageRelation(
+            image_reference=image_reference,
+            runtime_platform=(
+                "linux/arm64" if self.outcome == "wrong_platform" else runtime_platform
+            ),
+            platform_child_manifest_digest=platform_child_manifest_digest,
+            image_config_digest=image_config_digest,
+            image_relation_receipt_ref=(
+                "sha256:" + "0" * 64 if self.outcome == "mismatch" else image_relation_receipt_ref
+            ),
+        )
+
+
+class FakeControllerAdmissionVerifier:
+    """Test-only injected controller capability; it does not authenticate receipts."""
+
+    def __init__(self, *, outcome: str = "exact") -> None:
+        self.outcome = outcome
+
+    def verify_image_admission(
+        self,
+        *,
+        image_contract_digest: str,
+        image_admission_decision_ref: str,
+        execution_identity_digest: str,
+        protected_execution_identity_digest: str,
+        runtime_qualification_ref: str,
+    ) -> ControllerVerifiedImageAdmission:
+        if self.outcome == "false":
+            return False  # type: ignore[return-value]
+        if self.outcome == "raise":
+            raise RuntimeError("controller admission unavailable")
+        return ControllerVerifiedImageAdmission(
+            image_contract_digest=image_contract_digest,
+            image_admission_decision_ref=(
+                "sha256:" + "0" * 64 if self.outcome == "mismatch" else image_admission_decision_ref
+            ),
+            execution_identity_digest=execution_identity_digest,
+            protected_execution_identity_digest=protected_execution_identity_digest,
+            runtime_qualification_ref=(
+                "sha256:" + "0" * 64
+                if self.outcome == "wrong_runtime_qualification"
+                else runtime_qualification_ref
+            ),
+            runtime_qualification_admitted=True,
+            image_admitted_for_runtime=True,
+            missing_checks=(),
+        )
+
+
+def v2_policy_inputs(
+    *,
+    child: str | None = None,
+    config: str | None = None,
+    receipt: str | None = None,
+) -> dict[str, Any]:
+    """Synthetic V2 declarations; the fake verifiers are tests, not real proofs."""
+
+    identity_row = _identity()
+    if child is not None:
+        identity_row["platform_child_manifest_digest"] = child
+    if config is not None:
+        identity_row["image_config_digest"] = config
+    if receipt is not None:
+        identity_row["image_relation_receipt_ref"] = receipt
+    v2_network = EngineNetworkPlanV2.create(
+        attempt_id=identity_row["attempt_id"],
+        network_id="a" * 64,
+        network_identity_ref="sha256:" + "f" * 64,
+        subnet="172.28.40.0/24",
+        target_address="172.28.40.2",
+        model_gateway_address="172.28.40.3",
+        host_gateway_address="172.28.40.1",
+        created_at=NOW,
+    )
+    preliminary_contract = _public_image_contract(identity_row)
+    contract_row = preliminary_contract.to_dict()
+    contract_row["runtime_profile"] = proposed_image_runtime_profile(
+        network_id=v2_network.network_id,
+        network_name=v2_network.network_name,
+        network_policy_digest=v2_network.policy_digest,
+    )
+    contract = StrixImageContractV2.from_mapping(contract_row)
+    _bind_contract(identity_row, contract)
+    decision = StrixImageAdmissionDecisionV2(
+        contract_digest=contract.contract_digest,
+        local_build_qualified=True,
+        hosted_qualification_complete=True,
+        image_admitted_for_runtime=True,
+        missing_checks=(),
+    )
+    identity_row["derived_image_decision_ref"] = content_hash(
+        {
+            "schema_version": "bluefire.strix-image-admission-decision-ref.v2",
+            "decision": asdict(decision),
+        }
+    )
+    identity = StrixControlledExecutionIdentityV2.from_mapping(identity_row)
+    image_identity = {
+        "image_reference": identity_row["derived_image_reference"],
+        "runtime_platform": V2_RUNTIME_PLATFORM,
+        "platform_child_manifest_digest": identity_row["platform_child_manifest_digest"],
+        "image_config_digest": identity_row["image_config_digest"],
+        "image_relation_receipt_ref": identity_row["image_relation_receipt_ref"],
+    }
+    profile = contract.to_dict()["runtime_profile"]
+    labels = {
+        "bluefire.engine.attempt": identity_row["attempt_id"],
+        "bluefire.engine.image-identity": container_image_identity_digest(**image_identity),
+        "strix-run-id": identity_row["attempt_id"],
+        "strix-run-type": "bluefire",
+    }
+    custody_row = {
+        "schema_version": "bluefire.engine-container-custody.v2",
+        "attempt_id": identity_row["attempt_id"],
+        "daemon_instance_digest": DAEMON_DIGEST,
+        "disposable_boundary_ref": "sha256:" + "2" * 64,
+        "baseline_inventory_digest": "sha256:" + "3" * 64,
+        "required_labels": dict(sorted(labels.items())),
+        **image_identity,
+        "network_id": v2_network.network_id,
+        "network_policy_digest": v2_network.policy_digest,
+        "expected_mounts": [
+            {
+                "mount_type": "tmpfs",
+                "source": "",
+                "destination": destination,
+                "read_only": False,
+                "options_digest": content_hash({"options": options}),
+            }
+            for destination, options in sorted(profile["tmpfs"].items())
+        ],
+        "expected_capabilities": [],
+        "expected_user": profile["user"],
+        "memory_bytes": profile["memory_bytes"],
+        "nano_cpus": profile["nano_cpus"],
+        "pids_limit": profile["pids_limit"],
+        "expected_container_count": 1,
+    }
+    startup_build = StrixBuildIdentity(
+        **{
+            key: value
+            for key, value in identity_row["startup_build_identity"].items()
+            if key != "engine"
+        }
+    )
+    return {
+        "build": startup_build,
+        "derived_image_reference": identity_row["derived_image_reference"],
+        "network": v2_network,
+        "custody": ContainerCustodyPlanV2.from_mapping(custody_row),
+        "image_contract": contract,
+        "execution_identity": identity,
+        "protected_execution_identity_digest": identity.identity_digest,
+        "image_admission_decision": decision,
+        "controller_relation_verifier": FakeControllerRelationVerifier(),
+        "controller_admission_verifier": FakeControllerAdmissionVerifier(),
+        "api_version": "v1.47",
+        "tmpfs_options": profile["tmpfs"],
+    }
+
+
+def policy_v2(
+    *,
+    child: str | None = None,
+    config: str | None = None,
+    receipt: str | None = None,
+) -> DockerApiPolicyV2:
+    return DockerApiPolicyV2.create(**v2_policy_inputs(child=child, config=config, receipt=receipt))
 
 
 def ownership(*, container: bool = True, exec_id: bool = True) -> DockerOwnership:
@@ -195,6 +409,46 @@ def create_body() -> dict[str, object]:
     }
 
 
+def create_body_v2(item: DockerApiPolicyV2 | None = None) -> dict[str, object]:
+    plan = item or policy_v2()
+    profile = plan.image_runtime_profile
+    body = create_body()
+    host = body["HostConfig"]
+    assert isinstance(host, dict)
+    body.update(
+        {
+            "Cmd": profile["command"],
+            "Entrypoint": profile["entrypoint"],
+            "Env": [
+                f"{key}={profile['environment'][key]}" for key in sorted(profile["environment"])
+            ],
+            "Image": plan.image_reference,
+            "Labels": dict(plan.required_labels),
+            "NetworkingConfig": {
+                "EndpointsConfig": {
+                    plan.network_name: {"Aliases": [], "NetworkID": plan.network_id}
+                }
+            },
+            "User": profile["user"],
+            "WorkingDir": profile["working_directory"],
+        }
+    )
+    host.update(
+        {
+            "CapAdd": profile["cap_add"],
+            "CapDrop": profile["cap_drop"],
+            "CgroupParent": plan.cgroup_parent,
+            "Memory": profile["memory_bytes"],
+            "MemorySwap": profile["memory_swap_bytes"],
+            "NanoCpus": profile["nano_cpus"],
+            "NetworkMode": plan.network_name,
+            "PidsLimit": profile["pids_limit"],
+            "Tmpfs": profile["tmpfs"],
+        }
+    )
+    return body
+
+
 def exec_body(*, command: list[str] | None = None) -> dict[str, object]:
     return {
         "AttachStderr": True,
@@ -242,6 +496,282 @@ def test_policy_binds_existing_plans_labels_image_network_and_tmpfs() -> None:
         "strix-run-id": ATTEMPT_ID,
         "strix-run-type": "bluefire",
     }
+
+
+def test_v2_policy_binds_index_child_config_receipt_and_create_identity() -> None:
+    item = policy_v2()
+    row = item.to_dict()
+    inputs = v2_policy_inputs()
+    identity = inputs["execution_identity"]
+    contract = inputs["image_contract"]
+    decision = inputs["image_admission_decision"]
+    assert row["schema_version"] == "bluefire.engine-docker-api-policy.v2"
+    assert row["image_reference"] == identity.to_dict()["derived_image_reference"]
+    assert row["runtime_platform"] == V2_RUNTIME_PLATFORM
+    assert (
+        row["platform_child_manifest_digest"]
+        == identity.to_dict()["platform_child_manifest_digest"]
+    )
+    assert row["image_config_digest"] == identity.to_dict()["image_config_digest"]
+    assert row["image_relation_receipt_ref"] == identity.to_dict()["image_relation_receipt_ref"]
+    assert row["upstream_image_reference"] == inputs["build"].image_reference
+    assert row["upstream_build_ref"] == identity.to_dict()["startup_build_ref"]
+    assert row["image_contract_digest"] == contract.contract_digest
+    assert row["execution_identity_digest"] == identity.identity_digest
+    assert row["protected_execution_identity_digest"] == identity.identity_digest
+    assert row["custody_plan_digest"] == inputs["custody"].plan_digest
+    assert row["image_runtime_profile_digest"] == contract.runtime_profile_digest
+    assert row["runtime_qualification_ref"] == identity.to_dict()["runtime_qualification_ref"]
+    assert row["image_admission_decision_ref"] == identity.to_dict()["derived_image_decision_ref"]
+    assert "image_digest" not in row
+    assert row["required_labels"]["bluefire.engine.image-identity"] == item.image_identity_digest
+    assert item.policy_digest == content_hash(row)
+    different_child = policy_v2(child="sha256:" + "1" * 64)
+    assert different_child.image_reference == item.image_reference
+    assert different_child.image_config_digest == item.image_config_digest
+    assert different_child.platform_child_manifest_digest != item.platform_child_manifest_digest
+    assert different_child.policy_digest != item.policy_digest
+    assert policy_v2(config="sha256:" + "2" * 64).policy_digest != item.policy_digest
+    assert policy_v2(receipt="sha256:" + "3" * 64).policy_digest != item.policy_digest
+    assert item.verified_relation.image_relation_receipt_ref == row["image_relation_receipt_ref"]
+    assert (
+        item.verified_admission.image_admission_decision_ref == row["image_admission_decision_ref"]
+    )
+    assert decision.image_admitted_for_runtime is True
+    assert decision.production_runtime_admitted is False
+    assert decision.live_execution_proven is False
+    assert len(row["tmpfs"]) == 4
+    assert row["pids_limit"] == 256
+    assert row["expected_capabilities"] == []
+
+    create = create_body_v2(item)
+    authorized = authorize_docker_api_request(
+        item,
+        request("POST", f"/v1.47/containers/create?name={item.container_name}", create),
+        ownership(container=False, exec_id=False),
+    )
+    assert authorized.policy_digest == item.policy_digest
+    assert authorized.body_digest == content_hash(create)
+    create["Labels"] = dict(policy().required_labels)
+    with pytest.raises(EngineDockerPolicyError, match="Labels"):
+        authorize_docker_api_request(
+            item,
+            request("POST", f"/v1.47/containers/create?name={item.container_name}", create),
+            ownership(container=False, exec_id=False),
+        )
+
+
+@pytest.mark.parametrize("outcome", ["false", "mismatch", "wrong_platform", "raise"])
+def test_v2_policy_requires_exact_controller_relation(outcome: str) -> None:
+    inputs = v2_policy_inputs()
+    inputs["controller_relation_verifier"] = FakeControllerRelationVerifier(outcome=outcome)
+    with pytest.raises(EngineDockerPolicyError, match="verification"):
+        DockerApiPolicyV2.create(**inputs)
+
+
+@pytest.mark.parametrize("outcome", ["false", "mismatch", "wrong_runtime_qualification", "raise"])
+def test_v2_policy_requires_exact_controller_admission(outcome: str) -> None:
+    inputs = v2_policy_inputs()
+    inputs["controller_admission_verifier"] = FakeControllerAdmissionVerifier(outcome=outcome)
+    with pytest.raises(EngineDockerPolicyError, match="verification"):
+        DockerApiPolicyV2.create(**inputs)
+
+
+@pytest.mark.parametrize("field", ["controller_relation_verifier", "controller_admission_verifier"])
+def test_v2_policy_has_no_default_controller_verifier(field: str) -> None:
+    inputs = v2_policy_inputs()
+    inputs[field] = None
+    with pytest.raises(EngineDockerPolicyError, match="unavailable"):
+        DockerApiPolicyV2.create(**inputs)
+
+
+def test_v2_direct_constructor_requires_matching_network_and_custody_plans() -> None:
+    inputs = v2_policy_inputs()
+    policy = DockerApiPolicyV2.create(**inputs)
+    init_values = {
+        "image_contract": inputs["image_contract"],
+        "execution_identity": inputs["execution_identity"],
+        "protected_execution_identity_digest": inputs["protected_execution_identity_digest"],
+        "image_admission_decision": inputs["image_admission_decision"],
+        "controller_relation_verifier": inputs["controller_relation_verifier"],
+        "controller_admission_verifier": inputs["controller_admission_verifier"],
+        "network": inputs["network"],
+        "custody": inputs["custody"],
+    }
+    wrong_network = EngineNetworkPlanV2.create(
+        attempt_id=policy.attempt_id,
+        network_id="b" * 64,
+        network_identity_ref="sha256:" + "f" * 64,
+        subnet="172.28.40.0/24",
+        target_address="172.28.40.2",
+        model_gateway_address="172.28.40.3",
+        host_gateway_address="172.28.40.1",
+        created_at=NOW,
+    )
+    with pytest.raises(EngineDockerPolicyError, match="network plan differs"):
+        replace(policy, **{**init_values, "network": wrong_network})
+
+    custody_row = inputs["custody"].to_dict()
+    custody_row["daemon_instance_digest"] = "sha256:" + "9" * 64
+    wrong_custody = ContainerCustodyPlanV2.from_mapping(custody_row)
+    with pytest.raises(EngineDockerPolicyError, match="custody plan differs"):
+        replace(policy, **{**init_values, "custody": wrong_custody})
+
+
+def test_v2_policy_refuses_old_one_tmpfs_net_admin_pids_512_fixture() -> None:
+    inputs = v2_policy_inputs()
+    legacy = inputs["custody"].to_dict()
+    legacy["expected_mounts"] = [
+        {
+            "mount_type": "tmpfs",
+            "source": "",
+            "destination": "/workspace",
+            "read_only": False,
+            "options_digest": content_hash({"options": TMPFS_OPTIONS}),
+        }
+    ]
+    legacy["expected_capabilities"] = ["NET_ADMIN"]
+    legacy["pids_limit"] = 512
+    inputs["custody"] = ContainerCustodyPlanV2.from_mapping(legacy)
+    inputs["tmpfs_options"] = {"/workspace": TMPFS_OPTIONS}
+    with pytest.raises(EngineDockerPolicyError, match="qualified profile"):
+        DockerApiPolicyV2.create(**inputs)
+
+
+def test_v2_policy_rejects_upstream_build_and_contract_substitution() -> None:
+    inputs = v2_policy_inputs()
+    inputs["build"] = replace(
+        inputs["build"],
+        image_reference="registry.example/other-upstream@sha256:" + "9" * 64,
+    )
+    with pytest.raises(EngineDockerPolicyError, match="upstream build"):
+        DockerApiPolicyV2.create(**inputs)
+
+    inputs = v2_policy_inputs()
+    other_contract_row = inputs["image_contract"].to_dict()
+    other_contract_row["dockerfile_digest"] = "sha256:" + "9" * 64
+    inputs["image_contract"] = StrixImageContractV2.from_mapping(other_contract_row)
+    with pytest.raises(EngineDockerPolicyError, match="contract|identity"):
+        DockerApiPolicyV2.create(**inputs)
+
+
+def test_v2_policy_rejects_identity_and_protected_digest_mismatch() -> None:
+    inputs = v2_policy_inputs()
+    inputs["execution_identity"] = v2_policy_inputs(child="sha256:" + "9" * 64)[
+        "execution_identity"
+    ]
+    with pytest.raises(EngineDockerPolicyError, match="contract|identity"):
+        DockerApiPolicyV2.create(**inputs)
+
+    inputs = v2_policy_inputs()
+    inputs["protected_execution_identity_digest"] = "sha256:" + "9" * 64
+    with pytest.raises(EngineDockerPolicyError, match="contract|identity"):
+        DockerApiPolicyV2.create(**inputs)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"image_admitted_for_runtime": False},
+        {"missing_checks": ("hosted",)},
+        {"production_runtime_admitted": True},
+        {"live_execution_proven": True},
+    ],
+)
+def test_v2_policy_rejects_unqualified_or_forged_positive_decision(
+    changed: dict[str, object],
+) -> None:
+    inputs = v2_policy_inputs()
+    inputs["image_admission_decision"] = replace(inputs["image_admission_decision"], **changed)
+    with pytest.raises(EngineDockerPolicyError, match="decision|qualified"):
+        DockerApiPolicyV2.create(**inputs)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "strix-controlled@sha256:" + "e" * 64,
+        "registry.example:5000/strix-controlled@sha256:" + "e" * 64,
+        "registry.example/strix-controlled:latest@sha256:" + "e" * 64,
+        "registry.example/strix-controlled:latest",
+        "https://registry.example/strix-controlled@sha256:" + "e" * 64,
+    ],
+)
+def test_v2_custody_and_policy_refuse_noncanonical_image_references(reference: str) -> None:
+    inputs = v2_policy_inputs()
+    custody_row = inputs["custody"].to_dict()
+    custody_row["image_reference"] = reference
+    with pytest.raises(ValueError, match="reference"):
+        ContainerCustodyPlanV2.from_mapping(custody_row)
+    inputs["derived_image_reference"] = reference
+    with pytest.raises(EngineDockerPolicyError, match="reference|contract"):
+        DockerApiPolicyV2.create(**inputs)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("Env", ["HOME=/root"]),
+        ("Cmd", ["sh", "-lc", "id"]),
+        ("Entrypoint", ["/bin/sh"]),
+        ("WorkingDir", "/tmp"),
+        ("Image", "registry.example/other@sha256:" + "9" * 64),
+    ],
+)
+def test_v2_create_refuses_runtime_command_and_environment_drift(
+    field: str, replacement: object
+) -> None:
+    item = policy_v2()
+    create = create_body_v2(item)
+    create[field] = replacement
+    with pytest.raises(EngineDockerPolicyError, match="runtime profile"):
+        authorize_docker_api_request(
+            item,
+            request("POST", f"/v1.47/containers/create?name={item.container_name}", create),
+            ownership(container=False, exec_id=False),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("Memory", 1024**3),
+        ("MemorySwap", 4 * 1024**3),
+        ("NanoCpus", 1_000_000_000),
+        ("PidsLimit", 512),
+        ("CapAdd", ["NET_ADMIN"]),
+        ("Tmpfs", {"/workspace": TMPFS_OPTIONS}),
+        ("SecurityOpt", []),
+        ("RestartPolicy", {"MaximumRetryCount": 0, "Name": "always"}),
+        ("RestartPolicy", {"MaximumRetryCount": False, "Name": "no"}),
+    ],
+)
+def test_v2_create_refuses_host_profile_drift(field: str, replacement: object) -> None:
+    item = policy_v2()
+    create = create_body_v2(item)
+    host = create["HostConfig"]
+    assert isinstance(host, dict)
+    host[field] = replacement
+    with pytest.raises(EngineDockerPolicyError):
+        authorize_docker_api_request(
+            item,
+            request("POST", f"/v1.47/containers/create?name={item.container_name}", create),
+            ownership(container=False, exec_id=False),
+        )
+
+
+def test_v2_policy_refuses_docker_pull_and_runtime_exec() -> None:
+    item = policy_v2()
+    with pytest.raises(EngineDockerPolicyError, match="not permitted"):
+        authorize_docker_api_request(
+            item, request("POST", "/v1.47/images/create?fromImage=alpine:latest"), ownership()
+        )
+    with pytest.raises(EngineDockerPolicyError, match="not admitted"):
+        authorize_docker_api_request(
+            item,
+            request("POST", f"/v1.47/containers/{CONTAINER_ID}/exec", exec_body()),
+            ownership(),
+        )
 
 
 @pytest.mark.parametrize("missing", ["bluefire.engine.attempt", "strix-run-id", "strix-run-type"])

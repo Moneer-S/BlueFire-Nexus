@@ -27,9 +27,10 @@ from urllib.parse import parse_qsl
 from .engine_docker_control import (
     DockerApiDecision,
     DockerApiOperation,
-    DockerApiPolicy,
+    DockerApiPolicyV2,
     DockerApiRequest,
     DockerOwnership,
+    DockerPolicy,
     DockerResponseContract,
     EngineDockerPolicyError,
     authorize_docker_api_request,
@@ -555,20 +556,48 @@ def _expect_equal(mapping: Mapping[str, Any], field: str, expected: Any, label: 
         raise EngineDockerProxyError(f"Docker inspect {label} does not match admission")
 
 
+def _same_json_value_v2(actual: Any, expected: Any) -> bool:
+    """Compare V2 inspect values recursively without Python's bool/int equality."""
+
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            _same_json_value_v2(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _same_json_value_v2(observed, value)
+            for observed, value in zip(actual, expected, strict=True)
+        )
+    return bool(actual == expected)
+
+
+def _expect_equal_v2(mapping: Mapping[str, Any], field: str, expected: Any, label: str) -> None:
+    if field not in mapping or not _same_json_value_v2(mapping[field], expected):
+        raise EngineDockerProxyError(f"Docker inspect {label} does not match admission")
+
+
 def _expect_present_empty(mapping: Mapping[str, Any], field: str, label: str) -> None:
     if field not in mapping or mapping[field] not in (None, [], {}):
         raise EngineDockerProxyError(f"Docker inspect {label} is not empty")
 
 
+def _image_config_digest(policy: DockerPolicy) -> str:
+    if isinstance(policy, DockerApiPolicyV2):
+        return policy.image_config_digest
+    return policy.image_digest
+
+
 def _validate_container_inspect(
     row: Mapping[str, Any],
-    policy: DockerApiPolicy,
+    policy: DockerPolicy,
     container_id: str,
     *,
     pending_promotion: bool,
 ) -> None:
     _expect_equal(row, "Id", container_id, "identity")
-    _expect_equal(row, "Image", policy.image_digest, "image")
+    _expect_equal(row, "Image", _image_config_digest(policy), "image")
     _expect_equal(row, "Name", "/" + policy.container_name, "name")
     config = row.get("Config")
     host = row.get("HostConfig")
@@ -581,11 +610,18 @@ def _validate_container_inspect(
         or not isinstance(state, dict)
     ):
         raise EngineDockerProxyError("Docker inspect lacks required configuration")
-    for field, expected, label in (
+    is_v2 = isinstance(policy, DockerApiPolicyV2)
+    expect_equal = _expect_equal_v2 if is_v2 else _expect_equal
+    if isinstance(policy, DockerApiPolicyV2):
+        profile = policy.image_runtime_profile
+    else:
+        profile = None
+    command = profile["command"] if profile is not None else ["tail", "-f", "/dev/null"]
+    config_expectations: tuple[tuple[str, Any, str], ...] = (
         ("Image", policy.image_reference, "configured image"),
         ("User", policy.expected_user, "user"),
         ("Labels", dict(policy.required_labels), "labels"),
-        ("Cmd", ["tail", "-f", "/dev/null"], "command"),
+        ("Cmd", command, "command"),
         ("AttachStderr", False, "stderr attachment"),
         ("AttachStdin", False, "stdin attachment"),
         ("AttachStdout", False, "stdout attachment"),
@@ -593,9 +629,24 @@ def _validate_container_inspect(
         ("Tty", False, "terminal"),
         ("OpenStdin", False, "stdin"),
         ("StdinOnce", False, "one-shot stdin"),
-    ):
-        _expect_equal(config, field, expected, label)
-    _expect_present_empty(config, "Env", "environment")
+    )
+    if profile is not None:
+        config_expectations += (
+            ("Entrypoint", profile["entrypoint"], "entrypoint"),
+            ("WorkingDir", profile["working_directory"], "working directory"),
+        )
+    for field, expected, label in config_expectations:
+        expect_equal(config, field, expected, label)
+    if profile is not None:
+        environment = profile["environment"]
+        expect_equal(
+            config,
+            "Env",
+            [f"{key}={environment[key]}" for key in sorted(environment)],
+            "environment",
+        )
+    else:
+        _expect_present_empty(config, "Env", "environment")
     tmpfs = {item.destination: item.options for item in policy.tmpfs}
     host_expectations: tuple[tuple[str, Any, str], ...] = (
         ("Privileged", False, "privileged mode"),
@@ -623,8 +674,10 @@ def _validate_container_inspect(
         ),
         ("UsernsMode", "", "user namespace"),
     )
+    if isinstance(policy, DockerApiPolicyV2):
+        host_expectations += (("MemorySwap", policy.memory_swap_bytes, "memory swap"),)
     for field, expected, label in host_expectations:
-        _expect_equal(host, field, expected, label)
+        expect_equal(host, field, expected, label)
     for field in (
         "Binds",
         "Devices",
@@ -668,8 +721,18 @@ def _validate_container_inspect(
         destination = mount.get("Destination")
         if destination not in tmpfs or mount.get("Source") not in (None, ""):
             raise EngineDockerProxyError("Docker inspect tmpfs does not match admission")
+        if is_v2:
+            if mount.get("RW") is not True:
+                raise EngineDockerProxyError("Docker inspect tmpfs is not writable")
+            if mount.get("Mode") not in (None, "", tmpfs[destination]):
+                raise EngineDockerProxyError("Docker inspect tmpfs mode contradicts admission")
+            if mount.get("Propagation") not in (None, "", "rprivate"):
+                raise EngineDockerProxyError("Docker inspect tmpfs propagation is not private")
         destinations.add(destination)
-    if len(destinations) != len(mounts) or destinations and destinations != set(tmpfs):
+    if is_v2:
+        if len(destinations) != len(mounts) or destinations != set(tmpfs):
+            raise EngineDockerProxyError("Docker inspect tmpfs set is incomplete")
+    elif len(destinations) != len(mounts) or destinations and destinations != set(tmpfs):
         raise EngineDockerProxyError("Docker inspect tmpfs set is incomplete")
     state_fields: tuple[tuple[str, type[Any]], ...] = (
         ("Status", str),
@@ -720,7 +783,7 @@ def _validate_multiplex_stream(body: bytes) -> None:
 
 
 def _validate_archive_stat(
-    request: DockerApiRequest, encoded: str | None, policy: DockerApiPolicy
+    request: DockerApiRequest, encoded: str | None, policy: DockerPolicy
 ) -> None:
     if encoded is None or len(encoded) > 4096:
         raise EngineDockerProxyError("Docker archive stat header is missing or oversized")
@@ -803,7 +866,7 @@ def _ownership(
 
 
 def _validated_response(
-    policy: DockerApiPolicy,
+    policy: DockerPolicy,
     request: DockerApiRequest,
     decision: DockerApiDecision,
     response: _ParsedResponse,
@@ -873,14 +936,14 @@ def _validated_response(
         row = _json_response(response, status=200)
         repo_digests = row.get("RepoDigests")
         if (
-            row.get("Id") != policy.image_digest
+            row.get("Id") != _image_config_digest(policy)
             or not isinstance(repo_digests, list)
             or any(not isinstance(item, str) for item in repo_digests)
             or policy.image_reference not in repo_digests
         ):
             raise EngineDockerProxyError("Docker image inspection does not match admission")
         body = _canonical_bytes(
-            {"Id": policy.image_digest, "RepoDigests": [policy.image_reference]}
+            {"Id": _image_config_digest(policy), "RepoDigests": [policy.image_reference]}
         )
         return _ValidatedResponse(
             DockerProxyReply.create(200, body, content_type="application/json"), ownership
@@ -926,7 +989,7 @@ def _validated_response(
         body = _canonical_bytes(
             {
                 "Id": decision.resource_id,
-                "Image": policy.image_digest,
+                "Image": _image_config_digest(policy),
                 "Name": "/" + policy.container_name,
             }
         )
@@ -1025,7 +1088,7 @@ class DockerPolicyProxy:
     def __init__(
         self,
         *,
-        policy: DockerApiPolicy,
+        policy: DockerPolicy,
         ownership: DockerOwnership,
         transport: DockerDaemonTransport,
         audit: DockerProxyAuditSink,
@@ -1041,6 +1104,10 @@ class DockerPolicyProxy:
         self._state = DockerProxyState.create(ownership)
         self._inflight: str | None = None
         self._sequence = 0
+        # V2 requires a successful, audited image inspect immediately before
+        # create. The single-flight proxy consumes this one-use proof on the
+        # next request; no v1 state or digest changes.
+        self._v2_image_verified_for_create = False
 
     def snapshot(self) -> DockerProxyState:
         with self._lock:
@@ -1145,15 +1212,23 @@ class DockerPolicyProxy:
             self._sequence += 1
             sequence = self._sequence
             before = self._state
-            request_ref = content_hash(
-                {
-                    "schema_version": "bluefire.engine-docker-proxy-request-ref.v1",
-                    "policy_digest": self._policy.policy_digest,
-                    "request_digest": request_digest,
-                    "sequence": sequence,
-                    "state_digest": before.state_digest,
-                }
-            )
+            image_was_verified_for_create = self._v2_image_verified_for_create
+            self._v2_image_verified_for_create = False
+            request_ref_identity = {
+                "schema_version": "bluefire.engine-docker-proxy-request-ref.v1",
+                "policy_digest": self._policy.policy_digest,
+                "request_digest": request_digest,
+                "sequence": sequence,
+                "state_digest": before.state_digest,
+            }
+            if isinstance(self._policy, DockerApiPolicyV2):
+                request_ref_identity["schema_version"] = (
+                    "bluefire.engine-docker-proxy-request-ref.v2"
+                )
+                request_ref_identity["image_inspect_verified_for_create"] = (
+                    image_was_verified_for_create
+                )
+            request_ref = content_hash(request_ref_identity)
             self._inflight = request_ref
         deadline = started + 60 * 1_000_000_000
         decision: DockerApiDecision | None = None
@@ -1171,6 +1246,13 @@ class DockerPolicyProxy:
                 decision = authorize_docker_api_request(self._policy, request, before.ownership)
             except EngineDockerPolicyError as exc:
                 raise _ProxyRefusal("policy_refused") from exc
+
+            if (
+                isinstance(self._policy, DockerApiPolicyV2)
+                and decision.operation is DockerApiOperation.CONTAINER_CREATE
+                and not image_was_verified_for_create
+            ):
+                raise _ProxyRefusal("image_inspect_required")
             operation = decision.operation.value
             deadline = started + decision.deadline_seconds * 1_000_000_000
             if self._now() >= deadline or cancellation.is_cancelled():
@@ -1258,6 +1340,12 @@ class DockerPolicyProxy:
                         reconciliation_required=True,
                     )
                 raise _ProxyRefusal("deadline_exceeded" if self._now() >= deadline else "cancelled")
+            if (
+                isinstance(self._policy, DockerApiPolicyV2)
+                and decision.operation is DockerApiOperation.IMAGE_INSPECT
+            ):
+                with self._lock:
+                    self._v2_image_verified_for_create = True
             return validated.reply
         except _ProxyRefusal as exc:
             reason = exc.reason

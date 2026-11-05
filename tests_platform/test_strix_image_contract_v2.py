@@ -273,6 +273,7 @@ def test_v2_rejects_substituted_lineage_and_review_claims(
         "registry.example/bluefire/strix:latest@" + _digest("derived-index"),
         "registry.example:080/bluefire/strix@" + _digest("derived-index"),
         "registry.example:443/bluefire/strix@" + _digest("derived-index"),
+        "registry.example:5000/bluefire/strix@" + _digest("derived-index"),
         "strix@" + _digest("derived-index"),
     ],
 )
@@ -281,6 +282,21 @@ def test_v2_rejects_noncanonical_derived_references(reference: str) -> None:
     row["derived_image"]["index_reference"] = reference
     with pytest.raises(image.StrixImageContractError):
         image.StrixImageContractV2.from_mapping(row)
+
+
+def test_v2_public_reference_validator_matches_contract_grammar() -> None:
+    reference = _contract_document()["derived_image"]["index_reference"]
+    assert image.validate_v2_image_reference(reference) == reference
+    assert image.validate_v2_image_reference("localhost/bluefire/strix@" + _digest("local"))
+    for bad in (
+        "registry.example:5000/bluefire/strix@" + _digest("derived-index"),
+        "registry.example/bluefire/strix:latest@" + _digest("derived-index"),
+        "bluefire/strix@" + _digest("derived-index"),
+        "https://registry.example/bluefire/strix@" + _digest("derived-index"),
+        "registry.example/bluefire/strix@sha256:" + "A" * 64,
+    ):
+        with pytest.raises(image.StrixImageContractError):
+            image.validate_v2_image_reference(bad)
 
 
 def test_v2_derived_image_cannot_reuse_the_upstream_repository() -> None:
