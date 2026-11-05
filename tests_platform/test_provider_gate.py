@@ -940,6 +940,34 @@ def test_runner_managed_duplex_contract_refuses_mutation(mutation: str) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("replacement", "passed"),
+    [
+        ("ManagedRunnerLifecycle(\n    managed_product_root()\n)", True),
+        ("ManagedRunnerLifecycle(unreviewed_root())", False),
+        ("ManagedRunnerLifecycle(managed_product_root(), host_command_factory=other)", False),
+        ("unreviewed_lifecycle() # ManagedRunnerLifecycle(managed_product_root())", False),
+    ],
+)
+def test_fixed_installed_host_audit_checks_exact_call_without_formatting_dependency(
+    monkeypatch: pytest.MonkeyPatch, replacement: str, passed: bool
+) -> None:
+    service_path = REPOSITORY / "bluefire" / "service.py"
+    read_text = Path.read_text
+    source = ast.unparse(ast.parse(read_text(service_path, encoding="utf-8")))
+    expected_call = "ManagedRunnerLifecycle(managed_product_root())"
+    assert source.count(expected_call) == 1
+    changed = source.replace(expected_call, replacement, 1)
+
+    def candidate_source(path: Path, *args: Any, **kwargs: Any) -> str:
+        return changed if path == service_path else read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", candidate_source)
+    report = provider_gate_source_audit._process_boundary_report(REPOSITORY)
+    assert report["checks"]["lifecycle_uses_fixed_installed_host"] is passed
+    assert report["passed"] is passed
+
+
 @pytest.mark.parametrize("platform", ["windows", "linux"])
 def test_containment_owner_remains_pinned_without_new_process_launches(
     tmp_path: Path,
@@ -1437,12 +1465,13 @@ def _install_passing_fakes(
 
 def test_provider_gate_core_action_count_distinguishes_reserved_metadata() -> None:
     """Advertised descriptors are not the ordinary registry's dispatch authority."""
-    assert len(BUILTIN_RUNNER_ACTION_IDS) == 26
+    assert len(BUILTIN_RUNNER_ACTION_IDS) == 27
     assert "owned.aws.s3_access.v1" not in BUILTIN_RUNNER_ACTION_IDS
     assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS) + 1
     assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.permission.chmod.v1"] == "1.0.0"
     assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.probe.non_owner.v1"] == "1.0.0"
     assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.verify.owner.v1"] == "1.0.0"
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.collection.materialize-retained.v1"] == "1.0.0"
 
 
 def test_provider_gate_counts_the_actual_reserved_descriptor_shape() -> None:
@@ -1456,7 +1485,7 @@ def test_provider_gate_counts_the_actual_reserved_descriptor_shape() -> None:
     }
     inventory = {"actions": actions + [reserved]}
     count = provider_gate_runtime_evidence._advertised_core_action_count(inventory)
-    assert count == 27
+    assert count == 28
     report = _journey_report()
     report["packaged_runner"]["inventory_contract"]["core_action_count"] = count
     provider_gate._validate_journey(report)

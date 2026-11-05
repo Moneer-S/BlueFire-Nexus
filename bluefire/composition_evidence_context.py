@@ -6,7 +6,7 @@ from typing import Any
 
 from .ai_composition_contract import REFRESH_PREREQUISITES
 from .capability_grant import authority_id, digest, text
-from .capability_packs import RECEIVER_PACK
+from .capability_packs import RECEIVER_PACK, RECEIVER_RETAINED_PACK
 from .capability_resources import CapabilityContractError, exact
 from .composition_knowledge import QUERY_SCHEMA as KNOWLEDGE_QUERY_SCHEMA
 from .composition_knowledge import _members, build_knowledge
@@ -17,6 +17,8 @@ QUERY_SCHEMA = "bluefire.composition-evidence-context-query.v1"
 REQUEST_SCHEMA = "bluefire.composition-evidence-proposal-request.v1"
 CONTEXT_SCHEMA = "bluefire.composition-evidence-proposal-context.v1"
 RESULT_SCHEMA = "bluefire.composition-ai-result.v2"
+RETAINED_CONTEXT_SCHEMA = "bluefire.retained-composition-evidence-context.v1"
+RETAINED_RESULT_SCHEMA = "bluefire.composition-ai-result.v3"
 _SELECTION = {"prior_attempt_id", "attempt_ids", "knowledge_digest"}
 _TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
 
@@ -42,7 +44,7 @@ def selection(request: Any, *, submission=False) -> dict[str, Any]:
 
 def historical_context(jobs, owner_id, selected, current):
     """Reverify source membership and settlement before constructing model context."""
-    if current["snapshot"].get("pack") != RECEIVER_PACK:
+    if current["snapshot"].get("pack") not in (RECEIVER_PACK, RECEIVER_RETAINED_PACK):
         raise ProductStoreError("Historical model context supports only the receiver pack.")
     children = [
         child

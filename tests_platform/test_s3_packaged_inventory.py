@@ -78,7 +78,8 @@ def test_reserved_descriptor_stages_bootstraps_and_preserves_siblings(
     assert result.binary_path.read_bytes() == source.read_bytes()
     assert result.managed_binary is True
     assert RESERVED_ID not in BUILTIN_RUNNER_ACTION_IDS
-    assert len(BUILTIN_RUNNER_ACTION_VERSIONS) == 26
+    assert len(BUILTIN_RUNNER_ACTION_VERSIONS) == 27
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.collection.materialize-retained.v1"] == "1.0.0"
     projected = packaged_builtin_inventory(raw)
     assert {row["action_id"] for row in projected["actions"]} == BUILTIN_RUNNER_ACTION_IDS
 
@@ -151,7 +152,7 @@ def test_reserved_descriptor_is_never_ordinary_execution_authority(platform: str
     for value in (raw, canonical_runner_inventory(raw)):
         with pytest.raises(RunnerInventoryAuthorityError, match="required runner action set"):
             validate_builtin_action_inventory(value, required_action_ids={RESERVED_ID})
-    assert len(packaged_builtin_inventory(_inventory())["actions"]) == 26
+    assert len(packaged_builtin_inventory(_inventory())["actions"]) == 27
 
 
 @pytest.mark.parametrize("platform", ["windows", "linux"])

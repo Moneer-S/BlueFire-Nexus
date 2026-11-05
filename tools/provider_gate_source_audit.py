@@ -1659,7 +1659,11 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
                 "process = subprocess.Popen(command, shell=False, **options)",
             )
         )
-        and "ManagedRunnerLifecycle(managed_product_root())" in service_text
+        and any(
+            _expression_matches(node, "ManagedRunnerLifecycle(managed_product_root())")
+            for node in ast.walk(ast.parse(service_text))
+            if isinstance(node, ast.Call)
+        )
         and all(
             token in host_text
             for token in (

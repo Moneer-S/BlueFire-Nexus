@@ -11,3 +11,11 @@ class RunnerTransportError(RuntimeError):
 
 class JobCancelled(Exception):
     """Cooperative cancellation signal shared across execution boundaries."""
+
+
+class EnginePreDispatchCancelled(JobCancelled):
+    """An installed engine cancellation won before its one-shot claim."""
+
+    def __init__(self, pre_dispatch_ref: str) -> None:
+        super().__init__("engine cancellation preceded its execution claim")
+        self.pre_dispatch_ref = pre_dispatch_ref

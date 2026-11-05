@@ -26,6 +26,14 @@ available; it does not grant authorization.
 
 ## Implemented, not installed-verified
 
+- Around the pinned Strix `1.7.0` modified-source candidate at commit
+  `6b7ae2ebe4d47037a927aade23265ff4e4f27e84`, BlueFire implements restricted
+  runtime contracts, controlled target and model relays, Docker policy custody,
+  append-only authority/admission/issuance evidence, and an optional fail-closed
+  installed composition. This does not establish live Strix execution, native
+  target effects, live inference, offensive effectiveness, redistribution
+  clearance, a concrete installed attempt factory selecting the controlled
+  backend, or a positively qualified installed attack-to-defense-to-retest journey.
 - Effective file access has a finite Linux implementation for one generated file,
   a prepared owner identity, and a distinct enrolled non-owner worker identity.
   It does not provision arbitrary users or accept operator-selected host paths.

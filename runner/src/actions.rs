@@ -619,6 +619,7 @@ use atomic_gzip_action::AtomicGzipAction;
 use atomic_gzip_action::{atomic_gzip_failure, publish_atomic_gzip};
 
 mod collection;
+mod retained;
 use collection::{ArchiveTarAction, BundleFormat, CollectionMethodAction, CollectionStageAction};
 
 // -------------------------------------------------------------------------
@@ -3862,6 +3863,8 @@ static PROCESS_DISCOVERY: ProcessDiscoveryAction = ProcessDiscoveryAction;
 static RECURSIVE_DISCOVERY: RecursiveDiscoveryAction = RecursiveDiscoveryAction;
 static ARCHIVE_TAR: ArchiveTarAction = ArchiveTarAction;
 static COLLECTION_STAGE: CollectionStageAction = CollectionStageAction;
+static RETAINED_MATERIALIZE: retained::RetainedMaterializeAction =
+    retained::RetainedMaterializeAction;
 static COLLECTION_RECORDS: CollectionMethodAction = CollectionMethodAction { archive: false };
 static COLLECTION_ARCHIVE: CollectionMethodAction = CollectionMethodAction { archive: true };
 static ATOMIC_GZIP: AtomicGzipAction = AtomicGzipAction;
@@ -3878,7 +3881,7 @@ static RESTRICTED_PERSISTENCE_MARKER: RestrictedPersistenceMarkerAction =
     RestrictedPersistenceMarkerAction;
 static CLEANUP: CleanupAction = CleanupAction;
 
-static REGISTRY: [&'static dyn Action; 26] = [
+static REGISTRY: [&'static dyn Action; 27] = [
     &NATIVE_CANARY,
     &PROCESS_TREE_CANCELLATION_WITNESS,
     &IDENTITY_MATERIAL_SEED,
@@ -3893,6 +3896,7 @@ static REGISTRY: [&'static dyn Action; 26] = [
     &RECURSIVE_DISCOVERY,
     &ARCHIVE_TAR,
     &COLLECTION_STAGE,
+    &RETAINED_MATERIALIZE,
     &COLLECTION_RECORDS,
     &COLLECTION_ARCHIVE,
     &ATOMIC_GZIP,
@@ -4124,6 +4128,7 @@ mod tests {
             "sandbox.discovery.recursive.v1",
             "sandbox.archive.tar.v1",
             "sandbox.collection.stage.v1",
+            "sandbox.collection.materialize-retained.v1",
             "sandbox.collection.records.v1",
             "sandbox.collection.archive.v1",
             "sandbox.collection.atomic-gzip.v1",

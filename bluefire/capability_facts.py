@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from . import capability_file_access, capability_macos_file_access
+from . import retained_artifact_contract as retained_contract
 from .capability_grant import authority_id, digest, identifier
 from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, grant_pack
 from .capability_resources import CapabilityContractError, exact, integer
@@ -100,7 +101,10 @@ def validate_facts(
             raise CapabilityContractError("composition fact IDs must be unique")
         seen.add(identity)
         kind = fact["kind"]
-        if kind not in ("retained_policy", "receiver_result", "cleanup"):
+        allowed_kinds = {"retained_policy", "receiver_result", "cleanup"}
+        if grant_pack(grant) == retained_contract.PACK:
+            allowed_kinds.add("retained_artifact_result")
+        if kind not in allowed_kinds:
             raise CapabilityContractError("fact kind is outside the reviewed pack")
         if fact["provenance"] not in ("observed", "operator_declared", "model_hypothesis"):
             raise CapabilityContractError("fact provenance is invalid")
@@ -128,6 +132,23 @@ def validate_facts(
             if detail["status"] not in ("retained", "rolled_back", "unknown"):
                 raise CapabilityContractError("retained policy fact status is invalid")
             digest(detail["policy_digest"], "observed policy digest")
+        elif kind == "retained_artifact_result":
+            exact(
+                detail,
+                {"source", "prior_run_id", "later_failure", "receiver_decision"},
+                "retained prior result",
+            )
+            retained_contract.source_reference(detail["source"])
+            failure = exact(detail["later_failure"], {"step_id", "outcome"}, "later failed task")
+            identifier(failure["step_id"], "later failed step")
+            if (
+                source["id"] != detail["prior_run_id"]
+                or failure["outcome"] not in {"blocked", "failed", "partial"}
+                or detail["receiver_decision"] != "unknown"
+            ):
+                raise CapabilityContractError(
+                    "retained prior result is not an exact failed attempt"
+                )
         elif kind == "receiver_result":
             exact(detail, {"decision", "policy_digest", *_COUNTS}, "receiver result fact")
             digest(detail["policy_digest"], "observed policy digest")
@@ -158,6 +179,19 @@ def validate_facts(
         raise CapabilityContractError("current retained policy is not established")
     if require_prior_result:
         result, cleanup = usable.get("receiver_result"), usable.get("cleanup")
+        retained = usable.get("retained_artifact_result")
+        if grant_pack(grant) == retained_contract.PACK and retained is not None:
+            if (
+                retained["source"]["kind"] != "run_evidence"
+                or cleanup is None
+                or cleanup["source"]["kind"] != "run_evidence"
+                or cleanup["source"] != retained["source"]
+                or cleanup["value"] != {"run": "complete", "receiver": "verified_closed"}
+            ):
+                raise CapabilityContractError(
+                    "retained revision requires verified settled prior cleanup"
+                )
+            return dict(json_clone(row))
         if (
             result is None
             or cleanup is None

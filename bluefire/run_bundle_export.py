@@ -11,14 +11,23 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from .run_store import RECOVERY_ID_RE, SAFE_BUNDLE_NAMES, RunStore, RunStoreError
+from .run_store import (
+    RECOVERY_ID_RE,
+    RETAINED_PAYLOAD_DIRECTORY,
+    RETAINED_PAYLOAD_NAME,
+    SAFE_BUNDLE_NAMES,
+    RunStore,
+    RunStoreError,
+)
 from .util import content_hash
 
 # Match the existing cloud run-bundle read bounds, including recovery material.
 MAX_FILES = 32
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
-_REQUIRED = SAFE_BUNDLE_NAMES - {"comparison.json", "manifest.json"} | {"events.jsonl"}
+_REQUIRED = SAFE_BUNDLE_NAMES - {"comparison.json", "manifest.json", "artifacts.json"} | {
+    "events.jsonl"
+}
 
 
 def _require(condition: bool, message: str) -> None:
@@ -51,6 +60,14 @@ def _stat_identity(details: os.stat_result) -> tuple[int, ...]:
 def _inventory(root: Path) -> dict[str, tuple[int, ...]]:
     inventory = {".": _identity(root, directory=True)}
     for entry in root.iterdir():
+        if entry.name == RETAINED_PAYLOAD_DIRECTORY:
+            # Explicitly excluded private payload inventory. Unknown files,
+            # links and additional children never become silent omissions.
+            _identity(entry, directory=True)
+            for child in entry.iterdir():
+                _require(child.name == RETAINED_PAYLOAD_NAME, "Unexpected retained payload entry.")
+                _identity(child)
+            continue
         if RECOVERY_ID_RE.fullmatch(entry.name):
             inventory[entry.name] = _identity(entry, directory=True)
             for child in entry.iterdir():
@@ -134,6 +151,14 @@ def export_run_bundle(store: RunStore, run_id: str) -> bytes:
             "Invalid bundle identity.",
         )
         _validate_files(manifest, original)
+        if "artifacts.json" in original:
+            from .retained_artifact_contract import MAX_ENVELOPE_BYTES, validate_envelope
+
+            _require(
+                len(original["artifacts.json"]) <= MAX_ENVELOPE_BYTES,
+                "Retained metadata exceeds its reviewed export bound.",
+            )
+            validate_envelope(_object(original["artifacts.json"]))
         result = _object(original["result.json"])
         _require(
             result.get("run_id") == run_id and bool(result.get("finalized_at")),

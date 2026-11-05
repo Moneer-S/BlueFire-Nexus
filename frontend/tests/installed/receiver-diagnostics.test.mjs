@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { receiverPreparationDiagnostic, receiverPrepareHttpDiagnostic, readReceiverCompositionUi, receiverCompositionInteractionDiagnostic, receiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
+import { receiverPreparationDiagnostic, receiverPrepareHttpDiagnostic, receiverPhaseBindingFailure, readReceiverCompositionUi, receiverCompositionInteractionDiagnostic, receiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
 import { handleReceiverRoute } from "./receiver-guards.mjs";
 /* global document, localStorage, location, history */
 
@@ -21,8 +21,10 @@ test("composition interaction retains finite button, pending and context facts w
     const result = receiverCompositionInteractionDiagnostic("click", ui,
       { grant: { status: "active", document: { grant_id: "g", expires_at_ms: 90_001 } } },
       { grant_id: "g", context_digest: "c", private: "private context" },
-      { candidate_ready: true, proposal: { context_digest: "c", candidate: "private graph" } }, 1);
+      { candidate_ready: true, proposal: { context_digest: "c", candidate: "private graph" } }, 1,
+      "receiver_counts");
     assert.equal(result.step, "click");
+    assert.equal(result.settlement_checkpoint, "receiver_counts");
     assert.equal(result.context_grant_matches, true);
     assert.equal(result.context_digest_matches, true);
     assert.equal(result.grant_time, "over_30_seconds");
@@ -37,14 +39,43 @@ test("composition interaction retains finite button, pending and context facts w
 
 test("composition diagnostics distinguish response wait and collapse unknown values", () => {
   const result = receiverCompositionInteractionDiagnostic("response", { pending_kind: "/private/path", button_enabled: "true" },
-    { grant: { status: "private status", document: { expires_at_ms: 10 } } }, undefined, undefined, 10);
+    { grant: { status: "private status", document: { expires_at_ms: 10 } } }, undefined, undefined, 10,
+    "/private/checkpoint");
   assert.equal(result.step, "response");
+  assert.equal(result.settlement_checkpoint, "other");
   assert.equal(result.button_enabled, null);
   assert.equal(result.pending_kind, "other");
   assert.equal(result.grant_status, "other");
   assert.equal(result.grant_time, "expired");
   assert.equal(result.context_present, false);
   assert.equal(JSON.stringify(result).includes("private"), false);
+});
+
+test("receiver phase binding diagnostics attach only to actual receiver phases", () => {
+  const diagnostic = { assertion_id: "completed_phase_binding", observed: { phase_name: "legitimate" } };
+  assert.deepEqual(receiverPhaseBindingFailure("baseline-result-binding", diagnostic), {
+    baseline_binding: diagnostic,
+  });
+  for (const stage of [
+    "original-protected-result-binding",
+    "original-legitimate-result-binding",
+    "linked-protected-result-binding",
+    "linked-legitimate-result-binding",
+  ]) {
+    assert.deepEqual(receiverPhaseBindingFailure(stage, diagnostic), { phase_binding: diagnostic }, stage);
+  }
+});
+
+test("retained result binding cannot inherit an earlier receiver phase diagnostic", () => {
+  const stale = { assertion_id: "phase_cleanup_run", observed: { phase_name: "legitimate" } };
+  for (const stage of [
+    "retained-original-result-binding",
+    "retained-continuation-result-binding",
+    "private-result-binding",
+  ]) {
+    assert.deepEqual(receiverPhaseBindingFailure(stage, stale), {}, stage);
+  }
+  assert.deepEqual(receiverPhaseBindingFailure("original-protected-result-binding", null), {});
 });
 
 test("projects bounded owner and preparation status plus shared preflight labels", () => {

@@ -23,8 +23,60 @@ Current built-in records are stored in `bluefire/data/research_sources.yaml` and
 | Atomic Red Team general snapshot | `reference_only` | Metadata only | Historical comparative behavior/test-structure reference; this record does not import the corpus. |
 | Atomic Red Team single-file gzip test | `compatible_code_adaptation` | One reviewed method adapted into the fixed Linux gzip adapter | MIT, Copyright (c) 2018 Red Canary, Inc.; complete license preserved at `bluefire/data/atomic_red_team_LICENSE.txt`. |
 | Atomic Red Team chmod test | `compatible_code_adaptation` | Reviewed permission-change procedure adapted into a fixed Linux GNU chmod adapter | MIT, Copyright (c) 2018 Red Canary, Inc.; the same complete Atomic license is preserved. |
+| Strix external assessment engine | `external_adapter` | Exact source is retrieved only by the explicit candidate-build workflow; no normal runtime source or OCI image is vendored | Apache-2.0 modified-source candidate at commit `6b7ae2ebe4d47037a927aade23265ff4e4f27e84`; no release-equivalence, runtime, image-rights, target, or effectiveness claim. |
 
 Before any `compatible_code_adaptation`, perform file-level license review, preserve attribution and notices, isolate copied code paths, and record modifications in the source metadata.
+
+## Strix external engine candidate
+
+BlueFire prepares a separately supervised Strix candidate from
+[`usestrix/strix`](https://github.com/usestrix/strix/tree/6b7ae2ebe4d47037a927aade23265ff4e4f27e84)
+at commit `6b7ae2ebe4d47037a927aade23265ff4e4f27e84`, Git tree
+`23c06e4a0e58bdf3b4979863d7623230e4091332`. That source declares version 1.7.0
+but is not the published `v1.7.0` release commit. BlueFire therefore records it as an exact
+modified-source build and makes no release-equivalence claim.
+
+The source root declares Apache-2.0. Its exact
+[`LICENSE`](https://github.com/usestrix/strix/blob/6b7ae2ebe4d47037a927aade23265ff4e4f27e84/LICENSE)
+is preserved in candidate outputs. The reviewed tree contains no `NOTICE` file; the builder checks
+that absence and fails closed if a future pin adds one until its distribution is handled.
+
+The proposed controlled derived-image contract additionally requires these exact component
+versions: `strix-agent 1.7.0`, `openai-agents 0.19.0`, `docker 7.1.0`, Caido `0.56.0`, and
+`caido-sdk-client 0.2.0`. These are controller-validated version requirements, not a claim that a
+qualified image containing them exists, that their complete dependency closure has been reviewed,
+or that redistribution rights have been cleared. A later journey record must preserve the exact
+resolved lock closure and its digest rather than treating this short list as a complete inventory.
+
+BlueFire changes one file in the candidate source,
+`strix/agents/prompts/system_prompt.jinja`, through a hash-pinned replacement. The modification
+removes upstream blanket-authorization and refusal-avoidance directives, substitutes accurate
+controller-scope and provider-safeguard language, and includes an inert modification notice in the
+file. No other upstream source change is admitted. See
+[Strix engine candidate provenance](docs/engine-provenance.md) for exact build and prompt hashes.
+
+The candidate workflow does not run or publish Strix, its tools, a target, a model, or the external
+sandbox image. The OCI index is not bundled or redistributed, and its tools and transitive licenses
+are not represented as Apache-2.0 merely because the Strix source root uses that license. Runtime
+installation, containment, model quality, target effects, and security effectiveness require
+separate qualification.
+
+BlueFire remains MIT licensed; neither project's root attribution clears every component in
+the assembled Strix candidate. The pinned
+[`pyproject.toml`](https://github.com/usestrix/strix/blob/6b7ae2ebe4d47037a927aade23265ff4e4f27e84/pyproject.toml)
+specifies a compiled Go TUI and prebuilt viewer static assets in the wheel, excluding their
+source directories from that wheel. The builder's Python lock-export SBOM does not inventory
+those components or OCI contents. A root `NOTICE` absence is not proof of complete third-party
+notices.
+
+Redistribution readiness remains blocked pending review of third-party Go TUI dependencies,
+bundled frontend/viewer assets, the complete platform Python runtime wheel closure (including
+nested libraries and notices), and the OCI image. Their complete license expressions, notice
+completeness, and confirmed redistribution rights are unknown; this notice does not assign
+licenses to those components. Candidate, preparation, and CLI-startup admission manifests record
+these unresolved facts under `qualification.redistribution_review`, with readiness, completed
+license review, and redistribution authorization false. Artifact integrity and CLI startup do
+not satisfy that gate. See [the provenance gate](docs/engine-provenance.md#redistribution-remains-blocked).
 
 ## Atomic gzip collection adapter
 

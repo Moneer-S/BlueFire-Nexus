@@ -48,6 +48,7 @@ function isReadPath(path) {
     || path === "/api/v1/build-info"
     || path === "/api/v1/runs"
     || path === "/api/v1/receiver-defense/jobs"
+    || path === "/api/v1/engine-experiments"
     || path === "/api/v1/scenario-versions"
     || path === `/api/v1/scenario-versions/${scenarioId}/versions`
     || new RegExp(`^/api/v1/scenario-versions/${scenarioId}/versions/[1-2]$`).test(path);

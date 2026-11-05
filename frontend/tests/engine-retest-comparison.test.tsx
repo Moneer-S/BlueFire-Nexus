@@ -1,0 +1,178 @@
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { expect, it, vi } from "vitest";
+import { MemoryRouter, useLocation } from "react-router-dom";
+import { EngineRetestComparison, engineComparisonConclusion } from "../src/components/EngineRetestComparison";
+import type { EngineDefenseChange, EngineExperimentConclusion, EngineExperimentProjection, EngineWorkspaceAction } from "../src/lib/engine-experiment";
+
+const digest = (character: string) => `sha256:${character.repeat(64)}`;
+const run = (character: string, second: string) => `run-20261104T1200${second}Z-${character.repeat(16)}`;
+const defense: EngineDefenseChange = { change_id: `defense-change-${"8".repeat(32)}`, state: "retained", kind: "identity", summary: "Removed the generated-record reader role.", mechanism_ref: digest("7"), before_target_snapshot_ref: digest("8"), after_target_snapshot_ref: digest("9"), rollback_digest: digest("a"), applied_at: "2026-11-04T12:02:00Z" };
+
+function LocationWitness() {
+  const location = useLocation();
+  return <output aria-label="Current route">{location.pathname + location.search}</output>;
+}
+
+const renderComparison = (value: EngineExperimentConclusion, change: EngineDefenseChange | null = defense, props: { evidence?: Pick<EngineExperimentProjection, "observations" | "run_integrity">; comparisonHref?: string; runHref?: (runId: string) => string; dispositionActions?: EngineWorkspaceAction[]; onDispositionAction?: (action: EngineWorkspaceAction["kind"]) => void } = {}) => render(
+  <MemoryRouter initialEntries={["/compare"]}>
+    <EngineRetestComparison conclusion={value} defensiveChange={change} {...props} />
+    <LocationWitness />
+  </MemoryRouter>,
+);
+
+function conclusion(overrides: Partial<EngineExperimentConclusion> = {}): EngineExperimentConclusion {
+  return {
+    headline: "original_blocked_alternate_path_found",
+    original_mechanism: { status: "established", run_id: run("1", "01"), support_refs: [`evidence-${"1".repeat(20)}`] },
+    retained_reproducer: { status: "blocked", run_id: run("2", "02"), support_refs: [`evidence-${"2".repeat(20)}`] },
+    adaptive_search: { status: "remaining_path_found", run_id: run("3", "03"), support_refs: [`evidence-${"3".repeat(20)}`] },
+    legitimate_use: { status: "passed", run_id: run("4", "04"), support_refs: [`evidence-${"4".repeat(20)}`] },
+    telemetry_health: { status: "complete", expected_sources: ["target audit"], verified_sources: ["target audit"], missing_sources: [] },
+    cleanup: { status: "verified_absent", items: [] },
+    defense: { state: "retained", change_id: defense.change_id, mechanism_ref: defense.mechanism_ref, before_target_snapshot_ref: defense.before_target_snapshot_ref, after_target_snapshot_ref: defense.after_target_snapshot_ref, current_target_snapshot_ref: defense.after_target_snapshot_ref, application_receipt_ref: digest("b"), reconciliation_receipt_ref: null, rollback_operation_ref: null, rollback_receipt_ref: null },
+    unknowns: [],
+    ...overrides,
+  };
+}
+
+it("leads with a remaining path and labels each supporting run by role", async () => {
+  const user = userEvent.setup();
+  renderComparison(conclusion());
+  expect(screen.getByRole("heading", { name: "Original route blocked; another path remains" })).toBeInTheDocument();
+  const baseline = screen.getByRole("link", { name: /Baseline exploration run/ });
+  expect(baseline).toHaveAttribute("href", `/runs/${run("1", "01")}`);
+  expect(screen.getByRole("link", { name: /Original mechanism retest run/ })).toHaveAttribute("href", `/runs/${run("2", "02")}`);
+  expect(screen.getByRole("link", { name: /Fresh adaptive search run/ })).toHaveAttribute("href", `/runs/${run("3", "03")}`);
+  expect(screen.getByRole("link", { name: /Legitimate-use check run/ })).toHaveAttribute("href", `/runs/${run("4", "04")}`);
+  await user.tab();
+  expect(baseline).toHaveFocus();
+  await user.keyboard("{Enter}");
+  expect(screen.getByLabelText("Current route")).toHaveTextContent(`/runs/${run("1", "01")}`);
+});
+
+it("keeps a bounded no-path search qualified instead of declaring remediation", () => {
+  const value = conclusion({
+    headline: "original_blocked_no_remaining_path_observed_within_limits",
+    adaptive_search: { status: "no_path_observed_within_limits", run_id: run("3", "03"), support_refs: [`evidence-${"3".repeat(20)}`], limit_qualified: true },
+  });
+  expect(engineComparisonConclusion(value)).toMatchObject({ tone: "warning", title: "Original route blocked; bounded search found no new path" });
+  const { container } = renderComparison(value);
+  expect(container.querySelector(".engine-retest-comparison")).toHaveClass("is-warning");
+  expect(screen.getByText(/not proof that no other path exists/i)).toBeInTheDocument();
+});
+
+it("keeps legitimate-use failure separate and dominant", () => {
+  const value = conclusion({ headline: "original_blocked_legitimate_use_failed", legitimate_use: { status: "failed", run_id: run("4", "04"), support_refs: [`evidence-${"4".repeat(20)}`] } });
+  expect(engineComparisonConclusion(value)).toMatchObject({ tone: "danger", title: "The change disrupted legitimate use" });
+});
+
+it("does not hide unknown cleanup behind a favorable security result", () => {
+  const value = conclusion({
+    headline: "original_blocked_no_remaining_path_observed_within_limits",
+    adaptive_search: { status: "no_path_observed_within_limits", run_id: run("3", "03"), support_refs: [], limit_qualified: true },
+    cleanup: { status: "unknown", items: [] },
+  });
+  expect(engineComparisonConclusion(value)).toMatchObject({ tone: "warning", title: "Retest recorded; cleanup remains unknown" });
+  renderComparison(value);
+  expect(screen.getByText("Cleanup is not verified")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Choose what happens to the applied change" })).not.toBeInTheDocument();
+});
+
+it("does not present a historical result as current while target state needs reconciliation", () => {
+  const value = conclusion({
+    defense: { ...conclusion().defense, state: "unknown", current_target_snapshot_ref: null },
+  });
+  expect(engineComparisonConclusion(value)).toMatchObject({ tone: "warning", title: "Current target state needs reconciliation" });
+  renderComparison(value, { ...defense, state: "unknown" });
+  expect(screen.getByRole("heading", { name: "Current target state needs reconciliation" })).toBeInTheDocument();
+  expect(screen.getByText(/remain available as history/i)).toBeInTheDocument();
+});
+
+it("names incomplete observation before interpreting absent findings", () => {
+  const value = conclusion({
+    headline: "original_blocked_no_remaining_path_observed_within_limits",
+    adaptive_search: { status: "no_path_observed_within_limits", run_id: run("3", "03"), support_refs: [], limit_qualified: true },
+    telemetry_health: { status: "partial", expected_sources: ["target audit", "worker receipt"], verified_sources: ["worker receipt"], missing_sources: ["target audit"] },
+  });
+  expect(engineComparisonConclusion(value)).toMatchObject({ title: "Original route blocked; observation is incomplete" });
+  renderComparison(value);
+  expect(screen.getByText("Observation is incomplete")).toBeInTheDocument();
+  expect(screen.getByText(/cannot be interpreted as prevention/i)).toBeInTheDocument();
+  expect(screen.getByText(/Missing: target audit/i)).toBeInTheDocument();
+});
+
+it("states when a conclusion has no supporting run route", () => {
+  const value = conclusion({
+    headline: "inconclusive_original_mechanism",
+    original_mechanism: { status: "not_attempted", run_id: null, support_refs: [] },
+    retained_reproducer: { status: "not_attempted", run_id: null, support_refs: [] },
+    adaptive_search: { status: "not_attempted", run_id: null, support_refs: [] },
+    legitimate_use: { status: "not_attempted", run_id: null, support_refs: [] },
+  });
+  renderComparison(value, null);
+  expect(screen.getByText("Supporting runs unavailable")).toBeInTheDocument();
+});
+
+it("refuses external result routes instead of creating full-page navigation", () => {
+  renderComparison(conclusion(), defense, {
+    runHref: () => "https://outside.invalid/run",
+    comparisonHref: "//outside.invalid/compare",
+  });
+  expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  expect(screen.getByText("Supporting runs unavailable")).toBeInTheDocument();
+});
+
+it("presents both server-advertised disposition choices without hiding proof warnings", async () => {
+  const onDispositionAction = vi.fn();
+  const actions: EngineWorkspaceAction[] = [
+    { kind: "retain_defense", label: "Retain applied defensive change", enabled: true, reason: "Keep the current applied change.", primary: false },
+    { kind: "rollback_defense", label: "Roll back defensive change", enabled: true, reason: "Restore the reviewed prior configuration.", primary: false },
+  ];
+  const value = conclusion({ telemetry_health: { status: "partial", expected_sources: ["target audit", "worker receipt"], verified_sources: ["worker receipt"], missing_sources: ["target audit"] }, unknowns: ["Adaptive search ended within a bounded budget."] });
+  const user = userEvent.setup();
+  renderComparison(value, { ...defense, state: "applied" }, { dispositionActions: actions, onDispositionAction });
+  expect(screen.getByRole("heading", { name: "Choose what happens to the applied change" })).toBeVisible();
+  expect(screen.getByText(/cleanup is tracked separately from the applied defense/i)).toBeVisible();
+  expect(screen.getByText(/Keep the reviewed change on the current target/i)).toBeVisible();
+  expect(screen.getByText("Observation is incomplete")).toBeVisible();
+  expect(screen.getByText("Unknowns and unattempted work")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Retain applied defensive change" }));
+  await user.click(screen.getByRole("button", { name: "Roll back defensive change" }));
+  expect(onDispositionAction).toHaveBeenNthCalledWith(1, "retain_defense");
+  expect(onDispositionAction).toHaveBeenNthCalledWith(2, "rollback_defense");
+});
+
+it("opens inspectable independent support with exact mechanism, target, hash and integrity", async () => {
+  const value = conclusion();
+  const evidence = {
+    observations: [{ evidence_id: value.retained_reproducer.support_refs[0]!, run_id: value.retained_reproducer.run_id!, attempt_id: null, check_id: `controller-check-${"2".repeat(32)}`, mechanism_ref: digest("7"), target_snapshot_ref: digest("9"), assessment: "authorization_denied" as const, record_hash: digest("c") }],
+    run_integrity: [{ run_id: value.retained_reproducer.run_id!, terminal: true, state: "verified" as const, detail: "Verified retained run record" }],
+  };
+  const user = userEvent.setup(); renderComparison(value, defense, { evidence });
+  const disclosure = screen.getByText("Evidence and lineage", { exact: false }).closest("summary")!;
+  await user.click(disclosure);
+  const retest = screen.getByRole("region", { name: "Exact mechanism retest evidence" });
+  expect(within(retest).getByText("Run integrity verified")).toBeVisible();
+  expect(within(retest).getByRole("link", { name: /Inspect exact mechanism retest run/ })).toHaveAttribute("href", `/runs/${value.retained_reproducer.run_id}`);
+  await user.click(within(retest).getByText("Authorization denied"));
+  expect(within(retest).getByText(digest("7"))).toBeVisible();
+  expect(within(retest).getByText(digest("9"))).toBeVisible();
+  expect(within(retest).getByText(digest("c"))).toBeVisible();
+  expect(screen.getByText(/Engine assertions and runner-reported tool results remain separate/)).toBeVisible();
+  await user.click(screen.getByText("Recorded change and proof boundary"));
+  expect(screen.getByText("Before change snapshot")).toBeVisible();
+  expect(screen.getByText("After change snapshot")).toBeVisible();
+  expect(screen.getByText("Exact retained mechanism")).toBeVisible();
+});
+
+it("refuses normalized routes that escape the run and comparison workspaces", () => {
+  renderComparison(conclusion(), defense, { runHref: () => "/runs/../../settings", comparisonHref: "/compare/../settings" });
+  expect(screen.queryByRole("link", { hidden: true })).not.toBeInTheDocument();
+});
+
+it("renders no disposition controls when the server advertises none", () => {
+  renderComparison(conclusion({ defense: { ...conclusion().defense, state: "unknown", current_target_snapshot_ref: null } }), { ...defense, state: "unknown" });
+  expect(screen.queryByRole("heading", { name: "Choose what happens to the applied change" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /defensive change/i })).not.toBeInTheDocument();
+});

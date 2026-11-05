@@ -1,6 +1,8 @@
 """Closed capability pack identities, never a model-selectable extension registry."""
 
 RECEIVER_PACK = "bluefire.receiver-composition-pack.v1"
+RECEIVER_RETAINED_PACK = "bluefire.receiver-composition-pack.v2"
+RETAINED_MATERIALIZE_METHOD = "sandbox.collection.materialize-retained.v1"
 FILE_ACCESS_PACK = "bluefire.linux-file-access-pack.v1"
 MACOS_FILE_ACCESS_PACK = "bluefire.macos-file-access-pack.v1"
 MACOS_FILE_ACCESS_METHODS = (
@@ -24,7 +26,7 @@ def review_pack(request):
     if (
         set(request) == common | {"schema_version", "pack"}
         and request["schema_version"] == "bluefire.composition-review-request.v2"
-        and request["pack"] in (FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK)
+        and request["pack"] in (FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, RECEIVER_RETAINED_PACK)
     ):
         return request["pack"]
     raise ValueError("Unsupported composition review schema/pack pair")
@@ -36,6 +38,7 @@ def grant_pack(grant):
     elif grant.get("schema_version") == "bluefire.capability-grant.v2" and grant.get("pack") in (
         FILE_ACCESS_PACK,
         MACOS_FILE_ACCESS_PACK,
+        RECEIVER_RETAINED_PACK,
     ):
         pack = grant["pack"]
     else:

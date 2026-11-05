@@ -48,6 +48,7 @@ from tests_platform.job_wait_diagnostics import diagnose_job_wait
 from tests_platform.test_ai_live_authorization import request as authorization_request
 
 ROOT = Path(__file__).resolve().parents[1]
+SERVICE_JOB_WORK_BUDGET_SECONDS = 30.0
 EXECUTE_PROFILE_ACTIONS = {
     "endpoint.discovery.processes.v1",
     "endpoint.discovery.system.v1",
@@ -500,7 +501,13 @@ def test_service_seeds_durable_product_state_and_indexes_completed_runs(
 
     assert service.product_store.path == database.resolve()
     assert service.seed_counts["scenario"] == 14
-    assert service.seed_counts["action"] == 29
+    assert service.seed_counts["action"] == 30
+    assert (
+        service.product_store.get_resource("action", "sandbox.collection.materialize-retained.v1")[
+            "document"
+        ]["id"]
+        == "sandbox.collection.materialize-retained.v1"
+    )
     assert len(service.product_store.list_resources("collector")) == 11
 
     result = service.run(
@@ -866,26 +873,34 @@ def test_active_jobs_rejects_invalid_controller_snapshot(
 
 def test_interrupted_simulate_retry_clones_request_and_records_lineage(tmp_path: Path) -> None:
     service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
-    request = {
-        "scenario_id": "scenario.sandbox.research.chain.v1",
-        "mode": "simulate",
-        "autonomy": "off",
-        "target_scope": {"scope_refs": ["sandbox.workspace"]},
-    }
-    interrupted = _persist_interrupted_scenario_job(service, request)
+    try:
+        request = {
+            "scenario_id": "scenario.sandbox.research.chain.v1",
+            "mode": "simulate",
+            "autonomy": "off",
+            "target_scope": {"scope_refs": ["sandbox.workspace"]},
+        }
+        interrupted = _persist_interrupted_scenario_job(service, request)
 
-    retry = service.retry_job(str(interrupted["job_id"]))
-    retry_job_id = str(retry["job"]["job_id"])
-    completed = service.job_controller.wait(retry_job_id, timeout=5)
+        retry = service.retry_job(str(interrupted["job_id"]))
+        retry_job_id = str(retry["job"]["job_id"])
+        # The controller wait is condition-driven. Use the maintained service
+        # work budget so loaded CI scheduling does not become a lineage failure.
+        with diagnose_job_wait("service_terminal"):
+            completed = service.job_controller.wait(
+                retry_job_id,
+                timeout=SERVICE_JOB_WORK_BUDGET_SECONDS,
+            )
 
-    assert retry["schema_version"] == "bluefire.job-retry.v1"
-    assert retry["retry_of_job_id"] == interrupted["job_id"]
-    assert completed["state"] == "completed"
-    assert completed["request"] == request
-    source = service.job(str(interrupted["job_id"]))
-    assert source["progress"]["retry_lineage"][-1]["retry_job_id"] == retry_job_id
-    assert source["progress"]["retry_lineage"][-1]["mode"] == "simulate"
-    service.close()
+        assert retry["schema_version"] == "bluefire.job-retry.v1"
+        assert retry["retry_of_job_id"] == interrupted["job_id"]
+        assert completed["state"] == "completed"
+        assert completed["request"] == request
+        source = service.job(str(interrupted["job_id"]))
+        assert source["progress"]["retry_lineage"][-1]["retry_job_id"] == retry_job_id
+        assert source["progress"]["retry_lineage"][-1]["mode"] == "simulate"
+    finally:
+        service.close()
 
 
 def test_interrupted_execute_retry_requires_a_fresh_exact_approval(tmp_path: Path) -> None:
@@ -1049,7 +1064,10 @@ def test_execute_job_requires_separate_exact_approval_before_callback(
 
         with diagnose_job_wait("service_terminal"):
             # Allow bounded hosted-worker planning and durable-storage latency.
-            settled = service.job_controller.wait(job_id, timeout=30)
+            settled = service.job_controller.wait(
+                job_id,
+                timeout=SERVICE_JOB_WORK_BUDGET_SECONDS,
+            )
         assert settled["state"] == "completed"
         assert runner.execute_calls > 0
         approval_id = str(submission["approval_request"]["approval_id"])

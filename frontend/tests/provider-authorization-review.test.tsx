@@ -54,6 +54,7 @@ describe("in-product data and usage authorization", () => {
   });
   it.each([
     ["Reconsider receiver graph choices using selected historical findings", "bluefire_receiver_evidence_composition_proposal"],
+    ["Propose receiver graphs that keep and reuse generated results", "bluefire_receiver_retained_composition_proposal"],
     ["Propose a Linux file-access verification graph", "bluefire_linux_file_access_composition_proposal"],
     ["Propose a macOS file-access verification graph", "bluefire_macos_file_access_composition_proposal"],
   ] as const)("authorizes %s independently from receiver composition", async (label, purpose) => {

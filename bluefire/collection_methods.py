@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Sequence
 
+from . import retained_artifact_contract as retained_contract
 from .tool_adapters.gzip import CONTRACT as GZIP_CONTRACT
 from .tool_adapters.gzip import TOOL_ID
 from .tool_adapters.gzip import VERSION as GZIP_VERSION
@@ -15,6 +16,7 @@ COLLECTION_METHODS = {
     "sandbox.collection.archive.v1": "ustar",
     "sandbox.collection.atomic-gzip.v1": "gzip",
 }
+COLLECTION_ACTION_IDS = frozenset(COLLECTION_METHODS) | {retained_contract.METHOD}
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_PATH = "fixtures/transformed.jsonl"
 _MAX_BYTES = 1024 * 1024
@@ -115,8 +117,14 @@ def _record(bound_inputs: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def collection_request(
-    action_id: str, parameters: Mapping[str, Any], bound_inputs: Mapping[str, Any]
+    action_id: str,
+    parameters: Mapping[str, Any],
+    bound_inputs: Mapping[str, Any],
+    *,
+    retained_material: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], tuple[str, ...], tuple[str, ...]]:
+    if action_id == retained_contract.METHOD:
+        return _retained_request(parameters, retained_material)
     variant, directory, path = _selection(action_id, parameters)
     record = _record(bound_inputs)
     digest = record.get("sha256")
@@ -149,6 +157,8 @@ def collection_artifacts(
     output: Mapping[str, Any],
     receipt_ids: Sequence[str],
 ) -> dict[str, Any]:
+    if action_id == retained_contract.METHOD:
+        return _retained_artifacts(parameters, output, receipt_ids)
     params, _, paths = collection_request(action_id, parameters, bound_inputs)
     digest, size = output.get("sha256"), output.get("size")
     expected_fields = {"artifact", "container", "input_count", "source_sha256", "size", "sha256"}
@@ -179,6 +189,65 @@ def collection_artifacts(
             "sha256": digest,
             "size": size,
             "receipt_ids": list(receipt_ids),
+        }
+    }
+
+
+def _retained_request(
+    parameters: Mapping[str, Any], material: Mapping[str, Any] | None
+) -> tuple[dict[str, Any], tuple[str, ...], tuple[str, ...]]:
+    if set(parameters) != {"source_ref"} or material is None:
+        raise CollectionMethodError("retained materialization needs resolved grant-owned bytes")
+    try:
+        reference = retained_contract.source_reference(material["source"])
+        payload = material["payload"]
+        retained_contract.validate_bytes(payload, reference)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise CollectionMethodError("retained materialization source is invalid") from exc
+    if reference["source_ref"] != parameters["source_ref"]:
+        raise CollectionMethodError("retained materialization source differs from the plan")
+    return (
+        {
+            "source_ref": reference["source_ref"],
+            "payload_hex_chunks": retained_contract.wire_chunks(payload),
+            "expected_sha256": reference["sha256"],
+            "expected_size": reference["size_bytes"],
+        },
+        ("fixtures/input.jsonl",),
+        ("fixtures/input.jsonl",),
+    )
+
+
+def _retained_artifacts(
+    parameters: Mapping[str, Any], output: Mapping[str, Any], receipt_ids: Sequence[str]
+) -> dict[str, Any]:
+    if set(output) != {"artifact", "sha256", "size", "record_count", "source_ref", "format"}:
+        raise CollectionMethodError("retained materialization output shape changed")
+    if (
+        output["artifact"] != "fixtures/input.jsonl"
+        or output["format"] != "jsonl"
+        or output["source_ref"] != parameters["source_ref"]
+        or not receipt_ids
+    ):
+        raise CollectionMethodError("retained materialization output identity changed")
+    if not isinstance(output["sha256"], str) or _SHA256.fullmatch(output["sha256"]) is None:
+        raise CollectionMethodError("materialized digest must be a SHA-256 digest")
+    for key, bound in (("size", retained_contract.MAX_BYTES), ("record_count", 100)):
+        if type(output[key]) is not int or not 1 <= output[key] <= bound:
+            raise CollectionMethodError(
+                "retained materialization output count is outside its reviewed bound"
+            )
+    return {
+        "workspace": {
+            "type": "artifact.sandbox.workspace.v1",
+            "root": "fixtures",
+            "fixture_path": "fixtures/input.jsonl",
+            "format": "jsonl",
+            "sha256": output["sha256"],
+            "size": output["size"],
+            "record_count": output["record_count"],
+            "receipt_ids": list(receipt_ids),
+            "historical_source_ref": output["source_ref"],
         }
     }
 

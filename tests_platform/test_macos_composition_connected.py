@@ -17,6 +17,7 @@ from bluefire import macos_file_access_clock as clock
 from bluefire import macos_file_access_control as macos_application
 from bluefire import macos_file_access_method as method
 from bluefire import macos_file_access_peer as peer
+from bluefire import product_store as product_store_module
 from bluefire import product_store_macos_composition as macos_store
 from bluefire import product_store_macos_file_access as macos_control
 from bluefire import product_store_macos_settlement as settlement
@@ -536,7 +537,7 @@ def connected(original, pack_state, tmp_path, monkeypatch):
 
 def test_actual_store_compiled_grant_and_original_fake_bridge_settle_complete_chain(connected):
     context = connected
-    assert context.store.schema_version == 13
+    assert context.store.schema_version == product_store_module.SCHEMA_VERSION
     assert context.execute(0)["status"] == "success"
     assert context.producer._used_budget == 5
     assert context.execute(1)["status"] == "success"

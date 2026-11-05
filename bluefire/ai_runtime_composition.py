@@ -12,11 +12,15 @@ from .ai_composition_contract import (
     EVIDENCE_OUTPUT_SCHEMA,
     EVIDENCE_OUTPUT_VERSION,
     EVIDENCE_PURPOSE,
+    RETAINED_MODEL_SCHEMA,
+    RETAINED_OUTPUT_VERSION,
     proposal_contract,
 )
 from .ai_composition_contract import OUTPUT_SCHEMA as OUTPUT_SCHEMA
 from .ai_composition_contract import PURPOSE as PURPOSE
+from .ai_composition_evidence_data import validate_candidate as validate_candidate_contract
 from .ai_composition_evidence_data import validate_model_context as validate_evidence_model_context
+from .ai_composition_evidence_data import validate_retained_model_context
 from .ai_wire import (
     AIProviderCancelled,
     AIProviderError,
@@ -27,9 +31,13 @@ from .ai_wire import (
     structured_request,
 )
 from .application_errors import APIError
-from .capability_composition import _step_id, parse_proposal
 from .capability_grant import authority_id, digest, identifier
-from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, RECEIVER_PACK
+from .capability_packs import (
+    FILE_ACCESS_PACK,
+    MACOS_FILE_ACCESS_PACK,
+    RECEIVER_PACK,
+    RECEIVER_RETAINED_PACK,
+)
 from .capability_resources import CapabilityContractError, exact
 from .config import AIProviderKind, ConfigError
 from .job_runtime import JobCancelled, JobResult, JobRuntimeError
@@ -98,7 +106,27 @@ _MACOS_FILE_ACCESS_INSTRUCTIONS = (
     "Unknown evidence is not success. The server rechecks the live grant, original-workspace facts, "
     "exact graph semantics and cumulative budgets independently."
 )
+_RETAINED_INSTRUCTIONS = _RECEIVER_INSTRUCTIONS.replace(
+    "actual observed refusal", "verified prior failure or refusal"
+) + (
+    " This pack may reuse a validated sealed generated JSONL result through the supplied "
+    "materialize-retained method with exactly one available source_ref. A source summary proves "
+    "sealed byte custody only; it does not establish current producer access or receiver acceptance. "
+    "Materialization writes exact retained JSONL to the fixed reviewed input fixture with a fresh "
+    "workspace receipt. Use the existing transform, discovery and staging methods before handoff; "
+    "the materialization node cannot directly feed receiver handoff. The source may contain retained "
+    "values: do not assume it is already redacted or that any receiver previously accepted it. "
+    "An initial proposal with no available sources is legitimate and must use normal generation. "
+    "When a later context has no available source bytes, an explicit fresh-generation proposal may "
+    "continue the same objective from its supplied prior attempt and findings. Do not reuse an "
+    "unavailable source_ref or silently retry or replace an invalid import. "
+    "Never invent a source_ref, payload, path, source availability or receiver decision. "
+    "Citing a historical finding to explain a failed route is distinct from using actual retained "
+    "bytes: byte reuse requires a materialize-retained node with an available exact source_ref. "
+    "Return the candidate envelope with reconsideration null when no historical context is supplied."
+)
 _PACK_INSTRUCTIONS = {
+    RECEIVER_RETAINED_PACK: _RETAINED_INSTRUCTIONS,
     RECEIVER_PACK: _RECEIVER_INSTRUCTIONS,
     FILE_ACCESS_PACK: _FILE_ACCESS_INSTRUCTIONS,
     MACOS_FILE_ACCESS_PACK: _MACOS_FILE_ACCESS_INSTRUCTIONS,
@@ -142,7 +170,9 @@ def model_context(context, redaction):
     }
     if supplied["initial_proposal"] is not None:
         supplied["initial_proposal"] = redact_for_model(supplied["initial_proposal"], redaction)
-    if context.get("schema_version") == evidence_context.CONTEXT_SCHEMA:
+    retained = snapshot.get("pack") == RECEIVER_RETAINED_PACK
+    historical = context.get("historical_context") is not None
+    if historical:
         history = json_clone(context["historical_context"])
         history["attempts"] = [
             {
@@ -153,7 +183,19 @@ def model_context(context, redaction):
             for row in history["attempts"]
         ]
         supplied.update(schema_version=EVIDENCE_MODEL_SCHEMA, historical_context=history)
-        validate_evidence_model_context(supplied)
+        if not retained:
+            validate_evidence_model_context(supplied)
+    if retained:
+        if supplied["initial_proposal"] is not None:
+            supplied["initial_proposal"]["evidence_refs"] = list(
+                context["initial_proposal"]["evidence_refs"]
+            )
+        supplied.update(
+            schema_version=RETAINED_MODEL_SCHEMA,
+            historical_context=supplied.get("historical_context"),
+            retained_artifacts=json_clone(context["retained_artifacts"]),
+        )
+        validate_retained_model_context(supplied)
     return json_clone(supplied)
 
 
@@ -165,11 +207,16 @@ def format_request(config, context):
         raise CapabilityContractError("composition context lacks its capability snapshot")
     pack = snapshot.get("pack")
     purpose, schema = proposal_contract(pack)
-    historical = context.get("schema_version") == evidence_context.CONTEXT_SCHEMA
+    historical = (
+        context.get("schema_version")
+        in {evidence_context.CONTEXT_SCHEMA, evidence_context.RETAINED_CONTEXT_SCHEMA}
+        or context.get("historical_context") is not None
+    )
     if historical:
-        if pack != RECEIVER_PACK:
-            raise CapabilityContractError("Historical proposals support only the receiver pack.")
-        purpose, schema = EVIDENCE_PURPOSE, EVIDENCE_OUTPUT_SCHEMA
+        if pack not in (RECEIVER_PACK, RECEIVER_RETAINED_PACK):
+            raise CapabilityContractError("Historical proposals support only the receiver packs.")
+        if pack == RECEIVER_PACK:
+            purpose, schema = EVIDENCE_PURPOSE, EVIDENCE_OUTPUT_SCHEMA
     supplied = model_context(context, config.redaction)
     request = structured_request(
         config,
@@ -218,7 +265,9 @@ def propose(*, config, access, context, cancel):
     output = structured_output(response, config.kind)
     try:
         extra = {}
-        if context.get("schema_version") == evidence_context.CONTEXT_SCHEMA:
+        retained = context["snapshot"].get("pack") == RECEIVER_RETAINED_PACK
+        historical = context.get("historical_context") is not None
+        if retained or historical:
             from .ai_broker_contract import strict_object
 
             envelope = strict_object(output.encode("utf-8"))
@@ -227,15 +276,22 @@ def propose(*, config, access, context, cancel):
                 {"schema_version", "candidate", "reconsideration"},
                 "historical proposal envelope",
             )
-            if envelope["schema_version"] != EVIDENCE_OUTPUT_VERSION:
+            if envelope["schema_version"] != (
+                RETAINED_OUTPUT_VERSION if retained else EVIDENCE_OUTPUT_VERSION
+            ):
                 raise CapabilityContractError("historical proposal envelope version is invalid")
             candidate = validate_candidate(envelope["candidate"], context)
-            extra = {
-                "knowledge_digest": context["historical_context"]["knowledge_digest"],
-                "reconsideration": evidence_context.validate_reconsideration(
-                    envelope["reconsideration"], context
-                ),
-            }
+            if historical:
+                extra = {
+                    "knowledge_digest": context["historical_context"]["knowledge_digest"],
+                    "reconsideration": evidence_context.validate_reconsideration(
+                        envelope["reconsideration"], context
+                    ),
+                }
+            elif envelope["reconsideration"] is not None:
+                raise CapabilityContractError("initial retained proposal cannot invent history")
+            else:
+                extra = {"reconsideration": None}
         else:
             candidate = validate_candidate(output.encode("utf-8"), context)
         usage = response_usage(response.get("usage"), config.max_output_tokens, config.kind)
@@ -259,40 +315,24 @@ def propose(*, config, access, context, cancel):
 
 
 def validate_candidate(value, context):
-    candidate = parse_proposal(value)
-    methods = {row["behavior_id"]: row for row in context["snapshot"]["methods"]}
-    allowed = {row["fact_id"] for row in context["facts"]["facts"]}
-    if set(candidate["evidence_refs"]) - allowed:
-        raise CapabilityContractError("unavailable evidence references")
-    for step in candidate["steps"]:
-        fields = {"id", "behavior_id", "parameters"}
-        if isinstance(step, Mapping) and "inputs" in step:
-            fields.add("inputs")
-        exact(step, fields, "model graph step")
-        if not isinstance(step["behavior_id"], str) or step["behavior_id"] not in methods:
-            raise CapabilityContractError("model graph selected an unavailable method")
-        domains = methods[step["behavior_id"]]["parameter_domains"]
-        exact(step["parameters"], set(domains), "model method parameters")
-        if any(
-            not any(
-                content_hash(step["parameters"][key]) == content_hash(value) for value in values
-            )
-            for key, values in domains.items()
-        ):
-            raise CapabilityContractError("model graph expanded the exact parameter domains")
-        if "inputs" in step:
-            refs = step["inputs"]
-            ports = {item["name"] for item in methods[step["behavior_id"]]["behavior"]["inputs"]}
-            if not isinstance(refs, Mapping) or set(refs) - ports:
-                raise CapabilityContractError("model graph selected an unavailable input port")
-            for ref in refs.values():
-                exact(ref, {"from_step", "artifact"}, "model graph input reference")
-                _step_id(ref["from_step"])
-                if not isinstance(ref["artifact"], str):
-                    raise CapabilityContractError("model graph artifact name is invalid")
-    for edge in candidate["edges"]:
-        exact(edge, {"from_step", "outcome", "to_step"}, "model graph edge")
-    return candidate
+    snapshot = context["snapshot"]
+    return validate_candidate_contract(
+        value,
+        pack=snapshot["pack"],
+        parameter_domains={
+            row["behavior_id"]: row["parameter_domains"] for row in snapshot["methods"]
+        },
+        input_ports={
+            row["behavior_id"]: {port["name"] for port in row["behavior"]["inputs"]}
+            for row in snapshot["methods"]
+        },
+        evidence_refs={row["fact_id"] for row in context["facts"]["facts"]},
+        retained_source_refs=(
+            [row["source_ref"] for row in context["retained_artifacts"]["available_sources"]]
+            if snapshot["pack"] == RECEIVER_RETAINED_PACK
+            else ()
+        ),
+    )
 
 
 class CompositionAIJobs:
@@ -328,7 +368,11 @@ class CompositionAIJobs:
             raise ProductStoreError("Composition proposal requires an active, unexhausted grant.")
         if history_selection is not None:
             current.update(
-                schema_version=evidence_context.CONTEXT_SCHEMA,
+                schema_version=(
+                    evidence_context.RETAINED_CONTEXT_SCHEMA
+                    if current["snapshot"].get("pack") == RECEIVER_RETAINED_PACK
+                    else evidence_context.CONTEXT_SCHEMA
+                ),
                 historical_context=evidence_context.historical_context(
                     self, owner_id, history_selection, current
                 ),
@@ -435,9 +479,13 @@ class CompositionAIJobs:
             ctx.checkpoint()
             proposal = {
                 "schema_version": (
-                    evidence_context.RESULT_SCHEMA
-                    if "reconsideration" in result
-                    else "bluefire.composition-ai-result.v1"
+                    evidence_context.RETAINED_RESULT_SCHEMA
+                    if current["snapshot"].get("pack") == RECEIVER_RETAINED_PACK
+                    else (
+                        evidence_context.RESULT_SCHEMA
+                        if "reconsideration" in result
+                        else "bluefire.composition-ai-result.v1"
+                    )
                 ),
                 "proposal_job_id": ctx.job_id,
                 "owner_id": request["owner_id"],
@@ -536,9 +584,28 @@ class CompositionAIJobs:
                     "The retained composition proposal failed integrity validation."
                 )
             validate_candidate(proposal["candidate"], request["context"])
-            if request["context"].get("schema_version") == evidence_context.CONTEXT_SCHEMA:
+            retained = request["context"]["snapshot"].get("pack") == RECEIVER_RETAINED_PACK
+            if retained:
                 if (
-                    proposal.get("schema_version") != evidence_context.RESULT_SCHEMA
+                    proposal.get("schema_version") != evidence_context.RETAINED_RESULT_SCHEMA
+                    or request["context"].get("context_digest") != submitted["context_digest"]
+                    or request["context"].get("context_digest")
+                    != context_digest(request["context"])
+                ):
+                    raise ProductStoreError("The captured retained-result context changed.")
+                if (
+                    request["context"].get("historical_context") is None
+                    and proposal.get("reconsideration") is not None
+                ):
+                    raise ProductStoreError("The initial retained proposal invented history.")
+            if request["context"].get("historical_context") is not None:
+                if (
+                    proposal.get("schema_version")
+                    != (
+                        evidence_context.RETAINED_RESULT_SCHEMA
+                        if retained
+                        else evidence_context.RESULT_SCHEMA
+                    )
                     or proposal.get("knowledge_digest") != submitted["knowledge_digest"]
                     or request["context"].get("context_digest") != submitted["context_digest"]
                     or request["context"].get("context_digest")

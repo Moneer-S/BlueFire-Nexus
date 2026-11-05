@@ -37,9 +37,76 @@ PUBLISHER_KEY_ID = "release-key.v1"
 PROVIDER_FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "provider_upgrade"
 
 
+class StubEngineExperimentService:
+    def __init__(self, calls: list[tuple[Any, ...]]) -> None:
+        self.calls = calls
+
+    def list(self, *, limit: int = 100):
+        self.calls.append(("engine_experiments", limit))
+        return {"schema_version": "bluefire.engine-experiment-list.v1", "experiments": []}
+
+    def get(self, experiment_id: str):
+        self.calls.append(("engine_experiment", experiment_id))
+        return {"experiment_id": experiment_id}
+
+    def workspace(
+        self,
+        experiment_id: str,
+        *,
+        selected_attempt_id: str | None = None,
+        selected_check_id: str | None = None,
+    ):
+        self.calls.append(
+            (
+                "engine_experiment_workspace",
+                experiment_id,
+                selected_attempt_id,
+                selected_check_id,
+            )
+        )
+        return {"experiment_id": experiment_id}
+
+    def assistance_context_request(
+        self,
+        experiment_id: str,
+        selection: Mapping[str, Any],
+    ):
+        self.calls.append(("engine_assistance_context", experiment_id, selection))
+        return {
+            "schema_version": "bluefire.assistance-context.v1",
+            "selected": selection,
+            "analysis_only": True,
+            "capabilities": [],
+            "reference_summary": {},
+            "limitations": [],
+            "context_digest": "sha256:" + "f" * 64,
+        }
+
+    def create_request(self, request: Mapping[str, Any]):
+        self.calls.append(("create_engine_experiment", request))
+        return {"experiment_id": request["experiment_id"]}
+
+    def submit_attempt_request(self, request: Mapping[str, Any]):
+        self.calls.append(("submit_engine_attempt", request))
+        return {"job_id": JOB_ID}
+
+    def recover_attempt(self, *, experiment_id: str, attempt_id: str):
+        self.calls.append(("recover_engine_attempt", experiment_id, attempt_id))
+        return {"experiment_id": experiment_id}
+
+    def perform_controller_transition_request(self, experiment_id: str, request: Mapping[str, Any]):
+        self.calls.append(("engine_controller_transition", experiment_id, request))
+        return {"experiment_id": experiment_id}
+
+    def submit_controller_operation_request(self, experiment_id: str, request: Mapping[str, Any]):
+        self.calls.append(("engine_controller_operation", experiment_id, request))
+        return {"job_id": JOB_ID}
+
+
 class StubService:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
+        self.engine_experiment_service = StubEngineExperimentService(self.calls)
 
     def s3_access_environments(self):
         self.calls.append(("s3_access_environments",))

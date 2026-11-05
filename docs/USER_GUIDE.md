@@ -85,7 +85,10 @@ bluefire scenario validate scenarios/sandbox_research_chain.yaml
 bluefire scenario preview scenarios/sandbox_research_chain.yaml
 ```
 
-Validation rejects unknown fields/IDs, invalid parameters, incompatible bindings or alternates, duplicate outcome routes, cycles, unreachable nodes, and an artifact producer that does not dominate its consumer.
+For `bluefire.scenario.v1`, validation rejects unknown fields/IDs, invalid
+parameters, incompatible bindings or alternates, duplicate outcome routes,
+cycles, unreachable nodes, and an artifact producer that does not dominate its
+consumer.
 
 ## Configure a run
 
@@ -97,10 +100,20 @@ Validation rejects unknown fields/IDs, invalid parameters, incompatible bindings
 ### AI autonomy
 
 - **Off**: deterministic planner; no model call.
-- **Assist**: the provider may propose the exact observed next edge, a compatible behavior, bounded primitive parameters, an exact-profile action, or one retry; every actionable proposal pauses at durable exact-digest review.
-- **Auto**: a schema-valid, policy-valid choice may be applied automatically in Simulate. Every Execute mutation still pauses for proposal review and a fresh exact Execute approval.
+- **Assist**: in a legacy exact-plan run, the provider may propose the exact
+  observed next edge, a compatible behavior, bounded primitive parameters, an
+  exact-profile action, or one retry; every actionable proposal pauses at durable
+  exact-digest review.
+- **Auto**: a schema-valid, policy-valid choice may be applied automatically in
+  Simulate. In the legacy exact-plan Execute path, every mutation still pauses
+  for proposal review and a fresh exact Execute approval.
 
 Autonomy does not alter effect mode.
+
+The separately reviewed finite adaptive policy permits only its enumerated
+method retries. Objective-level continuation can propose a new graph under a
+versioned capability grant; it does not change the authority of an existing
+exact-plan approval. See [AI Planner](AI_PLANNER.md#capability-composition-and-objective-continuation).
 
 ### Runner profile and scope
 

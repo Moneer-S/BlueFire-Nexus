@@ -1,6 +1,6 @@
 # Architecture
 
-BlueFire Nexus separates planning from effects. The Python package is the control plane; the Rust crate is the execution authority. The boundary is intentional: scenario, AI, plugin, or UI data can select only registered IDs and typed values, never an arbitrary executable instruction.
+BlueFire Nexus separates planning from effects. The Python package is the control plane. Exact-plan scenario effects use the Rust execution authority. A separately admitted external-engine worker can own exploration inside one reviewed disposable environment, while BlueFire retains experiment identity, scope, lifecycle, evidence, defensive changes, and comparison. Neither boundary accepts an arbitrary executable instruction from scenario, model, plugin, or UI data.
 
 ## System view
 
@@ -27,8 +27,14 @@ flowchart LR
     transport --> host[Separate managed runner host]
     host --> runner[Reviewed Rust action registry]
 
+    service --> enginePolicy[External engine admission]
+    enginePolicy --> engineWorker[Pinned owned engine worker]
+    engineWorker --> engineLab[Authorized disposable lab]
+    engineWorker --> engineArtifacts[Engine assertions and tool results]
+
     simulation --> evidence[Evidence graph]
     runner --> evidence
+    engineArtifacts --> evidence[Evidence graph with explicit provenance]
     collectors[Independent collectors] --> evidence
     evidence --> store[Run bundle store]
     store --> replay[Replay]
@@ -51,13 +57,14 @@ The UI and CLI are adapters over the same service boundary. Neither browser stat
 | bluefire/planner.py | Deterministic plan compilation, outcome-edge selection, budget state, and compatible-alternate compilation | Policy bypass or action creation |
 | bluefire/policy.py | Deny-by-default Execute decisions and request-bound approval checks | Performing actions |
 | RunnerActionAdapter | Sole mapping from logical parameters and artifact bindings to a known Rust action's sealed parameters | Generic commands, arbitrary paths, or unknown actions |
+| External engine admission and worker | Bind one exact reviewed engine build, disposable environment, target snapshot, model destination, limits, process/container ownership and artifact policy to a new attempt | Installing model-selected code, widening scope, applying defensive changes, or treating engine output as independent evidence |
 | bluefire/runner_client.py, bluefire/runner_transport.py, bluefire/runner_host.py, and bluefire/runner_lifecycle.py | Authenticated loopback task transport, durable replay/cancellation state, exact managed-process ownership, and fixed invocation of one verified runner binary | Shell execution, cross-host exposure, or behavior implementation |
 | runner/ | Strict manifest/profile validation and compiled sandbox actions | Simulation, planning, UI, or arbitrary execution |
 | bluefire/evidence.py and bluefire/collectors.py | Provenance records, same-run evidence graph, bounded sandbox/fixture observation, health, and explicit gaps | Treating runner self-report as independent observation |
 | bluefire/detections.py | Detection candidate lifecycle, internal matcher, fields, revisions, and public baselines | Claiming target-language production validity |
 | bluefire/detection_backends.py | Exact-pinned Sigma conversion, bounded SQLite execution, YARA execution, SPL structural checks, and backend provenance | SIEM deployment or arbitrary query execution |
 | bluefire/run_store.py | Contained run directories, atomic JSON snapshots, append-only events, hashes, and bundle validation | Remote storage or digital signing |
-| bluefire/product_store.py and bluefire/bootstrap.py | SQLite migrations, versioned scenarios, secret-safe settings/resources, approvals/jobs, run index, recovery, and idempotent built-in seeding | Replacing immutable evidence bundles or exposing a public persistence API |
+| bluefire/product_store.py and bluefire/bootstrap.py | SQLite migrations, versioned scenarios, secret-safe settings/resources, approvals/jobs, run index, recovery, idempotent built-in seeding, and private append-only generation, action-material, runtime-authority, and admission records | Replacing immutable evidence bundles, provisioning runtime resources, or exposing a public persistence API |
 | bluefire/research.py | Strict pinned source/version/license/relationship registry | Fetching or executing external research |
 | bluefire/replay.py | Lineage, restart, and compatible behavior substitution | Mutating source runs through the replay API |
 | bluefire/comparison.py | Normalized run summaries and deltas | Causal inference |
@@ -107,13 +114,54 @@ Eight sanitized scenarios ship. The canonical seven-node sandbox graph demonstra
 
 ## Planning and AI
 
-Deterministic planning is authoritative. It compiles a validated graph into a versioned plan, applies declared defaults, selects only profile-enabled action IDs in Execute, follows registered outcome edges, and records state/budget decisions.
+Deterministic compilation and authorization checks are authoritative for effects.
+For an authored scenario, the deterministic planner compiles a validated graph
+into a versioned plan, applies declared defaults, selects only profile-enabled
+action IDs in Execute, follows registered outcome edges, and records state/budget
+decisions.
 
 AI autonomy is `off`, `assist`, or `auto`. Off performs no provider call. In the legacy exact-plan loop, Assist or Auto may request a strict `bluefire.ai-proposal.v2` after an observed step outcome. Its immutable option envelope permits the exact registered next edge, compatible registered behaviors, allowlisted primitive parameters, exact-profile actions, and a bounded retry. Correlated choices and digests prevent cross-pairing. Assist pauses at durable review; exact-plan Execute mutations require fresh approval. A separately reviewed finite adaptive policy permits only its enumerated method retries. Provider failure or invalid output uses the path's deterministic fallback or an explicit rejected record.
 
 That legacy loop cannot create or reorder nodes or choose an edge for another outcome. The separate capability-composition path can propose a whole fresh graph within a versioned grant over an installed method snapshot. It retains distinct objective, attempt, run, and cleanup records and revalidates each dispatch independently of the model. Current receiver composition uses bounded prior-result facts; the file-access packs retain their fixed routes.
 
-Objective-level continuation distinguishes recorded history, currently applicable findings, and proposed work. The versioned receiver evidence-context proposal path supplies selected sealed findings and original compiled choices to a separately authorized model purpose. It records reconsidered choices and exact citations in the existing durable proposal job, pins the latest settled frontier, and revalidates context before publication and when checking candidate readiness. Historical summaries remain separate from executable facts. This does not yet implement prior-result execution imports or complete nonlocal backtracking. Explicit typed imports must resolve original evidence and artifact identities, semantic compatibility, custody, and any required current resource validation. Planning must not silently repeat completed effects or treat an old observation as proof of a mutable resource's present state. Existing grants and exact-plan approvals do not gain new authority. See [AI Planner](AI_PLANNER.md) and the [program acceptance case](AI_FIRST_PROGRAM.md#nonlocal-replanning-acceptance).
+Objective-level continuation distinguishes recorded history, currently applicable findings, and proposed work. The versioned receiver evidence-context proposal path supplies selected sealed findings and original compiled choices to a separately authorized model purpose. It records reconsidered choices and exact citations in the existing durable proposal job, pins the latest settled frontier, and revalidates context before publication and when checking candidate readiness. Historical summaries remain separate from executable facts.
+
+Those responsibilities stay distinct in every planning representation:
+
+| Responsibility | Required treatment |
+| --- | --- |
+| What happened | Append-only attempts, decisions, effects, observations, cleanup, and source identities. An abandoned route remains evidence and is never rewritten as success. |
+| What applies now | Keep historical status (established or uncertain), current applicability (fresh or stale), and source availability (available or unavailable) separate. Ordinary code checks semantic compatibility and custody before using a finding. A historical record alone is not current proof. |
+| What should happen next | A versioned proposal that names the earlier assumption being reconsidered, exact imported dependencies, prerequisites to refresh, any state to restore or recreate, and the authority needed for new effects. Proposed work is not an established finding. |
+
+Nonlocal replanning may therefore revisit a choice made several stages earlier,
+retain useful findings learned on the dead-end route, and construct a different
+continuation. Each finding imported into an executable plan needs an exact source
+and a validated consuming-attempt dependency; a proposal cannot create execution
+authority.
+Reusing a still-valid result must not repeat its producer effect.
+Refreshing an observation, repeating an action for a justified fresh test, and
+restoring environment state are separate operations, each with a new identity
+and the applicable review. The workspace must show why the plan changed, what
+was reused, what was rechecked, and what actually executed afterward.
+
+The experimental receiver v2 pack supports explicit retained-result dependencies within the same saved objective. A pure contract defines source identity, bounds and wire validation; the application resolver checks the source attempt, compiled plan, observed content identity, trusted capture record and current payload. Native materialization produces a new workspace output and receipt from the exact retained bytes. Existing producer checks continue to apply to downstream bindings. This is a bounded implementation of result reuse, not complete nonlocal backtracking. Planning must not silently repeat completed effects or treat an old observation as proof of a mutable resource's present state. Existing grants and exact-plan approvals do not gain new authority. See [Retained results](RETAINED_RESULTS.md), [AI Planner](AI_PLANNER.md) and the [program acceptance case](AI_FIRST_PROGRAM.md#nonlocal-replanning-acceptance).
+
+The reuse-first external-engine path is a distinct authorization model. Its first bounded workflow records a baseline attempt and a fresh adaptive-search attempt after a defensive change, while preserving the baseline findings and identity. The broader design requires future continuations to reconsider an earlier decision, cite useful findings from an abandoned attempt, and import an explicitly validated result into a new plan. That general nonlocal replanning and result-import surface is not yet implemented by the two-role experiment contract. Ordinary code must resolve every citation to its source identity, check semantic compatibility and freshness, and decide whether a current resource must be re-observed or recreated. Every attempt and upstream session has a new identity; history is append-only. The attacking worker cannot apply a defensive mutation or change its own delegation. Legacy exact-plan approvals do not authorize this path.
+
+## External engine experiment boundary
+
+An external engine is admitted as one pinned, attributed build behind a narrow worker contract: preflight, start, observe, inspect state, cancel, verify owned work stopped, and collect bounded artifacts. BlueFire supplies an immutable objective, environment and target snapshot, scope version, model destination, budgets and attempt identity. The engine owns reasoning and tool scheduling inside that envelope.
+
+Committed controller state separates five concerns. The v18 tenant-generation journal records generated-lab lifecycle and custody. V19 action-material slots atomically retain server-derived preparation material and approval without accepting browser authority. V20 retains append-only Strix authority, immutable attempt reservations and admissions, and lifecycle heads. V21 atomically binds each issuer record's then-current receipt state to the corresponding runtime lifecycle event; a verified record requires the complete protected resource set. The qualification resolver binds one exact installed build and threat-review ref to those records. None of these stores provisions a target, network, model credential, container, or worker.
+
+Launch resolution requires the exact active authority under which the immutable admission was created and a verified lifecycle head. The runtime rereads that resolution before acquiring a credential and again before secret access or worker launch. Revocation, lifecycle drift, admission drift, or custody drift fails before launch and remains distinguishable from target prevention. Historical revoked, unknown, or cleaned admissions can be reopened only for reconciliation without replay.
+
+The worker receives a fresh home, configuration and workspace. Global tool servers, host credentials, cloud metadata, management sockets and unrelated mounts are excluded. Independently effective network enforcement and process or container custody outside model-writable content are fail-closed prerequisites for execution; the current controller contracts validate their receipts and snapshots but do not themselves enforce the host boundary. A worker exit code, report, finding or completed status remains engine-reported data. BlueFire preserves raw bytes and hashes, normalizes them without executing report content, and records independent target observations separately. Partial, stopped, cancelled, budget-exhausted, failed and completed attempts remain distinct.
+
+The first qualified Strix profile will not use the stock Docker backend. That backend requests host-gateway access, extra network capabilities, and image pulling that do not fit this boundary. The implemented `bluefire-controlled` contracts define an integration through Strix's public downstream-backend hook using an exact preloaded image, fixed internal target and model relays, a policy proxy that rejects rather than rewrites unsafe requests, bounded workspace transfer, and a non-root owned sandbox. The optional installed composition joins supplied owners to the service's product store and job controller while the default service remains closed. The current Strix adapter still selects the stock `docker` backend, and `InstalledAttemptFactory` remains an injected protocol rather than a maintained concrete controlled factory. Remaining gates are that factory wiring, durable one-shot execution consumption, controller-owned independent-observation publication, positive installed qualification, and separate native or live-provider proof. Current startup qualification, v20/v21 records, and fail-closed composition do not constitute a live run.
+
+The workflow contract requires a baseline exploration, an independently verified effect, a separately reviewed defensive change, an exact reproducer against the changed target, a fresh adaptive attempt, a legitimate-use control, and a recomputed comparison. Cleanup, target reset, rollback and intentionally retained hardening are separate decisions. A controlled deterministic provider can qualify the application and lifecycle mechanics; only a separately authorized live-model evaluation can establish evidence-dependent model decision quality.
 
 AI enablement does not imply Execute, and Execute does not imply AI.
 
@@ -198,6 +246,8 @@ Multiple renderings of the same hypothesis do not count as independent validatio
 ## Storage, recovery, replay, and comparison
 
 RunStore creates internally named, contained run directories. It stores scenario, plan, policy, profile, result, evidence, and detection JSON, plus append-only events. Finalization hashes every covered file and hashes the resulting file table. Validation detects missing or changed covered files.
+
+For an explicitly reviewed retained-result attempt, the sealed `artifacts.json` records bounded source metadata. A separate private payload under that run's `retained/` directory has its own pinned read, size and digest validation. Losing the payload removes executable availability without rewriting intact historical evidence. Metadata-only exports preserve the source manifest, disclose payload omission and do not claim custody of reusable bytes. Workspace cleanup and source retention have separate dispositions.
 
 Hashes are tamper indicators, not signatures.
 

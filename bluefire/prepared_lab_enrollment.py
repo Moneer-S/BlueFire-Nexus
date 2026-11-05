@@ -11,7 +11,12 @@ from typing import Any, Mapping
 from .ai import PROPOSAL_JSON_SCHEMA
 from .ai_assistance import OUTPUT_SCHEMA as ASSISTANCE_SCHEMA
 from .ai_broker_contract import BrokerEnrollment, refusal
-from .ai_composition_contract import EVIDENCE_OUTPUT_SCHEMA, EVIDENCE_PURPOSE
+from .ai_composition_contract import (
+    EVIDENCE_OUTPUT_SCHEMA,
+    EVIDENCE_PURPOSE,
+    RETAINED_OUTPUT_SCHEMA,
+    RETAINED_PURPOSE,
+)
 from .ai_composition_contract import FILE_ACCESS_OUTPUT_SCHEMA as FILE_ACCESS_COMPOSITION_SCHEMA
 from .ai_composition_contract import (
     MACOS_FILE_ACCESS_OUTPUT_SCHEMA as MACOS_FILE_ACCESS_COMPOSITION_SCHEMA,
@@ -57,6 +62,7 @@ def enroll(
             ("bluefire_receiver_defense_inspection", content_hash(RECEIVER_INSPECTION_SCHEMA)),
             ("bluefire_composition_proposal", content_hash(COMPOSITION_SCHEMA)),
             (EVIDENCE_PURPOSE, content_hash(EVIDENCE_OUTPUT_SCHEMA)),
+            (RETAINED_PURPOSE, content_hash(RETAINED_OUTPUT_SCHEMA)),
             (
                 "bluefire_linux_file_access_composition_proposal",
                 content_hash(FILE_ACCESS_COMPOSITION_SCHEMA),

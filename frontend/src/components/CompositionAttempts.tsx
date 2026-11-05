@@ -5,6 +5,8 @@ import { Badge, Callout, DataList, sentence } from "./Primitives";
 import { FileAccessRetestComparison } from "./FileAccessRetestComparison";
 import { CompositionKnowledge } from "./CompositionKnowledge";
 import type { CompositionKnowledge as Knowledge } from "../lib/composition-knowledge";
+import { RECEIVER_RETAINED_PACK, retainedPolicy, type RetainedCompositionContinuation } from "../lib/composition-retained";
+import { CompositionRetainedSources } from "./CompositionRetainedSources";
 
 export function CompositionAttempts({ objective, selectedAttemptRef, onKnowledgeChange }: { objective: CompositionObjective; selectedAttemptRef?: Ref<HTMLLIElement>; onKnowledgeChange?: (knowledge: Knowledge | null) => void }) {
   const [params] = useSearchParams();
@@ -31,6 +33,8 @@ export function CompositionAttempts({ objective, selectedAttemptRef, onKnowledge
       const access = compositionRecord(macOS ? result.macos_file_access_result : result.file_access_result);
       const cleanup = compositionRecord(result.cleanup);
       const verified = typeof progress.verified_result_digest === "string" && typeof result.run_id === "string";
+      const continuation = compositionPack(objective.grant.document) === RECEIVER_RETAINED_PACK ? progress.retained_continuation as RetainedCompositionContinuation | undefined : undefined;
+      const receiverDecision = verified && typeof receiver.decision === "string" ? receiver.decision : undefined;
       const selected = selectedAttempt === attempt.request.composition_attempt.attempt_id;
       return <li key={attempt.job_id} ref={selected ? selectedAttemptRef : undefined} className={selected ? "composition-selected-attempt" : undefined} tabIndex={selected ? -1 : undefined} aria-label={selected ? "Selected attempt comparison" : undefined}><header><h3>Attempt {index + 1}</h3><Badge tone={outcome.established === true && verified ? "success" : "neutral"}>{verified ? outcome.established === true ? "Objective established" : "Objective not established" : sentence(attempt.state)}</Badge></header>
         {fileAccess && !macOS ? selectedAttempt === attempt.request.composition_attempt.attempt_id
@@ -53,6 +57,7 @@ export function CompositionAttempts({ objective, selectedAttemptRef, onKnowledge
           { label: "Records", value: String(access.record_count) }, { label: "Content digest", value: <code>{String(access.sha256)}</code> },
         ] : Object.entries(receiver).map(([label, value]) => ({ label: label.replaceAll("_", " "), value: <span>{String(value)}</span> }))} /><Link to={`/runs/${encodeURIComponent(String(result.run_id))}`}>Inspect verified run evidence</Link></> : <><p>{String(progress.verified_result_problem ?? "No verified objective conclusion is available.")}</p>{macOS && typeof progress.finalized_run_id === "string" ? <Link to={`/runs/${encodeURIComponent(progress.finalized_run_id)}`}>Inspect finalized run evidence</Link> : null}</>}
         {macOS ? <p>Original-producer metadata, not independent telemetry. Attempt closure does not remove the retained resource or workers.</p> : null}
+        {continuation ? <><p>Later step {continuation.later_failure.step_id}: {sentence(continuation.later_failure.outcome)}. Receiver decision: {receiverDecision ? sentence(receiverDecision) : "Unknown"}.</p><Link to={`/runs/${encodeURIComponent(continuation.prior_run_id)}`}>Inspect recorded failed attempt</Link><CompositionRetainedSources artifacts={{ policy: retainedPolicy, available_sources: [continuation.source], availability: "available" }} objective={objective} attempted receiverDecision={receiverDecision} /></> : null}
       </li>;
     })}</ol>}
   </section>;

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from .capability_grant import build_snapshot, validate_objective
-from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, RECEIVER_PACK
+from .capability_packs import (
+    FILE_ACCESS_PACK,
+    MACOS_FILE_ACCESS_PACK,
+    RECEIVER_PACK,
+    RECEIVER_RETAINED_PACK,
+)
 from .capability_resources import METHODS, MIB, validate_limits
 from .contracts import ExecutionMode
 from .product_store_errors import ProductStoreError
@@ -37,7 +42,7 @@ def resolve(service, owner_id: str, *, pack: str = RECEIVER_PACK) -> dict[str, A
     if pack == FILE_ACCESS_PACK:
         context: dict[str, Any] = service.file_access.composition_context(owner_id)
         return context
-    if pack != RECEIVER_PACK:
+    if pack not in (RECEIVER_PACK, RECEIVER_RETAINED_PACK):
         raise ProductStoreError("The composition pack is unavailable.")
     owner = service.receiver_defense._job(owner_id)
     current = service.receiver_defense._fresh(owner)
@@ -72,8 +77,15 @@ def resolve(service, owner_id: str, *, pack: str = RECEIVER_PACK) -> dict[str, A
     catalog = service._catalog_snapshot
     native = {row["action_id"]: row for row in readiness["enabled_actions"]}
     implementation_digests = {}
-    for method in METHODS:
+    from .retained_artifact_contract import METHOD
+
+    methods = (*METHODS, METHOD) if pack == RECEIVER_RETAINED_PACK else METHODS
+    for method in methods:
         if method not in native or native[method].get("readiness") != "ready":
+            if pack == RECEIVER_RETAINED_PACK and method == METHOD:
+                raise ProductStoreError(
+                    "The enrolled profile lacks the ready retained-result materialization method."
+                )
             raise ProductStoreError("The enrolled profile lacks a required composition method.")
         implementation_digests[method] = content_hash(
             {
@@ -151,9 +163,11 @@ def review(service, owner_id, *, question, limits=None, pack=RECEIVER_PACK):
     environment = current["current_environment"]
     body = {
         "schema_version": (
-            "bluefire.composition-review.v2" if file_access else "bluefire.composition-review.v1"
+            "bluefire.composition-review.v2"
+            if file_access or pack == RECEIVER_RETAINED_PACK
+            else "bluefire.composition-review.v1"
         ),
-        **({"pack": pack} if file_access else {}),
+        **({"pack": pack} if file_access or pack == RECEIVER_RETAINED_PACK else {}),
         "objective": objective,
         "environment": environment,
         "limits": validate_limits(DEFAULT_LIMITS if limits is None else limits),
@@ -207,4 +221,149 @@ def review(service, owner_id, *, question, limits=None, pack=RECEIVER_PACK):
             )
         ),
     }
+    if pack == RECEIVER_RETAINED_PACK:
+        from .retained_artifact_contract import METHOD, POLICY
+        from .util import json_clone
+
+        body["retention"] = json_clone(POLICY)
+        body["native_materialization"] = {
+            "method": METHOD,
+            "readiness": "ready",
+            "implementation_digest": current["implementation_digests"][METHOD],
+        }
+        body["limitations"] = [
+            "Delegates fresh graphs within the reviewed same-objective and exact-environment lineage.",
+            "At most one generated public JSONL staging output of at most 256 KiB is sealed per attempt until its run bundle is deleted.",
+            "Workspace cleanup removes owned workspace artifacts; it does not delete the sealed run-bundle output.",
+            "Materialization also retains payload copies in the existing task and transport stores until those stores are deleted; two copies are included in the reservation.",
+            "Later-produced sources are validated when selected and again before dispatch; source summaries contain no payload bytes.",
+            "Materialization writes exact retained JSONL to the fixed reviewed fixture input with a fresh workspace receipt; existing transform, discovery and staging must produce the handoff bundle.",
+            "Historical findings remain reasoning context and do not authorize source reuse or establish current receiver acceptance.",
+            "No source availability or successful receiver delivery is promised by this review.",
+            "The retained-storage allowance is an admission reservation, not an enforced total-storage quota.",
+            "Runtime AI requests require a separate provider/data/usage authorization for retained-result proposals.",
+        ]
     return {**body, "review_digest": content_hash(body)}
+
+
+RETAINED_CONTEXT_SCHEMA = "bluefire.retained-composition-proposal-context.v1"
+
+
+def retained_proposal_context(
+    jobs, grant: Mapping[str, Any], body: dict[str, Any], *, owner_id: str
+) -> dict[str, Any]:
+    """Expose validated sealed custody metadata separately from current execution facts."""
+    from .retained_artifact_contract import POLICY
+    from .retained_artifacts import available_sources
+    from .util import json_clone
+
+    if grant.get("pack") != RECEIVER_RETAINED_PACK:
+        return body
+    sources = available_sources(jobs, grant, owner_id=owner_id)
+    return {
+        **body,
+        "schema_version": RETAINED_CONTEXT_SCHEMA,
+        "retained_artifacts": {
+            "policy": json_clone(POLICY),
+            "available_sources": sources,
+            "availability": "available" if sources else "none_available",
+        },
+    }
+
+
+def receiver_facts(jobs, grant, prior_attempt_id=None, *, owner_id=None) -> dict[str, Any]:
+    """Project current policy and verified prior receiver history without dispatch."""
+    from datetime import datetime
+
+    from . import retained_artifacts
+    from .capability_facts import seal_facts
+    from .capability_packs import grant_pack
+
+    environment = grant["environment"]
+
+    def fact(identity, kind, source, value, observed=None):
+        return {
+            "fact_id": identity,
+            "kind": kind,
+            "provenance": "observed",
+            "source": source,
+            "observed_at_ms": grant["created_at_ms"] if observed is None else observed,
+            "valid_until_ms": grant["expires_at_ms"],
+            "environment_digest": content_hash(environment),
+            "control_digest": environment["control_digest"],
+            "attempt_id": None if kind == "retained_policy" else prior_attempt_id,
+            "value": value,
+        }
+
+    rows = [
+        fact(
+            "policy",
+            "retained_policy",
+            {
+                "kind": "control_record",
+                "id": environment["control_owner_id"],
+                "digest": environment["control_digest"],
+            },
+            {"status": "retained", "policy_digest": environment["policy_digest"]},
+        )
+    ]
+    prior_graph = None
+    if prior_attempt_id is not None:
+        attempt = jobs.store.get_capability_attempt(prior_attempt_id)
+        prior_job = jobs.store.get_job(attempt["lease"]["job_id"])
+        marker = prior_job["request"].get("composition_attempt", {})
+        prior_owner = jobs._owner(marker.get("parent_job_id"))
+        if (
+            attempt["lease"]["grant_id"] != grant["grant_id"]
+            or attempt["lease"]["grant_digest"] != grant["grant_digest"]
+            or prior_job["kind"] != "composition.attempt"
+            or marker.get("attempt_id") != prior_attempt_id
+            or prior_owner["request"]["grant_id"] != grant["grant_id"]
+            or prior_owner["request"]["grant_digest"] != grant["grant_digest"]
+            or (
+                grant_pack(grant) == retained_artifacts.PACK
+                and marker.get("parent_job_id") != owner_id
+            )
+        ):
+            raise ProductStoreError("Prior evidence belongs to another delegated objective.")
+        if attempt["state"] != "settled":
+            raise ProductStoreError("Prior owned effects must settle before a revision.")
+        if grant_pack(grant) == retained_artifacts.PACK:
+            retained_artifacts.historical_sources(jobs, grant, owner_id=owner_id)
+            # Preserve a verified receiver decision whenever one exists.
+            # An absent terminal is not evidence of a policy refusal.
+            if retained_artifacts.receiver_terminal_absent(prior_job):
+                result = retained_artifacts.prior_failure(
+                    jobs, grant, attempt, prior_job, owner_id=owner_id
+                )
+            else:
+                result = jobs._verified_result(attempt)
+        else:
+            result = jobs._verified_result(attempt)
+        source = {
+            "kind": "run_evidence",
+            "id": result["run_id"],
+            "digest": content_hash(result["source_binding"]),
+        }
+        finalized = result["source_binding"]["finalized_at"]
+        observed = int(datetime.fromisoformat(finalized.replace("Z", "+00:00")).timestamp() * 1000)
+        result_kind = (
+            "retained_artifact_result"
+            if "retained_artifact_result" in result
+            else "receiver_result"
+        )
+        rows += [
+            fact("result", result_kind, source, result[result_kind], observed),
+            fact("cleanup", "cleanup", source, result["cleanup"], observed),
+        ]
+        prior_graph = attempt["compiled"]["semantic_digest"]
+    return seal_facts(
+        {
+            "schema_version": "bluefire.composition-facts.v1",
+            "environment_digest": content_hash(environment),
+            "control_digest": environment["control_digest"],
+            "prior_attempt_id": prior_attempt_id,
+            "prior_graph_digest": prior_graph,
+            "facts": rows,
+        }
+    )

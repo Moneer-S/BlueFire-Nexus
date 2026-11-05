@@ -13,6 +13,7 @@ export const modelPurposes: Record<AIModelPurpose, string> = {
   bluefire_graph_step_edit: "Edit graph parameters",
   bluefire_receiver_defense_inspection: "Explain a receiver control test",
   bluefire_composition_proposal: "Propose a bounded composition graph",
+  bluefire_receiver_retained_composition_proposal: "Propose receiver graphs that keep and reuse generated results",
   bluefire_receiver_evidence_composition_proposal: "Reconsider receiver graph choices using selected historical findings",
   bluefire_linux_file_access_composition_proposal: "Propose a Linux file-access verification graph",
   bluefire_macos_file_access_composition_proposal: "Propose a macOS file-access verification graph",

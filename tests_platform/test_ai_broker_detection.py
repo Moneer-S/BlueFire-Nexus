@@ -158,6 +158,7 @@ def test_detection_enrollment_does_not_admit_modified_schema_or_arbitrary_operat
             "bluefire_method_comparison",
             "bluefire_receiver_defense_inspection",
             "bluefire_receiver_evidence_composition_proposal",
+            "bluefire_receiver_retained_composition_proposal",
             "bluefire_run_evidence_inspection",
         )
     finally:

@@ -41,7 +41,7 @@ it("reviews Mac delegation with its distinct pack and original-request closure w
   expect(screen.getByText(/not independent telemetry/)).toBeInTheDocument();
   expect(screen.getByText(/not enrollment cleanup/)).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Delegation reviewed by"), { target: { value: "operator" } });
-  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("checkbox", { name: "I authorize the reviewed finite capabilities, data effects, cleanup reserve and cumulative budgets for this objective." }));
   fireEvent.click(screen.getByRole("button", { name: "Issue capability grant" }));
   expect(submit.mock.calls[0]![0]).toMatchObject({ kind: "grant", control: macOSOwner, body: { review: macRequestFixture() } });
 });
@@ -200,7 +200,7 @@ it("allows initial Mac grant submission without a saved grant expiry", async () 
   fireEvent.click(screen.getByRole("button", { name: "Review finite delegation" }));
   await screen.findByRole("button", { name: "Issue capability grant" });
   fireEvent.change(screen.getByLabelText("Delegation reviewed by"), { target: { value: "operator" } });
-  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("checkbox", { name: "I authorize the reviewed finite capabilities, data effects, cleanup reserve and cumulative budgets for this objective." }));
   fireEvent.click(screen.getByRole("button", { name: "Issue capability grant" }));
   await waitFor(() => expect(submit).toHaveBeenCalledOnce());
   expect(submit.mock.calls[0]![0]).toMatchObject({ kind: "grant", control: macOSOwner, body: { review: macRequestFixture() } });
@@ -212,9 +212,9 @@ it("requires fresh finite review, unchecked acknowledgment and reviewer before i
   fireEvent.change(screen.getByRole("textbox", { name: "Objective question" }), { target: { value: question } });
   fireEvent.click(screen.getByRole("button", { name: "Review finite delegation" }));
   const grant = await screen.findByRole("button", { name: "Issue capability grant" });
-  expect(grant).toBeDisabled(); expect(screen.getByRole("checkbox")).not.toBeChecked();
+  expect(grant).toBeDisabled(); expect(screen.getByRole("checkbox", { name: "I authorize the reviewed finite capabilities, data effects, cleanup reserve and cumulative budgets for this objective." })).not.toBeChecked();
   expect(screen.getByText(/not a total-storage hard cap/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("checkbox")); expect(grant).toBeDisabled();
+  fireEvent.click(screen.getByRole("checkbox", { name: "I authorize the reviewed finite capabilities, data effects, cleanup reserve and cumulative budgets for this objective." })); expect(grant).toBeDisabled();
   fireEvent.change(screen.getByRole("textbox", { name: "Delegation reviewed by" }), { target: { value: "reviewer" } });
   fireEvent.click(grant); expect(onSubmit).toHaveBeenCalledOnce();
   expect(onSubmit.mock.calls[0]![0].body).toMatchObject({ review_digest: testDigest, reviewed_by: "reviewer", review: { control_owner_id: controlId, question, limits: null } });

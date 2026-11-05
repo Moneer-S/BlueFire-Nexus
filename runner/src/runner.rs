@@ -342,6 +342,7 @@ fn reviewed_program_constants(opcode: &str) -> Option<BTreeMap<String, Value>> {
         | "endpoint.discovery.system.v1"
         | "endpoint.discovery.windows-version.v1"
         | "sandbox.cleanup.v1"
+        | "sandbox.collection.materialize-retained.v1"
         | "sandbox.collection.stage.v1"
         | "sandbox.collection.records.v1"
         | "sandbox.collection.archive.v1"

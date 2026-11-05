@@ -127,7 +127,7 @@ Run bundles may still contain environment descriptions, scenario parameters, tel
 - Four `research.*` catalog entries remain metadata-only. A separate persistence-detection canary can Simulate or Execute one fixed non-executable marker inside a runner-owned sandbox under the dedicated restricted profile; it does not change host persistence.
 - No configured remote telemetry collector, SIEM connector, or general network target support ships in the maintained baseline.
 - Runner transport is a separately hosted same-user loopback service with local enrollment/revocation, TLS 1.3 mutual authentication, enrollment-bound task authentication, and a durable duplicate/cancellation/recovery ledger. Cross-host transport/enrollment, an external code-signing trust chain, and asymmetric signed task/profile/result artifacts are not implemented.
-- The legacy runtime proposal path is limited to registered outcome edges and reviewed method retries. Contextual Assistant and capability-composition operations have separate bounded contracts. General nonlocal replanning and cross-attempt result imports are not yet implemented.
+- The legacy runtime proposal path is limited to registered outcome edges and reviewed method retries. Contextual Assistant and capability-composition operations have separate bounded contracts. General nonlocal replanning and general cross-attempt result imports beyond the receiver v2 pack's exact retained generated-result path are not yet implemented.
 - Bundle hashes and request/profile digests detect mismatch; they are not cryptographic identity signatures.
 - Historical Git objects may contain unsupported direct-effect implementations; do not restore or invoke them as runner actions.
 
