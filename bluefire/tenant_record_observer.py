@@ -7,12 +7,12 @@ import json
 import re
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import timezone
 from typing import Any, Callable, Mapping, cast
 
 from .evidence import EvidenceProvenance, EvidenceRecord
 from .tenant_record_lab import TenantDefenseConfig, TenantRecordFixture
-from .util import canonical_json_bytes, content_hash
+from .util import canonical_json_bytes, content_hash, parse_iso8601_datetime
 
 AUDIT_SCHEMA = "bluefire.tenant-record-audit.v1"
 OBSERVATION_SCHEMA = "bluefire.tenant-record-observation.v1"
@@ -71,8 +71,8 @@ class TenantAuditRow:
         if _IDENTITY.fullmatch(self.source_identity) is None:
             raise TenantRecordObservationError("audit source identity is invalid")
         try:
-            timestamp = datetime.fromisoformat(self.timestamp.removesuffix("Z") + "+00:00")
-        except (AttributeError, ValueError) as exc:
+            timestamp = parse_iso8601_datetime(self.timestamp)
+        except (AttributeError, TypeError, ValueError) as exc:
             raise TenantRecordObservationError("audit timestamp is invalid") from exc
         if not self.timestamp.endswith("Z") or timestamp.utcoffset() != timezone.utc.utcoffset(
             timestamp

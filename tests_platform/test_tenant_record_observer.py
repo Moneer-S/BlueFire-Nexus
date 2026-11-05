@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -217,3 +218,17 @@ def test_audit_log_is_bounded_and_unique() -> None:
         application.handle(
             "GET", "/health", {"host": "tenant-record.test"}, source_identity="controller_probe"
         )
+
+
+def test_audit_row_accepts_bounded_single_digit_fraction_across_python_versions() -> None:
+    _fixture, _config, audit, application = _application()
+    response = application.handle(
+        "GET", "/health", {"host": "tenant-record.test"}, source_identity="controller_probe"
+    )
+
+    row = replace(
+        audit.row(response.headers["x-bluefire-lab-request"]),
+        timestamp="2026-11-04T15:00:00.5Z",
+    )
+
+    assert row.timestamp == "2026-11-04T15:00:00.5Z"
