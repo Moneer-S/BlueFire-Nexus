@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any, Mapping, Protocol, Sequence, cast
 from urllib.parse import urlsplit
 
-from .util import content_hash, json_clone, parse_iso8601_datetime
+from .util import canonical_json_bytes, content_hash, json_clone, parse_iso8601_datetime
 
 
 class EngineNetworkPolicyError(ValueError):
@@ -44,6 +44,7 @@ _ATTEMPT_ID = re.compile(r"^engine-attempt-[0-9a-f]{32}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SERVICE_NAME = re.compile(r"^bf-(?:target|model)-[0-9a-f]{12}$")
 _NETWORK_NAME = re.compile(r"^bf-engine-[0-9a-f]{12}$")
+_NETWORK_ID_V2 = re.compile(r"^[0-9a-f]{64}$")
 _RFC1918: tuple[ipaddress.IPv4Network, ...] = tuple(
     ipaddress.IPv4Network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
 )
@@ -317,6 +318,193 @@ class EngineNetworkPlan:
     @property
     def policy_digest(self) -> str:
         return content_hash(self.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class EngineNetworkPlanV2:
+    """Attempt-bound plan for the qualified image's single internal network.
+
+    This is a proposed network contract, not evidence that Docker allocated or
+    enforced the network. V1 snapshot and probe verification remain v1-only.
+    """
+
+    schema_version: str
+    attempt_id: str
+    network_name: str
+    network_id: str
+    network_identity_ref: str
+    subnet: str
+    target: BoundNetworkEndpoint
+    model_gateway: BoundNetworkEndpoint
+    host_gateway_address: str
+    controller_address: str
+    daemon_address: str
+    created_at: str
+    default_egress: str
+    dns_mode: str
+    redirect_mode: str
+    daemon_transport: str
+    network_attachment_mode: str
+    loopback_scope: str
+    internal: bool
+    attach_additional_networks: bool
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.target) is not BoundNetworkEndpoint
+            or type(self.model_gateway) is not BoundNetworkEndpoint
+        ):
+            raise EngineNetworkPolicyError("v2 network endpoints are invalid")
+        if (
+            not isinstance(self.network_id, str)
+            or _NETWORK_ID_V2.fullmatch(self.network_id) is None
+        ):
+            raise EngineNetworkPolicyError("v2 network ID must be a full lowercase Docker ID")
+        base = EngineNetworkPlan.create(
+            attempt_id=self.attempt_id,
+            network_identity_ref=self.network_identity_ref,
+            subnet=self.subnet,
+            target_address=self.target.address,
+            model_gateway_address=self.model_gateway.address,
+            host_gateway_address=self.host_gateway_address,
+            created_at=self.created_at,
+        )
+        expected = base.to_dict()
+        expected.update(
+            schema_version="bluefire.engine-network-plan.v2",
+            network_name=f"bluefire-engine-{self.attempt_id.removeprefix('engine-attempt-')}",
+            network_id=self.network_id,
+            internal=True,
+            attach_additional_networks=False,
+        )
+        try:
+            matches = canonical_json_bytes(self.to_dict()) == canonical_json_bytes(expected)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise EngineNetworkPolicyError("v2 engine network plan is not canonical JSON") from exc
+        if not matches:
+            raise EngineNetworkPolicyError("v2 engine network plan is not canonical")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        attempt_id: str,
+        network_id: str,
+        network_identity_ref: str,
+        subnet: str,
+        target_address: str,
+        model_gateway_address: str,
+        host_gateway_address: str,
+        created_at: str,
+    ) -> "EngineNetworkPlanV2":
+        base = EngineNetworkPlan.create(
+            attempt_id=attempt_id,
+            network_identity_ref=network_identity_ref,
+            subnet=subnet,
+            target_address=target_address,
+            model_gateway_address=model_gateway_address,
+            host_gateway_address=host_gateway_address,
+            created_at=created_at,
+        )
+        return cls(
+            schema_version="bluefire.engine-network-plan.v2",
+            attempt_id=base.attempt_id,
+            network_name=f"bluefire-engine-{base.attempt_id.removeprefix('engine-attempt-')}",
+            network_id=network_id,
+            network_identity_ref=base.network_identity_ref,
+            subnet=base.subnet,
+            target=base.target,
+            model_gateway=base.model_gateway,
+            host_gateway_address=base.host_gateway_address,
+            controller_address=base.controller_address,
+            daemon_address=base.daemon_address,
+            created_at=base.created_at,
+            default_egress=base.default_egress,
+            dns_mode=base.dns_mode,
+            redirect_mode=base.redirect_mode,
+            daemon_transport=base.daemon_transport,
+            network_attachment_mode=base.network_attachment_mode,
+            loopback_scope=base.loopback_scope,
+            internal=True,
+            attach_additional_networks=False,
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "EngineNetworkPlanV2":
+        row = _exact(value, frozenset(cls.__dataclass_fields__), "v2 engine network plan")
+        target = BoundNetworkEndpoint.from_mapping(row["target"])
+        gateway = BoundNetworkEndpoint.from_mapping(row["model_gateway"])
+        plan = cls.create(
+            attempt_id=_text(row["attempt_id"], "engine attempt ID", maximum=47),
+            network_id=row["network_id"],
+            network_identity_ref=row["network_identity_ref"],
+            subnet=row["subnet"],
+            target_address=target.address,
+            model_gateway_address=gateway.address,
+            host_gateway_address=row["host_gateway_address"],
+            created_at=row["created_at"],
+        )
+        try:
+            matches = canonical_json_bytes(value) == canonical_json_bytes(plan.to_dict())
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise EngineNetworkPolicyError("v2 engine network plan is not canonical JSON") from exc
+        if not matches:
+            raise EngineNetworkPolicyError("v2 engine network plan is not canonical")
+        return plan
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "attempt_id": self.attempt_id,
+            "network_name": self.network_name,
+            "network_id": self.network_id,
+            "network_identity_ref": self.network_identity_ref,
+            "subnet": self.subnet,
+            "target": self.target.to_dict(),
+            "model_gateway": self.model_gateway.to_dict(),
+            "host_gateway_address": self.host_gateway_address,
+            "controller_address": self.controller_address,
+            "daemon_address": self.daemon_address,
+            "created_at": self.created_at,
+            "default_egress": self.default_egress,
+            "dns_mode": self.dns_mode,
+            "redirect_mode": self.redirect_mode,
+            "daemon_transport": self.daemon_transport,
+            "network_attachment_mode": self.network_attachment_mode,
+            "loopback_scope": self.loopback_scope,
+            "internal": self.internal,
+            "attach_additional_networks": self.attach_additional_networks,
+        }
+
+    @property
+    def policy_digest(self) -> str:
+        return content_hash(self.to_dict())
+
+    @property
+    def runtime_profile_network(self) -> dict[str, Any]:
+        """Return the exact network object required by the qualified profile."""
+
+        return {
+            "id": self.network_id,
+            "name": self.network_name,
+            "policy_digest": self.policy_digest,
+            "internal": self.internal,
+            "attach_additional_networks": self.attach_additional_networks,
+        }
+
+    def validate_runtime_profile_network(self, value: Any) -> None:
+        """Bind a proposed image profile to this exact attempt and network."""
+
+        expected = self.runtime_profile_network
+        _exact(value, frozenset(expected), "v2 image runtime network")
+        try:
+            matches = canonical_json_bytes(value) == canonical_json_bytes(expected)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise EngineNetworkPolicyError(
+                "v2 image runtime network is not canonical JSON"
+            ) from exc
+        if not matches:
+            raise EngineNetworkPolicyError("v2 image runtime network does not bind the plan")
 
 
 @dataclass(frozen=True, slots=True)
@@ -792,7 +980,9 @@ def verify_effective_network(
     state = (
         VerificationState.MISMATCH
         if mismatches
-        else VerificationState.UNKNOWN if limitations else VerificationState.VERIFIED
+        else VerificationState.UNKNOWN
+        if limitations
+        else VerificationState.VERIFIED
     )
     details = tuple(sorted(set(mismatches + limitations)))
     return EngineNetworkVerification(
@@ -824,13 +1014,13 @@ def observe_effective_network(
     )
 
 
-def validate_target_url(plan: EngineNetworkPlan, value: str) -> str:
+def validate_target_url(plan: EngineNetworkPlan | EngineNetworkPlanV2, value: str) -> str:
     """Return a same-origin target URL or reject it as out of scope."""
 
     return _validate_url(plan.target, value, exact_path=False)
 
 
-def validate_model_gateway_url(plan: EngineNetworkPlan, value: str) -> str:
+def validate_model_gateway_url(plan: EngineNetworkPlan | EngineNetworkPlanV2, value: str) -> str:
     """Return the exact attempt-local model endpoint or reject it."""
 
     return _validate_url(plan.model_gateway, value, exact_path=True)

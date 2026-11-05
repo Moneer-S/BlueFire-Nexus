@@ -10,6 +10,7 @@ from bluefire.engine_network_policy import (
     EndpointRole,
     EngineNetworkObserver,
     EngineNetworkPlan,
+    EngineNetworkPlanV2,
     EngineNetworkPolicyError,
     EngineNetworkVerification,
     NetworkFlow,
@@ -23,9 +24,11 @@ from bluefire.engine_network_policy import (
     validate_target_url,
     verify_effective_network,
 )
+from bluefire.strix_image_contract import proposed_image_runtime_profile
 
 ATTEMPT_ID = "engine-attempt-0123456789abcdef0123456789abcdef"
 DIGEST = "sha256:" + "a" * 64
+NETWORK_ID = "b" * 64
 ENFORCER = "sha256:" + "b" * 64
 NOW = "2026-11-04T12:00:00Z"
 
@@ -43,6 +46,19 @@ def _plan(*, ipv6: bool = False) -> EngineNetworkPlan:
         )
     return EngineNetworkPlan.create(
         attempt_id=ATTEMPT_ID,
+        network_identity_ref=DIGEST,
+        subnet="172.28.40.0/24",
+        target_address="172.28.40.2",
+        model_gateway_address="172.28.40.3",
+        host_gateway_address="172.28.40.1",
+        created_at=NOW,
+    )
+
+
+def _plan_v2() -> EngineNetworkPlanV2:
+    return EngineNetworkPlanV2.create(
+        attempt_id=ATTEMPT_ID,
+        network_id=NETWORK_ID,
         network_identity_ref=DIGEST,
         subnet="172.28.40.0/24",
         target_address="172.28.40.2",
@@ -126,6 +142,134 @@ def test_plan_round_trips_and_derives_fixed_service_names() -> None:
     assert plan.model_gateway.port == 8081
     assert EngineNetworkPlan.from_mapping(plan.to_dict()) == plan
     assert plan.policy_digest.startswith("sha256:")
+
+
+def test_v2_plan_round_trips_and_binds_qualified_image_network() -> None:
+    plan = _plan_v2()
+    profile = proposed_image_runtime_profile(
+        network_id=plan.network_id,
+        network_name=plan.network_name,
+        network_policy_digest=plan.policy_digest,
+    )
+
+    assert plan.schema_version == "bluefire.engine-network-plan.v2"
+    assert plan.network_name == "bluefire-engine-0123456789abcdef0123456789abcdef"
+    assert plan.network_id == NETWORK_ID
+    assert plan.target == _plan().target
+    assert plan.model_gateway == _plan().model_gateway
+    assert plan.default_egress == "deny"
+    assert plan.dns_mode == "bound_services_only"
+    assert plan.redirect_mode == "same_target_origin_only"
+    assert plan.network_attachment_mode == "single_internal_network"
+    assert plan.internal is True
+    assert plan.attach_additional_networks is False
+    assert profile["network"] == plan.runtime_profile_network
+    plan.validate_runtime_profile_network(profile["network"])
+    assert EngineNetworkPlanV2.from_mapping(plan.to_dict()) == plan
+    assert EngineNetworkPlanV2.from_mapping(plan.to_dict()).policy_digest == plan.policy_digest
+
+
+def test_v1_plan_wire_and_digest_remain_stable_and_versions_do_not_cross_parse() -> None:
+    plan = _plan()
+    assert (
+        plan.policy_digest
+        == "sha256:7730bb2e2422af1a8525cded213788351aa12fb68962ef5eabcf6fa7ad0e7e2f"
+    )
+    assert plan.network_name == "bf-engine-456789abcdef"
+    assert EngineNetworkPlan.from_mapping(plan.to_dict()) == plan
+    with pytest.raises(EngineNetworkPolicyError):
+        EngineNetworkPlanV2.from_mapping(plan.to_dict())
+    with pytest.raises(EngineNetworkPolicyError):
+        EngineNetworkPlan.from_mapping(_plan_v2().to_dict())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", "bluefire.engine-network-plan.v1"),
+        ("attempt_id", "engine-attempt-ffffffffffffffffffffffffffffffff"),
+        ("network_name", "bf-engine-456789abcdef"),
+        ("network_name", "bluefire-engine-ffffffffffffffffffffffffffffffff"),
+        ("default_egress", "allow"),
+        ("dns_mode", "public_dns"),
+        ("redirect_mode", "follow_any"),
+        ("network_attachment_mode", "multiple_networks"),
+        ("internal", False),
+        ("internal", 1),
+        ("attach_additional_networks", True),
+        ("attach_additional_networks", 0),
+    ],
+)
+def test_v2_mapping_rejects_wrong_attempt_name_or_fixed_controls(field: str, value: object) -> None:
+    row = _plan_v2().to_dict()
+    row[field] = value
+    with pytest.raises(EngineNetworkPolicyError):
+        EngineNetworkPlanV2.from_mapping(row)
+
+
+@pytest.mark.parametrize("network_id", ["b" * 63, "B" * 64, "sha256:" + "b" * 64, "z" * 64])
+def test_v2_plan_requires_full_lowercase_network_id(network_id: str) -> None:
+    with pytest.raises(EngineNetworkPolicyError, match="network ID"):
+        replace(_plan_v2(), network_id=network_id)
+
+
+def test_v2_full_network_id_changes_policy_digest_and_cannot_replace_admitted_id() -> None:
+    plan = _plan_v2()
+    substituted = replace(plan, network_id="c" * 64)
+
+    assert substituted.policy_digest != plan.policy_digest
+    with pytest.raises(EngineNetworkPolicyError, match="does not bind"):
+        substituted.validate_runtime_profile_network(plan.runtime_profile_network)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("id", "c" * 64),
+        ("name", "bluefire-engine-ffffffffffffffffffffffffffffffff"),
+        ("policy_digest", "sha256:" + "c" * 64),
+        ("internal", False),
+        ("internal", 1),
+        ("attach_additional_networks", True),
+        ("attach_additional_networks", 0),
+    ],
+)
+def test_v2_profile_rejects_wrong_id_name_policy_or_network_scope(
+    field: str, value: object
+) -> None:
+    profile_network = _plan_v2().runtime_profile_network
+    profile_network[field] = value
+    with pytest.raises(EngineNetworkPolicyError, match="does not bind"):
+        _plan_v2().validate_runtime_profile_network(profile_network)
+
+
+def test_v2_plan_rejects_extra_networks_and_changed_endpoint_constraints() -> None:
+    plan = _plan_v2()
+    extra = plan.runtime_profile_network
+    extra["extra_network"] = "unreviewed"
+    with pytest.raises(EngineNetworkPolicyError, match="fields"):
+        plan.validate_runtime_profile_network(extra)
+    with pytest.raises(EngineNetworkPolicyError, match="not canonical"):
+        replace(plan, attach_additional_networks=True)
+    with pytest.raises(EngineNetworkPolicyError, match="not canonical"):
+        replace(plan, target=replace(plan.target, port=80))
+    with pytest.raises(EngineNetworkPolicyError, match="not canonical"):
+        replace(plan, default_egress="allow")
+
+
+def test_v2_target_and_gateway_scope_remains_exact() -> None:
+    plan = _plan_v2()
+    target_url = f"{plan.target.origin}/records/generated"
+    gateway_url = f"{plan.model_gateway.origin}{plan.model_gateway.path}"
+
+    assert validate_target_url(plan, target_url) == target_url
+    assert validate_model_gateway_url(plan, gateway_url) == gateway_url
+    with pytest.raises(EngineNetworkPolicyError, match="outside scope"):
+        validate_target_url(plan, "http://example.com:8080/records/generated")
+    with pytest.raises(EngineNetworkPolicyError, match="exact path"):
+        validate_model_gateway_url(plan, gateway_url + "?debug=1")
+    with pytest.raises(EngineNetworkPolicyError, match="outside"):
+        replace(plan, target=replace(plan.target, address="8.8.8.8"))
 
 
 @pytest.mark.parametrize(
