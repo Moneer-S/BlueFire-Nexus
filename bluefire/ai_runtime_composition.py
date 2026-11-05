@@ -207,11 +207,11 @@ def format_request(config, context):
         raise CapabilityContractError("composition context lacks its capability snapshot")
     pack = snapshot.get("pack")
     purpose, schema = proposal_contract(pack)
-    historical = (
-        context.get("schema_version")
-        in {evidence_context.CONTEXT_SCHEMA, evidence_context.RETAINED_CONTEXT_SCHEMA}
-        or context.get("historical_context") is not None
-    )
+    # The retained context schema is also used for an initial proposal where no
+    # prior attempt was selected.  Only validated historical content enables
+    # the reconsideration dialect; the envelope schema alone is not evidence
+    # that history exists.
+    historical = context.get("historical_context") is not None
     if historical:
         if pack not in (RECEIVER_PACK, RECEIVER_RETAINED_PACK):
             raise CapabilityContractError("Historical proposals support only the receiver packs.")

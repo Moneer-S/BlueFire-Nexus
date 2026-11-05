@@ -75,12 +75,14 @@ def retained_context(state, supplied=None, sources=None):
 def test_initial_proposal_without_sources_uses_new_exact_purpose(provider, state):
     current = retained_context(state)
     body, model = format_request(provider, current)
+    prompt = body.decode()
     assert schema_identity(body, provider.kind) == (
         RETAINED_PURPOSE,
         content_hash(RETAINED_OUTPUT_SCHEMA),
     )
-    assert "verified prior failure or refusal" in body.decode()
-    assert "actual observed refusal" not in body.decode()
+    assert "verified prior failure or refusal" in prompt
+    assert "actual observed refusal" not in prompt
+    assert "Reconsider an earlier supplied choice using selected historical findings" not in prompt
     assert model["historical_context"] is None
     assert model["retained_artifacts"]["available_sources"] == []
     validate_retained_model_context(model)
@@ -114,9 +116,9 @@ def test_available_custody_and_failed_route_are_separate_from_actual_use(provide
         },
         *[row for row in graph["steps"] if row["id"] != "seed"],
     ]
-    next(row for row in graph["steps"] if row["id"] == "prepare")["parameters"][
-        "redact_values"
-    ] = True
+    next(row for row in graph["steps"] if row["id"] == "prepare")["parameters"]["redact_values"] = (
+        True
+    )
     graph["edges"] = [
         {"from_step": "reuse", "outcome": "success", "to_step": "prepare"},
         *[row for row in graph["edges"] if row["from_step"] != "seed"],
@@ -124,6 +126,9 @@ def test_available_custody_and_failed_route_are_separate_from_actual_use(provide
     body, model = format_request(history.harness.provider, current)
     validate_retained_model_context(model)
     assert model["historical_context"]["attempts"][0]["findings"]
+    assert (
+        "Reconsider an earlier supplied choice using selected historical findings" in body.decode()
+    )
     assert "never send this payload" not in body.decode()
     result = propose(
         config=history.harness.provider,
