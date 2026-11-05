@@ -352,7 +352,7 @@ def test_cleanup_only_window_is_rejected_before_creator_or_attempt_reservations(
     }
     grant = {"expires_at_ms": 100_000, "grant_id": "grant", "grant_digest": "digest"}
     jobs._owner = lambda _owner_id: {"job_id": OWNER}
-    jobs._current = lambda _owner: (grant, current)
+    jobs._current = lambda _owner, **_kwargs: (grant, current)
     jobs._orchestrator = lambda _current: SimpleNamespace(
         planner=SimpleNamespace(
             compile=lambda *_args, **_kwargs: SimpleNamespace(to_dict=lambda: {})

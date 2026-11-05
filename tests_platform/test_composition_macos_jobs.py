@@ -111,12 +111,17 @@ def test_mac_proposal_context_uses_the_fixed_proposal_without_receiver_context(m
     facts = {"facts": [], "facts_digest": "sha256:" + "f" * 64}
     scenario = {"id": "fixed-mac-scenario"}
     checked = []
+    repair_modes = []
     jobs.clock = lambda: 2000
     jobs._owner = lambda owner_id: owner_id
-    jobs._current = lambda owner: (grant, {})
+    jobs._current = lambda owner, *, _repair=True: (
+        repair_modes.append(("current", _repair)) or (grant, {})
+    )
     jobs._facts = lambda document, prior: facts
-    jobs.validate_proposal = lambda owner, proposal: (
-        checked.append((owner, proposal)) or {"scenario": scenario}
+    jobs.validate_proposal = lambda owner, proposal, *, _repair=True: (
+        repair_modes.append(("validate", _repair))
+        or checked.append((owner, proposal))
+        or {"scenario": scenario}
     )
     monkeypatch.setattr(composition_jobs, "validate_facts", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -127,6 +132,7 @@ def test_mac_proposal_context_uses_the_fixed_proposal_without_receiver_context(m
 
     initial = composition_jobs.capability_macos_file_access.initial_proposal()
     assert checked == [("owner-1", initial)]
+    assert repair_modes == [("current", True), ("validate", True)]
     assert result == {
         "schema_version": "bluefire.composition-proposal-context.v1",
         "grant_id": "grant-1",
