@@ -772,6 +772,8 @@ def test_reconnect_rejects_tampered_or_duplicate_launch_receipt(tmp_path: Path) 
 def test_linux_proc_inventory_handles_names_with_spaces_and_parentheses(tmp_path: Path) -> None:
     proc = tmp_path / "proc"
     for process_id, name, group, session in (
+        (1, "init", 1, 1),
+        (2, "kthreadd", 0, 0),
         (301, "engine (root)", 301, 301),
         (302, "child worker", 301, 301),
         (401, "unrelated", 401, 401),
@@ -783,8 +785,25 @@ def test_linux_proc_inventory_handles_names_with_spaces_and_parentheses(tmp_path
             f"{process_id} ({name}) {' '.join(fields)}\n",
             encoding="ascii",
         )
+    assert runtime._linux_process_identity(1, proc_root=proc) == (1, 1, "S", 10)
+    assert runtime._linux_process_identity(2, proc_root=proc) == (0, 0, "S", 20)
     assert runtime._linux_process_identity(301, proc_root=proc) == (301, 301, "S", 3010)
     assert runtime._linux_private_session_members(301, 301, proc_root=proc) == {301, 302}
+
+
+@pytest.mark.parametrize(("group", "session"), ((-1, 0), (0, -1), (-1, -1)))
+def test_linux_proc_identity_rejects_negative_scope(
+    tmp_path: Path, group: int, session: int
+) -> None:
+    proc = tmp_path / "proc"
+    directory = proc / "1"
+    directory.mkdir(parents=True)
+    fields = ["S", "0", str(group), str(session), *("0" for _ in range(15)), "10"]
+    directory.joinpath("stat").write_text(
+        f"1 (init) {' '.join(fields)}\n",
+        encoding="ascii",
+    )
+    assert runtime._linux_process_identity(1, proc_root=proc) is None
 
 
 def test_linux_proc_inventory_fails_closed_for_persistent_unreadable_pid(

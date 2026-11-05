@@ -1422,7 +1422,8 @@ def _linux_process_identity(
         start_time = int(fields[19])
     except (IndexError, TypeError, ValueError):
         return None
-    if len(state) != 1 or group <= 1 or session <= 1 or start_time < 0:
+    # Linux exposes kernel-scoped 0 values and init-scoped 1 values in /proc.
+    if len(state) != 1 or group < 0 or session < 0 or start_time < 0:
         return None
     return group, session, state, start_time
 
