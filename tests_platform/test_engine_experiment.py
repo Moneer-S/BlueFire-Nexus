@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 import pytest
 
 from bluefire.engine_attempt_contract import (
@@ -36,6 +34,7 @@ from bluefire.tenant_record_observer import (
     observe_tenant_response,
 )
 from bluefire.tenant_record_service import TenantRecordApplication
+from bluefire.util import parse_iso8601_datetime
 
 
 def _digest(character: str) -> str:
@@ -188,7 +187,7 @@ def _tenant_observation(
         else baseline
     )
     audit = BoundedTenantAuditLog()
-    now = datetime.fromisoformat(timestamp.removesuffix("Z") + "+00:00")
+    now = parse_iso8601_datetime(timestamp)
     application = TenantRecordApplication(
         fixture=fixture,
         config=config,
@@ -231,6 +230,19 @@ def _tenant_observation(
         run_id=run_id,
         step_id="tenant-boundary",
         target_scope_ref=SCOPE_REF,
+    )
+
+
+def test_tenant_observation_fixture_preserves_single_digit_fraction_instant() -> None:
+    evidence = _tenant_observation(
+        owner_id=BASELINE_ATTEMPT,
+        run_id=BASELINE_RUN,
+        timestamp="2026-11-04T12:03:00.5Z",
+        hardened=False,
+    )
+
+    assert parse_iso8601_datetime(evidence.timestamp) == parse_iso8601_datetime(
+        "2026-11-04T12:03:00.5Z"
     )
 
 
