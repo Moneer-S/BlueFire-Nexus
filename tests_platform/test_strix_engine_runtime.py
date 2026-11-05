@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, cast
 
 import pytest
 
 from bluefire.engine_artifact_store import (
     _CONTROLLER_SOURCE_AUTHORITY,
+    MAX_SOURCE_TREE_ENTRIES,
+    EngineArtifactStore,
     SourceCollectionSeal,
     source_collection_tree_digest,
 )
@@ -57,6 +62,7 @@ from bluefire.strix_engine_runtime import (
     StrixEngineRuntimeError,
     StrixRuntimeAdmission,
     StrixRuntimeAdmissionResolution,
+    _optional_strix_artifact_names,
 )
 from bluefire.strix_policy_overlay import (
     OVERLAY_SHA256,
@@ -161,6 +167,7 @@ class Credentials:
 class FakeArtifactStore:
     max_file_bytes = 1024 * 1024
     max_total_bytes = 4 * 1024 * 1024
+    max_files = 64
 
     def __init__(self, events: list[str], root: Path, *, drift_digest: bool = False) -> None:
         self.events = events
@@ -300,6 +307,45 @@ class Worker:
             reservation = plan.public_launch_receipt()
             reservation["reserved_at"] = STARTED
             (control / "launch.json").write_text(json.dumps(reservation), encoding="utf-8")
+            (control / "outcome.json").write_text(json.dumps(outcome.to_dict()), encoding="utf-8")
+        return outcome
+
+
+class OutputWorker(Worker):
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        outputs: dict[str, bytes],
+        execution_state: EngineExecutionState = EngineExecutionState.EXITED,
+        cleanup_state: EngineCleanupState = EngineCleanupState.VERIFIED,
+        post_run: Callable[[Path], None] | None = None,
+    ) -> None:
+        super().__init__(events)
+        self.outputs = outputs
+        self.execution_state = execution_state
+        self.cleanup_state = cleanup_state
+        self.post_run = post_run
+
+    def run(self, plan, *, cancellation, custody):
+        outcome = super().run(plan, cancellation=cancellation, custody=custody)
+        run_directory = plan.working_directory / "strix_runs" / "upstream-run-1"
+        for name, payload in self.outputs.items():
+            target = run_directory / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+        if self.post_run is not None:
+            self.post_run(run_directory)
+        if (
+            self.execution_state is not EngineExecutionState.EXITED
+            or self.cleanup_state is not EngineCleanupState.VERIFIED
+        ):
+            outcome = replace(
+                outcome,
+                execution_state=self.execution_state,
+                cleanup_state=self.cleanup_state,
+            )
+            control = plan.control_root / plan.attempt_id
             (control / "outcome.json").write_text(json.dumps(outcome.to_dict()), encoding="utf-8")
         return outcome
 
@@ -613,6 +659,58 @@ def _runtime(tmp_path: Path):
     return runtime, binding, delegation, admission, worker, artifacts, credentials, events
 
 
+def _output_runtime(
+    tmp_path: Path,
+    *,
+    outputs: dict[str, bytes],
+    execution_state: EngineExecutionState = EngineExecutionState.EXITED,
+    cleanup_state: EngineCleanupState = EngineCleanupState.VERIFIED,
+    post_run: Callable[[Path], None] | None = None,
+    artifact_store_factory: Callable[[list[str], Path], Any] | None = None,
+    source_controller_factory: Callable[[list[str]], Any] | None = None,
+):
+    binding, delegation, admission = _fixture(tmp_path)
+    events: list[str] = []
+    worker = OutputWorker(
+        events,
+        outputs=outputs,
+        execution_state=execution_state,
+        cleanup_state=cleanup_state,
+        post_run=post_run,
+    )
+    artifacts = (
+        artifact_store_factory(events, tmp_path / "artifacts")
+        if artifact_store_factory is not None
+        else FakeArtifactStore(events, tmp_path / "artifacts")
+    )
+    if isinstance(artifacts, EngineArtifactStore):
+        protected_roots = replace(
+            admission.protected_roots,
+            artifact_root_digest=root_digest(artifacts.root),
+        )
+        admission = replace(
+            admission,
+            protected_roots=protected_roots,
+            containment=replace(
+                admission.containment,
+                protected_roots_digest=protected_roots.receipt_digest,
+            ),
+        )
+    runtime = StrixEngineRuntime(
+        resolver=Resolver(admission),
+        worker=cast(Any, worker),
+        artifact_store=cast(Any, artifacts),
+        credential_provider=Credentials(binding.model_authorization_ref, events),
+        source_controller=(
+            source_controller_factory(events)
+            if source_controller_factory is not None
+            else SourceController(events)
+        ),
+        clock=lambda: STARTED,
+    )
+    return runtime, binding, delegation, admission, worker, artifacts, events
+
+
 def test_execute_binds_exact_plan_revokes_before_intake_and_retains_only_engine_claims(
     tmp_path: Path,
 ) -> None:
@@ -644,6 +742,177 @@ def test_execute_binds_exact_plan_revokes_before_intake_and_retains_only_engine_
         "strix_runs/upstream-run-1/run.json",
         "strix_runs/upstream-run-1/coverage.json",
     )
+
+
+def test_retains_present_findings_and_reports_without_private_state(tmp_path: Path) -> None:
+    outputs = {
+        "vulnerabilities.json": b'[{"id":"finding-one"}]',
+        "vulnerabilities.csv": b"id,title\nfinding-one,Example\n",
+        "vulnerabilities/finding-one.md": b"# Engine finding\n",
+        "penetration_test_report.md": b"# Engine report\n",
+        "findings.sarif": b'{"version":"2.1.0"}',
+        "strix.log": b"private log content",
+        ".state/agents.db": b"private runtime database",
+    }
+    runtime, binding, delegation, _admission, _worker, store, _events = _output_runtime(
+        tmp_path,
+        outputs=outputs,
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert settlement.record.state is AttemptState.COMPLETED
+    assert settlement.artifact_manifest_ref is not None
+    assert settlement.engine_evidence[0].category is EvidenceCategory.ENGINE_ASSERTION
+    prefix = "strix_runs/upstream-run-1/"
+    assert set(store.names) == {
+        prefix + "run.json",
+        prefix + "coverage.json",
+        *(prefix + name for name in outputs if not name.startswith((".state/", "strix.log"))),
+    }
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows test sandbox denies temp-root publication")
+def test_real_store_preserves_optional_raw_bytes_and_excludes_private_state(tmp_path: Path) -> None:
+    outputs = {
+        "vulnerabilities.json": b'[{"id":"finding-one"}]',
+        "vulnerabilities/finding-one.md": b"# Engine finding\n",
+        "penetration_test_report.md": b"# Engine report\n",
+        "strix.log": b"private log content",
+        ".state/agents.db": b"private runtime database",
+    }
+
+    def store_factory(_events: list[str], root: Path) -> EngineArtifactStore:
+        root.chmod(0o700)
+        return EngineArtifactStore(
+            root, max_file_bytes=1024 * 1024, max_total_bytes=4 * 1024 * 1024
+        )
+
+    runtime, binding, delegation, _admission, _worker, store, _events = _output_runtime(
+        tmp_path, outputs=outputs, artifact_store_factory=store_factory
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert settlement.record.state is AttemptState.COMPLETED
+    assert settlement.artifact_manifest_ref is not None
+    raw_root = store.root / ENGINE_ATTEMPT / "raw" / "strix_runs" / "upstream-run-1"
+    for name, payload in outputs.items():
+        retained = raw_root / name
+        if name.startswith((".state/", "strix.log")):
+            assert not retained.exists()
+        else:
+            assert retained.read_bytes() == payload
+
+
+def test_optional_selector_bounds_ignored_entries_before_store_intake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_directory = tmp_path / "strix_runs" / "upstream-run-1"
+    run_directory.mkdir(parents=True)
+
+    class ManyEntries:
+        def __enter__(self):
+            return (
+                SimpleNamespace(name=f"ignored-{index}")
+                for index in range(MAX_SOURCE_TREE_ENTRIES + 1)
+            )
+
+        def __exit__(self, _type, _value, _traceback):
+            return None
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "scandir", lambda _path: ManyEntries())
+        with pytest.raises(StrixEngineRuntimeError, match="entry bound"):
+            _optional_strix_artifact_names(
+                run_directory,
+                prefix="strix_runs/upstream-run-1",
+                max_files=64,
+                max_file_bytes=1024,
+                required_count=1,
+            )
+
+
+@pytest.mark.parametrize(
+    ("name", "payload"),
+    [
+        ("vulnerabilities/bad name.md", b"invalid portable filename"),
+        ("penetration_test_report.md", b""),
+        ("findings.sarif", b"x" * (1024 * 1024 + 1)),
+    ],
+    ids=("unsafe-name", "empty-report", "oversized-sarif"),
+)
+def test_present_unsafe_optional_output_fails_closed(
+    tmp_path: Path, name: str, payload: bytes
+) -> None:
+    runtime, binding, delegation, _admission, _worker, artifacts, _events = _output_runtime(
+        tmp_path, outputs={name: payload}
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert settlement.record.state is AttemptState.UNKNOWN
+    assert settlement.record.exit_reason == "engine_artifacts_unavailable"
+    assert settlement.artifact_manifest_ref is None
+    assert settlement.engine_evidence == ()
+    assert artifacts.names == ()
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink", "directory_symlink"])
+def test_optional_output_link_is_not_imported(tmp_path: Path, link_kind: str) -> None:
+    outside = tmp_path / "outside.md"
+    outside.write_bytes(b"outside content")
+
+    def make_link(run_directory: Path) -> None:
+        try:
+            if link_kind == "directory_symlink":
+                (run_directory / "vulnerabilities").symlink_to(tmp_path, target_is_directory=True)
+            elif link_kind == "symlink":
+                (run_directory / "penetration_test_report.md").symlink_to(outside)
+            else:
+                os.link(outside, run_directory / "penetration_test_report.md")
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"{link_kind} unavailable: {exc}")
+
+    runtime, binding, delegation, _admission, _worker, artifacts, _events = _output_runtime(
+        tmp_path, outputs={}, post_run=make_link
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert settlement.record.state is AttemptState.UNKNOWN
+    assert settlement.record.exit_reason == "engine_artifacts_unavailable"
+    assert settlement.artifact_manifest_ref is None
+    assert artifacts.names == ()
+
+
+def test_optional_output_count_over_store_bound_fails_closed(tmp_path: Path) -> None:
+    outputs = {f"vulnerabilities/finding-{index}.md": b"finding" for index in range(3)}
+
+    def store_factory(events: list[str], root: Path) -> FakeArtifactStore:
+        store = FakeArtifactStore(events, root)
+        store.max_files = 4
+        return store
+
+    runtime, binding, delegation, _admission, _worker, artifacts, _events = _output_runtime(
+        tmp_path, outputs=outputs, artifact_store_factory=store_factory
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert settlement.record.exit_reason == "engine_artifacts_unavailable"
+    assert settlement.artifact_manifest_ref is None
+    assert artifacts.names == ()
 
 
 def test_claimed_resolution_drift_refuses_before_allocation_or_launch(tmp_path: Path) -> None:
@@ -884,6 +1153,155 @@ def test_imported_artifact_digest_drift_cannot_become_engine_evidence(tmp_path: 
     assert settlement.record.exit_reason == "engine_artifacts_unavailable"
     assert settlement.engine_evidence == ()
     assert settlement.artifact_manifest_ref is None
+
+
+def test_run_record_changed_after_discovery_cannot_become_engine_evidence(tmp_path: Path) -> None:
+    class ChangingRunController(SourceController):
+        def seal(self, *, attempt_id: str, source_run_dir: Path, worker_outcome):
+            sealed = super().seal(
+                attempt_id=attempt_id,
+                source_run_dir=source_run_dir,
+                worker_outcome=worker_outcome,
+            )
+            run_record = source_run_dir / "strix_runs" / "upstream-run-1" / "run.json"
+            run_record.write_bytes(
+                run_record.read_bytes().replace(b"upstream-run-1", b"upstream-run-2")
+            )
+            return sealed
+
+    runtime, binding, delegation, _admission, _worker, _artifacts, _events = _output_runtime(
+        tmp_path,
+        outputs={"vulnerabilities.json": b"[]"},
+        source_controller_factory=ChangingRunController,
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert settlement.record.exit_reason == "engine_artifacts_unavailable"
+    assert settlement.artifact_manifest_ref is None
+    assert settlement.engine_evidence == ()
+
+
+def test_extra_output_added_after_seal_is_rejected_by_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name == "nt":
+        monkeypatch.setattr(
+            EngineArtifactStore,
+            "_verify_protected_root",
+            staticmethod(lambda _path: None),
+        )
+
+    class ChangingTreeController(SourceController):
+        def seal(self, *, attempt_id: str, source_run_dir: Path, worker_outcome):
+            sealed = super().seal(
+                attempt_id=attempt_id,
+                source_run_dir=source_run_dir,
+                worker_outcome=worker_outcome,
+            )
+            run_directory = source_run_dir / "strix_runs" / "upstream-run-1"
+            (run_directory / "vulnerabilities.csv").write_bytes(b"new source entry")
+            current = source_run_dir.lstat()
+            os.utime(source_run_dir, ns=(current.st_atime_ns, sealed.source_root_mtime_ns))
+            return sealed
+
+    runtime, binding, delegation, _admission, _worker, store, _events = _output_runtime(
+        tmp_path,
+        outputs={"vulnerabilities.json": b"[]"},
+        artifact_store_factory=lambda _events, root: EngineArtifactStore(
+            root, max_file_bytes=1024 * 1024, max_total_bytes=4 * 1024 * 1024
+        ),
+        source_controller_factory=ChangingTreeController,
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert settlement.record.exit_reason == "engine_artifacts_unavailable"
+    assert settlement.artifact_manifest_ref is None
+    assert settlement.engine_evidence == ()
+    assert not (store.root / ENGINE_ATTEMPT).exists()
+
+
+def test_forged_optional_manifest_row_cannot_become_engine_evidence(tmp_path: Path) -> None:
+    class ForgedArtifactStore(FakeArtifactStore):
+        def import_attempt(self, **values: Any) -> dict[str, Any]:
+            manifest = super().import_attempt(**values)
+            manifest["artifacts"][-1]["name"] = "strix_runs/upstream-run-1/.state/agents.db"
+            return manifest
+
+    runtime, binding, delegation, _admission, _worker, _artifacts, _events = _output_runtime(
+        tmp_path,
+        outputs={"vulnerabilities.json": b"[]"},
+        artifact_store_factory=ForgedArtifactStore,
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert settlement.record.exit_reason == "engine_artifacts_unavailable"
+    assert settlement.artifact_manifest_ref is None
+    assert settlement.engine_evidence == ()
+
+
+def test_forged_optional_manifest_size_cannot_become_engine_evidence(tmp_path: Path) -> None:
+    class ForgedArtifactStore(FakeArtifactStore):
+        def import_attempt(self, **values: Any) -> dict[str, Any]:
+            manifest = super().import_attempt(**values)
+            manifest["artifacts"][-1]["size_bytes"] = self.max_file_bytes + 1
+            manifest["total_bytes"] = sum(row["size_bytes"] for row in manifest["artifacts"])
+            return manifest
+
+    runtime, binding, delegation, _admission, _worker, _artifacts, _events = _output_runtime(
+        tmp_path,
+        outputs={"vulnerabilities.json": b"[]"},
+        artifact_store_factory=ForgedArtifactStore,
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert settlement.record.exit_reason == "engine_artifacts_unavailable"
+    assert settlement.artifact_manifest_ref is None
+    assert settlement.engine_evidence == ()
+
+
+@pytest.mark.parametrize(
+    ("cleanup_state", "expected_manifest"),
+    [
+        (EngineCleanupState.VERIFIED, True),
+        (EngineCleanupState.UNKNOWN, False),
+    ],
+)
+def test_cancelled_attempt_retains_outputs_only_after_verified_cessation(
+    tmp_path: Path, cleanup_state: EngineCleanupState, expected_manifest: bool
+) -> None:
+    runtime, binding, delegation, _admission, _worker, artifacts, events = _output_runtime(
+        tmp_path,
+        outputs={"vulnerabilities.json": b"[]"},
+        execution_state=EngineExecutionState.CANCELLED,
+        cleanup_state=cleanup_state,
+    )
+
+    settlement = runtime.execute(
+        cast(Any, Context()), binding, delegation, lambda _record, _timestamp: None
+    )
+
+    assert settlement.record.state is AttemptState.CANCELLED
+    assert (settlement.artifact_manifest_ref is not None) is expected_manifest
+    assert ("sealed" in events) is expected_manifest
+    assert ("imported" in events) is expected_manifest
+    if expected_manifest:
+        assert "strix_runs/upstream-run-1/vulnerabilities.json" in artifacts.names
+        assert settlement.engine_evidence[0].category is EvidenceCategory.ENGINE_ASSERTION
+    else:
+        assert artifacts.names == ()
+        assert settlement.engine_evidence == ()
 
 
 def test_reconcile_reads_retained_outcome_without_relaunching(tmp_path: Path) -> None:

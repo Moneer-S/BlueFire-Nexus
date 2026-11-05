@@ -12,6 +12,8 @@ reservation/outcome and reconciles custody without calling ``run``.
 
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -19,9 +21,12 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .domain_errors import JobCancelled
 from .engine_artifact_store import (
+    MAX_SOURCE_TREE_ENTRIES,
     EngineArtifactStore,
     EngineArtifactStoreError,
     SourceCollectionSeal,
+    _is_reparse,
+    _safe_name,
 )
 from .engine_attempt_contract import (
     AttemptCompleteness,
@@ -70,6 +75,14 @@ from .util import content_hash, parse_iso8601_datetime
 
 class StrixEngineRuntimeError(RuntimeError):
     """The trusted runtime boundary could not prove an exact safe settlement."""
+
+
+_OPTIONAL_STRIX_RUN_FILES = (
+    "vulnerabilities.json",
+    "vulnerabilities.csv",
+    "penetration_test_report.md",
+    "findings.sarif",
+)
 
 
 class ModelGatewayLease(Protocol):
@@ -1229,6 +1242,15 @@ class StrixEngineRuntime:
             names = [f"{prefix}/run.json"]
             if snapshot.coverage_sha256 is not None:
                 names.append(f"{prefix}/coverage.json")
+            names.extend(
+                _optional_strix_artifact_names(
+                    snapshot.run_directory,
+                    prefix=prefix,
+                    max_files=self._artifact_store.max_files,
+                    max_file_bytes=self._artifact_store.max_file_bytes,
+                    required_count=len(names),
+                )
+            )
             manifest = self._artifact_store.import_attempt(
                 attempt_id=binding.attempt_id,
                 source_run_dir=prepared.admission.workspace.cwd,
@@ -1242,7 +1264,11 @@ class StrixEngineRuntime:
                 manifest,
                 attempt_id=binding.attempt_id,
                 source_receipt=seal.controller_receipt_digest,
+                selected_names=tuple(names),
                 expected_digests=expected_digests,
+                max_file_bytes=self._artifact_store.max_file_bytes,
+                max_total_bytes=self._artifact_store.max_total_bytes,
+                max_files=self._artifact_store.max_files,
             )
             manifest_ref = content_hash(manifest)
             evidence = EngineEvidenceItem.create(
@@ -1379,12 +1405,93 @@ def _root_digest(path: Path) -> str:
     )
 
 
+def _ordinary_artifact_directory(path: Path) -> None:
+    details = path.lstat()
+    if path.is_symlink() or _is_reparse(details) or not stat.S_ISDIR(details.st_mode):
+        raise StrixEngineRuntimeError("Strix artifact directory is unsafe")
+
+
+def _ordinary_optional_artifact(entry: os.DirEntry[str], *, max_file_bytes: int) -> None:
+    details = Path(entry.path).lstat()
+    if (
+        entry.is_symlink()
+        or _is_reparse(details)
+        or not stat.S_ISREG(details.st_mode)
+        or details.st_nlink != 1
+        or not 1 <= details.st_size <= max_file_bytes
+    ):
+        raise StrixEngineRuntimeError("optional Strix artifact is unsafe or outside its byte bound")
+
+
+def _optional_strix_artifact_names(
+    run_directory: Path,
+    *,
+    prefix: str,
+    max_files: int,
+    max_file_bytes: int,
+    required_count: int,
+) -> tuple[str, ...]:
+    """Select reviewed public outputs only; missing optional outputs stay missing."""
+
+    _ordinary_artifact_directory(run_directory.parent)
+    _ordinary_artifact_directory(run_directory)
+    if required_count > max_files:
+        raise StrixEngineRuntimeError("Strix artifact selection exceeds its file bound")
+    selected: list[str] = []
+    scanned = 0
+    report_directory: Path | None = None
+    allowed_root = frozenset((*_OPTIONAL_STRIX_RUN_FILES, "vulnerabilities"))
+    with os.scandir(run_directory) as entries:
+        for entry in entries:
+            scanned += 1
+            if scanned > MAX_SOURCE_TREE_ENTRIES:
+                raise StrixEngineRuntimeError("Strix artifact directory exceeds its entry bound")
+            name = entry.name
+            if name not in allowed_root:
+                if name.casefold() in allowed_root:
+                    raise StrixEngineRuntimeError("optional Strix artifact has a portable alias")
+                continue
+            if name == "vulnerabilities":
+                report_directory = run_directory / name
+                _ordinary_artifact_directory(report_directory)
+                continue
+            _safe_name(f"{prefix}/{name}")
+            _ordinary_optional_artifact(entry, max_file_bytes=max_file_bytes)
+            selected.append(f"{prefix}/{name}")
+            if required_count + len(selected) > max_files:
+                raise StrixEngineRuntimeError("Strix artifact selection exceeds its file bound")
+    if report_directory is not None:
+        with os.scandir(report_directory) as entries:
+            for entry in entries:
+                scanned += 1
+                if scanned > MAX_SOURCE_TREE_ENTRIES:
+                    raise StrixEngineRuntimeError(
+                        "Strix artifact directory exceeds its entry bound"
+                    )
+                name = entry.name
+                if not name.casefold().endswith(".md"):
+                    continue
+                if not name.endswith(".md"):
+                    raise StrixEngineRuntimeError("optional Strix artifact has a portable alias")
+                artifact_name = f"{prefix}/vulnerabilities/{name}"
+                _safe_name(artifact_name)
+                _ordinary_optional_artifact(entry, max_file_bytes=max_file_bytes)
+                selected.append(artifact_name)
+                if required_count + len(selected) > max_files:
+                    raise StrixEngineRuntimeError("Strix artifact selection exceeds its file bound")
+    return tuple(sorted(selected))
+
+
 def _validate_artifact_manifest(
     manifest: Any,
     *,
     attempt_id: str,
     source_receipt: str,
+    selected_names: tuple[str, ...],
     expected_digests: Mapping[str, str],
+    max_file_bytes: int,
+    max_total_bytes: int,
+    max_files: int,
 ) -> None:
     fields = {
         "schema_version",
@@ -1404,8 +1511,10 @@ def _validate_artifact_manifest(
         or manifest.get("storage_boundary") != "contained_exclusive_protected_root"
         or manifest.get("source_collection_receipt") != source_receipt
         or not isinstance(artifacts, list)
-        or manifest.get("artifact_count") != len(expected_digests)
-        or len(artifacts) != len(expected_digests)
+        or manifest.get("artifact_count") != len(selected_names)
+        or len(artifacts) != len(selected_names)
+        or len(set(selected_names)) != len(selected_names)
+        or len(selected_names) > max_files
     ):
         raise StrixEngineRuntimeError("retained Strix artifact manifest identity changed")
     total = 0
@@ -1421,12 +1530,17 @@ def _validate_artifact_manifest(
             or name in retained
             or isinstance(size, bool)
             or not isinstance(size, int)
-            or size < 1
+            or not 1 <= size <= max_file_bytes
         ):
             raise StrixEngineRuntimeError("retained Strix artifact row is invalid")
         retained[name] = _require_digest(digest, "retained Strix artifact")
         total += size
-    if retained != dict(expected_digests) or manifest.get("total_bytes") != total:
+    if (
+        set(retained) != set(selected_names)
+        or any(retained.get(name) != digest for name, digest in expected_digests.items())
+        or manifest.get("total_bytes") != total
+        or total > max_total_bytes
+    ):
         raise StrixEngineRuntimeError("retained Strix artifact bytes differ from discovery")
 
 
