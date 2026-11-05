@@ -293,19 +293,23 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         record_digest TEXT NOT NULL UNIQUE
     )""")
     if rebuilt_pre_dispatch:
-        columns = (
-            "settlement_ref,job_id,attempt_id,experiment_id,preparation_ref,"
-            "preparation_id,preparation_record_digest,acceptance_record_digest,"
-            "binding_digest,delegation_digest,submission_id,intent_digest,"
-            "job_request_digest,prior_revision,prior_experiment_digest,"
-            "prior_attempt_state,observed_job_state,exit_reason,"
-            "adapter_pre_dispatch_ref,terminal_record_digest,settled_at,"
-            "document_json,record_digest"
-        )
-        connection.execute(
-            f"INSERT INTO engine_attempt_pre_dispatch_settlements({columns}) "
-            f"SELECT {columns} FROM engine_attempt_pre_dispatch_settlements_v22_draft"
-        )
+        connection.execute("""INSERT INTO engine_attempt_pre_dispatch_settlements(
+                settlement_ref, job_id, attempt_id, experiment_id, preparation_ref,
+                preparation_id, preparation_record_digest, acceptance_record_digest,
+                binding_digest, delegation_digest, submission_id, intent_digest,
+                job_request_digest, prior_revision, prior_experiment_digest,
+                prior_attempt_state, observed_job_state, exit_reason,
+                adapter_pre_dispatch_ref, terminal_record_digest, settled_at,
+                document_json, record_digest
+            ) SELECT
+                settlement_ref, job_id, attempt_id, experiment_id, preparation_ref,
+                preparation_id, preparation_record_digest, acceptance_record_digest,
+                binding_digest, delegation_digest, submission_id, intent_digest,
+                job_request_digest, prior_revision, prior_experiment_digest,
+                prior_attempt_state, observed_job_state, exit_reason,
+                adapter_pre_dispatch_ref, terminal_record_digest, settled_at,
+                document_json, record_digest
+              FROM engine_attempt_pre_dispatch_settlements_v22_draft""")
         connection.execute("DROP TABLE engine_attempt_pre_dispatch_settlements_v22_draft")
     connection.execute("""CREATE TRIGGER IF NOT EXISTS engine_attempt_execution_claims_no_update
         BEFORE UPDATE ON engine_attempt_execution_claims BEGIN

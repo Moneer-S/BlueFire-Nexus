@@ -31,6 +31,9 @@ TESTED_PLATFORM = "linux/amd64"
 CONTROLLED_ENTRYPOINT = "/opt/bluefire/bin/strix-controlled-entrypoint"
 # This is the image's fixed service-account home, independent of the build host.
 _CONTAINER_HOME = "/".join(("", "home", "strix"))
+# Fixed path inside the read-only container namespace. The runtime profile
+# mounts it as a private mode-0700 tmpfs; it is never used for host temp files.
+_CONTAINER_TMPDIR = "/tmp"  # nosec B108
 LOCAL_BUILD_CHECKS = ("artifact-integrity", "offline-dependency-closure")
 HOSTED_QUALIFICATION_CHECKS = (
     "native-architecture",
@@ -109,7 +112,7 @@ def proposed_image_runtime_profile(
         "command": [],
         "environment": {
             "HOME": _CONTAINER_HOME,
-            "TMPDIR": "/tmp",
+            "TMPDIR": _CONTAINER_TMPDIR,
             "XDG_CACHE_HOME": f"{_CONTAINER_HOME}/.cache",
             "PYTHONDONTWRITEBYTECODE": "1",
         },
@@ -118,7 +121,7 @@ def proposed_image_runtime_profile(
             for destination, size in (
                 (_CONTAINER_HOME, 128 * 1024**2),
                 ("/run", 16 * 1024**2),
-                ("/tmp", 128 * 1024**2),
+                (_CONTAINER_TMPDIR, 128 * 1024**2),
                 ("/workspace", 512 * 1024**2),
             )
         },

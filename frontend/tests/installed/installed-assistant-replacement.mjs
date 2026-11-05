@@ -38,6 +38,7 @@ const apiReadPaths = new Set([
   "/api/v1/session", "/api/v1/build-info", "/api/v1/catalog", "/api/v1/scenarios", "/api/v1/runs",
   "/api/v1/receiver-defense/jobs", "/api/v1/comparison-snapshots", "/api/v1/settings",
   "/api/v1/resources/model-providers", "/api/v1/ai/authorizations", "/api/v1/detections",
+  "/api/v1/engine-experiments",
 ]);
 const capabilityInput = createInterface({ input: process.stdin, crlfDelay: Infinity });
 const commandLines = capabilityInput[Symbol.asyncIterator]();

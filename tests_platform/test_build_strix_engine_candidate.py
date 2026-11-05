@@ -5,6 +5,7 @@ import base64
 import csv
 import hashlib
 import io
+import json
 import os
 import subprocess
 import tarfile
@@ -110,6 +111,12 @@ def test_reviewed_source_and_runtime_pins_are_immutable_and_distinct() -> None:
     assert candidate.DECLARED_PACKAGE_VERSION == "1.7.0"
     assert candidate.PYTHON_VERSION == "3.12.14"
     assert candidate.UV_VERSION == "0.13.6"
+    assert candidate.UV_VERSION_OUTPUT == (
+        "uv 0.13.6 (329bf9448 2026-10-26 x86_64-unknown-linux-gnu)"
+    )
+    assert candidate.UV_RELEASE_COMMIT == (
+        "329bf9448afd9f9088d14a4d57fbc61eb454f117"  # pragma: allowlist secret -- public uv release commit
+    )
     assert candidate.GO_VERSION == "1.24.10"
     assert candidate.SANDBOX_IMAGE.endswith(
         "@sha256:78df914f3029464c9d00580f531ec51025c251c422ec3b09c3f19c5fa6d80c30"
@@ -261,6 +268,124 @@ def test_build_backend_constraints_are_hash_pinned_and_cross_checked(tmp_path: P
     assert '"--require-build-hashes"' in source
     assert '_run(["uv", "-V"]' in source
     assert receipt["sha256"] == hashlib.sha256(destination.read_bytes()).hexdigest()
+
+
+def test_toolchain_validation_binds_exact_uv_release_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outputs = {
+        ("uv", "-V"): candidate.UV_VERSION_OUTPUT,
+        ("uv", "--version"): candidate.UV_VERSION_OUTPUT,
+        ("uv", "self", "version", "--output-format", "json"): json.dumps(
+            {
+                "package_name": "uv",
+                "version": candidate.UV_VERSION,
+                "commit_info": {
+                    "short_commit_hash": candidate.UV_RELEASE_COMMIT[:9],
+                    "commit_hash": candidate.UV_RELEASE_COMMIT,
+                    "commit_date": candidate.UV_RELEASE_DATE,
+                    "last_tag": None,
+                    "commits_since_last_tag": 0,
+                },
+                "target_triple": candidate.UV_TARGET_TRIPLE,
+            }
+        ),
+        ("go", "version"): f"go version go{candidate.GO_VERSION} linux/amd64",
+        ("git", "--version"): "git version 2.56.0",
+    }
+
+    def run(command: list[str], **_kwargs: Any) -> str:
+        return outputs[tuple(command)]
+
+    monkeypatch.setattr(candidate, "_run", run)
+    monkeypatch.setattr(candidate, "_executable_sha256", lambda *_args: "0" * 64)
+    monkeypatch.setattr(candidate.platform, "python_version", lambda: candidate.PYTHON_VERSION)
+    receipt = candidate._validate_toolchains(tmp_path, {"PATH": os.environ.get("PATH", "")})
+    assert receipt["uv"] == {
+        "version": candidate.UV_VERSION_OUTPUT,
+        "full_version": candidate.UV_VERSION_OUTPUT,
+        "release_identity": json.loads(
+            outputs[("uv", "self", "version", "--output-format", "json")]
+        ),
+        "executable_sha256": "0" * 64,
+    }
+
+    outputs[("uv", "--version")] = "uv 0.13.6"
+    with pytest.raises(candidate.StrixCandidateBuildError, match="reviewed build version"):
+        candidate._validate_toolchains(tmp_path, {"PATH": os.environ.get("PATH", "")})
+
+    outputs[("uv", "--version")] = candidate.UV_VERSION_OUTPUT
+    outputs[("uv", "-V")] = candidate.UV_VERSION_OUTPUT.replace("0.13.6", "0.13.7")
+    with pytest.raises(candidate.StrixCandidateBuildError, match="reviewed build version"):
+        candidate._validate_toolchains(tmp_path, {"PATH": os.environ.get("PATH", "")})
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"version": "0.13.7"}, "reviewed build"),
+        ({"target_triple": "x86_64-pc-windows-msvc"}, "reviewed build"),
+        ({"package_name": "not-uv"}, "reviewed build"),
+        (
+            {
+                "commit_info": {
+                    "short_commit_hash": "0" * 9,
+                    "commit_hash": "0" * 40,
+                    "commit_date": candidate.UV_RELEASE_DATE,
+                    "last_tag": None,
+                    "commits_since_last_tag": 0,
+                }
+            },
+            "reviewed build",
+        ),
+    ],
+)
+def test_uv_release_identity_refuses_provenance_drift(
+    mutation: dict[str, Any], message: str
+) -> None:
+    document: dict[str, Any] = {
+        "package_name": "uv",
+        "version": candidate.UV_VERSION,
+        "commit_info": {
+            "short_commit_hash": candidate.UV_RELEASE_COMMIT[:9],
+            "commit_hash": candidate.UV_RELEASE_COMMIT,
+            "commit_date": candidate.UV_RELEASE_DATE,
+            "last_tag": None,
+            "commits_since_last_tag": 0,
+        },
+        "target_triple": candidate.UV_TARGET_TRIPLE,
+    }
+    document.update(mutation)
+    with pytest.raises(candidate.StrixCandidateBuildError, match=message):
+        candidate.validate_uv_release_identity(json.dumps(document))
+
+
+def test_uv_release_identity_refuses_malformed_or_duplicate_json() -> None:
+    for payload in (
+        "not-json",
+        '{"package_name":"uv","package_name":"uv"}',
+        "{}",
+    ):
+        with pytest.raises(candidate.StrixCandidateBuildError):
+            candidate.validate_uv_release_identity(payload)
+
+
+@pytest.mark.parametrize("value", [False, 0.0])
+def test_uv_release_identity_refuses_non_integer_commit_distance(value: Any) -> None:
+    document = {
+        "package_name": "uv",
+        "version": candidate.UV_VERSION,
+        "commit_info": {
+            "short_commit_hash": candidate.UV_RELEASE_COMMIT[:9],
+            "commit_hash": candidate.UV_RELEASE_COMMIT,
+            "commit_date": candidate.UV_RELEASE_DATE,
+            "last_tag": None,
+            "commits_since_last_tag": value,
+        },
+        "target_triple": candidate.UV_TARGET_TRIPLE,
+    }
+    with pytest.raises(candidate.StrixCandidateBuildError, match="invalid shape"):
+        candidate.validate_uv_release_identity(json.dumps(document))
 
 
 def test_candidate_builder_uses_project_toml_compatibility_dependency() -> None:

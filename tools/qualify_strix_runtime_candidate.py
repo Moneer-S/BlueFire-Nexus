@@ -618,7 +618,17 @@ def _export_requirements(
     source: Path, destination: Path, environment: Mapping[str, str]
 ) -> dict[str, Any]:
     version = _run(["uv", "-V"], cwd=source, environment=environment)
-    if version != f"uv {candidate.UV_VERSION}":
+    try:
+        release_identity = candidate.validate_uv_release_identity(
+            _run(
+                ["uv", "self", "version", "--output-format", "json"],
+                cwd=source,
+                environment=environment,
+            )
+        )
+    except candidate.StrixCandidateBuildError as exc:
+        raise StrixRuntimeQualificationError("uv version does not match candidate build") from exc
+    if version != candidate.UV_VERSION_OUTPUT:
         raise StrixRuntimeQualificationError("uv version does not match candidate build")
     _run(
         [
@@ -642,6 +652,7 @@ def _export_requirements(
         raise StrixRuntimeQualificationError("uv executable cannot be identified")
     return {
         "version": version,
+        "release_identity": release_identity,
         "executable_sha256": _sha256(_read_regular(Path(uv_path), 128 * 1024 * 1024)),
         "requirements_sha256": _sha256(payload),
         **counts,

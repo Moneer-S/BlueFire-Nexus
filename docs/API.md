@@ -272,7 +272,11 @@ Pause, resume, cancel, and retry requests use `{}` bodies. Pause is acknowledged
 
 ### AI proposal review and continuation
 
-An actionable Assist proposal, or any Execute mutation proposed under Auto, leaves the durable job in `awaiting_approval`. Job progress identifies `approval_kind: "ai_proposal"`, the `proposal_record_id`, and exact `state_digest`, `plan_digest`, and `proposal_digest`. The v2 record can carry the exact registered next edge for the observed outcome, a compatible behavior, bounded primitive parameter changes, an action already registered for the exact profile, or one bounded retry. Read the complete review envelope and digests, then accept or reject with exactly:
+This section describes the legacy exact-plan scenario-run proposal record.
+Objective-level composition uses a separate versioned grant and a fresh attempt;
+it does not mutate this job or broaden its approval.
+
+An actionable legacy Assist proposal, or any legacy exact-plan Execute mutation proposed under Auto, leaves the durable job in `awaiting_approval`. Job progress identifies `approval_kind: "ai_proposal"`, the `proposal_record_id`, and exact `state_digest`, `plan_digest`, and `proposal_digest`. The v2 record can carry the exact registered next edge for the observed outcome, a compatible behavior, bounded primitive parameter changes, an action already registered for the exact profile, or one bounded retry. Read the complete review envelope and digests, then accept or reject with exactly:
 
 ```json
 {

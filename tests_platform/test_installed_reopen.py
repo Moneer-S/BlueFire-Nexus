@@ -403,4 +403,5 @@ def test_browser_driver_allowlists_initial_overview_reads_and_declares_globals()
 
     assert '|| path === "/api/v1/runs"' in source
     assert '|| path === "/api/v1/receiver-defense/jobs"' in source
+    assert '|| path === "/api/v1/engine-experiments"' in source
     assert "/* global process, Buffer, fetch, sessionStorage, URL, URLSearchParams */" in source

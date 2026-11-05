@@ -140,6 +140,19 @@ def test_complete_synthetic_receipts_satisfy_only_the_necessary_image_gate() -> 
     assert not decision.live_execution_proven
 
 
+def test_runtime_tmpdir_is_the_private_container_tmpfs() -> None:
+    profile = image.proposed_image_runtime_profile(
+        network_id="a" * 64,
+        network_name="bluefire-engine-" + "b" * 32,
+        network_policy_digest=_digest("network-policy"),
+    )
+
+    assert profile["environment"]["TMPDIR"] == "/tmp"
+    assert profile["tmpfs"]["/tmp"] == (
+        "rw,nosuid,nodev,noexec,size=134217728,uid=1000,gid=1000,mode=0700"
+    )
+
+
 @pytest.mark.parametrize("omitted", range(12))
 def test_every_exact_check_is_required(omitted: int) -> None:
     contract = image.StrixImageContract.from_mapping(_contract_document())

@@ -72,6 +72,18 @@ _DEFENSE_FIELDS = frozenset(
 _DEFENSE_KINDS = frozenset(
     {"configuration", "permission", "identity", "prevention", "visibility", "detection"}
 )
+_REGISTRY_ANCHOR_QUERIES = {
+    "target": """SELECT 1 FROM engine_experiment_target_presentations
+        WHERE experiment_id = ? AND snapshot_ref = ?
+          AND registered_revision = ?
+          AND registered_experiment_digest = ?
+          AND registered_prior_digest = ?""",
+    "defense": """SELECT 1 FROM engine_experiment_defense_presentations
+        WHERE experiment_id = ? AND change_id = ?
+          AND registered_revision = ?
+          AND registered_experiment_digest = ?
+          AND registered_prior_digest = ?""",
+}
 
 
 class EngineExperimentPresentationStore(Protocol):
@@ -775,20 +787,11 @@ def _has_exact_registry_anchor(
     experiment_digest: str,
     prior_digest: str,
 ) -> bool:
-    if kind == "target":
-        table = "engine_experiment_target_presentations"
-        item_column = "snapshot_ref"
-    elif kind == "defense":
-        table = "engine_experiment_defense_presentations"
-        item_column = "change_id"
-    else:  # pragma: no cover - internal closed call sites
+    query = _REGISTRY_ANCHOR_QUERIES.get(kind)
+    if query is None:  # pragma: no cover - internal closed call sites
         raise ProductStoreError("engine experiment presentation registry kind is invalid")
     row = connection.execute(
-        f"""SELECT 1 FROM {table}
-            WHERE experiment_id = ? AND {item_column} = ?
-              AND registered_revision = ?
-              AND registered_experiment_digest = ?
-              AND registered_prior_digest = ?""",
+        query,
         (experiment_id, item_id, revision, experiment_digest, prior_digest),
     ).fetchone()
     return row is not None

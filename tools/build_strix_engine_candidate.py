@@ -68,6 +68,10 @@ SANDBOX_IMAGE = (
     "sha256:78df914f3029464c9d00580f531ec51025c251c422ec3b09c3f19c5fa6d80c30"
 )
 UV_VERSION = "0.13.6"
+UV_RELEASE_COMMIT = "329bf9448afd9f9088d14a4d57fbc61eb454f117"  # pragma: allowlist secret -- public uv release commit
+UV_RELEASE_DATE = "2026-10-26"
+UV_TARGET_TRIPLE = "x86_64-unknown-linux-gnu"
+UV_VERSION_OUTPUT = f"uv {UV_VERSION} (329bf9448 {UV_RELEASE_DATE} {UV_TARGET_TRIPLE})"
 GO_VERSION = "1.24.10"
 PYTHON_VERSION = "3.12.14"
 
@@ -967,12 +971,83 @@ def _executable_sha256(name: str, environment: Mapping[str, str]) -> str:
     return digest.hexdigest()
 
 
+def _reject_uv_json_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise StrixCandidateBuildError("uv release identity contains duplicate JSON keys")
+        result[key] = value
+    return result
+
+
+def validate_uv_release_identity(payload: str) -> dict[str, Any]:
+    if len(payload.encode("utf-8")) > 4096:
+        raise StrixCandidateBuildError("uv release identity is oversized")
+    try:
+        document = json.loads(payload, object_pairs_hook=_reject_uv_json_duplicates)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise StrixCandidateBuildError("uv release identity is invalid JSON") from exc
+    if not isinstance(document, dict) or set(document) != {
+        "package_name",
+        "version",
+        "commit_info",
+        "target_triple",
+    }:
+        raise StrixCandidateBuildError("uv release identity has an invalid shape")
+    if any(
+        not isinstance(document[name], str) for name in ("package_name", "version", "target_triple")
+    ):
+        raise StrixCandidateBuildError("uv release identity has an invalid shape")
+    commit = document["commit_info"]
+    if not isinstance(commit, dict) or set(commit) != {
+        "short_commit_hash",
+        "commit_hash",
+        "commit_date",
+        "last_tag",
+        "commits_since_last_tag",
+    }:
+        raise StrixCandidateBuildError("uv release identity has an invalid shape")
+    commit_distance = commit["commits_since_last_tag"]
+    if (
+        any(
+            not isinstance(commit[name], str)
+            for name in ("short_commit_hash", "commit_hash", "commit_date")
+        )
+        or commit["last_tag"] is not None
+        or not isinstance(commit_distance, int)
+        or isinstance(commit_distance, bool)
+    ):
+        raise StrixCandidateBuildError("uv release identity has an invalid shape")
+    expected_commit = {
+        "short_commit_hash": UV_RELEASE_COMMIT[:9],
+        "commit_hash": UV_RELEASE_COMMIT,
+        "commit_date": UV_RELEASE_DATE,
+        "last_tag": None,
+        "commits_since_last_tag": 0,
+    }
+    if (
+        document["package_name"] != "uv"
+        or document["version"] != UV_VERSION
+        or document["target_triple"] != UV_TARGET_TRIPLE
+        or commit != expected_commit
+    ):
+        raise StrixCandidateBuildError("uv release identity is not the reviewed build")
+    return document
+
+
 def _validate_toolchains(source: Path, environment: Mapping[str, str]) -> dict[str, Any]:
     uv = _run(["uv", "-V"], cwd=source, environment=environment)
     uv_full = _run(["uv", "--version"], cwd=source, environment=environment)
+    uv_identity = validate_uv_release_identity(
+        _run(
+            ["uv", "self", "version", "--output-format", "json"],
+            cwd=source,
+            environment=environment,
+        )
+    )
     go = _run(["go", "version"], cwd=source, environment=environment)
     git = _run(["git", "--version"], cwd=source, environment=environment)
-    if uv != f"uv {UV_VERSION}":
+    if uv != UV_VERSION_OUTPUT or uv_full != UV_VERSION_OUTPUT:
         raise StrixCandidateBuildError("uv version is not the reviewed build version")
     if f"go{GO_VERSION} " not in f"{go} ":
         raise StrixCandidateBuildError("Go version is not the reviewed build version")
@@ -986,6 +1061,7 @@ def _validate_toolchains(source: Path, environment: Mapping[str, str]) -> dict[s
         "uv": {
             "version": uv,
             "full_version": uv_full,
+            "release_identity": uv_identity,
             "executable_sha256": _executable_sha256("uv", environment),
         },
         "go": {"version": go, "executable_sha256": _executable_sha256("go", environment)},

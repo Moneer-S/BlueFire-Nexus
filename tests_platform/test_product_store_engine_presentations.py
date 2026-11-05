@@ -12,6 +12,7 @@ import pytest
 
 from bluefire.engine_experiment import ENGINE_CAPABILITY_SCOPE_VERSION, EngineExperiment
 from bluefire.product_store import ProductStore
+from bluefire.product_store_engine_presentations import _has_exact_registry_anchor
 from bluefire.product_store_errors import ProductStoreError, ResourceConflictError
 from tests_platform.test_engine_experiment import (
     AFTER_SNAPSHOT,
@@ -135,6 +136,21 @@ def _save_versions(
             )
         )
     return records
+
+
+def test_registry_anchor_lookup_rejects_unknown_registry_kind() -> None:
+    connection = sqlite3.connect(":memory:")
+    with pytest.raises(ProductStoreError, match="registry kind is invalid"):
+        _has_exact_registry_anchor(
+            connection,
+            kind="unreviewed",
+            experiment_id=EXPERIMENT_ID,
+            item_id=INITIAL_SNAPSHOT,
+            revision=1,
+            experiment_digest=_digest("1"),
+            prior_digest=_digest("2"),
+        )
+    connection.close()
 
 
 def _provisioned_store(path: Path) -> tuple[ProductStore, list[Mapping[str, Any]]]:
