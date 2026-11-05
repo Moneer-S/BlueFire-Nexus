@@ -24,8 +24,10 @@ class RunnerManagementServiceMixin:
     if TYPE_CHECKING:
         import threading
 
+        from .composition_jobs import CompositionJobs
         from .job_runtime import RunJobController
 
+        composition: CompositionJobs
         runner_lifecycle: ManagedRunnerLifecycle
         job_controller: RunJobController
         _runtime_configuration_lock: threading.RLock

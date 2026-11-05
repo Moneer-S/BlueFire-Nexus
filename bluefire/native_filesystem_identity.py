@@ -34,6 +34,11 @@ def _windows_file_identity(
     import msvcrt
     from ctypes import wintypes
 
+    get_osfhandle = getattr(msvcrt, "get_osfhandle", None)
+    if not callable(get_osfhandle):
+        raise OSError("native Windows file identity is unavailable")
+    handle = get_osfhandle(descriptor)
+
     class FileIdInfo(ctypes_module.Structure):
         _fields_ = [
             ("VolumeSerialNumber", ctypes_module.c_ulonglong),
@@ -51,7 +56,6 @@ def _windows_file_identity(
         wintypes.DWORD,
     )
     operation.restype = wintypes.BOOL
-    handle = msvcrt.get_osfhandle(descriptor)
     information = FileIdInfo()
     if handle == -1 or not operation(
         wintypes.HANDLE(handle),

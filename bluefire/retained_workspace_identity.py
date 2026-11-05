@@ -17,8 +17,8 @@ def workspace_identity(path: str | Path) -> dict[str, int | str]:
         raise OSError("owned workspace path is not absolute")
     chain = (*reversed(candidate.parents), candidate)
     with ExitStack() as stack:
-        parent = None
-        pinned = []
+        parent: int | None = None
+        pinned: list[tuple[Path, int | None, tuple[int, int]]] = []
         for item in chain:
             if sys.platform == "win32":
                 descriptor = _windows_open_descriptor(item, directory=True)

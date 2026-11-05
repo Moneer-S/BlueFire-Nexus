@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from . import product_store_capability_grants as records
 from .capability_packs import RECEIVER_RETAINED_PACK, grant_pack
@@ -258,7 +258,9 @@ def _original_task_at(connection, attempt_id, task_id, request_hash, transport_r
     return task, payload
 
 
-def mark_task_dispatch(store, attempt_id, *, task_id, request_hash, transport_request_hash):
+def mark_task_dispatch(
+    store, attempt_id, *, task_id, request_hash, transport_request_hash
+) -> dict[str, Any]:
     """Commit the send boundary before the runner can receive a retained task."""
 
     with store._connection(write=True) as connection:
@@ -278,7 +280,7 @@ def mark_task_dispatch(store, attempt_id, *, task_id, request_hash, transport_re
             ).fetchone()
         ):
             raise ProductStoreError("Original attempt has already entered recovery closure.")
-        document = {
+        document: dict[str, Any] = {
             "schema_version": "bluefire.capability-task-dispatch-intent.v1",
             "attempt_id": attempt_id,
             "lease_digest": lease["lease_digest"],
@@ -301,7 +303,9 @@ def mark_task_dispatch(store, attempt_id, *, task_id, request_hash, transport_re
         return document
 
 
-def record_task_no_send(store, attempt_id, *, task_id, request_hash, transport_request_hash):
+def record_task_no_send(
+    store, attempt_id, *, task_id, request_hash, transport_request_hash
+) -> dict[str, Any]:
     """Atomically bar a late send when no dispatcher crossed the send boundary."""
 
     with store._connection(write=True) as connection:
@@ -317,7 +321,7 @@ def record_task_no_send(store, attempt_id, *, task_id, request_hash, transport_r
             "task_id": task_id,
             "request_hash": request_hash,
         }
-        document = {
+        document: dict[str, Any] = {
             "schema_version": "bluefire.capability-task-terminal.v1",
             "task_id": task_id,
             "attempt_id": attempt_id,
@@ -328,7 +332,7 @@ def record_task_no_send(store, attempt_id, *, task_id, request_hash, transport_r
         if previous is not None:
             if previous != document:
                 raise ProductStoreError("Original task has another terminal.")
-            return previous
+            return cast(dict[str, Any], previous)
         records._insert_document(
             connection,
             "INSERT INTO capability_task_terminals VALUES(?,?,?)",
