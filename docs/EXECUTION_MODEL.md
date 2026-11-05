@@ -1,6 +1,6 @@
 # Execution model
 
-BlueFire Nexus has exactly two modes: **Simulate** and **Execute**. They share scenario and planning contracts but have different effect and evidence semantics.
+BlueFire Nexus has exactly two modes: **Simulate** and **Execute**. They share scenario and planning contracts but have different effect and evidence semantics. Execute currently has a shipped exact-plan Rust runner lane and a separate development external-engine lane; the latter is not a third mode and is not shipped in RC2.
 
 ## Mode invariants
 
@@ -66,6 +66,30 @@ Execute is unavailable unless every prerequisite succeeds:
 - a live request-bound approval is present when required.
 
 Failure of any prerequisite is a refusal, approval_required, or control_blocked outcome. It is not silently converted into simulated success.
+
+## External-engine Execute lane (development, not RC2)
+
+The external-engine lane composes reviewed capabilities around an upstream engine worker. It does not translate a scenario action into the Rust registry and it does not give the worker general host authority. The source contains fail-closed contracts for capability delegation, action preparation and acceptance, runtime admission and issuance, controlled Docker lifecycle access, target and model relays, workspace transfer, result bridging, cancellation, and installed-service composition. The maintained `InstalledAttemptFactory` is still an injected protocol, however, and no concrete installed factory selects the controlled runtime. Consequently this section specifies the development boundary; it is not native, live-model, target-effectiveness, or release evidence.
+
+An external-engine attempt requires a versioned capability-level delegation and a separately admitted runtime. Legacy exact-plan approvals keep their original meaning and cannot authorize this lane. Before dispatch, ordinary controller code must resolve every proposed operation to an admitted capability and validate the exact objective, environment, target snapshot, binding, delegation, network policy, runtime identity, lifetime, and budget. A model or engine cannot create ownership, credentials, approval, privileges, capability admission, executable content, defensive-change authority, or spending authority.
+
+The controlled worker boundary is deliberately narrower than a general container launch:
+
+- the worker has a private HOME and workspace and no host mounts, container-management socket, reachable host gateway, cloud-metadata route, caller-supplied host command, or runtime content installer;
+- the controller-owned Docker proxy admits only the bounded, attempt-bound lifecycle and in-container exec grammar required for the pinned worker and owned descendants;
+- target access uses an attempt-bound relay with exact admitted routes and destinations;
+- model access uses a separate attempt-bound relay with an exact provider, model, authorization reference, and usage limits;
+- provider credentials remain outside the worker and are injected only inside the controller-owned relay;
+- model responses, tool output, target content, engine assertions, and generated reports remain untrusted data;
+- the engine may propose work, but only the controller can validate and issue a reviewed operation.
+
+The derived image is admitted by its complete reviewed identity, including the source revision, base image, Dockerfile, dependency lock, SBOM, provenance, attestation, and image digest. An upstream source pin or sandbox-image index is not an executed-image identity. Content admission and experiment execution remain separate decisions.
+
+Lifecycle state is controller owned. Every accepted attempt receives a new identity; restart and recovery reconcile retained custody and never silently resubmit uncertain work. Cancellation stops new admission, revokes relays, requests descendant cessation, and records what can be verified. Cleanup and residue absence are separate outcomes, and an intentionally retained defense is not attack cleanup. The lane has no authority to apply a defense merely because an engine recommends one.
+
+Engine output is self-reported evidence. A successful process exit is not an independent observation or proof that an objective succeeded. Independent observations must be retained through a separately reviewed source and bound to the exact attempt, run, target snapshot, and observer identity. A missing, stale, partial, or uncertain observer result remains unknown. The original attempt, later defensive change, exact retest, fresh adaptive attempt, legitimate-use check, and cleanup or retained-hardening disposition remain distinct records.
+
+The shipped exact-plan runner prerequisites and literal-loopback network rules below do not describe this development lane. Conversely, the external-engine contracts do not broaden the Rust runner inventory, profile, approval, filesystem, or network scope.
 
 ## Logical contract to sealed executor contract
 
