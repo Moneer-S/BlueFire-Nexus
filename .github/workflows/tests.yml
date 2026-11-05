@@ -242,7 +242,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             platform: linux
             architecture: x86_64
             runner-path: runner/target/x86_64-unknown-linux-musl/release/bluefire-runner
@@ -269,6 +269,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Prepare protected Linux Python cache
         if: runner.os == 'Linux'
@@ -401,6 +405,38 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: >-
           python -c "import os, subprocess; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-I', os.path.join(r'${{ runner.temp }}', 'verify_packaged_runner.py'), 'smoke', '--work-root', os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke-state'), '--forbid-root', os.environ['GITHUB_WORKSPACE'], '--report', os.path.join(r'${{ runner.temp }}', 'installed-wheel-smoke.json')], check=True)"
+
+      # Synthetic product mechanics only: no native Strix, Docker, live model,
+      # external target, attack effectiveness, or protected admission proof.
+      - name: Verify installed Linux deterministic engine mechanics simulation
+        id: installed-engine-mechanics
+        if: matrix.platform == 'linux'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          cp tools/verify_installed_engine_mechanics.py "$RUNNER_TEMP/verify_installed_engine_mechanics.py"
+          cp tools/installed_engine_mechanics_fixture.py "$RUNNER_TEMP/installed_engine_mechanics_fixture.py"
+          cp tools/verify_installed_engine_experiment.py "$RUNNER_TEMP/verify_installed_engine_experiment.py"
+          wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
+          test "${#wheels[@]}" = 1
+          test -f "${wheels[0]}"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -I -B verify_installed_engine_mechanics.py \
+            --source-revision "$GITHUB_SHA" \
+            --forbid-root "$GITHUB_WORKSPACE" \
+            --wheel "${wheels[0]}" \
+            --fixture "$RUNNER_TEMP/installed_engine_mechanics_fixture.py" \
+            --binding-helper "$RUNNER_TEMP/verify_installed_engine_experiment.py" \
+            --output "$RUNNER_TEMP/bluefire-installed-engine-mechanics-evidence"
+
+      - name: Upload installed Linux deterministic engine mechanics public summary
+        if: success() && matrix.platform == 'linux' && steps.installed-engine-mechanics.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-installed-deterministic-engine-mechanics-linux-x86_64-${{ github.sha }}
+          path: ${{ runner.temp }}/bluefire-installed-engine-mechanics-evidence/public-summary.json
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Verify installed macOS file-access protocol capability
         if: matrix.platform == 'macos' && matrix.architecture == 'aarch64'
