@@ -67,7 +67,10 @@ def _require_text(value: str, label: str, *, maximum: int = 512) -> str:
 def _canonical_url(value: str, label: str, *, allow_path: bool) -> str:
     if not isinstance(value, str) or len(value) > 2048:
         raise StrixAdapterError(f"{label} is invalid")
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        raise StrixAdapterError(f"{label} is invalid") from None
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.hostname
@@ -94,6 +97,13 @@ def _canonical_url(value: str, label: str, *, allow_path: bool) -> str:
     canonical = urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
     if canonical != value:
         raise StrixAdapterError(f"{label} must use its canonical URL form")
+    return canonical
+
+
+def _canonical_target_origin(value: str, label: str) -> str:
+    canonical = _canonical_url(value, label, allow_path=True)
+    if urlsplit(canonical).path not in {"", "/"}:
+        raise StrixAdapterError(f"{label} must be an exact root-origin HTTP(S) URL")
     return canonical
 
 
@@ -157,7 +167,7 @@ class StrixScope:
     network_name: str
 
     def __post_init__(self) -> None:
-        _canonical_url(self.target, "Strix target", allow_path=True)
+        _canonical_target_origin(self.target, "Strix target")
         for name in ("target_snapshot_digest", "scope_digest", "network_policy_digest"):
             _require_digest(getattr(self, name), name)
         if _NETWORK.fullmatch(self.network_name) is None:
@@ -658,7 +668,7 @@ def discover_run_snapshot(
 ) -> StrixRunSnapshot:
     """Bind one fixed Strix run record and project it without security claims."""
 
-    _canonical_url(expected_target, "Strix expected target", allow_path=True)
+    _canonical_target_origin(expected_target, "Strix expected target")
     _require_digest(expected_instruction_sha256, "Strix expected instruction")
     if process_exit_code is not None and (
         isinstance(process_exit_code, bool) or not -255 <= process_exit_code <= 255

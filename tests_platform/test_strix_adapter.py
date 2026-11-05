@@ -27,7 +27,7 @@ from bluefire.strix_policy_overlay import (
 from bluefire.util import file_hash
 
 ATTEMPT_ID = "attempt-0123456789abcdef0123456789abcdef"
-TARGET = "http://bluefire-lab:8080/app"
+TARGET = "http://bluefire-lab:8080/"
 DIGEST = "sha256:" + "a" * 64
 
 
@@ -290,6 +290,59 @@ def test_workspace_binds_attempt_identity_to_directory(tmp_path: Path) -> None:
 def test_scope_refuses_global_ambiguous_or_link_local_targets(target: str, address: str) -> None:
     with pytest.raises(StrixAdapterError):
         StrixScope(target, (address,), DIGEST, DIGEST, DIGEST, "bf-strix-test")
+
+
+@pytest.mark.parametrize(
+    "target,address,origin",
+    [
+        ("http://bluefire-lab:8080", "172.18.0.7", "http://bluefire-lab:8080"),
+        ("http://bluefire-lab:8080/", "172.18.0.7", "http://bluefire-lab:8080"),
+        ("https://[fd00::7]/", "fd00::7", "https://[fd00::7]"),
+    ],
+)
+def test_scope_accepts_canonical_root_origins(
+    target: str, address: str, origin: str
+) -> None:
+    scope = StrixScope(target, (address,), DIGEST, DIGEST, DIGEST, "bf-strix-test")
+    assert scope.target == target
+    assert scope.origin == origin
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "http://bluefire-lab:8080/app",
+        "http://bluefire-lab:8080//app",
+        "http://bluefire-lab:8080/.",
+        "http://bluefire-lab:8080/%2e",
+        "http://bluefire-lab:8080/app/../",
+        "http://bluefire-lab:8080/;admin",
+        "http://bluefire-lab:8080/?wide=true",
+        "http://bluefire-lab:8080/?",
+        "http://bluefire-lab:8080/#fragment",
+        "http://bluefire-lab:8080/#",
+        "http://operator@bluefire-lab:8080/",
+        "http://@bluefire-lab:8080/",
+        "HTTP://bluefire-lab:8080/",
+        "http://BLUEFIRE-lab:8080/",
+        "http://bluefire-lab:08080/",
+        "http://bluefire-lab:8080\\escape",
+        "http://[::1",
+        "http://bluefire-lab:8080/\n",
+    ],
+)
+def test_target_admission_rejects_paths_and_noncanonical_forms(
+    target: str, tmp_path: Path
+) -> None:
+    with pytest.raises(StrixAdapterError, match="Strix target"):
+        StrixScope(target, ("172.18.0.7",), DIGEST, DIGEST, DIGEST, "bf-strix-test")
+    with pytest.raises(StrixAdapterError, match="Strix expected target"):
+        discover_run_snapshot(
+            tmp_path,
+            expected_target=target,
+            expected_instruction_sha256=DIGEST,
+            process_exit_code=None,
+        )
 
 
 def test_scope_requires_canonical_address_order() -> None:
