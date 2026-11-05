@@ -41,6 +41,13 @@ The source root declares Apache-2.0. Its exact
 is preserved in candidate outputs. The reviewed tree contains no `NOTICE` file; the builder checks
 that absence and fails closed if a future pin adds one until its distribution is handled.
 
+The proposed controlled derived-image contract additionally requires these exact component
+versions: `strix-agent 1.7.0`, `openai-agents 0.19.0`, `docker 7.1.0`, Caido `0.56.0`, and
+`caido-sdk-client 0.2.0`. These are controller-validated version requirements, not a claim that a
+qualified image containing them exists, that their complete dependency closure has been reviewed,
+or that redistribution rights have been cleared. A later journey record must preserve the exact
+resolved lock closure and its digest rather than treating this short list as a complete inventory.
+
 BlueFire changes one file in the candidate source,
 `strix/agents/prompts/system_prompt.jinja`, through a hash-pinned replacement. The modification
 removes upstream blanket-authorization and refusal-avoidance directives, substitutes accurate

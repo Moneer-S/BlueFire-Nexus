@@ -27,6 +27,42 @@ The build also validates fixed Git blob identities for `pyproject.toml`, `uv.loc
 system prompt, the Hatch TUI build hook, and the Go module files. It refuses a dirty preimage,
 unexpected remote, changed metadata, missing Apache-2.0 text, or drift in any reviewed blob.
 
+## Engine selection and evidence record
+
+Strix is the default external engine for this increment because the repository has already pinned
+and reviewed its source, uses its supported headless CLI, and can integrate through its public
+runtime-backend registry while preserving its report and agent-coordination behavior. BlueFire
+places authorization, target and model routing, lifecycle control, evidence retention, and cleanup
+outside that model-driven engine. Decepticon remains an alternative only if a concrete requirement
+cannot be met through this controlled Strix profile. No Decepticon source version, dependency
+closure, adapter, admission, or effectiveness proof is accepted by the current implementation, so
+switching engines would require a separate source and runtime decision rather than an informal
+fallback.
+
+Every installed engine journey must retain one exact, reviewable record containing:
+
+- BlueFire source revision; Strix source, package and prompt overlay identities; the complete
+  resolved dependency-lock digest; and the exact bootstrap, backend, policy-proxy,
+  workspace-transfer, controlled-provider, SDK-closure, derived-image and runtime-profile digests;
+- every candidate, installed runtime, image contract, base-image, Dockerfile, SBOM, provenance,
+  attestation, image-qualification receipt-set and runtime-admission reference used;
+- the exact preparation reference and acceptance record, binding and delegation digests, job,
+  submission and intent identities, preflight revision and digest, execution-claim reference and
+  runtime-resolution reference for the admitted attempt;
+- provider and model identity, configuration, test-versus-live label, budgets, measured usage, and
+  any usage or cost uncertainty;
+- owned target, authorized scope, environment snapshot, versioned delegation, and controller-owned
+  target and model relay identities;
+- raw engine artifacts, engine-reported outcome and exit classification, independent observer
+  identity and health, retained observations, and every evidence completeness gap;
+- baseline mechanism and outcome, bounded defensive change, exact-mechanism retest, fresh adaptive
+  attempt, legitimate-use check, and cleanup or retained-hardening disposition;
+- cancellation and restart/reconciliation results, including pre-dispatch cancellation or
+  absent-claim evidence where applicable; operator interventions, abandoned paths, reused
+  findings, refreshed prerequisites, and unresolved uncertainty.
+
+This record is an acceptance requirement, not evidence that such a journey has already run.
+
 ## Reviewed BlueFire modification
 
 The upstream system prompt contains blanket authorization and refusal-avoidance wording that is
@@ -144,6 +180,16 @@ qualification, the selected platform child manifest, config, and layer digests m
 and recorded, and the image inventory and third-party notices must be reviewed. The manifest keeps
 those fields unresolved and runtime qualification false. The image and its dependencies must not
 be represented as wholly Apache-2.0 merely because the Strix source root uses that license.
+
+That upstream sandbox identity is also not the image BlueFire proposes to execute. The separate
+`bluefire.strix-derived-image.v1` declaration requires a digest-pinned controlled image and binds
+its exact base image, Dockerfile, dependency lock, SBOM, provenance and attestation digests,
+`linux/amd64` platform, fixed runtime profile, and component requirements: `strix-agent 1.7.0`,
+`openai-agents 0.19.0`, `docker 7.1.0`, Caido `0.56.0`, and `caido-sdk-client 0.2.0`. A declaration
+is not a build or qualification receipt. No production receipt-signing authority is configured,
+and no current record proves that this derived image was built, admitted, executed, or cleared for
+redistribution. A future installed journey must retain the actual contract and independently
+verified receipt digests; the upstream OCI index cannot substitute for them.
 
 Further runtime work must separately establish target binding, outer network containment,
 lifecycle stop and cleanup, raw evidence collection, and controlled-provider mechanics. Live-model

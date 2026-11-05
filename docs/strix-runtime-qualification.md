@@ -25,6 +25,13 @@ identities agree:
 The candidate checkout must still contain only the reviewed prompt modification. The preparation
 does not reconstruct source from an unbound archive or a moving tag.
 
+The proposed controlled-image contract separately pins `strix-agent 1.7.0`,
+`openai-agents 0.19.0`, `docker 7.1.0`, Caido `0.56.0`, and `caido-sdk-client 0.2.0`. These short
+pins are not a complete dependency inventory. The preparation must preserve the exact resolved
+lock closure and digest. A future image builder and verifier must prove that closure agrees with
+the declared components before admission; the current contract parser does not perform that
+cross-check and therefore supplies no positive admission claim.
+
 ## Offline Python closure
 
 The exact upstream lock is exported with `uv export --frozen --no-dev --no-emit-project`. The
@@ -70,6 +77,14 @@ The generated notices report is an inventory aid, not a rights decision. It expl
 NOTICE completeness, license review, and redistribution review unresolved. The Apache-2.0 license
 of the Strix source repository is not applied to the image or its third-party packages.
 
+This inventory describes the pinned upstream sandbox OCI child. It does not create or qualify the
+separate controlled `bluefire.strix-derived-image.v1` artifact proposed for an installed attempt.
+That contract must bind the actual derived image, base image, Dockerfile, dependency-lock, SBOM,
+provenance and attestation digests. Admission must pair it with the complete independently verified
+controller receipt set: two local-build checks and ten hosted-qualification checks. The upstream
+index or this inventory cannot stand in for that set. No production
+signing authority is configured, so the derived-image path remains fail closed.
+
 The preparation manifest also preserves the candidate's blocked
 `qualification.redistribution_review`. Go TUI dependencies, bundled frontend/viewer assets,
 the complete Python runtime wheel closure, and OCI image notices/rights all remain unreviewed.
@@ -101,6 +116,10 @@ either. The preparation directory contains:
 
 The manifest always records `runtime_qualified: false`, all execution flags as false, and the hosted
 runner, action, Python, uv, pip, Syft, candidate, wheel, prompt, and image identities.
+
+A later installed journey must also retain the exact controlled derived-image declaration and
+all receipt references. Their absence cannot be repaired by copying the upstream OCI index identity
+into a journey record.
 
 ## Remaining gates
 

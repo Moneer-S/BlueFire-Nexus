@@ -46,6 +46,15 @@ retain their private modes.
 - the exact BlueFire commit, transfer bundle ref, recorded threat-review ref,
   and actual second-job probe-runner identity.
 
+Those startup inputs inventory the upstream sandbox OCI and do not admit the controlled image for
+an engine attempt. The separate `bluefire.strix-derived-image.v1` contract must bind the actual
+derived image, base image, Dockerfile, dependency-lock, SBOM, provenance and attestation digests,
+and admission must pair it with the full independently verified controller receipt set. It
+requires `strix-agent 1.7.0`, `openai-agents 0.19.0`, `docker 7.1.0`, Caido `0.56.0`, and
+`caido-sdk-client 0.2.0`; the complete
+resolved lock closure and digest remain part of the retained build and journey evidence. The
+upstream OCI index is not an executed-image identity and cannot substitute for this record.
+
 Every preparation file is bound by `SHA256SUMS`. A deterministic bounded tar
 contains the validated candidate and preparation artifacts, offline wheelhouse,
 and exact pinned pip wheel. It deliberately does not contain job 1's installed
@@ -240,6 +249,10 @@ builds its legacy launch plan. `InstalledAttemptFactory` remains an injected
 protocol; no maintained concrete factory yet selects the controlled bootstrap,
 backend, relays, and launch plan for an installed attempt.
 
+No production controller signing authority is configured for the derived-image
+receipt set. The upstream sandbox index, a self-reported image hash, or a startup
+receipt therefore cannot promote the controlled image into a launchable runtime.
+
 The policy proxy, relay, workspace-transfer, controlled-provider, backend, and
 composition contracts are implemented and fail closed, but they are not part of
 an admitted release candidate or a live proof. Their exact bootstrap, backend,
@@ -250,6 +263,10 @@ until a concrete controlled attempt factory is wired, durable execution
 consumption is proven, and the complete installed session, cancellation,
 artifact, independent-observation, defense, retest, legitimate-use, and cleanup
 journey passes.
+
+The exact per-journey identities and attack, defense, retest, legitimate-use,
+lifecycle, and uncertainty record are listed in
+[`engine-provenance.md`](engine-provenance.md#engine-selection-and-evidence-record).
 
 ## Workflow and outputs
 
