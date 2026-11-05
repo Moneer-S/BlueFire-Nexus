@@ -480,3 +480,588 @@ def evaluate_image_admission(
 def blocked_image_redistribution_review() -> dict[str, Any]:
     """A fresh unresolved rights review, independent of qualification success."""
     return dict(strix_redistribution_review())
+
+
+# V2 is deliberately separate from the historical declaration, receipt parser,
+# signature domain, and admission decision above. A V1 receipt cannot qualify V2.
+REVIEWED_UPSTREAM_INDEX_REFERENCE = (
+    "ghcr.io/usestrix/strix-sandbox@"
+    "sha256:78df914f3029464c9d00580f531ec51025c251c422ec3b09c3f19c5fa6d80c30"
+)
+_V2_INDEX_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    }
+)
+_V2_MANIFEST_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    }
+)
+_V2_CONFIG_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.config.v1+json",
+        "application/vnd.docker.container.image.v1+json",
+    }
+)
+_V2_REFERENCE = re.compile(
+    r"(?P<registry>[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[1-9][0-9]{0,4})?)/"
+    r"(?P<repository>[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*)"
+    r"@(?P<digest>sha256:[0-9a-f]{64})"
+)
+_CONTROLLER_RECEIPT_PUBLIC_KEYS_V2: tuple[bytes, ...] = ()
+_RECEIPT_SIGNATURE_DOMAIN_V2 = b"bluefire.strix-image-controller-receipt.v2\x00"
+
+
+def _v2_reference(value: Any, label: str) -> str:
+    if not isinstance(value, str) or len(value) > 256:
+        raise StrixImageContractError(f"{label} is not a canonical digest reference")
+    match = _V2_REFERENCE.fullmatch(value)
+    if match is None:
+        raise StrixImageContractError(f"{label} is not a canonical digest reference")
+    registry = match.group("registry")
+    host, separator, port = registry.partition(":")
+    if "." not in host and host != "localhost":
+        raise StrixImageContractError(f"{label} registry is not fully qualified")
+    if separator and (int(port) > 65535 or int(port) in {80, 443}):
+        raise StrixImageContractError(f"{label} registry port is invalid")
+    return match.group("digest")
+
+
+def _v2_oci_descriptor(value: Any, *, role: str, platform: bool) -> dict[str, Any]:
+    fields = {"digest", "media_type", "platform"} if platform else {"digest", "media_type"}
+    row = _exact(value, fields, role)
+    _digest(row["digest"], role)
+    allowed_media_types = {
+        "index": _V2_INDEX_MEDIA_TYPES,
+        "manifest": _V2_MANIFEST_MEDIA_TYPES,
+        "config": _V2_CONFIG_MEDIA_TYPES,
+    }[role.rsplit(" ", 1)[-1]]
+    if type(row["media_type"]) is not str or row["media_type"] not in allowed_media_types:
+        raise StrixImageContractError(f"{role} media type is invalid")
+    if platform:
+        _same(row["platform"], TESTED_PLATFORM, f"{role} platform")
+    return row
+
+
+def _v2_overlay_receipts(row: Mapping[str, Any]) -> None:
+    from . import strix_policy_overlay, strix_startup_overlay
+
+    expected = (
+        (
+            "prompt_overlay_receipt",
+            {
+                "schema_version": "bluefire.strix-prompt-overlay.v1",
+                "source_revision": STRIX_SOURCE_REVISION,
+                "upstream_sha256": strix_policy_overlay.REVIEWED_PROMPT_SHA256,
+                "overlay_sha256": strix_policy_overlay.OVERLAY_SHA256,
+                "patched_sha256": strix_policy_overlay.PATCHED_PROMPT_SHA256,
+            },
+        ),
+        (
+            "startup_overlay_receipt",
+            {
+                "schema_version": "bluefire.strix-startup-overlay.v1",
+                "source_revision": STRIX_SOURCE_REVISION,
+                "upstream_sha256": strix_startup_overlay.REVIEWED_STARTUP_SHA256,
+                "overlay_sha256": strix_startup_overlay.STARTUP_OVERLAY_SHA256,
+                "patched_sha256": strix_startup_overlay.PATCHED_STARTUP_SHA256,
+            },
+        ),
+    )
+    for field, receipt in expected:
+        _exact(row[field], set(receipt), field)
+        _same(row[field], receipt, field)
+
+
+def _v2_notice_review(value: Any, label: str) -> str:
+    row = _exact(
+        value,
+        {
+            "notice_report_digest",
+            "notices_complete",
+            "license_review_complete",
+            "redistribution_rights_confirmed",
+        },
+        label,
+    )
+    notice_digest = _digest(row["notice_report_digest"], label)
+    _same(
+        {
+            "notices_complete": row["notices_complete"],
+            "license_review_complete": row["license_review_complete"],
+            "redistribution_rights_confirmed": row["redistribution_rights_confirmed"],
+        },
+        {
+            "notices_complete": False,
+            "license_review_complete": False,
+            "redistribution_rights_confirmed": None,
+        },
+        label,
+    )
+    return notice_digest
+
+
+def _validate_contract_v2(value: Any) -> dict[str, Any]:
+    row = _exact(
+        value,
+        {
+            "schema_version",
+            "source_revision",
+            "source_tree_digest",
+            "upstream_image",
+            "dockerfile_from",
+            "derived_image",
+            "dockerfile_digest",
+            "dependency_lock_digest",
+            "sbom_digest",
+            "provenance_digest",
+            "attestation_digest",
+            "components",
+            "platform",
+            "runtime_profile",
+            "prompt_overlay_receipt",
+            "startup_overlay_receipt",
+            "upstream_notice_review",
+            "derived_notice_review",
+            "redistribution_review",
+        },
+        "derived image V2",
+    )
+    _same(row["schema_version"], "bluefire.strix-derived-image.v2", "image V2 schema")
+    _same(row["source_revision"], STRIX_SOURCE_REVISION, "Strix source revision")
+    _same(row["platform"], TESTED_PLATFORM, "tested platform")
+    _same(row["components"], pinned_image_components(), "component versions")
+    for name in (
+        "source_tree_digest",
+        "dockerfile_digest",
+        "dependency_lock_digest",
+        "sbom_digest",
+        "provenance_digest",
+        "attestation_digest",
+    ):
+        _digest(row[name], name)
+
+    upstream = _exact(
+        row["upstream_image"],
+        {
+            "index_reference",
+            "index",
+            "platform_child",
+            "config",
+            "inventory_digest",
+            "qualification_receipt_digest",
+        },
+        "upstream image",
+    )
+    upstream_index = _v2_oci_descriptor(upstream["index"], role="upstream index", platform=False)
+    upstream_child = _v2_oci_descriptor(
+        upstream["platform_child"], role="upstream manifest", platform=True
+    )
+    upstream_config = _v2_oci_descriptor(upstream["config"], role="upstream config", platform=True)
+    _same(
+        upstream["index_reference"],
+        REVIEWED_UPSTREAM_INDEX_REFERENCE,
+        "reviewed upstream index reference",
+    )
+    _same(
+        _v2_reference(upstream["index_reference"], "upstream index reference"),
+        upstream_index["digest"],
+        "upstream index reference digest",
+    )
+    _digest(upstream["inventory_digest"], "upstream inventory")
+    _digest(upstream["qualification_receipt_digest"], "upstream qualification receipt")
+
+    dockerfile_from = _exact(
+        row["dockerfile_from"],
+        {"reference", "platform_child_manifest_digest", "config_digest"},
+        "actual Dockerfile FROM",
+    )
+    _same(
+        _v2_reference(dockerfile_from["reference"], "Dockerfile FROM reference"),
+        upstream_index["digest"],
+        "Dockerfile FROM index digest",
+    )
+    _same(dockerfile_from["reference"], upstream["index_reference"], "Dockerfile FROM reference")
+    _same(
+        dockerfile_from["platform_child_manifest_digest"],
+        upstream_child["digest"],
+        "Dockerfile FROM child manifest",
+    )
+    _same(dockerfile_from["config_digest"], upstream_config["digest"], "Dockerfile FROM config")
+
+    derived = _exact(
+        row["derived_image"],
+        {"index_reference", "index", "platform_child", "config"},
+        "derived image",
+    )
+    derived_index = _v2_oci_descriptor(derived["index"], role="derived index", platform=False)
+    derived_child = _v2_oci_descriptor(
+        derived["platform_child"], role="derived manifest", platform=True
+    )
+    derived_config = _v2_oci_descriptor(derived["config"], role="derived config", platform=True)
+    _same(
+        _v2_reference(derived["index_reference"], "derived image reference"),
+        derived_index["digest"],
+        "derived image reference digest",
+    )
+    # The six OCI objects serve distinct roles. In particular an upstream index
+    # is not an executable child, and the base cannot masquerade as the result.
+    oci_digests = (
+        upstream_index["digest"],
+        upstream_child["digest"],
+        upstream_config["digest"],
+        derived_index["digest"],
+        derived_child["digest"],
+        derived_config["digest"],
+    )
+    if len(set(oci_digests)) != len(oci_digests):
+        raise StrixImageContractError("OCI index, child, config, and derived roles overlap")
+    if derived["index_reference"] == upstream["index_reference"]:
+        raise StrixImageContractError("upstream base cannot be the derived image")
+    if derived["index_reference"].split("@", 1)[0] == upstream["index_reference"].split("@", 1)[0]:
+        raise StrixImageContractError("derived image must use a separate controlled repository")
+
+    profile = row["runtime_profile"]
+    if not isinstance(profile, Mapping):
+        raise StrixImageContractError("image runtime profile is invalid")
+    network = _exact(
+        profile.get("network"),
+        {"id", "name", "policy_digest", "internal", "attach_additional_networks"},
+        "image network",
+    )
+    _same(
+        profile,
+        proposed_image_runtime_profile(
+            network_id=network["id"],
+            network_name=network["name"],
+            network_policy_digest=network["policy_digest"],
+        ),
+        "image runtime profile",
+    )
+    _v2_overlay_receipts(row)
+    upstream_notice = _v2_notice_review(row["upstream_notice_review"], "upstream notice review")
+    derived_notice = _v2_notice_review(row["derived_notice_review"], "derived notice review")
+    if (
+        len({upstream_notice, derived_notice, upstream["inventory_digest"], row["sbom_digest"]})
+        != 4
+    ):
+        raise StrixImageContractError("notice reports must have separate artifact identities")
+    if not is_blocked_strix_redistribution_review(row["redistribution_review"]):
+        raise StrixImageContractError("image redistribution review must remain blocked")
+    return row
+
+
+@dataclass(frozen=True, slots=True)
+class StrixImageContractV2:
+    """Canonical proposed identity, including claims about FROM and upstream proof.
+
+    Only authenticated qualification receipts can establish that the actual
+    Dockerfile, resolved registry objects, and retained upstream receipt match.
+    Parsing this declaration does not inspect those external artifacts.
+    """
+
+    canonical_bytes: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.canonical_bytes) is not bytes or len(self.canonical_bytes) > 65536:
+            raise StrixImageContractError("derived image V2 contract bytes are invalid")
+        try:
+            row = _validate_contract_v2(json.loads(self.canonical_bytes))
+            if self.canonical_bytes != canonical_json_bytes(row):
+                raise StrixImageContractError("derived image V2 encoding is not canonical")
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise StrixImageContractError("derived image V2 contract is not JSON") from exc
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> StrixImageContractV2:
+        try:
+            return cls(canonical_json_bytes(_validate_contract_v2(value)))
+        except (TypeError, ValueError, OverflowError) as exc:
+            if isinstance(exc, StrixImageContractError):
+                raise
+            raise StrixImageContractError("derived image V2 contract is invalid") from exc
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(json.loads(self.canonical_bytes))
+
+    @property
+    def contract_digest(self) -> str:
+        return "sha256:" + hashlib.sha256(self.canonical_bytes).hexdigest()
+
+    @property
+    def runtime_profile_digest(self) -> str:
+        return cast(str, content_hash(self.to_dict()["runtime_profile"]))
+
+    @property
+    def image_identity_digest(self) -> str:
+        row = self.to_dict()
+        identity_fields = (
+            "source_revision",
+            "source_tree_digest",
+            "upstream_image",
+            "dockerfile_from",
+            "derived_image",
+            "dockerfile_digest",
+            "dependency_lock_digest",
+            "sbom_digest",
+            "provenance_digest",
+            "attestation_digest",
+            "components",
+            "platform",
+            "runtime_profile",
+            "prompt_overlay_receipt",
+            "startup_overlay_receipt",
+        )
+        return cast(str, content_hash({name: row[name] for name in identity_fields}))
+
+
+@dataclass(frozen=True, slots=True)
+class StrixImageQualificationReceiptV2:
+    """One V2 assertion; only the controller can authenticate retained bytes."""
+
+    canonical_bytes: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.canonical_bytes) is not bytes or len(self.canonical_bytes) > 8192:
+            raise StrixImageContractError("image V2 qualification receipt bytes are invalid")
+        try:
+            row = _exact(
+                json.loads(self.canonical_bytes),
+                {
+                    "schema_version",
+                    "stage",
+                    "check",
+                    "contract_digest",
+                    "image_identity_digest",
+                    "runtime_profile_digest",
+                    "upstream_index_digest",
+                    "upstream_child_manifest_digest",
+                    "upstream_config_digest",
+                    "derived_index_digest",
+                    "derived_child_manifest_digest",
+                    "derived_config_digest",
+                    "source_revision",
+                    "platform",
+                    "runner_digest",
+                    "verifier_digest",
+                    "evidence_digest",
+                    "checked_at",
+                    "passed",
+                },
+                "image V2 qualification receipt",
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise StrixImageContractError("image V2 qualification receipt is not JSON") from exc
+        _same(row["schema_version"], "bluefire.strix-image-qualification.v2", "receipt V2 schema")
+        _same(row["source_revision"], STRIX_SOURCE_REVISION, "receipt source revision")
+        _same(row["platform"], TESTED_PLATFORM, "receipt platform")
+        _same(row["passed"], True, "receipt success")
+        checks: tuple[str, ...]
+        if row["stage"] == "local-build":
+            checks = LOCAL_BUILD_CHECKS
+        elif row["stage"] == "hosted-qualification":
+            checks = HOSTED_QUALIFICATION_CHECKS
+        else:
+            raise StrixImageContractError("image V2 qualification stage is unsupported")
+        if row["check"] not in checks:
+            raise StrixImageContractError("image V2 qualification check is unsupported for stage")
+        for name in (
+            "contract_digest",
+            "image_identity_digest",
+            "runtime_profile_digest",
+            "upstream_index_digest",
+            "upstream_child_manifest_digest",
+            "upstream_config_digest",
+            "derived_index_digest",
+            "derived_child_manifest_digest",
+            "derived_config_digest",
+            "runner_digest",
+            "verifier_digest",
+            "evidence_digest",
+        ):
+            _digest(row[name], name)
+        try:
+            if not isinstance(row["checked_at"], str):
+                raise ValueError("not text")
+            parse_iso8601_datetime(row["checked_at"])
+        except ValueError as exc:
+            raise StrixImageContractError("image V2 qualification timestamp is invalid") from exc
+        if self.canonical_bytes != canonical_json_bytes(row):
+            raise StrixImageContractError("image V2 qualification encoding is not canonical")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> StrixImageQualificationReceiptV2:
+        try:
+            return cls(canonical_json_bytes(dict(value)))
+        except (TypeError, ValueError, OverflowError) as exc:
+            if isinstance(exc, StrixImageContractError):
+                raise
+            raise StrixImageContractError("image V2 qualification receipt is invalid") from exc
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(json.loads(self.canonical_bytes))
+
+    @property
+    def receipt_digest(self) -> str:
+        return "sha256:" + hashlib.sha256(self.canonical_bytes).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class SignedImageQualificationReceiptV2:
+    """Untrusted registry response; construction confers no authority."""
+
+    canonical_receipt: bytes
+    signature: bytes
+
+
+def _controller_public_key_v2(authority_key_id: str) -> bytes:
+    _digest(authority_key_id, "controller V2 image receipt authority")
+    for key in _CONTROLLER_RECEIPT_PUBLIC_KEYS_V2:
+        if type(key) is bytes and len(key) == 32:
+            if "sha256:" + hashlib.sha256(key).hexdigest() == authority_key_id:
+                return key
+    raise StrixImageContractError("controller V2 image receipt authority is not configured")
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerVerifiedImageReceiptRegistryV2:
+    """Reopen and verify every V2 receipt under a separately reviewed authority."""
+
+    authority_key_id: str
+    open_signed_receipt: Callable[[str, str], SignedImageQualificationReceiptV2]
+
+    def __post_init__(self) -> None:
+        _controller_public_key_v2(self.authority_key_id)
+        if not callable(self.open_signed_receipt):
+            raise StrixImageContractError("controller V2 image receipt opener is invalid")
+
+    def reopen_verified(
+        self, *, contract_digest: str, receipt_digest: str
+    ) -> StrixImageQualificationReceiptV2:
+        _digest(contract_digest, "registry V2 image contract")
+        _digest(receipt_digest, "registry V2 image receipt")
+        public_key = _controller_public_key_v2(self.authority_key_id)
+        try:
+            signed = self.open_signed_receipt(contract_digest, receipt_digest)
+        except Exception:
+            raise StrixImageContractError(
+                "controller V2 image receipt could not be reopened"
+            ) from None
+        if (
+            type(signed) is not SignedImageQualificationReceiptV2
+            or type(signed.canonical_receipt) is not bytes
+            or type(signed.signature) is not bytes
+            or len(signed.signature) != 64
+        ):
+            raise StrixImageContractError("controller V2 image receipt envelope is invalid")
+        receipt = StrixImageQualificationReceiptV2(signed.canonical_receipt)
+        if receipt.receipt_digest != receipt_digest:
+            raise StrixImageContractError("controller V2 image receipt was replaced")
+        row = receipt.to_dict()
+        _same(row["contract_digest"], contract_digest, "registry V2 receipt contract")
+        _same(row["verifier_digest"], self.authority_key_id, "registry V2 receipt verifier")
+        message = (
+            _RECEIPT_SIGNATURE_DOMAIN_V2
+            + self.authority_key_id.encode("ascii")
+            + b"\x00"
+            + signed.canonical_receipt
+        )
+        try:
+            Ed25519PublicKey.from_public_bytes(public_key).verify(signed.signature, message)
+        except (InvalidSignature, ValueError):
+            raise StrixImageContractError(
+                "controller V2 image receipt signature is invalid"
+            ) from None
+        return receipt
+
+
+@dataclass(frozen=True, slots=True)
+class StrixImageAdmissionDecisionV2:
+    contract_digest: str
+    local_build_qualified: bool
+    hosted_qualification_complete: bool
+    image_admitted_for_runtime: bool
+    missing_checks: tuple[str, ...]
+    # These are separate decisions. Image receipts cannot clear them.
+    notices_complete: bool = False
+    license_review_complete: bool = False
+    redistribution_rights_confirmed: None = None
+    redistribution_authorized: bool = False
+    production_runtime_admitted: bool = False
+    live_execution_proven: bool = False
+
+
+def evaluate_image_admission_v2(
+    contract: StrixImageContractV2,
+    receipts: Sequence[StrixImageQualificationReceiptV2],
+    *,
+    receipt_registry: ControllerVerifiedImageReceiptRegistryV2 | None = None,
+) -> StrixImageAdmissionDecisionV2:
+    """Evaluate only the necessary V2 image gate, without effects or launch authority.
+
+    The reviewed signer must have inspected the actual Dockerfile and upstream
+    qualification evidence. This pure decision only authenticates its receipts.
+    """
+    if type(contract) is not StrixImageContractV2:
+        raise StrixImageContractError("image V2 contract has not been parsed")
+    contract = StrixImageContractV2(contract.canonical_bytes)
+    if (
+        receipt_registry is not None
+        and type(receipt_registry) is not ControllerVerifiedImageReceiptRegistryV2
+    ):
+        raise StrixImageContractError("image V2 receipt registry is not a controller capability")
+    if receipt_registry is not None:
+        _controller_public_key_v2(receipt_registry.authority_key_id)
+    if not isinstance(receipts, (list, tuple)) or len(receipts) > 12:
+        raise StrixImageContractError("image V2 qualification receipt collection is invalid")
+    row = contract.to_dict()
+    upstream = row["upstream_image"]
+    derived = row["derived_image"]
+    expected = {
+        "contract_digest": contract.contract_digest,
+        "image_identity_digest": contract.image_identity_digest,
+        "runtime_profile_digest": contract.runtime_profile_digest,
+        "upstream_index_digest": upstream["index"]["digest"],
+        "upstream_child_manifest_digest": upstream["platform_child"]["digest"],
+        "upstream_config_digest": upstream["config"]["digest"],
+        "derived_index_digest": derived["index"]["digest"],
+        "derived_child_manifest_digest": derived["platform_child"]["digest"],
+        "derived_config_digest": derived["config"]["digest"],
+    }
+    found: set[str] = set()
+    for candidate in receipts:
+        if type(candidate) is not StrixImageQualificationReceiptV2:
+            raise StrixImageContractError("image V2 qualification receipt has not been parsed")
+        receipt = StrixImageQualificationReceiptV2(candidate.canonical_bytes)
+        if receipt_registry is None:
+            raise StrixImageContractError("controller V2 image receipt registry is unavailable")
+        reopened = ControllerVerifiedImageReceiptRegistryV2.reopen_verified(
+            receipt_registry,
+            contract_digest=contract.contract_digest,
+            receipt_digest=receipt.receipt_digest,
+        )
+        if reopened.canonical_bytes != receipt.canonical_bytes:
+            raise StrixImageContractError("candidate and controller V2 image receipts differ")
+        receipt_row = receipt.to_dict()
+        for name, value in expected.items():
+            _same(receipt_row[name], value, f"V2 receipt {name}")
+        check = receipt_row["check"]
+        if check in found:
+            raise StrixImageContractError("duplicate V2 image qualification check")
+        found.add(check)
+    local = all(check in found for check in LOCAL_BUILD_CHECKS)
+    hosted = all(check in found for check in HOSTED_QUALIFICATION_CHECKS)
+    return StrixImageAdmissionDecisionV2(
+        contract_digest=contract.contract_digest,
+        local_build_qualified=local,
+        hosted_qualification_complete=hosted,
+        image_admitted_for_runtime=local and hosted,
+        missing_checks=tuple(
+            check
+            for check in LOCAL_BUILD_CHECKS + HOSTED_QUALIFICATION_CHECKS
+            if check not in found
+        ),
+    )
