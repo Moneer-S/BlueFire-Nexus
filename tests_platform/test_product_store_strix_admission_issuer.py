@@ -231,7 +231,7 @@ def advance(previous, state, *, pending_kind=None, resources=None, evidence=None
 
 
 def test_product_store_and_private_adapter_import_smoke():
-    assert SCHEMA_VERSION == 22
+    assert SCHEMA_VERSION == 23
     assert issuance.ProductStoreStrixAdmissionIssuerPersistence is not None
 
 
@@ -698,18 +698,18 @@ def test_v20_migration_preserves_every_existing_row_and_rolls_back(tmp_path, mon
         connection.execute("DROP TABLE engine_attempt_reconciliation_intents")
         connection.execute("DROP TABLE engine_attempt_pre_dispatch_settlements")
         connection.execute("DROP TABLE engine_attempt_execution_claims")
-        connection.execute("DELETE FROM schema_migrations WHERE version=22")
+        connection.execute("DELETE FROM schema_migrations WHERE version=23")
         connection.execute("INSERT INTO schema_migrations VALUES(20,'2026-11-04T00:00:00Z')")
     before = _snapshot(store.path)
     upgraded = ProductStore(store.path)
-    assert upgraded.schema_version == 22 and _snapshot(store.path) == before
-    assert ProductStore(store.path).schema_version == 22
+    assert upgraded.schema_version == 23 and _snapshot(store.path) == before
+    assert ProductStore(store.path).schema_version == 23
     with sqlite3.connect(store.path) as connection:
         connection.execute("DROP TABLE strix_runtime_issuance_records")
         connection.execute("DROP TABLE engine_attempt_reconciliation_intents")
         connection.execute("DROP TABLE engine_attempt_pre_dispatch_settlements")
         connection.execute("DROP TABLE engine_attempt_execution_claims")
-        connection.execute("DELETE FROM schema_migrations WHERE version=22")
+        connection.execute("DELETE FROM schema_migrations WHERE version=23")
     original = issuance.initialize_schema
 
     def interrupted(connection):

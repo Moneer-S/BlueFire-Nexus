@@ -32,6 +32,7 @@ from . import product_store_engine_action_submissions as engine_action_submissio
 from . import product_store_engine_actions as engine_action_store
 from . import product_store_engine_execution_claims as engine_execution_claim_store
 from . import product_store_engine_experiments as engine_experiment_store
+from . import product_store_engine_file_access as engine_file_access_store
 from . import product_store_engine_jobs as engine_job_store
 from . import product_store_engine_presentations as engine_presentation_store
 from . import product_store_file_access as file_access_store
@@ -85,7 +86,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 _ENGINE_RECONCILIATION_SESSION_GUARD = threading.Lock()
 
 
@@ -300,6 +301,7 @@ class ProductStore(
     tenant_action_material_store.TenantActionMaterialStoreMixin,
     tenant_generation_journal_store.TenantGenerationJournalStoreMixin,
     engine_execution_claim_store.EngineExecutionClaimStoreMixin,
+    engine_file_access_store.EngineFileAccessStoreMixin,
     engine_job_store.EngineExperimentJobStoreMixin,
     engine_presentation_store.EngineExperimentPresentationStoreMixin,
     engine_action_store.EngineActionPreparationStoreMixin,
@@ -961,6 +963,7 @@ class ProductStore(
             engine_action_store.initialize_schema(connection)
             engine_action_submission_store.initialize_schema(connection)
             engine_execution_claim_store.initialize_schema(connection)
+            engine_file_access_store.initialize_schema(connection)
             tenant_generation_journal_store.initialize_schema(connection)
             tenant_action_material_store.initialize_schema(connection)
             strix_runtime_store.initialize_schema(connection)

@@ -764,7 +764,7 @@ def test_v19_to_v20_preserves_existing_data_and_migration_rolls_back(
     _as_v19(store)
     before = _non_v20_data(store.path)
     upgraded = ProductStore(store.path)
-    assert SCHEMA_VERSION == upgraded.schema_version == 22
+    assert SCHEMA_VERSION == upgraded.schema_version == 23
     assert _non_v20_data(store.path) == before
 
     _as_v19(upgraded)
@@ -821,7 +821,7 @@ def test_future_schema_refuses_before_v20_ddl(tmp_path: Path) -> None:
     path = tmp_path / "future.db"
     ProductStore(path)
     with sqlite3.connect(path) as connection:
-        connection.execute("INSERT INTO schema_migrations VALUES(23,'2026-11-04T00:00:00Z')")
+        connection.execute("INSERT INTO schema_migrations VALUES(24,'2026-11-04T00:00:00Z')")
         for table in (
             "strix_runtime_issuance_records",
             "strix_runtime_admission_heads",
