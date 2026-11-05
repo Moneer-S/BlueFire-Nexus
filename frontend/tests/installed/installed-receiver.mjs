@@ -37,6 +37,7 @@ import { receiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
 import {
   receiverPreparationDiagnostic,
   receiverPrepareHttpDiagnostic,
+  receiverPhaseBindingFailure,
   readReceiverCompositionUi,
   receiverCompositionInteractionDiagnostic,
 } from "./receiver-diagnostics.mjs";
@@ -2305,10 +2306,7 @@ try {
     );
     pendingPreparationFailure = failure.receiver_preparation;
   }
-  if (phaseBindingDiagnostic && (stage === "baseline-result-binding" || stage.endsWith("-result-binding"))) {
-    if (stage === "baseline-result-binding") failure.baseline_binding = phaseBindingDiagnostic;
-    else failure.phase_binding = phaseBindingDiagnostic;
-  }
+  Object.assign(failure, receiverPhaseBindingFailure(stage, phaseBindingDiagnostic));
   if (stage.startsWith("baseline-control-")) failure.visible_controls = await visibleControlsDiagnostic();
   if (stage.startsWith("composition-saved-comparison") && comparisonDiagnostic) {
     failure.comparison_diagnostic = comparisonDiagnostic;

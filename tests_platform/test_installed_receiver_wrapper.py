@@ -792,6 +792,30 @@ def test_receiver_receipt_preserves_retained_failure_stage_without_private_mater
     ]
 
 
+def test_retained_result_binding_receipt_drops_stale_receiver_phase_diagnostic() -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-original-result-binding",
+            "kind": "journey_failed",
+            "error_type": "AssertionError",
+            "phase_binding": {
+                "assertion_id": "private-earlier-phase-assertion",
+                "observed": {"run_id": "private-earlier-run"},
+            },
+        }
+    ]
+    errors = _receiver_report_for_receipt(report)["errors"]
+    assert errors == [
+        {
+            "stage": "retained-original-result-binding",
+            "kind": "journey_failed",
+            "error_type": "AssertionError",
+        }
+    ]
+    assert "private" not in json.dumps(errors)
+
+
 def test_receiver_receipt_maps_unknown_retained_failure_stage_to_other() -> None:
     report = receiver_report()
     report["errors"] = [

@@ -135,6 +135,22 @@ const errorCode = (value, allowed) => typeof value === "string" && allowed.has(v
 const errorType = value => typeof value === "string" && JOB_ERROR_TYPES.has(value) ? value : "other";
 const booleanValue = value => typeof value === "boolean" ? value : null;
 
+const RECEIVER_PHASE_RESULT_BINDING_FIELDS = new Map([
+  ["baseline-result-binding", "baseline_binding"],
+  ["original-protected-result-binding", "phase_binding"],
+  ["original-legitimate-result-binding", "phase_binding"],
+  ["linked-protected-result-binding", "phase_binding"],
+  ["linked-legitimate-result-binding", "phase_binding"],
+]);
+
+// The retained composition journey also has result-binding stages, but it does
+// not produce this receiver-phase diagnostic. Match only the stages that call
+// waitCompletedPhase so a later failure cannot inherit a stale earlier value.
+export function receiverPhaseBindingFailure(stage, diagnostic) {
+  const field = RECEIVER_PHASE_RESULT_BINDING_FIELDS.get(stage);
+  return field && isRecord(diagnostic) ? { [field]: diagnostic } : {};
+}
+
 const POST_ROUTE_FAMILIES = [
   [/^\/api\/v1\/session$/, "session", "session"],
   [/^\/api\/v1\/resources\/model-providers\/provider\.installed-receiver-composition\.v1$/, "provider_save", "provider_save"],
