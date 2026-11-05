@@ -114,7 +114,11 @@ Eight sanitized scenarios ship. The canonical seven-node sandbox graph demonstra
 
 ## Planning and AI
 
-Deterministic planning is authoritative. It compiles a validated graph into a versioned plan, applies declared defaults, selects only profile-enabled action IDs in Execute, follows registered outcome edges, and records state/budget decisions.
+Deterministic compilation and authorization checks are authoritative for effects.
+For an authored scenario, the deterministic planner compiles a validated graph
+into a versioned plan, applies declared defaults, selects only profile-enabled
+action IDs in Execute, follows registered outcome edges, and records state/budget
+decisions.
 
 AI autonomy is `off`, `assist`, or `auto`. Off performs no provider call. In the legacy exact-plan loop, Assist or Auto may request a strict `bluefire.ai-proposal.v2` after an observed step outcome. Its immutable option envelope permits the exact registered next edge, compatible registered behaviors, allowlisted primitive parameters, exact-profile actions, and a bounded retry. Correlated choices and digests prevent cross-pairing. Assist pauses at durable review; exact-plan Execute mutations require fresh approval. A separately reviewed finite adaptive policy permits only its enumerated method retries. Provider failure or invalid output uses the path's deterministic fallback or an explicit rejected record.
 
@@ -127,12 +131,15 @@ Those responsibilities stay distinct in every planning representation:
 | Responsibility | Required treatment |
 | --- | --- |
 | What happened | Append-only attempts, decisions, effects, observations, cleanup, and source identities. An abandoned route remains evidence and is never rewritten as success. |
-| What applies now | Findings classified as established, uncertain, stale, or available, with semantic compatibility, custody, freshness, and current resource state resolved by ordinary code. A historical record alone is not current proof. |
-| What should happen next | A proposal that names the earlier assumption being reconsidered, exact imported dependencies, prerequisites to refresh, any state to restore or recreate, and the authority needed for new effects. |
+| What applies now | Keep historical status (established or uncertain), current applicability (fresh or stale), and source availability (available or unavailable) separate. Ordinary code checks semantic compatibility and custody before using a finding. A historical record alone is not current proof. |
+| What should happen next | A versioned proposal that names the earlier assumption being reconsidered, exact imported dependencies, prerequisites to refresh, any state to restore or recreate, and the authority needed for new effects. Proposed work is not an established finding. |
 
 Nonlocal replanning may therefore revisit a choice made several stages earlier,
 retain useful findings learned on the dead-end route, and construct a different
-continuation. Reusing a still-valid result must not repeat its producer effect.
+continuation. Each finding imported into an executable plan needs an exact source
+and a validated consuming-attempt dependency; a proposal cannot create execution
+authority.
+Reusing a still-valid result must not repeat its producer effect.
 Refreshing an observation, repeating an action for a justified fresh test, and
 restoring environment state are separate operations, each with a new identity
 and the applicable review. The workspace must show why the plan changed, what
