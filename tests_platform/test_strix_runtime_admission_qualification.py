@@ -371,6 +371,12 @@ def test_qualifier_emits_an_admissible_manifest_without_running_a_real_probe(
             "overlay_sha256": OVERLAY_SHA256,
             "patched_sha256": PATCHED_PROMPT_SHA256,
         },
+        "startup_overlay": {
+            "path": candidate.STARTUP_PATH,
+            "upstream_sha256": digest("a")[7:],
+            "overlay_sha256": digest("b")[7:],
+            "patched_sha256": digest("c")[7:],
+        },
         "future_install_identity_inputs": {
             "source_tree_sha256": digest("6"),
             "package_sha256": digest("7"),
@@ -390,6 +396,8 @@ def test_qualifier_emits_an_admissible_manifest_without_running_a_real_probe(
         "checksums_sha256": hashlib.sha256(checksums_payload).hexdigest(),
         "wheel_identity": {"path": "strix.whl", "sha256": "7" * 64, "size": 10},
         "prompt_sha256": PATCHED_PROMPT_SHA256,
+        "startup_sha256": digest("c")[7:],
+        "modified_paths": sorted((candidate.PROMPT_PATH, candidate.STARTUP_PATH)),
         "lock_sha256": "8" * 64,
     }
     prep_manifest = {
@@ -533,6 +541,7 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
     site_packages = runtime_root / "lib/python3.12/site-packages"
     dist_info = site_packages / "strix_agent-1.7.0.dist-info"
     prompt_path = site_packages / candidate.PROMPT_PATH
+    startup_path = site_packages / candidate.STARTUP_PATH
     cli_relative = "Scripts/strix.exe" if os.name == "nt" else "bin/strix"
     cli = runtime_root / cli_relative
     interpreter = runtime_root / "bin/python"
@@ -542,6 +551,7 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
         preparation_root,
         dist_info,
         prompt_path.parent,
+        startup_path.parent,
         cli.parent,
         interpreter.parent,
     ):
@@ -551,15 +561,28 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
     prompt_hash = hashlib.sha256(prompt).hexdigest()
     upstream_hash = hashlib.sha256(b"fixture upstream").hexdigest()
     overlay_hash = hashlib.sha256(b"fixture overlay").hexdigest()
+    startup = b"reviewed patched fixture startup\n"
+    startup_hash = hashlib.sha256(startup).hexdigest()
+    startup_upstream_hash = hashlib.sha256(b"fixture startup upstream").hexdigest()
+    startup_overlay_hash = hashlib.sha256(b"fixture startup overlay").hexdigest()
+    monkeypatch.setattr(admission.preparation, "REVIEWED_STARTUP_SHA256", startup_upstream_hash)
+    monkeypatch.setattr(admission.preparation, "STARTUP_OVERLAY_SHA256", startup_overlay_hash)
+    monkeypatch.setattr(admission.preparation, "PATCHED_STARTUP_SHA256", startup_hash)
     monkeypatch.setattr(strix_adapter, "REVIEWED_PROMPT_SHA256", upstream_hash)
     monkeypatch.setattr(strix_adapter, "OVERLAY_SHA256", overlay_hash)
     monkeypatch.setattr(strix_adapter, "PATCHED_PROMPT_SHA256", prompt_hash)
+    monkeypatch.setattr(admission.preparation, "REVIEWED_PROMPT_SHA256", upstream_hash)
+    monkeypatch.setattr(admission.preparation, "OVERLAY_SHA256", overlay_hash)
+    monkeypatch.setattr(admission.preparation, "PATCHED_PROMPT_SHA256", prompt_hash)
 
     lock = b"version = 1\n"
     (source_root / "uv.lock").write_bytes(lock)
     source_prompt = source_root / candidate.PROMPT_PATH
     source_prompt.parent.mkdir(parents=True)
     source_prompt.write_bytes(prompt)
+    source_startup = source_root / candidate.STARTUP_PATH
+    source_startup.parent.mkdir(parents=True)
+    source_startup.write_bytes(startup)
 
     source_archive = b"source archive"
     wheel = b"wheel artifact"
@@ -585,10 +608,27 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
             "redistribution_review": strix_redistribution_review(),
         },
         "policy_overlay": {
+            "schema_version": "bluefire.strix-prompt-overlay.v1",
+            "source_revision": candidate.UPSTREAM_COMMIT,
+            "path": candidate.PROMPT_PATH,
             "upstream_sha256": upstream_hash,
             "overlay_sha256": overlay_hash,
             "patched_sha256": prompt_hash,
+            "modified_upstream_build": True,
         },
+        "startup_overlay": {
+            "schema_version": "bluefire.strix-startup-overlay.v1",
+            "source_revision": candidate.UPSTREAM_COMMIT,
+            "path": candidate.STARTUP_PATH,
+            "upstream_sha256": startup_upstream_hash,
+            "overlay_sha256": startup_overlay_hash,
+            "patched_sha256": startup_hash,
+            "modified_upstream_build": True,
+        },
+        "source_archive": {
+            "modified_paths": sorted((candidate.PROMPT_PATH, candidate.STARTUP_PATH))
+        },
+        "wheel_inspection": {"prompt_sha256": prompt_hash, "startup_sha256": startup_hash},
         "artifacts": [
             {
                 "path": candidate.SOURCE_ARCHIVE_NAME,
@@ -616,7 +656,9 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
         if arguments[-2:] == ["rev-parse", "HEAD^{tree}"]:
             return candidate.UPSTREAM_TREE
         if arguments[1:3] == ["status", "--porcelain=v1"]:
-            return f" M {candidate.PROMPT_PATH}"
+            return "\n".join(
+                f" M {path}" for path in sorted((candidate.PROMPT_PATH, candidate.STARTUP_PATH))
+            )
         raise AssertionError(arguments)
 
     monkeypatch.setattr(admission.preparation, "_run", fake_git)
@@ -636,6 +678,7 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
     cli.write_bytes(cli_payload)
     cli.chmod(0o755)
     prompt_path.write_bytes(prompt)
+    startup_path.write_bytes(startup)
     metadata = b"Name: strix-agent\nVersion: 1.7.0\n\n"
     entry_points = b"[console_scripts]\nstrix = strix.interface.main:main\n"
     (dist_info / "METADATA").write_bytes(metadata)
@@ -647,10 +690,12 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
 
     cli_record = ("../../../" + cli_relative).replace("\\", "/")
     prompt_record = candidate.PROMPT_PATH
+    startup_record = candidate.STARTUP_PATH
     record = (
         record_row("strix_agent-1.7.0.dist-info/METADATA", metadata)
         + record_row("strix_agent-1.7.0.dist-info/entry_points.txt", entry_points)
         + record_row(prompt_record, prompt)
+        + record_row(startup_record, startup)
         + record_row(cli_record, cli_payload)
         + "strix_agent-1.7.0.dist-info/RECORD,,\n"
     ).encode("utf-8")
@@ -668,7 +713,41 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
         site_packages,
         installed,
         prompt_hash,
+        startup_hash,
     )
+    assert inspected["startup"] == {
+        "path": candidate.STARTUP_PATH,
+        "size": len(startup),
+        "sha256": startup_hash,
+    }
+    startup_path.write_bytes(startup + b"drift")
+    with pytest.raises(
+        admission.preparation.StrixRuntimeQualificationError, match="startup module"
+    ):
+        admission.preparation._inspect_installed_candidate(
+            runtime_root, interpreter, site_packages, installed, prompt_hash, startup_hash
+        )
+    startup_path.write_bytes(startup)
+    (dist_info / "RECORD").write_bytes(
+        record.replace(record_row(startup_record, startup).encode("utf-8"), b"")
+    )
+    with pytest.raises(
+        admission.preparation.StrixRuntimeQualificationError, match="omits a reviewed"
+    ):
+        admission.preparation._inspect_installed_candidate(
+            runtime_root, interpreter, site_packages, installed, prompt_hash, startup_hash
+        )
+    (dist_info / "RECORD").write_bytes(
+        record.replace(
+            record_row(startup_record, startup).encode("utf-8"),
+            record_row(startup_record, b"other bytes").encode("utf-8"),
+        )
+    )
+    with pytest.raises(admission.preparation.StrixRuntimeQualificationError, match="RECORD hash"):
+        admission.preparation._inspect_installed_candidate(
+            runtime_root, interpreter, site_packages, installed, prompt_hash, startup_hash
+        )
+    (dist_info / "RECORD").write_bytes(record)
     runtime_receipt = {
         "python": {"runtime_interpreter": admission.preparation._hash_executable(interpreter)},
         "installed_distributions": [distribution],
@@ -701,6 +780,8 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
             "upstream_commit": candidate.UPSTREAM_COMMIT,
             "upstream_tree": candidate.UPSTREAM_TREE,
             "policy_prompt_sha256": prompt_hash,
+            "startup_main_sha256": startup_hash,
+            "modified_paths": sorted((candidate.PROMPT_PATH, candidate.STARTUP_PATH)),
             "frozen_lock_sha256": hashlib.sha256(lock).hexdigest(),
         },
         "runner": {
@@ -721,15 +802,39 @@ def test_full_candidate_preparation_runtime_and_oci_path_is_revalidated(
         admission.preparation.RUNTIME_RECEIPT_NAME: canonical_json_bytes(runtime_receipt) + b"\n",
         admission.preparation.OCI_INVENTORY_NAME: canonical_json_bytes(oci) + b"\n",
     }
-    for name, payload in prep_files.items():
-        (preparation_root / name).write_bytes(payload)
-    (preparation_root / admission.CHECKSUMS_NAME).write_text(
-        "".join(
-            f"{hashlib.sha256(payload).hexdigest()}  {name}\n"
-            for name, payload in sorted(prep_files.items())
-        ),
-        encoding="ascii",
-    )
+
+    def write_preparation_files() -> None:
+        prep_files[admission.preparation.QUALIFICATION_MANIFEST_NAME] = (
+            canonical_json_bytes(preparation_manifest) + b"\n"
+        )
+        for name, payload in prep_files.items():
+            (preparation_root / name).write_bytes(payload)
+        (preparation_root / admission.CHECKSUMS_NAME).write_text(
+            "".join(
+                f"{hashlib.sha256(payload).hexdigest()}  {name}\n"
+                for name, payload in sorted(prep_files.items())
+            ),
+            encoding="ascii",
+        )
+
+    write_preparation_files()
+    prepared_candidate = preparation_manifest["candidate"]
+    assert isinstance(prepared_candidate, dict)
+    for field, bad_value in (
+        ("startup_main_sha256", "0" * 64),
+        ("modified_paths", [candidate.PROMPT_PATH]),
+    ):
+        original = prepared_candidate[field]
+        prepared_candidate[field] = bad_value
+        write_preparation_files()
+        with pytest.raises(
+            admission.StrixRuntimeAdmissionQualificationError, match="candidate drifted"
+        ):
+            admission._validate_preparation(
+                preparation_root, revision=REVISION, candidate_identity=identity
+            )
+        prepared_candidate[field] = original
+    write_preparation_files()
 
     monkeypatch.setattr(admission.platform, "system", lambda: "Linux")
     monkeypatch.setattr(admission.platform, "release", lambda: "job2-kernel")

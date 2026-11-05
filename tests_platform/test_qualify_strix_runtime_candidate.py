@@ -15,6 +15,7 @@ import yaml
 
 from bluefire.strix_redistribution_review import strix_redistribution_review
 from tools import qualify_strix_runtime_candidate as qualification
+from tools import reconstruct_strix_runtime_admission_source as reconstruction
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/strix-runtime-qualification.yml"
@@ -134,6 +135,43 @@ def test_requirements_accept_exact_multiline_hashes() -> None:
     }
 
 
+def test_fresh_source_reconstruction_applies_both_reviewed_overlays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    def clone(source: Path, _environment: dict[str, str]) -> None:
+        source.mkdir()
+        calls.append("clone")
+
+    monkeypatch.setattr(
+        reconstruction.candidate,
+        "build_sanitized_environment",
+        lambda *_args: {},
+    )
+    monkeypatch.setattr(reconstruction.candidate, "clone_reviewed_source", clone)
+    monkeypatch.setattr(
+        reconstruction.candidate,
+        "validate_source_checkout",
+        lambda *_args: calls.append("validate"),
+    )
+    monkeypatch.setattr(
+        reconstruction.candidate,
+        "apply_reviewed_overlay",
+        lambda *_args: calls.append("prompt"),
+    )
+    monkeypatch.setattr(
+        reconstruction.candidate,
+        "apply_reviewed_startup_overlay",
+        lambda *_args: calls.append("startup"),
+    )
+    work = tmp_path / "reconstruction"
+    reconstruction.reconstruct_source(
+        work_root=work, source_root=work / "source", inherited_environment={}
+    )
+    assert calls == ["clone", "validate", "prompt", "startup"]
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -198,9 +236,24 @@ def test_candidate_validation_binds_checksum_source_and_untracked_state(
     source.mkdir()
     (source / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     (source / "prompt.jinja").write_text("upstream\n", encoding="utf-8")
+    startup = source / qualification.candidate.STARTUP_PATH
+    startup.parent.mkdir(parents=True)
+    startup.write_text("patched startup fixture\n", encoding="utf-8")
+    startup_hash = hashlib.sha256(startup.read_bytes()).hexdigest()
+    upstream_startup_hash = hashlib.sha256(b"upstream startup fixture\n").hexdigest()
+    startup_overlay_hash = hashlib.sha256(b"startup overlay fixture\n").hexdigest()
+    monkeypatch.setattr(qualification, "REVIEWED_STARTUP_SHA256", upstream_startup_hash)
+    monkeypatch.setattr(qualification, "STARTUP_OVERLAY_SHA256", startup_overlay_hash)
+    monkeypatch.setattr(qualification, "PATCHED_STARTUP_SHA256", startup_hash)
     commit = "a" * 40
     tree = "d" * 40
     (source / "prompt.jinja").write_text("patched\n", encoding="utf-8")
+    prompt_hash = hashlib.sha256((source / "prompt.jinja").read_bytes()).hexdigest()
+    upstream_prompt_hash = hashlib.sha256(b"upstream\n").hexdigest()
+    prompt_overlay_hash = hashlib.sha256(b"prompt overlay fixture\n").hexdigest()
+    monkeypatch.setattr(qualification, "REVIEWED_PROMPT_SHA256", upstream_prompt_hash)
+    monkeypatch.setattr(qualification, "OVERLAY_SHA256", prompt_overlay_hash)
+    monkeypatch.setattr(qualification, "PATCHED_PROMPT_SHA256", prompt_hash)
 
     def fake_git_run(
         arguments: list[str],
@@ -216,7 +269,8 @@ def test_candidate_validation_binds_checksum_source_and_untracked_state(
             return tree
         if arguments[1:3] == ["status", "--porcelain=v1"]:
             suffix = "\n?? uv.toml" if (source / "uv.toml").exists() else ""
-            return f" M prompt.jinja{suffix}"
+            modified = sorted(("prompt.jinja", qualification.candidate.STARTUP_PATH))
+            return "\n".join(f" M {path}" for path in modified) + suffix
         raise AssertionError(arguments)
 
     monkeypatch.setattr(qualification, "_run", fake_git_run)
@@ -253,8 +307,27 @@ def test_candidate_validation_binds_checksum_source_and_untracked_state(
             "redistribution_review": strix_redistribution_review(),
         },
         "policy_overlay": {
-            "patched_sha256": hashlib.sha256((source / "prompt.jinja").read_bytes()).hexdigest()
+            "schema_version": "bluefire.strix-prompt-overlay.v1",
+            "source_revision": commit,
+            "path": "prompt.jinja",
+            "upstream_sha256": upstream_prompt_hash,
+            "overlay_sha256": prompt_overlay_hash,
+            "patched_sha256": prompt_hash,
+            "modified_upstream_build": True,
         },
+        "startup_overlay": {
+            "schema_version": "bluefire.strix-startup-overlay.v1",
+            "source_revision": commit,
+            "path": qualification.candidate.STARTUP_PATH,
+            "upstream_sha256": upstream_startup_hash,
+            "overlay_sha256": startup_overlay_hash,
+            "patched_sha256": startup_hash,
+            "modified_upstream_build": True,
+        },
+        "source_archive": {
+            "modified_paths": sorted(("prompt.jinja", qualification.candidate.STARTUP_PATH))
+        },
+        "wheel_inspection": {"prompt_sha256": prompt_hash, "startup_sha256": startup_hash},
         "artifacts": [
             {
                 "path": wheel_name,
@@ -279,6 +352,10 @@ def test_candidate_validation_binds_checksum_source_and_untracked_state(
     environment = {"PATH": os.environ["PATH"]}
     receipt = qualification.validate_candidate(candidate_root, source, revision, environment)
     assert receipt["wheel_identity"]["sha256"] == hashlib.sha256(wheel_payload).hexdigest()
+    assert receipt["startup_sha256"] == startup_hash
+    assert receipt["modified_paths"] == sorted(
+        ("prompt.jinja", qualification.candidate.STARTUP_PATH)
+    )
 
     # A correct root license cannot replace the incomplete component review.
     for invalid_review in (
@@ -293,10 +370,48 @@ def test_candidate_validation_binds_checksum_source_and_untracked_state(
         (candidate_root / qualification.candidate.MANIFEST_NAME).write_bytes(changed_payload)
         with pytest.raises(qualification.StrixRuntimeQualificationError, match="redistribution"):
             qualification.validate_candidate(candidate_root, source, revision, environment)
+    manifest["qualification"]["redistribution_review"] = strix_redistribution_review()
     (candidate_root / qualification.candidate.MANIFEST_NAME).write_bytes(manifest_payload)
+
+    for section, field, value in (
+        ("policy_overlay", "overlay_sha256", "0" * 64),
+        ("startup_overlay", "overlay_sha256", "0" * 64),
+        ("source_archive", "modified_paths", ["prompt.jinja"]),
+        (
+            "source_archive",
+            "modified_paths",
+            sorted(("prompt.jinja", qualification.candidate.STARTUP_PATH, "third.py")),
+        ),
+        ("wheel_inspection", "startup_sha256", "0" * 64),
+    ):
+        original = manifest[section][field]
+        manifest[section][field] = value
+        tampered_payload = qualification._canonical_json(manifest) + b"\n"
+        (candidate_root / qualification.candidate.MANIFEST_NAME).write_bytes(tampered_payload)
+        (candidate_root / qualification.candidate.CHECKSUMS_NAME).write_text(
+            f"{hashlib.sha256(tampered_payload).hexdigest()}  "
+            f"{qualification.candidate.MANIFEST_NAME}\n"
+            f"{hashlib.sha256(wheel_payload).hexdigest()}  {wheel_name}\n",
+            encoding="ascii",
+        )
+        with pytest.raises(qualification.StrixRuntimeQualificationError, match="prompt|startup"):
+            qualification.validate_candidate(candidate_root, source, revision, environment)
+        manifest[section][field] = original
+    (candidate_root / qualification.candidate.MANIFEST_NAME).write_bytes(manifest_payload)
+    (candidate_root / qualification.candidate.CHECKSUMS_NAME).write_text(
+        f"{hashlib.sha256(manifest_payload).hexdigest()}  "
+        f"{qualification.candidate.MANIFEST_NAME}\n"
+        f"{hashlib.sha256(wheel_payload).hexdigest()}  {wheel_name}\n",
+        encoding="ascii",
+    )
 
     (source / "uv.toml").write_text("offline = false\n", encoding="utf-8")
     with pytest.raises(qualification.StrixRuntimeQualificationError, match="reviewed overlay"):
+        qualification.validate_candidate(candidate_root, source, revision, environment)
+    (source / "uv.toml").unlink()
+
+    startup.write_text("drifted startup fixture\n", encoding="utf-8")
+    with pytest.raises(qualification.StrixRuntimeQualificationError, match="startup overlay"):
         qualification.validate_candidate(candidate_root, source, revision, environment)
 
 
@@ -569,6 +684,10 @@ def test_preparation_manifest_and_checksums_remain_hard_false(
                 "media_type": "application/zip",
             },
             "prompt_sha256": "3" * 64,
+            "startup_sha256": "6" * 64,
+            "modified_paths": sorted(
+                (qualification.candidate.PROMPT_PATH, qualification.candidate.STARTUP_PATH)
+            ),
             "lock_sha256": "4" * 64,
         }
 
@@ -652,11 +771,13 @@ def test_installed_launcher_must_bind_runtime_interpreter(tmp_path: Path) -> Non
     site = runtime / "lib/python3.12/site-packages"
     dist = site / "strix_agent-1.7.0.dist-info"
     prompt = site / qualification.candidate.PROMPT_PATH
+    startup = site / qualification.candidate.STARTUP_PATH
     cli = runtime / "bin/strix"
     interpreter = runtime / "bin/python"
-    for directory in (dist, prompt.parent, cli.parent):
+    for directory in (dist, prompt.parent, startup.parent, cli.parent):
         directory.mkdir(parents=True, exist_ok=True)
     prompt.write_text("prompt\n", encoding="utf-8")
+    startup.write_text("startup\n", encoding="utf-8")
     (dist / "entry_points.txt").write_text(
         "[console_scripts]\nstrix = strix.interface.main:main\n", encoding="utf-8"
     )
@@ -677,6 +798,7 @@ def test_installed_launcher_must_bind_runtime_interpreter(tmp_path: Path) -> Non
             site,
             installed,
             hashlib.sha256(prompt.read_bytes()).hexdigest(),
+            hashlib.sha256(startup.read_bytes()).hexdigest(),
         )
 
 

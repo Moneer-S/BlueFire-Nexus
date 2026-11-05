@@ -33,14 +33,14 @@ uid/gid 65534 can traverse only to the explicitly opened read-only runtime and
 private probe state, while sibling source, controller, and download directories
 retain their private modes.
 
-- the exact candidate manifest, checksums, wheel, source archive, and policy
-  overlay produced from Strix commit
+- the exact candidate manifest, checksums, wheel, source archive, and separate prompt and startup
+  overlays produced from Strix commit
   `6b7ae2ebe4d47037a927aade23265ff4e4f27e84`;
 - a fresh checkout of the pinned upstream commit, exact tree and reviewed
-  blobs, with only the deterministic reviewed prompt modification;
+  blobs, with exactly the deterministic reviewed prompt and startup modifications;
 - the exact offline wheel closure and installed-runtime receipt;
 - the verified installed interpreter, `strix` entry point, package `RECORD`,
-  and patched prompt;
+  patched prompt, and patched startup `main.py`;
 - the pinned sandbox OCI index and resolved Linux AMD64 child/config/layer
   inventory; and
 - the exact BlueFire commit, transfer bundle ref, recorded threat-review ref,
@@ -69,7 +69,7 @@ transport and inner bundle digests, manually extract the same open descriptor,
 and repeat candidate, source, preparation, and OCI validation. It creates a new
 virtual environment offline from the
 revalidated wheel bytes and hash-required requirements. The new interpreter,
-installed distribution metadata, entry point, package `RECORD`, patched prompt,
+installed distribution metadata, entry point, package `RECORD`, patched prompt, patched startup,
 and CLI must exactly match the first job's receipt before and after the probe.
 The qualifier emits the exact
 `StrixBuildIdentity` fields and a canonical manifest whose file SHA-256 is the
@@ -97,6 +97,11 @@ container, sidecar, or tool server is supplied. The probe requires a successful
 exit and bounded UTF-8 help output containing the supported usage and target
 option. The output itself is not published in the manifest; only its byte count
 and SHA-256 are retained.
+
+The root `--help` path exits during argument parsing before the scan startup branch. A successful
+help probe therefore does not show that the registered backend selection, Docker check/pull
+condition, or `validate_environment()` branch ran. Those behaviors require separate qualification
+before a controlled engine attempt.
 
 The hosted controller starts the probe with:
 

@@ -65,6 +65,7 @@ def package_input(
             (preparation_work_root / "runtime").resolve(strict=True),
             runtime,
             prompt_sha256=str(identity["prompt_sha256"]),
+            startup_sha256=str(identity["startup_sha256"]),
         )
         if inspected.get("imported") is not False or inspected.get("executed") is not False:
             raise admission.StrixRuntimeAdmissionQualificationError(

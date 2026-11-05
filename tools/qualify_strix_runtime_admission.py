@@ -351,6 +351,8 @@ def _validate_preparation(
         or prepared_candidate.get("upstream_commit") != candidate.UPSTREAM_COMMIT
         or prepared_candidate.get("upstream_tree") != candidate.UPSTREAM_TREE
         or prepared_candidate.get("policy_prompt_sha256") != candidate_identity["prompt_sha256"]
+        or prepared_candidate.get("startup_main_sha256") != candidate_identity["startup_sha256"]
+        or prepared_candidate.get("modified_paths") != candidate_identity["modified_paths"]
         or prepared_candidate.get("frozen_lock_sha256") != candidate_identity["lock_sha256"]
     ):
         raise StrixRuntimeAdmissionQualificationError("runtime preparation candidate drifted")
@@ -431,6 +433,7 @@ def _inspect_runtime(
     runtime: Mapping[str, Any],
     *,
     prompt_sha256: str,
+    startup_sha256: str,
 ) -> dict[str, Any]:
     root = runtime_root.resolve(strict=True)
     if root.name != "runtime":
@@ -452,6 +455,7 @@ def _inspect_runtime(
             site_packages,
             _installed_map(runtime),
             prompt_sha256,
+            startup_sha256,
         ),
     )
     if runtime.get("strix") != inspected:
@@ -601,6 +605,7 @@ def _reconstruct_runtime_offline(
             runtime_root,
             runtime_receipt,
             prompt_sha256=str(candidate_identity["prompt_sha256"]),
+            startup_sha256=str(candidate_identity["startup_sha256"]),
         )
         if runtime_receipt.get("strix") != inspected:
             raise StrixRuntimeAdmissionQualificationError(
@@ -976,6 +981,7 @@ def qualify_runtime_admission(
             runtime_root,
             runtime,
             prompt_sha256=str(candidate_identity["prompt_sha256"]),
+            startup_sha256=str(candidate_identity["startup_sha256"]),
         )
         cli = runtime_root / str(cast(Mapping[str, Any], before["cli"])["path"])
         probe = dict((probe_runner or _production_probe)(cli, runtime_root, work))
@@ -983,6 +989,7 @@ def qualify_runtime_admission(
             runtime_root,
             runtime,
             prompt_sha256=str(candidate_identity["prompt_sha256"]),
+            startup_sha256=str(candidate_identity["startup_sha256"]),
         )
         if after != before:
             raise StrixRuntimeAdmissionQualificationError(

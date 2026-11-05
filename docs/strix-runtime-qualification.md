@@ -17,12 +17,13 @@ identities agree:
 - BlueFire's exact checked-out commit;
 - upstream Strix commit `6b7ae2ebe4d47037a927aade23265ff4e4f27e84` and tree
   `23c06e4a0e58bdf3b4979863d7623230e4091332`;
-- the candidate manifest, `SHA256SUMS`, wheel, policy-overlay prompt, and frozen `uv.lock`;
+- the candidate manifest, `SHA256SUMS`, wheel, policy-overlay prompt, startup-overlay
+  `strix/interface/main.py`, and frozen `uv.lock`;
 - CPython 3.12.14 on Linux x86-64 and uv 0.13.6; and
 - sandbox OCI index
   `sha256:78df914f3029464c9d00580f531ec51025c251c422ec3b09c3f19c5fa6d80c30`.
 
-The candidate checkout must still contain only the reviewed prompt modification. The preparation
+The candidate checkout must still contain exactly the reviewed prompt and startup modifications. The preparation
 does not reconstruct source from an unbound archive or a moving tag.
 
 The proposed controlled-image contract separately pins `strix-agent 1.7.0`,
@@ -50,8 +51,11 @@ resolution. Strix is not imported and its CLI is not invoked.
 
 The receipt records the actual virtual-environment interpreter, every wheel, installed distribution
 metadata, the generated `strix` launcher, the installed package `RECORD`, the entry point, and the
-installed policy prompt. A missing binary wheel, extra distribution, hash drift, source distribution,
-link, special file, ambiguous name, oversized closure, or prompt/entry-point mismatch fails closed.
+installed policy prompt and startup `main.py`. Both installed files must match their candidate
+SHA-256 identities and their installed package `RECORD` entries; the installed `RECORD` bytes are
+compared across jobs. A missing binary wheel, extra
+distribution, hash drift, source distribution, link, special file, ambiguous name, oversized
+closure, or prompt/startup/entry-point mismatch fails closed.
 
 This establishes a one-platform offline installation closure only. It is not proof of artifact
 reproducibility, safe runtime behavior, containment, or effectiveness.
@@ -115,7 +119,7 @@ either. The preparation directory contains:
 - `SHA256SUMS` over every emitted preparation payload and the manifest.
 
 The manifest always records `runtime_qualified: false`, all execution flags as false, and the hosted
-runner, action, Python, uv, pip, Syft, candidate, wheel, prompt, and image identities.
+runner, action, Python, uv, pip, Syft, candidate, wheel, prompt, startup, and image identities.
 
 A later installed journey must also retain the exact controlled derived-image declaration and
 all receipt references. Their absence cannot be repaired by copying the upstream OCI index identity

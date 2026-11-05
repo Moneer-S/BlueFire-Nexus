@@ -14,7 +14,7 @@ from tools import build_strix_engine_candidate as candidate
 def reconstruct_source(
     *, work_root: Path, source_root: Path, inherited_environment: dict[str, str]
 ) -> None:
-    """Create one clean pinned source checkout with only the reviewed overlay."""
+    """Create one clean pinned source checkout with both reviewed overlays."""
 
     work = work_root.resolve(strict=False)
     source = source_root.resolve(strict=False)
@@ -29,6 +29,7 @@ def reconstruct_source(
         candidate.clone_reviewed_source(source, environment)
         candidate.validate_source_checkout(source, environment)
         candidate.apply_reviewed_overlay(source, environment)
+        candidate.apply_reviewed_startup_overlay(source, environment)
         succeeded = True
     finally:
         if not succeeded:
@@ -53,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         print(f"Strix source reconstruction refused: {exc}", file=sys.stderr)
         return 2
-    print("Reconstructed the exact reviewed Strix source and policy overlay.")
+    print("Reconstructed the exact reviewed Strix source and two overlays.")
     return 0
 
 

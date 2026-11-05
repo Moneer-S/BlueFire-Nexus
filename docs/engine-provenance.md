@@ -24,7 +24,7 @@ the declared package version, exact source commit, exact source tree, BlueFire w
 and resulting artifact hashes separately. It makes no release-equivalence claim.
 
 The build also validates fixed Git blob identities for `pyproject.toml`, `uv.lock`, `LICENSE`, the
-system prompt, the Hatch TUI build hook, and the Go module files. It refuses a dirty preimage,
+system prompt, `strix/interface/main.py`, the Hatch TUI build hook, and the Go module files. It refuses a dirty preimage,
 unexpected remote, changed metadata, missing Apache-2.0 text, or drift in any reviewed blob.
 
 ## Engine selection and evidence record
@@ -41,7 +41,7 @@ fallback.
 
 Every installed engine journey must retain one exact, reviewable record containing:
 
-- BlueFire source revision; Strix source, package and prompt overlay identities; the complete
+- BlueFire source revision; Strix source, package, prompt and startup overlay identities; the complete
   resolved dependency-lock digest; and the exact bootstrap, backend, policy-proxy,
   workspace-transfer, controlled-provider, SDK-closure, derived-image and runtime-profile digests;
 - every candidate, installed runtime, image contract, base-image, Dockerfile, SBOM, provenance,
@@ -63,18 +63,32 @@ Every installed engine journey must retain one exact, reviewable record containi
 
 This record is an acceptance requirement, not evidence that such a journey has already run.
 
-## Reviewed BlueFire modification
+## Reviewed BlueFire modifications
 
 The upstream system prompt contains blanket authorization and refusal-avoidance wording that is
-not suitable as a BlueFire execution boundary. The candidate therefore applies exactly one
-reviewed correction through `bluefire.strix_policy_overlay.apply_policy_overlay` to:
+not suitable as a BlueFire execution boundary. The candidate applies the reviewed correction
+through `bluefire.strix_policy_overlay.apply_policy_overlay` to:
 
 `strix/agents/prompts/system_prompt.jinja`
 
-The adapter validates the source revision, prompt preimage SHA-256, packaged overlay SHA-256, and
-patched SHA-256. The build refuses ambiguity or any second source change, and its manifest marks
-the result as a modified upstream build. Authorization remains in BlueFire's ordinary reviewed
-controller and runtime boundaries, not in a prompt.
+The pinned upstream CLI checks and may pull Docker before it selects the effective runtime backend.
+The second reviewed correction is an exact old-to-new byte replacement through
+`bluefire.strix_startup_overlay.apply_startup_overlay` in:
+
+`strix/interface/main.py`
+
+The replacement reads `load_settings().runtime.backend`, validates that name through the registered
+`get_backend` hook before scan preflight, and performs the existing Docker check and image pull only
+when the effective backend is `docker`. `validate_environment()` remains unconditional. The stock
+Docker branch retains its check, pull, and environment validation order.
+
+Both corrections require the exact upstream preimage and exact patched SHA-256. The startup
+replacement bytes and the prompt correction are separately hash-pinned. The builder refuses any
+modified tracked path beyond those two, checks both files in the wheel and its `RECORD`, and emits
+separate prompt and startup receipts. The upstream commit and tree describe the clean preimage;
+the source archive and wheel hashes identify the modified output. The manifest marks the result
+as a modified upstream build. Authorization remains in BlueFire's reviewed controller and runtime
+boundaries, not in the prompt or this startup branch.
 
 ## Controlled candidate build
 
@@ -91,7 +105,7 @@ The manual or reusable `Strix engine candidate` workflow uses:
   proxy, user-home, or credential variables.
 
 The manifest records exact tool versions and executable hashes, hosted runner identity, `uv.lock`,
-`go.mod`, and `go.sum` hashes, source blobs, overlay receipt, and artifact identities. Candidate output is
+`go.mod`, and `go.sum` hashes, source blobs, both overlay receipts, and artifact identities. Candidate output is
 limited to 256 MiB. Destinations are exclusive, archives reject links and special files, and the
 wheel is inspected as bounded ZIP data rather than installed or imported. A single build does not
 establish byte-for-byte reproducibility; that remains an explicit qualification blocker until a
@@ -104,9 +118,9 @@ sandbox image is run by this workflow.
 
 Successful output contains:
 
-- one platform wheel with the exact Apache license, reviewed prompt, and a hashed, non-executed
+- one platform wheel with the exact Apache license, reviewed prompt, reviewed startup, and a hashed, non-executed
   Linux x86-64 TUI sidecar;
-- a deterministic source archive containing the reviewed modification and upstream license;
+- a deterministic source archive containing both reviewed modifications and upstream license;
 - the exact upstream Apache-2.0 `LICENSE`;
 - a CycloneDX 1.5 dependency SBOM;
 - a canonical candidate manifest with SHA-256 and size for every payload; and
@@ -197,10 +211,13 @@ quality is a different proof and requires its own authorization.
 
 ## Implemented BlueFire restricted runtime contracts
 
-The reviewed source exposes a public downstream runtime-backend registry. BlueFire keeps the exact
-pinned upstream package and official headless CLI while its implemented, separately hashed
+The reviewed source exposes a public downstream runtime-backend registry. BlueFire uses the exact
+pinned upstream commit as its preimage and retains the official headless CLI with two reviewed
+source corrections. Its implemented, separately hashed
 `bluefire-controlled` bootstrap and backend contracts define an integration through that boundary.
-This is preferable to patching upstream source or silently normalizing unsafe Docker requests.
+The candidate's reviewed startup patch makes the registered backend reachable without the
+upstream Docker check or pull when a downstream backend is selected. It does not normalize
+unsafe Docker requests.
 
 The stock Docker backend is not admissible for the first BlueFire workflow. At this pin it can pull
 a missing image, adds `NET_ADMIN` and `NET_RAW`, requests
@@ -218,7 +235,7 @@ and launch plan.
 The bootstrap, controlled-backend implementation, policy proxy, relays, workspace transfer, SDK
 closure, sandbox image, and runtime-profile digests are additional BlueFire artifacts. Their
 contracts and fail-closed installed composition are implemented, but they are not covered by the
-current prompt-overlay digest and are not included in the candidate or startup admission.
+candidate's prompt or startup overlay digests and are not included in the candidate or startup admission.
 Qualification and every later authority, admission, preparation, and launch record must bind them
 before use. Durable execution consumption, independent-observation publication, concrete
 attempt-factory wiring and positive installed qualification, and separate native or live-provider
@@ -229,7 +246,7 @@ follows from this document.
 
 ## Updating the pin
 
-A source, package, prompt, lock, build-hook, Go-module, sandbox, or toolchain change requires a new
+A source, package, prompt, startup, lock, build-hook, Go-module, sandbox, or toolchain change requires a new
 source review. Update the exact identities, review the source and applicable licenses, regenerate
-the overlay only if its preimage changed, extend regression tests, and build a new candidate. Never
+either overlay only after review of its changed preimage, extend regression tests, and build a new candidate. Never
 move a tag, accept `latest`, loosen a hash assertion, or reuse an old manifest for a new source.

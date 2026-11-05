@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 import csv
 import hashlib
@@ -14,6 +15,7 @@ from typing import Any
 import pytest
 import yaml
 
+from bluefire import strix_startup_overlay as startup_overlay
 from bluefire.strix_policy_overlay import PATCHED_PROMPT_SHA256
 from bluefire.strix_redistribution_review import strix_redistribution_review
 from tools import build_strix_engine_candidate as candidate
@@ -28,13 +30,14 @@ def _record_row(name: str, payload: bytes) -> list[str]:
     return [name, f"sha256={digest}", str(len(payload))]
 
 
-def _synthetic_wheel(path: Path, prompt: bytes, license_payload: bytes) -> None:
+def _synthetic_wheel(path: Path, prompt: bytes, startup: bytes, license_payload: bytes) -> None:
     dist = "strix_agent-1.7.0.dist-info"
     sidecar = bytearray(64)
     sidecar[:6] = b"\x7fELF\x02\x01"
     sidecar[18:20] = (62).to_bytes(2, "little")
     members = {
         candidate.PROMPT_PATH: prompt,
+        candidate.STARTUP_PATH: startup,
         "strix/bin/strix-tui": bytes(sidecar),
         f"{dist}/METADATA": (
             b"Metadata-Version: 2.4\n"
@@ -107,6 +110,9 @@ def test_reviewed_source_and_runtime_pins_are_immutable_and_distinct() -> None:
     )
     assert ":latest" not in candidate.SANDBOX_IMAGE
     assert candidate.MAX_OUTPUT_BYTES == 256 * 1024 * 1024
+    assert candidate.EXPECTED_BLOBS[candidate.STARTUP_PATH] == (
+        "846a35da9878a299905a774247e6b537d07d81ce"
+    )
 
 
 def test_sanitized_environment_drops_ambient_credentials(tmp_path: Path) -> None:
@@ -167,25 +173,35 @@ def test_source_archive_refuses_tracked_symlink(tmp_path: Path) -> None:
         candidate.create_source_archive(source, tmp_path / "source.tar", environment)
 
 
-def test_wheel_inspection_binds_prompt_license_sidecar_and_record(tmp_path: Path) -> None:
+def test_wheel_inspection_binds_prompt_startup_license_sidecar_and_record(tmp_path: Path) -> None:
     prompt = b"reviewed patched prompt\n"
+    startup = b"reviewed patched startup\n"
     license_payload = b"Apache License\nVersion 2.0\n"
     wheel = tmp_path / "strix_agent-1.7.0-py3-none-linux_x86_64.whl"
-    _synthetic_wheel(wheel, prompt, license_payload)
-    receipt = candidate.inspect_wheel(wheel, prompt, license_payload)
+    _synthetic_wheel(wheel, prompt, startup, license_payload)
+    receipt = candidate.inspect_wheel(wheel, prompt, startup, license_payload)
     assert receipt["declared_version"] == "1.7.0"
+    assert receipt["startup_sha256"] == hashlib.sha256(startup).hexdigest()
     assert receipt["executed"] is False
     assert receipt["contained_sidecar"]["architecture"] == "x86_64"
     assert receipt["contained_sidecar"]["executed"] is False
 
 
-def test_wheel_inspection_refuses_prompt_or_license_drift(tmp_path: Path) -> None:
+def test_wheel_inspection_refuses_prompt_startup_or_license_drift(tmp_path: Path) -> None:
     wheel = tmp_path / "strix_agent-1.7.0-py3-none-linux_x86_64.whl"
-    _synthetic_wheel(wheel, b"different\n", b"Apache License\nVersion 2.0\n")
+    _synthetic_wheel(wheel, b"different\n", b"startup\n", b"Apache License\nVersion 2.0\n")
     with pytest.raises(candidate.StrixCandidateBuildError, match="policy overlay"):
         candidate.inspect_wheel(
             wheel,
             b"reviewed\n",
+            b"startup\n",
+            b"Apache License\nVersion 2.0\n",
+        )
+    with pytest.raises(candidate.StrixCandidateBuildError, match="startup overlay"):
+        candidate.inspect_wheel(
+            wheel,
+            b"different\n",
+            b"reviewed startup\n",
             b"Apache License\nVersion 2.0\n",
         )
 
@@ -280,6 +296,68 @@ def test_overlay_result_is_the_reviewed_modified_build() -> None:
     assert (
         PATCHED_PROMPT_SHA256 == "1908703508eff7287d492e63d1722d7f1a4a968ab3d2c237e92898abdd65d6fe"
     )
+    assert startup_overlay.REVIEWED_STARTUP_SHA256 == (
+        "735ad8463f83256f049749a91c00f85cd6b58301c225244c7b6b798898cc7014"
+    )
+    assert startup_overlay.PATCHED_STARTUP_SHA256 == (
+        "db3294b351406479960f1f18cde51e58d48f2dd9d4c1c249004385510a6e4fbf"
+    )
+    assert hashlib.sha256(startup_overlay._REPLACEMENT).hexdigest() == (
+        startup_overlay.STARTUP_OVERLAY_SHA256
+    )
+
+
+def test_startup_overlay_refuses_unknown_source_and_ambiguous_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(startup_overlay.StrixStartupOverlayError, match="preimage"):
+        startup_overlay.apply_startup_overlay(b"unreviewed source\n")
+
+    original = startup_overlay._ORIGINAL
+    source = b"before\n" + original + original + b"after\n"
+    monkeypatch.setattr(
+        startup_overlay, "REVIEWED_STARTUP_SHA256", hashlib.sha256(source).hexdigest()
+    )
+    with pytest.raises(startup_overlay.StrixStartupOverlayError, match="ambiguous"):
+        startup_overlay.apply_startup_overlay(source)
+
+
+def test_startup_overlay_validates_exact_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = b"before\n" + startup_overlay._ORIGINAL + b"after\n"
+    expected = b"before\n" + startup_overlay._REPLACEMENT + b"after\n"
+    monkeypatch.setattr(
+        startup_overlay, "REVIEWED_STARTUP_SHA256", hashlib.sha256(source).hexdigest()
+    )
+    monkeypatch.setattr(
+        startup_overlay, "PATCHED_STARTUP_SHA256", hashlib.sha256(expected).hexdigest()
+    )
+    patched, receipt = startup_overlay.apply_startup_overlay(source)
+    assert patched == expected
+    assert receipt.to_dict()["overlay_sha256"] == startup_overlay.STARTUP_OVERLAY_SHA256
+    assert b"backend_name = load_settings().runtime.backend" in patched
+    assert b"get_backend(backend_name)" in patched
+    assert b"    validate_environment()\n" in patched
+    with pytest.raises(startup_overlay.StrixStartupOverlayError, match="replacement"):
+        startup_overlay.apply_startup_overlay(source, overlay=b"unreviewed replacement\n")
+
+
+def test_startup_replacement_keeps_docker_setup_conditional() -> None:
+    module = ast.parse("def startup():\n" + startup_overlay._REPLACEMENT.decode("ascii"))
+    function = module.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    assert isinstance(function.body[0], ast.ImportFrom)
+    assert function.body[0].module == "strix.runtime.backends"
+    assert isinstance(function.body[1], ast.Assign)
+    assert isinstance(function.body[2], ast.Expr)
+    assert ast.unparse(function.body[2]) == "get_backend(backend_name)"
+    docker_branch = function.body[3]
+    assert isinstance(docker_branch, ast.If)
+    assert ast.unparse(docker_branch.test) == "backend_name == 'docker'"
+    assert [ast.unparse(statement) for statement in docker_branch.body] == [
+        "check_docker_installed()",
+        "pull_docker_image()",
+    ]
+    assert ast.unparse(function.body[4]) == "validate_environment()"
 
 
 def test_root_license_attribution_does_not_clear_bundled_components() -> None:

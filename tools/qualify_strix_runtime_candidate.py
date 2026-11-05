@@ -34,9 +34,19 @@ from email.policy import default as email_policy
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
+from bluefire.strix_policy_overlay import (
+    OVERLAY_SHA256,
+    PATCHED_PROMPT_SHA256,
+    REVIEWED_PROMPT_SHA256,
+)
 from bluefire.strix_redistribution_review import (
     is_blocked_strix_redistribution_review,
     strix_redistribution_review,
+)
+from bluefire.strix_startup_overlay import (
+    PATCHED_STARTUP_SHA256,
+    REVIEWED_STARTUP_SHA256,
+    STARTUP_OVERLAY_SHA256,
 )
 from tools import build_strix_engine_candidate as candidate
 
@@ -453,14 +463,60 @@ def validate_candidate(
     )
     if head != candidate.UPSTREAM_COMMIT or tree != candidate.UPSTREAM_TREE:
         raise StrixRuntimeQualificationError("candidate source checkout identity drifted")
-    if changed != f" M {candidate.PROMPT_PATH}":
+    modified_paths = sorted((candidate.PROMPT_PATH, candidate.STARTUP_PATH))
+    if changed.splitlines() != [f" M {path}" for path in modified_paths]:
         raise StrixRuntimeQualificationError(
-            "candidate source changes are not the reviewed overlay"
+            "candidate source changes are not the two reviewed overlays"
         )
     prompt = _read_regular(source / candidate.PROMPT_PATH, candidate.MAX_SOURCE_FILE_BYTES)
     overlay = manifest.get("policy_overlay")
-    if not isinstance(overlay, dict) or overlay.get("patched_sha256") != _sha256(prompt):
+    if (
+        not isinstance(overlay, dict)
+        or any(
+            overlay.get(key) != value
+            for key, value in {
+                "schema_version": "bluefire.strix-prompt-overlay.v1",
+                "source_revision": candidate.UPSTREAM_COMMIT,
+                "path": candidate.PROMPT_PATH,
+                "upstream_sha256": REVIEWED_PROMPT_SHA256,
+                "overlay_sha256": OVERLAY_SHA256,
+                "patched_sha256": PATCHED_PROMPT_SHA256,
+                "modified_upstream_build": True,
+            }.items()
+        )
+        or _sha256(prompt) != PATCHED_PROMPT_SHA256
+    ):
         raise StrixRuntimeQualificationError("candidate source prompt is not manifest-bound")
+    startup = _read_regular(source / candidate.STARTUP_PATH, candidate.MAX_SOURCE_FILE_BYTES)
+    startup_digest = _sha256(startup)
+    startup_overlay = manifest.get("startup_overlay")
+    if (
+        not isinstance(startup_overlay, dict)
+        or any(
+            startup_overlay.get(key) != value
+            for key, value in {
+                "schema_version": "bluefire.strix-startup-overlay.v1",
+                "source_revision": candidate.UPSTREAM_COMMIT,
+                "path": candidate.STARTUP_PATH,
+                "upstream_sha256": REVIEWED_STARTUP_SHA256,
+                "overlay_sha256": STARTUP_OVERLAY_SHA256,
+                "patched_sha256": PATCHED_STARTUP_SHA256,
+                "modified_upstream_build": True,
+            }.items()
+        )
+        or startup_digest != PATCHED_STARTUP_SHA256
+    ):
+        raise StrixRuntimeQualificationError("candidate startup overlay receipt drifted")
+    source_archive = manifest.get("source_archive")
+    wheel_inspection = manifest.get("wheel_inspection")
+    if (
+        not isinstance(source_archive, dict)
+        or source_archive.get("modified_paths") != modified_paths
+        or not isinstance(wheel_inspection, dict)
+        or wheel_inspection.get("prompt_sha256") != _sha256(prompt)
+        or wheel_inspection.get("startup_sha256") != startup_digest
+    ):
+        raise StrixRuntimeQualificationError("candidate startup inventory drifted")
 
     return {
         "manifest": manifest,
@@ -471,6 +527,8 @@ def validate_candidate(
         "wheel_path": root / wheels[0],
         "wheel_identity": artifact_rows[wheels[0]],
         "prompt_sha256": _sha256(prompt),
+        "startup_sha256": startup_digest,
+        "modified_paths": modified_paths,
         "lock_sha256": upstream["lock_sha256"],
     }
 
@@ -745,6 +803,7 @@ def _inspect_installed_candidate(
     site_packages: Path,
     installed: Mapping[str, Mapping[str, Any]],
     prompt_sha256: str,
+    startup_sha256: str,
 ) -> dict[str, Any]:
     row = installed.get("strix-agent")
     if row is None or row.get("version") != candidate.DECLARED_PACKAGE_VERSION:
@@ -773,9 +832,14 @@ def _inspect_installed_candidate(
     prompt_payload = _read_regular(prompt, candidate.MAX_SOURCE_FILE_BYTES)
     if _sha256(prompt_payload) != prompt_sha256:
         raise StrixRuntimeQualificationError("installed Strix prompt drifted")
+    startup = site_packages / candidate.STARTUP_PATH
+    startup_payload = _read_regular(startup, candidate.MAX_SOURCE_FILE_BYTES)
+    if _sha256(startup_payload) != startup_sha256:
+        raise StrixRuntimeQualificationError("installed Strix startup module drifted")
 
     record_payload = _read_regular(dist_info / "RECORD", 32 * 1024 * 1024)
     aggregate_rows: list[str] = []
+    recorded_paths: set[str] = set()
     count = 0
     try:
         rows = csv.reader(io.StringIO(record_payload.decode("utf-8"), newline=""))
@@ -783,6 +847,9 @@ def _inspect_installed_candidate(
             if len(record) != 3:
                 raise StrixRuntimeQualificationError("installed RECORD row is malformed")
             relative, encoded_hash, encoded_size = record
+            if relative in recorded_paths:
+                raise StrixRuntimeQualificationError("installed RECORD contains duplicate paths")
+            recorded_paths.add(relative)
             target = (site_packages / relative).resolve(strict=True)
             if target != runtime_root and runtime_root not in target.parents:
                 raise StrixRuntimeQualificationError("installed RECORD escapes runtime root")
@@ -802,6 +869,8 @@ def _inspect_installed_candidate(
             count += 1
     except (UnicodeDecodeError, csv.Error, OSError) as exc:
         raise StrixRuntimeQualificationError("installed Strix RECORD cannot be verified") from exc
+    if not {candidate.PROMPT_PATH, candidate.STARTUP_PATH} <= recorded_paths:
+        raise StrixRuntimeQualificationError("installed RECORD omits a reviewed source path")
     aggregate = "".join(sorted(aggregate_rows)).encode("utf-8")
     return {
         "distribution": dict(row),
@@ -815,6 +884,11 @@ def _inspect_installed_candidate(
             "path": candidate.PROMPT_PATH,
             "size": len(prompt_payload),
             "sha256": _sha256(prompt_payload),
+        },
+        "startup": {
+            "path": candidate.STARTUP_PATH,
+            "size": len(startup_payload),
+            "sha256": _sha256(startup_payload),
         },
         "package_record": {
             "record_sha256": _sha256(record_payload),
@@ -927,6 +1001,7 @@ def _install_runtime(
         site_packages,
         installed,
         str(candidate_identity["prompt_sha256"]),
+        str(candidate_identity["startup_sha256"]),
     )
     return {
         "platform": {"system": platform.system(), "machine": platform.machine()},
@@ -1479,6 +1554,8 @@ def prepare_runtime_candidate(
             "upstream_commit": candidate.UPSTREAM_COMMIT,
             "upstream_tree": candidate.UPSTREAM_TREE,
             "policy_prompt_sha256": candidate_identity["prompt_sha256"],
+            "startup_main_sha256": candidate_identity["startup_sha256"],
+            "modified_paths": candidate_identity["modified_paths"],
             "frozen_lock_sha256": candidate_identity["lock_sha256"],
         },
         "runner": {

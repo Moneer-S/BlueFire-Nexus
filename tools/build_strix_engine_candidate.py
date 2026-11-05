@@ -1,7 +1,7 @@
 """Build a provenance-bound, non-executed Strix engine candidate.
 
 This tool fetches one reviewed upstream Git object, validates its identity and
-declared license, applies BlueFire's single reviewed prompt correction, and
+declared license, applies BlueFire's reviewed prompt and startup corrections, and
 builds immutable candidate artifacts from the frozen upstream lock. It never
 launches Strix, its sidecar, a sandbox image, a target, or a model.
 """
@@ -38,6 +38,14 @@ from bluefire.strix_policy_overlay import (
     apply_policy_overlay,
 )
 from bluefire.strix_redistribution_review import strix_redistribution_review
+from bluefire.strix_startup_overlay import (
+    PATCHED_STARTUP_SHA256,
+    REVIEWED_STARTUP_SHA256,
+    apply_startup_overlay,
+)
+from bluefire.strix_startup_overlay import (
+    REVIEWED_SOURCE_REVISION as REVIEWED_STARTUP_SOURCE_REVISION,
+)
 
 UPSTREAM_REPOSITORY = "https://github.com/usestrix/strix.git"
 UPSTREAM_COMMIT = "6b7ae2ebe4d47037a927aade23265ff4e4f27e84"
@@ -47,6 +55,7 @@ PUBLISHED_RELEASE_COMMIT = "55bc07991aacb1c26a81b43e7ca53148730d2019"
 UPSTREAM_LICENSE = "Apache-2.0"
 UPSTREAM_PYTHON_REQUIREMENT = ">=3.12"
 PROMPT_PATH = "strix/agents/prompts/system_prompt.jinja"
+STARTUP_PATH = "strix/interface/main.py"
 
 # The reviewed source selects sandbox 1.3.1. A tag is not an immutable
 # identity, so the later runtime may use only this OCI index digest and must
@@ -80,6 +89,7 @@ EXPECTED_BLOBS: Mapping[str, str] = {
     "uv.lock": "aa7a27ef224c85aad82e9bb9a2e29a96a5a6a763",
     "LICENSE": "65c4e8f58a00552cc29f6bd1dcaf1c4ef10012b8",
     PROMPT_PATH: "fd09d0774f48c85b056104e1eb5e265e8b3c756b",
+    STARTUP_PATH: "846a35da9878a299905a774247e6b537d07d81ce",
     "scripts/tui_sidecar_hook.py": "01de6fdc1a63a1ee4787e8a27a1d6d17ef147802",
     "strix/interface/tui/go.mod": "1ff6ec350e8a6dc3a03cb08015ba9eed56bee2db",
     "strix/interface/tui/go.sum": "f255aec1de72d711f90f22d150648a45ee33bd7b",
@@ -412,6 +422,7 @@ def _validate_bluefire_checkout(
         ".github/workflows/strix-engine-candidate.yml",
         "bluefire/strix_policy_overlay.py",
         "bluefire/data/strix_prompt_policy_overlay.txt",
+        "bluefire/strix_startup_overlay.py",
     )
     files: dict[str, dict[str, str]] = {}
     for relative in reviewed_paths:
@@ -449,7 +460,11 @@ def validate_source_checkout(source: Path, environment: Mapping[str, str]) -> di
     )
     if remote != UPSTREAM_REPOSITORY:
         raise StrixCandidateBuildError("upstream repository identity does not match the review")
-    if commit != UPSTREAM_COMMIT or commit != REVIEWED_SOURCE_REVISION:
+    if (
+        commit != UPSTREAM_COMMIT
+        or commit != REVIEWED_SOURCE_REVISION
+        or commit != REVIEWED_STARTUP_SOURCE_REVISION
+    ):
         raise StrixCandidateBuildError("upstream source commit does not match the review")
     if tree != UPSTREAM_TREE:
         raise StrixCandidateBuildError("upstream source tree does not match the review")
@@ -532,6 +547,36 @@ def apply_reviewed_overlay(source: Path, environment: Mapping[str, str]) -> dict
     expected_status = f" M {PROMPT_PATH}"
     if changed != expected_status:
         raise StrixCandidateBuildError("the policy overlay changed more than the reviewed prompt")
+    raw_receipt = receipt.to_dict()
+    return {
+        "schema_version": str(raw_receipt["schema_version"]),
+        "source_revision": str(raw_receipt["source_revision"]),
+        "upstream_sha256": str(raw_receipt["upstream_sha256"]),
+        "overlay_sha256": str(raw_receipt["overlay_sha256"]),
+        "patched_sha256": str(raw_receipt["patched_sha256"]),
+    }
+
+
+def apply_reviewed_startup_overlay(source: Path, environment: Mapping[str, str]) -> dict[str, str]:
+    startup = source / STARTUP_PATH
+    upstream = _read_regular(startup, MAX_SOURCE_FILE_BYTES)
+    if _sha256(upstream) != REVIEWED_STARTUP_SHA256:
+        raise StrixCandidateBuildError("reviewed startup preimage drifted before overlay")
+    try:
+        patched, receipt = apply_startup_overlay(upstream)
+    except (OSError, ValueError) as exc:
+        raise StrixCandidateBuildError("reviewed Strix startup overlay was refused") from exc
+    if _sha256(patched) != PATCHED_STARTUP_SHA256:
+        raise StrixCandidateBuildError("reviewed Strix startup overlay result drifted")
+    startup.write_bytes(patched)
+    changed = _run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=source,
+        environment=environment,
+    )
+    expected_status = "\n".join(f" M {path}" for path in sorted((PROMPT_PATH, STARTUP_PATH)))
+    if changed != expected_status:
+        raise StrixCandidateBuildError("the reviewed overlays changed another source path")
     raw_receipt = receipt.to_dict()
     return {
         "schema_version": str(raw_receipt["schema_version"]),
@@ -625,7 +670,12 @@ def _validate_wheel_record(archive: zipfile.ZipFile, record_name: str) -> None:
         raise StrixCandidateBuildError("wheel RECORD does not cover every regular member")
 
 
-def inspect_wheel(wheel: Path, expected_prompt: bytes, expected_license: bytes) -> dict[str, Any]:
+def inspect_wheel(
+    wheel: Path,
+    expected_prompt: bytes,
+    expected_startup: bytes,
+    expected_license: bytes,
+) -> dict[str, Any]:
     identity = _artifact(wheel, "application/vnd.python.wheel", MAX_WHEEL_BYTES)
     if not wheel.name.endswith("-py3-none-linux_x86_64.whl"):
         raise StrixCandidateBuildError("wheel filename does not bind the hosted Linux x86-64 tag")
@@ -690,6 +740,10 @@ def inspect_wheel(wheel: Path, expected_prompt: bytes, expected_license: bytes) 
                 raise StrixCandidateBuildError("wheel metadata does not bind Linux x86-64")
             if _wheel_member(archive, PROMPT_PATH, MAX_SOURCE_FILE_BYTES) != expected_prompt:
                 raise StrixCandidateBuildError("wheel does not contain the reviewed policy overlay")
+            if _wheel_member(archive, STARTUP_PATH, MAX_SOURCE_FILE_BYTES) != expected_startup:
+                raise StrixCandidateBuildError(
+                    "wheel does not contain the reviewed startup overlay"
+                )
             license_names = [name for name in names if name.endswith(".dist-info/licenses/LICENSE")]
             if (
                 len(license_names) != 1
@@ -722,6 +776,7 @@ def inspect_wheel(wheel: Path, expected_prompt: bytes, expected_license: bytes) 
         "declared_name": "strix-agent",
         "declared_version": DECLARED_PACKAGE_VERSION,
         "prompt_sha256": _sha256(expected_prompt),
+        "startup_sha256": _sha256(expected_startup),
         "contained_sidecar": {
             "path": "strix/bin/strix-tui",
             "size": len(sidecar),
@@ -987,7 +1042,9 @@ def build_candidate(
     source_identity = validate_source_checkout(source, environment)
     toolchains = _validate_toolchains(source, environment)
     overlay_receipt = apply_reviewed_overlay(source, environment)
+    startup_overlay_receipt = apply_reviewed_startup_overlay(source, environment)
     patched_prompt = _read_regular(source / PROMPT_PATH, MAX_SOURCE_FILE_BYTES)
+    patched_startup = _read_regular(source / STARTUP_PATH, MAX_SOURCE_FILE_BYTES)
 
     source_artifact = create_source_archive(source, output / SOURCE_ARCHIVE_NAME, environment)
     license_payload = _read_regular(source / "LICENSE", MAX_SOURCE_FILE_BYTES)
@@ -1037,7 +1094,7 @@ def build_candidate(
     wheels = sorted(output.glob("*.whl"))
     if len(wheels) != 1 or not wheels[0].name.startswith("strix_agent-1.7.0-"):
         raise StrixCandidateBuildError("candidate build did not produce exactly one expected wheel")
-    wheel_receipt = inspect_wheel(wheels[0], patched_prompt, license_payload)
+    wheel_receipt = inspect_wheel(wheels[0], patched_prompt, patched_startup, license_payload)
 
     for initial, media_type, maximum in (
         (source_artifact, "application/x-tar", MAX_SOURCE_BYTES + 8 * 1024 * 1024),
@@ -1051,7 +1108,7 @@ def build_candidate(
         cwd=source,
         environment=environment,
     )
-    if changed_tracked != PROMPT_PATH:
+    if changed_tracked != "\n".join(sorted((PROMPT_PATH, STARTUP_PATH))):
         raise StrixCandidateBuildError("upstream build changed tracked source beyond the overlay")
 
     wheel_artifact = ArtifactIdentity(**wheel_receipt["artifact"])
@@ -1085,6 +1142,15 @@ def build_candidate(
             "notice": (
                 "BlueFire replaces only the reviewed upstream prompt policy block; "
                 "this candidate is not the unmodified upstream release."
+            ),
+        },
+        "startup_overlay": {
+            **startup_overlay_receipt,
+            "path": STARTUP_PATH,
+            "modified_upstream_build": True,
+            "notice": (
+                "BlueFire validates the registered effective backend before scan preflight "
+                "and limits Docker setup to the Docker backend."
             ),
         },
         "sandbox": {
@@ -1126,9 +1192,11 @@ def build_candidate(
         ],
         "source_archive": {
             "sha256": source_artifact.sha256,
-            "modified_path": PROMPT_PATH,
+            "modified_paths": sorted((PROMPT_PATH, STARTUP_PATH)),
             "upstream_prompt_sha256": overlay_receipt["upstream_sha256"],
             "patched_prompt_sha256": overlay_receipt["patched_sha256"],
+            "upstream_startup_sha256": startup_overlay_receipt["upstream_sha256"],
+            "patched_startup_sha256": startup_overlay_receipt["patched_sha256"],
             "upstream_notice_paths": source_identity["notice_paths"],
         },
         "limits": {
@@ -1146,6 +1214,7 @@ def build_candidate(
             "declared_name": wheel_receipt["declared_name"],
             "declared_version": wheel_receipt["declared_version"],
             "prompt_sha256": wheel_receipt["prompt_sha256"],
+            "startup_sha256": wheel_receipt["startup_sha256"],
             "contained_sidecar": wheel_receipt["contained_sidecar"],
             "installable": False,
             "installation_requirement": (
