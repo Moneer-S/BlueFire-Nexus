@@ -410,9 +410,33 @@ def test_candidate_validation_binds_checksum_source_and_untracked_state(
         qualification.validate_candidate(candidate_root, source, revision, environment)
     (source / "uv.toml").unlink()
 
-    startup.write_text("drifted startup fixture\n", encoding="utf-8")
-    with pytest.raises(qualification.StrixRuntimeQualificationError, match="startup overlay"):
-        qualification.validate_candidate(candidate_root, source, revision, environment)
+    for source_path, overlay_section, wheel_field, failure in (
+        (source / "prompt.jinja", "policy_overlay", "prompt_sha256", "source prompt"),
+        (startup, "startup_overlay", "startup_sha256", "startup overlay"),
+    ):
+        original = source_path.read_bytes()
+        forged = original + b"drift"
+        forged_hash = hashlib.sha256(forged).hexdigest()
+        source_path.write_bytes(forged)
+        manifest[overlay_section]["patched_sha256"] = forged_hash
+        manifest["wheel_inspection"][wheel_field] = forged_hash
+        forged_manifest = qualification._canonical_json(manifest) + b"\n"
+        (candidate_root / qualification.candidate.MANIFEST_NAME).write_bytes(forged_manifest)
+        (candidate_root / qualification.candidate.CHECKSUMS_NAME).write_text(
+            f"{hashlib.sha256(forged_manifest).hexdigest()}  "
+            f"{qualification.candidate.MANIFEST_NAME}\n"
+            f"{hashlib.sha256(wheel_payload).hexdigest()}  {wheel_name}\n",
+            encoding="ascii",
+        )
+        with pytest.raises(qualification.StrixRuntimeQualificationError, match=failure):
+            qualification.validate_candidate(candidate_root, source, revision, environment)
+        source_path.write_bytes(original)
+        manifest[overlay_section]["patched_sha256"] = (
+            prompt_hash if overlay_section == "policy_overlay" else startup_hash
+        )
+        manifest["wheel_inspection"][wheel_field] = (
+            prompt_hash if overlay_section == "policy_overlay" else startup_hash
+        )
 
 
 def test_wheelhouse_is_binary_only_bounded_and_unambiguous(tmp_path: Path) -> None:
