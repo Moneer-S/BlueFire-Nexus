@@ -176,6 +176,7 @@ The committed state layers are deliberately separate:
 | v18 tenant-generation journal | Exact generated-lab generation, transition, custody, and reconciliation history | Strix runtime authority or a launchable attempt |
 | v19 tenant action material | Immutable server-derived preparation material, exact protected references, and atomic preparation/approval retention | A missing runtime admission, browser-supplied authority, or resource provisioning |
 | v20 Strix runtime store | Append-only authority lineage, immutable attempt reservations and verified admission records, and admission lifecycle heads | Runtime allocation, credentials, process launch, or effectiveness |
+| v21 Strix issuance evidence | Atomic append-only issuer records bind each runtime lifecycle event to the exact pre-admission profile, resource receipt set, reconciliation evidence, and retained admission document | Current resource custody, execution consumption, independent target observation, or effectiveness |
 
 `ControllerQualifiedStrixAdmissionResolver` loads only an expected manifest ref
 from a controller-private pinned artifact root, compares the installed BlueFire
@@ -194,13 +195,24 @@ explicit limitation. Recovery may reopen historical custody without replaying
 or recreating resources. These rereads do not claim an atomic lock against the
 final operating-system launch instant.
 
-The remaining production boundary is concrete rather than credential-blocked:
-trusted protected registries and a controller-owned admission issuer must
-allocate and independently verify the network, model gateway, process/container
-custody, protected roots, containment, budgets, cancellation, source seal, and
-cleanup evidence before retaining a verified v20 admission. The installed
-service has not yet wired that issuer and composition. Missing material therefore
-refuses before approval, credentials, target access, or worker launch.
+The protected registries and controller-owned issuer now retain and independently
+verify the complete protected resource set before a verified admission can be
+retained. That set binds scope and gateway policy, network plan and verification,
+custody plan, protected roots, containment, runtime installation, workspace,
+executable and path environment, control and artifact roots, and source-root
+custody. Cancellation and cleanup evidence belong to later runtime and
+reconciliation lifecycle states, not the verified-issuance resource set. The
+optional installed-service composition wires these owners to the shared product
+store, job controller, prepared-action gate, and cancellation path. The default
+service remains closed, and the composition refuses generic unprepared
+controller work. Missing or changed material therefore still refuses before
+credentials, target access, or worker launch.
+
+This wiring is not positive installed qualification. Durable one-shot execution
+consumption, controller-owned publication of independent target observations,
+the installed attack-to-defense-to-retest journey, and native or live-provider
+proof remain separate gates. No current record establishes that Strix executed,
+that a target effect occurred, or that the model made a useful decision.
 
 ## Restricted runtime profile decision
 
@@ -212,23 +224,32 @@ reject those requests; it must not silently rewrite them and make an unsafe
 request appear qualified.
 
 Strix exposes a public downstream-backend registry selected by
-`STRIX_RUNTIME_BACKEND`. The planned integration is a separately hashed
-`bluefire-controlled` bootstrap and backend that register through that hook
-before invoking the official headless CLI. The profile will use an exact
-preloaded image, internal target and model relays, a non-root owned sandbox,
-bounded resources, no host gateway or host mounts, and an empty capability set
-for the first HTTP authorization lab. It preserves Strix reasoning, agent
-coordination, reports, exit semantics, and bounded commands inside the owned
-sandbox. Raw-packet scanning, interface manipulation, VPN/TUN devices,
-privileged mounts, host access, and unrelated network discovery remain
+`STRIX_RUNTIME_BACKEND`. BlueFire now implements a separately hashed
+`bluefire-controlled` bootstrap and backend contract designed to register through
+that hook before the official headless CLI. The controlled contracts require an
+exact preloaded image, internal target and model relays, a non-root owned
+sandbox, bounded resources, no host gateway or host mounts, and an empty
+capability set for the first HTTP authorization lab. They preserve Strix
+reasoning, agent coordination, reports, exit semantics, and bounded commands
+inside the owned sandbox. Raw-packet scanning, interface manipulation, VPN/TUN
+devices, privileged mounts, host access, and unrelated network discovery remain
 explicitly unavailable profile capabilities, not evidence of target prevention.
 
-This restricted backend is planned and under qualification; it is not part of
-the admitted candidate or a live proof yet. Its bootstrap, backend, policy,
-relay, SDK closure, image, and profile digests must be added to build identity,
-runtime authority, v20 admission, action material, and launch intent before use.
-`production_runtime_admitted` remains false until the complete session,
-cancellation, artifact, independent-observation, and cleanup journey passes.
+The current installed Strix adapter still selects the stock `docker` backend and
+builds its legacy launch plan. `InstalledAttemptFactory` remains an injected
+protocol; no maintained concrete factory yet selects the controlled bootstrap,
+backend, relays, and launch plan for an installed attempt.
+
+The policy proxy, relay, workspace-transfer, controlled-provider, backend, and
+composition contracts are implemented and fail closed, but they are not part of
+an admitted release candidate or a live proof. Their exact bootstrap, backend,
+policy, relay, SDK closure, image, and profile digests still must be present in
+the build identity, runtime authority, admission, action material, and launch
+intent used by a qualified run. `production_runtime_admitted` remains false
+until a concrete controlled attempt factory is wired, durable execution
+consumption is proven, and the complete installed session, cancellation,
+artifact, independent-observation, defense, retest, legitimate-use, and cleanup
+journey passes.
 
 ## Workflow and outputs
 

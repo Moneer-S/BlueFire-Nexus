@@ -149,28 +149,37 @@ Further runtime work must separately establish target binding, outer network con
 lifecycle stop and cleanup, raw evidence collection, and controlled-provider mechanics. Live-model
 quality is a different proof and requires its own authorization.
 
-## Planned BlueFire restricted runtime profile
+## Implemented BlueFire restricted runtime contracts
 
-The reviewed source exposes a public downstream runtime-backend registry. BlueFire plans to keep
-the exact pinned upstream package and official headless CLI while registering a separately hashed
-`bluefire-controlled` backend before invoking it. This is preferable to patching upstream source or
-silently normalizing unsafe Docker requests.
+The reviewed source exposes a public downstream runtime-backend registry. BlueFire keeps the exact
+pinned upstream package and official headless CLI while its implemented, separately hashed
+`bluefire-controlled` bootstrap and backend contracts define an integration through that boundary.
+This is preferable to patching upstream source or silently normalizing unsafe Docker requests.
 
 The stock Docker backend is not admissible for the first BlueFire workflow. At this pin it can pull
 a missing image, adds `NET_ADMIN` and `NET_RAW`, requests
-`host.docker.internal=host-gateway`, and lacks BlueFire's custody label. The controller policy must
-refuse those requests. The restricted backend will instead emit the exact safe request shape for a
-preloaded image, fixed internal network and relays, non-root user, bounded resources, required
+`host.docker.internal=host-gateway`, and lacks BlueFire's custody label. The controller policy
+refuses those requests. The restricted contracts instead require the exact safe request shape for
+a preloaded image, fixed internal network and relays, non-root user, bounded resources, required
 upstream and BlueFire labels, no host mounts or host gateway, and no extra capabilities for the
 initial HTTP authorization lab.
 
-The bootstrap, controlled-backend implementation, policy, relay contract, SDK closure, sandbox
-image, and runtime-profile digests are additional BlueFire artifacts. They are not covered by the
-current prompt-overlay digest and are not yet included in the candidate or startup admission.
+The current installed Strix adapter still selects `STRIX_RUNTIME_BACKEND=docker` and builds the
+legacy Docker launch plan. The installed composition accepts an injected `InstalledAttemptFactory`,
+but no maintained concrete factory yet selects and binds the controlled bootstrap, backend, relays,
+and launch plan.
+
+The bootstrap, controlled-backend implementation, policy proxy, relays, workspace transfer, SDK
+closure, sandbox image, and runtime-profile digests are additional BlueFire artifacts. Their
+contracts and fail-closed installed composition are implemented, but they are not covered by the
+current prompt-overlay digest and are not included in the candidate or startup admission.
 Qualification and every later authority, admission, preparation, and launch record must bind them
-before use. Until that exact profile passes session, cancellation, evidence, independent-observation,
-and cleanup qualification, `production_runtime_admitted` remains false and no live Strix capability
-claim follows from this document.
+before use. Durable execution consumption, independent-observation publication, concrete
+attempt-factory wiring and positive installed qualification, and separate native or live-provider
+proof remain incomplete. Until that exact profile passes session, cancellation, evidence, defense,
+retest, legitimate-use, and cleanup
+qualification, `production_runtime_admitted` remains false and no live Strix capability claim
+follows from this document.
 
 ## Updating the pin
 
