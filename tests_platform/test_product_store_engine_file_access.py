@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -12,6 +13,10 @@ from typing import Any, Mapping
 
 import pytest
 
+from bluefire import product_store_capability_grants as capability_records
+from bluefire import product_store_file_access_records as file_access_records
+from bluefire.capability_dependency import endpoint_digest, usage_document
+from bluefire.capability_packs import RECEIVER_PACK
 from bluefire.engine_attempt_contract import (
     AttemptRole,
     AttemptState,
@@ -52,6 +57,164 @@ def _validate_experiment(document: Mapping[str, Any]) -> Mapping[str, Any]:
     return EngineExperiment._from_controller_mapping(document).to_dict()
 
 
+def _insert_file_access_operation(
+    store: ProductStore,
+    *,
+    job_id: str,
+    owner_id: str,
+    enrollment_id: str,
+    operation: str,
+    outcome: Mapping[str, Any] | None,
+    control: Mapping[str, Any] | None = None,
+) -> None:
+    """Persist relationally valid control history without dispatching an effect."""
+
+    document = {"control_owner_id": owner_id, "operation": operation}
+    with store._connection(write=True) as connection:
+        connection.execute(
+            "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                job_id,
+                "file_access.operation",
+                "completed" if outcome is not None else "running",
+                "{}",
+                "{}",
+                None,
+                None,
+                "1970-01-01T00:16:40Z",
+                "1970-01-01T00:16:40Z",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO file_access_operations VALUES(?,?,?,?,?,?)",
+            (
+                job_id,
+                owner_id,
+                enrollment_id,
+                operation,
+                canonical_json(document),
+                content_hash(document),
+            ),
+        )
+        if outcome is not None:
+            connection.execute(
+                "INSERT INTO file_access_outcomes(job_id,document_json,document_digest) "
+                "VALUES(?,?,?)",
+                (job_id, canonical_json(outcome), content_hash(outcome)),
+            )
+        if control is not None:
+            connection.execute(
+                "INSERT INTO file_access_revisions VALUES(?,?,?,?,?)",
+                (
+                    owner_id,
+                    control["revision"],
+                    job_id,
+                    canonical_json(control),
+                    content_hash(control),
+                ),
+            )
+
+
+def _insert_unsettled_control_usage(store: ProductStore, owner_id: str) -> None:
+    """Add an internally consistent capability lease with no settlement."""
+
+    lineage_id = "lineage-engine-file-access-claim"
+    grant_id = "grant-engine-file-access-claim"
+    attempt_id = "attempt-engine-file-access-claim"
+    environment = {
+        "control_owner_id": owner_id,
+        "control_digest": _digest("a"),
+        "environment_id": "environment-engine-file-access-claim",
+        "runner_id": "runner-test",
+        "target_scope_digest": _digest("b"),
+        "policy_digest": _digest("c"),
+        "port": 1234,
+    }
+    objective = {"predicate": "test"}
+    limits: dict[str, Any] = {}
+    lineage_binding = {
+        "control_owner_id": owner_id,
+        "environment_id": environment["environment_id"],
+        "runner_id": environment["runner_id"],
+        "target_scope_digest": environment["target_scope_digest"],
+        "predicate": objective["predicate"],
+    }
+    lineage = {"binding": lineage_binding, "limits": limits}
+    grant_body = {
+        "schema_version": "bluefire.capability-grant.v1",
+        "grant_id": grant_id,
+        "environment": environment,
+        "objective": objective,
+        "limits": limits,
+        "snapshot": {"pack": RECEIVER_PACK},
+        "created_at_ms": 1,
+        "expires_at_ms": 2**62,
+    }
+    grant = {**grant_body, "grant_digest": content_hash(grant_body)}
+    compiled_body = {"handoff": {"mode": "test"}}
+    compiled = {**compiled_body, "compiled_digest": content_hash(compiled_body)}
+    lease_body = {
+        "attempt_id": attempt_id,
+        "grant_id": grant_id,
+        "grant_digest": grant["grant_digest"],
+        "lineage_id": lineage_id,
+        "control_owner_id": owner_id,
+        "endpoint_digest": endpoint_digest(environment),
+        "job_id": "job-" + "e" * 32,
+        "run_id": "run-engine-file-access-claim",
+        "compiled_digest": compiled["compiled_digest"],
+    }
+    lease = {**lease_body, "lease_digest": content_hash(lease_body)}
+    usage = usage_document(grant, compiled, lease)
+    with store._connection(write=True) as connection:
+        connection.execute(
+            "INSERT INTO capability_lineages VALUES(?,?,?,?)",
+            (
+                lineage_id,
+                content_hash(lineage_binding),
+                canonical_json(lineage),
+                content_hash(lineage),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO capability_grants VALUES(?,?,?,?,?,?,?)",
+            (
+                grant_id,
+                lineage_id,
+                owner_id,
+                canonical_json(grant),
+                content_hash(grant),
+                grant["created_at_ms"],
+                grant["expires_at_ms"],
+            ),
+        )
+        connection.execute(
+            "INSERT INTO capability_grant_events(grant_id,status,at_ms) VALUES(?,?,?)",
+            (grant_id, "active", 1),
+        )
+        connection.execute(
+            "INSERT INTO capability_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                attempt_id,
+                grant_id,
+                lineage_id,
+                owner_id,
+                lease["endpoint_digest"],
+                lease["job_id"],
+                lease["run_id"],
+                canonical_json(lease),
+                content_hash(lease),
+                canonical_json(compiled),
+                content_hash(compiled),
+                1,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO capability_control_usages VALUES(?,?,?,?)",
+            (attempt_id, owner_id, canonical_json(usage), content_hash(usage)),
+        )
+
+
 def _saved_policy(
     store: ProductStore,
     *,
@@ -65,6 +228,7 @@ def _saved_policy(
     created_at = _timestamp(instant)
     document = binding()
     document["expires_at_ms"] = instant + 600_000
+    control_owner_id = "job-" + "a" * 31 + marker
     baseline = {
         "baseline_digest": _digest("a"),
         "non_owner": "allowed",
@@ -72,21 +236,41 @@ def _saved_policy(
         "record_count": document["resource"]["record_count"],
         "sha256": document["resource"]["sha256"],
         "source_binding": {
-            "operation_job_id": "job-" + "a" * 32,
+            "operation_job_id": control_owner_id,
             "evidence_digest": _digest("a"),
         },
     }
     verified = verify_file_access_binding(
         document, expected_document_digest=content_hash(document), now_ms=instant
     )
+    control = {
+        "schema_version": "bluefire.retained-file-control.v1",
+        "control_owner_id": control_owner_id,
+        "enrollment_id": document["enrollment_id"],
+        "revision": document["control_revision"],
+        "status": "baseline_verified",
+        "binding": document,
+        "binding_digest": content_hash(document),
+        "source": {"retained": "owned"},
+        "baseline": baseline,
+    }
+    _insert_file_access_operation(
+        store,
+        job_id=control_owner_id,
+        owner_id=control_owner_id,
+        enrollment_id=document["enrollment_id"],
+        operation="baseline",
+        outcome={"state": "complete", "control_digest": content_hash(control)},
+        control=control,
+    )
     mechanism = FileAccessReadMechanism.from_verified_binding(verified, baseline=baseline)
     snapshot = FileAccessTargetSnapshot.from_verified_binding(
         verified,
         mechanism=mechanism,
-        control_owner_id="job-" + "a" * 32,
-        control_digest=_digest("c"),
+        control_owner_id=control_owner_id,
+        control_digest=content_hash(control),
         prior_control_digest=None,
-        source_operation_job_id="job-" + "a" * 32,
+        source_operation_job_id=control_owner_id,
         source_evidence_digest=_digest("a"),
         phase=HISTORICAL_BASELINE,
     )
@@ -514,6 +698,72 @@ def test_claim_rejects_attempt_settled_after_reservation(tmp_path: Path) -> None
         )
     with pytest.raises(ProductStoreError):
         _claim(store, attempt.attempt_id, 1, "a")
+
+
+@pytest.mark.parametrize("change", ["pending_operation", "unsettled_usage", "new_control"])
+def test_claim_rechecks_saved_control_and_effects_without_consuming_ordinal(
+    tmp_path: Path, change: str
+) -> None:
+    store = ProductStore(tmp_path / "bluefire.db")
+    experiment, attempt, policy = _saved_policy(store)
+    store.reserve_engine_file_access_target(experiment.experiment_id, attempt.attempt_id, policy)
+    snapshot = policy.snapshot.to_dict()
+    owner_id = snapshot["control_owner_id"]
+
+    if change == "pending_operation":
+        _insert_file_access_operation(
+            store,
+            job_id="job-" + "d" * 32,
+            owner_id=owner_id,
+            enrollment_id=snapshot["enrollment_id"],
+            operation="harden",
+            outcome=None,
+        )
+    elif change == "unsettled_usage":
+        _insert_unsettled_control_usage(store, owner_id)
+    else:
+        with store._connection() as connection:
+            row = connection.execute(
+                "SELECT document_json FROM file_access_revisions WHERE control_owner_id=? "
+                "ORDER BY revision DESC LIMIT 1",
+                (owner_id,),
+            ).fetchone()
+            assert row is not None
+            changed_control = json.loads(row["document_json"])
+        changed_control["revision"] += 1
+        changed_control["status"] = "hardened"
+        changed_control["binding"]["control_revision"] += 1
+        changed_control["binding"]["mode"] = "0600"
+        changed_control["binding_digest"] = content_hash(changed_control["binding"])
+        _insert_file_access_operation(
+            store,
+            job_id="job-" + "f" * 32,
+            owner_id=owner_id,
+            enrollment_id=snapshot["enrollment_id"],
+            operation="harden",
+            outcome={"state": "complete", "control_digest": content_hash(changed_control)},
+            control=changed_control,
+        )
+
+    with store._connection() as connection:
+        latest = file_access_records._control_at(connection, owner_id)
+        observed = (
+            latest["document_digest"] == snapshot["control_digest"],
+            file_access_records._pending(connection, owner_id),
+            capability_records.control_usages_settled(store, connection, owner_id),
+        )
+        expected = {
+            "pending_operation": (True, True, True),
+            "unsettled_usage": (True, False, False),
+            "new_control": (False, False, True),
+        }
+        assert observed == expected[change]
+        if change == "unsettled_usage":
+            capability_records._attempt_at(connection, "attempt-engine-file-access-claim")
+
+    with pytest.raises(ProductStoreError):
+        _claim(ProductStore(store.path), attempt.attempt_id, 1, "a")
+    assert store.list_engine_file_access_request_claims(attempt.attempt_id) == []
 
 
 def test_active_lifecycle_update_preserves_exact_policy_without_widening(tmp_path: Path) -> None:

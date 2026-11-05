@@ -17,6 +17,7 @@ from contextlib import AbstractContextManager
 from typing import Any, Protocol, cast
 
 from . import product_store_engine_jobs as engine_jobs
+from . import product_store_file_access_records as file_access_records
 from .engine_attempt_contract import AttemptRole, AttemptState
 from .engine_experiment import (
     ENGINE_CAPABILITY_SCOPE_VERSION,
@@ -27,6 +28,7 @@ from .engine_experiment import (
 from .engine_file_access_snapshot import CURRENT_HARDENED, HISTORICAL_BASELINE
 from .engine_file_access_target import EngineFileReadTargetPolicy
 from .file_access_contract import PROBE_ACTION
+from .product_store_capability_grants import control_usages_settled
 from .product_store_errors import ProductStoreError, ResourceConflictError
 from .product_store_serialization import canonical_json
 from .util import content_hash, parse_iso8601_datetime
@@ -311,9 +313,7 @@ def _active_owner_at(
     expected_phase = (
         HISTORICAL_BASELINE
         if binding.role is AttemptRole.BASELINE
-        else CURRENT_HARDENED
-        if binding.role is AttemptRole.ADAPTIVE_SEARCH
-        else None
+        else CURRENT_HARDENED if binding.role is AttemptRole.ADAPTIVE_SEARCH else None
     )
     created_at_ms = int(parse_iso8601_datetime(binding.created_at).timestamp() * 1000)
     if (
@@ -587,7 +587,11 @@ class EngineFileAccessStoreMixin:
         request_hash: str,
         transport_request_hash: str,
     ) -> Mapping[str, Any]:
-        """Consume one ordinal atomically; a claim itself cannot launch a read."""
+        """Consume one ordinal against current database control state atomically.
+
+        This guard does not prove live filesystem state or launch a read. The
+        controller must perform its separate live admission checks first.
+        """
 
         attempt_id = _attempt_id(attempt_id)
         request_hash = _digest(request_hash, "file-access request hash")
@@ -630,6 +634,24 @@ class EngineFileAccessStoreMixin:
                 or now_ms >= reservation["deadline_ms"]
             ):
                 raise ResourceConflictError("engine file-access reservation is no longer current")
+            snapshot = stored_policy.snapshot.to_dict()
+            owner_id = snapshot["control_owner_id"]
+            control_view = file_access_records._control_at(connection, owner_id)
+            control = control_view["document"]
+            expected_status = (
+                "baseline_verified" if binding.role is AttemptRole.BASELINE else "hardened"
+            )
+            if (
+                control_view["document_digest"] != snapshot["control_digest"]
+                or control["control_owner_id"] != owner_id
+                or control["revision"] != snapshot["control_revision"]
+                or control["binding_digest"] != snapshot["binding_digest"]
+                or content_hash(control["binding"]) != snapshot["binding_digest"]
+                or control["status"] != expected_status
+                or file_access_records._pending(connection, owner_id)
+                or not control_usages_settled(self, connection, owner_id)
+            ):
+                raise ResourceConflictError("engine file-access control is no longer settled")
             latest = connection.execute(
                 """SELECT COALESCE(MAX(ordinal), 0) AS latest
                 FROM engine_file_access_request_claims WHERE attempt_id = ?""",
