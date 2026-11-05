@@ -77,6 +77,41 @@ it("retains captured source reasoning after selection changes while blocking sta
   expect(submit).not.toHaveBeenCalled();
 });
 
+it("keeps a matching proposal actionable after findings hide, show, and objective navigation", async () => {
+  const { objective, knowledge } = evidenceFixture();
+  const other = `job-${"9".repeat(32)}`;
+  const second = structuredClone(objective); second.owner.job_id = other; second.attempts = [];
+  vi.mocked(compositionApi.objective).mockImplementation(async id => id === ownerId ? objective : second);
+  vi.mocked(compositionApi.list).mockResolvedValue({ schema_version: "bluefire.composition-objective-list.v1", objectives: [{ owner_id: ownerId, title: "Receiver objective", status: "active", job_state: "completed" }, { owner_id: other, title: "Other objective", status: "active", job_state: "completed" }] });
+  const submit = vi.spyOn(compositionApi, "submit").mockRejectedValue(new Error("Saved response pending"));
+  const read = vi.mocked(compositionKnowledgeApi.read);
+  mount(true);
+  const start = await screen.findByRole("button", { name: "Start fresh attempt within grant" });
+  await waitFor(() => expect(start).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Findings across attempts" }));
+  await screen.findByRole("region", { name: "Findings from attempt 2" });
+  fireEvent.click(screen.getByText("Choose attempts"));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Attempt 2 Completed" }));
+  fireEvent.click(screen.getByRole("button", { name: "Load selected findings" }));
+  await waitFor(() => expect(start).toBeEnabled());
+  expect(read).toHaveBeenLastCalledWith(objective, knowledge.attempts.map(attempt => attempt.attempt_id));
+  const reads = read.mock.calls.length;
+  fireEvent.click(screen.getByRole("button", { name: "Hide findings" }));
+  expect(start).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Findings across attempts" }));
+  expect(await screen.findByRole("region", { name: "Findings from attempt 1" })).toBeVisible();
+  expect(read).toHaveBeenCalledTimes(reads);
+  expect(start).toBeEnabled();
+  fireEvent.click(screen.getByRole("link", { name: "Open objective: Other objective, Active" }));
+  await screen.findByRole("heading", { name: "Initial graph" });
+  fireEvent.click(screen.getByRole("link", { name: "Open objective: Receiver objective, Active" }));
+  const restored = await screen.findByRole("button", { name: "Start fresh attempt within grant" });
+  await waitFor(() => expect(restored).toBeEnabled());
+  fireEvent.click(restored);
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0]![0]).toMatchObject({ kind: "attempt", owner: ownerId, body: { prior_attempt_id: objective.attempts[1]!.request.composition_attempt.attempt_id } });
+});
+
 it("preserves completed captured context and result across objective navigation", async () => {
   const other = `job-${"9".repeat(32)}`;
   const { objective } = evidenceFixture();
