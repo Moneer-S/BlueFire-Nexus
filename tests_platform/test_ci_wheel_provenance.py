@@ -21,6 +21,7 @@ import yaml
 
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
 from bluefire.s3_access_runtime import WORKER_FILES
+from tools import ci_plan
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 WINDOWS_PARTITIONS = {
@@ -40,9 +41,13 @@ def _package_job():
     )
     matrix = python_job["strategy"]["matrix"]
     assert set(matrix) == {"os", "python-version", "include"}
-    assert matrix["os"] == ["ubuntu-latest", "macos-latest"]
+    # The platforms come from tools/ci_plan.py; a full run uses every one of them.
+    assert matrix["os"] == "${{ fromJSON(needs.plan.outputs.python_os) }}"
+    assert matrix["include"] == "${{ fromJSON(needs.plan.outputs.python_windows) }}"
+    full = ci_plan.plan("push", "")
+    assert full["python_os"] == ["ubuntu-latest", "macos-latest"]
     assert matrix["python-version"] == ["3.10", "3.12"]
-    windows = matrix["include"]
+    windows = full["python_windows"]
     assert len(windows) == 10
     assert all(set(entry) == {"os", "python-version", "partition"} for entry in windows)
     assert {(entry["os"], entry["python-version"], entry["partition"]) for entry in windows} == {
@@ -205,7 +210,8 @@ def test_native_wheel_build_and_verification_use_the_exact_archive():
     assert "${{ github.workspace }}/wheel-source/${{ matrix.runner-path }}" in staged
     assert "${{ github.workspace }}/wheel-source/bluefire/native" in staged
     assert steps["Build platform wheel"]["run"] == "python -m build --wheel"
-    assert {entry["platform"] for entry in job["strategy"]["matrix"]["include"]} == {
+    assert job["strategy"]["matrix"]["include"] == "${{ fromJSON(needs.plan.outputs.packages) }}"
+    assert {entry["platform"] for entry in ci_plan.plan("push", "")["packages"]} == {
         "windows",
         "linux",
         "macos",

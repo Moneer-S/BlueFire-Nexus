@@ -556,7 +556,7 @@ def test_main_reports_static_failure_without_exception_path(runtime, monkeypatch
     }
 
 
-@pytest.mark.parametrize("job_name", ["python", "package"])
+@pytest.mark.parametrize("job_name", ["checks", "python", "package"])
 def test_workflow_exports_linux_runtime_only_after_verification(job_name):
     workflow = yaml.safe_load((ROOT / ".github/workflows/tests.yml").read_text(encoding="utf-8"))
     steps = workflow["jobs"][job_name]["steps"]
@@ -580,9 +580,9 @@ def test_workflow_exports_linux_runtime_only_after_verification(job_name):
         verify["env"]["BLUEFIRE_CI_PYTHON_PATH"] == "${{ steps.setup-python.outputs.python-path }}"
     )
     first_use = (
-        "Install maintained package and tools"
-        if job_name == "python"
-        else "Archive exact committed wheel source"
+        "Archive exact committed wheel source"
+        if job_name == "package"
+        else "Install maintained package and tools"
     )
     assert names.index(verify["name"]) < names.index(first_use)
     if job_name == "package":
