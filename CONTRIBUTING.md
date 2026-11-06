@@ -27,6 +27,16 @@ rules documented in [docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md).
 
 ## Verification
 
+Before every push, run the fast checks (about two minutes; lint, format, types
+for Linux, Windows and macOS, frontend types and lint):
+
+~~~bash
+python tools/quick_check.py
+~~~
+
+[AGENTS.md](AGENTS.md) explains which platforms CI runs for draft and ready pull
+requests. The full list:
+
 ~~~bash
 python -m compileall -q bluefire tests_platform
 python -m pytest
