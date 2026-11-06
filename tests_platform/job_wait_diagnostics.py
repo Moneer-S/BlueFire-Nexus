@@ -1,5 +1,6 @@
 """Finite timeout evidence from the existing wait frame; no store or lock reads."""
 
+import inspect
 import json
 import sys
 from contextlib import contextmanager
@@ -201,7 +202,7 @@ def _report(timeout, stage):
     for _ in range(32):
         if trace is None:
             break
-        if trace.tb_frame.f_code is RunJobController.wait_for_state.__code__:
+        if trace.tb_frame.f_code is inspect.unwrap(RunJobController.wait_for_state).__code__:
             snapshot = trace.tb_frame.f_locals.get("snapshot")
             if type(snapshot) is dict:
                 progress = snapshot.get("progress")
