@@ -1,10 +1,11 @@
 """Summarize one CI run in a few lines for people and agents.
 
 The last CI job runs this. It lists every job that did not pass, the step that
-failed, and the lines from that job's log that say why: failing pytest and
-Vitest tests, lint, format and type errors, and the stage reported by the
-installed-product verifiers. Reading the tail of this one job's log is enough
-to know what to fix; no 90 KB job listing or separate log downloads.
+failed, and the lines from that job's log that say why: failing pytest, Vitest
+and cargo tests, Rust panics, lint, format and type errors, and the stage
+reported by the installed-product verifiers. Reading the tail of this one job's
+log is enough to know what to fix; no 90 KB job listing or separate log
+downloads.
 
 Uses the Actions REST API with the workflow's token (``actions: read``). Always
 exits 0: the failed jobs themselves are the red checks.
@@ -33,6 +34,12 @@ _SIGNALS = (
     re.compile(r"error TS\d+"),  # tsc
     re.compile(r"^\s*(FAIL|×) "),  # vitest
     re.compile(r"^\s*\d+\) \[chromium\] › "),  # playwright
+    re.compile(r"^test \S+ \.\.\. FAILED$"),  # cargo test
+    re.compile(r"^thread '[^']+' (?:\(\d+\) )?panicked at "),  # Rust panic location
+    re.compile(
+        r"^error(?:\[\w+\])?: (?!test failed|could not compile|aborting due)"
+    ),  # rustc, clippy
+    re.compile(r"^Diff in \S+"),  # cargo fmt --check
 )
 _VERIFIER_KEYS = (
     "status",

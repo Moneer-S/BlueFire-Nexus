@@ -50,6 +50,34 @@ def test_extracts_why_a_job_failed_from_real_log_shapes() -> None:
     ]
 
 
+def test_extracts_rust_test_panic_clippy_and_fmt_failures() -> None:
+    # Shapes from the Rust runner job, including a real cargo test failure.
+    name = "runner::tests::authority_tests::cleanup_obligation_checks_native_receipt"
+    log = "\n".join(
+        STAMP + line
+        for line in (
+            "test runner::tests::authority_tests::cleanup_wire_rejects_unknown ... ok",
+            f"test {name} ... FAILED",
+            f"thread '{name}' (4813) panicked at src/runner_authority_tests.rs:425:5:",
+            "assertion `left == right` failed: TaskResult {",
+            "error: unused variable: `deadline`",
+            "error[E0308]: mismatched types",
+            "Diff in /home/runner/work/repo/runner/src/safety.rs at line 12:",
+            "test result: FAILED. 493 passed; 1 failed; 2 ignored",
+            "error: test failed, to rerun pass `--lib`",
+            "error: could not compile `bluefire-runner` (lib) due to 1 previous error",
+            "##[error]Process completed with exit code 101.",
+        )
+    )
+    assert ci_digest.extract_signals(log) == [
+        f"test {name} ... FAILED",
+        f"thread '{name}' (4813) panicked at src/runner_authority_tests.rs:425:5:",
+        "error: unused variable: `deadline`",
+        "error[E0308]: mismatched types",
+        "Diff in /home/runner/work/repo/runner/src/safety.rs at line 12:",
+    ]
+
+
 def test_falls_back_to_error_annotations_and_bounds_output() -> None:
     log = STAMP + "##[error]Unable to download artifact\n" + STAMP + "##[error]Process completed"
     assert ci_digest.extract_signals(log + " with exit code 1.") == ["Unable to download artifact"]
