@@ -195,6 +195,8 @@ fn malformed_grant_is_rejected_even_without_an_approval_threshold() {
     );
 }
 
+const CLEANUP_TIMEOUT_MS: u64 = 4_000;
+
 fn cleanup_documents(root: &Path) -> (RunnerProfile, ExecutionManifest) {
     let (mut profile, mut manifest) = grant_documents();
     let action = find_action("sandbox.cleanup.v1").unwrap().descriptor();
@@ -231,7 +233,10 @@ fn cleanup_documents(root: &Path) -> (RunnerProfile, ExecutionManifest) {
     });
     let previous = manifest.grant_attempt.take().unwrap();
     manifest.expires_at = manifest.requested_at + ChronoDuration::seconds(10);
-    manifest.limits.timeout_ms = 1000;
+    // Cleanup deletes and fsyncs several files. On a busy CI runner that has
+    // taken over a second, so allow four. Stay below the profile's five-second
+    // limit so the "timeout" case below still fails as grant_cleanup_invalid.
+    manifest.limits.timeout_ms = CLEANUP_TIMEOUT_MS;
     reseal_documents(&mut profile, &mut manifest);
     manifest.grant_cleanup = Some(crate::contract::GrantCleanup {
         schema_version: "bluefire.runner-grant-cleanup.v1".into(),
@@ -256,7 +261,7 @@ fn cleanup_documents(root: &Path) -> (RunnerProfile, ExecutionManifest) {
         }],
         issued_at: manifest.requested_at,
         expires_at: manifest.expires_at,
-        timeout_ms: 1000,
+        timeout_ms: CLEANUP_TIMEOUT_MS,
         request_hash: String::new(),
     });
     crate::contract::seal_manifest(&mut manifest);
