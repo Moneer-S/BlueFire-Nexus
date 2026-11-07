@@ -715,3 +715,24 @@ jobs:
         with:
           name: bluefire-runner-${{ runner.os }}
           path: runner/target/release/bluefire-runner${{ runner.os == 'Windows' && '.exe' || '' }}
+
+  digest:
+    # One short result for people and agents: every job that did not pass, the
+    # step that failed, and the failing tests or checks from its log. Read the
+    # tail of this job's log instead of listing every job. See tools/ci_digest.py.
+    name: Result digest
+    if: ${{ !cancelled() }}
+    needs: [plan, checks, frontend, python, package, rust]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Summarize this run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -I -B tools/ci_digest.py

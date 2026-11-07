@@ -16,13 +16,24 @@ has setup and the full verification list.
 
 ## How CI runs
 
-- **Draft pull request:** Linux only. Static checks run first, in a few minutes;
-  Python tests on Ubuntu, the frontend, Rust and the Linux wheel with its
-  installed-browser checks start only when they pass.
-- **Ready for review, push to `main`, or a manual run:** every platform. That
-  adds Python on macOS, the Windows test partitions and the Windows and macOS
-  wheels. Marking a draft ready starts this run.
+Every run covers Linux, macOS and Windows, because agents cannot check macOS or
+Windows on their own machines.
+
+- Static checks run first, in about two minutes. The Python, frontend, Rust and
+  wheel jobs start only when they pass.
+- **Draft pull request:** Python 3.10 on Linux and Python 3.12 on Linux, macOS
+  and every Windows partition, plus all four native wheels with their installed
+  checks.
+- **Ready for review, push to `main`, or a manual run:** both Python versions on
+  every platform.
 - `tools/ci_plan.py` holds the platform matrices.
+
+## Reading a CI result
+
+Read the end of the **Result digest** job's log. It lists every job that did not
+pass, the step that failed, and the failing tests, lint, format or type errors,
+or installed-check stage from that job's log (see `tools/ci_digest.py`). Open a
+job's own log only when the digest line is not enough.
 
 ## When a test times out only in CI
 

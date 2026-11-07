@@ -24,6 +24,7 @@ PYTHON_PATHS = (
     "bluefire",
     "tests_platform",
     "tools/prepare_ci_python.py",
+    "tools/ci_digest.py",
     "tools/ci_plan.py",
     "tools/quick_check.py",
 )
