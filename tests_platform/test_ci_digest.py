@@ -121,6 +121,18 @@ def test_missing_environment_is_reported_without_failing() -> None:
     assert ci_digest.main({}) == 0
 
 
+def test_digest_output_starts_with_a_searchable_header(monkeypatch, capsys) -> None:
+    jobs = {"total_count": 1, "jobs": [{"id": 1, "name": "frontend", "conclusion": "success"}]}
+    monkeypatch.setattr(ci_digest, "_get_json", lambda url, token: jobs)
+    environ = {"GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "1", "GITHUB_TOKEN": "t"}
+    assert ci_digest.main(environ) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        ci_digest.HEADER,
+        "All jobs passed.",
+        "Jobs: 1 success",
+    ]
+
+
 def test_workflow_runs_the_digest_after_every_other_job() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]

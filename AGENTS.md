@@ -43,10 +43,12 @@ macOS check and the only Windows check for cloud agents.
 
 ## Reading a CI result
 
-Read the end of the **Result digest** job's log. It lists every job that did not
-pass, the step that failed, and the failing tests, lint, format or type errors,
-or installed-check stage from that job's log (see `tools/ci_digest.py`). Open a
-job's own log only when the digest line is not enough.
+Open the **Result digest** job's log and read the lines under
+`== Result digest ==`, about 30 lines from the end. They list every job that did
+not pass, the step that failed, and the failing tests, lint, format or type
+errors, Rust panics, or installed-check stage from that job's log (see
+`tools/ci_digest.py`). Open a job's own log only when the digest line is not
+enough.
 
 ## When a test times out only in CI
 

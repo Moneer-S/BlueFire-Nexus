@@ -23,6 +23,9 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 DIGEST_JOB_NAME = "Result digest"
+# GitHub prints about 30 lines of checkout cleanup after this job's last step,
+# so the digest starts with a fixed line to search for.
+HEADER = "== Result digest =="
 MAX_SIGNALS_PER_JOB = 12
 MAX_LINE = 240
 _TIMESTAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?")
@@ -195,7 +198,7 @@ def main(environ: Mapping[str, str] = os.environ) -> int:
             except (OSError, ValueError) as error:
                 signals[int(job["id"])] = [f"(log unavailable: {type(error).__name__})"]
     lines = render(jobs, signals)
-    print("\n".join(lines))
+    print("\n".join([HEADER, *lines]))
     summary = environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as handle:
