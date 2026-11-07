@@ -43,11 +43,11 @@ def _package_job():
     assert set(matrix) == {"os", "python-version", "include"}
     # The platforms come from tools/ci_plan.py; a full run uses every one of them.
     assert matrix["os"] == "${{ fromJSON(needs.plan.outputs.python_os) }}"
-    assert matrix["include"] == "${{ fromJSON(needs.plan.outputs.python_windows) }}"
+    assert matrix["include"] == "${{ fromJSON(needs.plan.outputs.python_include) }}"
     full = ci_plan.plan("push", "")
     assert full["python_os"] == ["ubuntu-latest", "macos-latest"]
     assert matrix["python-version"] == ["3.10", "3.12"]
-    windows = full["python_windows"]
+    windows = full["python_include"]
     assert len(windows) == 10
     assert all(set(entry) == {"os", "python-version", "partition"} for entry in windows)
     assert {(entry["os"], entry["python-version"], entry["partition"]) for entry in windows} == {

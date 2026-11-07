@@ -20,15 +20,16 @@ env:
 
 jobs:
   plan:
-    # Draft pull requests run Linux only; ready pull requests, main and manual
-    # runs use every platform. tools/ci_plan.py holds the matrices.
+    # Every run covers Linux, macOS and Windows. Drafts run Python 3.10 on Linux
+    # only; ready pull requests, main and manual runs use both versions
+    # everywhere. tools/ci_plan.py holds the matrices.
     name: Plan platforms
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       full: ${{ steps.scope.outputs.full }}
       python_os: ${{ steps.scope.outputs.python_os }}
-      python_windows: ${{ steps.scope.outputs.python_windows }}
+      python_include: ${{ steps.scope.outputs.python_include }}
       packages: ${{ steps.scope.outputs.packages }}
     steps:
       - name: Checkout
@@ -137,7 +138,7 @@ jobs:
       matrix:
         os: ${{ fromJSON(needs.plan.outputs.python_os) }}
         python-version: ["3.10", "3.12"]
-        include: ${{ fromJSON(needs.plan.outputs.python_windows) }}
+        include: ${{ fromJSON(needs.plan.outputs.python_include) }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0

@@ -1,9 +1,11 @@
 """Choose which CI matrices run for one workflow event.
 
-Draft pull requests run Linux only: people and agents iterating on a branch get
-feedback without occupying the slower, scarcer macOS and Windows runners, and
-each new push to a draft cancels the previous run anyway. A pull request that is
-ready for review, every push to main and a manual run get every platform.
+Every run covers Linux, macOS and Windows: agents cannot validate macOS or
+Windows on their own machines, so CI is their only check there. A draft pull
+request runs Python 3.10 on Linux only and Python 3.12 on every platform, which
+keeps the macOS jobs within GitHub's concurrent macOS limit while a branch is
+iterating. A pull request that is ready for review, every push to main and a
+manual run use both Python versions on every platform.
 
 Run in the workflow as ``python tools/ci_plan.py``; it reads GITHUB_EVENT_NAME
 and BLUEFIRE_CI_DRAFT and appends ``key=json`` lines to GITHUB_OUTPUT.
@@ -56,22 +58,23 @@ PACKAGES: tuple[dict[str, str], ...] = (
 
 
 def plan(event_name: str, draft: str) -> dict[str, Any]:
-    """Return the matrices for this event; only a draft pull request is reduced."""
+    """Return the matrices for this event; a draft runs Python 3.10 on Linux only."""
 
     full = not (event_name == "pull_request" and draft.strip().lower() == "true")
+    platform_versions = PYTHON_VERSIONS if full else ("3.12",)
+    # Linux always runs both versions through python_os x python-version; the
+    # include entries add macOS (draft only) and the Windows partitions.
+    macos = [] if full else [{"os": "macos-latest", "python-version": "3.12"}]
+    windows = [
+        {"os": "windows-latest", "python-version": version, "partition": partition}
+        for version in platform_versions
+        for partition in WINDOWS_PARTITIONS
+    ]
     return {
         "full": full,
         "python_os": ["ubuntu-latest", "macos-latest"] if full else ["ubuntu-latest"],
-        "python_windows": (
-            [
-                {"os": "windows-latest", "python-version": version, "partition": partition}
-                for version in PYTHON_VERSIONS
-                for partition in WINDOWS_PARTITIONS
-            ]
-            if full
-            else []
-        ),
-        "packages": [package for package in PACKAGES if full or package["platform"] == "linux"],
+        "python_include": macos + windows,
+        "packages": list(PACKAGES),
     }
 
 
