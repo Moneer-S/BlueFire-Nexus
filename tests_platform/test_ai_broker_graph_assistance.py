@@ -1,5 +1,6 @@
 """Graph planning and drafting traverse actual enrolled fixed-purpose framing."""
 
+import inspect
 import json
 import sys
 import uuid
@@ -42,7 +43,10 @@ def _timeout_evidence(
             for _ in range(32):
                 if trace is None:
                     break
-                if trace.tb_frame.f_code is RunJobController.wait_for_state.__code__:
+                if (
+                    trace.tb_frame.f_code
+                    is inspect.unwrap(RunJobController.wait_for_state).__code__
+                ):
                     snapshot = trace.tb_frame.f_locals.get("snapshot")
                     if type(snapshot) is dict:
                         progress = snapshot.get("progress")

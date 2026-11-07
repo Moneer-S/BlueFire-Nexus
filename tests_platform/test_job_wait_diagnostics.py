@@ -1,5 +1,6 @@
 """Authored timeout snapshots; no service, provider, or worker execution."""
 
+import inspect
 import json
 import threading
 from types import SimpleNamespace
@@ -269,8 +270,8 @@ def test_receiver_execute_site_uses_exact_code_object_and_bounded_relative_offse
     code = diagnostic.RECEIVER_EXECUTE_CODE
     known_offset = 6
     tail_frame = SimpleNamespace(
-        f_code=RunJobController.wait_for_state.__code__,
-        f_lineno=RunJobController.wait_for_state.__code__.co_firstlineno,
+        f_code=inspect.unwrap(RunJobController.wait_for_state).__code__,
+        f_lineno=inspect.unwrap(RunJobController.wait_for_state).__code__.co_firstlineno,
         f_back=None,
     )
     exact_frame = SimpleNamespace(
