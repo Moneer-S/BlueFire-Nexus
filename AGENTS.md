@@ -6,8 +6,9 @@ has setup and the full verification list.
 ## Before you push
 
 1. Run `python tools/quick_check.py`. It lints, checks formatting, type-checks
-   for Linux, Windows and macOS, and checks frontend types and lint in about two
-   minutes. Fix everything it reports.
+   for Linux, Windows and macOS, rejects home-directory paths in tracked files,
+   and checks frontend types and lint in about two minutes. Fix everything it
+   reports.
 2. Run the tests for the area you changed, for example
    `python -m pytest tests_platform/test_service.py` or
    `cd frontend && pnpm exec vitest run tests/builder-routes.test.tsx`.

@@ -1,4 +1,4 @@
-"""Fast pre-push checks: lint, format and type-check in a couple of minutes.
+"""Fast pre-push checks: lint, format, types and private paths in a couple of minutes.
 
 Run this before pushing instead of using CI to find these errors:
 
@@ -6,8 +6,10 @@ Run this before pushing instead of using CI to find these errors:
     python tools/quick_check.py --python-only  # what the CI "checks" job runs
 
 Type-checking covers Linux, Windows and macOS from any host, so platform-only
-code is checked without a Windows or macOS machine. Every check runs even when
-an earlier one fails, and the summary lists each result.
+code is checked without a Windows or macOS machine. The private-path check is
+the release test that rejects home-directory paths in tracked files; it takes
+about a second. Every check runs even when an earlier one fails, and the
+summary lists each result.
 """
 
 from __future__ import annotations
@@ -29,6 +31,10 @@ PYTHON_PATHS = (
     "tools/quick_check.py",
 )
 MYPY_PLATFORMS = ("linux", "win32", "darwin")
+PRIVATE_PATH_TEST = (
+    "tests_platform/test_release_readiness_suites.py"
+    "::test_tracked_release_tree_has_no_private_identity_literals"
+)
 
 
 def python_checks() -> list[tuple[str, list[str], Path]]:
@@ -41,6 +47,13 @@ def python_checks() -> list[tuple[str, list[str], Path]]:
         (f"mypy ({platform})", [python, "-m", "mypy", "--platform", platform, "bluefire"], ROOT)
         for platform in MYPY_PLATFORMS
     ]
+    checks.append(
+        (
+            "private paths",
+            [python, "-m", "pytest", "-q", "-p", "no:cacheprovider", PRIVATE_PATH_TEST],
+            ROOT,
+        )
+    )
     return checks
 
 
