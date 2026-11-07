@@ -12,7 +12,7 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/tests.yml"
 
 
 def test_draft_pull_requests_still_cover_every_platform() -> None:
-    # Agents cannot validate macOS or Windows locally, so drafts keep both.
+    # Nobody can check macOS locally and cloud agents run on Linux, so drafts keep both.
     scope = ci_plan.plan("pull_request", "true")
     assert scope["full"] is False
     assert scope["python_os"] == ["ubuntu-latest"]

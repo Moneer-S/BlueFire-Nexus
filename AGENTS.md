@@ -16,8 +16,9 @@ has setup and the full verification list.
 
 ## How CI runs
 
-Every run covers Linux, macOS and Windows, because agents cannot check macOS or
-Windows on their own machines.
+Every run covers Linux, macOS and Windows. Nobody on this project can check
+macOS on their own machine, and cloud agents run on Linux only, so CI is the only
+macOS check and the only Windows check for cloud agents.
 
 - Static checks run first, in about two minutes. The Python, frontend, Rust and
   wheel jobs start only when they pass.
@@ -27,6 +28,17 @@ Windows on their own machines.
 - **Ready for review, push to `main`, or a manual run:** both Python versions on
   every platform.
 - `tools/ci_plan.py` holds the platform matrices.
+
+## Checking Windows and Linux on your own machine
+
+- **Windows:** in PowerShell, activate the virtual environment
+  (`.venv\Scripts\Activate.ps1`), then run `python tools/quick_check.py` and
+  `python -m pytest tests_platform/<file>.py`.
+- **Linux:** use WSL with its own clone inside the WSL file system, for example
+  `~/BlueFire-Nexus`, and its own virtual environment. A checkout under `/mnt/c`
+  is slow and does not keep Linux file permissions, and a Windows `.venv` does
+  not run in WSL.
+- **macOS:** no local check. Push and read the Result digest.
 
 ## Reading a CI result
 
