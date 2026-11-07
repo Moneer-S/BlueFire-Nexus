@@ -62,7 +62,7 @@ def test_extracts_rust_test_panic_clippy_and_fmt_failures() -> None:
             "assertion `left == right` failed: TaskResult {",
             "error: unused variable: `deadline`",
             "error[E0308]: mismatched types",
-            "Diff in /home/runner/work/repo/runner/src/safety.rs at line 12:",
+            "Diff in D:\\a\\repo\\runner\\src\\safety.rs at line 12:",
             "test result: FAILED. 493 passed; 1 failed; 2 ignored",
             "error: test failed, to rerun pass `--lib`",
             "error: could not compile `bluefire-runner` (lib) due to 1 previous error",
@@ -74,7 +74,7 @@ def test_extracts_rust_test_panic_clippy_and_fmt_failures() -> None:
         f"thread '{name}' (4813) panicked at src/runner_authority_tests.rs:425:5:",
         "error: unused variable: `deadline`",
         "error[E0308]: mismatched types",
-        "Diff in /home/runner/work/repo/runner/src/safety.rs at line 12:",
+        "Diff in D:\\a\\repo\\runner\\src\\safety.rs at line 12:",
     ]
 
 
