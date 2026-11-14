@@ -192,11 +192,15 @@ function canonicalRunList(payload: unknown): CanonicalRunList {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new ApiError("Run history response was invalid.", "invalid_run_history");
   const envelope = payload as { schema_version?: unknown; runs?: unknown };
   if (!Array.isArray(envelope.runs)) throw new ApiError("Run history response was invalid.", "invalid_run_history");
-  const runs = envelope.runs.filter(isFinalizedRunRecord);
+  // Older services can still return controller-owned engine bundles from the
+  // shared store. Their exact result schemas are separate from scenario runs.
+  const scenarioRuns = envelope.runs.filter(value => !value || typeof value !== "object" || Array.isArray(value)
+    || !["bluefire.engine-observation-result.v1", "bluefire.tenant-controller-check-run.v1"].includes((value as { schema_version?: string }).schema_version ?? ""));
+  const runs = scenarioRuns.filter(isFinalizedRunRecord);
   return {
     ...(typeof envelope.schema_version === "string" ? { schema_version: envelope.schema_version } : {}),
     runs,
-    unavailable_run_count: envelope.runs.length - runs.length,
+    unavailable_run_count: scenarioRuns.length - runs.length,
   };
 }
 

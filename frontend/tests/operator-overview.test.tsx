@@ -34,7 +34,7 @@ it("retries only failed run history and replaces the unavailable state with a re
   vi.mocked(api.runs).mockRejectedValueOnce(new Error("History request failed")).mockResolvedValue({ runs: [], unavailable_run_count: 0 });
   const user = userEvent.setup(); mount();
   await screen.findByText("Run history unavailable");
-  await user.click(screen.getByRole("button", { name: "Try again" }));
+  await user.click(screen.getByRole("button", { name: "Retry run history" }));
   expect(await screen.findByText("No runs have been recorded.")).toBeVisible();
   expect(api.runs).toHaveBeenCalledTimes(2); expect(api.scenarios).toHaveBeenCalledTimes(1);
 });

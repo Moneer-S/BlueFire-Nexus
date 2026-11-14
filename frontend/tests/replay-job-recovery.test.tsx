@@ -90,7 +90,7 @@ it("shows each recorded adaptive attempt's method in the live path and runner de
   const first = demoCatalog.behaviors[0]!, alternate = demoCatalog.behaviors[1]!;
   const firstAction = demoCatalog.actions.find(item => item.id === first.action_ids[0])!;
   const nextAction = demoCatalog.actions.find(item => item.id === alternate.action_ids[0])!;
-  const record = { ...structuredClone(demoRuns[0]!), run_id: "run-two-attempts", mode: "execute" as const, is_demo: false, scenario: { ...demoScenario, steps: [{ id: "same_step", behavior_id: first.id, inputs: {}, parameters: {}, alternates: [alternate.id] }] }, steps: [
+  const record = { ...structuredClone(demoRuns[0]!), run_id: "run-20300101T000001Z-aaaaaaaaaaaaaaaa", mode: "execute" as const, is_demo: false, scenario: { ...demoScenario, steps: [{ id: "same_step", behavior_id: first.id, inputs: {}, parameters: {}, alternates: [alternate.id] }] }, steps: [
     { step_id: "same_step", behavior_id: first.id, action_id: firstAction.id, status: "blocked" },
     { step_id: "same_step", behavior_id: alternate.id, action_id: nextAction.id, status: "success" },
   ] };
@@ -113,7 +113,7 @@ it("shows each recorded adaptive attempt's method in the live path and runner de
 });
 
 it.each(["cancelled", "interrupted", "failed", "completed"] as const)("loads the linked %s record with its actual outcome and a concise result notice", async (state) => {
-  const run = { ...structuredClone(demoRuns[0]!), run_id: "run-retained", status: state, steps: [] };
+  const run = { ...structuredClone(demoRuns[0]!), run_id: "run-20300101T000002Z-bbbbbbbbbbbbbbbb", status: state, steps: [] };
   const job = { ...replayJob(firstId, state), progress: {}, result_ref: run.run_id };
   inventory([]);
   vi.spyOn(api, "job").mockResolvedValue(job);

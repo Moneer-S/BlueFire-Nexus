@@ -31,6 +31,7 @@ const responsiveViewports = [
 ];
 const responsiveReadPaths = new Set([
   "/api/v1/session", "/api/v1/scenarios", "/api/v1/catalog", "/api/v1/runs",
+  "/api/v1/engine-experiments",
   "/api/v1/comparison-snapshots", "/api/v1/detection-lab/health", "/api/v1/detections",
   "/api/v1/resources/research-sources", "/api/v1/resources/runner-profiles",
   "/api/v1/resources/runners", "/api/v1/resources/model-providers", "/api/v1/ai/authorizations",

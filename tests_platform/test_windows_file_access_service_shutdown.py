@@ -36,6 +36,7 @@ def bare_service(*, failures=None, windows=None, correction=None):
     failures = failures or {}
     events = []
     instance = service.BlueFireService.__new__(service.BlueFireService)
+    instance._engine_assembly = service.EngineServiceComposition()
     instance._retained_recovery_stop = threading.Event()
     instance._retained_recovery_thread = None
     instance._provider_access = ClosingBoundary(events, "provider", failures.get("provider"))
@@ -61,7 +62,7 @@ def test_real_service_initialization_keeps_one_file_access_controller(monkeypatc
     registry = object()
     startup = []
     store = SimpleNamespace(
-        recover_interrupted_jobs=lambda: (startup.append("jobs") or []),
+        recover_interrupted_jobs=lambda: startup.append("jobs") or [],
         interrupt_active_capability_grants=lambda **_: startup.append("grants"),
     )
 
@@ -76,7 +77,7 @@ def test_real_service_initialization_keeps_one_file_access_controller(monkeypatc
         service,
         "RunStore",
         lambda root: SimpleNamespace(
-            root=root, recover_interrupted_runs=lambda: (startup.append("runs") or [])
+            root=root, recover_interrupted_runs=lambda: startup.append("runs") or []
         ),
     )
     monkeypatch.setattr(service, "ProductStore", lambda _: store)

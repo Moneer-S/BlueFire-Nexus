@@ -12,6 +12,7 @@ import { receiverFixture } from "./receiver-defense-fixture";
 import { receiverApprovalAcknowledgementName } from "./installed/receiver-guards.mjs";
 
 const clients: QueryClient[] = [];
+const phaseRunId = "run-20300101T000003Z-aaaaaaaaaaaaaaaa";
 afterEach(() => { for (const client of clients.splice(0)) client.clear(); vi.useRealTimers(); });
 let product: ReturnType<typeof useProduct>;
 function Probe() { product = useProduct(); const location = useLocation(); return <output aria-label="Current location">{location.pathname}{location.search}</output>; }
@@ -23,7 +24,7 @@ function mount(envelope = nativeReceiverFixture()) {
   const detail = vi.spyOn(api, "job").mockImplementation(async (id) => { if (id !== server.job.job_id) throw new ApiError("Other job", "job_not_found", undefined, 404); return structuredClone(server.job); });
   const approve = vi.spyOn(api, "approveJob").mockImplementation(async (id) => {
     expect(id).toBe(server.job.job_id);
-    server.job = { ...server.job, state: "running", progress: { run_id: "run-inline-phase" }, updated_at: "2026-09-07T12:00:01Z", approval_request: { ...server.job.approval_request, status: "consumed" } };
+    server.job = { ...server.job, state: "running", progress: { run_id: phaseRunId }, updated_at: "2026-09-07T12:00:01Z", approval_request: { ...server.job.approval_request, status: "consumed" } };
     return { schema_version: "bluefire.job-approval.v1", job: structuredClone(server.job) };
   });
   const control = vi.spyOn(api, "controlJob").mockImplementation(async (id, action) => {
@@ -124,7 +125,7 @@ it.each(["baseline", "protected", "restored"] as const)("explains the whole-test
 
 it("reconciles a lost approval response through reads without repeating release", async () => {
   const view = mount(); await ready();
-  view.approve.mockImplementation(async () => { view.server.job = { ...view.server.job, state: "running", progress: { run_id: "run-inline-phase" }, updated_at: "2026-09-07T12:00:01Z" }; throw new Error("Response unavailable; checking saved state"); });
+  view.approve.mockImplementation(async () => { view.server.job = { ...view.server.job, state: "running", progress: { run_id: phaseRunId }, updated_at: "2026-09-07T12:00:01Z" }; throw new Error("Response unavailable; checking saved state"); });
   confirm(); fireEvent.click(screen.getByRole("button", { name: "Approve and release job" }));
   await screen.findByText("Response unavailable; checking saved state");
   await act(async () => { await view.client.invalidateQueries({ queryKey: ["job", view.selected.job_id], exact: true }); });
@@ -175,9 +176,9 @@ it("holds release and later phase preparation after an uncertain cancellation re
 it("loads only the exact finalized result while leaving the global active run untouched", async () => {
   const view = mount(); await ready(); confirm(); fireEvent.click(screen.getByRole("button", { name: "Approve and release job" }));
   await screen.findByText("Actual retained phase event");
-  view.server.job = { ...view.server.job, state: "completed", result_ref: "run-inline-phase", updated_at: "2026-09-07T12:00:03Z" }; view.server.owns = false;
+  view.server.job = { ...view.server.job, state: "completed", result_ref: phaseRunId, updated_at: "2026-09-07T12:00:03Z" }; view.server.owns = false;
   await act(async () => { await view.client.invalidateQueries({ queryKey: ["job", view.selected.job_id], exact: true }); });
-  await waitFor(() => expect(api.runDetail).toHaveBeenCalledExactlyOnceWith("run-inline-phase"));
+  await waitFor(() => expect(api.runDetail).toHaveBeenCalledExactlyOnceWith(phaseRunId));
   await screen.findByRole("button", { name: "Review" });
   expect(product.activeRun).toBeNull(); expect(view.approve).toHaveBeenCalledTimes(1); expect(view.retry).not.toHaveBeenCalled();
 });

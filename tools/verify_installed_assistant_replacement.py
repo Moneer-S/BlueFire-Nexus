@@ -433,12 +433,22 @@ def _browser_failure_diagnostic(value: dict[str, object]) -> dict[str, object]:
         "visible-blocked-original",
         "fresh-normal-authorization",
         "explicit-replacement",
+        "explicit-replacement-completion",
+        "explicit-replacement-visible",
+        "explicit-replacement-final-state",
         "cleanup",
     }
     if isinstance(errors, list) and errors and isinstance(errors[0], dict):
         stage = errors[0].get("stage")
         if isinstance(stage, str) and stage in allowed_stages:
             result["browser_stage"] = stage
+        error_type = errors[0].get("error_type")
+        if isinstance(error_type, str) and error_type in {
+            "AssertionError",
+            "TimeoutError",
+            "Error",
+        }:
+            result["browser_error_type"] = error_type
     keys = {
         "first_session",
         "second_session",
@@ -492,11 +502,17 @@ def _hard_stop_first(process: subprocess.Popen[bytes]) -> bool:
         process.wait(timeout=8)
     except subprocess.TimeoutExpired:
         return False
-    try:
-        support._kill_process_group(process.pid, 0)
-    except ProcessLookupError:
-        return bool(process.returncode == -cast(int, support._signal_number("SIGKILL")))
-    return False
+    # The leader is reaped here, but other killed members are reaped by init
+    # asynchronously; the group can outlive the leader by a few milliseconds.
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            support._kill_process_group(process.pid, 0)
+        except ProcessLookupError:
+            return bool(process.returncode == -cast(int, support._signal_number("SIGKILL")))
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
 
 
 def main() -> int:

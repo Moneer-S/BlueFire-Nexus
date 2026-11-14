@@ -1,0 +1,109 @@
+name: Strix runtime qualification preparation
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strix-runtime-qualification-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Prepare offline runtime and image inventory without execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact BlueFire revision without retained credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up exact Python toolchain
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12.14"
+          check-latest: false
+
+      - name: Set up exact Go toolchain for the candidate build hook
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.24.10"
+          cache: false
+
+      - name: Read reviewed uv build version
+        id: uv-version
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import ast
+          import re
+          from pathlib import Path
+
+          source = Path("tools/build_strix_engine_candidate.py").read_text(encoding="utf-8")
+          tree = ast.parse(source)
+          values = [
+              node.value.value
+              for node in tree.body
+              if isinstance(node, ast.Assign)
+              and any(
+                  isinstance(target, ast.Name) and target.id == "UV_VERSION"
+                  for target in node.targets
+              )
+              and isinstance(node.value, ast.Constant)
+              and isinstance(node.value.value, str)
+          ]
+          if len(values) != 1 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", values[0]):
+              raise SystemExit("candidate build must define one exact uv version")
+          print(f"version={values[0]}")
+          PY
+
+      - name: Set up exact uv frontend without a shared cache
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ steps.uv-version.outputs.version }}
+          enable-cache: false
+
+      - name: Capture bounded uv version evidence
+        shell: bash
+        run: >-
+          python -m tools.capture_uv_version_evidence
+          --output "$RUNNER_TEMP/bluefire-uv-version-evidence.json"
+
+      - name: Upload bounded uv version evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: strix-uv-version-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bluefire-uv-version-evidence.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
+      - name: Rebuild the provenance-bound candidate
+        shell: bash
+        run: >-
+          python -m tools.build_strix_engine_candidate
+          --work-root "$RUNNER_TEMP/bluefire-strix-candidate-work"
+          --output-root "$RUNNER_TEMP/bluefire-strix-candidate-output"
+          --bluefire-source-revision "${{ github.sha }}"
+
+      - name: Prepare exact offline closure and non-executed image inventory
+        shell: bash
+        run: >-
+          python -m tools.qualify_strix_runtime_candidate
+          --candidate-root "$RUNNER_TEMP/bluefire-strix-candidate-output"
+          --source-root "$RUNNER_TEMP/bluefire-strix-candidate-work/source"
+          --work-root "$RUNNER_TEMP/bluefire-strix-qualification-work"
+          --output-root "$RUNNER_TEMP/bluefire-strix-qualification-output"
+          --bluefire-source-revision "${{ github.sha }}"
+
+      # Only the bounded uv metadata receipt is published. Candidate, wheel,
+      # source, dependency, OCI, and qualification payloads stay in runner-temp.

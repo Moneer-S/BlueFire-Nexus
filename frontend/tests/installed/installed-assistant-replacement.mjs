@@ -38,6 +38,7 @@ const apiReadPaths = new Set([
   "/api/v1/session", "/api/v1/build-info", "/api/v1/catalog", "/api/v1/scenarios", "/api/v1/runs",
   "/api/v1/receiver-defense/jobs", "/api/v1/comparison-snapshots", "/api/v1/settings",
   "/api/v1/resources/model-providers", "/api/v1/ai/authorizations", "/api/v1/detections",
+  "/api/v1/engine-experiments",
 ]);
 const capabilityInput = createInterface({ input: process.stdin, crlfDelay: Infinity });
 const commandLines = capabilityInput[Symbol.asyncIterator]();
@@ -195,7 +196,9 @@ async function poll(fn, wanted, timeout = 30000) {
     if (wanted(value)) return value;
     await new Promise(resolve => setTimeout(resolve, 120));
   }
-  throw new Error("Bounded installed state did not arrive");
+  const error = new Error("Bounded installed state did not arrive");
+  error.name = "TimeoutError";
+  throw error;
 }
 
 async function connect(capability) {
@@ -468,15 +471,25 @@ try {
   stage = "explicit-replacement";
   await selectAssistantProvider(replacementPanel);
   const replacement = await submitThroughUi(replacementPanel);
+  stage = "explicit-replacement-completion";
   replacementId = replacement.jobId;
   assert.notEqual(replacementId, originalId);
   assert.equal(replacement.submitted.context_digest, phaseOne.context_digest);
   assert.equal(replacement.submitted.message, prompt);
-  const completed = await poll(() => api(`/assistance/turns/${replacementId}`), value => ["completed", "blocked"].includes(value.turn?.status), 30000);
+  const completed = await poll(
+    () => api(`/assistance/turns/${replacementId}`),
+    value => ["completed", "failed", "cancelled", "interrupted"].includes(value.job?.state),
+    30000,
+  );
+  report.observed_states.replacement = {
+    job: completed.job?.state ?? "missing",
+    turn: completed.turn?.status ?? "missing",
+  };
   assert.equal(completed.job.state, "completed");
   assert.equal(completed.turn.status, "completed");
+  stage = "explicit-replacement-visible";
   await replacementPanel.getByRole("heading", { name: "Work completed", exact: true }).waitFor();
-  report.observed_states.replacement = { job: "completed", turn: "completed" };
+  stage = "explicit-replacement-final-state";
   assert.deepEqual(completed.turn.plan, []);
   assert.deepEqual(completed.turn.results, []);
   assert.equal((await fixtureState()).request_count, 2);
@@ -517,8 +530,10 @@ try {
   report.checks.push("visible_explicit_new_request_created_distinct_completed_explanation");
   report.checks.push("snapshot_run_order_and_request_context_remained_unchanged_without_effectful_writes");
   report.status = "passed";
-} catch {
-  report.errors.push({ stage, kind: "journey_failed" });
+} catch (error) {
+  // Only a fixed label leaves the driver; messages can carry private values.
+  const errorType = ["AssertionError", "TimeoutError"].includes(error?.name) ? error.name : "Error";
+  report.errors.push({ stage, kind: "journey_failed", error_type: errorType });
   process.exitCode = 1;
 } finally {
   capabilityInput.close();

@@ -3,8 +3,11 @@ import { adSmbApi, checkedAdList } from "./ad-smb";
 import { checkedFileAccessList, fileAccessApi } from "./file-access";
 import { phaseTitle, receiverJobValid } from "./receiver-defense";
 import { checkedList, s3Api } from "./s3-access";
+import { engineExperimentApi, engineExperimentPath } from "./engine-experiment-api";
+import { engineWorkflowLabel } from "./engine-experiment";
 
 export const workFamilies = [
+  { id: "engine", label: "Defense experiments", href: "/composition" },
   { id: "handoff", label: "Data handoff", href: "/compare?receiver=1" },
   { id: "file", label: "File access", href: "/file-access" },
   { id: "domain", label: "Domain access", href: "/ad-smb" },
@@ -15,6 +18,23 @@ export interface SavedWorkRow { id: string; title: string; href: string; state: 
 export interface SavedWorkList { rows: SavedWorkRow[]; more: boolean }
 
 export async function loadSavedWork(family: WorkFamily): Promise<SavedWorkList> {
+  if (family === "engine") {
+    const value = await engineExperimentApi.list();
+    const heads = [...value.experiments].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+    const workspaces = await Promise.all(heads.slice(0, 5).map(head => engineExperimentApi.workspace(head.experiment_id)));
+    return { more: heads.length > 5, rows: workspaces.map((workspace, index) => {
+      const head = heads[index];
+      if (!head || workspace.revision !== head.active_revision || workspace.experiment_digest !== head.active_digest) throw new Error("The saved defense experiment changed while it was loading.");
+      return {
+        id: workspace.experiment_id,
+        title: workspace.objective.title,
+        href: engineExperimentPath(workspace.experiment_id),
+        state: workspace.projection.workflow_state,
+        detail: `${workspace.environment.display_name} / ${engineWorkflowLabel(workspace.projection.workflow_state)}`,
+        attention: workspace.current_target === null || workspace.projection.conclusion.cleanup.status !== "verified_absent",
+      };
+    }) };
+  }
   if (family === "handoff") {
     const value = await api.receiverTests();
     if (value?.schema_version !== "bluefire.receiver-defense-list.v1" || !Array.isArray(value.jobs) || value.jobs.length > 128

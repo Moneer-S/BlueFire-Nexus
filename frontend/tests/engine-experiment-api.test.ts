@@ -1,0 +1,112 @@
+import { beforeEach, expect, it, vi } from "vitest";
+import { request } from "../src/lib/api";
+import { checkedEngineExperimentList, engineExperimentApi, engineExperimentPath } from "../src/lib/engine-experiment-api";
+import type { EngineArtifact, EngineAttempt } from "../src/lib/engine-experiment";
+
+vi.mock("../src/lib/api", () => ({ request: vi.fn() }));
+
+const checkedWorkspace = vi.hoisted(() => vi.fn((value: unknown, _experimentId?: string, selection?: { kind: string; id: string }) => {
+  if (selection?.kind === "controller_check") throw new Error("Selected workspace context changed.");
+  return value;
+}));
+vi.mock("../src/lib/engine-experiment", () => ({ checkedEngineExperiment: checkedWorkspace }));
+
+beforeEach(() => { vi.mocked(request).mockReset(); checkedWorkspace.mockClear(); });
+
+it("loads and binds the exact selected workspace through a canonical API query", async () => {
+  const experimentId = `experiment-${"a".repeat(32)}`;
+  const attemptId = `engine-attempt-${"b".repeat(32)}`;
+  const raw = { experiment_id: experimentId, selected_context: { kind: "engine_attempt" } };
+  vi.mocked(request).mockResolvedValue(raw);
+
+  const workspace = await engineExperimentApi.workspace(experimentId, { kind: "engine_attempt", id: attemptId });
+
+  expect(workspace.selected_context?.kind).toBe("engine_attempt");
+  expect(request).toHaveBeenCalledExactlyOnceWith(`/engine-experiments/${experimentId}/workspace?attempt=${attemptId}`);
+  expect(checkedWorkspace).toHaveBeenCalledWith(raw, experimentId, { kind: "engine_attempt", id: attemptId });
+});
+
+it("reconciles only the exact saved attempt with an empty request", async () => {
+  const experimentId = `experiment-${"a".repeat(32)}`;
+  const attemptId = `engine-attempt-${"b".repeat(32)}`;
+  const raw = { experiment_id: experimentId, selected_context: null };
+  vi.mocked(request).mockResolvedValue(raw);
+
+  await expect(engineExperimentApi.recover(experimentId, attemptId)).resolves.toBe(raw);
+
+  expect(request).toHaveBeenCalledExactlyOnceWith(`/engine-experiments/${experimentId}/attempts/${attemptId}/recover`, { method: "POST", body: "{}" });
+  expect(checkedWorkspace).toHaveBeenCalledWith(raw, experimentId);
+});
+
+it("rejects malformed recovery identities before posting", async () => {
+  await expect(engineExperimentApi.recover("experiment-invalid", `engine-attempt-${"b".repeat(32)}`)).rejects.toThrow(/experiment identity/i);
+  await expect(engineExperimentApi.recover(`experiment-${"a".repeat(32)}`, "engine-attempt-invalid")).rejects.toThrow(/attempt identity/i);
+  expect(request).not.toHaveBeenCalled();
+});
+
+it("rejects malformed route identities before making a request", async () => {
+  expect(engineExperimentPath(`experiment-${"a".repeat(32)}`, { kind: "controller_check", id: `controller-check-${"c".repeat(32)}` }))
+    .toBe(`/composition?engine_experiment=experiment-${"a".repeat(32)}&check=controller-check-${"c".repeat(32)}`);
+  expect(() => engineExperimentPath("experiment-invalid")).toThrow(/experiment identity/i);
+  expect(() => engineExperimentPath(`experiment-${"a".repeat(32)}`, { kind: "engine_attempt", id: "engine-attempt-invalid" })).toThrow(/attempt identity/i);
+  expect(() => engineExperimentPath(`experiment-${"a".repeat(32)}`, { kind: "controller_check", id: "controller-check-invalid" })).toThrow(/check identity/i);
+  expect(() => engineExperimentPath(`experiment-${"a".repeat(32)}`, { kind: "engine_attempt", id: `engine-attempt-${"b".repeat(32)}`, extra: true } as never)).toThrow(/selection/i);
+  expect(request).not.toHaveBeenCalled();
+});
+
+it("strictly validates bounded saved experiment heads", () => {
+  const value = {
+    schema_version: "bluefire.engine-experiment-list.v1",
+    experiments: [{
+      schema_version: "bluefire.engine-experiment-head.v1",
+      experiment_id: `experiment-${"a".repeat(32)}`,
+      active_revision: 3,
+      active_digest: `sha256:${"b".repeat(64)}`,
+      created_at: "2026-11-04T12:00:00Z",
+      updated_at: "2026-11-04T12:01:00Z",
+    }],
+  };
+  expect(checkedEngineExperimentList(value)).toEqual(value);
+  expect(() => checkedEngineExperimentList({ ...value, experiments: [value.experiments[0], value.experiments[0]] })).toThrow(/invalid/i);
+  expect(() => checkedEngineExperimentList({ ...value, next_cursor: null })).toThrow(/invalid/i);
+  expect(() => checkedEngineExperimentList({ ...value, experiments: [{ ...value.experiments[0], updated_at: "2026-02-31T12:01:00Z" }] })).toThrow(/invalid/i);
+});
+
+it("requests a bounded saved page and rejects an invalid page before transport", async () => {
+  vi.mocked(request).mockResolvedValue({ schema_version: "bluefire.engine-experiment-list.v1", experiments: [] });
+  await engineExperimentApi.list({ limit: 6, offset: 100 });
+  expect(request).toHaveBeenCalledWith("/engine-experiments?limit=6&offset=100");
+  vi.mocked(request).mockClear();
+  await expect(engineExperimentApi.list({ limit: 101, offset: 0 })).rejects.toThrow(/page is invalid/i);
+  expect(request).not.toHaveBeenCalled();
+});
+
+it("refuses a response whose selected context does not match the requested item", async () => {
+  const experimentId = `experiment-${"a".repeat(32)}`;
+  const checkId = `controller-check-${"c".repeat(32)}`;
+  const raw = { experiment_id: experimentId };
+  vi.mocked(request).mockResolvedValue(raw);
+
+  await expect(engineExperimentApi.workspace(experimentId, { kind: "controller_check", id: checkId })).rejects.toThrow(/selected workspace context changed/i);
+});
+
+it("binds artifact review to the saved row and rejects private source text", async () => {
+  const experimentId = `experiment-${"a".repeat(32)}`;
+  const attemptId = `engine-attempt-${"b".repeat(32)}`;
+  const artifact: EngineArtifact = { artifact_id: `artifact-${"c".repeat(32)}`, attempt_id: attemptId,
+    name: "report.json", sha256: `sha256:${"d".repeat(64)}`, bytes: 27,
+    media_type: "application/json", access: "private" };
+  const attempt = { attempt_id: attemptId, artifact_manifest_ref: `sha256:${"e".repeat(64)}`,
+    artifacts: [artifact] } as EngineAttempt;
+  const response = { schema_version: "bluefire.engine-artifact-review.v1", experiment_id: experimentId,
+    attempt_id: attemptId, artifact_id: artifact.artifact_id, manifest_ref: attempt.artifact_manifest_ref,
+    sha256: artifact.sha256, bytes: artifact.bytes, access: "private", availability: "retained",
+    reason: null, summary: { kind: "json", line_count: 1, root: "object", field_count: 1,
+      recognized_fields: ["status"], item_count: null }, text: null };
+  vi.mocked(request).mockResolvedValue(response);
+  await expect(engineExperimentApi.reviewArtifact(experimentId, attempt, artifact)).resolves.toEqual(response);
+  expect(request).toHaveBeenCalledExactlyOnceWith(`/engine-experiments/${experimentId}/attempts/${attemptId}/artifacts/${artifact.artifact_id}`);
+  vi.mocked(request).mockResolvedValue({ ...response, text: "private secret" });
+  await expect(engineExperimentApi.reviewArtifact(experimentId, attempt, artifact)).rejects.toThrow(/review changed/i);
+  await expect(engineExperimentApi.reviewArtifact(experimentId, attempt, { ...artifact, attempt_id: `engine-attempt-${"f".repeat(32)}` })).rejects.toThrow(/saved attempt/i);
+});

@@ -221,6 +221,20 @@ def test_failure_progress_retains_only_bounded_stages_counts_and_observed_states
         "attempted_writes": attempts,
         "observed_states": {"original_before_loss": {"job": "running", "turn": "working"}},
     }
+    # A finer replacement stage and a fixed error type say which wait or check failed.
+    source["errors"] = [
+        {
+            "stage": "explicit-replacement-completion",
+            "kind": "journey_failed",
+            "error_type": "TimeoutError",
+        }
+    ]
+    assert verifier._browser_failure_diagnostic(source)["browser_stage"] == (
+        "explicit-replacement-completion"
+    )
+    assert verifier._browser_failure_diagnostic(source)["browser_error_type"] == "TimeoutError"
+    source["errors"][0]["error_type"] = "Bounded installed state did not arrive"
+    assert "browser_error_type" not in verifier._browser_failure_diagnostic(source)
     source["errors"] = [{"stage": ["unhashable"], "kind": "journey_failed"}]
     source["attempted_writes"]["run"] = True
     source["observed_states"]["original_before_loss"]["job"] = ["unhashable"]
@@ -252,3 +266,30 @@ def test_first_process_loss_requires_sigkill_reap_and_absent_owned_group(monkeyp
     calls.clear()
     assert not verifier._hard_stop_first(child)
     assert calls == [(4812, sigkill), (4812, 0)]
+
+
+def test_first_process_loss_allows_killed_members_a_moment_to_be_reaped(monkeypatch) -> None:
+    sigkill = 9
+    monkeypatch.setattr(
+        verifier.support, "_signal_number", lambda name: sigkill if name == "SIGKILL" else None
+    )
+    child = Mock()
+    child.pid = 4812
+    child.returncode = -sigkill
+    probes = {"left": 3}
+
+    def lingering_group(pid: int, signum: int) -> None:
+        if signum == 0:
+            if probes["left"] == 0:
+                raise ProcessLookupError
+            probes["left"] -= 1
+
+    monkeypatch.setattr(verifier.support, "_kill_process_group", lingering_group)
+    monkeypatch.setattr(verifier.time, "sleep", lambda _seconds: None)
+    assert verifier._hard_stop_first(child)
+
+    # A group that never empties is still refused once the short deadline passes.
+    clock = iter(range(0, 1000))
+    monkeypatch.setattr(verifier.time, "monotonic", lambda: float(next(clock)))
+    probes["left"] = 10**6
+    assert not verifier._hard_stop_first(child)

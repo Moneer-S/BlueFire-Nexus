@@ -1,0 +1,359 @@
+{
+  "schema_version": "bluefire.strix-sdk-wire-fixture.v1",
+  "proof": {
+    "level": "mixed_exact_artifact_and_source_derived",
+    "captured_on": "CPython 3.13 host",
+    "target_runtime": "CPython 3.12.14",
+    "candidate_runtime_qualified": false,
+    "live_model_proof": false,
+    "target_execution_proof": false,
+    "notes": [
+      "The exact OpenAI Agents SDK wheel was imported and exercised for ShellTool and BaseSandboxSession behavior.",
+      "Strix source calls and transforms are derived from the exact Git tree; Caido HTTP headers and authentication were captured from the exact client wheel plus exact locked aiohttp and gql versions on the CPython 3.13 host, with only the target CPython 3.12 User-Agent normalized from source.",
+      "This fixture is compatibility evidence, not installed engine, target, containment, or autonomous model proof."
+    ]
+  },
+  "sources": {
+    "strix": {
+      "repository": "https://github.com/usestrix/strix.git",
+      "commit": "6b7ae2ebe4d47037a927aade23265ff4e4f27e84",
+      "tree": "23c06e4a0e58bdf3b4979863d7623230e4091332",
+      "uv_lock_sha256": "e82b68f2d9ff70695843e43ce932b8c4ecb90551e1b0c2fff4b82d45248af36d",
+      "files": [
+        {
+          "path": "strix/agents/factory.py",
+          "git_blob": "1b8742ba4ac9e0a9e841cd85313d7376671165cf",
+          "sha256": "7b77ddcf7b49e88f91d4129101bdb227a8e46520db0519819a5edb7ccfb43db1"
+        },
+        {
+          "path": "strix/runtime/caido_bootstrap.py",
+          "git_blob": "a9c7c82aef87e0109e87b2d8dc02af5fb37731af",
+          "sha256": "f493e3a7c9219e52520d2fadfd8dde78782e17440056f98aa068b146a0e788af"
+        },
+        {
+          "path": "strix/runtime/session_manager.py",
+          "git_blob": "d92b1fdbd47a569c5d24be1022133ff132cb158e",
+          "sha256": "739589d5d79f3d18b2ee86c27c7c3cf749889575e8d19e2ff6e89a6eb8c90fe4"
+        },
+        {
+          "path": "strix/interface/main.py",
+          "git_blob": "846a35da9878a299905a774247e6b537d07d81ce",
+          "sha256": "735ad8463f83256f049749a91c00f85cd6b58301c225244c7b6b798898cc7014"
+        },
+        {
+          "path": "uv.lock",
+          "git_blob": "aa7a27ef224c85aad82e9bb9a2e29a96a5a6a763",
+          "sha256": "e82b68f2d9ff70695843e43ce932b8c4ecb90551e1b0c2fff4b82d45248af36d"
+        }
+      ]
+    },
+    "openai_agents": {
+      "package": "openai-agents",
+      "version": "0.19.0",
+      "wheel": "openai_agents-0.19.0-py3-none-any.whl",
+      "wheel_size": 928463,
+      "wheel_sha256": "25392cff993eca7c75b0679ec8d0111faef20c517222c0193111097d0f70db7a",
+      "members": {
+        "agents/sandbox/capabilities/tools/shell_tool.py": "6c82f099f18c7f46a0c4bbda0fbe8102b31c07c87f1ecb6a82560ef034d85479",
+        "agents/sandbox/session/base_sandbox_session.py": "805c7fe495c39c4b3efc59c28f998fdf4ffec12b814108be1ccb26796b43916c"
+      }
+    },
+    "caido_sdk": {
+      "package": "caido-sdk-client",
+      "version": "0.2.0",
+      "wheel": "caido_sdk_client-0.2.0-py3-none-any.whl",
+      "wheel_sha256": "bc573651681c093ee9663c7924d38d522a89cea60e2ce00d34ba9b02942b1da1",
+      "members": {
+        "caido_sdk_client/client.py": "100736e1ac42554d61ac914a051cb7d1925a787bc461fc6f0fd7239e2d90a700",
+        "caido_sdk_client/graphql/client.py": "a91f5fee583e3c74ebdbdfe2a105e4e6e1083d729708e7304be2150d3b8899e8",
+        "caido_sdk_client/auth/manager.py": "57f7b939ef62a7c9fdd125dc31094fc6bc09507b26572c8c46b2d34c3a890cdf",
+        "caido_sdk_client/sdks/project.py": "e04581f2be89848979bf04c3353db59d7cb10d026d83195a4cec34d8c1a9f5d6",
+        "caido_sdk_client/graphql/documents/project.graphql": "ea2c5935a9921295c029d2912589df5997f2b9eec185b1bf73556f1af7d986cf"
+      },
+      "locked_transport": {
+        "aiohttp": "3.14.5",
+        "gql": "4.0.0",
+        "caido-server-auth": "0.1.2"
+      },
+      "capture_environment_transport": {
+        "aiohttp": "3.14.5",
+        "gql": "4.0.0",
+        "caido-server-auth": "0.1.3",
+        "matches_complete_locked_closure": false,
+        "scope": "HTTP header and bearer shape capture only; no target-runtime qualification"
+      }
+    }
+  },
+  "shell": {
+    "strix_wrapper": {
+      "omitted_shell_becomes": "bash",
+      "source_proof": "source_derived"
+    },
+    "captures": [
+      {
+        "case": "default",
+        "proof_level": "exact_artifact_import_capture",
+        "input": {
+          "cmd": "printf ready"
+        },
+        "session_exec": {
+          "argv": [
+            "bash",
+            "-lc",
+            "printf ready"
+          ],
+          "timeout_seconds": 10.0,
+          "user": null
+        }
+      },
+      {
+        "case": "login_false",
+        "proof_level": "exact_artifact_import_capture",
+        "input": {
+          "cmd": "printf ready",
+          "login": false,
+          "yield_time_ms": 5000
+        },
+        "session_exec": {
+          "argv": [
+            "bash",
+            "-c",
+            "printf ready"
+          ],
+          "timeout_seconds": 5.0,
+          "user": null
+        }
+      }
+    ]
+  },
+  "sandbox_start": {
+    "proof_level": "exact_artifact_import_capture",
+    "case": "fresh_empty_manifest",
+    "capture": [
+      {
+        "operation": "mkdir_workspace",
+        "argv": [
+          "mkdir",
+          "-p",
+          "/workspace"
+        ],
+        "timeout_seconds": 120.0,
+        "working_directory": "/workspace"
+      }
+    ],
+    "manifest_entries": [],
+    "caido_port": 48080,
+    "staged_files": {
+      "proof_level": "exact_source_plus_artifact_transform_capture",
+      "upstream_call": {
+        "proof_level": "exact_source_derived",
+        "boundary": "Strix source to BaseSandboxSession.exec inside the sandbox",
+        "argv": [
+          "sh",
+          "-c",
+          "tar --no-same-owner -xf \"$1\" -C \"$2\" && rm -f -- \"$1\"",
+          "sh",
+          "/workspace/.strix-extra-files.tar",
+          "/workspace"
+        ],
+        "timeout_seconds": 120.0
+      },
+      "session_exec": {
+        "proof_level": "exact_artifact_import_capture",
+        "boundary": "BaseSandboxSession to ControlledSandboxSession._exec_internal",
+        "argv": [
+          "sh",
+          "-lc",
+          "sh -c 'tar --no-same-owner -xf \"$1\" -C \"$2\" && rm -f -- \"$1\"' sh /workspace/.strix-extra-files.tar /workspace"
+        ],
+        "timeout_seconds": 120.0
+      }
+    }
+  },
+  "caido": {
+    "bootstrap_exec": {
+      "proof_level": "exact_source_plus_artifact_transform_capture",
+      "upstream_call": {
+        "proof_level": "exact_source_derived",
+        "boundary": "Strix source to BaseSandboxSession.exec inside the sandbox",
+        "argv": [
+          "curl",
+          "-fsS",
+          "-X",
+          "POST",
+          "-H",
+          "Content-Type: application/json",
+          "-d",
+          "{\"query\":\"mutation LoginAsGuest { loginAsGuest { token { accessToken } } }\"}",
+          "http://127.0.0.1:48080/graphql"
+        ],
+        "timeout_seconds": 15.0
+      },
+      "session_exec": {
+        "proof_level": "exact_artifact_import_capture",
+        "boundary": "BaseSandboxSession to ControlledSandboxSession._exec_internal",
+        "argv": [
+          "sh",
+          "-lc",
+          "curl -fsS -X POST -H 'Content-Type: application/json' -d '{\"query\":\"mutation LoginAsGuest { loginAsGuest { token { accessToken } } }\"}' http://127.0.0.1:48080/graphql"
+        ],
+        "timeout_seconds": 15.0
+      },
+      "maximum_attempts": 10,
+      "retry_backoff_seconds": [
+        2.0,
+        4.0,
+        6.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0
+      ],
+      "destination_is_fixed_sandbox_loopback": true,
+      "destination_is_model_selectable": false,
+      "container_port_profile_bound": true,
+      "generic_curl_authority": false,
+      "traverses_host_caido_relay": false
+    },
+    "health": {
+      "proof_level": "exact_artifact_loopback_capture_with_target_runtime_normalization",
+      "traffic_origin": "host-side SDK through the resolved controller loopback relay",
+      "method": "GET",
+      "target": "/health",
+      "required_headers": {
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate",
+        "Host": "<controller-loopback-authority>",
+        "User-Agent": "Python/3.12 aiohttp/3.14.5"
+      },
+      "captured_user_agent": "Python/3.13 aiohttp/3.14.5",
+      "forbidden_headers": [
+        "Authorization",
+        "Connection",
+        "Proxy-Authorization",
+        "Upgrade"
+      ],
+      "body": null,
+      "readiness": {
+        "request_timeout_ms": 5000,
+        "maximum_attempts": 5,
+        "retry_interval_ms": 5000,
+        "authentication_occurs_after_ready": true
+      },
+      "response_contract": {
+        "name": "<string>",
+        "version": "<string>",
+        "ready": true
+      }
+    },
+    "graphql": {
+      "proof_level": "exact_artifact_loopback_capture_with_target_runtime_normalization",
+      "traffic_origin": "host-side SDK through the resolved controller loopback relay",
+      "method": "POST",
+      "target": "/graphql",
+      "required_headers": {
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate",
+        "Authorization": "Bearer <attempt-local-token>",
+        "Content-Type": "application/json",
+        "Host": "<controller-loopback-authority>",
+        "User-Agent": "Python/3.12 aiohttp/3.14.5"
+      },
+      "captured_user_agent": "Python/3.13 aiohttp/3.14.5",
+      "required_dynamic_headers": [
+        "Content-Length"
+      ],
+      "forbidden_headers": [
+        "Connection",
+        "Proxy-Authorization",
+        "Upgrade",
+        "X-Forwarded-For",
+        "X-Forwarded-Host"
+      ],
+      "operations": [
+        {
+          "name": "CreateProject",
+          "variables": {
+            "input": {
+              "name": "sandbox",
+              "temporary": true
+            }
+          }
+        },
+        {
+          "name": "SelectProject",
+          "variables": {
+            "id": "<returned-project-id>"
+          }
+        }
+      ],
+      "header_order_significant": false,
+      "json_member_order_significant": false
+    }
+  },
+  "launch": {
+    "argv_template": [
+      "<reviewed-executable>",
+      "-n",
+      "--target",
+      "<admitted-target>",
+      "--scan-mode",
+      "quick",
+      "--scope-mode",
+      "full",
+      "--instruction-file",
+      "<attempt-private-objective-file>",
+      "--config",
+      "<attempt-private-cli-config>",
+      "--mcp-config",
+      "<attempt-private-mcp-config>",
+      "--max-turns",
+      "<positive-turn-limit>",
+      "--max-budget",
+      "<finite-usd-limit>",
+      "--fail-on",
+      "info"
+    ],
+    "config": {
+      "cli-config.json": {
+        "env": {}
+      },
+      "mcp-servers.json": []
+    },
+    "provider_environment": {
+      "controller_launch": {
+        "model": "STRIX_LLM",
+        "api_type": "STRIX_API_TYPE",
+        "api_base": "LLM_API_BASE",
+        "one_use_secret": "LLM_API_KEY",
+        "secret_must_not_be_persisted": true
+      },
+      "upstream_process_local_aliases": {
+        "api_type": [
+          "STRIX_API_TYPE",
+          "STRIX_FORCE_API"
+        ],
+        "api_key": [
+          "LLM_API_KEY",
+          "OPENAI_API_KEY"
+        ],
+        "api_base": [
+          "LLM_API_BASE",
+          "OPENAI_API_BASE",
+          "OPENAI_BASE_URL",
+          "LITELLM_BASE_URL",
+          "OLLAMA_API_BASE"
+        ]
+      }
+    },
+    "controlled_backend": {
+      "required_value": "bluefire-controlled",
+      "current_adapter_value_at_capture": "bluefire-controlled",
+      "compatible": true,
+      "reason": "The adapter selects the registered controlled backend; this source-derived fixture does not prove the controller transport or a qualified installed launch."
+    }
+  }
+}

@@ -457,7 +457,7 @@ def test_source_privacy_classifies_only_the_exact_public_lab_contract(relative: 
     assert gate_module._has_private_source_path(relative, f'"{public}/../private-operator"') is True
     assert gate_module._has_private_source_path("bluefire/unrelated.py", f'"{public}"') is True
     assert (
-        gate_module._has_private_source_path(relative, public.replace("bluefire", "BlueFire"))
+        gate_module._has_private_source_path(relative, public.replace("home", "Home", 1))
         is True
     )
     private_windows = "C:" + "/".join(("", "Users", "private-operator"))

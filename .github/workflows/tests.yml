@@ -2,8 +2,11 @@ name: tests
 
 on:
   pull_request:
+    # Marking a draft ready starts the full Python platform matrix.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,6 +19,29 @@ env:
   PYTHONNOUSERSITE: "1"
 
 jobs:
+  plan:
+    # Drafts run Python 3.10 on Linux only and Python 3.12 everywhere.
+    # Ready pull requests and main run both versions on every platform.
+    name: Plan platforms
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+      python_os: ${{ steps.scope.outputs.python_os }}
+      python_include: ${{ steps.scope.outputs.python_include }}
+      packages: ${{ steps.scope.outputs.packages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Choose platforms for this event
+        id: scope
+        env:
+          BLUEFIRE_CI_DRAFT: ${{ github.event.pull_request.draft }}
+        run: /usr/bin/python3 -I -B tools/ci_plan.py
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -63,44 +89,15 @@ jobs:
 
   python:
     name: Python ${{ matrix.python-version }} · ${{ matrix.os }}${{ matrix.partition && format(' · {0}', matrix.partition) || '' }}
+    needs: [plan]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.plan.outputs.python_os) }}
         python-version: ["3.10", "3.12"]
-        include:
-          - os: windows-latest
-            python-version: "3.10"
-            partition: a-b
-          - os: windows-latest
-            python-version: "3.10"
-            partition: c-d
-          - os: windows-latest
-            python-version: "3.10"
-            partition: e-q
-          - os: windows-latest
-            python-version: "3.10"
-            partition: r
-          - os: windows-latest
-            python-version: "3.10"
-            partition: remainder
-          - os: windows-latest
-            python-version: "3.12"
-            partition: a-b
-          - os: windows-latest
-            python-version: "3.12"
-            partition: c-d
-          - os: windows-latest
-            python-version: "3.12"
-            partition: e-q
-          - os: windows-latest
-            python-version: "3.12"
-            partition: r
-          - os: windows-latest
-            python-version: "3.12"
-            partition: remainder
+        include: ${{ fromJSON(needs.plan.outputs.python_include) }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -233,6 +230,7 @@ jobs:
 
   package:
     name: Native wheel - ${{ matrix.platform }} ${{ matrix.architecture }}
+    needs: [plan]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     defaults:
@@ -241,34 +239,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux
-            architecture: x86_64
-            runner-path: runner/target/x86_64-unknown-linux-musl/release/bluefire-runner
-            wheel-platform-tag: linux_x86_64
-            venv-python: bin/python
-          - os: windows-latest
-            platform: windows
-            architecture: x86_64
-            runner-path: runner/target/release/bluefire-runner.exe
-            wheel-platform-tag: win_amd64
-            venv-python: Scripts/python.exe
-          - os: macos-15-intel
-            platform: macos
-            architecture: x86_64
-            runner-path: runner/target/release/bluefire-runner
-            wheel-platform-tag: macosx_11_0_x86_64
-            venv-python: bin/python
-          - os: macos-26
-            platform: macos
-            architecture: aarch64
-            runner-path: runner/target/release/bluefire-runner
-            wheel-platform-tag: macosx_11_0_arm64
-            venv-python: bin/python
+        include: ${{ fromJSON(needs.plan.outputs.packages) }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Prepare protected Linux Python cache
         if: runner.os == 'Linux'
@@ -401,6 +379,38 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: >-
           python -c "import os, subprocess; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-I', os.path.join(r'${{ runner.temp }}', 'verify_packaged_runner.py'), 'smoke', '--work-root', os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke-state'), '--forbid-root', os.environ['GITHUB_WORKSPACE'], '--report', os.path.join(r'${{ runner.temp }}', 'installed-wheel-smoke.json')], check=True)"
+
+      # Synthetic product mechanics only: no native Strix, Docker, live model,
+      # external target, attack effectiveness, or protected admission proof.
+      - name: Verify installed Linux deterministic engine mechanics simulation
+        id: installed-engine-mechanics
+        if: matrix.platform == 'linux'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          cp tools/verify_installed_engine_mechanics.py "$RUNNER_TEMP/verify_installed_engine_mechanics.py"
+          cp tools/installed_engine_mechanics_fixture.py "$RUNNER_TEMP/installed_engine_mechanics_fixture.py"
+          cp tools/verify_installed_engine_experiment.py "$RUNNER_TEMP/verify_installed_engine_experiment.py"
+          wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
+          test "${#wheels[@]}" = 1
+          test -f "${wheels[0]}"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -I -B verify_installed_engine_mechanics.py \
+            --source-revision "$GITHUB_SHA" \
+            --forbid-root "$GITHUB_WORKSPACE" \
+            --wheel "${wheels[0]}" \
+            --fixture "$RUNNER_TEMP/installed_engine_mechanics_fixture.py" \
+            --binding-helper "$RUNNER_TEMP/verify_installed_engine_experiment.py" \
+            --output "$RUNNER_TEMP/bluefire-installed-engine-mechanics-evidence"
+
+      - name: Upload installed Linux deterministic engine mechanics public summary
+        if: always() && matrix.platform == 'linux' && steps.installed-engine-mechanics.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-installed-deterministic-engine-mechanics-linux-x86_64-${{ github.sha }}
+          path: ${{ runner.temp }}/bluefire-installed-engine-mechanics-evidence/public-summary.json
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Verify installed macOS file-access protocol capability
         if: matrix.platform == 'macos' && matrix.architecture == 'aarch64'
@@ -556,6 +566,39 @@ jobs:
             --browser-cache "$RUNNER_TEMP/bluefire-installed-browser-cache" \
             --wheel "${wheels[0]}" \
             --output "$RUNNER_TEMP/bluefire-installed-browser-evidence"
+
+      # Packaged UI and real local service only. This refuses incomplete engine
+      # setup; it does not establish native Strix or target execution.
+      - name: Verify installed engine experiment shell and fail-closed setup
+        if: always() && matrix.platform == 'linux' && steps.installed-wheel.outcome == 'success' && steps.installed-browser-tooling.outcome == 'success'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          cp tools/verify_installed_engine_experiment.py "$RUNNER_TEMP/verify_installed_engine_experiment.py"
+          cp frontend/tests/installed/installed-engine-experiment.mjs "$RUNNER_TEMP/installed-engine-experiment.mjs"
+          wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
+          test "${#wheels[@]}" = 1
+          node_path="$(command -v node)"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -I -B verify_installed_engine_experiment.py \
+            --forbid-root "$GITHUB_WORKSPACE" \
+            --node "$node_path" \
+            --playwright "$GITHUB_WORKSPACE/wheel-source/frontend/node_modules/@playwright/test/index.mjs" \
+            --browser-driver "$RUNNER_TEMP/installed-engine-experiment.mjs" \
+            --browser-cache "$RUNNER_TEMP/bluefire-installed-browser-cache" \
+            --wheel "${wheels[0]}" \
+            --output "$RUNNER_TEMP/bluefire-installed-engine-shell-evidence"
+
+      - name: Upload installed engine shell evidence
+        if: always() && matrix.platform == 'linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-installed-engine-shell-linux-x86_64
+          path: |
+            ${{ runner.temp }}/bluefire-installed-engine-shell-evidence/receipt.json
+            ${{ runner.temp }}/bluefire-installed-engine-shell-evidence/browser-report.json
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Verify installed CLI restart and saved versions
         if: always() && matrix.platform == 'linux' && steps.installed-wheel.outcome == 'success' && steps.installed-browser-tooling.outcome == 'success'
@@ -724,3 +767,21 @@ jobs:
         with:
           name: bluefire-runner-${{ runner.os }}
           path: runner/target/release/bluefire-runner${{ runner.os == 'Windows' && '.exe' || '' }}
+
+  digest:
+    # Read-only summary of jobs, failed steps, and useful log diagnostics.
+    name: Result digest
+    if: ${{ !cancelled() }}
+    needs: [plan, frontend, python, package, rust]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Summarize this run
+        run: /usr/bin/python3 -I -B tools/ci_digest.py

@@ -1,6 +1,6 @@
 {
   "schema_version": "bluefire.release-rights-policy.v1",
-  "reviewed_at": "2026-10-01",
+  "reviewed_at": "2026-11-04",
   "review_scope": "base Python wheel, packaged web UI, native runner, committed data and documentation assets",
   "allowed_license_expressions": [
     "0BSD",
@@ -399,6 +399,9 @@
         "bluefire/native/__init__.py",
         "docs/assets/screenshots/capture.json"
       ],
+      "project-authored-external-adapter-policy-mit": [
+        "bluefire/data/strix_prompt_policy_overlay.txt"
+      ],
       "third-party-declarative-metadata-custom-license": [
         "bluefire/data/mitre_attack_t1082_v19_2.json",
         "bluefire/data/mitre_attack_v19_2_LICENSE.txt"
@@ -441,6 +444,19 @@
       "third-party-adapted-test-license-mit": [
         "bluefire/data/atomic_red_team_LICENSE.txt"
       ]
+    },
+    "external_adapter_asset_context": {
+      "bluefire/data/strix_prompt_policy_overlay.txt": {
+        "asset_license": "MIT",
+        "content_sha256": "a88d1cb62230023c7809df4010831ea696e9a6e5793ab7ff80e46f24d4bc506d",
+        "upstream_project": "usestrix/strix",
+        "upstream_source_revision": "6b7ae2ebe4d47037a927aade23265ff4e4f27e84",
+        "upstream_license": "Apache-2.0",
+        "upstream_content_included": false,
+        "purpose": "BlueFire-authored replacement text for one hash-pinned upstream prompt region in the separately built modified Strix external-adapter candidate.",
+        "modification_notice": "THIRD_PARTY_NOTICES.md#strix-external-engine-candidate",
+        "oci_or_tool_image_redistributed": false
+      }
     },
     "third_party_integrity": {
       "bluefire/data/mitre_attack_t1082_v19_2.json": "dd2e50ceef844302a690a1debac8336864e93ebd19da526eefac3072f5ee9a02",

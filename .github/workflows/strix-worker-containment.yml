@@ -1,0 +1,412 @@
+name: Strix worker containment mechanics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strix-worker-containment-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    name: Qualify fixed Linux containment mechanics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact BlueFire revision without retained credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain in job-owned state
+        shell: bash
+        env:
+          RUSTUP_HOME: ${{ runner.temp }}/bluefire-worker-containment-rustup
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$RUSTUP_HOME"
+          printf 'RUSTUP_HOME=%s\n' "$RUSTUP_HOME" >> "$GITHUB_ENV"
+          channel="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component cargo --force
+          rustup run "$channel" cargo --version
+
+      - name: Build exact fixed native runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          cargo build --locked --release --manifest-path runner/Cargo.toml --bin bluefire-runner
+          test -x runner/target/release/bluefire-runner
+
+      - name: Fail closed when required Linux primitives are unavailable
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(stat -f -c %T /sys/fs/cgroup)" = cgroup2fs
+          cgroup_row="$(cat /proc/self/cgroup)"
+          test "$(grep -c '^0::/' <<<"$cgroup_row")" = 1
+          cgroup_relative="${cgroup_row#0::/}"
+          test "$cgroup_relative" != "$cgroup_row"
+          cgroup_root="/sys/fs/cgroup"
+          test -z "$cgroup_relative" || cgroup_root="$cgroup_root/$cgroup_relative"
+          controllers="$(cat "$cgroup_root/cgroup.controllers")"
+          subtree="$(cat "$cgroup_root/cgroup.subtree_control")"
+          for controller in cpu memory pids; do
+            grep -qw "$controller" <<<"$controllers"
+            grep -qw "$controller" <<<"$subtree"
+          done
+          test -r /proc/sys/kernel/seccomp/actions_avail
+          grep -qw errno /proc/sys/kernel/seccomp/actions_avail
+          sudo test -w "$cgroup_root"
+          python3 -I -B - <<'PY'
+          import fcntl
+          import os
+
+          required = ("memfd_create", "pidfd_open")
+          if any(not hasattr(os, name) for name in required):
+              raise SystemExit("required Linux descriptor primitive is unavailable")
+          if not hasattr(__import__("signal"), "pidfd_send_signal"):
+              raise SystemExit("pidfd signal primitive is unavailable")
+          fd = os.memfd_create("bluefire-containment-preflight", os.MFD_ALLOW_SEALING)
+          try:
+              os.write(fd, b"preflight")
+              seals = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+              fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+              if fcntl.fcntl(fd, fcntl.F_GET_SEALS) != seals:
+                  raise SystemExit("memfd seal verification failed")
+          finally:
+              os.close(fd)
+          pidfd = os.pidfd_open(os.getpid(), 0)
+          os.close(pidfd)
+          PY
+
+      - name: Run fixed harmless containment mechanics self-test
+        id: containment-self-test
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/bluefire-worker-containment-evidence"
+          install -d -m 0700 "$evidence"
+          binary="$GITHUB_WORKSPACE/runner/target/release/bluefire-runner"
+          sha256sum "$binary" | awk '{print $1}' > "$evidence/runner.sha256"
+          sudo find /sys/fs/cgroup -xdev -type d -name 'bluefire-strix-worker-selftest-*' -print \
+            | sort > "$evidence/pre-cgroups.txt"
+          sudo find /tmp -xdev -maxdepth 1 -type d -name 'bluefire-strix-worker-root-*' -print \
+            | sort > "$evidence/pre-roots.txt"
+          sudo find /tmp -xdev -maxdepth 1 -type f -name 'bluefire-strix-worker-uid-*.lease' -print \
+            | sort > "$evidence/pre-leases.txt"
+          chmod 0600 "$evidence"/pre-*.txt
+          set +e
+          sudo bash -c 'umask 077; printf "%s %s\n" "$$" "$(awk "{print \$22}" /proc/$$/stat)" > "$1"; exec "$2" strix-worker-boundary-self-test' \
+            bluefire-containment "$evidence/controller.pid" "$binary" \
+            > "$evidence/raw-receipt.json"
+          status=$?
+          set -e
+          sudo chown -R "$(id -u):$(id -g)" "$evidence"
+          test "$status" = 0
+          python3 -I -B - "$evidence" "$GITHUB_SHA" <<'PY'
+          import hashlib
+          import json
+          import os
+          import platform
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          receipt = json.loads((root / "raw-receipt.json").read_text(encoding="utf-8"))
+          required_true = (
+              "pidfd_owned_from_spawn",
+              "pid_namespace_matches_controller",
+              "no_new_privileges",
+              "seccomp_tsync",
+              "same_tgid_thread_allowed",
+              "thread_tid_distinct",
+              "clone3_enosys",
+              "non_thread_clone_refused",
+              "fork_refused",
+              "vfork_refused",
+              "exec_refused",
+              "public_network_refused",
+              "metadata_network_refused",
+              "host_root_absent",
+              "proc_absent",
+              "private_writes_succeeded",
+              "controller_relay_allowed",
+              "cancellation_identity_verified_with_spawn_pidfd",
+              "cancelled_via_exact_cgroup_kill",
+              "cgroup_empty_after_cancel",
+              "cgroup_removed",
+              "private_root_removed",
+              "identity_lease_released",
+              "sealed_input_fds_closed",
+              "bootstrap_fd_closed",
+              "environment_cleared",
+              "fresh_address_space",
+              "helper_worker_executable_same",
+              "ambient_credential_absence_proven",
+              "activation_eligible_for_fixed_harmless_worker",
+          )
+          if receipt.get("schema_version") != "bluefire.strix-worker-kernel-self-test.v1":
+              raise SystemExit("unexpected containment receipt schema")
+          if any(receipt.get(name) is not True for name in required_true):
+              raise SystemExit("containment receipt is incomplete")
+          if receipt.get("pid_namespace_isolated") is not False:
+              raise SystemExit("first profile must preserve exact host PID authentication")
+          if receipt.get("process_policy") != "same_tgid_thread_only":
+              raise SystemExit("worker process policy is not exact")
+          if receipt.get("installed_strix_qualified") is not False:
+              raise SystemExit("mechanics fixture must not claim installed Strix qualification")
+          binary = Path(os.environ["GITHUB_WORKSPACE"]) / "runner/target/release/bluefire-runner"
+          binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+          if binary_digest != (root / "runner.sha256").read_text(encoding="ascii").strip():
+              raise SystemExit("runner digest changed after execution")
+          executable_digest = "sha256:" + binary_digest
+          if receipt.get("boundary_helper_executable_digest") != executable_digest:
+              raise SystemExit("receipt does not bind the executed helper")
+          if receipt.get("worker_executable_digest") != executable_digest:
+              raise SystemExit("receipt does not bind the self-exec worker")
+          worker_digest = receipt.get("worker_payload_identity_digest", "")
+          if (
+              not isinstance(worker_digest, str)
+              or not worker_digest.startswith("sha256:")
+              or worker_digest == executable_digest
+          ):
+              raise SystemExit("worker payload digest is invalid")
+          summary = {
+              "schema_version": "bluefire.public-strix-worker-containment-mechanics.v1",
+              "source_revision": sys.argv[2],
+              "scope": "fixed-harmless-containment-mechanics-only",
+              "not_proven": [
+                  "installed-strix-runtime",
+                  "live-model-usefulness",
+                  "production-strix-worker-activation",
+                  "customer-host-containment",
+              ],
+              "runner_sha256": "sha256:" + binary_digest,
+              "host": {
+                  "image_os": os.environ.get("ImageOS"),
+                  "image_version": os.environ.get("ImageVersion"),
+                  "kernel": platform.release(),
+                  "architecture": platform.machine(),
+              },
+              "receipt_sha256": "sha256:" + hashlib.sha256(
+                  (root / "raw-receipt.json").read_bytes()
+              ).hexdigest(),
+              "mechanics": {
+                  name: receipt[name]
+                  for name in (
+                      "process_policy",
+                      "cgroup_pids_max",
+                      "cgroup_pids_current_during_thread",
+                      "same_tgid_thread_allowed",
+                      "clone3_enosys",
+                      "non_thread_clone_refused",
+                      "fork_refused",
+                      "vfork_refused",
+                      "exec_refused",
+                      "public_network_refused",
+                      "metadata_network_refused",
+                      "controller_relay_allowed",
+                      "host_root_absent",
+                      "proc_absent",
+                      "cancellation_identity_verified_with_spawn_pidfd",
+                      "cancelled_via_exact_cgroup_kill",
+                      "cgroup_empty_after_cancel",
+                      "cgroup_removed",
+                      "private_root_removed",
+                      "identity_lease_released",
+                      "sealed_input_fds_closed",
+                      "bootstrap_fd_closed",
+                      "fresh_address_space",
+                      "ambient_credential_absence_proven",
+                      "activation_eligible_for_fixed_harmless_worker",
+                      "installed_strix_qualified",
+                  )
+              },
+          }
+          (root / "public-summary.json").write_text(
+              json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Verify and clean exact ephemeral containment resources
+        id: containment-cleanup
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/bluefire-worker-containment-evidence"
+          install -d -m 0700 "$evidence"
+          if ! test -f "$evidence/pre-cgroups.txt"; then
+            test ! -e "$evidence/controller.pid"
+            printf '{"attempt_started":false,"residue_before":0,"residue_after":0}\n' \
+              > "$evidence/cleanup.json"
+            exit 0
+          fi
+          for name in cgroups roots leases; do
+            test -f "$evidence/pre-$name.txt"
+            test "$(stat -c '%a' "$evidence/pre-$name.txt")" = 600
+          done
+          sudo cat "$evidence/controller.pid" > "$evidence/controller.identity"
+          read -r controller_pid controller_start < "$evidence/controller.identity"
+          test "$controller_pid" -gt 1
+          test "$controller_pid" = "${controller_pid//[^0-9]/}"
+          test "$controller_start" -gt 0
+          test "$controller_start" = "${controller_start//[^0-9]/}"
+          set +e
+          sudo python3 -I -B - \
+            "$controller_pid" "$controller_start" \
+            "$GITHUB_WORKSPACE/runner/target/release/bluefire-runner" \
+            "$(cat "$evidence/runner.sha256")" <<'PY'
+          import hashlib
+          import os
+          import select
+          import signal
+          import sys
+          import time
+          from pathlib import Path
+
+          pid, expected_start = int(sys.argv[1]), int(sys.argv[2])
+          expected_executable = Path(sys.argv[3]).resolve(strict=True)
+          expected_digest = sys.argv[4]
+
+          def start_ticks() -> int | None:
+              try:
+                  raw = (Path("/proc") / str(pid) / "stat").read_bytes()
+              except FileNotFoundError:
+                  return None
+              close = raw.rfind(b")")
+              fields = raw[close + 2 :].split() if close > 0 else []
+              if len(fields) < 20:
+                  raise SystemExit("controller identity is invalid")
+              return int(fields[19])
+
+          def identity() -> tuple[int, Path, str] | None:
+              process = Path("/proc") / str(pid)
+              try:
+                  executable = (process / "exe").resolve(strict=True)
+                  digest = hashlib.sha256((process / "exe").read_bytes()).hexdigest()
+              except FileNotFoundError:
+                  return None
+              observed_start = start_ticks()
+              if observed_start is None:
+                  return None
+              return observed_start, executable, digest
+
+          expected = (expected_start, expected_executable, expected_digest)
+          before = identity()
+          if before is None:
+              if start_ticks() == expected_start:
+                  raise SystemExit("controller process remains without executable identity")
+              raise SystemExit(0)
+          if before != expected:
+              raise SystemExit("controller process identity changed")
+          pidfd = os.pidfd_open(pid, 0)
+          try:
+              if identity() != expected:
+                  raise SystemExit("controller process identity changed")
+              poller = select.poll()
+              poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+              signal.pidfd_send_signal(pidfd, signal.SIGTERM, None, 0)
+              if not poller.poll(2_000):
+                  signal.pidfd_send_signal(pidfd, signal.SIGKILL, None, 0)
+              deadline = time.monotonic() + 5
+              while not poller.poll(50):
+                  if time.monotonic() >= deadline:
+                      raise SystemExit("controller process did not exit")
+          finally:
+              os.close(pidfd)
+          absence_deadline = time.monotonic() + 5
+          while start_ticks() == expected_start and time.monotonic() < absence_deadline:
+              time.sleep(0.05)
+          if start_ticks() == expected_start:
+              raise SystemExit("controller process remains after cancellation")
+          PY
+          controller_status=$?
+          set -e
+          sudo find /sys/fs/cgroup -xdev -type d -name 'bluefire-strix-worker-selftest-*' -print \
+            | sort > "$evidence/current-cgroups.txt"
+          sudo find /tmp -xdev -maxdepth 1 -type d -name 'bluefire-strix-worker-root-*' -print \
+            | sort > "$evidence/current-roots.txt"
+          sudo find /tmp -xdev -maxdepth 1 -type f -name 'bluefire-strix-worker-uid-*.lease' -print \
+            | sort > "$evidence/current-leases.txt"
+          for name in cgroups roots leases; do
+            comm -13 "$evidence/pre-$name.txt" "$evidence/current-$name.txt" \
+              > "$evidence/owned-$name.txt"
+          done
+          mapfile -t cgroups < "$evidence/owned-cgroups.txt"
+          mapfile -t roots < "$evidence/owned-roots.txt"
+          mapfile -t leases < "$evidence/owned-leases.txt"
+          test "${#cgroups[@]}" -le 1
+          test "${#roots[@]}" -le 1
+          test "${#leases[@]}" -le 1
+          for cgroup in "${cgroups[@]}"; do
+            [[ "${cgroup##*/}" =~ ^bluefire-strix-worker-selftest-[0-9]+$ ]]
+          done
+          for root in "${roots[@]}"; do
+            test "$root" = "/tmp/bluefire-strix-worker-root-$controller_pid"
+          done
+          for lease in "${leases[@]}"; do
+            [[ "$lease" =~ ^/tmp/bluefire-strix-worker-uid-[0-9]+\.lease$ ]]
+          done
+          residue_before=$((${#cgroups[@]} + ${#roots[@]} + ${#leases[@]}))
+          for cgroup in "${cgroups[@]}"; do
+            if sudo test -f "$cgroup/cgroup.kill"; then
+              printf '1' | sudo tee "$cgroup/cgroup.kill" >/dev/null
+            fi
+            for _ in $(seq 1 50); do
+              test -z "$(sudo cat "$cgroup/cgroup.procs")" && break
+              sleep 0.1
+            done
+            sudo rmdir "$cgroup" || true
+          done
+          for root in "${roots[@]}"; do
+            if mountpoint -q "$root"; then
+              sudo umount -l "$root"
+            fi
+            sudo rmdir "$root" || true
+          done
+          for lease in "${leases[@]}"; do
+            sudo unlink "$lease" || true
+          done
+          sudo find /sys/fs/cgroup -xdev -type d -name 'bluefire-strix-worker-selftest-*' -print \
+            | sort > "$evidence/post-cgroups.txt"
+          sudo find /tmp -xdev -maxdepth 1 -type d -name 'bluefire-strix-worker-root-*' -print \
+            | sort > "$evidence/post-roots.txt"
+          sudo find /tmp -xdev -maxdepth 1 -type f -name 'bluefire-strix-worker-uid-*.lease' -print \
+            | sort > "$evidence/post-leases.txt"
+          residue_after=0
+          for name in cgroups roots leases; do
+            if ! cmp -s "$evidence/pre-$name.txt" "$evidence/post-$name.txt"; then
+              residue_after=1
+            fi
+          done
+          printf '{"attempt_started":true,"controller_status":%d,"residue_before":%d,"residue_after":%d}\n' \
+            "$controller_status" "$residue_before" "$residue_after" \
+            > "$evidence/cleanup.json"
+          test "$controller_status" = 0
+          test "$residue_before" = 0
+          test "$residue_after" = 0
+
+      - name: Upload sanitized containment mechanics summary
+        if: >-
+          ${{ always()
+          && steps.containment-self-test.outcome == 'success'
+          && steps.containment-cleanup.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-strix-worker-containment-mechanics-${{ github.sha }}
+          path: ${{ runner.temp }}/bluefire-worker-containment-evidence/public-summary.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false

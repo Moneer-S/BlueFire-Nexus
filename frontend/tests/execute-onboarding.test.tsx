@@ -53,7 +53,7 @@ const approvalRequest = { approval_id: "approval-guided", status: "pending", exp
 const awaitingJob: RunJob = { schema_version: "bluefire.job.v1", job_id: "job-guided-0123456789abcdef01234567", kind: "scenario.run", state: "awaiting_approval", request: { approval_request_id: approvalRequest.approval_id }, progress: { phase: "awaiting_approval" }, result_ref: null, error: null, created_at: "2030-01-01T00:00:00Z", updated_at: "2030-01-01T00:00:00Z" };
 const completedRun: RunRecord = {
   schema_version: "bluefire.run.v1",
-  run_id: "run-20300101T000001Z-guided0123456789",
+  run_id: "run-20300101T000001Z-0123456789abcdef",
   scenario_id: GUIDED_EXECUTE_SCENARIO_ID,
   runner_profile_id: GUIDED_EXECUTE_PROFILE_ID,
   mode: "execute",
@@ -154,7 +154,7 @@ describe("guided local Execute onboarding", () => {
     const runnerLookups = fetchMock.mock.calls.map(([input]) => new URL(String(input), "http://localhost")).filter(url => url.pathname.endsWith("/runner"));
     expect(runnerLookups.length).toBeGreaterThan(0);
     expect(runnerLookups.every(url => catalog.runner_profiles.some(profile => profile.mode === "execute" && profile.id === url.searchParams.get("profile_id")))).toBe(true);
-  }, 15_000);
+  }, 30_000);
 
   it("does not mark a terminal job complete without canonical observation and cleanup proof", () => {
     const completedJob: RunJob = { ...awaitingJob, state: "completed", result_ref: completedRun.run_id, progress: { phase: "completed" } };

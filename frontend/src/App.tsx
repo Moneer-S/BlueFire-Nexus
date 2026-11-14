@@ -12,7 +12,7 @@ import {
   RunnersPage,
 } from "./pages/CatalogPages";
 import { ComparePage } from "./pages/Compare";
-import { CompositionPage } from "./pages/Composition";
+import { CompositionRoute } from "./pages/EngineExperimentRoute";
 import { FileAccessPage } from "./pages/FileAccess";
 import { DetectionLabPage } from "./pages/DetectionLab";
 import { EnvironmentsPage } from "./pages/Environments";
@@ -34,7 +34,7 @@ export default function App() {
         <Route path="runs" element={<RunsPage />} />
         <Route path="runs/:runId" element={<RunsPage />} />
         <Route path="compare" element={<ComparePage />} />
-        <Route path="composition" element={<CompositionPage />} />
+        <Route path="composition" element={<CompositionRoute />} />
         <Route path="environments" element={<EnvironmentsPage />} />
         <Route path="s3-access" element={<S3AccessPage />} />
         <Route path="file-access" element={<FileAccessPage />} />

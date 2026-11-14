@@ -14,9 +14,9 @@ import { RunsPage } from "../src/pages/Runs";
 import { ProductProvider } from "../src/state/ProductContext";
 import type { DetectionCandidate, DetectionResource, RunRecord, RunJob, SavedComparisonSnapshot } from "../src/types";
 
-const sourceId = `run-${"1".repeat(32)}`;
-const syntheticId = `run-${"2".repeat(32)}`;
-const replayId = `run-${"3".repeat(32)}`;
+const sourceId = "run-20300101T000001Z-1111111111111111";
+const syntheticId = "run-20300101T000002Z-2222222222222222";
+const replayId = "run-20300101T000003Z-3333333333333333";
 const candidateId = `detection-${"4".repeat(20)}`;
 const savedId = `detection-${"5".repeat(20)}`;
 const comparisonSelection = { runIds: [sourceId, syntheticId, replayId], baselineId: candidateId, revisedId: savedId };
@@ -546,13 +546,14 @@ describe("run journey handoffs", () => {
 
   it("preselects the URL source and selects baseline plus new replay for comparison", async () => {
     const user = userEvent.setup();
-    renderJourney(comparisonLink(syntheticId));
+    const view = renderJourney(comparisonLink(syntheticId));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Source run" })).toHaveValue(syntheticId));
     const replayButton = screen.getByRole("button", { name: "Create Simulate replay" });
     await waitFor(() => expect(replayButton).toBeEnabled());
     expect(screen.getByRole("button", { name: "Compare selected" })).toBeDisabled();
     await user.click(replayButton);
     await waitFor(() => expect(screen.getByLabelText("Current route")).toHaveTextContent(`/runs?job=${replayJob?.job_id}`));
+    await waitFor(() => expect(view.client.getQueryData<RunRecord>(["run", replayId])?.run_id).toBe(replayId), { timeout: 5_000 });
     await user.click(await screen.findByRole("link", { name: "Compare with original run" }));
     await waitFor(() => expect(screen.getByLabelText("Current route")).toHaveTextContent(comparisonLink(syntheticId, replayId)));
     expect(screen.getByText("2 selected")).toBeInTheDocument();

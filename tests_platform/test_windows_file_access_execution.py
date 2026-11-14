@@ -21,6 +21,7 @@ from bluefire import windows_file_access_pair_admission as admission
 from bluefire import windows_file_access_pair_credential as credential
 from bluefire import windows_file_access_pair_launch as launch
 from bluefire import windows_file_access_process as supervisor
+from bluefire.engine_service_composition import EngineServiceComposition
 from bluefire.file_access_control import FileAccessControl
 from bluefire.job_runtime import RunJobController
 from bluefire.product_store import ProductStore
@@ -43,6 +44,7 @@ def connected(pair_observed, tmp_path, monkeypatch):
     # This test does not exercise unrelated service initialization facilities.
     # Its actual property/API/shutdown methods use one long-lived controller.
     service = object.__new__(BlueFireService)
+    service._engine_assembly = EngineServiceComposition()
     service._retained_recovery_stop = threading.Event()
     service._retained_recovery_thread = None
     service.product_store = store
@@ -531,6 +533,7 @@ def test_long_lived_service_controller_closes_exact_registry_at_shutdown(connect
     assert job["state"] == "completed", job.get("error")
     state.service.close()
     assert state.service._retained_recovery_stop.is_set()
+    assert state.service.job_controller._closed
     assert state.closed == ["provider", "transport"]
     assert state.control.windows._closing and not state.control.windows._owners
     assert len(state.harness.popen_calls) == 1
@@ -548,6 +551,7 @@ def test_unknown_closure_retains_exact_owner_until_service_shutdown_retry(connec
     assert state.harness.process_holder[0]._handle.closed is False
     state.harness.containments[0].finish_failure = False
     state.service.close()
+    assert state.service.job_controller._closed
     assert owner.resources_closed and state.harness.process_holder[0]._handle.closed
     assert state.control.windows._owners == {} and state.control.windows._closing
     assert len(state.provider_calls) == len(state.harness.popen_calls) == 1

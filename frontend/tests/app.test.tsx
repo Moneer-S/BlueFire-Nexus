@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
 import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import { ProductProvider, UI_PREFERENCE_SCHEMA_VERSION } from "../src/state/ProductContext";
-import type { AIProposalDecisionResult, AIProposalReview, Behavior, ComparisonResponse, DetectionComparisonResponse, DetectionResource, PreflightReport, PublicBaselineReference, RunJob } from "../src/types";
+import type { AIProposalDecisionResult, AIProposalReview, Behavior, ComparisonResponse, DetectionComparisonResponse, DetectionResource, PreflightReport, PublicBaselineReference, RunJob, RunRecord } from "../src/types";
 
 const envelopeBehavior = demoCatalog.behaviors.find((item) => item.execution_state === "action")!;
 const envelopeAction = demoCatalog.actions.find((item) => item.id === envelopeBehavior.action_ids[0])!;
@@ -1019,7 +1019,7 @@ describe("product application", () => {
 
   it("loads a completed result when inventory releases the slot before final detail", async () => {
     const runningJob: RunJob = { ...executeJob, state: "running", progress: { phase: "running" } };
-    const completedRun = demoRuns[0]!;
+    const completedRun: RunRecord = { ...demoRuns[0]!, run_id: "run-20300101T000003Z-aaaaaaaaaaaaaaaa", is_demo: false };
     const completedJob: RunJob = { ...runningJob, state: "completed", progress: { phase: "completed", run_id: completedRun.run_id }, result_ref: completedRun.run_id };
     activeJobInventory = [runningJob];
     const fetchMock = vi.mocked(fetch);
@@ -1029,6 +1029,7 @@ describe("product application", () => {
     let resolveFinalDetail: (() => void) | undefined;
     fetchMock.mockImplementation((input, init) => {
       const path = String(input);
+      if (path.endsWith(`/runs/${completedRun.run_id}`)) return Promise.resolve(json(completedRun));
       if (path.endsWith(`/jobs/${runningJob.job_id}`) && !init?.method && releaseControllerSlot) {
         return new Promise<Response>((resolve) => { resolveFinalDetail = () => resolve(json(completedJob)); });
       }
@@ -1040,7 +1041,8 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    renderApp("/runs?prepare=1");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    renderApp("/runs?prepare=1", client);
     expect(await findDisplayedJobId(runningJob.job_id)).toBeVisible();
     const main = within(screen.getByRole("main"));
     const progress = within(main.getByRole("region", { name: "Run progress" }));
@@ -1050,6 +1052,7 @@ describe("product application", () => {
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(runningJob.job_id);
 
     await act(async () => { resolveFinalDetail!(); });
+    await waitFor(() => expect(client.getQueryData<RunJob>(["job", runningJob.job_id])?.state).toBe("completed"));
     expect(await main.findByRole("link", { name: "Review latest result" })).toHaveAttribute("href", `/runs/${encodeURIComponent(completedRun.run_id)}`);
     const review = progress.getByRole("button", { name: "Review" });
     expect(review).toBeEnabled();

@@ -197,12 +197,98 @@ const retainedAttemptTerminalFailures = new Set(["cancelled", "failed", "interru
 const retainedAttemptErrorCodes = new Set(["execution_callback_failed", "replay_cleanup_deferred",
   "replay_record_incomplete", "run_cleanup_deferred", "run_record_incomplete"]);
 const retainedAttemptErrorTypes = new Set(["APIError", "AssertionError", "CapabilityContractError",
-  "EvidenceError", "FileNotFoundError", "JobCancelled", "JobRuntimeError", "OSError",
+  "EvidenceError", "FileNotFoundError", "JobCancelled", "JobRuntimeError", "KeyError", "OSError",
   "OrchestrationError", "PayloadUnavailable", "PermissionError", "ProductStoreError",
   "ReceiverSessionError", "RunnerAdapterError", "RunnerContractError", "RunnerTransportError",
-  "RunStoreError", "TimeoutError", "TypeError", "ValueError"]);
+  "RunStoreError", "RuntimeError", "TimeoutError", "TypeError", "ValueError"]);
 const retainedAttemptErrorCode = value => retainedAttemptErrorCodes.has(value) ? value : "unknown";
 const retainedAttemptErrorType = value => retainedAttemptErrorTypes.has(value) ? value : "other";
+const retainedSettlementPhases = new Set(["preparing_receiver", "attempt_completed", "failed", "cancelled", "interrupted"]);
+const retainedSettlements = new Set(["settled", "pending_cleanup"]);
+const retainedVerificationProblems = new Map([
+  ["The actual finalized run differs from its grant-owned attempt.", "run_binding"],
+  ["The exact authenticated receiver observation is unavailable.", "receiver_observation"],
+  ["The receiver lacks a bound terminal and clean process exit.", "receiver_terminal"],
+  ["Authenticated receiver bytes do not match the staged native artifact.", "staged_artifact"],
+]);
+const retainedDiagnosticLabel = (value, allowed) => value == null ? "missing" : allowed.has(value) ? value : "other";
+
+// Snapshot only finite labels and presence bits from the exact owned attempt.
+export function retainedSettlementDiagnostic(objective, attemptId) {
+  const attempt = Array.isArray(objective?.attempts)
+    ? objective.attempts.find(item => item && typeof item === "object" && item.job_id === attemptId) : undefined;
+  const progress = attempt?.progress && typeof attempt.progress === "object" && !Array.isArray(attempt.progress)
+    ? attempt.progress : {};
+  return {
+    schema_version: "bluefire.installed-retained-settlement-diagnostic.v1",
+    attempt_present: Boolean(attempt),
+    job_state: retainedDiagnosticLabel(attempt?.state, retainedAttemptStates),
+    phase: retainedDiagnosticLabel(progress.phase, retainedSettlementPhases),
+    settlement: retainedDiagnosticLabel(progress.settlement, retainedSettlements),
+    verified_result_present: Boolean(progress.verified_result),
+    verified_result_problem_present: typeof progress.verified_result_problem === "string",
+    verified_result_problem_kind: typeof progress.verified_result_problem === "string"
+      ? retainedVerificationProblems.get(progress.verified_result_problem) ?? "other" : "none",
+    operation_error_present: typeof progress.operation_error === "string",
+    error_present: Boolean(attempt?.error),
+    error_type: retainedDiagnosticLabel(attempt?.error?.exception_type, retainedAttemptErrorTypes),
+    error_code: retainedDiagnosticLabel(attempt?.error?.code, retainedAttemptErrorCodes),
+    receiver_closed: progress.receiver_closed === true,
+    cleanup_receipt_present: Boolean(progress.receiver_cleanup_receipt),
+    finalized_run_present: typeof progress.finalized_run_id === "string",
+    prepare_started: progress.prepare_started === true,
+    session_present: Boolean(progress.session),
+    task_binding_present: Boolean(progress.task_binding),
+    native_cleanup_present: Boolean(progress.native_cleanup),
+  };
+}
+
+const retainedHttpReadOutcomes = new Set(["not_found", "conflict", "authorization_rejected", "client_error", "server_error"]);
+export function retainedSettlementReadDiagnostic(readOutcome, error) {
+  const kind = readOutcome === "session_unavailable" ? "session_unavailable"
+    : readOutcome === "timeout" || error?.name === "TimeoutError" ? "timeout"
+      : retainedHttpReadOutcomes.has(readOutcome) ? "http"
+        : error?.name === "AbortError" ? "aborted"
+          : readOutcome === "transport_error" ? "transport_error"
+            : readOutcome === "invalid_response" ? "invalid_response" : "other";
+  return {
+    schema_version: "bluefire.installed-retained-read-diagnostic.v1",
+    outcome: readOutcome === "ok" ? "read_succeeded" : "read_failed",
+    read_outcome: objectiveReadOutcomes.has(readOutcome) ? readOutcome : "invalid_response",
+    kind: readOutcome === "ok" ? "none" : kind,
+  };
+}
+
+// The outer driver can report an early failure before any settlement read.
+// No message, stack, path, or unknown exception type is returned.
+export function retainedFailureDiagnostic(error) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  const status = /^Owned status read failed \((\d{3})\)$/.exec(message);
+  const httpStatus = status ? Number(status[1]) : null;
+  const source = /[\\/](receiver-retained\.mjs|installed-receiver\.mjs):([1-9]\d{0,4}):\d+/.exec(
+    typeof error?.stack === "string" ? error.stack : "",
+  );
+  const kind = httpStatus >= 400 && httpStatus <= 599 ? "owned_read_http"
+    : message === "The retained-result proof did not reach its bounded saved state" ? "settlement_wait_expired"
+      : message === "The retained-result attempt ended before its saved proof was ready" ? "terminal_without_verified_result"
+        : message === "The retained-result objective could not be read" ? "objective_read_failed"
+          : message === "The retained-result objective read was not usable" ? "objective_read_unusable"
+            : message === "The retained-result objective contained an invalid attempt" ? "invalid_saved_attempt"
+              : message === "The retained-result attempt state was invalid" ? "invalid_saved_attempt"
+                : message === "The retained-result attempt progress was invalid" ? "invalid_saved_progress"
+                  : message === "Retained attempt local deadline exceeded" ? "local_deadline"
+                    : message === "Installed receiver deadline exceeded" ? "work_deadline"
+                      : message === "Session unavailable" ? "session_unavailable"
+                        : error?.name === "TimeoutError" ? "timeout" : error?.name === "AbortError" ? "aborted"
+                          : error?.name === "AssertionError" ? "assertion" : "other";
+  return {
+    schema_version: "bluefire.installed-retained-failure-diagnostic.v1",
+    kind,
+    http_status: httpStatus >= 400 && httpStatus <= 599 ? httpStatus : null,
+    source: source ? source[1] : "other",
+    line: source ? Number(source[2]) : null,
+  };
+}
 const retainedProposalErrorCodes = new Set(["execution_callback_failed"]);
 const retainedProposalErrorTypes = new Set([
   "APIError", "AssertionError", "CapabilityContractError", "ConfigError", "DatabaseError",
@@ -215,7 +301,7 @@ const retainedProposalErrorCode = value => retainedProposalErrorCodes.has(value)
 const retainedProposalErrorType = value => retainedProposalErrorTypes.has(value) ? value : "other";
 
 export async function waitForRetainedSavedAttempt({ readObjective, attemptId, remainingMs,
-  maximum = 110000, onVerification }) {
+  maximum = 110000, onVerification, onSettlement, onSettlementRead }) {
   const budgetRemaining = () => {
     try { return Math.max(0, remainingMs()); }
     catch { return 0; }
@@ -238,8 +324,9 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
   while (Date.now() < until) {
     let loaded;
     try { loaded = await readObjective(); }
-    catch {
+    catch (error) {
       readOutcome = "transport_error";
+      onSettlementRead?.(retainedSettlementReadDiagnostic(readOutcome, error));
       attemptState = "unavailable";
       attemptOutcome = "unavailable";
       update(budgetRemaining() <= 0 ? "budget_exhausted" : "read_failed");
@@ -248,6 +335,7 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
     readOutcome = objectiveReadOutcomes.has(loaded?.outcome) ? loaded.outcome : "invalid_response";
     if (readOutcome !== "ok" || !loaded?.run || !Array.isArray(loaded.run.attempts)) {
       if (readOutcome === "ok") readOutcome = "invalid_response";
+      onSettlementRead?.(retainedSettlementReadDiagnostic(readOutcome));
       attemptState = "unavailable";
       attemptOutcome = "unavailable";
       update("read_failed");
@@ -257,6 +345,7 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
     for (const item of loaded.run.attempts) {
       if (!item || typeof item !== "object" || Array.isArray(item)) {
         readOutcome = "invalid_response";
+        onSettlementRead?.(retainedSettlementReadDiagnostic(readOutcome));
         attemptState = "unavailable";
         attemptOutcome = "unavailable";
         update("read_failed");
@@ -264,8 +353,10 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
       }
       if (item.job_id === attemptId) { attempt = item; break; }
     }
+    onSettlement?.(retainedSettlementDiagnostic(loaded.run, attemptId));
     if (attempt && !retainedAttemptStates.has(attempt.state)) {
       readOutcome = "invalid_response";
+      onSettlementRead?.(retainedSettlementReadDiagnostic(readOutcome));
       attemptState = "invalid_response";
       attemptOutcome = "unavailable";
       update("read_failed");
@@ -274,10 +365,12 @@ export async function waitForRetainedSavedAttempt({ readObjective, attemptId, re
     attemptState = attempt?.state ?? "not_observed";
     if (attempt?.state === "completed" && (!attempt.progress || typeof attempt.progress !== "object" || Array.isArray(attempt.progress))) {
       readOutcome = "invalid_response";
+      onSettlementRead?.(retainedSettlementReadDiagnostic(readOutcome));
       attemptOutcome = "unavailable";
       update("read_failed");
       throw new Error("The retained-result attempt progress was invalid");
     }
+    onSettlementRead?.(retainedSettlementReadDiagnostic(readOutcome));
     if (retainedAttemptTerminalFailures.has(attemptState)) {
       attemptErrorCode = retainedAttemptErrorCode(attempt?.error?.code);
       attemptErrorType = retainedAttemptErrorType(attempt?.error?.exception_type);
@@ -444,6 +537,8 @@ export async function runRetainedJourney(page, state, options) {
   assert.equal(firstProposal.proposal.reconsideration, null);
   assert.deepEqual(firstProposal.job.request.context.retained_artifacts.available_sources, []);
   const execute = async index => {
+    options.onSettlement?.(undefined);
+    options.onSettlementRead?.(undefined);
     await submitRetainedAttempt(page, { origin, ownerId: state.ownerId, controlId,
       proposalId: state.proposals[index], candidatePresent: Boolean(state.candidate),
       prefix: index === 0 ? "retained-original" : "retained-continuation",
@@ -452,7 +547,8 @@ export async function runRetainedJourney(page, state, options) {
     const id = state.attempts[index];
     const current = await waitForRetainedSavedAttempt({
       readObjective: () => options.readObjective(state.ownerId), attemptId: id, remainingMs,
-      onVerification: options.onVerification,
+      onVerification: options.onVerification, onSettlement: options.onSettlement,
+      onSettlementRead: options.onSettlementRead,
     });
     options.onVerification?.({ schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt" });
     const attempt = current.attempts.find(item => item.job_id === id);

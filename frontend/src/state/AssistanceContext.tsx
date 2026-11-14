@@ -8,6 +8,7 @@ import { validFileAccessAssistanceSelection, type FileAccessAssistanceSelection 
 import { validComparisonAssistanceSelection, type ComparisonAssistanceSelection } from "../lib/comparison-assistance";
 import { validFileAccessRetestAssistanceSelection, type FileAccessRetestAssistanceSelection } from "../lib/file-access-retest-assistance";
 import { validAdSmbAssistanceSelection, type AdSmbAssistanceSelection } from "../lib/ad-smb-assistance";
+import { validEngineExperimentSelection, type EngineExperimentAssistanceSelection } from "../lib/engine-assistance";
 
 export interface AssistanceSelection {
   runId: string;
@@ -36,7 +37,8 @@ export interface FileAccessWorkspaceSelection { kind: "file_access"; selected: F
 export interface ComparisonWorkspaceSelection { kind: "comparison"; selected: ComparisonAssistanceSelection; title: string; manualEdits: false }
 export interface FileAccessRetestWorkspaceSelection { kind: "file_access_retest"; selected: FileAccessRetestAssistanceSelection; title: string; manualEdits: false }
 export interface AdSmbWorkspaceSelection { kind: "ad_smb"; selected: AdSmbAssistanceSelection; title: string; manualEdits: false }
-export type WorkspaceSelection = AdSmbWorkspaceSelection | FileAccessRetestWorkspaceSelection | AuditWorkspaceSelection | FileAccessWorkspaceSelection | ComparisonWorkspaceSelection | ReceiverWorkspaceSelection | AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection | RunDetectionWorkspaceSelection;
+export interface EngineExperimentWorkspaceSelection { kind: "engine_experiment"; selected: EngineExperimentAssistanceSelection; title: string; manualEdits: false }
+export type WorkspaceSelection = EngineExperimentWorkspaceSelection | AdSmbWorkspaceSelection | FileAccessRetestWorkspaceSelection | AuditWorkspaceSelection | FileAccessWorkspaceSelection | ComparisonWorkspaceSelection | ReceiverWorkspaceSelection | AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection | RunDetectionWorkspaceSelection;
 const selectionKey = "bluefire.assistance.selection.v1";
 function readSelection(): WorkspaceSelection | undefined {
   try {
@@ -53,6 +55,7 @@ function readSelection(): WorkspaceSelection | undefined {
     if (value.kind === "comparison") return validComparisonAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
     if (value.kind === "file_access_retest") return validFileAccessRetestAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
     if (value.kind === "ad_smb") return validAdSmbAssistanceSelection(value.selected) && value.manualEdits === false ? value : undefined;
+    if (value.kind === "engine_experiment") return validEngineExperimentSelection(value.selected) && value.manualEdits === false ? value : undefined;
     if (value.kind === "graph" && (value.editUnavailable === undefined || (typeof value.editUnavailable === "string" && value.editUnavailable.length <= 1000)) && validGraphSelection({ kind: "graph", base_scenario: value.baseScenario, ...(value.editStep ? { edit_step: value.editStep } : {}) })) return value;
   } catch { /* Context is rechecked by the service before submission. */ }
 }
@@ -101,6 +104,16 @@ export function usePublishAdSmbSelection(selection?: AdSmbAssistanceSelection) {
     publish(owner, { kind: "ad_smb", selected: selection, title: "Saved AD share access", manualEdits: false });
     return () => publish(owner);
   }, [publish, selection]);
+}
+
+export function usePublishEngineExperimentSelection(selection?: EngineExperimentAssistanceSelection, title?: string) {
+  const publish = useContext(Context)?.publish;
+  useEffect(() => {
+    if (!publish || !validEngineExperimentSelection(selection)) return;
+    const owner = Symbol("engine-experiment-assistance");
+    publish(owner, { kind: "engine_experiment", selected: selection, title: title ?? "Defense experiment", manualEdits: false });
+    return () => publish(owner);
+  }, [publish, selection, title]);
 }
 
 /** Native views publish their actual selection, including unsaved-edit state. */
