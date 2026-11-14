@@ -290,7 +290,9 @@ export function EngineExperimentWorkspace({ experiment, workspaceEvidenceState =
     ? phaseState("not_attempted", "Not attempted")
     : !comparisonKnown || experiment.current_target === null
       ? phaseState("unknown", "Conclusion incomplete")
-      : recordedOrCurrent(workspaceEvidenceState, true);
+      : recordedOrCurrent(workspaceEvidenceState, Boolean(experiment.defensive_change &&
+        ["applied", "retained"].includes(experiment.defensive_change.state) &&
+        experiment.defensive_change.after_target_snapshot_ref === currentSnapshot));
   const phases = [
     { key: "baseline", label: "Baseline exploration", state: baselineState, icon: FlaskConical },
     { key: "verification", label: "Independent verification", state: verificationState, icon: CircleCheck },

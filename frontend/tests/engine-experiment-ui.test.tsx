@@ -354,6 +354,43 @@ it("leads a completed experiment with its established outcome and recorded dispo
   expect(within(environment).getByText("Exact target identity and provenance")).toBeVisible();
 });
 
+it("keeps a complete verified comparison as recorded history after defense rollback", () => {
+  const legitimate = {
+    ...checkSummary(), role: "legitimate_use" as const,
+    check_id: `controller-check-${"d".repeat(32)}`,
+    job_id: jobId("d"), run_id: runId("04", "d"),
+  };
+  const value = experiment({
+    attempts: [attemptSummary("baseline", "4"), attemptSummary("adaptive_search", "6")],
+    checks: [checkSummary(), legitimate],
+  });
+  value.projection.workflow_state = "complete";
+  value.projection.conclusion = {
+    ...value.projection.conclusion,
+    adaptive_search: { ...value.projection.conclusion.adaptive_search, status: "no_path_observed_within_limits" },
+    legitimate_use: { ...value.projection.conclusion.legitimate_use, status: "passed", run_id: legitimate.run_id },
+    telemetry_health: { ...value.projection.conclusion.telemetry_health, status: "complete", verified_sources: ["baseline", "retained_reproducer", "adaptive_search", "legitimate_use"], missing_sources: [] },
+    cleanup: { status: "verified_absent", items: value.projection.conclusion.cleanup.items.map(item => ({ ...item, state: "verified_absent" as const, receipt_ref: item.receipt_ref ?? digest("e") })) },
+  };
+
+  const view = renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} />);
+  const phase = () => within(screen.getByRole("list", { name: "Experiment phases" })).getByText("Comparison and disposition").closest("li");
+  expect(phase()).toHaveTextContent("Current and verified");
+
+  value.current_target = { ...value.current_target!, snapshot_ref: digest("8") };
+  value.defensive_change = { ...value.defensive_change!, state: "rolled_back" };
+  value.projection.conclusion = {
+    ...value.projection.conclusion,
+    defense: { ...value.projection.conclusion.defense, state: "rolled_back", current_target_snapshot_ref: digest("8"), rollback_operation_ref: digest("c"), rollback_receipt_ref: digest("d") },
+  };
+  view.rerender(<MemoryRouter><EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} /></MemoryRouter>);
+
+  const comparison = phase();
+  expect(comparison).toHaveTextContent("Recorded history");
+  expect(comparison).toHaveAttribute("data-state", "recorded");
+  expect(comparison).not.toHaveTextContent("Current and verified");
+});
+
 it("makes unknown target state visible and exposes only reconciliation", () => {
   const value = experiment();
   value.current_target = null;
