@@ -21,9 +21,14 @@ import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from . import strix_controlled_backend as backend
+from .controlled_scenario_target_contract import (
+    expected_discovery_body,
+    match_captured_http,
+    pending_command,
+)
 from .controlled_strix_scenario import ScenarioObservationRequest
 from .evidence import EvidenceProvenance, EvidenceRecord
 from .local_lock import (
@@ -34,7 +39,20 @@ from .local_lock import (
 )
 from .strix_controlled_worker_channel import ControllerSettledCall
 from .tenant_record_controller_contract import tenant_target_snapshot_ref
-from .tenant_record_observer import TenantRecordObservationError, _response_headers_digest
+from .tenant_record_experiment_fixture import (
+    TenantRecordExperimentCase,
+    TenantRecordTargetUrlSet,
+)
+from .tenant_record_lab import TenantDefenseConfig, TenantRecordFixture
+from .tenant_record_observer import (
+    TenantRecordObservationError,
+    _response_headers_digest,
+    observe_tenant_response,
+)
+from .tenant_record_sidecar_observer import (
+    OwnedTenantSidecarObservationReader,
+    SidecarTargetObservation,
+)
 from .util import canonical_json_bytes, content_hash, json_clone
 from .windows_owner_acl import (
     WindowsOwnerAclError,
@@ -43,10 +61,15 @@ from .windows_owner_acl import (
     verify_owner_private_acl,
 )
 
+if TYPE_CHECKING:
+    from .engine_experiment import IndependentObservationRecord
+
 SCHEMA = "bluefire.controlled-scenario-observation-retention.v1"
 SEAL_SCHEMA = "bluefire.controlled-scenario-observation-seal.v1"
 TOOL_SCHEMA = "bluefire.controlled-scenario-settled-exec.v1"
 SOURCE_TERMINAL_SCHEMA = "bluefire.installed-strix-v2-source-collection-terminal.v1"
+SIDECAR_EVIDENCE_SCHEMA = "bluefire.controlled-scenario-sidecar-evidence.v1"
+SIDECAR_SEAL_SCHEMA = "bluefire.controlled-scenario-sidecar-seal.v1"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ATTEMPT = re.compile(r"engine-attempt-[0-9a-f]{32}\Z")
 _MAX_RECORDS = 64
@@ -147,6 +170,17 @@ class ReopenedSettledExec:
     document: Mapping[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class ReopenedSidecarScenarioEvidence:
+    request_ref: str
+    retention_ref: str
+    operation_id: str
+    tool_capture_ref: str
+    sidecar_source_ref: str
+    target_request_id: str
+    evidence: EvidenceRecord
+
+
 class ControllerScenarioObservationJournal:
     """Bounded append-only SQLite journal in an owner-private controller path."""
 
@@ -162,7 +196,9 @@ class ControllerScenarioObservationJournal:
         try:
             self.path, self._identity = prepare_owner_private_database_file(candidate)
         except LocalLockError as exc:
-            raise ScenarioObservationJournalError("observation journal is not owner-private") from exc
+            raise ScenarioObservationJournalError(
+                "observation journal is not owner-private"
+            ) from exc
         if os.name == "nt" and not preexisting:
             try:
                 apply_owner_private_acl_path(self.path, directory=False)
@@ -245,6 +281,55 @@ class ControllerScenarioObservationJournal:
                 """CREATE TRIGGER IF NOT EXISTS role_terminals_no_delete
                    BEFORE DELETE ON role_terminals BEGIN SELECT RAISE(ABORT, 'immutable'); END"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS sidecar_evidence (
+                    request_ref TEXT PRIMARY KEY,
+                    attempt_id TEXT NOT NULL,
+                    call_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL UNIQUE,
+                    target_request_id TEXT NOT NULL UNIQUE,
+                    evidence_ref TEXT NOT NULL UNIQUE,
+                    retention_ref TEXT NOT NULL,
+                    document BLOB NOT NULL,
+                    UNIQUE (attempt_id, call_id)
+                )"""
+            )
+            connection.execute(
+                """CREATE TRIGGER IF NOT EXISTS sidecar_evidence_no_update
+                   BEFORE UPDATE ON sidecar_evidence BEGIN SELECT RAISE(ABORT, 'immutable'); END"""
+            )
+            connection.execute(
+                """CREATE TRIGGER IF NOT EXISTS sidecar_evidence_no_delete
+                   BEFORE DELETE ON sidecar_evidence BEGIN SELECT RAISE(ABORT, 'immutable'); END"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS sidecar_seals (
+                    attempt_id TEXT PRIMARY KEY,
+                    seal_ref TEXT NOT NULL,
+                    document BLOB NOT NULL
+                )"""
+            )
+            connection.execute(
+                """CREATE TRIGGER IF NOT EXISTS sidecar_seals_no_update
+                   BEFORE UPDATE ON sidecar_seals BEGIN SELECT RAISE(ABORT, 'immutable'); END"""
+            )
+            connection.execute(
+                """CREATE TRIGGER IF NOT EXISTS sidecar_seals_no_delete
+                   BEFORE DELETE ON sidecar_seals BEGIN SELECT RAISE(ABORT, 'immutable'); END"""
+            )
+
+    @property
+    def source_identity_ref(self) -> str:
+        """Private stable identity for a pinned journal across controller restarts."""
+        with self._connection(write=False):
+            return content_hash(
+                {
+                    "schema_version": "bluefire.controlled-scenario-source-identity.v1",
+                    "path": str(self.path),
+                    "device": self._identity[0],
+                    "inode": self._identity[1],
+                }
+            )
 
     def _connection(self, *, write: bool):
         """Pin the exact private database around each short SQLite operation."""
@@ -310,7 +395,9 @@ class ControllerScenarioObservationJournal:
                 child_details = child.lstat()
                 parent_details = parent.lstat()
             except OSError as exc:
-                raise ScenarioObservationJournalError("observation ancestor is unavailable") from exc
+                raise ScenarioObservationJournalError(
+                    "observation ancestor is unavailable"
+                ) from exc
             if (
                 child.is_symlink()
                 or parent.is_symlink()
@@ -321,7 +408,9 @@ class ControllerScenarioObservationJournal:
                 raise ScenarioObservationJournalError("observation ancestor is unsafe")
             if parent_details.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
                 if not parent_details.st_mode & stat.S_ISVTX or child_details.st_uid != owner:
-                    raise ScenarioObservationJournalError("observation ancestor permits replacement")
+                    raise ScenarioObservationJournalError(
+                        "observation ancestor permits replacement"
+                    )
             if parent == child:
                 return
             child = parent
@@ -347,7 +436,9 @@ class ControllerScenarioObservationJournal:
         try:
             details = path.lstat()
         except OSError as exc:
-            raise ScenarioObservationJournalError("observation journal path is unavailable") from exc
+            raise ScenarioObservationJournalError(
+                "observation journal path is unavailable"
+            ) from exc
         if (
             path.is_symlink()
             or not (stat.S_ISDIR(details.st_mode) if directory else stat.S_ISREG(details.st_mode))
@@ -428,9 +519,12 @@ class ControllerScenarioObservationJournal:
             or decoded_stdout != request.model_result
         ):
             raise ScenarioObservationJournalError("settled shell differs from pending tool")
-        if not isinstance(target_response, dict) or set(target_response) != {
-            "schema_version", "status", "headers", "body_base64", "target_observation_ref"
-        } or target_response["schema_version"] != "bluefire.scenario-target-response.v1":
+        if (
+            not isinstance(target_response, dict)
+            or set(target_response)
+            != {"schema_version", "status", "headers", "body_base64", "target_observation_ref"}
+            or target_response["schema_version"] != "bluefire.scenario-target-response.v1"
+        ):
             raise ScenarioObservationJournalError("target response source is incomplete")
         try:
             response_body = base64.b64decode(target_response["body_base64"], validate=True)
@@ -485,9 +579,14 @@ class ControllerScenarioObservationJournal:
         source_documents: Mapping[str, Any],
     ) -> ReopenedScenarioObservation:
         """Persist source-verified records, then reopen exact bytes before use."""
-        if type(request) is not ScenarioObservationRequest or type(links) is not ScenarioObservationLinks:
+        if (
+            type(request) is not ScenarioObservationRequest
+            or type(links) is not ScenarioObservationLinks
+        ):
             raise ScenarioObservationJournalError("observation inputs are invalid")
-        result_bytes = request.model_result.encode("utf-8") if isinstance(request.model_result, str) else b""
+        result_bytes = (
+            request.model_result.encode("utf-8") if isinstance(request.model_result, str) else b""
+        )
         if (
             not result_bytes
             or len(result_bytes) != request.model_result_bytes
@@ -508,9 +607,16 @@ class ControllerScenarioObservationJournal:
         try:
             documents = json_clone(source_documents)
         except (TypeError, ValueError, RecursionError) as exc:
-            raise ScenarioObservationJournalError("observation source documents are invalid") from exc
+            raise ScenarioObservationJournalError(
+                "observation source documents are invalid"
+            ) from exc
         if not isinstance(documents, dict) or set(documents) != {
-            "tool", "relay_operation", "relay_audit", "relay_receipt", "target_audit", "target_response"
+            "tool",
+            "relay_operation",
+            "relay_audit",
+            "relay_receipt",
+            "target_audit",
+            "target_response",
         }:
             raise ScenarioObservationJournalError("observation source documents are incomplete")
         self._check_source_documents(request, links, checked, documents)
@@ -533,19 +639,25 @@ class ControllerScenarioObservationJournal:
             ).fetchone()
             if tool_row != (links.tool_capture_ref, canonical_json_bytes(documents["tool"])):
                 raise ScenarioObservationJournalError("settled tool bytes were not captured")
-            if connection.execute(
-                "SELECT 1 FROM attempt_seals WHERE attempt_id=?", (request.attempt_id,)
-            ).fetchone() is not None:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM attempt_seals WHERE attempt_id=?", (request.attempt_id,)
+                ).fetchone()
+                is not None
+            ):
                 raise ScenarioObservationJournalError("observation attempt is sealed")
             existing = connection.execute(
-                "SELECT document, retention_ref FROM observations WHERE request_ref=?", (request.digest,)
+                "SELECT document, retention_ref FROM observations WHERE request_ref=?",
+                (request.digest,),
             ).fetchone()
             if existing is None:
                 count, total = connection.execute(
                     "SELECT COUNT(*), COALESCE(SUM(LENGTH(document)), 0) FROM observations"
                 ).fetchone()
                 if count >= _MAX_RECORDS or total + len(payload) > _MAX_TOTAL_BYTES:
-                    raise ScenarioObservationJournalError("observation journal capacity is exhausted")
+                    raise ScenarioObservationJournalError(
+                        "observation journal capacity is exhausted"
+                    )
                 try:
                     connection.execute(
                         "INSERT INTO observations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -563,9 +675,14 @@ class ControllerScenarioObservationJournal:
                 except sqlite3.IntegrityError as exc:
                     raise ScenarioObservationJournalError("observation source was reused") from exc
             elif existing[0] != payload or existing[1] != retention_ref:
-                raise ScenarioObservationJournalError("observation retry differs from retained bytes")
+                raise ScenarioObservationJournalError(
+                    "observation retry differs from retained bytes"
+                )
         reopened = self.reopen(request.digest)
-        if reopened.retention_ref != retention_ref or reopened.evidence.record_hash != checked.record_hash:
+        if (
+            reopened.retention_ref != retention_ref
+            or reopened.evidence.record_hash != checked.record_hash
+        ):
             raise ScenarioObservationJournalError("observation reopen differs")
         return reopened
 
@@ -584,9 +701,19 @@ class ControllerScenarioObservationJournal:
             document = json.loads(row[6])
             if not isinstance(document, dict) or canonical_json_bytes(document) != row[6]:
                 raise ValueError("noncanonical observation")
-            if set(document) != {
-                "schema_version", "request_ref", "request_identity", "links", "evidence", "source_documents"
-            } or document["schema_version"] != SCHEMA or document["request_ref"] != request_ref:
+            if (
+                set(document)
+                != {
+                    "schema_version",
+                    "request_ref",
+                    "request_identity",
+                    "links",
+                    "evidence",
+                    "source_documents",
+                }
+                or document["schema_version"] != SCHEMA
+                or document["request_ref"] != request_ref
+            ):
                 raise ValueError("observation shape")
             links = ScenarioObservationLinks.from_mapping(document["links"])
             evidence = EvidenceRecord.from_mapping(document["evidence"])
@@ -595,14 +722,32 @@ class ControllerScenarioObservationJournal:
         except (TypeError, ValueError, KeyError, RecursionError) as exc:
             raise ScenarioObservationJournalError("observation bytes are invalid") from exc
         required_identity = {
-            "attempt_id", "scenario_ref", "phase_id", "call_id", "tool_name", "arguments_digest", "arguments_json",
-            "target_url", "authorized_url_set_ref", "model_result_digest", "model_result_bytes", "model_result"
+            "attempt_id",
+            "scenario_ref",
+            "phase_id",
+            "call_id",
+            "tool_name",
+            "arguments_digest",
+            "arguments_json",
+            "target_url",
+            "authorized_url_set_ref",
+            "model_result_digest",
+            "model_result_bytes",
+            "model_result",
         }
         if (
             not isinstance(identity, dict)
             or set(identity) != required_identity
             or not isinstance(sources, dict)
-            or set(sources) != {"tool", "relay_operation", "relay_audit", "relay_receipt", "target_audit", "target_response"}
+            or set(sources)
+            != {
+                "tool",
+                "relay_operation",
+                "relay_audit",
+                "relay_receipt",
+                "target_audit",
+                "target_response",
+            }
             or content_hash(document) != row[5]
             or identity["attempt_id"] != row[0]
             or identity["attempt_id"] != links.attempt_id
@@ -675,9 +820,16 @@ class ControllerScenarioObservationJournal:
             raise ScenarioObservationJournalError("settled shell capture exceeds its byte bound")
         capture_ref = content_hash(body)
         with self._connection(write=True) as connection:
-            if connection.execute(
-                "SELECT 1 FROM attempt_seals WHERE attempt_id=?", (call.binding.attempt_id,)
-            ).fetchone() is not None:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM attempt_seals WHERE attempt_id=?", (call.binding.attempt_id,)
+                ).fetchone()
+                is not None
+                or connection.execute(
+                    "SELECT 1 FROM sidecar_seals WHERE attempt_id=?", (call.binding.attempt_id,)
+                ).fetchone()
+                is not None
+            ):
                 raise ScenarioObservationJournalError("observation attempt is sealed")
             existing = connection.execute(
                 "SELECT capture_ref, document FROM settled_execs WHERE attempt_id=? AND operation_id=?",
@@ -688,28 +840,41 @@ class ControllerScenarioObservationJournal:
                     "SELECT COUNT(*), COALESCE(SUM(LENGTH(document)), 0) FROM settled_execs"
                 ).fetchone()
                 if count >= _MAX_RECORDS or total + len(payload) > _MAX_TOTAL_BYTES:
-                    raise ScenarioObservationJournalError("settled shell capture capacity is exhausted")
+                    raise ScenarioObservationJournalError(
+                        "settled shell capture capacity is exhausted"
+                    )
                 try:
                     connection.execute(
                         "INSERT INTO settled_execs VALUES (?, ?, ?, ?, ?)",
-                        (call.binding.attempt_id, request.operation_id, call.request_id, capture_ref, payload),
+                        (
+                            call.binding.attempt_id,
+                            request.operation_id,
+                            call.request_id,
+                            capture_ref,
+                            payload,
+                        ),
                     )
                 except sqlite3.IntegrityError as exc:
-                    raise ScenarioObservationJournalError("settled shell identity was reused") from exc
+                    raise ScenarioObservationJournalError(
+                        "settled shell identity was reused"
+                    ) from exc
             elif existing != (capture_ref, payload):
                 raise ScenarioObservationJournalError("settled shell retry differs")
         return self.reopen_settled_exec(call.binding.attempt_id, request.operation_id)
 
     def reopen_settled_exec(self, attempt_id: str, operation_id: str) -> ReopenedSettledExec:
         if (
-            not isinstance(attempt_id, str) or _ATTEMPT.fullmatch(attempt_id) is None
-            or not isinstance(operation_id, str) or re.fullmatch(r"operation-[0-9a-f]{32}", operation_id) is None
+            not isinstance(attempt_id, str)
+            or _ATTEMPT.fullmatch(attempt_id) is None
+            or not isinstance(operation_id, str)
+            or re.fullmatch(r"operation-[0-9a-f]{32}", operation_id) is None
         ):
             raise ScenarioObservationJournalError("settled shell identity is invalid")
         with self._connection(write=False) as connection:
             row = connection.execute(
                 "SELECT request_id, capture_ref, document FROM settled_execs "
-                "WHERE attempt_id=? AND operation_id=?", (attempt_id, operation_id),
+                "WHERE attempt_id=? AND operation_id=?",
+                (attempt_id, operation_id),
             ).fetchone()
         if row is None or type(row[2]) is not bytes or len(row[2]) > _MAX_RECORD_BYTES:
             raise ScenarioObservationJournalError("settled shell capture is unavailable")
@@ -734,34 +899,562 @@ class ControllerScenarioObservationJournal:
         except (KeyError, TypeError, ValueError, binascii.Error, RecursionError) as exc:
             raise ScenarioObservationJournalError("settled shell capture is invalid") from exc
 
+    @staticmethod
+    def _check_sidecar_evidence_sources(
+        request: ScenarioObservationRequest,
+        captured: ReopenedSettledExec,
+        observed: SidecarTargetObservation,
+        evidence: EvidenceRecord,
+        *,
+        fixture: TenantRecordFixture,
+        config: TenantDefenseConfig,
+        case: TenantRecordExperimentCase,
+        url_set: TenantRecordTargetUrlSet,
+    ) -> None:
+        """Validate the complete source join before retaining immutable bytes."""
+        if (
+            request.attempt_id != case.attempt_id
+            or captured.attempt_id != request.attempt_id
+            or observed.attempt_id != request.attempt_id
+            or request.target_url != observed.admitted_target_url
+            or case.asset_ref != fixture.digest
+            or case.target_config_ref != config.digest
+            or case.target_snapshot_ref != observed.target_snapshot_ref
+            or case.target_snapshot_id != config.target_snapshot_id
+            or case.service_generation != config.service_generation
+            or observed.service_generation != config.service_generation
+            or observed.source_binding.get("fixture_digest") != fixture.digest
+            or observed.source_binding.get("target_snapshot_id") != config.target_snapshot_id
+            or request.authorized_url_set_ref != case.authorized_url_set_ref
+            or url_set.digest != case.authorized_url_set_ref
+            or url_set.attempt_id != case.attempt_id
+            or url_set.target_origin != case.target_origin
+            or request.target_url not in url_set.urls
+            or evidence.content.get("request_id") != observed.target_request_id
+        ):
+            raise ScenarioObservationJournalError("sidecar evidence case differs")
+        try:
+            stdout = base64.b64decode(captured.document["stdout_base64"], validate=True)
+            model_bytes = request.model_result.encode("utf-8")
+            if (
+                stdout != model_bytes
+                or len(model_bytes) != request.model_result_bytes
+                or "sha256:" + hashlib.sha256(model_bytes).hexdigest()
+                != request.model_result_digest
+                or captured.document.get("exit_code") != 0
+            ):
+                raise ValueError("model-visible target result changed")
+            pending_command(request, captured.document.get("argv"), fixture.protected_tenant_id)
+            match_captured_http(
+                stdout,
+                source_status=observed.response_status,
+                source_headers=observed.response_headers,
+                source_body=observed.response_body,
+            )
+            if (
+                (request.phase_id == "discover_target" and observed.audit_row.route != "metadata")
+                or (
+                    request.phase_id == "try_record_lookup"
+                    and observed.audit_row.route != "record_lookup"
+                )
+                or (
+                    request.phase_id == "try_bounded_export"
+                    and observed.audit_row.route != "bounded_export"
+                )
+            ):
+                raise ValueError("target route differs from pending phase")
+            if request.phase_id == "discover_target" and (
+                request.target_url != case.target_origin + "/openapi.json"
+                or observed.response_status != 200
+                or observed.response_body != expected_discovery_body(fixture)
+            ):
+                raise ValueError("public discovery differs from generated target")
+            expected = observe_tenant_response(
+                fixture=fixture,
+                config=config,
+                audit_row=observed.audit_row,
+                response_status=observed.response_status,
+                response_headers=observed.response_headers,
+                response_body=observed.response_body,
+                attempt_id=request.attempt_id,
+                run_id=evidence.run_id,
+                step_id=evidence.step_id,
+                target_scope_ref=case.scope_ref,
+            )
+            if expected.to_dict() != evidence.to_dict():
+                raise ValueError("independent evidence differs from source")
+        except (KeyError, TypeError, ValueError, UnicodeError, binascii.Error) as exc:
+            raise ScenarioObservationJournalError("sidecar evidence source is invalid") from exc
+
+    def retain_sidecar_evidence(
+        self,
+        *,
+        request: ScenarioObservationRequest,
+        operation_id: str,
+        sidecar_source_ref: str,
+        target_request_id: str,
+        evidence: EvidenceRecord,
+        reader: OwnedTenantSidecarObservationReader,
+        fixture: TenantRecordFixture,
+        config: TenantDefenseConfig,
+        case: TenantRecordExperimentCase,
+        url_set: TenantRecordTargetUrlSet,
+    ) -> ReopenedSidecarScenarioEvidence:
+        """Retain one target-owned response before another model decision.
+
+        The source reader and captured worker bytes are reopened again after
+        the durable insert. This is a staged result, not an execution receipt.
+        """
+        if (
+            type(request) is not ScenarioObservationRequest
+            or type(evidence) is not EvidenceRecord
+            or not isinstance(sidecar_source_ref, str)
+            or _DIGEST.fullmatch(sidecar_source_ref) is None
+            or not isinstance(target_request_id, str)
+            or not target_request_id
+        ):
+            raise ScenarioObservationJournalError("sidecar evidence identity is invalid")
+        captured = self.reopen_settled_exec(request.attempt_id, operation_id)
+        observed = reader.reopen_request(request.attempt_id, target_request_id)
+        if (
+            observed.source_receipt_ref != sidecar_source_ref
+            or request.target_url != observed.admitted_target_url
+            or evidence.content.get("request_id") != target_request_id
+        ):
+            raise ScenarioObservationJournalError("sidecar evidence source differs")
+        self._check_sidecar_evidence_sources(
+            request,
+            captured,
+            observed,
+            evidence,
+            fixture=fixture,
+            config=config,
+            case=case,
+            url_set=url_set,
+        )
+        body = {
+            "schema_version": SIDECAR_EVIDENCE_SCHEMA,
+            "request_identity": self._request_identity(request),
+            "operation_id": operation_id,
+            "tool_request_id": captured.request_id,
+            "tool_capture_ref": captured.capture_ref,
+            "sidecar_source_ref": sidecar_source_ref,
+            "target_request_id": target_request_id,
+            "evidence": evidence.to_dict(),
+        }
+        payload = canonical_json_bytes(body)
+        if len(payload) > _MAX_RECORD_BYTES:
+            raise ScenarioObservationJournalError("sidecar evidence exceeds its byte bound")
+        retention_ref = content_hash(body)
+        with self._connection(write=True) as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM sidecar_seals WHERE attempt_id=?", (request.attempt_id,)
+                ).fetchone()
+                is not None
+            ):
+                raise ScenarioObservationJournalError("sidecar evidence attempt is sealed")
+            existing = connection.execute(
+                "SELECT retention_ref, document FROM sidecar_evidence WHERE request_ref=?",
+                (request.digest,),
+            ).fetchone()
+            if existing is None:
+                count, total = connection.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(LENGTH(document)), 0) FROM sidecar_evidence"
+                ).fetchone()
+                if count >= _MAX_RECORDS or total + len(payload) > _MAX_TOTAL_BYTES:
+                    raise ScenarioObservationJournalError("sidecar evidence capacity is exhausted")
+                try:
+                    connection.execute(
+                        "INSERT INTO sidecar_evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            request.digest,
+                            request.attempt_id,
+                            request.call_id,
+                            operation_id,
+                            target_request_id,
+                            evidence.record_hash,
+                            retention_ref,
+                            payload,
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ScenarioObservationJournalError(
+                        "sidecar evidence identity was reused"
+                    ) from exc
+            elif existing != (retention_ref, payload):
+                raise ScenarioObservationJournalError("sidecar evidence retry differs")
+        return self.reopen_sidecar_evidence(
+            request.digest,
+            reader=reader,
+            fixture=fixture,
+            config=config,
+            case=case,
+            url_set=url_set,
+        )
+
+    def reopen_sidecar_evidence(
+        self,
+        request_ref: str,
+        *,
+        reader: OwnedTenantSidecarObservationReader,
+        fixture: TenantRecordFixture,
+        config: TenantDefenseConfig,
+        case: TenantRecordExperimentCase,
+        url_set: TenantRecordTargetUrlSet,
+    ) -> ReopenedSidecarScenarioEvidence:
+        """Recheck the protected source and rederive the independent record."""
+        if not isinstance(request_ref, str) or _DIGEST.fullmatch(request_ref) is None:
+            raise ScenarioObservationJournalError("sidecar evidence reference is invalid")
+        with self._connection(write=False) as connection:
+            row = connection.execute(
+                "SELECT attempt_id, call_id, operation_id, target_request_id, "
+                "evidence_ref, retention_ref, document FROM sidecar_evidence WHERE request_ref=?",
+                (request_ref,),
+            ).fetchone()
+        if row is None or type(row[6]) is not bytes or len(row[6]) > _MAX_RECORD_BYTES:
+            raise ScenarioObservationJournalError("sidecar evidence is unavailable")
+        try:
+            body = json.loads(row[6])
+            if (
+                type(body) is not dict
+                or set(body)
+                != {
+                    "schema_version",
+                    "request_identity",
+                    "operation_id",
+                    "tool_request_id",
+                    "tool_capture_ref",
+                    "sidecar_source_ref",
+                    "target_request_id",
+                    "evidence",
+                }
+                or body["schema_version"] != SIDECAR_EVIDENCE_SCHEMA
+                or canonical_json_bytes(body) != row[6]
+                or content_hash(body) != row[5]
+                or body["operation_id"] != row[2]
+                or body["target_request_id"] != row[3]
+            ):
+                raise ValueError("sidecar evidence bytes changed")
+            request = ScenarioObservationRequest(**body["request_identity"])
+            evidence = EvidenceRecord.from_mapping(body["evidence"])
+            if (
+                request.digest != request_ref
+                or request.attempt_id != row[0]
+                or request.call_id != row[1]
+                or evidence.record_hash != row[4]
+            ):
+                raise ValueError("sidecar evidence case differs")
+            captured = self.reopen_settled_exec(request.attempt_id, row[2])
+            observed = reader.reopen_request(request.attempt_id, row[3])
+            if (
+                captured.capture_ref != body["tool_capture_ref"]
+                or captured.request_id != body["tool_request_id"]
+                or observed.source_receipt_ref != body["sidecar_source_ref"]
+            ):
+                raise ValueError("sidecar source reference changed")
+            self._check_sidecar_evidence_sources(
+                request,
+                captured,
+                observed,
+                evidence,
+                fixture=fixture,
+                config=config,
+                case=case,
+                url_set=url_set,
+            )
+            return ReopenedSidecarScenarioEvidence(
+                request_ref,
+                row[5],
+                row[2],
+                captured.capture_ref,
+                observed.source_receipt_ref,
+                observed.target_request_id,
+                evidence,
+            )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+            binascii.Error,
+            RecursionError,
+        ) as exc:
+            raise ScenarioObservationJournalError("sidecar evidence is invalid") from exc
+
+    def reopen_sidecar_attempt(
+        self,
+        attempt_id: str,
+        *,
+        reader: OwnedTenantSidecarObservationReader,
+        fixture: TenantRecordFixture,
+        config: TenantDefenseConfig,
+        case: TenantRecordExperimentCase,
+        url_set: TenantRecordTargetUrlSet,
+    ) -> tuple[ReopenedSidecarScenarioEvidence, ...]:
+        """Return the currently retained prefix; this is not a final proof."""
+        if not isinstance(attempt_id, str) or _ATTEMPT.fullmatch(attempt_id) is None:
+            raise ScenarioObservationJournalError("sidecar attempt identity is invalid")
+        with self._connection(write=False) as connection:
+            refs = tuple(
+                row[0]
+                for row in connection.execute(
+                    "SELECT request_ref FROM sidecar_evidence WHERE attempt_id=? ORDER BY rowid",
+                    (attempt_id,),
+                ).fetchall()
+            )
+        return tuple(
+            self.reopen_sidecar_evidence(
+                ref,
+                reader=reader,
+                fixture=fixture,
+                config=config,
+                case=case,
+                url_set=url_set,
+            )
+            for ref in refs
+        )
+
+    def seal_sidecar_attempt(
+        self,
+        attempt_id: str,
+        expected_request_refs: tuple[str, ...],
+        terminal_ref: str,
+        *,
+        reader: OwnedTenantSidecarObservationReader,
+        fixture: TenantRecordFixture,
+        config: TenantDefenseConfig,
+        case: TenantRecordExperimentCase,
+        url_set: TenantRecordTargetUrlSet,
+    ) -> str:
+        """Freeze the exact source set after a separately verified terminal.
+
+        The caller must reopen and validate the native terminal itself. This
+        journal only binds its reference to the immutable staged set.
+        """
+        if (
+            not isinstance(attempt_id, str)
+            or _ATTEMPT.fullmatch(attempt_id) is None
+            or type(expected_request_refs) is not tuple
+            or not 1 <= len(expected_request_refs) <= _MAX_RECORDS
+            or len(set(expected_request_refs)) != len(expected_request_refs)
+            or any(
+                not isinstance(ref, str) or _DIGEST.fullmatch(ref) is None
+                for ref in expected_request_refs
+            )
+            or not isinstance(terminal_ref, str)
+            or _DIGEST.fullmatch(terminal_ref) is None
+        ):
+            raise ScenarioObservationJournalError("sidecar seal identity is invalid")
+        reopened = self.reopen_sidecar_attempt(
+            attempt_id,
+            reader=reader,
+            fixture=fixture,
+            config=config,
+            case=case,
+            url_set=url_set,
+        )
+        if tuple(item.request_ref for item in reopened) != expected_request_refs:
+            raise ScenarioObservationJournalError("sidecar evidence differs from provider trace")
+        body = {
+            "schema_version": SIDECAR_SEAL_SCHEMA,
+            "attempt_id": attempt_id,
+            "terminal_ref": terminal_ref,
+            "observations": [
+                {
+                    "request_ref": item.request_ref,
+                    "retention_ref": item.retention_ref,
+                    "evidence_ref": item.evidence.record_hash,
+                }
+                for item in reopened
+            ],
+        }
+        payload = canonical_json_bytes(body)
+        seal_ref = content_hash(body)
+        with self._connection(write=True) as connection:
+            rows = connection.execute(
+                "SELECT request_ref, retention_ref, evidence_ref FROM sidecar_evidence "
+                "WHERE attempt_id=? ORDER BY rowid",
+                (attempt_id,),
+            ).fetchall()
+            captured_operations = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT operation_id FROM settled_execs WHERE attempt_id=?",
+                    (attempt_id,),
+                ).fetchall()
+            }
+            if tuple(rows) != tuple(
+                (item.request_ref, item.retention_ref, item.evidence.record_hash)
+                for item in reopened
+            ) or captured_operations != {item.operation_id for item in reopened}:
+                raise ScenarioObservationJournalError("sidecar source changed before seal")
+            existing = connection.execute(
+                "SELECT seal_ref, document FROM sidecar_seals WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    "INSERT INTO sidecar_seals VALUES (?, ?, ?)",
+                    (attempt_id, seal_ref, payload),
+                )
+            elif existing != (seal_ref, payload):
+                raise ScenarioObservationJournalError("sidecar seal retry differs")
+        self.reopen_sealed_sidecar_attempt(
+            attempt_id,
+            reader=reader,
+            fixture=fixture,
+            config=config,
+            case=case,
+            url_set=url_set,
+        )
+        return seal_ref
+
+    def reopen_sealed_sidecar_attempt(
+        self,
+        attempt_id: str,
+        *,
+        reader: OwnedTenantSidecarObservationReader,
+        fixture: TenantRecordFixture,
+        config: TenantDefenseConfig,
+        case: TenantRecordExperimentCase,
+        url_set: TenantRecordTargetUrlSet,
+    ) -> tuple[str, str, tuple[ReopenedSidecarScenarioEvidence, ...]]:
+        """Reopen the complete frozen target source set and terminal ref."""
+        if not isinstance(attempt_id, str) or _ATTEMPT.fullmatch(attempt_id) is None:
+            raise ScenarioObservationJournalError("sidecar seal attempt is invalid")
+        with self._connection(write=False) as connection:
+            row = connection.execute(
+                "SELECT seal_ref, document FROM sidecar_seals WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+        if row is None or type(row[1]) is not bytes or len(row[1]) > _MAX_RECORD_BYTES:
+            raise ScenarioObservationJournalError("sidecar source attempt is not sealed")
+        try:
+            body = json.loads(row[1])
+            if (
+                type(body) is not dict
+                or set(body) != {"schema_version", "attempt_id", "terminal_ref", "observations"}
+                or body["schema_version"] != SIDECAR_SEAL_SCHEMA
+                or body["attempt_id"] != attempt_id
+                or not isinstance(body["terminal_ref"], str)
+                or _DIGEST.fullmatch(body["terminal_ref"]) is None
+                or not isinstance(body["observations"], list)
+                or not 1 <= len(body["observations"]) <= _MAX_RECORDS
+                or canonical_json_bytes(body) != row[1]
+                or content_hash(body) != row[0]
+            ):
+                raise ValueError("sidecar seal bytes changed")
+            reopened = self.reopen_sidecar_attempt(
+                attempt_id,
+                reader=reader,
+                fixture=fixture,
+                config=config,
+                case=case,
+                url_set=url_set,
+            )
+            with self._connection(write=False) as connection:
+                captured_operations = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT operation_id FROM settled_execs WHERE attempt_id=?",
+                        (attempt_id,),
+                    ).fetchall()
+                }
+            if tuple(
+                {
+                    "request_ref": item.request_ref,
+                    "retention_ref": item.retention_ref,
+                    "evidence_ref": item.evidence.record_hash,
+                }
+                for item in reopened
+            ) != tuple(body["observations"]) or captured_operations != {
+                item.operation_id for item in reopened
+            }:
+                raise ValueError("sidecar sealed source set changed")
+            return row[0], body["terminal_ref"], reopened
+        except (KeyError, TypeError, ValueError, RecursionError) as exc:
+            raise ScenarioObservationJournalError("sidecar seal is invalid") from exc
+
+    def reopen_staged_independent_observations(
+        self,
+        attempt_id: str,
+        *,
+        mechanism_ref: str,
+        verified_terminal_ref: str,
+        reader: OwnedTenantSidecarObservationReader,
+        fixture: TenantRecordFixture,
+        config: TenantDefenseConfig,
+        case: TenantRecordExperimentCase,
+        url_set: TenantRecordTargetUrlSet,
+    ) -> tuple["IndependentObservationRecord", ...]:
+        """Build trusted staged observations for one atomic final publication.
+
+        The caller must separately establish that ``verified_terminal_ref`` is
+        the native terminal for this attempt and must publish/reopen the final
+        RunStore bundle before reporting persisted product proof.
+        """
+        from .engine_experiment import _controller_observation_record
+
+        if (
+            not isinstance(mechanism_ref, str)
+            or _DIGEST.fullmatch(mechanism_ref) is None
+            or not isinstance(verified_terminal_ref, str)
+            or _DIGEST.fullmatch(verified_terminal_ref) is None
+        ):
+            raise ScenarioObservationJournalError("staged observation binding is invalid")
+        _seal_ref, terminal_ref, rows = self.reopen_sealed_sidecar_attempt(
+            attempt_id,
+            reader=reader,
+            fixture=fixture,
+            config=config,
+            case=case,
+            url_set=url_set,
+        )
+        if terminal_ref != verified_terminal_ref:
+            raise ScenarioObservationJournalError("staged observation terminal differs")
+        return tuple(
+            _controller_observation_record(
+                target_snapshot_ref=case.target_snapshot_ref,
+                mechanism_ref=mechanism_ref,
+                evidence=row.evidence,
+                attempt_id=attempt_id,
+            )
+            for row in rows
+        )
+
     def reopen_attempt(self, attempt_id: str) -> tuple[ReopenedScenarioObservation, ...]:
         if not isinstance(attempt_id, str) or _ATTEMPT.fullmatch(attempt_id) is None:
             raise ScenarioObservationJournalError("observation attempt is invalid")
         with self._connection(write=False) as connection:
             refs = tuple(
-                row[0] for row in connection.execute(
-                    "SELECT request_ref FROM observations WHERE attempt_id=? ORDER BY rowid", (attempt_id,)
+                row[0]
+                for row in connection.execute(
+                    "SELECT request_ref FROM observations WHERE attempt_id=? ORDER BY rowid",
+                    (attempt_id,),
                 ).fetchall()
             )
         return tuple(self.reopen(ref) for ref in refs)
 
-    def seal_attempt(
-        self, attempt_id: str, expected_request_refs: tuple[str, ...]
-    ) -> str:
+    def seal_attempt(self, attempt_id: str, expected_request_refs: tuple[str, ...]) -> str:
         """Freeze the exact controller-verified provider trace after worker stop."""
         if (
             not isinstance(attempt_id, str)
             or _ATTEMPT.fullmatch(attempt_id) is None
             or type(expected_request_refs) is not tuple
             or len(expected_request_refs) > _MAX_RECORDS
-            or any(not isinstance(ref, str) or _DIGEST.fullmatch(ref) is None for ref in expected_request_refs)
+            or any(
+                not isinstance(ref, str) or _DIGEST.fullmatch(ref) is None
+                for ref in expected_request_refs
+            )
             or len(set(expected_request_refs)) != len(expected_request_refs)
         ):
             raise ScenarioObservationJournalError("observation seal identity is invalid")
         with self._connection(write=True) as connection:
             rows = connection.execute(
                 "SELECT request_ref, retention_ref, evidence_ref FROM observations "
-                "WHERE attempt_id=? ORDER BY rowid", (attempt_id,)
+                "WHERE attempt_id=? ORDER BY rowid",
+                (attempt_id,),
             ).fetchall()
             if tuple(row[0] for row in rows) != expected_request_refs:
                 raise ScenarioObservationJournalError("observation set differs from provider trace")
@@ -848,7 +1541,8 @@ class ControllerScenarioObservationJournal:
             or _DIGEST.fullmatch(owner_ref) is None
             or not isinstance(source_ref, str)
             or _DIGEST.fullmatch(source_ref) is None
-            or source_ref != content_hash({key: value for key, value in checked.items() if key != "receipt_ref"})
+            or source_ref
+            != content_hash({key: value for key, value in checked.items() if key != "receipt_ref"})
         ):
             raise ScenarioObservationJournalError("role terminal identity differs")
         payload = canonical_json_bytes(checked)
@@ -872,7 +1566,9 @@ class ControllerScenarioObservationJournal:
                         (attempt_id, "source_collection", owner_ref, source_ref, payload),
                     )
                 except sqlite3.IntegrityError as exc:
-                    raise ScenarioObservationJournalError("role terminal identity was reused") from exc
+                    raise ScenarioObservationJournalError(
+                        "role terminal identity was reused"
+                    ) from exc
             elif existing != (source_ref, payload):
                 raise ScenarioObservationJournalError("role terminal retry differs")
         if self.reopen_role_terminal(source_ref) != checked:
@@ -885,7 +1581,8 @@ class ControllerScenarioObservationJournal:
         with self._connection(write=False) as connection:
             row = connection.execute(
                 "SELECT attempt_id, role, owner_ref, document FROM role_terminals "
-                "WHERE source_receipt_ref=?", (source_receipt_ref,),
+                "WHERE source_receipt_ref=?",
+                (source_receipt_ref,),
             ).fetchone()
         if row is None or type(row[3]) is not bytes or len(row[3]) > _MAX_RECORD_BYTES:
             raise ScenarioObservationJournalError("role terminal receipt is unavailable")
@@ -898,7 +1595,10 @@ class ControllerScenarioObservationJournal:
                 or row[1] != "source_collection"
                 or checked.get("owner_ref") != row[2]
                 or checked.get("receipt_ref") != source_receipt_ref
-                or source_receipt_ref != content_hash({key: value for key, value in checked.items() if key != "receipt_ref"})
+                or source_receipt_ref
+                != content_hash(
+                    {key: value for key, value in checked.items() if key != "receipt_ref"}
+                )
                 or canonical_json_bytes(checked) != row[3]
             ):
                 raise ValueError("role terminal bytes changed")
@@ -910,9 +1610,11 @@ class ControllerScenarioObservationJournal:
         self, attempt_id: str, role: str, owner_ref: str
     ) -> Mapping[str, Any] | None:
         if (
-            not isinstance(attempt_id, str) or _ATTEMPT.fullmatch(attempt_id) is None
+            not isinstance(attempt_id, str)
+            or _ATTEMPT.fullmatch(attempt_id) is None
             or role != "source_collection"
-            or not isinstance(owner_ref, str) or _DIGEST.fullmatch(owner_ref) is None
+            or not isinstance(owner_ref, str)
+            or _DIGEST.fullmatch(owner_ref) is None
         ):
             raise ScenarioObservationJournalError("role terminal owner identity is invalid")
         with self._connection(write=False) as connection:
