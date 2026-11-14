@@ -71,6 +71,31 @@ export function retainedReadFailureDiagnostic(error) {
   };
 }
 
+// This is attached by the outer driver even if an exception occurs before the
+// first settlement poll. Only allowlisted source locations and fixed labels leave CI.
+export function retainedFailureDiagnostic(error) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  const status = /^Owned status read failed \((\d{3})\)$/.exec(message);
+  const source = /[\\/](receiver-retained\.mjs|installed-receiver\.mjs):([1-9]\d{0,4}):\d+/.exec(
+    typeof error?.stack === "string" ? error.stack : "",
+  );
+  const kind = status ? "owned_read_http"
+    : message === "The retained-result proof did not reach its bounded saved state" ? "settlement_wait_expired"
+      : message === "The retained attempt ended without a verified result" ? "terminal_without_verified_result"
+        : message === "Retained attempt local deadline exceeded" ? "local_deadline"
+          : message === "Installed receiver deadline exceeded" ? "work_deadline"
+            : message === "Session unavailable" ? "session_unavailable"
+              : error?.name === "TimeoutError" ? "timeout" : error?.name === "AbortError" ? "aborted"
+                : error?.name === "AssertionError" ? "assertion" : "other";
+  return {
+    schema_version: "bluefire.installed-retained-failure-diagnostic.v1",
+    kind,
+    http_status: status ? Number(status[1]) : null,
+    source: source ? source[1] : "other",
+    line: source ? Number(source[2]) : null,
+  };
+}
+
 // The rendered action must become ready before a response observer is armed.
 // Both local windows are inside the existing work budget, never its cleanup reserve.
 export async function submitRetainedAttempt(page, options) {

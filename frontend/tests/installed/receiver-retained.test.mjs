@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { URL } from "node:url";
-import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, retainedReadFailureDiagnostic, retainedSettlementDiagnostic, retainedSettlementPollBudget, submitRetainedAttempt } from "./receiver-retained.mjs";
+import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, retainedFailureDiagnostic, retainedReadFailureDiagnostic, retainedSettlementDiagnostic, retainedSettlementPollBudget, submitRetainedAttempt } from "./receiver-retained.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
 import { retainedHash, assertRetainedSource, assertMetadataOnly, verifyRetainedOriginal, verifyRetainedContinuation, RETAINED_PACK, RETAINED_QUESTION, RETAINED_REVIEWER, RETAINED_METHOD } from "./receiver-retained-proof.mjs";
 
@@ -89,6 +89,18 @@ test("retained read failure diagnostic exposes only the HTTP status or fixed fai
     schema_version: "bluefire.installed-retained-read-diagnostic.v1", outcome: "read_failed", kind: "other", http_status: null,
   });
   assert.equal(JSON.stringify(retainedReadFailureDiagnostic(new Error("secret local path"))).includes("secret"), false);
+});
+
+test("outer retained failure diagnosis survives an early throw without exposing stack paths", () => {
+  const error = new Error("private generated-record path");
+  error.stack = "Error: private generated-record path\n    at execute (file:///tmp/private/receiver-retained.mjs:330:17)";
+  assert.deepEqual(retainedFailureDiagnostic(error), {
+    schema_version: "bluefire.installed-retained-failure-diagnostic.v1", kind: "other",
+    http_status: null, source: "receiver-retained.mjs", line: 330,
+  });
+  assert.equal(JSON.stringify(retainedFailureDiagnostic(error)).includes("private"), false);
+  assert.equal(retainedFailureDiagnostic(new Error("The retained-result proof did not reach its bounded saved state")).kind, "settlement_wait_expired");
+  assert.equal(retainedFailureDiagnostic(new Error("Owned status read failed (503)")).http_status, 503);
 });
 
 test("retained submission observes visible enabled action before arming and clicks exactly once", async () => {

@@ -32,7 +32,7 @@ import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.m
 import { inspectReceiverKnowledge, receiverKnowledgeRequestAllowed } from "./receiver-knowledge.mjs";
 import { EVIDENCE_PURPOSE, EVIDENCE_PURPOSE_LABEL, authorizeReceiverEvidence, inspectReceiverEvidenceProposal, receiverEvidenceRequestAllowed } from "./receiver-evidence-proposal.mjs";
 import { RETAINED_PURPOSE, RETAINED_PURPOSE_LABEL } from "./receiver-retained-proof.mjs";
-import { retainedState, retainedReadAllowed, retainedPostAllowed, retainedResponse, authorizeRetainedPurpose, runRetainedJourney } from "./receiver-retained.mjs";
+import { retainedState, retainedReadAllowed, retainedPostAllowed, retainedResponse, retainedFailureDiagnostic, authorizeRetainedPurpose, runRetainedJourney } from "./receiver-retained.mjs";
 import { receiverPostDenialDiagnostic } from "./receiver-diagnostics.mjs";
 import {
   receiverPreparationDiagnostic,
@@ -2290,6 +2290,7 @@ try {
 } catch (error) {
   const errorType = ["AssertionError", "TimeoutError", "TypeError", "Error"].includes(error?.name) ? error.name : "other";
   const failure = { stage, kind: "journey_failed", error_type: errorType };
+  if (/^retained-(original|continuation)-/.test(stage)) failure.retained_failure = retainedFailureDiagnostic(error);
   if (/^retained-(original|continuation)-(readiness|click|response|settlement)$/.test(stage) && retainedInteraction) {
     failure.retained_interaction = retainedInteraction;
   }
