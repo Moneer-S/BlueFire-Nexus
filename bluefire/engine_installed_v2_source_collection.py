@@ -9,20 +9,23 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import threading
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from .engine_artifact_store import (
     _CONTROLLER_SOURCE_AUTHORITY,
     EngineArtifactPublicationBinding,
     EngineArtifactStore,
+    ReopenedEngineArtifactAttempt,
     SourceCollectionSeal,
     source_collection_tree_digest,
 )
 from .engine_installed_v2_authority import InstalledStrixV2ActivationReceipt
+from .strix_adapter import StrixRunSnapshot
 from .strix_workspace_export import (
     StrixWorkspaceExport,
     StrixWorkspaceExportUnknown,
@@ -43,10 +46,51 @@ class InstalledStrixV2SourceCollectionError(RuntimeError):
     """The exact source could not be verified and retained."""
 
 
+class _WorkerTerminalReader(Protocol):
+    @property
+    def cleanup_uncertain(self) -> bool: ...
+
+    @property
+    def workspace_fd(self) -> int: ...
+
+    @property
+    def qualified_document(self) -> Mapping[str, Any] | None: ...
+
+    def observed_document(self) -> Mapping[str, Any] | None: ...
+
+    def terminal_receipt(self) -> Mapping[str, Any] | None: ...
+
+
+class _TerminalJournal(Protocol):
+    @property
+    def source_identity_ref(self) -> str: ...
+
+    def retain_role_terminal(self, document: Mapping[str, Any]) -> str: ...
+
+    def reopen_role_terminal(self, source_receipt_ref: str) -> Mapping[str, Any]: ...
+
+    def reopen_latest_role_terminal(
+        self, attempt_id: str, role: str, owner_ref: str
+    ) -> Mapping[str, Any] | None: ...
+
+
 def _digest(value: object, label: str) -> str:
     if type(value) is not str or _DIGEST.fullmatch(value) is None:
         raise InstalledStrixV2SourceCollectionError(f"{label} is invalid")
     return value
+
+
+def _workspace_identity(workspace_fd: int) -> dict[str, int]:
+    details = os.fstat(workspace_fd)
+    if not stat.S_ISDIR(details.st_mode):
+        raise InstalledStrixV2SourceCollectionError("pinned workspace is not a directory")
+    return {
+        "device": details.st_dev,
+        "inode": details.st_ino,
+        "mode": stat.S_IMODE(details.st_mode),
+        "uid": details.st_uid,
+        "gid": details.st_gid,
+    }
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -122,6 +166,8 @@ class SourceCollectionTerminalReceipt:
             or terminal.get("qualified_receipt_ref") != qualified.get("receipt_ref")
             or terminal.get("resource_claim_ref") != self.claim_ref
             or terminal.get("plan_ref") != observed.get("plan_ref")
+            or terminal.get("reason") not in {"completed", "cancelled"}
+            or terminal.get("workspace_fd_transferred") is not True
             or terminal.get("workspace_ref") != observed.get("workspace_ref")
             or terminal.get("verified_absent") is not True
             or terminal.get("worker_reaped") is not True
@@ -151,7 +197,7 @@ class SourceCollectionTerminalReceipt:
             if (
                 terminal.get("reason") != "completed"
                 or type(exit_code) is not int
-                or exit_code == 0
+                or exit_code in {0, 2}
             ):
                 raise InstalledStrixV2SourceCollectionError("missing completed run is unknown")
         if self.receipt_ref != content_hash(self.document(include_receipt=False)):
@@ -187,6 +233,19 @@ class SourceCollectionTerminalReceipt:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class RetainedStrixV2SourceResult:
+    """Saved engine run and artifacts; target effects require separate evidence."""
+
+    snapshot: StrixRunSnapshot
+    artifacts: ReopenedEngineArtifactAttempt
+    export_manifest_ref: str
+
+    @property
+    def artifact_manifest_ref(self) -> str:
+        return self.artifacts.manifest_ref
+
+
 class InstalledStrixV2SourceCollection:
     """Publish only a verified stopped worker's bounded saved run."""
 
@@ -205,8 +264,8 @@ class InstalledStrixV2SourceCollection:
         expected_target: str,
         expected_instruction_sha256: str,
         artifact_store: EngineArtifactStore,
-        terminal_journal: object,
-        worker_controller: object | None,
+        terminal_journal: _TerminalJournal,
+        worker_controller: _WorkerTerminalReader | None,
     ) -> None:
         if type(attempt_id) is not str or _ATTEMPT.fullmatch(attempt_id) is None:
             raise InstalledStrixV2SourceCollectionError("source attempt is invalid")
@@ -224,7 +283,7 @@ class InstalledStrixV2SourceCollection:
             raise InstalledStrixV2SourceCollectionError("source activation is invalid")
         expected_prelaunch_binding = content_hash(
             {
-                "schema_version": "bluefire.installed-strix-v2-prelaunch-role-binding.v1",
+                "schema_version": "bluefire.installed-strix-v2-prelaunch-resource-binding.v1",
                 "prelaunch_ref": prelaunch_ref,
                 "role": _ROLE,
             }
@@ -255,6 +314,7 @@ class InstalledStrixV2SourceCollection:
                 raise InstalledStrixV2SourceCollectionError(
                     "source terminal journal is unavailable"
                 )
+        _digest(terminal_journal.source_identity_ref, "protected source journal")
         self.transaction_ref = transaction_ref
         self.attempt_id = attempt_id
         self.authority_ref = prelaunch_ref
@@ -278,6 +338,24 @@ class InstalledStrixV2SourceCollection:
     def cleanup_uncertain(self) -> bool:
         return self._cleanup_uncertain
 
+    @property
+    def source_identity_ref(self) -> str:
+        """Stable protected journal and exact resource identity for replay checks."""
+
+        return content_hash(
+            {
+                "schema_version": "bluefire.installed-strix-v2-source-owner-identity.v1",
+                "journal_source_identity_ref": _digest(
+                    self._terminal_journal.source_identity_ref, "protected source journal"
+                ),
+                "transaction_ref": self.transaction_ref,
+                "attempt_id": self.attempt_id,
+                "prelaunch_binding_ref": self.prelaunch_binding_ref,
+                "resource_ref": self.binding_ref,
+                "owner_ref": self.owner_ref,
+            }
+        )
+
     def _native_terminal(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], int]:
         worker = self._worker_controller
         if worker is None or getattr(worker, "cleanup_uncertain", True) is not False:
@@ -286,15 +364,50 @@ class InstalledStrixV2SourceCollection:
         qualified = worker.qualified_document
         terminal = worker.terminal_receipt()
         workspace_fd = worker.workspace_fd
-        if any(type(value) is not dict for value in (observed, qualified, terminal)):
+        if (
+            not isinstance(observed, dict)
+            or not isinstance(qualified, dict)
+            or not isinstance(terminal, dict)
+        ):
             raise InstalledStrixV2SourceCollectionError("native worker receipts are unavailable")
         if type(workspace_fd) is not int or workspace_fd < 0:
             raise InstalledStrixV2SourceCollectionError("pinned workspace is unavailable")
+        workspace_fact = _workspace_identity(workspace_fd)
         if (
-            terminal.get("attempt_id") != self.attempt_id
+            observed.get("schema_version") != "bluefire.strix-worker-runtime-observation.v1"
+            or observed.get("attempt_id") != self.attempt_id
+            or observed.get("workspace") != workspace_fact
+            or observed.get("workspace_ref") != content_hash(workspace_fact)
+            or observed.get("observation_ref")
+            != content_hash(
+                {key: value for key, value in observed.items() if key != "observation_ref"}
+            )
+            or qualified.get("receipt_ref")
+            != content_hash(
+                {key: value for key, value in qualified.items() if key != "receipt_ref"}
+            )
+            or terminal.get("receipt_ref")
+            != content_hash({key: value for key, value in terminal.items() if key != "receipt_ref"})
+            or qualified.get("native_observation_ref") != observed.get("observation_ref")
+            or qualified.get("attempt_id") != self.attempt_id
+            or qualified.get("resource_claim_ref") != self._activation.claim_ref
+            or qualified.get("plan_ref") != observed.get("plan_ref")
+            or terminal.get("schema_version") != "bluefire.strix-worker-runtime-terminal.v1"
+            or terminal.get("observation_ref") != observed.get("observation_ref")
+            or terminal.get("workspace_ref") != observed.get("workspace_ref")
+            or terminal.get("attempt_id") != self.attempt_id
             or terminal.get("resource_claim_ref") != self._activation.claim_ref
+            or terminal.get("plan_ref") != observed.get("plan_ref")
             or terminal.get("qualified_receipt_ref") != self._activation.fixed_exec_receipt_ref
             or qualified.get("receipt_ref") != self._activation.fixed_exec_receipt_ref
+            or terminal.get("reason") not in {"completed", "cancelled"}
+            or terminal.get("workspace_fd_transferred") is not True
+            or terminal.get("verified_absent") is not True
+            or terminal.get("worker_reaped") is not True
+            or terminal.get("cgroup_empty_and_removed") is not True
+            or terminal.get("endpoint_absent") is not True
+            or terminal.get("staging_root_absent") is not True
+            or terminal.get("identity_released") is not True
         ):
             raise InstalledStrixV2SourceCollectionError("native worker activation changed")
         return observed, qualified, terminal, workspace_fd
@@ -328,7 +441,7 @@ class InstalledStrixV2SourceCollection:
             return reopen_strix_workspace_export(**kwargs)
         presence = inspect_guest_strix_run_presence(workspace_fd)
         if presence == "no_run_record":
-            if reason == "completed" and exit_code == 0:
+            if reason == "completed" and exit_code in {0, 2}:
                 raise InstalledStrixV2SourceCollectionError("completed worker has no saved run")
             return None
         duplicate = os.dup(workspace_fd)
@@ -336,6 +449,25 @@ class InstalledStrixV2SourceCollection:
             return export_strix_workspace_run(workspace_fd=duplicate, **kwargs)
         finally:
             os.close(duplicate)
+
+    def _publication_binding(
+        self, exported: StrixWorkspaceExport, terminal: Mapping[str, Any]
+    ) -> EngineArtifactPublicationBinding:
+        return EngineArtifactPublicationBinding(
+            attempt_id=self.attempt_id,
+            binding_digest=self._binding_digest,
+            delegation_digest=self._delegation_digest,
+            launch_digest=self._activation.controlled_launch_digest,
+            runtime_resolution_ref=self._activation.runtime_resolution_ref,
+            execution_claim_ref=self._activation.claim_ref,
+            worker_outcome_digest=content_hash(
+                {
+                    "schema_version": "bluefire.installed-strix-v2-worker-outcome.v1",
+                    "terminal_ref": terminal["receipt_ref"],
+                    "run_snapshot": exported.snapshot.to_dict(),
+                }
+            ),
+        )
 
     def _publish(self, exported: StrixWorkspaceExport, terminal: dict[str, Any]):
         source = exported.source_run_dir
@@ -368,21 +500,7 @@ class InstalledStrixV2SourceCollection:
             },
             _controller_authority=_CONTROLLER_SOURCE_AUTHORITY,
         )
-        binding = EngineArtifactPublicationBinding(
-            attempt_id=self.attempt_id,
-            binding_digest=self._binding_digest,
-            delegation_digest=self._delegation_digest,
-            launch_digest=self._activation.controlled_launch_digest,
-            runtime_resolution_ref=self._activation.runtime_resolution_ref,
-            execution_claim_ref=self._activation.claim_ref,
-            worker_outcome_digest=content_hash(
-                {
-                    "schema_version": "bluefire.installed-strix-v2-worker-outcome.v1",
-                    "terminal_ref": terminal["receipt_ref"],
-                    "run_snapshot": exported.snapshot.to_dict(),
-                }
-            ),
-        )
+        binding = self._publication_binding(exported, terminal)
         published = self._artifact_store.import_or_reopen(
             attempt_id=self.attempt_id,
             source_run_dir=source,
@@ -390,19 +508,24 @@ class InstalledStrixV2SourceCollection:
             allowed_names=exported.selected_names,
             publication_binding=binding,
         )
-        if not published.recovery_eligible or published.artifact_publication_ref is None:
+        if (
+            not published.recovery_eligible
+            or published.artifact_publication_ref is None
+            or published.publication_binding != binding
+            or tuple(item.name for item in published.artifacts) != exported.selected_names
+        ):
             raise InstalledStrixV2SourceCollectionError("source publication was not retained")
         return published, content_hash(seal.to_dict())
 
     def seal_and_observe(self) -> SourceCollectionTerminalReceipt:
         with self._lock:
-            if self._terminal is not None:
-                reopened = self.reopen_terminal()
-                if reopened is None:
-                    raise InstalledStrixV2SourceCollectionError(
-                        "retained source terminal disappeared"
-                    )
+            reopened = self.reopen_terminal()
+            if reopened is not None:
+                self._terminal = reopened
+                self._cleanup_uncertain = False
                 return reopened
+            if self._terminal is not None:
+                raise InstalledStrixV2SourceCollectionError("retained source terminal disappeared")
             try:
                 observed, qualified, terminal, workspace_fd = self._native_terminal()
                 exported = self._export(observed, terminal, workspace_fd)
@@ -485,6 +608,9 @@ class InstalledStrixV2SourceCollection:
                 exported.manifest_ref != receipt.export_manifest_ref
                 or published.artifact_publication_ref != receipt.artifact_publication_ref
                 or published.source_collection_seal_ref != receipt.source_seal_ref
+                or published.publication_binding
+                != self._publication_binding(exported, receipt.native_terminal)
+                or tuple(item.name for item in published.artifacts) != exported.selected_names
             ):
                 raise InstalledStrixV2SourceCollectionError("source publication changed")
         elif (
@@ -506,6 +632,69 @@ class InstalledStrixV2SourceCollection:
             ref = _digest(row.get("receipt_ref"), "source terminal reference")
             return self._reopen_by_ref(ref)
 
+    def reopen_source_receipt(self, source_receipt_ref: str) -> SourceCollectionTerminalReceipt:
+        """Reopen a specific durable source receipt for ProductStore verification."""
+
+        with self._lock:
+            return self._reopen_by_ref(_digest(source_receipt_ref, "source terminal reference"))
+
+    def reopen_artifact_attempt(self) -> ReopenedEngineArtifactAttempt | None:
+        """Return the exact saved artifact manifest after terminal source validation.
+
+        Saved engine files are engine evidence, not independent target observations
+        or proof that the objective was reached.
+        """
+
+        with self._lock:
+            terminal = self.reopen_terminal()
+            if terminal is None:
+                raise InstalledStrixV2SourceCollectionError("source terminal is unavailable")
+            if terminal.state == "verified_absent":
+                return None
+            published = self._artifact_store.reopen_attempt(self.attempt_id)
+            if (
+                published.recovery_eligible is not True
+                or published.attempt_id != self.attempt_id
+                or published.artifact_publication_ref != terminal.artifact_publication_ref
+                or published.source_collection_seal_ref != terminal.source_seal_ref
+            ):
+                raise InstalledStrixV2SourceCollectionError("source artifact manifest changed")
+            _digest(published.manifest_ref, "source artifact manifest")
+            return published
+
+    def retained_result(self) -> RetainedStrixV2SourceResult | None:
+        """Reopen the saved Strix classification without claiming a target outcome."""
+
+        with self._lock:
+            terminal = self.reopen_terminal()
+            if terminal is None:
+                raise InstalledStrixV2SourceCollectionError("source terminal is unavailable")
+            if terminal.state == "verified_absent":
+                return None
+            exported = reopen_strix_workspace_export(
+                attempt_id=self.attempt_id,
+                host_attempt_directory=self._host_attempt_directory,
+                native_observed=dict(terminal.native_observed),
+                worker_terminal_ref=terminal.native_terminal["receipt_ref"],
+                expected_target=self._expected_target,
+                expected_instruction_sha256=self._expected_instruction_sha256,
+                process_exit_code=terminal.native_terminal.get("exit_code"),
+                cancellation_requested=terminal.native_terminal.get("reason") == "cancelled",
+                cessation_verified=True,
+            )
+            artifacts = self.reopen_artifact_attempt()
+            if artifacts is None or exported.manifest_ref != terminal.export_manifest_ref:
+                raise InstalledStrixV2SourceCollectionError("saved Strix source changed")
+            return RetainedStrixV2SourceResult(
+                snapshot=exported.snapshot,
+                artifacts=artifacts,
+                export_manifest_ref=exported.manifest_ref,
+            )
+
+    def reopen_run_snapshot(self) -> StrixRunSnapshot | None:
+        result = self.retained_result()
+        return None if result is None else result.snapshot
+
     def close(self) -> None:
         self.seal_and_observe()
 
@@ -513,5 +702,6 @@ class InstalledStrixV2SourceCollection:
 __all__ = [
     "InstalledStrixV2SourceCollection",
     "InstalledStrixV2SourceCollectionError",
+    "RetainedStrixV2SourceResult",
     "SourceCollectionTerminalReceipt",
 ]
