@@ -678,6 +678,13 @@ class InstalledEngineComposition:
             elif store is not owners[0] or run_store is not owners[1] or jobs is not owners[2]:
                 raise InstalledEngineCompositionError("composition belongs to another service")
             if self._controller_jobs is None:
+                # The attempt factory is constructed before the service owns its
+                # RunStore. Bind that exact store once, before any attempt can be
+                # dispatched, so the installed runtime can finalize observations
+                # in the same run history the service presents.
+                bind_run_store = getattr(self.adapters.attempts, "bind_run_store", None)
+                if callable(bind_run_store):
+                    bind_run_store(run_store)
                 factory = self.adapters.controller_job_adapter_factory
                 if factory is None:
                     defense_executor = self.adapters.defense_executor

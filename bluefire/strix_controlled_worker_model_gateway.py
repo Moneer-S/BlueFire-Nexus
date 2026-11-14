@@ -9,6 +9,7 @@ and stable process-custody identity before releasing the bearer once.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable, Protocol
 
 from . import strix_adapter as adapter
@@ -259,30 +260,52 @@ class InstalledStrixV2ModelGatewayLease:
             self._state = "claimed"
             return token
 
-    def revoke(self) -> None:
+    def revoke(self, *, timeout_seconds: float = 2.0) -> None:
+        if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 30:
+            raise _refuse()
+        deadline = time.monotonic() + timeout_seconds
         with self._condition:
             while self._state == "revoking":
-                self._condition.wait()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._cleanup_uncertain = True
+                    raise _refuse()
+                self._condition.wait(remaining)
             if self._state == "revoked":
                 return
             self._state = "revoking"
+        begin_bound = getattr(self._lease, "begin_bounded_revocation", None)
+        end_bound = getattr(self._lease, "end_bounded_revocation", None)
+        if callable(begin_bound):
+            try:
+                begin_bound(deadline)
+            except Exception:
+                with self._condition:
+                    self._state = "uncertain"
+                    self._cleanup_uncertain = True
+                    self._condition.notify_all()
+                raise _refuse() from None
         receipt: object = None
-        if not self._reconcile_required:
-            try:
-                receipt = self._lease.revoke()
-            except Exception:
+        try:
+            if not self._reconcile_required:
+                try:
+                    receipt = self._lease.revoke()
+                except Exception:
+                    self._reconcile_required = True
+            if self._reconcile_required:
+                try:
+                    receipt = self._reconcile_revocation()
+                except Exception:
+                    receipt = None
+            elif type(receipt) is not str or adapter._SHA256.fullmatch(receipt) is None:
                 self._reconcile_required = True
-        if self._reconcile_required:
-            try:
-                receipt = self._reconcile_revocation()
-            except Exception:
-                receipt = None
-        elif type(receipt) is not str or adapter._SHA256.fullmatch(receipt) is None:
-            self._reconcile_required = True
-            try:
-                receipt = self._reconcile_revocation()
-            except Exception:
-                receipt = None
+                try:
+                    receipt = self._reconcile_revocation()
+                except Exception:
+                    receipt = None
+        finally:
+            if callable(end_bound):
+                end_bound()
         if type(receipt) is not str or adapter._SHA256.fullmatch(receipt) is None:
             with self._condition:
                 self._state = "uncertain"
@@ -295,10 +318,10 @@ class InstalledStrixV2ModelGatewayLease:
             self._cleanup_uncertain = False
             self._condition.notify_all()
 
-    def close(self) -> None:
+    def close(self, *, timeout_seconds: float = 2.0) -> None:
         with self._condition:
             self._closed = True
-        self.revoke()
+        self.revoke(timeout_seconds=timeout_seconds)
 
 
 __all__ = [

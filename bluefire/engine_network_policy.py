@@ -9,6 +9,7 @@ fixed probe results for validation here.
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -42,7 +43,7 @@ class VerificationState(str, Enum):
 
 _ATTEMPT_ID = re.compile(r"^engine-attempt-[0-9a-f]{32}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-_SERVICE_NAME = re.compile(r"^bf-(?:target|model)-[0-9a-f]{12}$")
+_SERVICE_NAME = re.compile(r"^bf-(?:target|model)-(?:[0-9a-f]{12}|[0-9a-f]{32})$")
 _NETWORK_NAME = re.compile(r"^bf-engine-[0-9a-f]{12}$")
 _NETWORK_ID_V2 = re.compile(r"^[0-9a-f]{64}$")
 _RFC1918: tuple[ipaddress.IPv4Network, ...] = tuple(
@@ -374,6 +375,14 @@ class EngineNetworkPlanV2:
             schema_version="bluefire.engine-network-plan.v2",
             network_name=f"bluefire-engine-{self.attempt_id.removeprefix('engine-attempt-')}",
             network_id=self.network_id,
+            target={
+                **base.target.to_dict(),
+                "service_name": f"bf-target-{self.attempt_id.removeprefix('engine-attempt-')}",
+            },
+            model_gateway={
+                **base.model_gateway.to_dict(),
+                "service_name": f"bf-model-{self.attempt_id.removeprefix('engine-attempt-')}",
+            },
             internal=True,
             attach_additional_networks=False,
         )
@@ -413,8 +422,20 @@ class EngineNetworkPlanV2:
             network_id=network_id,
             network_identity_ref=base.network_identity_ref,
             subnet=base.subnet,
-            target=base.target,
-            model_gateway=base.model_gateway,
+            target=BoundNetworkEndpoint(
+                role=EndpointRole.TARGET,
+                service_name=f"bf-target-{base.attempt_id.removeprefix('engine-attempt-')}",
+                address=base.target.address,
+                port=base.target.port,
+                path=base.target.path,
+            ),
+            model_gateway=BoundNetworkEndpoint(
+                role=EndpointRole.MODEL_GATEWAY,
+                service_name=f"bf-model-{base.attempt_id.removeprefix('engine-attempt-')}",
+                address=base.model_gateway.address,
+                port=base.model_gateway.port,
+                path=base.model_gateway.path,
+            ),
             host_gateway_address=base.host_gateway_address,
             controller_address=base.controller_address,
             daemon_address=base.daemon_address,
@@ -505,6 +526,105 @@ class EngineNetworkPlanV2:
             ) from exc
         if not matches:
             raise EngineNetworkPolicyError("v2 image runtime network does not bind the plan")
+
+
+def _historical_v2_network(value: Any) -> dict[str, Any]:
+    """Validate old V2 bytes without making them a current execution plan."""
+
+    row = _exact(value, frozenset(EngineNetworkPlanV2.__dataclass_fields__), "historical v2 plan")
+    target = BoundNetworkEndpoint.from_mapping(row["target"])
+    model = BoundNetworkEndpoint.from_mapping(row["model_gateway"])
+    current = EngineNetworkPlanV2.create(
+        attempt_id=_text(row["attempt_id"], "engine attempt ID", maximum=47),
+        network_id=row["network_id"],
+        network_identity_ref=row["network_identity_ref"],
+        subnet=row["subnet"],
+        target_address=target.address,
+        model_gateway_address=model.address,
+        host_gateway_address=row["host_gateway_address"],
+        created_at=row["created_at"],
+    )
+    expected = current.to_dict()
+    suffix = current.attempt_id[-12:]
+    expected["target"]["service_name"] = f"bf-target-{suffix}"
+    expected["model_gateway"]["service_name"] = f"bf-model-{suffix}"
+    try:
+        matches = canonical_json_bytes(value) == canonical_json_bytes(expected)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise EngineNetworkPolicyError("historical v2 plan is not canonical JSON") from exc
+    if not matches:
+        raise EngineNetworkPolicyError("historical v2 plan changed")
+    return expected
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class HistoricalEngineNetworkPlanV2:
+    """Read-only decoder for suffix-named V2 rows retained before full names.
+
+    This type has no runtime-plan constructor. New V2 execution must use
+    ``EngineNetworkPlanV2`` and cannot pass this historical value as authority.
+    """
+
+    canonical_bytes: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.canonical_bytes) is not bytes or not self.canonical_bytes:
+            raise EngineNetworkPolicyError("historical v2 network bytes are invalid")
+        try:
+            decoded = json.loads(self.canonical_bytes.decode("utf-8"))
+            checked = _historical_v2_network(decoded)
+        except (UnicodeError, ValueError, TypeError, OverflowError) as exc:
+            raise EngineNetworkPolicyError("historical v2 network is invalid") from exc
+        if self.canonical_bytes != canonical_json_bytes(checked):
+            raise EngineNetworkPolicyError("historical v2 network bytes changed")
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "HistoricalEngineNetworkPlanV2":
+        return cls(canonical_json_bytes(_historical_v2_network(value)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return json.loads(self.canonical_bytes.decode("utf-8"))
+
+    @property
+    def attempt_id(self) -> str:
+        return str(self.to_dict()["attempt_id"])
+
+    @property
+    def network_id(self) -> str:
+        return str(self.to_dict()["network_id"])
+
+    @property
+    def network_name(self) -> str:
+        return str(self.to_dict()["network_name"])
+
+    @property
+    def target(self) -> BoundNetworkEndpoint:
+        return BoundNetworkEndpoint.from_mapping(self.to_dict()["target"])
+
+    @property
+    def model_gateway(self) -> BoundNetworkEndpoint:
+        return BoundNetworkEndpoint.from_mapping(self.to_dict()["model_gateway"])
+
+    @property
+    def policy_digest(self) -> str:
+        return content_hash(self.to_dict())
+
+    @property
+    def runtime_profile_network(self) -> dict[str, Any]:
+        row = self.to_dict()
+        return {
+            "id": row["network_id"],
+            "name": row["network_name"],
+            "policy_digest": self.policy_digest,
+            "internal": True,
+            "attach_additional_networks": False,
+        }
+
+    def validate_runtime_profile_network(self, value: Any) -> None:
+        expected = self.runtime_profile_network
+        _exact(value, frozenset(expected), "historical v2 image network")
+        if canonical_json_bytes(value) != canonical_json_bytes(expected):
+            raise EngineNetworkPolicyError("historical v2 image network changed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -980,7 +1100,9 @@ def verify_effective_network(
     state = (
         VerificationState.MISMATCH
         if mismatches
-        else VerificationState.UNKNOWN if limitations else VerificationState.VERIFIED
+        else VerificationState.UNKNOWN
+        if limitations
+        else VerificationState.VERIFIED
     )
     details = tuple(sorted(set(mismatches + limitations)))
     return EngineNetworkVerification(

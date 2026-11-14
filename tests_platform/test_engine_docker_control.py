@@ -27,7 +27,11 @@ from bluefire.engine_docker_control import (
     authorize_docker_api_request,
     validate_docker_container_namespace_proof,
 )
-from bluefire.engine_network_policy import EngineNetworkPlan, EngineNetworkPlanV2
+from bluefire.engine_network_policy import (
+    EngineNetworkPlan,
+    EngineNetworkPlanV2,
+    HistoricalEngineNetworkPlanV2,
+)
 from bluefire.strix_adapter import StrixBuildIdentity
 from bluefire.strix_controlled_execution_identity import StrixControlledExecutionIdentityV2
 from bluefire.strix_image_contract import (
@@ -211,6 +215,7 @@ def v2_policy_inputs(
     child: str | None = None,
     config: str | None = None,
     receipt: str | None = None,
+    legacy_service_names: bool = False,
 ) -> dict[str, Any]:
     """Synthetic V2 declarations; the fake verifiers are tests, not real proofs."""
 
@@ -231,6 +236,12 @@ def v2_policy_inputs(
         host_gateway_address="172.28.40.1",
         created_at=NOW,
     )
+    if legacy_service_names:
+        historical = v2_network.to_dict()
+        suffix = identity_row["attempt_id"][-12:]
+        historical["target"]["service_name"] = f"bf-target-{suffix}"
+        historical["model_gateway"]["service_name"] = f"bf-model-{suffix}"
+        v2_network = HistoricalEngineNetworkPlanV2.from_mapping(historical)
     preliminary_contract = _public_image_contract(identity_row)
     contract_row = preliminary_contract.to_dict()
     contract_row["runtime_profile"] = proposed_image_runtime_profile(
@@ -506,6 +517,9 @@ def test_v2_policy_binds_index_child_config_receipt_and_create_identity() -> Non
     contract = inputs["image_contract"]
     decision = inputs["image_admission_decision"]
     assert row["schema_version"] == "bluefire.engine-docker-api-policy.v2"
+    assert item.container_name == (
+        "strix-sandbox-" + item.attempt_id.removeprefix("engine-attempt-")
+    )
     assert row["image_reference"] == identity.to_dict()["derived_image_reference"]
     assert row["runtime_platform"] == V2_RUNTIME_PLATFORM
     assert (

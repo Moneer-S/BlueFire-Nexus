@@ -12,6 +12,7 @@ this pure channel does not claim to implement restart recovery.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -1374,13 +1375,38 @@ class ControllerChannel(_Channel):
             raise
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class ControllerSettledCall:
+    """One controller-validated response, before delivery to the guest.
+
+    The request, receipt, and frame may contain private material. A trusted
+    sink can derive bounded metadata and reopen lower custody evidence; this
+    value is never a standalone execution proof or a product response.
+    """
+
+    binding: ControlledWorkerBinding
+    method: str
+    request_id: str
+    request: Any
+    receipt: Any
+    response_frame: bytes
+    responded_ns: int
+
+
 class ControllerDispatcher:
     """Literal dispatch to the controller's fifteen typed methods, without I/O."""
 
     def __init__(
-        self, channel: ControllerChannel, transport: backend.ControlledControllerTransport
+        self,
+        channel: ControllerChannel,
+        transport: backend.ControlledControllerTransport,
+        *,
+        settled_call_sink: Callable[[ControllerSettledCall], Awaitable[None]] | None = None,
     ) -> None:
         self.channel = channel
+        if settled_call_sink is not None and not callable(settled_call_sink):
+            raise _refuse()
+        self._settled_call_sink = settled_call_sink
         self._calls: Mapping[str, Callable[[Any], Awaitable[Any]]] = MappingProxyType(
             {
                 "create_exact": transport.create_exact,
@@ -1422,11 +1448,43 @@ class ControllerDispatcher:
     ) -> bytes:
         try:
             receipt = await self._calls[method](request)
-            return self.channel.response(
+            responded_ns = time.monotonic_ns() if replied_ns is None else replied_ns
+            response = self.channel.response(
                 request_id,
                 receipt,
-                now_ns=time.monotonic_ns() if replied_ns is None else replied_ns,
+                now_ns=responded_ns,
             )
+            if self._settled_call_sink is not None:
+                # The controller owns this sink. Publication must finish before
+                # the guest sees a successful response. A failed publication
+                # poisons the channel and leaves the effect for exact recovery.
+                publication = self._settled_call_sink(
+                    ControllerSettledCall(
+                        binding=self.channel.binding,
+                        method=method,
+                        request_id=request_id,
+                        request=request,
+                        receipt=receipt,
+                        response_frame=response,
+                        responded_ns=responded_ns,
+                    )
+                )
+                if not hasattr(publication, "__await__"):
+                    raise _refuse()
+                if replied_ns is None:
+                    # This is a controller-owned asynchronous publication. A
+                    # blocking journal call must run outside the RPC event loop.
+                    # Timeout leaves the effect ambiguous for exact recovery;
+                    # it never releases a successful guest response.
+                    remaining = (self.channel.binding.deadline_ns - time.monotonic_ns()) / 1e9
+                    if remaining <= 0:
+                        if hasattr(publication, "close"):
+                            publication.close()  # type: ignore[attr-defined]
+                        raise _refuse()
+                    await asyncio.wait_for(publication, min(remaining, 5.0))
+                else:
+                    await publication
+            return response
         except BaseException:
             self.channel.abandon()
         # Outside the handler, so a caller cannot inspect the original error's

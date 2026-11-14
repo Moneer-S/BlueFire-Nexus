@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields, replace
@@ -594,6 +595,39 @@ def test_revocation_scope_then_idempotent_drain_without_stopping_lab() -> None:
         h.forwarder.forward(h.request)
     assert error.value.code == "revoked"
     assert h.generation.stopped is False
+
+
+def test_bounded_revoke_marks_active_provider_call_unknown_without_stalling_cleanup() -> None:
+    h = Harness()
+    h.transport.block = True
+    finished = threading.Event()
+
+    def forward() -> None:
+        try:
+            h.forwarder.forward(h.request)
+        except (EngineRelayError, ProtectedUpstreamUnknown):
+            pass
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=forward)
+    worker.start()
+    try:
+        assert h.transport.entered.wait(2)
+        started = time.monotonic()
+        pending = h.forwarder.revoke_bounded(
+            ATTEMPT, h.binding.policy.authorization_ref, timeout_seconds=0.05
+        )
+        assert pending.verified is False
+        assert time.monotonic() - started < 0.5
+    finally:
+        h.transport.release.set()
+        worker.join(timeout=2)
+    assert finished.is_set()
+    terminal = h.forwarder.revoke_bounded(
+        ATTEMPT, h.binding.policy.authorization_ref, timeout_seconds=0.5
+    )
+    assert terminal.verified is True
 
 
 @pytest.mark.parametrize("lifecycle", ["restart", "cleanup"])

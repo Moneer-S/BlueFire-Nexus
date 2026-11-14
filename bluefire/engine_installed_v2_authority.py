@@ -16,7 +16,7 @@ from .engine_installed_attempt_factory import (
     INSTALLED_STRIX_EXECUTION_RESOURCE_ROLES,
     InstalledControlledStrixRuntimeIdentity,
 )
-from .engine_network_policy import EngineNetworkPlanV2
+from .engine_network_policy import EngineNetworkPlanV2, HistoricalEngineNetworkPlanV2
 from .strix_controlled_runtime_admission import (
     StrixControlledLaunchPlanV2,
     StrixControlledRuntimeAdmissionV2,
@@ -475,11 +475,16 @@ def _validate_admission_semantics(
     *,
     binding: EngineAttemptBinding,
     delegation: EngineCapabilityDelegation,
+    historical_legacy: bool = False,
 ) -> None:
     """Bind declared authority to admission meaning, not only opaque digests."""
 
     try:
-        network = EngineNetworkPlanV2.from_mapping(row["network_plan"])
+        network = (
+            HistoricalEngineNetworkPlanV2.from_mapping(row["network_plan"])
+            if historical_legacy
+            else EngineNetworkPlanV2.from_mapping(row["network_plan"])
+        )
         custody = ContainerCustodyPlanV2.from_mapping(row["custody_plan"])
         build = row["execution_identity"]["startup_build_identity"]
         scope = row["scope"]
@@ -724,6 +729,12 @@ class InstalledStrixV2AuthorityGuard:
         self._admission_ref: str | None = None
         self._snapshot_ref: str | None = None
         self._lock = threading.Lock()
+
+    def require_product_store(self, product_store: ProductStore) -> None:
+        if product_store is not self._store:
+            raise InstalledStrixV2CompositionError(
+                "V2 authority guard belongs to a different ProductStore"
+            )
 
     @property
     def authority_ref(self) -> str:

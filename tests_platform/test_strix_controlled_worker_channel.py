@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 from dataclasses import replace
 from typing import Any, Awaitable, TypeVar, cast
 
@@ -269,6 +271,83 @@ def test_literal_dispatcher_uses_original_handle_and_sanitizes_effect_error() ->
     assert "SENSITIVE_EXCEPTION_TEXT" not in str(failure.value)
     assert failure.value.__context__ is None
     assert not controller.usable
+
+
+def test_settled_call_is_offered_to_controller_before_guest_response() -> None:
+    worker, controller, transport = _pair()
+    handle = _create(worker, controller, transport)
+    seen: list[channel.ControllerSettledCall] = []
+
+    async def retain(call: channel.ControllerSettledCall) -> None:
+        seen.append(call)
+
+    dispatcher = channel.ControllerDispatcher(
+        controller, transport, settled_call_sink=retain
+    )
+    request = _request("exec_exact", worker.profile, handle)
+    frame = worker.request("exec_exact", request, request_id="2" * 32, now_ns=200)
+    response = _complete(dispatcher.dispatch(frame, received_ns=200, replied_ns=201))
+    assert len(seen) == 1
+    call = seen[0]
+    assert call.binding == controller.binding
+    assert (call.method, call.request_id, call.responded_ns) == (
+        "exec_exact", "2" * 32, 201
+    )
+    assert call.request == request
+    assert type(call.receipt) is backend.ControlledExecReceipt
+    assert call.response_frame == response
+    assert worker.response(response, now_ns=201)[2].stdout == b"stdout"
+
+
+def test_failed_controller_retention_poisoned_without_guest_receipt() -> None:
+    worker, controller, transport = _pair()
+    handle = _create(worker, controller, transport)
+
+    async def fail(_call: channel.ControllerSettledCall) -> None:
+        raise RuntimeError("SENSITIVE_JOURNAL_FAILURE")
+
+    dispatcher = channel.ControllerDispatcher(
+        controller, transport, settled_call_sink=fail
+    )
+    request = _request("exec_exact", worker.profile, handle)
+    frame = worker.request("exec_exact", request, request_id="2" * 32, now_ns=200)
+    with pytest.raises(channel.ControlledWorkerChannelError) as failure:
+        _complete(dispatcher.dispatch(frame, received_ns=200, replied_ns=201))
+    assert "SENSITIVE_JOURNAL_FAILURE" not in str(failure.value)
+    assert failure.value.__context__ is None
+    assert not controller.usable
+    assert worker.pending_count == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows event loop requires a blocked socketpair here")
+def test_guest_response_waits_for_asynchronous_controller_retention() -> None:
+    worker, controller, transport = _pair()
+    handle = _create(worker, controller, transport)
+    request = _request("exec_exact", worker.profile, handle)
+    frame = worker.request("exec_exact", request, request_id="2" * 32, now_ns=200)
+
+    async def check() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def retain(_call: channel.ControllerSettledCall) -> None:
+            entered.set()
+            await release.wait()
+
+        dispatcher = channel.ControllerDispatcher(
+            controller, transport, settled_call_sink=retain
+        )
+        task = asyncio.create_task(
+            dispatcher.dispatch(frame, received_ns=200, replied_ns=201)
+        )
+        await asyncio.wait_for(entered.wait(), 1.0)
+        assert not task.done()
+        assert worker.pending_count == 1
+        release.set()
+        response = await task
+        assert worker.response(response, now_ns=201)[2].stdout == b"stdout"
+
+    asyncio.run(check())
 
 
 @pytest.mark.parametrize(

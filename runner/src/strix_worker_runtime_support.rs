@@ -112,6 +112,35 @@ fn digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
+/// The prepared v2 closure hashes Python's ensure_ascii JSON document, including
+/// its terminal newline. Keep this local to the inventory: IPC and native
+/// manifest identities use BlueFire's ordinary canonical JSON instead.
+fn prepared_inventory_bytes(value: &Value) -> Vec<u8> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let canonical = canonical_json(value);
+    let mut output = Vec::with_capacity(canonical.len() + 1);
+    for scalar in canonical.chars() {
+        if scalar.is_ascii() {
+            output.push(scalar as u8);
+        } else {
+            let mut units = [0_u16; 2];
+            for unit in scalar.encode_utf16(&mut units).iter().copied() {
+                output.extend_from_slice(b"\\u");
+                for shift in [12, 8, 4, 0] {
+                    output.push(HEX[((unit >> shift) & 0xf) as usize]);
+                }
+            }
+        }
+    }
+    output.push(b'\n');
+    output
+}
+
+fn inventory_digest_matches(value: &Value, expected: &str) -> bool {
+    digest(&prepared_inventory_bytes(value)) == expected
+        || digest(canonical_json(value).as_bytes()) == expected
+}
+
 fn valid_digest(value: &str) -> bool {
     value.len() == 71
         && value.starts_with("sha256:")
@@ -319,7 +348,10 @@ pub(crate) fn materialize_closure(
         "files": manifest.files,
         "total_bytes": total_bytes,
     });
-    require(digest(canonical_json(&inventory).as_bytes()) == expected_inventory_digest)
+    require(inventory_digest_matches(
+        &inventory,
+        expected_inventory_digest,
+    ))
 }
 
 pub(crate) fn seal_closure_root(root: &Path) -> Result<(), String> {
@@ -767,4 +799,42 @@ pub(crate) fn await_two_phase(
     let mut extra = [0_u8; 1];
     require(unsafe { libc::recv(channel, extra.as_mut_ptr().cast(), 1, 0) } == 0)?;
     Ok(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepared_inventory_digest_matches_python_unicode_document() {
+        // Fixed vectors from tools.strix_runtime_closure_common._document_bytes
+        // and the legacy content_hash serializer, not values calculated by Rust.
+        let inventory = json!({
+            "schema_version": "bluefire.strix-linux-runtime-inventory.v1",
+            "directories": [{"path": "runtime", "mode": 365}],
+            "files": [{
+                "path": "runtime/café-🧪.py",
+                "mode": 292,
+                "size": 3,
+                "content_digest": format!("sha256:{}", "0".repeat(64)),
+            }],
+            "total_bytes": 3,
+        });
+        let prepared = prepared_inventory_bytes(&inventory);
+        assert!(prepared.is_ascii());
+        assert!(prepared.ends_with(b"\n"));
+        assert!(String::from_utf8(prepared.clone())
+            .unwrap()
+            .contains(r"caf\u00e9-\ud83e\uddea.py"));
+        let v2 = "sha256:4e5b052c3d73e73e2f2bc5c2989476092773bff98ead02e710c10ef26c604f6b";
+        let v1 = "sha256:f3e147c5893c81f645fc5091bbdc69434aa6de4e59143d0e3641a614112b6262";
+        assert_eq!(digest(&prepared), v2);
+        assert_eq!(digest(canonical_json(&inventory).as_bytes()), v1);
+        assert!(inventory_digest_matches(&inventory, v2));
+        assert!(inventory_digest_matches(&inventory, v1));
+        assert!(!inventory_digest_matches(
+            &inventory,
+            &format!("sha256:{}", "f".repeat(64)),
+        ));
+    }
 }

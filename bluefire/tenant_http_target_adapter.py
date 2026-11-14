@@ -382,6 +382,7 @@ class TenantRecordHttpTargetAdapterV2(TenantRecordLauncherTargetAdapter):
                     "target_request_id": target_request_id,
                     "generation_digest": request.expected_generation.digest,
                     "target_snapshot_ref": request.target_snapshot_ref,
+                    "request_target": fixed.target,
                     "audit_row_digest": row.digest,
                     "audit_binding_digest": binding.digest,
                     "audit_retention_ref": retention_ref,
@@ -401,4 +402,5 @@ class TenantRecordHttpTargetAdapterV2(TenantRecordLauncherTargetAdapter):
                 audit_retention_ref=retention_ref,
                 target_observation_ref=observation_ref,
                 protected_secret_absent=True,
+                request_target=fixed.target,
             )

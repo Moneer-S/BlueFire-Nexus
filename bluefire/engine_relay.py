@@ -8,18 +8,21 @@ never receive an upstream URL or a durable target/provider credential.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import math
 import re
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
+from urllib.parse import quote_from_bytes, unquote_to_bytes
 
-from .engine_network_policy import EngineNetworkPlan
+from .engine_network_policy import EngineNetworkPlan, EngineNetworkPlanV2
 from .tenant_record_service import TenantResponse
 from .util import canonical_json_bytes, content_hash, parse_iso8601_datetime
 
@@ -631,8 +634,12 @@ class TargetRelayPolicy:
             (self.network_policy_digest, "target relay network policy"),
         ):
             _require_digest(value, label)
-        expected_authority = f"bf-target-{self.attempt_id[-12:]}:8080"
-        if self.relay_authority != expected_authority:
+        suffix = self.attempt_id.removeprefix("engine-attempt-")
+        expected_authorities = {
+            f"bf-target-{suffix[-12:]}:8080",
+            f"bf-target-{suffix}:8080",
+        }
+        if self.relay_authority not in expected_authorities:
             raise ValueError("target relay authority is not bound to the attempt")
         if (
             not self.admitted_routes
@@ -670,7 +677,7 @@ class TargetRelayPolicy:
     @classmethod
     def from_network_plan(
         cls,
-        plan: EngineNetworkPlan,
+        plan: EngineNetworkPlan | EngineNetworkPlanV2,
         **values: Any,
     ) -> "TargetRelayPolicy":
         return cls(
@@ -762,8 +769,12 @@ class ModelGatewayPolicy:
             _require_digest(value, label)
         if _MODEL_ID.fullmatch(self.model_id) is None:
             raise ValueError("model gateway model identity is invalid")
-        expected_authority = f"bf-model-{self.attempt_id[-12:]}:8081"
-        if self.gateway_authority != expected_authority:
+        suffix = self.attempt_id.removeprefix("engine-attempt-")
+        expected_authorities = {
+            f"bf-model-{suffix[-12:]}:8081",
+            f"bf-model-{suffix}:8081",
+        }
+        if self.gateway_authority not in expected_authorities:
             raise ValueError("model gateway authority is not bound to the attempt")
         expected_authorization_ref = model_gateway_authorization_ref(
             self.attempt_id, self.authorization_digest
@@ -829,7 +840,9 @@ class ModelGatewayPolicy:
             raise ValueError("model gateway controlled SSE policy is invalid")
 
     @classmethod
-    def from_network_plan(cls, plan: EngineNetworkPlan, **values: Any) -> "ModelGatewayPolicy":
+    def from_network_plan(
+        cls, plan: EngineNetworkPlan | EngineNetworkPlanV2, **values: Any
+    ) -> "ModelGatewayPolicy":
         return cls(
             attempt_id=plan.attempt_id,
             network_policy_digest=plan.policy_digest,
@@ -1795,6 +1808,64 @@ class ControlledModelGateway:
             _not_expired(self.policy.expires_at, self._clock)
             return self._bearer
 
+    def bearer_absent_from_retained_bytes(self, payload: bytes) -> bool:
+        """One-way scan of bounded text artifacts while this owner exists.
+
+        Opaque or compressed bytes cannot be certified by a byte-pattern scan.
+        """
+
+        if type(payload) is not bytes or len(payload) > 16 * 1024 * 1024:
+            return False
+        try:
+            source_text = payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        if payload.startswith((b"PK\x03\x04", b"\x1f\x8b")):
+            return False
+        with self._lock:
+            secret = self._bearer
+        raw = secret.encode("ascii")
+        standard = base64.b64encode(raw)
+        urlsafe = base64.urlsafe_b64encode(raw)
+        encoded_url = quote_from_bytes(raw, safe="").encode("ascii")
+        values = {
+            raw,
+            json.dumps(secret, ensure_ascii=True)[1:-1].encode("ascii"),
+            raw.hex().encode("ascii"),
+            raw.hex().upper().encode("ascii"),
+            standard,
+            standard.rstrip(b"="),
+            base64.b32encode(raw),
+            urlsafe,
+            urlsafe.rstrip(b"="),
+            encoded_url,
+            encoded_url.lower(),
+        }
+        text = source_text
+        for _ in range(8):
+            if any(value in text.encode("utf-8") for value in values if value):
+                return False
+            try:
+                decoded = unquote_to_bytes(text).decode("utf-8")
+            except UnicodeDecodeError:
+                return False
+            decoded = _JSON_UNICODE_ESCAPE.sub(lambda match: chr(int(match.group(1), 16)), decoded)
+            if len(decoded.encode("utf-8")) > 16 * 1024 * 1024:
+                return False
+            if decoded == text:
+                break
+            text = decoded
+        else:
+            return False
+        try:
+            document = json.loads(text)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return True
+        try:
+            return not _json_contains_secret(document, secret)
+        except RecursionError:
+            return False
+
     def revoke(self) -> GatewayRevocationReceipt:
         with self._revocation_condition:
             if self._last_revocation is not None:
@@ -1838,6 +1909,107 @@ class ControlledModelGateway:
             self._revocation_in_progress = False
             self._revocation_condition.notify_all()
             return self._last_revocation
+
+    def revoke_bounded(self, timeout_seconds: float) -> GatewayRevocationReceipt:
+        """Bound installed cleanup while refusing to certify an active request.
+
+        The protected forwarder must implement its own bounded drain.  A
+        missing implementation or elapsed bound records an unverified result;
+        no background thread is left owning the lease.
+        """
+
+        if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 30:
+            raise ValueError("model gateway revoke bound is invalid")
+        deadline = time.monotonic() + timeout_seconds
+        with self._revocation_condition:
+            if (
+                self._last_revocation is not None
+                and self._last_revocation.protected_revocation_verified
+            ):
+                return self._last_revocation
+            while self._revocation_in_progress:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._bounded_revocation_receipt(
+                        ProtectedRevocationResult(
+                            False,
+                            content_hash(
+                                {
+                                    "schema_version": "bluefire.model-gateway-revocation-pending.v1",
+                                    "attempt_id": self.policy.attempt_id,
+                                    "authorization_ref": self.policy.authorization_ref,
+                                }
+                            ),
+                        )
+                    )
+                self._revocation_condition.wait(remaining)
+                if (
+                    self._last_revocation is not None
+                    and self._last_revocation.protected_revocation_verified
+                ):
+                    return self._last_revocation
+            self._revocation_in_progress = True
+            self._revoked = True
+            remaining = deadline - time.monotonic()
+        bounded = getattr(self._forwarder, "revoke_bounded", None)
+        protected = _safe_protected_revocation(
+            lambda: (
+                bounded(
+                    self.policy.attempt_id,
+                    self.policy.authorization_ref,
+                    timeout_seconds=max(0.000001, remaining),
+                )
+                if callable(bounded) and remaining > 0
+                else None
+            ),
+            {
+                "schema_version": "bluefire.model-forwarder-bounded-revocation-failure.v1",
+                "attempt_id": self.policy.attempt_id,
+                "authorization_ref": self.policy.authorization_ref,
+            },
+        )
+        with self._revocation_condition:
+            receipt = self._bounded_revocation_receipt(protected)
+            if protected.verified:
+                self._last_revocation = receipt
+            self._revocation_in_progress = False
+            self._revocation_condition.notify_all()
+            return receipt
+
+    def _bounded_revocation_receipt(
+        self, protected: ProtectedRevocationResult
+    ) -> GatewayRevocationReceipt:
+        return GatewayRevocationReceipt(
+            attempt_id=self.policy.attempt_id,
+            authorization_ref=self.policy.authorization_ref,
+            policy_digest=self.policy.policy_digest,
+            accepted_requests=self._sequence,
+            inflight_request=self._inflight is not None,
+            consumed_request_bytes=self._request_bytes,
+            reserved_response_bytes=self._reserved_response_bytes,
+            reserved_tokens=self._reserved_tokens,
+            reserved_cost_microunits=self._reserved_cost,
+            protected_revocation_verified=protected.verified,
+            protected_revocation_ref=protected.receipt_ref,
+        )
+
+    def revocation_drained(self, receipt: GatewayRevocationReceipt) -> bool:
+        """Observe that protected revocation settled and no request remains live.
+
+        ``inflight_request`` in the receipt describes the instant revocation
+        began.  A request active then may finish afterward, so the retained
+        receipt alone cannot establish terminal absence.
+        """
+
+        with self._lock:
+            return (
+                isinstance(receipt, GatewayRevocationReceipt)
+                and self._last_revocation == receipt
+                and self._revoked
+                and self._inflight is None
+                and receipt.protected_revocation_verified
+                and receipt.protected_revocation_ref is not None
+            )
 
     def handle(self, request: ModelGatewayRequest) -> RelayResponse:
         owner = object()

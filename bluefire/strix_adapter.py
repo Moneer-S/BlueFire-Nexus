@@ -423,7 +423,12 @@ def prepare_attempt_workspace(
 def _read_bounded_regular(path: Path, *, maximum: int) -> bytes:
     if path.is_symlink():
         raise StrixAdapterError(f"Strix artifact {path.name} is not an ordinary file")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except OSError as error:

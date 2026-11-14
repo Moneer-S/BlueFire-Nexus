@@ -174,6 +174,7 @@ class TenantEngineTargetResult:
     audit_retention_ref: str
     target_observation_ref: str
     protected_secret_absent: bool
+    request_target: str | None = None
 
     def __post_init__(self) -> None:
         if _RELAY_REQUEST_ID.fullmatch(self.relay_request_id) is None:
@@ -193,6 +194,14 @@ class TenantEngineTargetResult:
             raise TenantTargetAdapterError("engine target audit binding changed")
         if self.protected_secret_absent is not True:
             raise TenantTargetAdapterError("engine target secret check is incomplete")
+        if self.request_target is not None and (
+            not isinstance(self.request_target, str)
+            or not self.request_target.startswith("/")
+            or len(self.request_target) > 768
+            or not self.request_target.isascii()
+            or any(character in self.request_target for character in ("%", "\\", "#", "\x00"))
+        ):
+            raise TenantTargetAdapterError("engine target request path is invalid")
 
 
 def _digest(value: object, label: str) -> str:
@@ -1049,6 +1058,7 @@ class TenantRecordLauncherTargetAdapter:
                     "target_request_id": target_request_id,
                     "generation_digest": request.expected_generation.digest,
                     "target_snapshot_ref": request.target_snapshot_ref,
+                    "request_target": fixed.target,
                     "audit_row_digest": row.digest,
                     "audit_binding_digest": binding.digest,
                     "audit_retention_ref": retention_ref,
@@ -1068,6 +1078,7 @@ class TenantRecordLauncherTargetAdapter:
                 audit_retention_ref=retention_ref,
                 target_observation_ref=observation_ref,
                 protected_secret_absent=True,
+                request_target=fixed.target,
             )
 
     def controller_request(

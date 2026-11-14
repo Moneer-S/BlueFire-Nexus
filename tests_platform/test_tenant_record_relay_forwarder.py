@@ -11,6 +11,7 @@ from bluefire.engine_relay import EngineRelayError, TargetOperation, TargetRelay
 from bluefire.tenant_record_experiment_controller import tenant_target_snapshot_ref
 from bluefire.tenant_record_relay_forwarder import (
     ControllerOwnedTenantTargetForwarder,
+    ObservedTenantForward,
     tenant_protected_target_ref,
 )
 from bluefire.tenant_record_target_adapter import TenantTargetAdapterError
@@ -110,6 +111,17 @@ def test_forwarder_executes_fixed_route_and_retains_exact_audit(tmp_path: Path) 
     assert result.response.status == 200
     assert result.protected_secret_absent is True
     assert result.target_observation_ref.startswith("sha256:")
+    observed = forwarder.observed_result("relay-request-" + "1" * 32)
+    assert observed.operation.route_id == "health"
+    assert observed.target_result.request_target == "/health"
+    assert observed.target_result.target_observation_ref == result.target_observation_ref
+    with pytest.raises(ValueError, match="binding"):
+        ObservedTenantForward(
+            observed.operation,
+            replace(observed.target_result, request_target="/openapi.json"),
+        )
+    with pytest.raises(KeyError):
+        forwarder.observed_result("relay-request-" + "2" * 32)
     assert len(transport.calls) == 1
     assert transport.calls[0][1] == "/health"
     assert len(source.audit_bindings) == 1
@@ -269,6 +281,9 @@ def test_revoke_waits_for_inflight_then_blocks_result_and_new_calls(
     assert len(failures) == 1
     assert isinstance(failures[0], EngineRelayError)
     assert failures[0].code == "revoked"
+    assert forwarder.observed_result("relay-request-" + "6" * 32).target_result.request_target == (
+        "/health"
+    )
     with pytest.raises(EngineRelayError, match="revoked"):
         forwarder.forward(_operation(policy, suffix="7"))
     assert len(transport.calls) == 1

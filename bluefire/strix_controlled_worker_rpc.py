@@ -22,7 +22,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Protocol, cast
+from typing import Any, Awaitable, Callable, Protocol, cast
 
 from . import strix_controlled_backend as backend
 from . import strix_controlled_worker_channel as channel
@@ -37,6 +37,7 @@ _POLL_SECONDS = 0.02
 CONTAINMENT_AUTHORITY_VERSION = "bluefire.strix-worker-containment-authority.v1"
 ENDPOINT_CLEANUP_OWNER_VERSION = "bluefire.strix-worker-endpoint-cleanup-owner.v1"
 ENDPOINT_CLEANUP_RECEIPT_VERSION = "bluefire.strix-worker-endpoint-cleanup-receipt.v1"
+GUEST_ENDPOINT_CLEANUP_RECEIPT_VERSION = "bluefire.strix-native-guest-endpoint-cleanup-receipt.v1"
 CONTROLLER_CUSTODY_READY_VERSION = "bluefire.strix-worker-controller-custody-ready.v1"
 
 
@@ -477,13 +478,15 @@ class AttemptControllerServer:
         *,
         io_timeout_seconds: float = 300.0,
         guest_listener_mode: bool = False,
+        settled_call_sink: Callable[[channel.ControllerSettledCall], Awaitable[None]] | None = None,
     ) -> None:
         require_linux()
         if type(io_timeout_seconds) not in {int, float} or not 0.01 <= io_timeout_seconds <= 300:
             raise _refuse()
         self.channel = channel.ControllerChannel(profile, binding)
         self.dispatcher = channel.ControllerDispatcher(
-            self.channel, backend._require_transport(transport)
+            self.channel, backend._require_transport(transport),
+            settled_call_sink=settled_call_sink,
         )
         if not callable(getattr(model_gateway_lease, "claim", None)) or not callable(
             getattr(model_gateway_lease, "revoke", None)
@@ -935,7 +938,10 @@ class AttemptControllerServer:
         owner = self._endpoint_cleanup_owner
         return (
             owner is not None
-            and getattr(receipt, "schema_version", None) == ENDPOINT_CLEANUP_RECEIPT_VERSION
+            and getattr(receipt, "schema_version", None) == (
+                GUEST_ENDPOINT_CLEANUP_RECEIPT_VERSION
+                if self._guest_listener_mode else ENDPOINT_CLEANUP_RECEIPT_VERSION
+            )
             and getattr(receipt, "attempt_id", None) == self.channel.binding.attempt_id
             and getattr(receipt, "claim_digest", None) == self.channel.binding.claim_digest
             and getattr(receipt, "worker_containment_ref", None) == owner.worker_containment_ref

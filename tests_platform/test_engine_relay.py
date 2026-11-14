@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from bluefire.engine_network_policy import EngineNetworkPlan
+from bluefire.engine_network_policy import EngineNetworkPlan, EngineNetworkPlanV2
 from bluefire.engine_relay import (
     BoundedRelayAudit,
     ControlledModelGateway,
@@ -92,7 +92,9 @@ def _plan() -> EngineNetworkPlan:
     )
 
 
-def _target_policy(**overrides: Any) -> TargetRelayPolicy:
+def _target_policy(
+    *, plan: EngineNetworkPlan | EngineNetworkPlanV2 | None = None, **overrides: Any
+) -> TargetRelayPolicy:
     values: dict[str, Any] = {
         "binding_digest": _digest("binding"),
         "delegation_digest": _digest("delegation"),
@@ -108,10 +110,12 @@ def _target_policy(**overrides: Any) -> TargetRelayPolicy:
         "expires_at": EXPIRES_AT,
     }
     values.update(overrides)
-    return TargetRelayPolicy.from_network_plan(_plan(), **values)
+    return TargetRelayPolicy.from_network_plan(_plan() if plan is None else plan, **values)
 
 
-def _model_policy(**overrides: Any) -> ModelGatewayPolicy:
+def _model_policy(
+    *, plan: EngineNetworkPlan | EngineNetworkPlanV2 | None = None, **overrides: Any
+) -> ModelGatewayPolicy:
     values: dict[str, Any] = {
         "binding_digest": _digest("binding"),
         "delegation_digest": _digest("delegation"),
@@ -142,7 +146,25 @@ def _model_policy(**overrides: Any) -> ModelGatewayPolicy:
         values["authorization_ref"] = model_gateway_authorization_ref(
             ATTEMPT_ID, values["authorization_digest"]
         )
-    return ModelGatewayPolicy.from_network_plan(_plan(), **values)
+    return ModelGatewayPolicy.from_network_plan(_plan() if plan is None else plan, **values)
+
+
+def test_v2_relay_authorities_bind_full_attempt_identity() -> None:
+    plan = EngineNetworkPlanV2.create(
+        attempt_id=ATTEMPT_ID,
+        network_id="b" * 64,
+        network_identity_ref=_digest("network"),
+        subnet="172.28.41.0/24",
+        target_address="172.28.41.10",
+        model_gateway_address="172.28.41.11",
+        host_gateway_address="172.28.41.1",
+        created_at=CREATED_AT,
+    )
+    target = _target_policy(plan=plan)
+    model = _model_policy(plan=plan)
+    assert target.relay_authority == f"bf-target-{ATTEMPT_ID.removeprefix('engine-attempt-')}:8080"
+    assert model.gateway_authority == f"bf-model-{ATTEMPT_ID.removeprefix('engine-attempt-')}:8081"
+    assert target.network_policy_digest == model.network_policy_digest == plan.policy_digest
 
 
 def _target_headers(body: bytes) -> dict[str, str]:
@@ -1501,6 +1523,7 @@ def test_model_gateway_revocation_suppresses_inflight_result_and_is_idempotent()
     assert forwarder.entered.wait(timeout=5)
     first = gateway.revoke()
     second = gateway.revoke()
+    assert gateway.revocation_drained(first) is False
     forwarder.release.set()
     thread.join(timeout=5)
 
@@ -1511,6 +1534,7 @@ def test_model_gateway_revocation_suppresses_inflight_result_and_is_idempotent()
     assert len(result) == 1 and isinstance(result[0], EngineRelayError)
     assert result[0].code == "revoked"
     assert audit.records()[0].status == "revoked"
+    assert gateway.revocation_drained(first) is True
     with pytest.raises(EngineRelayError, match="revoked"):
         gateway.handle(
             _model_request(request_id="gateway-request-00000000000000000000000000000002")
@@ -1846,9 +1870,9 @@ def test_controlled_sse_rejects_semantically_invalid_frames(case: str) -> None:
     elif case == "array_arguments":
         documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] = "[]"
     elif case == "duplicate_arguments":
-        documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"][
-            "arguments"
-        ] = '{"unexpected":"a","unexpected":"b"}'
+        documents[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] = (
+            '{"unexpected":"a","unexpected":"b"}'
+        )
     elif case == "finish_drift":
         documents[1]["choices"][0]["finish_reason"] = "stop"
     elif case == "usage_total":

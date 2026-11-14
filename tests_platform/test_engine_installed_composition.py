@@ -376,6 +376,20 @@ def _bind(config, *, presentation_source=None):
     return workspace, attempts, controller_jobs
 
 
+def test_service_run_store_is_bound_to_attempt_factory_before_dispatch():
+    config = _configured()
+    bound = []
+    config.attempts.bind_run_store = bound.append
+    _bind(config)
+    try:
+        assert bound == [config.runs]
+        config.composition.controller_jobs_factory(config.store, config.runs, config.jobs)
+        assert bound == [config.runs]
+    finally:
+        config.composition.shutdown_jobs()
+        config.composition.close()
+
+
 @pytest.mark.parametrize("group", ["sources", "adapters"])
 def test_every_protected_dependency_is_required_without_effects(group):
     config = _configured()

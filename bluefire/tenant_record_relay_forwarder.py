@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from .engine_relay import (
     EngineRelayError,
@@ -53,6 +54,35 @@ def tenant_protected_target_ref(
             "target_snapshot_ref": _digest(target_snapshot_ref, "tenant target snapshot"),
         }
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedTenantForward:
+    """Verified target result tied to the admitted relay operation."""
+
+    operation: TargetOperation
+    target_result: TenantEngineTargetResult = field(repr=False)
+
+    def __post_init__(self) -> None:
+        expected_target = _operation_target(self.operation)
+        if (
+            self.operation.request_id != self.target_result.relay_request_id
+            or content_hash(self.operation.to_dict()) != self.target_result.operation_digest
+            or self.target_result.request_target != expected_target
+        ):
+            raise ValueError("observed target operation binding changed")
+
+
+def _operation_target(operation: TargetOperation) -> str:
+    if operation.route_id == "health":
+        return "/health"
+    if operation.route_id == "metadata":
+        return "/openapi.json"
+    if operation.route_id == "record_lookup" and operation.record_id is not None:
+        return f"/records/{operation.record_id}"
+    if operation.route_id == "bounded_export" and operation.tenant_id is not None:
+        return f"/exports?tenant={operation.tenant_id}"
+    raise ValueError("observed target route is invalid")
 
 
 class ControllerOwnedTenantTargetForwarder:
@@ -108,6 +138,21 @@ class ControllerOwnedTenantTargetForwarder:
         self._accepted = 0
         self._reserved_response_bytes = 0
         self._last_revocation: ProtectedRevocationResult | None = None
+        self._observed: dict[str, ObservedTenantForward] = {}
+
+    def observed_result(self, relay_request_id: str) -> ObservedTenantForward:
+        """Read a target result only after the protected forward completed."""
+
+        if (
+            not isinstance(relay_request_id, str)
+            or _RELAY_REQUEST_ID.fullmatch(relay_request_id) is None
+        ):
+            raise ValueError("observed relay request ID is invalid")
+        with self._condition:
+            observed = self._observed.get(relay_request_id)
+            if observed is None:
+                raise KeyError(relay_request_id)
+            return observed
 
     def forward(self, operation: TargetOperation) -> ProtectedTargetResult:
         """Revalidate and forward one operation without exposing target authority."""
@@ -160,6 +205,7 @@ class ControllerOwnedTenantTargetForwarder:
                 raise EngineRelayError(
                     "invalid_upstream", "protected target result binding is invalid"
                 )
+            observed = ObservedTenantForward(operation, result)
         except Exception:
             with self._condition:
                 self._inflight -= 1
@@ -168,6 +214,7 @@ class ControllerOwnedTenantTargetForwarder:
         with self._condition:
             revoked = self._revoked
             self._inflight -= 1
+            self._observed[operation.request_id] = observed
             self._condition.notify_all()
         if revoked:
             raise EngineRelayError("revoked", "protected target relay was revoked in flight")

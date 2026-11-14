@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 import pytest
 
@@ -41,6 +41,41 @@ from bluefire.util import content_hash, file_hash
 from tests_platform.test_strix_controlled_backend import FakeTransport
 from tests_platform.test_strix_controlled_bootstrap import _environment, _identities, _profile
 from tests_platform.test_strix_controlled_worker_channel import _binding, _complete, _request
+
+
+def test_guest_endpoint_receipt_uses_distinct_schema(tmp_path: Path) -> None:
+    """Guest reachability evidence cannot be decoded as host cleanup evidence."""
+    digest = "sha256:" + "1" * 64
+    server = object.__new__(rpc.AttemptControllerServer)
+    server.channel = SimpleNamespace(
+        binding=SimpleNamespace(attempt_id="guest-test", claim_digest=digest)
+    )
+    server._directory = tmp_path / "absent-host-launch"
+    server._directory_identity = (11, 12)
+    server._endpoint_identity = (13, 14)
+    server._launch_identity = None
+    server._endpoint_cleanup_owner = SimpleNamespace(worker_containment_ref=digest)
+    receipt = SimpleNamespace(
+        schema_version=rpc.GUEST_ENDPOINT_CLEANUP_RECEIPT_VERSION,
+        attempt_id="guest-test",
+        claim_digest=digest,
+        worker_containment_ref=digest,
+        directory_identity=(11, 12),
+        endpoint_identity=(13, 14),
+        launch_identity=None,
+        endpoint_absent=True,
+        launch_absent=True,
+        directory_absent=True,
+    )
+    server._guest_listener_mode = True
+    assert server._valid_endpoint_cleanup_receipt(receipt)
+    receipt.schema_version = rpc.ENDPOINT_CLEANUP_RECEIPT_VERSION
+    assert not server._valid_endpoint_cleanup_receipt(receipt)
+    server._guest_listener_mode = False
+    assert server._valid_endpoint_cleanup_receipt(receipt)
+    receipt.schema_version = rpc.GUEST_ENDPOINT_CLEANUP_RECEIPT_VERSION
+    assert not server._valid_endpoint_cleanup_receipt(receipt)
+
 
 linux = pytest.mark.skipif(
     sys.platform != "linux", reason="production AF_UNIX/SO_PEERCRED is Linux only"
@@ -449,6 +484,7 @@ async def _server(
     lifetime_seconds: float = 5.0,
     peer_pid: int | None = None,
     cancellation: threading.Event | None = None,
+    settled_call_sink: Callable[[channel.ControllerSettledCall], Awaitable[None]] | None = None,
 ) -> AsyncIterator[tuple[rpc.AttemptControllerServer, FakeTransport, asyncio.Task[None]]]:
     # Keep the actual Unix path below sockaddr_un's cap even with a long pytest root.
     with tempfile.TemporaryDirectory(prefix="bf-rpc-") as directory:
@@ -461,7 +497,10 @@ async def _server(
         )
         effects = (effects or FakeTransport()).bind(profile)
         lease = _ModelLease()
-        server = rpc.AttemptControllerServer(Path(directory), profile, binding, effects, lease)
+        server = rpc.AttemptControllerServer(
+            Path(directory), profile, binding, effects, lease,
+            settled_call_sink=settled_call_sink,
+        )
         server._test_invocation = invocation
         server._test_model_lease = lease
         server._test_launch_path = launch.write_launch_material(server, _material(server))
@@ -1400,7 +1439,12 @@ def test_worker_exit_is_rechecked_before_model_or_effect_authority(
 @linux
 def test_real_socket_all_serial_roundtrips_preserve_controller_handle() -> None:
     async def run() -> None:
-        async with _server() as (server, effects, _serving):
+        retained: list[channel.ControllerSettledCall] = []
+
+        async def retain(call: channel.ControllerSettledCall) -> None:
+            retained.append(call)
+
+        async with _server(settled_call_sink=retain) as (server, effects, _serving):
             client = await _client(server)
             try:
                 created = await client.create_exact(
@@ -1430,6 +1474,9 @@ def test_real_socket_all_serial_roundtrips_preserve_controller_handle() -> None:
                         assert effects.calls[-1][1].handle is effects.handle
                 assert client.channel.pending_count == server.channel.pending_count == 0
                 assert client.channel.usable and server.channel.usable
+                assert len(retained) == len(methods) + 1
+                assert [call.method for call in retained] == ["create_exact", *methods]
+                assert all(call.binding == server.channel.binding for call in retained)
             finally:
                 client.close()
         assert server._test_model_lease.claimed == 1

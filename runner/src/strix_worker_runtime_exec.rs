@@ -1238,6 +1238,17 @@ fn runtime_observation(
     }))
 }
 
+fn release_identity_after_staging<F>(staging_root: &Path, release: F) -> Result<(), String>
+where
+    F: FnOnce() -> Result<bool, String>,
+{
+    if staging_root.exists() {
+        fs::remove_dir(staging_root).map_err(|_| REFUSAL)?;
+    }
+    require(!staging_root.exists())?;
+    require(release()?)
+}
+
 fn cleanup_failed_launch(
     pid: i32,
     pidfd: RawFd,
@@ -1263,11 +1274,7 @@ fn cleanup_failed_launch(
         if let Some(leaf) = cgroup.as_deref_mut() {
             require(leaf.remove()?)?;
         }
-        if staging_root.exists() {
-            fs::remove_dir(staging_root).map_err(|_| REFUSAL)?;
-        }
-        require(!staging_root.exists())?;
-        require(identity.release()?)
+        release_identity_after_staging(staging_root, || identity.release())
     })();
     if result.is_err() {
         // A surviving child or descendant must keep its allocated UID/GID.
@@ -1551,11 +1558,7 @@ impl FixedRuntimeProcess {
         require(strix_worker_boundary_cgroup::threads(&self.cgroup.path)?.is_empty())?;
         remove_endpoint(self.endpoint_directory.as_raw_fd())?;
         require(self.cgroup.remove()?)?;
-        require(self.identity.release()?)?;
-        if self.staging_root.exists() {
-            fs::remove_dir(&self.staging_root).map_err(|_| REFUSAL)?;
-        }
-        require(!self.staging_root.exists())?;
+        release_identity_after_staging(&self.staging_root, || self.identity.release())?;
         self.pid = 0;
         Ok(())
     }
@@ -1617,6 +1620,41 @@ impl Drop for FixedRuntimeProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_release_waits_for_staging_root_removal() {
+        use std::cell::Cell;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "bluefire-strix-cleanup-order-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("retained"), b"x").unwrap();
+        let released = Cell::new(false);
+        let refused = release_identity_after_staging(&root, || {
+            released.set(true);
+            Ok(true)
+        });
+        fs::remove_file(root.join("retained")).unwrap();
+        fs::remove_dir(&root).unwrap();
+        assert!(refused.is_err());
+        assert!(!released.get());
+
+        fs::create_dir(&root).unwrap();
+        release_identity_after_staging(&root, || {
+            released.set(true);
+            Ok(true)
+        })
+        .unwrap();
+        assert!(released.get());
+        assert!(!root.exists());
+    }
 
     #[test]
     fn command_environment_and_relays_are_fixed() {

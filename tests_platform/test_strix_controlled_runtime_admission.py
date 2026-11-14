@@ -14,6 +14,7 @@ from bluefire.strix_controlled_execution_identity import StrixControlledExecutio
 from bluefire.strix_controlled_runtime_admission import (
     ADMISSION_SCHEMA,
     FILESYSTEM_CONFORMANCE,
+    HistoricalStrixControlledRuntimeAdmissionV2,
     StrixControlledLaunchPlanV2,
     StrixControlledRuntimeAdmissionError,
     StrixControlledRuntimeAdmissionV2,
@@ -28,9 +29,14 @@ def digest(label: str) -> str:
     return content_hash(label)
 
 
-def admission_document(*, sandbox_uid: int = 1000, sandbox_gid: int = 1000) -> dict[str, Any]:
+def admission_document(
+    *,
+    sandbox_uid: int = 1000,
+    sandbox_gid: int = 1000,
+    legacy_service_names: bool = False,
+) -> dict[str, Any]:
     """Synthetic declarations only: no controller verifier or authority is used."""
-    inputs = v2_policy_inputs()
+    inputs = v2_policy_inputs(legacy_service_names=legacy_service_names)
     identity = inputs["execution_identity"].to_dict()
     network = inputs["network"]
     custody = inputs["custody"]
@@ -193,6 +199,21 @@ def plan(admission: StrixControlledRuntimeAdmissionV2) -> StrixControlledLaunchP
         expected_admission_ref=admission.admission_ref,
         expected_execution_claim_ref=admission.to_dict()["accepted_execution_claim_ref"],
     )
+
+
+def test_historical_suffix_named_v2_admission_is_readable_but_cannot_launch() -> None:
+    source = admission_document(legacy_service_names=True)
+    historical = HistoricalStrixControlledRuntimeAdmissionV2.from_mapping(source)
+    assert historical.to_dict() == source
+    assert historical.admission_ref == content_hash(source)
+    with pytest.raises(StrixControlledRuntimeAdmissionError):
+        StrixControlledRuntimeAdmissionV2.from_mapping(source)
+    with pytest.raises(StrixControlledRuntimeAdmissionError):
+        build_controlled_launch_plan(
+            historical,  # type: ignore[arg-type]
+            expected_admission_ref=historical.admission_ref,
+            expected_execution_claim_ref=source["accepted_execution_claim_ref"],
+        )
 
 
 def test_canonical_admission_and_launch_roundtrip_and_copy_isolation() -> None:

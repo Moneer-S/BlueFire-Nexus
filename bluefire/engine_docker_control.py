@@ -803,6 +803,11 @@ class DockerApiPolicyV2:
         values = dict(self._common_values)
         if len(values) != len(self._common_values) or set(values) != expected:
             raise EngineDockerPolicyError("v2 Docker common policy fields do not match")
+        attempt_id = _text(values["attempt_id"], "Docker attempt ID", _ATTEMPT_ID, maximum=47)
+        full_name = f"strix-sandbox-{attempt_id.removeprefix('engine-attempt-')}"
+        if values["container_name"] != full_name:
+            raise EngineDockerPolicyError("v2 Docker container name is not attempt-bound")
+        values["container_name"] = f"strix-sandbox-{attempt_id[-12:]}"
         try:
             reference = validate_v2_image_reference(
                 self.image_reference, "derived Docker image reference"
@@ -1218,7 +1223,12 @@ class DockerApiPolicyV2:
         )
         common_values = tuple(
             sorted(
-                (item.name, getattr(base_policy, item.name))
+                (
+                    item.name,
+                    f"strix-sandbox-{network.attempt_id.removeprefix('engine-attempt-')}"
+                    if item.name == "container_name"
+                    else getattr(base_policy, item.name),
+                )
                 for item in fields(DockerApiPolicy)
                 if item.name not in {"schema_version", "image_reference", "image_digest", "tmpfs"}
             )
@@ -1285,6 +1295,7 @@ class DockerApiPolicyV2:
     def to_dict(self) -> dict[str, Any]:
         row = self._v1_projection().to_dict()
         row.pop("image_digest")
+        row["container_name"] = self.container_name
         row["schema_version"] = self.schema_version
         row["runtime_platform"] = V2_RUNTIME_PLATFORM
         row["platform_child_manifest_digest"] = self.platform_child_manifest_digest

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -579,14 +580,46 @@ class ControllerOwnedControlledProviderForwarder(ProtectedModelForwarder):
         raise failure
 
     def revoke(self, attempt_id: str, authorization_ref: str) -> ProtectedRevocationResult:
+        return self.revoke_bounded(attempt_id, authorization_ref, timeout_seconds=None)
+
+    def revoke_bounded(
+        self,
+        attempt_id: str,
+        authorization_ref: str,
+        *,
+        timeout_seconds: float | None,
+    ) -> ProtectedRevocationResult:
+        """Revoke immediately, then wait only within the caller's cleanup bound.
+
+        A timed-out active request remains unknown. A later call may observe
+        its drain and obtain a verified terminal receipt.
+        """
+
         policy = self._binding.policy
         if attempt_id != policy.attempt_id or authorization_ref != policy.authorization_ref:
             raise EngineRelayError("scope_refused", "controlled provider revocation scope changed")
+        if timeout_seconds is not None and (
+            type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 30
+        ):
+            raise EngineRelayError("invalid_request", "controlled provider revoke bound is invalid")
+        deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         with self._condition:
             self._revoked = True
             self._condition.notify_all()
             while self._active:
-                self._condition.wait()
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return ProtectedRevocationResult(
+                        False,
+                        content_hash(
+                            {
+                                "schema_version": "bluefire.controlled-provider-revocation-pending.v1",
+                                "binding_ref": self._binding.binding_ref,
+                                "authorization_ref": authorization_ref,
+                            }
+                        ),
+                    )
+                self._condition.wait(remaining)
             if self._revocation is None:
                 self._revocation = ProtectedRevocationResult(
                     True,

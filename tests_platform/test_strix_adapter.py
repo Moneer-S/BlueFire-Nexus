@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import signal
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -407,6 +410,31 @@ def _write_run(
 
 def _objective_digest(objective: str) -> str:
     return "sha256:" + hashlib.sha256(objective.strip().encode("utf-8") + b"\n").hexdigest()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux FIFO open behavior")
+def test_run_snapshot_refuses_fifo_without_blocking(tmp_path: Path) -> None:
+    objective = "Assess only the admitted lab."
+    run_dir = _write_run(tmp_path, status="completed", objective=objective, complete=True)
+    (run_dir / "run.json").unlink()
+    os.mkfifo(run_dir / "run.json")
+
+    def timeout(_signum: int, _frame: object) -> None:
+        raise TimeoutError("Strix run FIFO open blocked")
+
+    previous = signal.signal(signal.SIGALRM, timeout)
+    signal.alarm(5)
+    try:
+        with pytest.raises(StrixAdapterError):
+            discover_run_snapshot(
+                tmp_path,
+                expected_target=TARGET,
+                expected_instruction_sha256=_objective_digest(objective),
+                process_exit_code=0,
+            )
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def test_exit_two_is_findings_not_failure_and_completion_needs_coverage(tmp_path: Path) -> None:

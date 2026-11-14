@@ -19,6 +19,7 @@ from typing import Any, Mapping, cast
 from .engine_container_custody import ContainerCustodyPlanV2
 from .engine_network_policy import (
     EngineNetworkPlanV2,
+    HistoricalEngineNetworkPlanV2,
     validate_model_gateway_url,
     validate_target_url,
 )
@@ -236,7 +237,7 @@ def _claim(value: Any, admission: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _validate(value: Any) -> dict[str, Any]:
+def _validate(value: Any, *, historical_legacy: bool = False) -> dict[str, Any]:
     row = _exact(value, _ADMISSION_FIELDS, "admission fields")
     _same(row["schema_version"], ADMISSION_SCHEMA, "admission schema")
     attempt = row["attempt_id"]
@@ -251,7 +252,11 @@ def _validate(value: Any) -> dict[str, Any]:
     execution = identity.to_dict()
     _same(execution["attempt_id"], attempt, "execution attempt")
     profile = ControlledRuntimeProfile(**execution["controlled_runtime_profile"])
-    network = EngineNetworkPlanV2.from_mapping(row["network_plan"])
+    network = (
+        HistoricalEngineNetworkPlanV2.from_mapping(row["network_plan"])
+        if historical_legacy
+        else EngineNetworkPlanV2.from_mapping(row["network_plan"])
+    )
     custody = ContainerCustodyPlanV2.from_mapping(row["custody_plan"])
     _same(network.attempt_id, attempt, "network attempt")
     _same(custody.attempt_id, attempt, "custody attempt")
@@ -500,7 +505,53 @@ class StrixControlledRuntimeAdmissionV2:
         return f"StrixControlledRuntimeAdmissionV2(admission_ref={self.admission_ref!r})"
 
 
-def _launch_document(admission: StrixControlledRuntimeAdmissionV2) -> dict[str, Any]:
+@dataclass(frozen=True, slots=True, repr=False)
+class HistoricalStrixControlledRuntimeAdmissionV2:
+    """Inspect a retained suffix-named V2 admission without execution authority."""
+
+    canonical_bytes: bytes
+
+    def __post_init__(self) -> None:
+        try:
+            if (
+                type(self.canonical_bytes) is not bytes
+                or not 0 < len(self.canonical_bytes) <= MAX_DOCUMENT_BYTES
+            ):
+                raise _refuse("historical bytes")
+            row = _validate(_decode(self.canonical_bytes), historical_legacy=True)
+            if self.canonical_bytes != canonical_json_bytes(row):
+                raise _refuse("historical encoding")
+        except (TypeError, ValueError, RuntimeError, UnicodeError, RecursionError, OverflowError):
+            raise _refuse("historical admission") from None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> HistoricalStrixControlledRuntimeAdmissionV2:
+        try:
+            return cls(canonical_json_bytes(_validate(value, historical_legacy=True)))
+        except (TypeError, ValueError, RuntimeError, UnicodeError, RecursionError, OverflowError):
+            raise _refuse("historical admission") from None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _decode(self.canonical_bytes)
+
+    @property
+    def admission_ref(self) -> str:
+        return content_hash(self.to_dict())
+
+    @property
+    def historical_launch_digest(self) -> str:
+        """Recompute an old identity for reconciliation, never a launch plan."""
+
+        return content_hash(_launch_document(self))
+
+    @property
+    def historical_exec_broker_binding_digest(self) -> str:
+        return cast(str, _launch_document(self)["exec_broker_binding_digest"])
+
+
+def _launch_document(
+    admission: StrixControlledRuntimeAdmissionV2 | HistoricalStrixControlledRuntimeAdmissionV2,
+) -> dict[str, Any]:
     row = admission.to_dict()
     identity = row["execution_identity"]
     profile = identity["controlled_runtime_profile"]
@@ -673,6 +724,7 @@ __all__ = [
     "FILESYSTEM_CONFORMANCE",
     "StrixControlledRuntimeAdmissionError",
     "StrixControlledRuntimeAdmissionV2",
+    "HistoricalStrixControlledRuntimeAdmissionV2",
     "StrixControlledLaunchPlanV2",
     "build_controlled_launch_plan",
 ]

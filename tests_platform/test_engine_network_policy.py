@@ -13,6 +13,7 @@ from bluefire.engine_network_policy import (
     EngineNetworkPlanV2,
     EngineNetworkPolicyError,
     EngineNetworkVerification,
+    HistoricalEngineNetworkPlanV2,
     NetworkFlow,
     NetworkProbeResult,
     ProbeOutcome,
@@ -66,6 +67,24 @@ def _plan_v2() -> EngineNetworkPlanV2:
         host_gateway_address="172.28.40.1",
         created_at=NOW,
     )
+
+
+def test_historical_v2_suffix_names_reopen_read_only_without_current_authority() -> None:
+    current = _plan_v2()
+    old = current.to_dict()
+    old["target"]["service_name"] = f"bf-target-{ATTEMPT_ID[-12:]}"
+    old["model_gateway"]["service_name"] = f"bf-model-{ATTEMPT_ID[-12:]}"
+    historical = HistoricalEngineNetworkPlanV2.from_mapping(old)
+    assert historical.to_dict() == old
+    assert historical.policy_digest != current.policy_digest
+    with pytest.raises(EngineNetworkPolicyError):
+        EngineNetworkPlanV2.from_mapping(old)
+    with pytest.raises(EngineNetworkPolicyError):
+        HistoricalEngineNetworkPlanV2.from_mapping(current.to_dict())
+    changed = historical.to_dict()
+    changed["target"]["service_name"] = "bf-target-000000000000"
+    with pytest.raises(EngineNetworkPolicyError):
+        HistoricalEngineNetworkPlanV2.from_mapping(changed)
 
 
 def _snapshot(plan: EngineNetworkPlan) -> EffectiveNetworkSnapshot:
@@ -155,8 +174,10 @@ def test_v2_plan_round_trips_and_binds_qualified_image_network() -> None:
     assert plan.schema_version == "bluefire.engine-network-plan.v2"
     assert plan.network_name == "bluefire-engine-0123456789abcdef0123456789abcdef"
     assert plan.network_id == NETWORK_ID
-    assert plan.target == _plan().target
-    assert plan.model_gateway == _plan().model_gateway
+    assert plan.target.service_name == "bf-target-0123456789abcdef0123456789abcdef"
+    assert plan.model_gateway.service_name == "bf-model-0123456789abcdef0123456789abcdef"
+    assert plan.target.address == _plan().target.address
+    assert plan.model_gateway.address == _plan().model_gateway.address
     assert plan.default_egress == "deny"
     assert plan.dns_mode == "bound_services_only"
     assert plan.redirect_mode == "same_target_origin_only"
@@ -167,6 +188,18 @@ def test_v2_plan_round_trips_and_binds_qualified_image_network() -> None:
     plan.validate_runtime_profile_network(profile["network"])
     assert EngineNetworkPlanV2.from_mapping(plan.to_dict()) == plan
     assert EngineNetworkPlanV2.from_mapping(plan.to_dict()).policy_digest == plan.policy_digest
+
+
+def test_v2_rejects_v1_suffix_services_for_same_attempt() -> None:
+    row = _plan_v2().to_dict()
+    row["target"]["service_name"] = _plan().target.service_name
+    with pytest.raises(EngineNetworkPolicyError):
+        EngineNetworkPlanV2.from_mapping(row)
+
+    row = _plan_v2().to_dict()
+    row["model_gateway"]["service_name"] = _plan().model_gateway.service_name
+    with pytest.raises(EngineNetworkPolicyError):
+        EngineNetworkPlanV2.from_mapping(row)
 
 
 def test_v1_plan_wire_and_digest_remain_stable_and_versions_do_not_cross_parse() -> None:
