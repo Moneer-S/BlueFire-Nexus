@@ -30,6 +30,10 @@ supervisor as container custody before activation.
   container, validate its name, pinned image and complete label identity, stop
   it, force-remove it, then inspect the same identifier until the pinned daemon
   returns the exact bounded 404 absence response.
+- The inspected labels are the admitted V2 attempt, run, type, and image
+  identity labels. Policy, execution, and profile digests bind the supervisor
+  identity to the accepted controller policy without appearing as circular
+  labels in the policy's own label set.
 - Completion uses that same conservative absence path. Attach EOF and exec
   inspection never mint `verified_complete`.
 - Terminal receipts have monotonic event cursors and remain in the private

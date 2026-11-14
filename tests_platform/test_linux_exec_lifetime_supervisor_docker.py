@@ -146,9 +146,12 @@ def test_real_docker_broker_loss_retains_absence_and_recovery(
     labels = tuple(
         sorted(
             {
-                "bluefire.engine.policy-digest": policy_digest,
-                "bluefire.engine.execution-identity-digest": execution_digest,
-                "bluefire.engine.profile-digest": profile_digest,
+                "bluefire.engine.attempt": attempt_id,
+                "bluefire.engine.image-identity": content_hash(
+                    {"test_image_identity": image_reference}
+                ),
+                "strix-run-id": attempt_id,
+                "strix-run-type": "bluefire",
             }.items()
         )
     )

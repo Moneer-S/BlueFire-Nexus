@@ -150,9 +150,10 @@ def _identity() -> LinuxExecSupervisorContainerV2:
     labels = tuple(
         sorted(
             {
-                "bluefire.engine.policy-digest": policy,
-                "bluefire.engine.execution-identity-digest": execution,
-                "bluefire.engine.profile-digest": profile,
+                "bluefire.engine.attempt": ATTEMPT,
+                "bluefire.engine.image-identity": _digest("image identity"),
+                "strix-run-id": ATTEMPT,
+                "strix-run-type": "bluefire",
             }.items()
         )
     )

@@ -33,6 +33,7 @@ from .engine_docker_transport import (
 from .util import content_hash
 
 _CONTAINER = re.compile(r"[0-9a-f]{64}\Z")
+_ATTEMPT = re.compile(r"engine-attempt-[0-9a-f]{32}\Z")
 _API_VERSION = re.compile(r"v1\.([0-9]{2})\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _CONTAINER_NAME = re.compile(r"strix-sandbox-[a-z0-9][a-z0-9_.-]{0,62}\Z")
@@ -117,7 +118,7 @@ class SupervisorDockerContainerIdentity:
                 "container_identity_invalid", cleanup_uncertain=False
             )
         labels: list[tuple[str, str]] = []
-        if not isinstance(self.required_labels, tuple) or not 3 <= len(self.required_labels) <= 32:
+        if not isinstance(self.required_labels, tuple) or not 4 <= len(self.required_labels) <= 32:
             raise LinuxExecSupervisorDockerError(
                 "container_labels_invalid", cleanup_uncertain=False
             )
@@ -140,15 +141,23 @@ class SupervisorDockerContainerIdentity:
             raise LinuxExecSupervisorDockerError(
                 "container_labels_invalid", cleanup_uncertain=False
             )
-        expected = {
-            "bluefire.engine.policy-digest": self.policy_digest,
-            "bluefire.engine.execution-identity-digest": self.execution_identity_digest,
-            "bluefire.engine.profile-digest": self.profile_digest,
-        }
-        if any(dict(labels).get(key) != value for key, value in expected.items()):
+        admitted = dict(labels)
+        attempt = admitted.get("bluefire.engine.attempt")
+        image_identity = admitted.get("bluefire.engine.image-identity")
+        if (
+            not isinstance(attempt, str)
+            or _ATTEMPT.fullmatch(attempt) is None
+            or admitted.get("strix-run-id") != attempt
+            or admitted.get("strix-run-type") != "bluefire"
+            or not isinstance(image_identity, str)
+            or _DIGEST.fullmatch(image_identity) is None
+        ):
             raise LinuxExecSupervisorDockerError(
                 "container_labels_unbound", cleanup_uncertain=False
             )
+        # Policy, execution, and profile digests remain controller-bound fields
+        # of this identity. Policy digest cannot itself be a required Docker
+        # label because the policy digest includes the admitted label set.
 
     @property
     def identity_digest(self) -> str:

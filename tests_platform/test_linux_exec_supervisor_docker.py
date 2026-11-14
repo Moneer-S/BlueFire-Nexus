@@ -16,6 +16,7 @@ from bluefire.linux_exec_supervisor_docker import (
     SupervisorDockerContainerIdentity,
 )
 from bluefire.util import content_hash
+from tests_platform.test_engine_docker_control import policy_v2
 
 CONTAINER = "a" * 64
 DAEMON = content_hash("daemon")
@@ -25,13 +26,14 @@ EXECUTION = content_hash("execution identity")
 PROFILE = content_hash("profile")
 IMAGE_CONFIG = content_hash("image config")
 IMAGE_REFERENCE = "ghcr.io/usestrix/strix-sandbox@" + content_hash("image")
+ATTEMPT = "engine-attempt-" + "1" * 32
 LABELS = tuple(
     sorted(
         {
-            "bluefire.engine.attempt": "engine-attempt-" + "1" * 32,
-            "bluefire.engine.execution-identity-digest": EXECUTION,
-            "bluefire.engine.policy-digest": POLICY,
-            "bluefire.engine.profile-digest": PROFILE,
+            "bluefire.engine.attempt": ATTEMPT,
+            "bluefire.engine.image-identity": content_hash("image identity"),
+            "strix-run-id": ATTEMPT,
+            "strix-run-type": "bluefire",
         }.items()
     )
 )
@@ -45,6 +47,42 @@ IDENTITY = SupervisorDockerContainerIdentity(
     execution_identity_digest=EXECUTION,
     profile_digest=PROFILE,
 )
+
+
+def test_identity_accepts_exact_v2_policy_labels_without_circular_digest() -> None:
+    policy = policy_v2()
+    identity = SupervisorDockerContainerIdentity(
+        container_id=CONTAINER,
+        container_name=policy.container_name,
+        image_config_digest=policy.image_config_digest,
+        image_reference=policy.image_reference,
+        required_labels=policy.required_labels,
+        policy_digest=policy.policy_digest,
+        execution_identity_digest=policy.execution_identity_digest,
+        profile_digest=policy.image_runtime_profile_digest,
+    )
+    assert identity.required_labels == policy.required_labels
+    assert identity.policy_digest == policy.policy_digest
+    assert dict(identity.required_labels)["bluefire.engine.attempt"] == policy.attempt_id
+    assert "bluefire.engine.policy-digest" not in dict(identity.required_labels)
+
+
+def test_identity_rejects_mismatched_attempt_ownership_labels() -> None:
+    changed = dict(LABELS)
+    changed["strix-run-id"] = "engine-attempt-" + "2" * 32
+    with pytest.raises(LinuxExecSupervisorDockerError, match="container_labels_unbound"):
+        replace(IDENTITY, required_labels=tuple(sorted(changed.items())))
+
+
+def test_identity_rejects_missing_or_invalid_image_identity_label() -> None:
+    missing = dict(LABELS)
+    del missing["bluefire.engine.image-identity"]
+    with pytest.raises(LinuxExecSupervisorDockerError, match="container_labels_invalid"):
+        replace(IDENTITY, required_labels=tuple(sorted(missing.items())))
+    invalid = dict(LABELS)
+    invalid["bluefire.engine.image-identity"] = "unbound"
+    with pytest.raises(LinuxExecSupervisorDockerError, match="container_labels_unbound"):
+        replace(IDENTITY, required_labels=tuple(sorted(invalid.items())))
 
 
 def _endpoint() -> LinuxDockerDaemonEndpoint:
@@ -220,7 +258,7 @@ def test_inspect_must_bind_exact_container_and_running_state(monkeypatch) -> Non
 def test_destructive_cleanup_requires_exact_reviewed_labels(monkeypatch) -> None:
     monkeypatch.setattr(cleanup_module.time, "monotonic_ns", lambda: 1)
     changed_labels = dict(LABELS)
-    changed_labels["bluefire.engine.profile-digest"] = content_hash("changed")
+    changed_labels["bluefire.engine.image-identity"] = content_hash("changed")
     wrong = _raw(
         200,
         {
