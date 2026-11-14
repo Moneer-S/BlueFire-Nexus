@@ -566,3 +566,179 @@ jobs:
               if path.exists():
                   raise SystemExit("private service build material remains")
           PY
+
+      - name: Retain bounded private producer identities
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import stat
+          from pathlib import Path
+
+          from bluefire.strix_test_sandbox_image import (
+              CLEANUP_FILENAME,
+              StrixTestSandboxImageCleanupReceiptV1,
+              StrixTestSandboxImageContractV1,
+          )
+
+          digest_pattern = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+          def optional_digest(value):
+              if value == "":
+                  return None
+              if digest_pattern.fullmatch(value) is None:
+                  raise SystemExit("producer identity is not a canonical digest")
+              return value
+
+          root_path = Path(os.environ["RUNNER_TEMP"])
+          if root_path.is_symlink() or not root_path.is_absolute():
+              raise SystemExit("private runner root is invalid")
+          root = root_path.resolve(strict=True)
+          source_revision = "${{ github.sha }}"
+          if re.fullmatch(r"[0-9a-f]{40}", source_revision) is None:
+              raise SystemExit("source revision is invalid")
+          image_version = os.environ.get("ImageVersion", "")
+          if re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._-]{0,127}", image_version) is None:
+              raise SystemExit("hosted OS image version is unavailable or invalid")
+          if os.environ.get("RUNNER_OS") != "Linux" or os.environ.get("RUNNER_ARCH") != "X64":
+              raise SystemExit("hosted runner platform differs")
+          artifacts = {
+              "bluefire_wheel_digest": optional_digest("${{ steps.product.outputs.digest }}"),
+              "strix_candidate_digest": optional_digest("${{ steps.candidate.outputs.digest }}"),
+              "worker_wheel_digest": optional_digest("${{ steps.worker.outputs.digest }}"),
+              "runtime_composite_ref": optional_digest("${{ steps.runtime.outputs.ref }}"),
+              "image_index_digest": None,
+              "image_manifest_digest": None,
+              "image_config_digest": None,
+              "test_provider_digest": optional_digest("${{ steps.provider.outputs.digest }}"),
+          }
+          output = root / "bluefire-strix-test-sandbox-output"
+          if output.is_symlink() or (
+              output.exists() and output.resolve(strict=True).parent != root
+          ):
+              raise SystemExit("private image evidence root is invalid")
+          if output.exists() and not output.is_dir():
+              raise SystemExit("private image evidence root is not a directory")
+          manifest = output / "strix-test-sandbox-image-manifest.json"
+          cleanup = output / CLEANUP_FILENAME
+          if manifest.is_symlink() or cleanup.is_symlink():
+              raise SystemExit("private image evidence is a symbolic link")
+          image_contract_digest = None
+          image_cleanup_receipt_digest = None
+          if manifest.is_file():
+              contract = StrixTestSandboxImageContractV1(manifest.read_bytes())
+              row = contract.to_dict()
+              if row["bluefire_source_revision"] != source_revision:
+                  raise SystemExit("image evidence source revision differs")
+              bindings = (
+                  ("strix_candidate_digest", row["runtime_closure"]["strix_candidate_digest"]),
+                  ("worker_wheel_digest", row["runtime_closure"]["worker_artifact_digest"]),
+                  ("runtime_composite_ref", row["runtime_closure"]["composite_ref"]),
+                  ("test_provider_digest", row["test_provider"]["provider_source_digest"]),
+              )
+              for name, observed in bindings:
+                  if artifacts[name] != observed:
+                      raise SystemExit(f"image evidence {name} differs")
+              artifacts["image_index_digest"] = row["image"]["index"]["digest"]
+              artifacts["image_manifest_digest"] = row["image"]["platform_child"]["digest"]
+              artifacts["image_config_digest"] = row["image"]["config"]["digest"]
+              image_contract_digest = contract.contract_digest
+          if cleanup.is_file():
+              if image_contract_digest is None:
+                  raise SystemExit("image cleanup receipt has no image contract")
+              receipt = StrixTestSandboxImageCleanupReceiptV1(cleanup.read_bytes())
+              if receipt.to_dict()["contract_digest"] != image_contract_digest:
+                  raise SystemExit("image cleanup receipt contract differs")
+              image_cleanup_receipt_digest = receipt.receipt_digest
+
+          document = {
+              "schema_version": "bluefire.strix-private-producer-identities.v1",
+              "source_revision": source_revision,
+              "run": {
+                  "github_run_id": os.environ["GITHUB_RUN_ID"],
+                  "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "os_image": "ubuntu-24.04",
+                  "runner_image_version": image_version,
+                  "architecture": "x86_64",
+              },
+              "artifacts": artifacts,
+              "prelaunch_inventory_digest": optional_digest("${{ steps.prelaunch.outputs.inventory }}"),
+              "worker_record_digest": optional_digest("${{ steps.worker.outputs.record }}"),
+              "image_contract_digest": image_contract_digest,
+              "image_cleanup_receipt_digest": image_cleanup_receipt_digest,
+              "proof_scope": "identities-only-no-installed-execution-proof",
+          }
+          evidence = root / "bluefire-strix-evidence"
+          if evidence.is_symlink():
+              raise SystemExit("private evidence root is a symbolic link")
+          evidence.mkdir(mode=0o700, exist_ok=True)
+          if stat.S_IMODE(evidence.stat().st_mode) != 0o700:
+              raise SystemExit("private evidence root permissions differ")
+          path = evidence / "producer-identity.json"
+          flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+          payload = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()
+          descriptor = os.open(path, flags, 0o600)
+          with os.fdopen(descriptor, "wb") as stream:
+              stream.write(payload)
+              stream.flush()
+              os.fsync(stream.fileno())
+          print("Private producer identity digest: sha256:" + hashlib.sha256(payload).hexdigest())
+          PY
+
+      - name: Remove exact private candidate and worker materials
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i \
+            RUNNER_TEMP="$RUNNER_TEMP" GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            PATH=/usr/bin:/bin /usr/bin/python3 -I -B - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          root_path = Path(os.environ["RUNNER_TEMP"])
+          workspace_path = Path(os.environ["GITHUB_WORKSPACE"])
+          if (
+              root_path.is_symlink() or not root_path.is_absolute()
+              or workspace_path.is_symlink() or not workspace_path.is_absolute()
+          ):
+              raise SystemExit("private runner root is invalid")
+          root = root_path.resolve(strict=True)
+          workspace = workspace_path.resolve(strict=True)
+          if len(workspace.parents) < 2 or root != workspace.parents[1] / "_temp":
+              raise SystemExit("private runner root is not the workspace sibling temp")
+          if os.name == "posix" and not shutil.rmtree.avoids_symlink_attacks:
+              raise SystemExit("private tree removal is not symlink-safe")
+          names = (
+              "bluefire-strix-candidate-work",
+              "bluefire-strix-candidate-output",
+              "bluefire-strix-qualification-work",
+              "bluefire-strix-qualification-output",
+              "bluefire-worker-artifact",
+              "bluefire-worker-build-result.json",
+              "bluefire-strix-runtime-preparation",
+              "bluefire-strix-prelaunch-result.json",
+              "bluefire-strix-runtime-composite",
+              "bluefire-strix-test-provider-descriptor.json",
+              "bluefire-strix-test-sandbox-packages",
+              "bluefire-strix-test-sandbox-tools",
+          )
+          for name in names:
+              path = root / name
+              if path.parent != root or path.is_symlink() or (
+                  path.exists() and path.resolve(strict=True).parent != root
+              ):
+                  raise SystemExit("private candidate cleanup path is invalid")
+              if path.is_dir():
+                  shutil.rmtree(path)
+              elif path.exists():
+                  path.unlink()
+              if path.exists():
+                  raise SystemExit("private candidate material remains")
+          PY

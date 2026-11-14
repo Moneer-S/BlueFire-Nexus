@@ -220,6 +220,15 @@ full product and its dependencies outside the sealed worker image. It does not
 yet run the installed Strix experiment; that proof requires the final native
 composite and the product journey step before private image cleanup.
 
+After image and service cleanup, the job retains a bounded, owner-private
+`producer-identity.json` containing only source and artifact digests, host
+image identity, and the image cleanup receipt digest if one exists. It does
+not claim installed execution. An exact allowlist then removes the candidate
+checkout and wheel, worker wheel, qualification and prelaunch materials,
+runtime composite, and downloaded image build inputs. The image contract,
+cleanup receipt, and private identity summary remain available for a later
+sanitized proof bundle; no executable materials or raw paths are uploaded.
+
 The output manifest filename is
 `strix-test-sandbox-image-manifest.json`. Its canonical SHA-256 is the image
 contract reference. `StrixTestSandboxImageContractV1` exposes the separate

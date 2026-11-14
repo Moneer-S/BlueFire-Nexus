@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -63,6 +66,8 @@ APPROVED_STEP_ORDER = (
     "Smoke the installed service outside checkout",
     "Remove this run's exact private image resources",
     "Remove exact private service build materials",
+    "Retain bounded private producer identities",
+    "Remove exact private candidate and worker materials",
 )
 APPROVED_RUN_SHA256 = {
     "Read reviewed uv build version": (
@@ -124,6 +129,12 @@ APPROVED_RUN_SHA256 = {
     ),
     "Remove exact private service build materials": (
         "83d55240ce21675b6b46501411085102bf8f8ae15b7c8e7b1c4d284b79065fcb"
+    ),
+    "Retain bounded private producer identities": (
+        "b89ea5e367f08ed47b2983d7d185b9d27f019d5c93376d0912c4588c50d4fbde"
+    ),
+    "Remove exact private candidate and worker materials": (
+        "b3dd800584d27e5d2977c8d869dfb4de9a47e51fa11294fe8dd209151f0369eb"
     ),
 }
 FORBIDDEN = (
@@ -407,7 +418,7 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
     assert '{"reserved", "image-bound", "qualified"}' in cleanup["run"]
     assert 'output="$RUNNER_TEMP/bluefire-strix-test-sandbox-output"' in cleanup["run"]
     assert 'test ! -e "$ledger"' in cleanup["run"]
-    assert job["steps"][-2] is cleanup
+    assert job["steps"][-4] is cleanup
 
     service_cleanup = _step(workflow, "Remove exact private service build materials")
     assert service_cleanup.get("if") == "${{ always() }}"
@@ -425,7 +436,64 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "private service build material remains",
     ):
         assert required in service_cleanup["run"]
-    assert job["steps"][-1] is service_cleanup
+    assert job["steps"][-3] is service_cleanup
+
+    identity = _step(workflow, "Retain bounded private producer identities")
+    assert identity.get("if") == "${{ always() }}"
+    for required in (
+        'evidence = root / "bluefire-strix-evidence"',
+        "output.is_symlink()",
+        "output.resolve(strict=True).parent != root",
+        "output.exists() and not output.is_dir()",
+        'path = evidence / "producer-identity.json"',
+        '"bluefire_wheel_digest"',
+        '"strix_candidate_digest"',
+        '"worker_wheel_digest"',
+        '"runtime_composite_ref"',
+        '"image_index_digest"',
+        '"image_manifest_digest"',
+        '"image_config_digest"',
+        '"test_provider_digest"',
+        'image_version = os.environ.get("ImageVersion", "")',
+        '"os_image": "ubuntu-24.04"',
+        '"runner_image_version": image_version',
+        '"architecture": "x86_64"',
+        '"identities-only-no-installed-execution-proof"',
+        "mode=0o700",
+        "os.O_NOFOLLOW",
+        "os.open(path, flags, 0o600)",
+        "StrixTestSandboxImageContractV1(manifest.read_bytes())",
+        "StrixTestSandboxImageCleanupReceiptV1(cleanup.read_bytes())",
+    ):
+        assert required in identity["run"]
+
+    candidate_cleanup = _step(workflow, "Remove exact private candidate and worker materials")
+    assert candidate_cleanup.get("if") == "${{ always() }}"
+    for required in (
+        'root_path = Path(os.environ["RUNNER_TEMP"])',
+        "sudo -n /usr/bin/env -i",
+        'RUNNER_TEMP="$RUNNER_TEMP" GITHUB_WORKSPACE="$GITHUB_WORKSPACE"',
+        "PATH=/usr/bin:/bin /usr/bin/python3 -I -B -",
+        'workspace_path = Path(os.environ["GITHUB_WORKSPACE"])',
+        'root != workspace.parents[1] / "_temp"',
+        "path.parent != root or path.is_symlink()",
+        "path.resolve(strict=True).parent != root",
+        "shutil.rmtree.avoids_symlink_attacks",
+        '"bluefire-strix-candidate-work"',
+        '"bluefire-strix-candidate-output"',
+        '"bluefire-strix-qualification-work"',
+        '"bluefire-strix-qualification-output"',
+        '"bluefire-worker-artifact"',
+        '"bluefire-strix-runtime-preparation"',
+        '"bluefire-strix-runtime-composite"',
+        '"bluefire-strix-test-sandbox-packages"',
+        '"bluefire-strix-test-sandbox-tools"',
+    ):
+        assert required in candidate_cleanup["run"]
+    assert "bluefire-strix-evidence" not in candidate_cleanup["run"]
+    assert "bluefire-strix-test-sandbox-output" not in candidate_cleanup["run"]
+    assert job["steps"][-2] is identity
+    assert job["steps"][-1] is candidate_cleanup
 
     scripts = "\n".join(step["run"] for step in job["steps"] if "run" in step).lower()
     assert "actions/upload-artifact" not in scripts
@@ -556,3 +624,91 @@ def test_dispatch_has_no_caller_selected_image_or_digest_inputs() -> None:
     }
     with pytest.raises(AssertionError):
         _assert_private_workflow(workflow)
+
+
+def test_private_candidate_cleanup_removes_only_its_exact_materials(tmp_path: Path) -> None:
+    step = _step(_load(), "Remove exact private candidate and worker materials")
+    script = step["run"].split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    workspace = tmp_path / "work" / "repository" / "repository"
+    workspace.mkdir(parents=True)
+    runner_temp = tmp_path / "work" / "_temp"
+    runner_temp.mkdir()
+    candidate = runner_temp / "bluefire-strix-candidate-work"
+    candidate.mkdir()
+    (candidate / "source.py").write_text("generated candidate", encoding="utf-8")
+    (runner_temp / "bluefire-worker-build-result.json").write_text("{}", encoding="utf-8")
+    evidence = runner_temp / "bluefire-strix-evidence"
+    evidence.mkdir()
+    (evidence / "producer-identity.json").write_text("retained", encoding="utf-8")
+    output = runner_temp / "bluefire-strix-test-sandbox-output"
+    output.mkdir()
+    (output / "strix-test-sandbox-image-cleanup.json").write_text("retained", encoding="utf-8")
+    unrelated = runner_temp / "unrelated.txt"
+    unrelated.write_text("retained", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "RUNNER_TEMP": str(runner_temp), "GITHUB_WORKSPACE": str(workspace)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not candidate.exists()
+    assert not (runner_temp / "bluefire-worker-build-result.json").exists()
+    assert (evidence / "producer-identity.json").read_text(encoding="utf-8") == "retained"
+    assert (output / "strix-test-sandbox-image-cleanup.json").read_text(
+        encoding="utf-8"
+    ) == "retained"
+    assert unrelated.read_text(encoding="utf-8") == "retained"
+
+
+def test_private_candidate_cleanup_refuses_a_symbolic_link(tmp_path: Path) -> None:
+    step = _step(_load(), "Remove exact private candidate and worker materials")
+    script = step["run"].split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    workspace = tmp_path / "work" / "repository" / "repository"
+    workspace.mkdir(parents=True)
+    runner_temp = tmp_path / "work" / "_temp"
+    runner_temp.mkdir()
+    destination = runner_temp / "outside"
+    destination.mkdir()
+    (destination / "keep.txt").write_text("retained", encoding="utf-8")
+    link = runner_temp / "bluefire-strix-candidate-work"
+    try:
+        link.symlink_to(destination, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("symbolic links unavailable on this test host")
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "RUNNER_TEMP": str(runner_temp), "GITHUB_WORKSPACE": str(workspace)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "private candidate cleanup path is invalid" in result.stderr
+    assert link.is_symlink()
+    assert (destination / "keep.txt").read_text(encoding="utf-8") == "retained"
+
+
+def test_private_candidate_cleanup_refuses_another_temp_root(tmp_path: Path) -> None:
+    step = _step(_load(), "Remove exact private candidate and worker materials")
+    script = step["run"].split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    workspace = tmp_path / "work" / "repository" / "repository"
+    workspace.mkdir(parents=True)
+    wrong_temp = tmp_path / "other-temp"
+    candidate = wrong_temp / "bluefire-strix-candidate-work"
+    candidate.mkdir(parents=True)
+    (candidate / "keep.txt").write_text("retained", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "RUNNER_TEMP": str(wrong_temp), "GITHUB_WORKSPACE": str(workspace)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "private runner root is not the workspace sibling temp" in result.stderr
+    assert (candidate / "keep.txt").read_text(encoding="utf-8") == "retained"
