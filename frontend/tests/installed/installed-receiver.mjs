@@ -443,6 +443,7 @@ function allowedRead(url, method) {
     "/api/v1/receiver-defense/jobs",
     "/api/v1/jobs",
     "/api/v1/runs",
+    "/api/v1/engine-experiments",
     "/api/v1/detections",
     "/api/v1/comparison-snapshots",
   ].includes(path)) return !url.search;

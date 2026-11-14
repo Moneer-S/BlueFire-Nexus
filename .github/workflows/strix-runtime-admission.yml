@@ -1,0 +1,30 @@
+name: Strix installed CLI startup qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      threat_review_ref:
+        description: SHA-256 ref of the refreshed exact-candidate threat-review clearance
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strix-runtime-admission-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  publication_boundary:
+    name: Refuse unreviewed public artifact transfer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Refuse admission until reviewed private cross-job transfer exists
+        shell: bash
+        run: |
+          printf '%s\n' 'Strix admission is blocked: component redistribution review is incomplete.' >&2
+          printf '%s\n' 'Public Actions artifacts cannot carry the candidate, source, wheelhouse, OCI data, or transfer bundle.' >&2
+          printf '%s\n' 'A reviewed private transport preserving fresh-runner isolation is required before this workflow can run.' >&2
+          exit 2
