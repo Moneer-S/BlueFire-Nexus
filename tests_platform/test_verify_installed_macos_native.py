@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 import pytest
 import yaml
 
+from tools import ci_plan
 from tools import verify_installed_macos_native as verifier
 
 
@@ -22,9 +23,12 @@ def test_workflow_reuses_installed_intel_wheel_without_an_extra_platform_lane() 
         (repository / ".github/workflows/tests.yml").read_text(encoding="utf-8")
     )
     package = workflow["jobs"]["package"]
+    assert package["strategy"]["matrix"]["include"] == (
+        "${{ fromJSON(needs.plan.outputs.packages) }}"
+    )
     intel = [
         entry
-        for entry in package["strategy"]["matrix"]["include"]
+        for entry in ci_plan.plan("push", "")["packages"]
         if entry["platform"] == "macos" and entry["architecture"] == "x86_64"
     ]
     assert len(intel) == 1 and intel[0]["os"] == "macos-15-intel"

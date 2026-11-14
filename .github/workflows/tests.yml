@@ -2,8 +2,11 @@ name: tests
 
 on:
   pull_request:
+    # Marking a draft ready starts the full Python platform matrix.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,6 +19,29 @@ env:
   PYTHONNOUSERSITE: "1"
 
 jobs:
+  plan:
+    # Drafts run Python 3.10 on Linux only and Python 3.12 everywhere.
+    # Ready pull requests and main run both versions on every platform.
+    name: Plan platforms
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+      python_os: ${{ steps.scope.outputs.python_os }}
+      python_include: ${{ steps.scope.outputs.python_include }}
+      packages: ${{ steps.scope.outputs.packages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Choose platforms for this event
+        id: scope
+        env:
+          BLUEFIRE_CI_DRAFT: ${{ github.event.pull_request.draft }}
+        run: /usr/bin/python3 -I -B tools/ci_plan.py
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -63,44 +89,15 @@ jobs:
 
   python:
     name: Python ${{ matrix.python-version }} · ${{ matrix.os }}${{ matrix.partition && format(' · {0}', matrix.partition) || '' }}
+    needs: [plan]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.plan.outputs.python_os) }}
         python-version: ["3.10", "3.12"]
-        include:
-          - os: windows-latest
-            python-version: "3.10"
-            partition: a-b
-          - os: windows-latest
-            python-version: "3.10"
-            partition: c-d
-          - os: windows-latest
-            python-version: "3.10"
-            partition: e-q
-          - os: windows-latest
-            python-version: "3.10"
-            partition: r
-          - os: windows-latest
-            python-version: "3.10"
-            partition: remainder
-          - os: windows-latest
-            python-version: "3.12"
-            partition: a-b
-          - os: windows-latest
-            python-version: "3.12"
-            partition: c-d
-          - os: windows-latest
-            python-version: "3.12"
-            partition: e-q
-          - os: windows-latest
-            python-version: "3.12"
-            partition: r
-          - os: windows-latest
-            python-version: "3.12"
-            partition: remainder
+        include: ${{ fromJSON(needs.plan.outputs.python_include) }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -233,6 +230,7 @@ jobs:
 
   package:
     name: Native wheel - ${{ matrix.platform }} ${{ matrix.architecture }}
+    needs: [plan]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     defaults:
@@ -241,31 +239,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            platform: linux
-            architecture: x86_64
-            runner-path: runner/target/x86_64-unknown-linux-musl/release/bluefire-runner
-            wheel-platform-tag: linux_x86_64
-            venv-python: bin/python
-          - os: windows-latest
-            platform: windows
-            architecture: x86_64
-            runner-path: runner/target/release/bluefire-runner.exe
-            wheel-platform-tag: win_amd64
-            venv-python: Scripts/python.exe
-          - os: macos-15-intel
-            platform: macos
-            architecture: x86_64
-            runner-path: runner/target/release/bluefire-runner
-            wheel-platform-tag: macosx_11_0_x86_64
-            venv-python: bin/python
-          - os: macos-26
-            platform: macos
-            architecture: aarch64
-            runner-path: runner/target/release/bluefire-runner
-            wheel-platform-tag: macosx_11_0_arm64
-            venv-python: bin/python
+        include: ${{ fromJSON(needs.plan.outputs.packages) }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -793,3 +767,24 @@ jobs:
         with:
           name: bluefire-runner-${{ runner.os }}
           path: runner/target/release/bluefire-runner${{ runner.os == 'Windows' && '.exe' || '' }}
+
+  digest:
+    # Read-only summary of jobs, failed steps, and useful log diagnostics.
+    name: Result digest
+    if: ${{ !cancelled() }}
+    needs: [plan, frontend, python, package, rust]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Summarize this run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: /usr/bin/python3 -I -B tools/ci_digest.py

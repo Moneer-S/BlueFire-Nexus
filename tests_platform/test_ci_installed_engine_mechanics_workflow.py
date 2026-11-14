@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tools import ci_plan
+
 ROOT = Path(__file__).resolve().parents[1]
 VERIFY_NAME = "Verify installed Linux deterministic engine mechanics simulation"
 UPLOAD_NAME = "Upload installed Linux deterministic engine mechanics public summary"
@@ -71,7 +73,10 @@ def test_mechanics_uses_the_existing_exact_candidate_linux_wheel_lane() -> None:
     workflow = _workflow()
     assert workflow["permissions"] == {"contents": "read"}
     package = workflow["jobs"]["package"]
-    linux = [row for row in package["strategy"]["matrix"]["include"] if row["platform"] == "linux"]
+    assert (
+        package["strategy"]["matrix"]["include"] == "${{ fromJSON(needs.plan.outputs.packages) }}"
+    )
+    linux = [row for row in ci_plan.plan("push", "")["packages"] if row["platform"] == "linux"]
     assert len(linux) == 1
     assert linux[0]["os"] == "ubuntu-24.04"
     assert linux[0]["architecture"] == "x86_64"

@@ -5,12 +5,12 @@ from __future__ import annotations
 import threading
 
 import pytest
-from tests_platform.test_engine_installed_composition import _configured, _Resource
 
 import bluefire.service as service_module
 from bluefire.ai_provider_access import DirectAIProviderAccess
 from bluefire.job_runtime import JobContext, RunJobController
 from bluefire.service import BlueFireService
+from tests_platform.test_engine_installed_composition import _configured, _Resource
 from tests_platform.test_service_engine_composition import _service
 
 
