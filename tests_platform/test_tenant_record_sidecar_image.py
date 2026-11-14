@@ -276,7 +276,7 @@ def test_crashed_build_removes_only_exact_owned_tag(tmp_path: Path, monkeypatch:
     _write_once(private, f"intent-{build_id}.json", {
         **intent, "intent_ref": content_hash(intent),
     })
-    present = True
+    present = False
     calls: list[tuple[str, ...]] = []
 
     def runner(argv, _environment, _cwd, _timeout):  # type: ignore[no-untyped-def]
@@ -302,6 +302,11 @@ def test_crashed_build_removes_only_exact_owned_tag(tmp_path: Path, monkeypatch:
 
     monkeypatch.setattr(image_module, "_run", runner)
     monkeypatch.setattr(image_module, "_fixed_docker_executable", lambda: "/usr/bin/docker")
+    first = cleanup_target_sidecar_images(root=private)
+    assert first[0]["state"] == "unqualified_build_unsettled"
+    assert first[0]["image_id"] is None
+    assert not (private / f"cleanup-{build_id}.json").exists()
+    present = True  # The daemon may finish a build after its CLI client died.
     settled = cleanup_target_sidecar_images(root=private)
     assert settled[0]["state"] == "unqualified_build_unsettled"
     assert settled[0]["image_id"] == IMAGE_ID

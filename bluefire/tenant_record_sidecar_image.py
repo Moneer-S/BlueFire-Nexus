@@ -658,7 +658,11 @@ def cleanup_target_sidecar_images(
             "tag_absent_at_check": True,
         }
         cleanup["cleanup_ref"] = content_hash(cleanup)
-        _write_once(private, cleanup_name, cleanup)
+        if qualified_ref is not None:
+            # An unqualified build may still publish a tag after its client
+            # died. Keep its durable intent and repeat this cleanup on each
+            # recovery instead of recording terminal absence prematurely.
+            _write_once(private, cleanup_name, cleanup)
         terminal.append(cleanup)
         _remove_owned_context(private, build_id)
     return tuple(terminal)
