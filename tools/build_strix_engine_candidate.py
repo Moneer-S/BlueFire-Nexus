@@ -1127,6 +1127,24 @@ def _validate_output_set(output: Path, allowed: set[str]) -> None:
         raise StrixCandidateBuildError("candidate artifacts exceed the 256 MiB output limit")
 
 
+def _discard_uv_build_marker(output: Path) -> None:
+    """Remove only the exact uv 0.13.6 output-directory marker, never an artifact."""
+
+    marker = output / ".gitignore"
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise StrixCandidateBuildError("uv build output marker is unavailable") from None
+    if _read_regular(marker, 1) != b"*":
+        raise StrixCandidateBuildError("uv build output marker differs from the pinned frontend")
+    try:
+        marker.unlink()
+    except OSError:
+        raise StrixCandidateBuildError("uv build output marker could not be removed") from None
+
+
 def _safe_runner_value(value: str | None) -> str:
     if value is None or not _SAFE_RUNNER_VALUE.fullmatch(value):
         return "unreported"
@@ -1197,6 +1215,7 @@ def build_candidate(
         cwd=source,
         environment=environment,
     )
+    _discard_uv_build_marker(output)
     wheels = sorted(output.glob("*.whl"))
     if len(wheels) != 1 or not wheels[0].name.startswith("strix_agent-1.7.0-"):
         raise StrixCandidateBuildError("candidate build did not produce exactly one expected wheel")

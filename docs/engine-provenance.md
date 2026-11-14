@@ -109,6 +109,10 @@ The reusable candidate workflow uses:
 - an upstream subprocess environment that inherits no GitHub, cloud, registry, Docker, model,
   proxy, user-home, or credential variables.
 
+The pinned uv build creates a one-byte `*` `.gitignore` in its output directory. The builder
+checks that exact standalone marker and removes it before the final output inventory; any different
+marker or other unexpected output still fails the candidate inventory.
+
 The manifest records exact tool versions and executable hashes, hosted runner identity, `uv.lock`,
 `go.mod`, and `go.sum` hashes, source blobs, both overlay receipts, and artifact identities. Candidate output is
 limited to 256 MiB. Destinations are exclusive, archives reject links and special files, and the

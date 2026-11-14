@@ -281,6 +281,56 @@ def test_uv_build_uses_the_exact_0136_command_surface(tmp_path: Path) -> None:
     assert "--frozen" not in candidate._uv_build_arguments(work, output)
 
 
+def test_uv_build_marker_is_validated_and_excluded_from_candidate_output(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    candidate._discard_uv_build_marker(output)
+    marker = output / ".gitignore"
+    marker.write_bytes(b"*")
+    candidate._discard_uv_build_marker(output)
+    assert not marker.exists()
+    wheel = output / "candidate.whl"
+    wheel.write_bytes(b"wheel")
+    candidate._validate_output_set(output, {wheel.name})
+    (output / "unknown.txt").write_bytes(b"unexpected")
+    with pytest.raises(candidate.StrixCandidateBuildError, match="unexpected candidate output"):
+        candidate._validate_output_set(output, {wheel.name})
+
+
+@pytest.mark.parametrize("payload", [b"", b"\n", b"*\n", b"**", b"x"])
+def test_uv_build_marker_refuses_other_contents(tmp_path: Path, payload: bytes) -> None:
+    marker = tmp_path / ".gitignore"
+    marker.write_bytes(payload)
+    with pytest.raises(candidate.StrixCandidateBuildError, match="marker|standalone regular file"):
+        candidate._discard_uv_build_marker(tmp_path)
+    assert marker.read_bytes() == payload
+
+
+def test_uv_build_marker_refuses_non_regular_output(tmp_path: Path) -> None:
+    marker = tmp_path / ".gitignore"
+    marker.mkdir()
+    with pytest.raises(candidate.StrixCandidateBuildError, match="standalone regular file"):
+        candidate._discard_uv_build_marker(tmp_path)
+    assert marker.is_dir()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink"])
+def test_uv_build_marker_refuses_linked_output(tmp_path: Path, kind: str) -> None:
+    target = tmp_path / "target"
+    target.write_bytes(b"*")
+    marker = tmp_path / ".gitignore"
+    try:
+        if kind == "symlink":
+            marker.symlink_to(target)
+        else:
+            os.link(target, marker)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"filesystem does not support {kind}: {exc.__class__.__name__}")
+    with pytest.raises(candidate.StrixCandidateBuildError, match="standalone regular file"):
+        candidate._discard_uv_build_marker(tmp_path)
+    assert target.read_bytes() == b"*"
+
+
 def test_candidate_command_failure_is_stage_bounded_and_private(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
