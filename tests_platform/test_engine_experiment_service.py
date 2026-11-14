@@ -498,6 +498,20 @@ def _service(
     )
 
 
+def test_artifact_review_requires_a_saved_attempt_and_artifact() -> None:
+    experiment = _reserve_baseline(_new_experiment())
+    service, _jobs = _service(_History(experiment))
+    artifact_id = "artifact-" + "f" * 32
+    with pytest.raises(EngineExperimentServiceError) as missing_attempt:
+        service.review_artifact(EXPERIMENT_ID, "engine-attempt-" + "f" * 32, artifact_id)
+    assert missing_attempt.value.code == "engine_selection_not_found"
+    with pytest.raises(EngineExperimentServiceError) as missing_artifact:
+        service.review_artifact(
+            EXPERIMENT_ID, experiment.attempts[0].record.binding.attempt_id, artifact_id
+        )
+    assert missing_artifact.value.code == "engine_selection_not_found"
+
+
 def _reserved_reproducer_check() -> EngineExperiment:
     experiment = _applied_experiment()
     created_at = "2026-11-04T12:08:00Z"

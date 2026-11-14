@@ -63,6 +63,15 @@ Every installed engine journey must retain one exact, reviewable record containi
 
 This record is an acceptance requirement, not evidence that such a journey has already run.
 
+Saved attempt artifact inspection is an authenticated local read that must use the same explicitly
+configured protected `EngineArtifactStore` owner as the installed attempt. Each request selects one
+saved experiment, attempt, and artifact identity. The service reopens the publication and compares
+its binding, manifest, and complete artifact index with saved proof before reporting current
+availability. Installed proof currently classifies every source artifact as `private`; the browser
+receives only a bounded structural outline for those artifacts, never source words or values. If the
+protected reader is not wired or the retained bytes cannot be verified, the saved inventory remains
+historical and the inspection reports unavailable. No artifact path or download URL is exposed.
+
 ## Reviewed BlueFire modifications
 
 The upstream system prompt contains blanket authorization and refusal-avoidance wording that is

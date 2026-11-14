@@ -4,6 +4,7 @@ import hashlib
 import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,7 @@ from bluefire.engine_execution_proof_writer import (
     _artifact_index,
     reopen_controller_artifact_index,
 )
+from bluefire.engine_artifact_review import review_retained_engine_artifact
 from bluefire.util import content_hash
 
 ATTEMPT = "engine-attempt-" + "1" * 32
@@ -124,6 +126,82 @@ def test_reopens_exact_private_artifact_index(tmp_path: Path) -> None:
     }
     assert all(row.artifact_id.startswith("artifact-") for row in index.artifacts)
     assert all(row.to_dict()["sha256"] == row.sha256 for row in index.artifacts)
+
+
+def _review_setup(tmp_path: Path):
+    store, publication = _store(tmp_path)
+    index = reopen_controller_artifact_index(
+        store, publication_binding=publication, artifact_byte_limit=4096
+    )
+    rows = [item.to_dict() for item in index.artifacts]
+    saved_binding = SimpleNamespace(
+        attempt_id=ATTEMPT,
+        binding_digest=publication.binding_digest,
+        artifact_byte_limit=4096,
+    )
+    entry = SimpleNamespace(
+        record=SimpleNamespace(binding=saved_binding),
+        delegation_digest=publication.delegation_digest,
+        artifact_manifest_ref=index.manifest_ref,
+    )
+    return store, entry, rows
+
+
+def test_private_review_reopens_bytes_but_releases_only_structure(tmp_path: Path) -> None:
+    store, entry, rows = _review_setup(tmp_path)
+    selected = next(row for row in rows if row["media_type"] == "application/json")
+
+    result = review_retained_engine_artifact(
+        store, experiment_id="experiment-" + "9" * 32,
+        entry=entry, saved_artifacts=rows, selected_artifact=selected,
+    )
+
+    assert result["availability"] == "retained"
+    assert result["access"] == "private"
+    assert result["summary"] == {
+        "kind": "json", "line_count": 1, "root": "object",
+        "field_count": 1, "recognized_fields": ["status"], "item_count": None,
+    }
+    assert result["text"] is None
+    assert "complete" not in str(result)
+
+
+def test_private_review_fails_closed_for_missing_reader_or_changed_source(tmp_path: Path) -> None:
+    store, entry, rows = _review_setup(tmp_path)
+    selected = rows[0]
+    arguments = dict(
+        experiment_id="experiment-" + "9" * 32,
+        entry=entry, saved_artifacts=rows, selected_artifact=selected,
+    )
+    assert review_retained_engine_artifact(None, **arguments)["reason"] == "reader_not_configured"
+    assert review_retained_engine_artifact(
+        store, **{**arguments, "saved_artifacts": rows[:1]}
+    )["availability"] == "unavailable"
+    assert review_retained_engine_artifact(
+        store, **{**arguments, "entry": SimpleNamespace(
+            record=SimpleNamespace(binding=SimpleNamespace(
+                attempt_id=ATTEMPT, binding_digest="sha256:" + "0" * 64,
+                artifact_byte_limit=4096,
+            )),
+            delegation_digest=entry.delegation_digest,
+            artifact_manifest_ref=entry.artifact_manifest_ref,
+        )}
+    )["availability"] == "unavailable"
+    (store.root / ATTEMPT / "raw" / "run.log").write_bytes(b"tampered")
+    result = review_retained_engine_artifact(store, **arguments)
+    assert result["availability"] == "unavailable"
+    assert result["summary"] is None and result["text"] is None
+
+
+def test_private_proof_cannot_be_promoted_to_reviewable_at_read_time(tmp_path: Path) -> None:
+    store, entry, rows = _review_setup(tmp_path)
+    promoted = [{**row, "access": "reviewable"} if row is rows[0] else row for row in rows]
+    result = review_retained_engine_artifact(
+        store, experiment_id="experiment-" + "9" * 32,
+        entry=entry, saved_artifacts=promoted, selected_artifact=promoted[0],
+    )
+    assert result["availability"] == "unavailable"
+    assert result["text"] is None
 
 
 def test_long_valid_artifact_name_gets_bounded_distinct_label(tmp_path: Path) -> None:

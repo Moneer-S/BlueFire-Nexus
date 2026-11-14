@@ -98,6 +98,7 @@ from .contracts import (
 from .detection_ai_jobs import DetectionAIJobs
 from .detection_create_jobs import DetectionCreateJobs
 from .detection_lab import DetectionLabService
+from .engine_artifact_store import EngineArtifactStore
 from .engine_experiment_jobs import EngineAttemptRuntime
 from .engine_experiment_service import EngineControllerJobs as EngineControllerJobsAdapter
 from .engine_experiment_service import TrustedEngineController
@@ -279,6 +280,7 @@ class BlueFireService(
         engine_experiment_presentation_source: EngineExperimentPresentationSource | None = None,
         engine_action_preparation_factory: EngineActionPreparationFactory | None = None,
         engine_action_submission_factory: EngineActionSubmissionFactory | None = None,
+        engine_artifact_store: EngineArtifactStore | None = None,
         engine_workflow_composition: InstalledEngineComposition | None = None,
         engine_workflow_composition_factory: EngineWorkflowCompositionFactory | None = None,
     ) -> None:
@@ -289,6 +291,7 @@ class BlueFireService(
             controller_jobs_factory=engine_controller_jobs_factory,
             preparation_factory=engine_action_preparation_factory,
             submission_factory=engine_action_submission_factory,
+            artifact_store=engine_artifact_store,
             composition=engine_workflow_composition,
             composition_factory=engine_workflow_composition_factory,
         )

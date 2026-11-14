@@ -29,6 +29,7 @@ from .accepted_engine_jobs import (
 )
 from .engine_action_preparation import EngineActionPreparationCoordinator
 from .engine_action_submission import EngineActionSubmissionCoordinator
+from .engine_artifact_store import EngineArtifactStore
 from .engine_attempt_contract import EngineAttemptBinding, EngineAttemptRecord
 from .engine_controller_jobs import (
     ControllerCheckExecutor,
@@ -221,6 +222,7 @@ class InstalledEngineAdapters:
     attempts: InstalledAttemptFactory
     resources: tuple[InstalledEngineResource, ...] = ()
     controller_job_adapter_factory: InstalledControllerJobAdapterFactory | None = None
+    artifact_store: EngineArtifactStore | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,6 +514,8 @@ class InstalledEngineComposition:
             raise InstalledEngineCompositionError(
                 "explicit protected sources and adapters required"
             )
+        if adapters.artifact_store is not None and type(adapters.artifact_store) is not EngineArtifactStore:
+            raise InstalledEngineCompositionError("artifact review requires a protected store")
         for field in fields(sources):
             if getattr(sources, field.name) is None:
                 raise InstalledEngineCompositionError(f"required dependency absent: {field.name}")

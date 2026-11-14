@@ -27,6 +27,10 @@ class EngineExperimentAPIService(Protocol):
         selected_check_id: str | None = None,
     ) -> Mapping[str, Any]: ...
 
+    def review_artifact(
+        self, experiment_id: str, attempt_id: str, artifact_id: str
+    ) -> Mapping[str, Any]: ...
+
     def assistance_context_request(
         self,
         experiment_id: str,

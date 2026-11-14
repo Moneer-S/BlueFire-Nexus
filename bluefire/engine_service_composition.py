@@ -13,6 +13,7 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 
 from .application_errors import APIError
+from .engine_artifact_store import EngineArtifactStore
 from .engine_action_preparation import EngineActionPreparationCoordinator
 from .engine_action_submission import EngineActionSubmissionCoordinator
 from .engine_experiment_jobs import EngineAttemptRuntime, EngineExperimentJobs
@@ -56,6 +57,7 @@ class EngineServiceComposition:
         controller_jobs_factory: EngineControllerJobsFactory | None = None,
         preparation_factory: EngineActionPreparationFactory | None = None,
         submission_factory: EngineActionSubmissionFactory | None = None,
+        artifact_store: EngineArtifactStore | None = None,
         composition: InstalledEngineComposition | None = None,
         composition_factory: EngineWorkflowCompositionFactory | None = None,
     ) -> None:
@@ -73,6 +75,7 @@ class EngineServiceComposition:
                     controller_jobs_factory,
                     preparation_factory,
                     submission_factory,
+                    artifact_store,
                 )
             ):
                 raise ValueError(
@@ -96,6 +99,9 @@ class EngineServiceComposition:
             preparation_factory,
             submission_factory,
         )
+        if artifact_store is not None and type(artifact_store) is not EngineArtifactStore:
+            raise ValueError("The engine artifact reader must be a protected store.")
+        self._artifact_store = artifact_store
         if composition is not None:
             self._claim(composition)
 
@@ -115,6 +121,7 @@ class EngineServiceComposition:
         composition = self._composition
         if composition is not None:
             self._runtime, self._controller = composition.runtime, composition.controller
+            self._artifact_store = composition.adapters.artifact_store
             self._controller_jobs_factory = composition.controller_jobs_factory
             self._preparation_factory = composition.action_preparation_factory
             self._submission_factory = composition.action_submission_factory
@@ -156,6 +163,7 @@ class EngineServiceComposition:
             clock=clock,
             presentation_source=presentation_source if presentation_source is not None else store,
             controller_jobs=controller_jobs,
+            artifact_store=self._artifact_store,
         )
         if self._preparation_factory is not None:
             workspace._action_preparation = self._preparation_factory(store, workspace)

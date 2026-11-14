@@ -331,6 +331,7 @@ def _configured(*, accepted_jobs=None, resources=(), controller_job_adapter_fact
         defense_executor=None if controller_job_adapter_factory is not None else untouched,
         check_executor=None if controller_job_adapter_factory is not None else untouched,
         controller_job_adapter_factory=controller_job_adapter_factory,
+        artifact_store=None,
     )
     composition = InstalledEngineComposition(
         sources=sources,
@@ -396,7 +397,7 @@ def test_every_protected_dependency_is_required_without_effects(group):
     owner = config.composition
     selected = getattr(owner, group)
     for field in fields(selected):
-        if field.name in {"resources", "controller_job_adapter_factory"}:
+        if field.name in {"resources", "controller_job_adapter_factory", "artifact_store"}:
             continue
         values = {"sources": owner.sources, "adapters": owner.adapters}
         values[group] = replace(selected, **{field.name: None})

@@ -21,6 +21,7 @@ from .engine_experiment_service import EngineExperimentServiceError
 
 _EXPERIMENT_ID = re.compile(r"^experiment-[0-9a-f]{32}$")
 _ATTEMPT_ID = re.compile(r"^engine-attempt-[0-9a-f]{32}$")
+_ARTIFACT_ID = re.compile(r"^artifact-[0-9a-f]{32}$")
 _CHECK_ID = re.compile(r"^controller-check-[0-9a-f]{32}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _APPROVAL_ID = re.compile(r"^approval-[0-9a-f]{32}$")
@@ -361,6 +362,14 @@ def _parse_suffix(suffix: str) -> tuple[str, tuple[str, ...]] | None:
         return "read", (experiment_id,)
     if parts[1:] == ["workspace"]:
         return "workspace", (experiment_id,)
+    if (
+        len(parts) == 5
+        and parts[1] == "attempts"
+        and _ATTEMPT_ID.fullmatch(parts[2]) is not None
+        and parts[3] == "artifacts"
+        and _ARTIFACT_ID.fullmatch(parts[4]) is not None
+    ):
+        return "review-artifact", (experiment_id, parts[2], parts[4])
     if parts[1:] == ["assistant-context"]:
         return "assistant-context", (experiment_id,)
     if parts[1:] == ["actions", "prepare"]:
@@ -450,6 +459,7 @@ def dispatch_engine_experiments(
                 selected_attempt_id=selected_attempt_id,
                 selected_check_id=selected_check_id,
             ),
+            "review-artifact": lambda: service.review_artifact(*arguments),
         }
         callback = reads.get(operation)
         if callback is None:

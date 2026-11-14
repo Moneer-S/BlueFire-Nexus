@@ -1,10 +1,13 @@
-import { render, screen } from "@testing-library/react";
-import { expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
 import { EngineAttemptEvidence } from "../src/components/EngineAttemptEvidence";
+import { engineExperimentApi, type EngineArtifactReview } from "../src/lib/engine-experiment-api";
 import type { EngineAttempt, EngineEvidenceCategory } from "../src/lib/engine-experiment";
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const attemptId = `engine-attempt-${"4".repeat(32)}`;
+const experimentId = `experiment-${"3".repeat(32)}`;
+afterEach(() => vi.restoreAllMocks());
 
 const unverifiedExecutionProof = (): EngineAttempt["execution_proof"] => ({
   status: "unverified", controller_receipt_ref: null, runtime_identity_ref: null, image_identity_ref: null, runtime_activation_ref: null, runtime_closure_ref: null, fixed_exec_receipt_ref: null, startup_overlay_ref: null, target_response_receipt_ref: null,
@@ -106,4 +109,40 @@ it("uses unique heading identities for repeated evidence regions", () => {
   const { container } = render(<><EngineAttemptEvidence attempt={attempt()} /><EngineAttemptEvidence attempt={attempt()} /></>);
   const ids = [...container.querySelectorAll("h3[id]")].map(node => node.id);
   expect(new Set(ids).size).toBe(ids.length);
+});
+
+it("inspects a private artifact only on request and shows verified structure without source words", async () => {
+  const value = attempt();
+  value.artifacts![0]!.access = "private";
+  const spy = vi.spyOn(engineExperimentApi, "reviewArtifact").mockResolvedValue({
+    schema_version: "bluefire.engine-artifact-review.v1", experiment_id: experimentId,
+    attempt_id: attemptId, artifact_id: value.artifacts![0]!.artifact_id,
+    manifest_ref: value.artifact_manifest_ref!, sha256: value.artifacts![0]!.sha256,
+    bytes: value.artifacts![0]!.bytes, access: "private", availability: "retained",
+    reason: null, summary: { kind: "json", line_count: 7, root: "object", field_count: 3,
+      recognized_fields: ["findings", "status"], item_count: null }, text: null,
+  } satisfies EngineArtifactReview);
+  render(<EngineAttemptEvidence attempt={value} experimentId={experimentId} />);
+  expect(spy).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Inspect retained source" }));
+  expect(await screen.findByText(/Protected source verified at inspection time/)).toBeInTheDocument();
+  expect(screen.getByText(/Its body remains private/)).toBeInTheDocument();
+  expect(screen.getByText("findings, status")).toBeInTheDocument();
+  expect(spy).toHaveBeenCalledWith(experimentId, value, value.artifacts![0]);
+  expect(screen.queryByText("Show verified text excerpt")).not.toBeInTheDocument();
+});
+
+it("labels a missing or changed source without treating historical inventory as current", async () => {
+  const value = attempt();
+  vi.spyOn(engineExperimentApi, "reviewArtifact").mockResolvedValue({
+    schema_version: "bluefire.engine-artifact-review.v1", experiment_id: experimentId,
+    attempt_id: attemptId, artifact_id: value.artifacts![0]!.artifact_id,
+    manifest_ref: value.artifact_manifest_ref!, sha256: value.artifacts![0]!.sha256,
+    bytes: value.artifacts![0]!.bytes, access: "reviewable", availability: "unavailable",
+    reason: "retained_source_changed", summary: null, text: null,
+  });
+  render(<EngineAttemptEvidence attempt={value} experimentId={experimentId} />);
+  fireEvent.click(screen.getByRole("button", { name: "Inspect retained source" }));
+  expect(await screen.findByText(/protected source is missing, changed, or could not be verified/)).toBeInTheDocument();
+  expect(screen.queryByText(/Protected source verified at inspection time/)).not.toBeInTheDocument();
 });

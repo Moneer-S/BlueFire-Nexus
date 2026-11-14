@@ -16,6 +16,7 @@ ROOT = "/api/v1/engine-experiments"
 EXPERIMENT = "experiment-" + "1" * 32
 ATTEMPT = "engine-attempt-" + "2" * 32
 CHECK = "controller-check-" + "5" * 32
+ARTIFACT = "artifact-" + "6" * 32
 DIGEST = "sha256:" + "a" * 64
 
 
@@ -40,6 +41,10 @@ class _Service:
     ):
         self.calls.append(("workspace", experiment_id, selected_attempt_id, selected_check_id))
         return {"workspace": True}
+
+    def review_artifact(self, experiment_id: str, attempt_id: str, artifact_id: str):
+        self.calls.append(("review_artifact", experiment_id, attempt_id, artifact_id))
+        return {"artifact_review": True}
 
     def assistance_context_request(
         self,
@@ -487,6 +492,33 @@ def test_workspace_selection_rejects_ambiguous_or_noncanonical_queries(query) ->
     assert dispatch_engine_experiments(handler, path)
     assert handler.service.calls == []
     assert handler.errors[0][1] == "engine_experiment_invalid"
+
+
+def test_artifact_review_reads_only_one_canonical_saved_identity() -> None:
+    path = f"{ROOT}/{EXPERIMENT}/attempts/{ATTEMPT}/artifacts/{ARTIFACT}"
+    handler = _Handler(path)
+    assert dispatch_engine_experiments(handler, path)
+    assert handler.service.calls == [("review_artifact", EXPERIMENT, ATTEMPT, ARTIFACT)]
+    assert handler.responses == [{"artifact_review": True}]
+
+    post = _Handler(path)
+    assert dispatch_engine_experiments(post, path, {})
+    assert post.service.calls == [] and post.allowed == ["GET"]
+
+
+@pytest.mark.parametrize("suffix", [
+    f"/{EXPERIMENT}/attempts/{ATTEMPT}/artifacts/artifact-invalid",
+    f"/{EXPERIMENT}/attempts/engine-attempt-invalid/artifacts/{ARTIFACT}",
+    f"/{EXPERIMENT}/attempts/{ATTEMPT}/artifacts/{ARTIFACT}/raw",
+    f"/{EXPERIMENT}/attempts/{ATTEMPT}/artifacts/{ARTIFACT}?path=secret",
+    f"/{EXPERIMENT}/attempts/{ATTEMPT}/artifacts/{ARTIFACT}%2Fraw",
+])
+def test_artifact_review_refuses_path_or_query_authority(suffix: str) -> None:
+    path = ROOT + suffix
+    handler = _Handler(path)
+    assert dispatch_engine_experiments(handler, path.split("?", 1)[0])
+    assert handler.service.calls == []
+    assert handler.errors
 
 
 @pytest.mark.parametrize("field", sorted(_create_request()))

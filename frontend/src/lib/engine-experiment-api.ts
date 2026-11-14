@@ -1,5 +1,5 @@
 import { request } from "./api";
-import { checkedEngineExperiment, type EngineExperiment, type EngineWorkspaceSelection } from "./engine-experiment";
+import { checkedEngineExperiment, type EngineArtifact, type EngineAttempt, type EngineExperiment, type EngineWorkspaceSelection } from "./engine-experiment";
 import { checkedPreparedEngineAction, checkedEngineActionAcceptance, engineActionLabels, type PreparedActionKind, type PreparedEngineAction } from "./engine-actions";
 import type { RunJob } from "../types";
 
@@ -7,6 +7,7 @@ const EXPERIMENT_ID = /^experiment-[0-9a-f]{32}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const UTC_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?Z$/;
 const ATTEMPT_ID = /^engine-attempt-[0-9a-f]{32}$/;
+const ARTIFACT_ID = /^artifact-[0-9a-f]{32}$/;
 const CHECK_ID = /^controller-check-[0-9a-f]{32}$/;
 const CHANGE_ID = /^defense-change-[0-9a-f]{32}$/;
 const RUN_ID = /^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/;
@@ -28,6 +29,47 @@ export interface EngineExperimentHead {
 export interface EngineExperimentList {
   schema_version: "bluefire.engine-experiment-list.v1";
   experiments: EngineExperimentHead[];
+}
+
+export interface EngineArtifactReview {
+  schema_version: "bluefire.engine-artifact-review.v1";
+  experiment_id: string;
+  attempt_id: string;
+  artifact_id: string;
+  manifest_ref: string;
+  sha256: string;
+  bytes: number;
+  access: "private" | "reviewable";
+  availability: "retained" | "unavailable";
+  reason: "reader_not_configured" | "retained_source_changed" | null;
+  summary: { kind: "large" | "binary" | "text" | "json" | "jsonl" | "invalid_json"; line_count: number | null; root: "object" | "array" | "scalar" | null; field_count: number | null; recognized_fields: string[]; item_count: number | null } | null;
+  text: string | null;
+}
+
+function checkedArtifactReview(value: unknown, experimentId: string, attempt: EngineAttempt, artifact: EngineArtifact): EngineArtifactReview {
+  if (!exact(value, ["schema_version", "experiment_id", "attempt_id", "artifact_id", "manifest_ref", "sha256", "bytes", "access", "availability", "reason", "summary", "text"])
+    || value.schema_version !== "bluefire.engine-artifact-review.v1"
+    || value.experiment_id !== experimentId || value.attempt_id !== attempt.attempt_id
+    || value.artifact_id !== artifact.artifact_id || value.manifest_ref !== attempt.artifact_manifest_ref
+    || value.sha256 !== artifact.sha256 || value.bytes !== artifact.bytes || value.access !== artifact.access
+    || !["retained", "unavailable"].includes(String(value.availability))) throw new Error("The saved artifact review changed.");
+  if (value.availability === "unavailable") {
+    if (!["reader_not_configured", "retained_source_changed"].includes(String(value.reason)) || value.summary !== null || value.text !== null) throw new Error("The saved artifact review changed.");
+  } else {
+    const summary = value.summary;
+    const safeFields = ["findings", "issues", "vulnerabilities", "observations", "events", "steps", "results", "summary", "conclusion", "status"];
+    if (value.reason !== null || !exact(summary, ["kind", "line_count", "root", "field_count", "recognized_fields", "item_count"])
+      || !["large", "binary", "text", "json", "jsonl", "invalid_json"].includes(String(summary.kind))
+      || summary.line_count !== null && (typeof summary.line_count !== "number" || !Number.isSafeInteger(summary.line_count) || summary.line_count < 0)
+      || summary.field_count !== null && (typeof summary.field_count !== "number" || !Number.isSafeInteger(summary.field_count) || summary.field_count < 0)
+      || summary.item_count !== null && (typeof summary.item_count !== "number" || !Number.isSafeInteger(summary.item_count) || summary.item_count < 0)
+      || ![null, "object", "array", "scalar"].includes(summary.root as null | string)
+      || !Array.isArray(summary.recognized_fields) || summary.recognized_fields.length > safeFields.length
+      || summary.recognized_fields.some(field => typeof field !== "string" || !safeFields.includes(field))
+      || JSON.stringify([...summary.recognized_fields].sort()) !== JSON.stringify(summary.recognized_fields)
+      || value.text !== null && (artifact.access !== "reviewable" || typeof value.text !== "string" || new TextEncoder().encode(value.text).length > 8192)) throw new Error("The saved artifact review changed.");
+  }
+  return value as unknown as EngineArtifactReview;
 }
 
 const exact = (value: unknown, fields: readonly string[]): value is Record<string, unknown> => {
@@ -159,6 +201,14 @@ export function engineExperimentJobLink(job?: RunJob | null): string | undefined
 }
 
 export const engineExperimentApi = {
+  reviewArtifact: async (experimentId: string, attempt: EngineAttempt, artifact: EngineArtifact): Promise<EngineArtifactReview> => {
+    if (!engineExperimentId(experimentId) || !ATTEMPT_ID.test(attempt.attempt_id)
+      || !ARTIFACT_ID.test(artifact.artifact_id) || artifact.attempt_id !== attempt.attempt_id
+      || !attempt.artifact_manifest_ref || !DIGEST.test(attempt.artifact_manifest_ref)
+      || attempt.artifacts?.filter(item => item.artifact_id === artifact.artifact_id).length !== 1) throw new Error("Select an artifact from this saved attempt.");
+    const path = `/engine-experiments/${experimentId}/attempts/${attempt.attempt_id}/artifacts/${artifact.artifact_id}`;
+    return checkedArtifactReview(await request<unknown>(path), experimentId, attempt, artifact);
+  },
   prepare: async (workspace: EngineExperiment, actionKind?: PreparedActionKind) => {
     if (!engineExperimentId(workspace.experiment_id) || workspace.selected_context !== null || !Number.isSafeInteger(workspace.revision) || workspace.revision < 1 || workspace.revision > 10_000 || !DIGEST.test(workspace.experiment_digest) || !DIGEST.test(workspace.workspace_digest)) throw new Error("Reload the canonical engine workspace before reviewing this action.");
     const enabled = workspace.actions.filter(item => item.enabled && Object.hasOwn(engineActionLabels, item.kind));

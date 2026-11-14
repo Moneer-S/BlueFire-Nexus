@@ -13,6 +13,8 @@ import uuid
 from enum import Enum
 from typing import Any, Callable, Mapping, Protocol, TypeVar, cast
 
+from .engine_artifact_review import review_retained_engine_artifact
+from .engine_artifact_store import EngineArtifactStore
 from .engine_action_preparation import (
     EngineActionPreparationCoordinator,
     EngineActionPreparationServiceError,
@@ -228,6 +230,7 @@ class EngineExperimentService:
         controller_jobs: EngineControllerJobs | None = None,
         action_preparation: EngineActionPreparationCoordinator | None = None,
         action_submission: EngineActionSubmissionCoordinator | None = None,
+        artifact_store: EngineArtifactStore | None = None,
     ) -> None:
         self._history = history
         self._run_source = run_source
@@ -239,6 +242,7 @@ class EngineExperimentService:
         self._presentation_source = presentation_source
         self._action_preparation = action_preparation
         self._action_submission = action_submission
+        self._artifact_store = artifact_store
 
     def create(
         self,
@@ -356,6 +360,46 @@ class EngineExperimentService:
                 selected_check_id=selected_check_id,
             )
         )
+
+    def review_artifact(
+        self, experiment_id: str, attempt_id: str, artifact_id: str
+    ) -> Mapping[str, Any]:
+        """Review one saved artifact through the protected local store."""
+
+        def operation() -> Mapping[str, Any]:
+            saved = self._history.get_engine_experiment(experiment_id)
+            record = self._record(saved)
+            experiment = record["experiment"]
+            entry = next(
+                (item for item in experiment.attempts
+                 if item.record.binding.attempt_id == attempt_id), None
+            )
+            if entry is None:
+                raise EngineExperimentSelectionNotFound("attempt is not in this experiment")
+            workspace = self._workspace_from_record(
+                saved, selected_attempt_id=attempt_id
+            )
+            context = workspace["selected_context"]
+            if not isinstance(context, Mapping) or context.get("kind") != "engine_attempt":
+                raise EngineExperimentWorkspaceError("selected attempt is unavailable")
+            attempt = context["attempt"]
+            artifacts = attempt["artifacts"]
+            if not isinstance(artifacts, list):
+                raise EngineExperimentSelectionNotFound("artifact inventory is unavailable")
+            selected = next(
+                (item for item in artifacts if item["artifact_id"] == artifact_id), None
+            )
+            if selected is None:
+                raise EngineExperimentSelectionNotFound("artifact is not in this attempt")
+            return review_retained_engine_artifact(
+                self._artifact_store,
+                experiment_id=experiment_id,
+                entry=entry,
+                saved_artifacts=artifacts,
+                selected_artifact=selected,
+            )
+
+        return self._mapped(operation)
 
     def assistance_context_request(
         self,

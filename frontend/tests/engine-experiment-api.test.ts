@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { request } from "../src/lib/api";
 import { checkedEngineExperimentList, engineExperimentApi, engineExperimentPath } from "../src/lib/engine-experiment-api";
+import type { EngineArtifact, EngineAttempt } from "../src/lib/engine-experiment";
 
 vi.mock("../src/lib/api", () => ({ request: vi.fn() }));
 
@@ -87,4 +88,25 @@ it("refuses a response whose selected context does not match the requested item"
   vi.mocked(request).mockResolvedValue(raw);
 
   await expect(engineExperimentApi.workspace(experimentId, { kind: "controller_check", id: checkId })).rejects.toThrow(/selected workspace context changed/i);
+});
+
+it("binds artifact review to the saved row and rejects private source text", async () => {
+  const experimentId = `experiment-${"a".repeat(32)}`;
+  const attemptId = `engine-attempt-${"b".repeat(32)}`;
+  const artifact: EngineArtifact = { artifact_id: `artifact-${"c".repeat(32)}`, attempt_id: attemptId,
+    name: "report.json", sha256: `sha256:${"d".repeat(64)}`, bytes: 27,
+    media_type: "application/json", access: "private" };
+  const attempt = { attempt_id: attemptId, artifact_manifest_ref: `sha256:${"e".repeat(64)}`,
+    artifacts: [artifact] } as EngineAttempt;
+  const response = { schema_version: "bluefire.engine-artifact-review.v1", experiment_id: experimentId,
+    attempt_id: attemptId, artifact_id: artifact.artifact_id, manifest_ref: attempt.artifact_manifest_ref,
+    sha256: artifact.sha256, bytes: artifact.bytes, access: "private", availability: "retained",
+    reason: null, summary: { kind: "json", line_count: 1, root: "object", field_count: 1,
+      recognized_fields: ["status"], item_count: null }, text: null };
+  vi.mocked(request).mockResolvedValue(response);
+  await expect(engineExperimentApi.reviewArtifact(experimentId, attempt, artifact)).resolves.toEqual(response);
+  expect(request).toHaveBeenCalledExactlyOnceWith(`/engine-experiments/${experimentId}/attempts/${attemptId}/artifacts/${artifact.artifact_id}`);
+  vi.mocked(request).mockResolvedValue({ ...response, text: "private secret" });
+  await expect(engineExperimentApi.reviewArtifact(experimentId, attempt, artifact)).rejects.toThrow(/review changed/i);
+  await expect(engineExperimentApi.reviewArtifact(experimentId, attempt, { ...artifact, attempt_id: `engine-attempt-${"f".repeat(32)}` })).rejects.toThrow(/saved attempt/i);
 });

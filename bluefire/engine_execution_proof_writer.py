@@ -83,7 +83,7 @@ def reopen_controller_artifact_index(
         raise EngineExecutionProofWriterError("artifact proof source is invalid")
     try:
         reopened = store.reopen_attempt(publication_binding.attempt_id)
-        return _artifact_index(
+        return controller_artifact_index_from_reopened(
             reopened,
             publication_binding=publication_binding,
             artifact_byte_limit=artifact_byte_limit,
@@ -94,6 +94,26 @@ def reopen_controller_artifact_index(
         raise EngineExecutionProofWriterError(
             "artifact proof source could not be reopened"
         ) from None
+
+
+def controller_artifact_index_from_reopened(
+    reopened: ReopenedEngineArtifactAttempt,
+    *,
+    publication_binding: EngineArtifactPublicationBinding,
+    artifact_byte_limit: int,
+) -> ControllerArtifactIndex:
+    """Derive display rows from bytes already reopened by the protected store."""
+    if (
+        type(publication_binding) is not EngineArtifactPublicationBinding
+        or type(artifact_byte_limit) is not int
+        or not 0 <= artifact_byte_limit <= 64 * 1024 * 1024
+    ):
+        raise EngineExecutionProofWriterError("artifact proof source is invalid")
+    return _artifact_index(
+        reopened,
+        publication_binding=publication_binding,
+        artifact_byte_limit=artifact_byte_limit,
+    )
 
 
 def _artifact_index(
@@ -171,6 +191,7 @@ def _artifact_index(
 
 
 __all__ = [
+    "controller_artifact_index_from_reopened",
     "ControllerArtifactIndex",
     "ControllerArtifactProofRow",
     "EngineExecutionProofWriterError",

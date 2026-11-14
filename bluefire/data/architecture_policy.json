@@ -335,6 +335,7 @@
         "bluefire.linux_exec_lifetime_supervisor_process",
         "bluefire.engine_service_composition",
         "bluefire.engine_execution_proof_writer",
+        "bluefire.engine_artifact_review",
         "bluefire.engine_observation_publication",
         "bluefire.strix_admission_issuer",
         "bluefire.strix_engine_runtime",
