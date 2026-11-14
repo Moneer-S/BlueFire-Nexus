@@ -8,6 +8,8 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const UTC_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?Z$/;
 const ATTEMPT_ID = /^engine-attempt-[0-9a-f]{32}$/;
 const CHECK_ID = /^controller-check-[0-9a-f]{32}$/;
+const CHANGE_ID = /^defense-change-[0-9a-f]{32}$/;
+const RUN_ID = /^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/;
 const INSTALLED_CLAIM_POLICY = {
   schema_version: "bluefire.engine-execution-claim-policy.v1",
   claim_protocol: "bluefire.engine-attempt-execution-claim.v1",
@@ -95,6 +97,16 @@ export function engineExperimentPath(experimentId: string, selection?: { kind: "
   return `/composition?${params}`;
 }
 
+/** Link a run identity only to the one saved engine record that owns it. */
+export function engineExperimentRunHref(experiment: EngineExperiment, runId: string): string | undefined {
+  if (!RUN_ID.test(runId)) return;
+  const matches: EngineWorkspaceSelection[] = [
+    ...experiment.projection.attempts.filter(attempt => attempt.run_id === runId).map(attempt => ({ kind: "engine_attempt" as const, id: attempt.attempt_id })),
+    ...experiment.projection.checks.filter(check => check.run_id === runId).map(check => ({ kind: "controller_check" as const, id: check.check_id })),
+  ];
+  return matches.length === 1 ? engineExperimentPath(experiment.experiment_id, matches[0]) : undefined;
+}
+
 /** Navigation only. The destination validates the saved experiment and selected record. */
 export function engineExperimentJobLink(job?: RunJob | null): string | undefined {
   if (!job || job.schema_version !== "bluefire.job.v1" || typeof job.job_id !== "string" || !/^job-[0-9a-f]{32}$/.test(job.job_id)) return;
@@ -107,9 +119,9 @@ export function engineExperimentJobLink(job?: RunJob | null): string | undefined
     || typeof submission.intent_digest !== "string" || !DIGEST.test(submission.intent_digest))) return;
   if (!engineExperimentId(request.experiment_id)) return;
   const digestFields = job.kind === "engine-attempt" ? ["binding_digest", "delegation_digest", "execution_approval_digest"]
-    : ["experiment_digest", "mechanism_ref", "target_snapshot_ref", "input_digest"];
+    : job.kind === "engine-controller-check" ? ["experiment_digest", "mechanism_ref", "target_snapshot_ref", "input_digest"] : [];
   if (digestFields.some(field => typeof request[field] !== "string" || !DIGEST.test(request[field]))) return;
-  let selection: EngineWorkspaceSelection;
+  let selection: EngineWorkspaceSelection | null;
   if (job.kind === "engine-attempt") {
     const installed = request.schema_version === "bluefire.engine-attempt-job.v2";
     if (!exact(request, ["schema_version", "experiment_id", "attempt_id", ...digestFields, "execution_approval_id", ...(installed ? ["execution_claim_policy"] : [])])
@@ -127,10 +139,21 @@ export function engineExperimentJobLink(job?: RunJob | null): string | undefined
       || request.performer !== (request.role === "retained_reproducer" ? "bluefire.controller" : "bluefire.trusted-client")
       || !timestamp(request.reserved_at)) return;
     selection = { kind: "controller_check", id: request.check_id };
+  } else if (job.kind === "engine-controller-operation") {
+    if (!exact(request, ["schema_version", "experiment_id", "experiment_revision", "experiment_digest", "change_id", "change_digest", "operation", "originating_job_id", "originating_operation_receipt_digest"])
+      || request.schema_version !== "bluefire.engine-defense-operation-job.v1"
+      || typeof request.experiment_revision !== "number" || !Number.isSafeInteger(request.experiment_revision) || request.experiment_revision < 1
+      || typeof request.experiment_digest !== "string" || !DIGEST.test(request.experiment_digest)
+      || typeof request.change_id !== "string" || !CHANGE_ID.test(request.change_id)
+      || typeof request.change_digest !== "string" || !DIGEST.test(request.change_digest)
+      || typeof request.operation !== "string" || !["apply", "reconcile_application", "rollback", "reconcile_rollback"].includes(request.operation)
+      || request.originating_job_id !== null && (typeof request.originating_job_id !== "string" || !/^job-[0-9a-f]{32}$/.test(request.originating_job_id))
+      || request.originating_operation_receipt_digest !== null && (typeof request.originating_operation_receipt_digest !== "string" || !DIGEST.test(request.originating_operation_receipt_digest))) return;
+    selection = null;
   } else return;
   const progress = job.progress;
   if (!progress || typeof progress !== "object" || Array.isArray(progress)
-    || ["experiment_id", "attempt_id", "check_id"].some(field => Object.hasOwn(progress, field) && progress[field] !== request[field])
+    || ["experiment_id", "attempt_id", "check_id", "change_id", "operation"].some(field => Object.hasOwn(progress, field) && progress[field] !== request[field])
     || (job.result_ref != null && job.result_ref !== `engine-experiment:${request.experiment_id}`)) return;
   return engineExperimentPath(request.experiment_id, selection);
 }

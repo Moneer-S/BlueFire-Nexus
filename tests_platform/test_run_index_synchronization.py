@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from bluefire.application_errors import APIError
 from bluefire.product_store import ProductStore
 from bluefire.run_store import RunStore
 from bluefire.service import BlueFireService
@@ -41,6 +42,71 @@ def recorded(service: BlueFireService, mode: str = "simulate") -> str:
         detections=[],
     )
     return handle.run_id
+
+
+def engine_evidence_run(service: BlueFireService, run_id: str, schema: str) -> None:
+    service.store.publish_finalized_run(
+        run_id,
+        created_at="2026-11-13T12:00:00Z",
+        finalized_at="2026-11-13T12:00:01Z",
+        scenario={"schema_version": "bluefire.engine-evidence-scenario.v1"},
+        plan={"schema_version": "bluefire.engine-evidence-plan.v1"},
+        policy={"schema_version": "bluefire.engine-evidence-policy.v1"},
+        profile=None,
+        result={
+            "schema_version": schema,
+            "status": "completed",
+            "experiment_id": "experiment-" + "a" * 32,
+        },
+        evidence=(),
+        detections=(),
+    )
+
+
+def test_canonical_history_excludes_typed_engine_bundles_without_hiding_corruption(
+    tmp_path: Path,
+) -> None:
+    service = service_at(tmp_path)
+    canonical_id = recorded(service)
+    corrupted_id = recorded(service)
+    corrupted_result = service.store.root / corrupted_id / "result.json"
+    corrupted_result.write_text(
+        corrupted_result.read_text(encoding="utf-8") + " ", encoding="utf-8"
+    )
+    engine_ids = (
+        "run-20261113T120001Z-1111111111111111",
+        "run-20261113T120002Z-2222222222222222",
+    )
+    for run_id, schema in zip(
+        engine_ids,
+        (
+            "bluefire.engine-observation-result.v1",
+            "bluefire.tenant-controller-check-run.v1",
+        ),
+        strict=True,
+    ):
+        engine_evidence_run(service, run_id, schema)
+
+    summaries = service.list()["runs"]
+    assert {row["run_id"] for row in summaries} == {canonical_id, corrupted_id}
+    assert next(row for row in summaries if row["run_id"] == corrupted_id)["status"] == "corrupted"
+    assert next(row for row in summaries if row["run_id"] == canonical_id)["mode"] == "simulate"
+    for run_id in engine_ids:
+        assert service.store.get_run(run_id, require_finalized=True)["status"] == "completed"
+        with pytest.raises(APIError) as refused:
+            service.detail(run_id)
+        assert refused.value.code == "engine_run_not_canonical"
+
+
+def test_engine_only_store_leaves_canonical_history_empty(tmp_path: Path) -> None:
+    service = service_at(tmp_path)
+    engine_evidence_run(
+        service, "run-20261113T120001Z-1111111111111111", "bluefire.engine-observation-result.v1"
+    )
+    engine_evidence_run(
+        service, "run-20261113T120002Z-2222222222222222", "bluefire.tenant-controller-check-run.v1"
+    )
+    assert service.list() == {"schema_version": "bluefire.run-list.v1", "runs": []}
 
 
 def exact_files(service: BlueFireService, run_id: str) -> dict[str, bytes]:

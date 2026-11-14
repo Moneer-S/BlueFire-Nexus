@@ -170,6 +170,17 @@ describe("control-plane request contracts", () => {
     await expect(api.runs()).resolves.toMatchObject({ runs: [demoRuns[0]], unavailable_run_count: 1 });
   });
 
+  it("separates engine bundles from canonical history while reporting damaged scenario runs", async () => {
+    const engine = ["bluefire.engine-observation-result.v1", "bluefire.tenant-controller-check-run.v1"]
+      .map(schema_version => ({ schema_version, run_id: "run-20300101T000001Z-bbbbbbbbbbbbbbbb", status: "completed" }));
+    const corrupted = { run_id: "run-20300101T000002Z-cccccccccccccccc", status: "corrupted" };
+    const respond = (runs: unknown[]) => new Response(JSON.stringify({ schema_version: "bluefire.run-list.v1", runs }), { status: 200, headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn(async () => respond([demoRuns[0], ...engine, corrupted])));
+    await expect(api.runs()).resolves.toMatchObject({ runs: [demoRuns[0]], unavailable_run_count: 1 });
+    vi.stubGlobal("fetch", vi.fn(async () => respond(engine)));
+    await expect(api.runs()).resolves.toMatchObject({ runs: [], unavailable_run_count: 0 });
+  });
+
   it("uses the durable job submission, approval, polling, and control routes", async () => {
     const job = { schema_version: "bluefire.job.v1", job_id: "job-0123456789abcdef0123456789abcdef", kind: "scenario.run", state: "awaiting_approval", progress: { phase: "awaiting_approval" }, result_ref: null, error: null } as const;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {

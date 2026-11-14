@@ -17,6 +17,7 @@ import {
 import { Badge, Button, Callout, DataList, Panel, formatDate, sentence } from "./Primitives";
 import { EngineAttemptEvidence } from "./EngineAttemptEvidence";
 import { EngineRetestComparison, type EngineSourceRunLink } from "./EngineRetestComparison";
+import { engineExperimentRunHref } from "../lib/engine-experiment-api";
 import "./EngineExperimentWorkspace.css";
 
 export interface EngineExperimentWorkspaceProps {
@@ -31,7 +32,7 @@ export interface EngineExperimentWorkspaceProps {
   onCancelCheck?: (checkId: string) => void;
   cancellingAttemptId?: string | null;
   cancellingCheckId?: string | null;
-  runHref?: (runId: string) => string;
+  runHref?: (runId: string) => string | undefined;
   comparisonHref?: string;
 }
 
@@ -111,23 +112,25 @@ function ExecutionProofSummary({ attempt }: { attempt: EngineAttempt }) {
   </section>;
 }
 
-function AttemptSelector({ attempt, selected, detailAvailable, detailId, onSelect, runHref }: { attempt: EngineProjectionAttempt; selected: boolean; detailAvailable: boolean; detailId: string; onSelect: () => void; runHref: (runId: string) => string }) {
+function AttemptSelector({ attempt, selected, detailAvailable, detailId, onSelect, runHref }: { attempt: EngineProjectionAttempt; selected: boolean; detailAvailable: boolean; detailId: string; onSelect: () => void; runHref: (runId: string) => string | undefined }) {
+  const href = runHref(attempt.run_id);
   return <li className={selected ? "is-selected" : undefined}>
     <button type="button" aria-pressed={selected} aria-controls={selected && detailAvailable ? detailId : undefined} onClick={onSelect}>
       <span className="engine-attempt-marker"><Bot aria-hidden="true" /></span>
       <span><strong>{engineAttemptLabel(attempt.role)}</strong><small>{engineStateLabel(attempt)}</small></span>
       <Badge tone={stateTone(attempt.state, attempt.cleanup.state)}>{sentence(attempt.state)}</Badge>
     </button>
-    <Link to={runHref(attempt.run_id)} aria-label={`Open ${engineAttemptLabel(attempt.role)} run`}><ArrowRight aria-hidden="true" /></Link>
+    {href ? <Link to={href} aria-label={`Open ${engineAttemptLabel(attempt.role)} run`}><ArrowRight aria-hidden="true" /></Link> : null}
   </li>;
 }
 
-function ControllerCheckCard({ check, detail, selected, detailId, runHref, onSelect, onCancel, cancelling }: { check: EngineProjectionCheck; detail?: EngineControllerCheck; selected: boolean; detailId: string; runHref: (runId: string) => string; onSelect?: () => void; onCancel?: (checkId: string) => void; cancelling?: boolean }) {
+function ControllerCheckCard({ check, detail, selected, detailId, runHref, onSelect, onCancel, cancelling }: { check: EngineProjectionCheck; detail?: EngineControllerCheck; selected: boolean; detailId: string; runHref: (runId: string) => string | undefined; onSelect?: () => void; onCancel?: (checkId: string) => void; cancelling?: boolean }) {
+  const href = runHref(check.run_id);
   return <Panel className={`engine-check-card${selected ? " is-selected" : ""}`} id={selected ? detailId : undefined} tabIndex={selected ? -1 : undefined} aria-labelledby={selected ? `${detailId}-heading` : undefined}>
     <header><span className="engine-check-icon"><ShieldCheck aria-hidden="true" /></span><div><p>Trusted controller check</p><h3 id={selected ? `${detailId}-heading` : undefined}>{engineControllerCheckLabel(check.role)}</h3></div><Badge tone={stateTone(check.state, check.cleanup.state)}>{engineControllerCheckStateLabel(check)}</Badge></header>
     <p>{check.role === "retained_reproducer" ? "Repeats the retained mechanism without assigning model or engine authorship." : "Verifies the intended workflow separately from the attack objective."}</p>
     {detail?.observations.length ? <ul>{detail.observations.map(observation => <li key={observation.evidence_id}><strong>{checkObservationLabel(observation.category)}</strong><span>{observation.summary}</span><details><summary>Evidence identity and limits</summary><code>{observation.evidence_id}</code><p>{observation.limitations.length ? observation.limitations.join(" ") : "No additional limitation was recorded."}</p></details></li>)}</ul> : selected ? <Callout tone="warning" title="No checked outcome yet"><p>This controller operation has not established its result.</p></Callout> : null}
-    <footer><Link to={runHref(check.run_id)}>Inspect run evidence<ArrowRight aria-hidden="true" /></Link><span>{onSelect ? <Button type="button" size="small" variant="secondary" aria-pressed={selected} aria-controls={selected ? detailId : undefined} onClick={onSelect}>{selected ? "Selected" : `Review ${engineControllerCheckLabel(check.role).toLowerCase()}`}</Button> : null}{check.state === "reserved" && onCancel ? <Button type="button" size="small" variant="danger" disabled={cancelling} onClick={() => onCancel(check.check_id)}><Square aria-hidden="true" />{cancelling ? "Requesting cancellation" : "Cancel check"}</Button> : null}</span></footer>
+    <footer>{href ? <Link to={href}>Inspect run evidence<ArrowRight aria-hidden="true" /></Link> : null}<span>{onSelect ? <Button type="button" size="small" variant="secondary" aria-pressed={selected} aria-controls={selected ? detailId : undefined} onClick={onSelect}>{selected ? "Selected" : `Review ${engineControllerCheckLabel(check.role).toLowerCase()}`}</Button> : null}{check.state === "reserved" && onCancel ? <Button type="button" size="small" variant="danger" disabled={cancelling} onClick={() => onCancel(check.check_id)}><Square aria-hidden="true" />{cancelling ? "Requesting cancellation" : "Cancel check"}</Button> : null}</span></footer>
     <details><summary>Controller source and custody</summary><DataList items={[
       { label: "Performer", value: check.performer },
       { label: "Input", value: <code>{check.input_digest}</code> },
@@ -143,7 +146,7 @@ const phaseState = (kind: EnginePhaseState["kind"], label: string): EnginePhaseS
 const recordedOrCurrent = (workspaceEvidenceState: NonNullable<EngineExperimentWorkspaceProps["workspaceEvidenceState"]>, matchesCurrentSnapshot: boolean): EnginePhaseState =>
   workspaceEvidenceState === "current" && matchesCurrentSnapshot ? phaseState("current", "Current and verified") : phaseState("recorded", "Recorded history");
 
-export function EngineExperimentWorkspace({ experiment, workspaceEvidenceState = "current", selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction, onCancelAttempt, onCancelCheck, cancellingAttemptId, cancellingCheckId, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: EngineExperimentWorkspaceProps) {
+export function EngineExperimentWorkspace({ experiment, workspaceEvidenceState = "current", selectedAttemptId, selectedCheckId, onSelectAttempt, onSelectCheck, onPrimaryAction, onCancelAttempt, onCancelCheck, cancellingAttemptId, cancellingCheckId, runHref = runId => engineExperimentRunHref(experiment, runId), comparisonHref }: EngineExperimentWorkspaceProps) {
   const titleId = useId();
   const attemptDetailId = `${titleId}-selected-attempt`;
   const checkDetailId = `${titleId}-selected-check`;

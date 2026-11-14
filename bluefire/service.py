@@ -240,6 +240,14 @@ def _engine_service_clock() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+_ENGINE_EVIDENCE_RESULT_SCHEMAS = frozenset(
+    {
+        "bluefire.engine-observation-result.v1",
+        "bluefire.tenant-controller-check-run.v1",
+    }
+)
+
+
 class BlueFireService(
     RunnerManagementServiceMixin,
     ReceiverDefenseServiceMixin,
@@ -4688,6 +4696,10 @@ class BlueFireService(
         metadata = {
             item["id"]: item for item in self.product_store.list_resources(run_presentation.KIND)
         }
+        # Controller-owned engine evidence shares RunStore storage, but these
+        # result schemas are not canonical scenario runs. Keep every other
+        # summary, including corrupted or incomplete ones, visible to the
+        # canonical history's unavailable-record accounting.
         runs = [
             {
                 **run,
@@ -4696,12 +4708,19 @@ class BlueFireService(
                 ),
             }
             for run in self.store.list_runs()
+            if run.get("schema_version") not in _ENGINE_EVIDENCE_RESULT_SCHEMAS
         ]
         return {"schema_version": "bluefire.run-list.v1", "runs": runs}
 
     def detail(self, run_id: str) -> Mapping[str, Any]:
         try:
             run = self.store.get_run(run_id)
+            if run.get("schema_version") in _ENGINE_EVIDENCE_RESULT_SCHEMAS:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "engine_run_not_canonical",
+                    "Review this run in its saved engine experiment.",
+                )
             metadata = next(
                 (
                     item

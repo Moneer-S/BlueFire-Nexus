@@ -138,6 +138,18 @@ it("refuses external result routes instead of creating full-page navigation", ()
   expect(screen.getByText("Supporting runs unavailable")).toBeInTheDocument();
 });
 
+it("keeps engine evidence and comparison links inside the saved experiment", () => {
+  const experiment = `experiment-${"a".repeat(32)}`;
+  const attempt = `engine-attempt-${"b".repeat(32)}`;
+  const runHref = () => `/composition?engine_experiment=${experiment}&attempt=${attempt}`;
+  renderComparison(conclusion(), defense, {
+    runHref,
+    comparisonHref: `/composition?engine_experiment=${experiment}#engine-comparison`,
+  });
+  expect(screen.getByRole("link", { name: "Open full comparison" })).toHaveAttribute("href", `/composition?engine_experiment=${experiment}#engine-comparison`);
+  expect(screen.getByRole("link", { name: "Baseline exploration run" })).toHaveAttribute("href", runHref());
+});
+
 it("presents both server-advertised disposition choices without hiding proof warnings", async () => {
   const onDispositionAction = vi.fn();
   const actions: EngineWorkspaceAction[] = [

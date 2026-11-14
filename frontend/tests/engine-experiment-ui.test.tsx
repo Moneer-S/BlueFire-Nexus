@@ -100,7 +100,7 @@ it("selects an exact saved engine attempt through its callback without submittin
   const selectedDetail = document.getElementById(selectedDetailId!);
   expect(selectedDetail).toHaveAttribute("tabindex", "-1");
   expect(document.getElementById(selectedDetail?.getAttribute("aria-labelledby") ?? "")).toHaveTextContent("Baseline exploration");
-  expect(screen.getByRole("link", { name: "Open Baseline exploration run" })).toHaveAttribute("href", `/runs/${runId("01", "4")}`);
+  expect(screen.getByRole("link", { name: "Open Baseline exploration run" })).toHaveAttribute("href", `/composition?engine_experiment=experiment-${"1".repeat(32)}&attempt=${attemptId("4")}`);
   expect(screen.getByText(`approval-${"4".repeat(32)}`)).toBeInTheDocument();
   expect(screen.getByText(digest("5"))).toBeInTheDocument();
   const adaptive = screen.getByRole("button", { name: /Fresh adaptive search/i });

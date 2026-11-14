@@ -4,9 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { parseEngineExperimentRoute, CompositionRoute, engineExperimentComparisonHref, engineReviewSelection, resolvedEngineActionAcceptance } from "../src/pages/EngineExperimentRoute";
-import { readComparisonContext } from "../src/lib/comparison-context";
 import type { EngineExperiment } from "../src/lib/engine-experiment";
-import { engineExperimentApi } from "../src/lib/engine-experiment-api";
+import { engineExperimentApi, engineExperimentRunHref } from "../src/lib/engine-experiment-api";
 import { AssistanceProvider, useAssistanceSelection } from "../src/state/AssistanceContext";
 import { acceptedAction, actionDigest, actionWorkspace, preparedAction } from "./engine-action-fixture";
 import type { RunJob } from "../src/types";
@@ -110,7 +109,7 @@ function routeExperiment(workflow: EngineExperiment["projection"]["workflow_stat
   return value;
 }
 
-it("links the four exact verified terminal experiment runs to the ordinary comparison workspace", () => {
+it("links the four exact verified terminal experiment runs to their saved engine evidence", () => {
   const runIds = [
     "run-20261104T120001Z-1111111111111111",
     "run-20261104T120002Z-2222222222222222",
@@ -118,19 +117,21 @@ it("links the four exact verified terminal experiment runs to the ordinary compa
     "run-20261104T120004Z-4444444444444444",
   ];
   const value = routeExperiment("choose_defense_disposition", [
-    { role: "baseline", run_id: runIds[0] },
-    { role: "adaptive_search", run_id: runIds[2] },
+    { role: "baseline", attempt_id: `engine-attempt-${"1".repeat(32)}`, run_id: runIds[0] },
+    { role: "adaptive_search", attempt_id: `engine-attempt-${"2".repeat(32)}`, run_id: runIds[2] },
   ], [
-    { role: "retained_reproducer", run_id: runIds[1] },
-    { role: "legitimate_use", run_id: runIds[3] },
+    { role: "retained_reproducer", check_id: `controller-check-${"3".repeat(32)}`, run_id: runIds[1] },
+    { role: "legitimate_use", check_id: `controller-check-${"4".repeat(32)}`, run_id: runIds[3] },
   ]);
   value.projection.run_integrity = runIds.map(run_id => ({ run_id, terminal: true, state: "verified", detail: "Verified saved run." }));
 
   const href = engineExperimentComparisonHref(value);
-  expect(href).toBeTruthy();
-  const parsed = new URL(href!, "https://bluefire.invalid");
-  expect(parsed.pathname).toBe("/compare");
-  expect(readComparisonContext(parsed.searchParams)).toEqual({ runIds, baselineId: "", revisedId: "", explicit: true, invalid: false });
+  expect(href).toBe(`/composition?engine_experiment=${value.experiment_id}#engine-comparison`);
+  expect(engineExperimentRunHref(value, runIds[0]!)).toBe(`/composition?engine_experiment=${value.experiment_id}&attempt=${value.projection.attempts[0]!.attempt_id}`);
+  expect(engineExperimentRunHref(value, runIds[1]!)).toBe(`/composition?engine_experiment=${value.experiment_id}&check=${value.projection.checks[0]!.check_id}`);
+  expect(engineExperimentRunHref(value, runIds[2]!)).toBe(`/composition?engine_experiment=${value.experiment_id}&attempt=${value.projection.attempts[1]!.attempt_id}`);
+  expect(engineExperimentRunHref(value, runIds[3]!)).toBe(`/composition?engine_experiment=${value.experiment_id}&check=${value.projection.checks[1]!.check_id}`);
+  expect(engineExperimentRunHref(value, "run-20261104T120005Z-5555555555555555")).toBeUndefined();
 });
 
 it("does not link an incomplete, unavailable, or aliased experiment run set as a full comparison", () => {

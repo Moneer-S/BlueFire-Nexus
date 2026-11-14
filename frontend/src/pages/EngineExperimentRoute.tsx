@@ -3,8 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { EngineExperimentWorkspace } from "../components/EngineExperimentWorkspace";
 import { Button, Callout, ErrorState, LoadingState } from "../components/Primitives";
-import { engineExperimentApi, engineExperimentId, engineExperimentJobLink, engineExperimentPath } from "../lib/engine-experiment-api";
-import { writeComparisonContext } from "../lib/comparison-context";
+import { engineExperimentApi, engineExperimentId, engineExperimentJobLink, engineExperimentPath, engineExperimentRunHref } from "../lib/engine-experiment-api";
 import { engineExperimentSelection } from "../lib/engine-assistance";
 import { usePublishEngineExperimentSelection } from "../state/AssistanceContext";
 import { useRememberDefensiveWork } from "../state/activeDefensiveWork";
@@ -38,8 +37,7 @@ export function engineExperimentComparisonHref(experiment: EngineExperiment): st
     const integrity = experiment.projection.run_integrity.find(item => item.run_id === runId);
     return integrity?.state !== "verified" || !integrity.terminal;
   })) return;
-  const query = writeComparisonContext(new URLSearchParams(), { runIds: exactRunIds, baselineId: "", revisedId: "" });
-  return `/compare?${query.toString()}`;
+  return `${engineExperimentPath(experiment.experiment_id)}#engine-comparison`;
 }
 
 type EngineCancellationRequest = { kind: "engine_attempt" | "controller_check"; id: string; jobId: string };
@@ -122,6 +120,7 @@ export function CompositionRoute() {
 
 function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequest }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [reviewAction, setReviewAction] = useState<PreparedActionKind | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [uncertainAction, setUncertainAction] = useState<PreparedActionKind | null>(null);
@@ -134,6 +133,9 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
     return accepted && Date.now() < pollUntil || projection && ([...projection.attempts].some(item => ["queued", "preflight", "running", "stopping"].includes(item.state)) || projection.checks.some(item => item.state === "reserved")) ? 1500 : false;
   } });
   const experiment = workspace.data;
+  useEffect(() => {
+    if (experiment && location.hash === "#engine-comparison") document.getElementById("engine-comparison")?.scrollIntoView?.({ block: "start" });
+  }, [experiment, location.hash]);
   const selectedAttempt = request.selection?.kind === "engine_attempt" ? request.selection.id : null;
   const selectedCheck = request.selection?.kind === "controller_check" ? request.selection.id : null;
   const selectedAttemptSummary = selectedAttempt ? experiment?.projection.attempts.find(item => item.attempt_id === selectedAttempt) : undefined;
@@ -258,7 +260,7 @@ function EngineExperimentRoute({ request }: { request: EngineExperimentRouteRequ
           }
         }
       }}
-      runHref={id => `/runs/${encodeURIComponent(id)}`} comparisonHref={engineExperimentComparisonHref(experiment)} />
+      runHref={id => engineExperimentRunHref(experiment, id)} comparisonHref={engineExperimentComparisonHref(experiment)} />
     <EngineActionReview key={`${request.experimentId}:${reviewAction ?? "none"}`} open={reviewOpen} actionKind={reviewAction} onClose={() => setReviewOpen(false)} onUncertainChange={action => { setUncertainAction(action); if (!action) setReviewNotice(undefined); }} experiment={experiment} onAccepted={receipt => { setAccepted(receipt); setReviewOpen(false); setPollUntil(Date.now() + 60_000); void workspace.refetch(); }} />
   </div>;
 }

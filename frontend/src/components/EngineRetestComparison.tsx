@@ -67,7 +67,11 @@ const reproducerLabel = (value: EngineExperimentConclusion["retained_reproducer"
 const adaptiveLabel = (value: EngineExperimentConclusion["adaptive_search"]["status"]): string => ({ not_attempted: "Not attempted", remaining_path_found: "Remaining path found", no_path_observed_within_limits: "No path observed within limits", inconclusive: "Inconclusive", pending: "Pending" })[value];
 const legitimateUseLabel = (value: EngineExperimentConclusion["legitimate_use"]["status"]): string => ({ not_attempted: "Not attempted", passed: "Passed", failed: "Failed", unknown: "Unknown" })[value];
 
-const internalResultHref = (value: string): string | null => {
+const engineResultPath = /^\/composition\?engine_experiment=experiment-[0-9a-f]{32}(?:&attempt=engine-attempt-[0-9a-f]{32}|&check=controller-check-[0-9a-f]{32})?(?:#engine-comparison)?$/;
+
+const internalResultHref = (value: string | undefined): string | null => {
+  if (value === undefined) return null;
+  if (engineResultPath.test(value)) return value;
   if ([...value].some(character => character === "\\" || character.charCodeAt(0) <= 32)) return null;
   if (!/^\/(?:runs|compare)(?:[/?#]|$)/.test(value)) return null;
   const parsed = new URL(value, "https://bluefire.invalid");
@@ -76,7 +80,7 @@ const internalResultHref = (value: string): string | null => {
 
 type ComparisonEvidence = Pick<EngineExperimentProjection, "observations" | "run_integrity">;
 
-function EvidenceLineage({ conclusion, evidence, runHref }: { conclusion: EngineExperimentConclusion; evidence?: ComparisonEvidence; runHref: (runId: string) => string }) {
+function EvidenceLineage({ conclusion, evidence, runHref }: { conclusion: EngineExperimentConclusion; evidence?: ComparisonEvidence; runHref: (runId: string) => string | undefined }) {
   const roles = [
     { label: "Independent baseline", value: conclusion.original_mechanism },
     { label: "Exact mechanism retest", value: conclusion.retained_reproducer },
@@ -118,7 +122,7 @@ function EvidenceLineage({ conclusion, evidence, runHref }: { conclusion: Engine
   </details>;
 }
 
-export function EngineRetestComparison({ conclusion: value, evidence, defensiveChange, dispositionActions = [], onDispositionAction, sourceRuns, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: { conclusion: EngineExperimentConclusion; evidence?: ComparisonEvidence; defensiveChange: EngineDefenseChange | null; dispositionActions?: EngineWorkspaceAction[]; onDispositionAction?: (action: EngineWorkspaceActionKind) => void; sourceRuns?: EngineSourceRunLink[]; runHref?: (runId: string) => string; comparisonHref?: string }) {
+export function EngineRetestComparison({ conclusion: value, evidence, defensiveChange, dispositionActions = [], onDispositionAction, sourceRuns, runHref = runId => `/runs/${encodeURIComponent(runId)}`, comparisonHref }: { conclusion: EngineExperimentConclusion; evidence?: ComparisonEvidence; defensiveChange: EngineDefenseChange | null; dispositionActions?: EngineWorkspaceAction[]; onDispositionAction?: (action: EngineWorkspaceActionKind) => void; sourceRuns?: EngineSourceRunLink[]; runHref?: (runId: string) => string | undefined; comparisonHref?: string }) {
   const dispositionHeadingId = useId();
   const conclusion = engineComparisonConclusion(value);
   const runs = sourceRuns ?? conclusionSourceRuns(value);
@@ -130,7 +134,7 @@ export function EngineRetestComparison({ conclusion: value, evidence, defensiveC
   const Icon = conclusion.tone === "success" ? ShieldCheck : conclusion.tone === "danger" ? ShieldAlert : conclusion.tone === "warning" ? TriangleAlert : CircleHelp;
   const observationIncomplete = value.telemetry_health.status !== "complete";
   const cleanupUnsettled = value.cleanup.status === "residue" || value.cleanup.status === "unknown" || value.cleanup.items.length > 0 && value.cleanup.status !== "verified_absent";
-  return <Panel className={`engine-retest-comparison is-${conclusion.tone}`} aria-label="Attack, defense and fresh retest conclusion">
+  return <Panel id="engine-comparison" className={`engine-retest-comparison is-${conclusion.tone}`} aria-label="Attack, defense and fresh retest conclusion">
     <header className="engine-comparison-conclusion"><Icon aria-hidden="true" /><div><p>Attack → defense → fresh retest</p><h2>{conclusion.title}</h2><span>{conclusion.detail}</span></div></header>
     {observationIncomplete ? <Callout tone="warning" title="Observation is incomplete"><p>Verified {value.telemetry_health.verified_sources.length} of {value.telemetry_health.expected_sources.length} expected telemetry sources. An absent engine finding cannot be interpreted as prevention.</p>{value.telemetry_health.missing_sources.length ? <p>Missing: {value.telemetry_health.missing_sources.join(", ")}.</p> : null}</Callout> : null}
     {cleanupUnsettled ? <Callout tone={value.cleanup.status === "residue" ? "danger" : "warning"} title={value.cleanup.status === "residue" ? "Cleanup left residue" : "Cleanup is not verified"}><p>{value.cleanup.status === "not_started" ? "Cleanup has not started." : value.cleanup.status === "pending" ? "Cleanup is still pending." : value.cleanup.status === "unknown" ? "Worker or target cleanup is unknown." : "Owned worker or target effects remain."}</p></Callout> : null}

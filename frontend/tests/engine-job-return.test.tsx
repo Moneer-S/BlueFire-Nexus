@@ -34,6 +34,19 @@ function job(kind: "engine-attempt" | "engine-controller-check" = "engine-attemp
   };
 }
 
+function defenseJob(): RunJob {
+  return {
+    ...job(), kind: "engine-controller-operation",
+    request: {
+      schema_version: "bluefire.engine-defense-operation-job.v1", experiment_id: experimentId,
+      experiment_revision: 4, experiment_digest: digest, change_id: `defense-change-${"6".repeat(32)}`,
+      change_digest: digest, operation: "apply", originating_job_id: null,
+      originating_operation_receipt_digest: null,
+    },
+    progress: { experiment_id: experimentId, change_id: `defense-change-${"6".repeat(32)}`, operation: "apply" },
+  };
+}
+
 it.each(["engine-attempt", "engine-controller-check"] as const)("links the exact %s request with optional saved submission metadata", kind => {
   const value = job(kind);
   const path = `/composition?engine_experiment=${experimentId}&${kind === "engine-attempt" ? `attempt=${attemptId}` : `check=${checkId}`}`;
@@ -66,6 +79,27 @@ it("accepts the exact installed execution claim policy while keeping legacy jobs
   value.request!.execution_claim_policy = { ...policy, claim_protocol: "substituted" };
   expect(engineExperimentJobLink(value)).toBeUndefined();
   value.request!.schema_version = "bluefire.engine-attempt-job.v1";
+  expect(engineExperimentJobLink(value)).toBeUndefined();
+});
+
+it("returns a completed defense operation to its saved experiment without reading a scenario run", async () => {
+  const value = defenseJob();
+  expect(engineExperimentJobLink(value)).toBe(`/composition?engine_experiment=${experimentId}`);
+  const readRun = vi.spyOn(api, "runDetail");
+  mount(value);
+  const link = await screen.findByRole("link", { name: "Return to engine experiment and evidence" });
+  expect(link).toHaveAttribute("href", `/composition?engine_experiment=${experimentId}`);
+  expect(screen.getByText(/Review this defensive change, its evidence and cleanup/)).toBeVisible();
+  expect(readRun).not.toHaveBeenCalled();
+  readRun.mockRestore();
+}, 15_000);
+
+it("refuses mismatched defense operation ownership", () => {
+  const value = defenseJob();
+  value.progress.change_id = `defense-change-${"f".repeat(32)}`;
+  expect(engineExperimentJobLink(value)).toBeUndefined();
+  value.progress.change_id = value.request!.change_id;
+  value.request!.operation = ["apply"];
   expect(engineExperimentJobLink(value)).toBeUndefined();
 });
 
