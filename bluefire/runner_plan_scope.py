@@ -17,6 +17,7 @@ def filesystem_scope(plan: ExecutionPlan, *, opcode_for_step) -> tuple[str, ...]
         "sandbox.discovery.metadata.v1": ("fixtures",),
         "sandbox.discovery.recursive.v1": ("fixtures",),
         "sandbox.archive.tar.v1": ("fixtures", "staged"),
+        "sandbox.collection.materialize-retained.v1": ("fixtures",),
         "sandbox.collection.stage.v1": ("fixtures", "staged"),
         "sandbox.collection.records.v1": ("fixtures", "staged"),
         "sandbox.collection.archive.v1": ("fixtures", "staged"),

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, Cloud, FileLock2, Network, RefreshCw, Send } from "lucide-react";
+import { ArrowRight, Cloud, FileLock2, FlaskConical, Network, RefreshCw, Send } from "lucide-react";
 import { useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { DEMO_MODE } from "../lib/api";
@@ -8,7 +8,7 @@ import { loadSavedWork, workFamilies, type WorkFamily } from "../lib/saved-defen
 import { Badge, Button, ErrorState, LoadingState, sentence } from "./Primitives";
 import "./SavedDefensiveWork.css";
 
-const icons = { handoff: Send, file: FileLock2, domain: Network, cloud: Cloud };
+const icons = { engine: FlaskConical, handoff: Send, file: FileLock2, domain: Network, cloud: Cloud };
 
 export function SavedDefensiveWork() {
   const [params, setParams] = useSearchParams();
@@ -31,14 +31,14 @@ export function SavedDefensiveWork() {
     })}</div>
     <div className="saved-work-panel" role="tabpanel" id={`saved-work-panel-${selected.id}`} aria-labelledby={`saved-work-${selected.id}`}>
       {DEMO_MODE ? <p className="workspace-note">Saved defensive work is available in the installed workspace.</p> : <>
-        {history.isError ? <><ErrorState title={`${selected.label} history unavailable`} error={history.error} retry={() => { void history.refetch(); }} />{history.data ? <p className="workspace-note">Previously loaded records. Their current state could not be checked.</p> : null}</> : null}
+        {history.isError ? <><ErrorState title={`${selected.label} history unavailable`} error={history.error} retryLabel={`Retry ${selected.label.toLowerCase()} history`} retry={() => { void history.refetch(); }} />{history.data ? <p className="workspace-note">Previously loaded records. Their current state could not be checked.</p> : null}</> : null}
         {history.isPending ? <LoadingState label={`Loading ${selected.label.toLowerCase()} history`} /> : history.data?.rows.length ? <ul className="saved-work-list">{history.data.rows.map(row => <li key={row.id}>
           <Link to={row.href}><span className="saved-work-icon" data-attention={row.attention || undefined}><WorkIcon aria-hidden="true"/></span><span className="saved-work-title"><strong>{displayTitle(row.title)}</strong><small>{row.detail}</small></span><ArrowRight aria-hidden="true" /></Link>
           <span className="saved-work-state"><span>Recorded state</span><Badge tone={row.attention ? "warning" : "neutral"}>{sentence(row.state)}</Badge></span>
         </li>)}</ul> : history.isSuccess && !history.data.more ? <div className="saved-work-empty"><WorkIcon aria-hidden="true"/><p>No saved {selected.label.toLowerCase()} work.</p></div> : null}
         {history.data?.more ? <p className="workspace-note">More saved records are available in this workflow.</p> : null}
       </>}
-      <Link className="saved-work-open" to={selected.href}>Open {selected.label.toLowerCase()} workspace <ArrowRight aria-hidden="true" /></Link>
+      <Link className="saved-work-open" to={selected.id === "engine" ? "/composition?engine_history=1" : selected.href}>{selected.id === "engine" ? "Browse saved defense experiments" : `Open ${selected.label.toLowerCase()} workspace`} <ArrowRight aria-hidden="true" /></Link>
     </div>
   </section>;
 }

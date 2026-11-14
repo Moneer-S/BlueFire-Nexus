@@ -11,11 +11,14 @@ from .capability_packs import (
     MACOS_FILE_ACCESS_METHODS,
     MACOS_FILE_ACCESS_PACK,
     RECEIVER_PACK,
+    RECEIVER_RETAINED_PACK,
+    RETAINED_MATERIALIZE_METHOD,
 )
 from .util import content_hash, json_clone
 
 PACK = RECEIVER_PACK
 MIB = 1024 * 1024
+MAX_RETAINED_ARTIFACT_BYTES = 256 * 1024
 METHODS = (
     "sandbox.fixture.create.v1",
     "sandbox.fixture.transform.v1",
@@ -132,6 +135,34 @@ def validate_limits(value: Any) -> dict[str, int]:
 
 def method_cost(method_id: str, *, pack: str = PACK) -> dict[str, Any]:
     """Conservative material bounds; metadata reservations need writer enforcement."""
+    body: dict[str, Any]
+    if pack == RECEIVER_RETAINED_PACK:
+
+        if method_id == RETAINED_MATERIALIZE_METHOD:
+            body = {
+                "schema_version": "bluefire.retained-materialization-cost.v1",
+                "pack": pack,
+                "method_id": method_id,
+                "reads": ["sealed_same_lineage_artifact"],
+                "writes": ["fixtures/input.jsonl"],
+                "material_directories": ["fixtures"],
+                "removes": None,
+                "generated_bytes": MAX_RETAINED_ARTIFACT_BYTES,
+                "network_bytes": 0,
+                "retained_metadata_bytes": 4 * MAX_RETAINED_ARTIFACT_BYTES + 128 * 1024,
+                "business_steps": 1,
+                "maximum_material_file_bytes": MAX_RETAINED_ARTIFACT_BYTES,
+            }
+        else:
+            body = {
+                key: value for key, value in method_cost(method_id).items() if key != "cost_digest"
+            }
+            body.update(schema_version="bluefire.retained-receiver-method-cost.v1", pack=pack)
+            if method_id == METHODS[4]:
+                # Hex payload plus source/evidence envelope is charged to the
+                # existing cumulative retained-storage reservation.
+                body["retained_metadata_bytes"] += 2 * MAX_RETAINED_ARTIFACT_BYTES
+        return {**body, "cost_digest": content_hash(body)}
     if pack == MACOS_FILE_ACCESS_PACK:
         if method_id not in MACOS_FILE_ACCESS_METHODS:
             raise CapabilityContractError("method is outside the fixed macOS file-access pack")
@@ -197,6 +228,11 @@ def method_cost(method_id: str, *, pack: str = PACK) -> dict[str, Any]:
 
 def semantic_ports(method_id: str, *, pack: str = PACK) -> tuple[tuple, tuple]:
     """The semantic I/O boundary for which the pack's effect bounds were reviewed."""
+    if pack == RECEIVER_RETAINED_PACK:
+
+        if method_id == RETAINED_MATERIALIZE_METHOD:
+            return (), (("workspace", "artifact.sandbox.workspace.v1", False),)
+        return semantic_ports(method_id)
     if pack == MACOS_FILE_ACCESS_PACK:
         if method_id == MACOS_FILE_ACCESS_METHODS[0]:
             return (), (
@@ -266,7 +302,7 @@ def reserve_resources(
             "retained_metadata_bytes",
         ):
             totals[key] += cost[key]
-    if pack == PACK and handoffs != 1:
+    if pack in (PACK, RECEIVER_RETAINED_PACK) and handoffs != 1:
         raise CapabilityContractError("receiver composition requires exactly one handoff")
     if pack == FILE_ACCESS_PACK and sorted(step["behavior_id"] for step in steps) != sorted(
         FILE_ACCESS_METHODS

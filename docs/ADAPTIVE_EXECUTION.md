@@ -5,6 +5,14 @@ declaration is part of the saved scenario; it is not an approval or executable
 model output. Omitting it preserves legacy exact-plan approval semantics and
 serialization. Explicit `null`, unknown fields, and expanded limits are rejected.
 
+This contract governs only the legacy exact-plan retry loop. Its current-node
+and enumerated-method limits neither define nor prohibit objective-level
+continuation under a separate versioned capability grant. That newer path must
+preserve the legacy approval's meaning, issue new attempt identities, and
+validate any earlier finding or artifact as an explicit dependency before use.
+See [AI Planner](AI_PLANNER.md#capability-composition-and-objective-continuation)
+and the [nonlocal replanning acceptance case](AI_FIRST_PROGRAM.md#nonlocal-replanning-acceptance).
+
 The legacy contract is `bluefire.adaptive-execution.v1`:
 
 ```json

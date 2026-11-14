@@ -133,6 +133,7 @@ def executor(monkeypatch):
         cleanup_authority=claim,
         before_task=before_task,
         after_task=lambda *args, **kwargs: calls.append("terminal"),
+        retain_output=None,
     )
     engine.registry = SimpleNamespace(
         get_action=lambda action: SimpleNamespace(id=action),

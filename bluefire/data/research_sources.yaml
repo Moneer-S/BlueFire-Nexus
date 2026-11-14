@@ -204,3 +204,32 @@ sources:
     update_status: current
     transformation_history: Ported the upstream gzip-and-preserve-input method into a fixed Rust process adapter. Replaced shell conditionals, fallback sample content, caller paths and shell cleanup with existing typed synthetic fixture bindings and verified receipt cleanup; retained actual gzip execution. The native record and USTAR methods remain BlueFire authored.
     notes: Reviewed YAML SHA-256 681f0727810cc1fa1d2032f818d0cdb5b02dd058ed85416658ee26437773e681, 20402 bytes. Preserved license SHA-256 65af6027045d23175366eab50e460ab3ee7790e591cb84cc32c78ac63a4c90e1, 1078 bytes. System GNU gzip is an external GPL-3.0-or-later dependency and is not redistributed inside the wheel. Registration proves availability of the adapter contract, not that the tool executed or a detector fired.  # pragma: allowlist secret -- verified public Atomic Red Team MIT license SHA-256
+
+  - schema_version: bluefire.research-source.v1
+    id: research.strix-engine.v1
+    name: Strix external assessment engine
+    source_type: software
+    project: usestrix/strix
+    authority: Strix contributors
+    reference_url: https://github.com/usestrix/strix/tree/6b7ae2ebe4d47037a927aade23265ff4e4f27e84  # pragma: allowlist secret -- public Git commit
+    version: "1.7.0 (declared at reviewed source commit)"
+    pin: 6b7ae2ebe4d47037a927aade23265ff4e4f27e84  # pragma: allowlist secret -- public Git commit
+    exact_ref: 6b7ae2ebe4d47037a927aade23265ff4e4f27e84  # pragma: allowlist secret -- public Git commit
+    retrieved_at: "2026-11-04"
+    license: Apache-2.0
+    license_url: https://github.com/usestrix/strix/blob/6b7ae2ebe4d47037a927aade23265ff4e4f27e84/LICENSE  # pragma: allowlist secret -- public Git commit
+    file_level_license_review: The exact source tree, root Apache-2.0 license, build metadata, frozen lock, prompt, build hook, and Go module files were reviewed at the pinned commit. That tree contains no NOTICE file. The separately built candidate must preserve the root license and fail closed if either license or NOTICE handling changes.
+    trademark_considerations: The Strix name identifies the external engine and does not imply upstream endorsement of BlueFire or BlueFire endorsement of unqualified upstream images and tools.
+    license_review: reviewed
+    relationship: imported
+    use_classification: external_adapter
+    uses: [behavior_mapping, comparison, research_reference]
+    imported_paths: []
+    cache_policy: external_only
+    executable_content: true
+    attribution: Strix is an Apache-2.0 external engine candidate from usestrix/strix; BlueFire records its exact source identity and the reviewed modification in provenance and third-party notices.
+    security_review: BlueFire integrates only through the supported headless CLI in a separately supervised worker. The candidate build applies one hash-pinned correction to the upstream system prompt, admits no other source change, and does not run the engine, sandbox, tools, target, or model. Runtime remains unavailable until independent authorization, containment, network, artifact, image, and recovery qualifications pass.
+    last_verified_at: "2026-11-04"
+    update_status: current
+    transformation_history: The explicit candidate-build workflow is constrained to retrieve the exact source commit and, when run, produce a short-lived modified-source artifact. It replaces one reviewed prompt block to remove blanket-authorization and refusal-avoidance wording, adds an inert modification notice, and preserves the Apache-2.0 license. The workflow has not been dispatched for this record; Strix source is not vendored as a normal BlueFire runtime package, and the external sandbox image is neither bundled nor redistributed.
+    notes: The source commit has Git tree 23c06e4a0e58bdf3b4979863d7623230e4091332 and declares package version 1.7.0, but it is not the published v1.7.0 release commit 55bc07991aacb1c26a81b43e7ca53148730d2019. No release equivalence, runtime installation, image-license closure, live-model decision quality, target effect, or security effectiveness is claimed. The external OCI index remains an unresolved qualification input and is not covered by the source repository's Apache-2.0 terms.  # pragma: allowlist secret -- public Git object identities

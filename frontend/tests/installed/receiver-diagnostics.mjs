@@ -41,11 +41,37 @@ export function readReceiverCompositionUi(expected) {
   };
 }
 
-export function receiverCompositionInteractionDiagnostic(step, ui, objective, context, proposal, now) {
+const COMPOSITION_SETTLEMENT_CHECKPOINTS = [
+  "not_started",
+  "owner_binding",
+  "settlement_wait",
+  "attempt_state",
+  "parent_binding",
+  "grant_id_binding",
+  "grant_digest_binding",
+  "attempt_id_binding",
+  "run_id_binding",
+  "verified_run_binding",
+  "verified_source_binding",
+  "result_digest",
+  "observation_state",
+  "observation_authenticated",
+  "observation_decision",
+  "process_exit",
+  "receiver_closed",
+  "receiver_counts",
+  "cleanup",
+  "objective_established",
+  "objective_checks",
+  "verified",
+];
+
+export function receiverCompositionInteractionDiagnostic(step, ui, objective, context, proposal, now, settlementCheckpoint) {
   const remaining = objective?.grant?.document?.expires_at_ms - now;
   return {
     schema_version: "bluefire.installed-receiver-composition-interaction.v1",
     step: ["reconcile", "click", "response", "settlement"].includes(step) ? step : "other",
+    settlement_checkpoint: enumValue(settlementCheckpoint, COMPOSITION_SETTLEMENT_CHECKPOINTS),
     observation: enumValue(ui?.observation, ["before_click", "failure"]),
     center_hit: enumValue(ui?.center_hit, ["self", "descendant", "other", "out_of_view"]),
     route_matches: ui?.route_matches === true,
@@ -108,6 +134,22 @@ const enumValue = (value, allowed) => allowed.includes(value) ? value : value ==
 const errorCode = (value, allowed) => typeof value === "string" && allowed.has(value) ? value : "unknown";
 const errorType = value => typeof value === "string" && JOB_ERROR_TYPES.has(value) ? value : "other";
 const booleanValue = value => typeof value === "boolean" ? value : null;
+
+const RECEIVER_PHASE_RESULT_BINDING_FIELDS = new Map([
+  ["baseline-result-binding", "baseline_binding"],
+  ["original-protected-result-binding", "phase_binding"],
+  ["original-legitimate-result-binding", "phase_binding"],
+  ["linked-protected-result-binding", "phase_binding"],
+  ["linked-legitimate-result-binding", "phase_binding"],
+]);
+
+// The retained composition journey also has result-binding stages, but it does
+// not produce this receiver-phase diagnostic. Match only the stages that call
+// waitCompletedPhase so a later failure cannot inherit a stale earlier value.
+export function receiverPhaseBindingFailure(stage, diagnostic) {
+  const field = RECEIVER_PHASE_RESULT_BINDING_FIELDS.get(stage);
+  return field && isRecord(diagnostic) ? { [field]: diagnostic } : {};
+}
 
 const POST_ROUTE_FAMILIES = [
   [/^\/api\/v1\/session$/, "session", "session"],

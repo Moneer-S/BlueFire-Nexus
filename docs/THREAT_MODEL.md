@@ -43,7 +43,34 @@ flowchart TB
     STORE --> UI[Review, replay, compare]
 ```
 
-The current runner transport is a separately hosted same-user loopback service. Local enrollment issues exact client/runner identities, TLS 1.3 provides mutual authentication and encryption, enrollment-derived authenticators bind tasks, and a durable ledger provides duplicate recovery and cancellation state. Cross-host transport or enrollment is not shipped.
+The current RC2 runner transport is a separately hosted same-user loopback service. Local enrollment issues exact client/runner identities, TLS 1.3 provides mutual authentication and encryption, enrollment-derived authenticators bind tasks, and a durable ledger provides duplicate recovery and cancellation state. Cross-host transport or enrollment is not shipped.
+
+## Development external-engine boundary (not shipped in RC2)
+
+The source tree also contains a development-only external-engine Execute lane. It is separate from the exact-plan Rust runner lane above. Its controlled worker, Docker proxy, target and model relays, admission records, and installed-composition contracts are implemented fail closed, but no maintained concrete installed attempt factory selects that controlled runtime. These contracts therefore do not establish installed native execution, live-model behavior, target effectiveness, or release support.
+
+```mermaid
+flowchart LR
+    OP[Operator and reviewed capability delegation] --> CTRL[BlueFire controller]
+    CTRL -->|bounded lifecycle and exec operations| PX[Controlled Docker API proxy]
+    PX --> WORKER[Private external-engine worker]
+    WORKER -->|fixed admitted requests| TR[Target relay]
+    WORKER -->|bounded provider requests| MR[Model relay]
+    TR --> TARGET[Exact disposable target]
+    MR --> PROVIDER[Selected provider]
+    PROVIDER_SECRET[Provider secret] -->|controller-owned injection| MR
+    WORKER -->|untrusted assertions and artifacts| CTRL
+    OBS[Independent observer] -->|observed or unknown evidence| CTRL
+    CTRL --> STORE[Run and experiment stores]
+```
+
+The model, upstream engine, tool output, target content, and generated report are untrusted data. None can create target ownership, approval, credentials, capability delegation, executable-content admission, defensive-change authority, or spending authority. The controller resolves proposed operations to reviewed capability identities and validates the exact scope, limits, lifetime, and freshness before any effect.
+
+The intended worker boundary has a private HOME and workspace and receives neither host filesystem mounts nor the container-management socket. It has no direct cloud-metadata route. Network access is mediated through attempt-bound relays with exact target and model destinations; provider secrets stay outside the worker and are injected only by the controller-owned model relay. A controlled Docker proxy admits only the bounded, attempt-bound lifecycle and in-container exec grammar required for a pinned worker and its owned descendants. It is not a general Docker API, host shell, loader, or runtime content installer.
+
+The controller owns descendant custody, cancellation, cessation, and residue verification. Cancellation stops new admission and reconciles every owned child; it does not prove cleanup, roll back a defense, or turn an uncertain effect into absence. Engine assertions remain runner-reported evidence. Only a separately retained observer record can support an independent observation, and missing or uncertain telemetry remains an explicit evidence gap.
+
+The derived image and its runtime closure are a separate supply-chain boundary. Source revision, base image, Dockerfile, dependency lock, SBOM, provenance, attestation, and image digest must all match the reviewed admission. A pinned upstream source or upstream sandbox image alone does not identify the executed image. Redistribution review and installed qualification remain required before this lane can ship.
 
 ## Assumptions
 
@@ -69,7 +96,10 @@ The current runner transport is a separately hosted same-user loopback service. 
 | Task replay | Task/profile/request/policy identity binding; expiry; authenticated durable singleton ledger; exact duplicate-result recovery; task-ID collision refusal | A compromised enrolled control plane can authorize a new in-policy task. Preserve the managed ledger until every task and receipt is reconciled. |
 | Capability/tier expansion | Registry/profile intersection, allowlist, blocklist, exact capabilities, safety-tier checks, runner-side revalidation | A misconfigured broad profile is broad authority. Treat profile review as a security change. |
 | Path traversal or link escape | Relative normalized paths; drive/UNC/device/traversal rejection; canonical sandbox root; symlink/reparse refusal; create-new semantics | Filesystem race resistance depends on platform APIs and local account isolation. Keep the sandbox private and disposable. |
-| Unintended network access | Current action accepts literal loopback IP only; CIDR allowlist; no DNS, URL, redirect, or proxy | No general network testing ships. Do not modify the action/profile merely to bypass this boundary. |
+| Unintended network access | The shipped Rust action accepts literal loopback IP only; CIDR allowlist; no DNS, URL, redirect, or proxy. Development external-engine contracts use controller-owned, attempt-bound relays for exact admitted target and model destinations. | No general network testing ships. The development contracts are not an installed runtime. Do not modify either boundary merely to bypass its scope. |
+| External engine or model expands authority | Versioned capability delegation and runtime admission; exact target/model relays; provider secret outside the worker; bounded Docker lifecycle and in-container exec grammar; no host mounts, management socket, cloud-metadata route, arbitrary host execution, content installation, or defensive-change authority | These are source contracts, not installed or live proof. A compromised controller, admitted image, proxy, relay, or host can defeat its own boundary. Keep the lane disabled until the concrete factory, candidate, and environment are independently qualified. |
+| External engine assertions mistaken for observation | Engine results remain self-reported; independent observations require separately retained controller-attested evidence with exact attempt, run, snapshot, and source identity | The engine or target can lie, and telemetry can be missing. Preserve unknown and evidence-gap states instead of inferring an outcome. |
+| External-engine descendants or relays outlive cancellation | Controller-owned descendant custody; bounded admission lifetime; cancellation and revocation; separate cleanup and residue verification | Process or host loss can make cessation or absence unknowable. Preserve custody state and do not relaunch an uncertain attempt. |
 | Secret leakage | Config stores environment-variable names; browser has no plaintext-secret field; model redaction; safe API errors | Run artifacts can contain filenames, telemetry, or operator-entered text. Review before sharing and set retention controls externally. |
 | CSRF/host-header abuse | Loopback bind enforcement, exact Host validation, same-origin mutation requirement, no permissive CORS, bounded bodies, restrictive browser headers, a one-use URL-fragment bootstrap capability, and a bounded strict HttpOnly API session cookie | The browser session is same-user local protection, not remote or multi-user identity. Malicious software controlling the same account or browser remains in the threat model. |
 | Log/UI injection | Structured JSON, bounded strings/output, React escaping, no request-path logging by default | Exported data may be opened in other tools. Treat evidence fields as untrusted and avoid unsafe rendering. |
@@ -96,6 +126,8 @@ The current runner transport is a separately hosted same-user loopback service. 
 - hostile multi-user or remote service exposure;
 - a compromised kernel, administrator/root account, Python process, or runner binary;
 - cross-host runner identity, transport, enrollment, or revocation;
+- installed, native, or live effectiveness of the development external-engine lane;
+- redistribution clearance for its upstream engine, derived image, or runtime closure;
 - digital signatures or non-repudiation for profiles, approvals, tasks, evidence, or bundles;
 - complete prevention of all filesystem time-of-check/time-of-use races;
 - production-grade SIEM, EDR, cloud, or identity collector correctness;

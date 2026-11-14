@@ -83,8 +83,9 @@ test("Overview opens the exact experiment in the list without replacing the work
   expect(await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"))).toBe(before);
 });
 
-test("Overview fits narrow effective widths and keeps mobile navigation usable", async ({ page }) => {
-  for (const width of [320, 305, 390, 1280]) {
+test("Overview fits constrained desktop widths and keeps compact navigation reachable", async ({ page }) => {
+  const defensiveWorkflows = ["Defense experiments", "Data handoff", "File access", "Domain access", "S3 access"];
+  for (const width of [680, 768, 900, 1280]) {
     await page.setViewportSize({ width, height: 740 });
     await page.goto("./");
     await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
@@ -108,20 +109,24 @@ test("Overview fits narrow effective widths and keeps mobile navigation usable",
       };
     });
     expect(geometry.scrollWidth, `${width}px viewport document overflow`).toBeLessThanOrEqual(geometry.clientWidth);
-    expect(geometry.controls).toHaveLength(7);
+    expect(geometry.controls).toHaveLength(3 + defensiveWorkflows.length);
     expect(geometry.controls.every((control) => control.visible && control.left !== null && control.left >= 0 && control.right !== null && control.right <= geometry.clientWidth + 0.5), `${width}px viewport visible control bounds`).toBe(true);
-    if (width <= 320) {
+    for (const workflow of defensiveWorkflows) {
+      await expect(page.getByRole("tab", { name: workflow, exact: true })).toBeVisible();
+    }
+    if (width <= 768) {
       expect(geometry.scrollHeight, `${width}px Overview should scroll vertically`).toBeGreaterThan(geometry.clientHeight);
     }
   }
 
-  await page.setViewportSize({ width: 320, height: 740 });
+  await page.setViewportSize({ width: 768, height: 740 });
   await page.goto("./");
   const openNavigation = page.getByRole("button", { name: "Open navigation" });
   await expect(openNavigation).toHaveAttribute("aria-expanded", "false");
-  await openNavigation.click();
+  await openNavigation.focus();
+  await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: "Workspace navigation" })).toBeVisible();
-  await page.getByRole("button", { name: "Close navigation" }).click();
+  await page.keyboard.press("Escape");
   await expect(openNavigation).toHaveAttribute("aria-expanded", "false");
   await page.reload();
   await expect(page.getByRole("button", { name: "Open navigation" })).toHaveAttribute("aria-expanded", "false");

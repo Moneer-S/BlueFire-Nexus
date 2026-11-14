@@ -73,7 +73,7 @@ export function EmptyState({ icon, title, description, action }: { icon?: ReactN
   return <div className="empty-state">{icon}<strong>{title}</strong><p>{description}</p>{action}</div>;
 }
 
-export function ErrorState({ title, error, retry }: { title?: string; error: unknown; retry?: () => void }) {
+export function ErrorState({ title, error, retry, retryLabel }: { title?: string; error: unknown; retry?: () => void; retryLabel?: string }) {
   const message = error instanceof Error ? error.message : "An unexpected local error occurred.";
   const status = error instanceof ApiError ? error.status : undefined;
   const code = error instanceof ApiError ? error.code : undefined;
@@ -86,7 +86,7 @@ export function ErrorState({ title, error, retry }: { title?: string; error: unk
     : code === "request_timeout" || status === 408 || status === 504 ? ["The request timed out", "Check the current job or result before submitting work again."]
     : code === "service_unavailable" || status === 502 || status === 503 ? ["Local service unavailable", "Check that the launching terminal is still running, then retry."]
     : ["Could not complete the request", "Review the error and retry once its cause is resolved."];
-  return <div className="error-state" role="alert"><AlertCircle aria-hidden="true" /><div><strong>{title ?? category[0]}</strong><p>{message}</p><p>{category[1]}</p>{code || status ? <details><summary>Technical details</summary>{code ? <p>Code: <code>{code}</code></p> : null}{status ? <p>HTTP status: {status}</p> : null}</details> : null}{retry ? <Button size="small" onClick={retry}>Try again</Button> : null}</div></div>;
+  return <div className="error-state" role="alert"><AlertCircle aria-hidden="true" /><div><strong>{title ?? category[0]}</strong><p>{message}</p><p>{category[1]}</p>{code || status ? <details><summary>Technical details</summary>{code ? <p>Code: <code>{code}</code></p> : null}{status ? <p>HTTP status: {status}</p> : null}</details> : null}{retry ? <Button size="small" aria-label={retryLabel} onClick={retry}>Try again</Button> : null}</div></div>;
 }
 
 export function Modal({ trigger, title, description, children }: PropsWithChildren<{ trigger: ReactNode; title: string; description?: string }>) {

@@ -853,3 +853,26 @@ items:
     detection_hints: []
     limitations: [Attempt request closure only; no rollback or whole-enrollment cleanup; workers and hardened resource remain retained.]
     provenance: *authored
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.collection.materialize-retained.v1
+    title: Reuse a retained generated collection
+    purpose: Publish exact sealed generated JSONL as input for ordinary reviewed transformations in a fresh receipt-owned attempt.
+    safety_tier: controlled
+    capabilities: [sandbox.collection, filesystem.write]
+    platforms: [linux]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    parameters:
+      - name: source_ref
+        type: string
+        description: Exact sealed same-objective source reference resolved by the server.
+    execution_state: action
+    techniques: [T1074.001]
+    action_ids: [sandbox.collection.materialize-retained.v1]
+    telemetry: [sandbox.collection.materialized]
+    detection_hints: [Historical custody is separate from the fresh materialization receipt.]
+    limitations: [Retained bytes do not establish current access to any historical resource.]
+    provenance: *authored

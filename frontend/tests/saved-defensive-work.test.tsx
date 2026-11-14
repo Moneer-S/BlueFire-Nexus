@@ -7,15 +7,29 @@ import { SavedDefensiveWork } from "../src/components/SavedDefensiveWork";
 import { api } from "../src/lib/api";
 import { adSmbApi } from "../src/lib/ad-smb";
 import { fileAccessApi, type FileAccessControlList } from "../src/lib/file-access";
+import { engineExperimentApi } from "../src/lib/engine-experiment-api";
+import type { EngineExperiment } from "../src/lib/engine-experiment";
 import type { ReceiverTestList } from "../src/lib/receiver-defense-types";
 import { loadSavedWork } from "../src/lib/saved-defensive-work";
 import { s3Api } from "../src/lib/s3-access";
 import { rawAdList, rawAdWorkflow } from "./ad-smb-fixture";
 
 const owner = `job-${"1".repeat(32)}`;
+const engineOwner = `experiment-${"a".repeat(32)}`;
+const engineWorkspace = {
+  experiment_id: engineOwner,
+  revision: 1,
+  experiment_digest: `sha256:${"b".repeat(64)}`,
+  objective: { title: "Bounded tenant-record defense" },
+  environment: { display_name: "Disposable tenant lab" },
+  current_target: { snapshot_ref: `sha256:${"a".repeat(64)}` },
+  projection: { workflow_state: "complete", conclusion: { cleanup: { status: "verified_absent" } } },
+} as unknown as EngineExperiment;
 const receiver = (): ReceiverTestList => ({ schema_version: "bluefire.receiver-defense-list.v1", jobs: [{ job_id: owner, title: "Retained redaction test", status: "blocked", phase: "protected", updated_at: null, native_path: "https://invalid.test/ignored" }], truncated: false, next_cursor: null });
 const clients: QueryClient[] = [];
 beforeEach(() => {
+  vi.spyOn(engineExperimentApi, "list").mockResolvedValue({ schema_version: "bluefire.engine-experiment-list.v1", experiments: [{ schema_version: "bluefire.engine-experiment-head.v1", experiment_id: engineOwner, active_revision: 1, active_digest: `sha256:${"b".repeat(64)}`, created_at: "2026-11-04T12:00:00Z", updated_at: "2026-11-04T12:01:00Z" }] });
+  vi.spyOn(engineExperimentApi, "workspace").mockResolvedValue(engineWorkspace);
   vi.spyOn(api, "receiverTests").mockResolvedValue(receiver());
   vi.spyOn(fileAccessApi, "list").mockResolvedValue({ schema_version: "bluefire.file-access-control-list.v1", controls: [{ control_owner_id: owner, status: "recovery_required", revision: 3 }] });
   vi.spyOn(adSmbApi, "list").mockResolvedValue(rawAdList([rawAdWorkflow({ pending: `job-${"2".repeat(32)}` })]));
@@ -28,10 +42,28 @@ function mount(path = "/", client = new QueryClient({ defaultOptions: { queries:
   return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><SavedDefensiveWork /><Location /></MemoryRouter></QueryClientProvider>);
 }
 
+it("opens a retained defense experiment in the existing Composition workspace", async () => {
+  mount();
+  expect(screen.getByRole("tab", { name: "Defense experiments" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByRole("link", { name: /Bounded tenant-record defense/ })).toHaveAttribute("href", `/composition?engine_experiment=${engineOwner}`);
+  expect(screen.getByText("Disposable tenant lab / Complete")).toBeVisible();
+  expect(engineExperimentApi.list).toHaveBeenCalledOnce();
+  expect(engineExperimentApi.workspace).toHaveBeenCalledExactlyOnceWith(engineOwner);
+  expect(screen.getByRole("link", { name: "Browse saved defense experiments" })).toHaveAttribute("href", "/composition?engine_history=1");
+  expect(api.receiverTests).not.toHaveBeenCalled();
+});
+
+it("does not link a defense experiment whose workspace changed after the head list", async () => {
+  vi.mocked(engineExperimentApi.workspace).mockResolvedValue({ ...engineWorkspace, revision: 2 });
+  mount();
+  expect(await screen.findByText("Defense experiments history unavailable")).toBeVisible();
+  expect(screen.queryByRole("link", { name: /Bounded tenant-record defense/ })).not.toBeInTheDocument();
+});
+
 it("opens the exact saved handoff without trusting supplied navigation or reading other families", async () => {
   const create = vi.spyOn(api, "createReceiverTest"), prepare = vi.spyOn(api, "prepareReceiver");
   localStorage.setItem("retained-draft", "unchanged");
-  mount();
+  mount("/?work=handoff");
   expect(await screen.findByRole("link", { name: /Retained redaction test/ })).toHaveAttribute("href", `/compare?receiver_job=${owner}`);
   expect(screen.getByText("Blocked")).toBeVisible();
   expect(fileAccessApi.list).not.toHaveBeenCalled(); expect(adSmbApi.list).not.toHaveBeenCalled(); expect(s3Api.list).not.toHaveBeenCalled();
@@ -54,18 +86,18 @@ it.each([
 });
 
 it("switches families with keyboard focus and retains unrelated URL context", async () => {
-  const user = userEvent.setup(); mount("/?context=retained");
+  const user = userEvent.setup(); mount("/?work=handoff&context=retained");
   await screen.findByText("Retained redaction test");
   screen.getByRole("tab", { name: "Data handoff" }).focus();
   await user.keyboard("{ArrowRight}");
   expect(screen.getByRole("tab", { name: "File access" })).toHaveFocus();
   expect(await screen.findByText("Generated file access")).toBeVisible();
-  expect(screen.getByLabelText("Location")).toHaveTextContent("?context=retained&work=file");
+  expect(screen.getByLabelText("Location")).toHaveTextContent("?work=file&context=retained");
   await user.keyboard("{End}");
   expect(screen.getByRole("tab", { name: "S3 access" })).toHaveFocus();
   await screen.findByText("Synthetic bucket exercise");
   await user.keyboard("{Home}");
-  expect(screen.getByRole("tab", { name: "Data handoff" })).toHaveFocus();
+  expect(screen.getByRole("tab", { name: "Defense experiments" })).toHaveFocus();
 });
 
 it("shows unavailable history separately from empty history and retries just that family", async () => {
@@ -74,7 +106,7 @@ it("shows unavailable history separately from empty history and retries just tha
   const user = userEvent.setup(); mount("/?work=file");
   expect(await screen.findByText("File access history unavailable")).toBeVisible();
   expect(screen.queryByText("No saved file access work.")).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Try again" }));
+  await user.click(screen.getByRole("button", { name: "Retry file access history" }));
   expect(await screen.findByText("No saved file access work.")).toBeVisible();
   expect(fileAccessApi.list).toHaveBeenCalledTimes(2); expect(api.receiverTests).not.toHaveBeenCalled();
 });
@@ -82,7 +114,7 @@ it("shows unavailable history separately from empty history and retries just tha
 it("keeps late results bound to their original family", async () => {
   let finish!: (value: ReceiverTestList) => void;
   vi.mocked(api.receiverTests).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
-  const user = userEvent.setup(); mount();
+  const user = userEvent.setup(); mount("/?work=handoff");
   await user.click(screen.getByRole("tab", { name: "File access" }));
   await screen.findByText("Generated file access");
   await act(async () => finish(receiver()));
@@ -91,7 +123,7 @@ it("keeps late results bound to their original family", async () => {
 });
 
 it("preserves cached records on refresh failure and marks them as stale", async () => {
-  const user = userEvent.setup(); mount(); await screen.findByText("Retained redaction test");
+  const user = userEvent.setup(); mount("/?work=handoff"); await screen.findByText("Retained redaction test");
   vi.mocked(api.receiverTests).mockRejectedValue(new Error("Service stopped"));
   await user.click(screen.getByRole("button", { name: "Refresh data handoff history" }));
   expect(await screen.findByText("Previously loaded records. Their current state could not be checked.")).toBeVisible();
@@ -101,7 +133,7 @@ it("preserves cached records on refresh failure and marks them as stale", async 
 
 it("bounds the overview rows and exposes omitted history without claiming it is empty", async () => {
   const value = receiver(); value.jobs = Array.from({ length: 8 }, (_, index) => ({ ...value.jobs[0]!, job_id: `job-${String(index).repeat(32)}`, title: `Saved handoff ${index}` }));
-  vi.mocked(api.receiverTests).mockResolvedValue(value); mount();
+  vi.mocked(api.receiverTests).mockResolvedValue(value); mount("/?work=handoff");
   await screen.findByText("Saved handoff 0");
   expect(within(screen.getByRole("tabpanel")).getAllByRole("listitem")).toHaveLength(5);
   expect(screen.getByText("More saved records are available in this workflow.")).toBeVisible();
@@ -140,7 +172,7 @@ it("shows the newest five domain workflows without reordering the server list", 
 
 it("refuses invalid saved identities without creating links from them", async () => {
   const value = receiver(); value.jobs[0]!.job_id = "../../arbitrary";
-  vi.mocked(api.receiverTests).mockResolvedValue(value); mount();
+  vi.mocked(api.receiverTests).mockResolvedValue(value); mount("/?work=handoff");
   expect(await screen.findByText("Data handoff history unavailable")).toBeVisible();
   expect(screen.queryByRole("link", { name: /Retained redaction test/ })).not.toBeInTheDocument();
 });

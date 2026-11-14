@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -27,10 +28,25 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, cast
 from . import product_store_ai_authorizations as ai_authorization_store
 from . import product_store_capability_api as capability_store_api
 from . import product_store_detection_evaluations as detection_evaluation_store
+from . import product_store_engine_action_submissions as engine_action_submission_store
+from . import product_store_engine_actions as engine_action_store
+from . import product_store_engine_execution_claims as engine_execution_claim_store
+from . import product_store_engine_experiments as engine_experiment_store
+from . import product_store_engine_file_access as engine_file_access_store
+from . import product_store_engine_jobs as engine_job_store
+from . import product_store_engine_presentations as engine_presentation_store
 from . import product_store_file_access as file_access_store
 from . import product_store_proposal_reviews as proposal_review_store
+from . import product_store_strix_admission_issuer as strix_issuance_store
+from . import product_store_strix_runtime as strix_runtime_store
+from . import product_store_tenant_action_materials as tenant_action_material_store
+from . import product_store_tenant_generation_journals as tenant_generation_journal_store
 from .comparison_snapshot_store import list_legacy_resources, reject_generic_resource_write
 from .contracts import ScenarioDefinition
+from .engine_reconciliation_lock import (
+    EngineReconciliationLock,
+    EngineReconciliationLockError,
+)
 from .local_lock import (
     LocalLockError,
     owner_private_database_lock,
@@ -70,7 +86,30 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 23
+_ENGINE_RECONCILIATION_SESSION_GUARD = threading.Lock()
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _EngineReconciliationMutationCapability:
+    process_id: int
+    database_identity: tuple[int, int]
+    thread_id: int
+
+
+_ENGINE_RECONCILIATION_SESSIONS: dict[
+    tuple[int, tuple[int, int], int], _EngineReconciliationMutationCapability
+] = {}
+
+
+def _reset_engine_reconciliation_sessions_after_fork() -> None:
+    global _ENGINE_RECONCILIATION_SESSION_GUARD, _ENGINE_RECONCILIATION_SESSIONS
+    _ENGINE_RECONCILIATION_SESSION_GUARD = threading.Lock()
+    _ENGINE_RECONCILIATION_SESSIONS = {}
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_engine_reconciliation_sessions_after_fork)
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -258,6 +297,16 @@ class ApprovalRequest:
 
 
 class ProductStore(
+    strix_runtime_store.StrixRuntimeStoreMixin,
+    tenant_action_material_store.TenantActionMaterialStoreMixin,
+    tenant_generation_journal_store.TenantGenerationJournalStoreMixin,
+    engine_execution_claim_store.EngineExecutionClaimStoreMixin,
+    engine_file_access_store.EngineFileAccessStoreMixin,
+    engine_job_store.EngineExperimentJobStoreMixin,
+    engine_presentation_store.EngineExperimentPresentationStoreMixin,
+    engine_action_store.EngineActionPreparationStoreMixin,
+    engine_action_submission_store.EngineActionSubmissionStoreMixin,
+    engine_experiment_store.EngineExperimentStoreMixin,
     capability_store_api.CapabilityStoreMixin,
     file_access_store.FileAccessStoreMixin,
 ):
@@ -323,7 +372,78 @@ class ProductStore(
             yield snapshot
 
     @contextmanager
+    def engine_attempt_reconciliation_session(
+        self,
+        *,
+        cancel_event: threading.Event | None = None,
+        deadline: float | None = None,
+    ) -> Iterator[object]:
+        """Hold the fixed-purpose crash-released lock through recovery CAS."""
+
+        session_key = (os.getpid(), self._database_identity, threading.get_ident())
+        with _ENGINE_RECONCILIATION_SESSION_GUARD:
+            if session_key in _ENGINE_RECONCILIATION_SESSIONS:
+                raise ProductStoreError("engine reconciliation session is already active")
+        try:
+            guard = EngineReconciliationLock(
+                self.path,
+                expected=self._database_identity,
+            ).session(cancel_event=cancel_event, deadline=deadline)
+            guard.__enter__()
+        except EngineReconciliationLockError as exc:
+            raise ProductStoreError("engine reconciliation session is unavailable") from exc
+        token = _EngineReconciliationMutationCapability(
+            process_id=session_key[0],
+            database_identity=session_key[1],
+            thread_id=session_key[2],
+        )
+        with _ENGINE_RECONCILIATION_SESSION_GUARD:
+            if session_key in _ENGINE_RECONCILIATION_SESSIONS:
+                guard.__exit__(None, None, None)
+                raise ProductStoreError("engine reconciliation session is already active")
+            _ENGINE_RECONCILIATION_SESSIONS[session_key] = token
+
+        def revoke() -> None:
+            with _ENGINE_RECONCILIATION_SESSION_GUARD:
+                if _ENGINE_RECONCILIATION_SESSIONS.get(session_key) is token:
+                    del _ENGINE_RECONCILIATION_SESSIONS[session_key]
+
+        try:
+            yield token
+        except BaseException as exc:
+            revoke()
+            if not guard.__exit__(type(exc), exc, exc.__traceback__):
+                raise
+        else:
+            revoke()
+            guard.__exit__(None, None, None)
+
+    def _require_engine_attempt_reconciliation_session(self, capability: object) -> None:
+        """Require this thread's active purpose-lock capability."""
+
+        session_key = (os.getpid(), self._database_identity, threading.get_ident())
+        with _ENGINE_RECONCILIATION_SESSION_GUARD:
+            if (
+                not isinstance(capability, _EngineReconciliationMutationCapability)
+                or capability.process_id != session_key[0]
+                or capability.database_identity != session_key[1]
+                or capability.thread_id != session_key[2]
+                or _ENGINE_RECONCILIATION_SESSIONS.get(session_key) is not capability
+            ):
+                raise ProductStoreError("engine reconciliation session is not active")
+
+    @contextmanager
     def _connection(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+        scoped = tenant_action_material_store._scoped_read_connection(
+            self.path, self._database_identity, write=write
+        )
+        if scoped is not None:
+            try:
+                pinned_regular_file_identity(self.path, expected=self._database_identity)
+            except LocalLockError as exc:
+                raise ProductStoreError("tenant material database identity changed") from exc
+            yield scoped
+            return
         with self._lock:
             try:
                 pinned_regular_file_identity(
@@ -838,6 +958,16 @@ class ProductStore(
             ai_authorization_store.initialize_schema(connection)
             capability_store_api.initialize_schema(connection)
             file_access_store.initialize_schema(connection)
+            engine_experiment_store.initialize_schema(connection)
+            engine_presentation_store.initialize_schema(connection)
+            engine_action_store.initialize_schema(connection)
+            engine_action_submission_store.initialize_schema(connection)
+            engine_execution_claim_store.initialize_schema(connection)
+            engine_file_access_store.initialize_schema(connection)
+            tenant_generation_journal_store.initialize_schema(connection)
+            tenant_action_material_store.initialize_schema(connection)
+            strix_runtime_store.initialize_schema(connection)
+            strix_issuance_store.initialize_schema(connection)
             self._initialize_macos_workspace_schema(connection)
             if current is None or int(current) < 6:
                 self._migrate_legacy_plugin_metadata(connection)
@@ -4411,6 +4541,30 @@ class ProductStore(
                 if progress is not None
                 else json.loads(row["progress_json"])
             )
+            if row["kind"] == "engine-controller-check":
+                current_progress = json.loads(row["progress_json"])
+                marker = current_progress.get("_engine_controller_dispatch")
+                if marker is not None and marker not in (
+                    {
+                        "schema_version": "bluefire.engine-controller-check-dispatch.v1",
+                        "begun": False,
+                    },
+                    {
+                        "schema_version": "bluefire.engine-controller-check-dispatch.v1",
+                        "begun": True,
+                    },
+                ):
+                    raise ProductStoreError("controller-check dispatch marker is invalid")
+                if marker is None:
+                    raise ProductStoreError("controller-check dispatch marker is missing")
+                dispatch_begun = bool(marker["begun"]) or (
+                    state == "running" and current != "running"
+                )
+                next_progress = dict(next_progress)
+                next_progress["_engine_controller_dispatch"] = {
+                    "schema_version": "bluefire.engine-controller-check-dispatch.v1",
+                    "begun": dispatch_begun,
+                }
             next_error = (
                 _canonical_json(_safe_document(error, context=f"job.{job_id}.error"))
                 if error is not None

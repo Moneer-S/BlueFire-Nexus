@@ -121,7 +121,11 @@ Repeat the experiment or change a method, then open **Compare** to see the diffe
 
 The optional Assistant works beside the graph and results. It supports experiment planning, supported edits, and detection drafting and revision. Connect a compatible provider when you need it; manual operation remains available without one.
 
-**Assist** asks you to review proposed changes. For supported operations, **Auto** can choose from alternatives included in the run you approved. It cannot add new targets or permissions. **Off** follows the saved plan without calling a model.
+In legacy exact-plan runs, **Assist** asks you to review proposed changes and
+**Auto** can choose from reviewed alternatives included in the run you approved.
+**Off** follows the saved plan without calling a model. The objective-level
+composition path instead uses a separate versioned grant and a fresh attempt;
+neither path can add targets, permissions, or executable content.
 
 See [model setup and supported operations](docs/AI_PLANNER.md). Live-provider validation is still in progress, and external providers may charge for usage.
 

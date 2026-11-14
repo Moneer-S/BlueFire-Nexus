@@ -146,25 +146,29 @@ exit status establishes the security objective.
 
 An experiment must follow an approach through several meaningful operations,
 learn useful information, and encounter a dead end that invalidates an earlier
-choice. The planner must propose a different continuation using information
-learned after that choice. The operator can inspect the changed assumption,
-original failed attempt, reused findings, refreshed prerequisites, and actual
-subsequent effects.
+choice. The planner must record a versioned objective-level proposal for a
+different continuation using information learned after that choice.
+The operator can inspect the changed assumption, original failed attempt,
+reused findings, refreshed prerequisites, and actual subsequent effects.
 
 The continuation must avoid repeating unrelated completed effects and use
-explicit validated dependencies for imported findings or artifacts. A contrasting
+explicit validated dependencies for imported findings or artifacts. Preserve
+every attempt's history and distinguish established historical findings, stale
+current-state claims, available resources, and proposed work. A contrasting
 case changes a resource or defense so an earlier observation remains historical
 evidence but cannot satisfy a current prerequisite. Only required observations
 are refreshed; restoration or recreation requires its own reviewed operation.
 Changed inputs, prerequisites, a deliberate fresh test, or meaningful new
 evidence can justify another attempt within the grant. Unchanged wasteful
-repetition cannot.
+repetition cannot. Neither a planning proposal nor a legacy exact-plan approval
+creates authority for the new effects; dispatch needs the applicable reviewed
+grant and fresh validation.
 
 This acceptance is pending. Controlled provider responses can establish the
 application mechanics; a separate authorized live-model evaluation must show
-that a real model makes a useful evidence-dependent decision. Neither proof
-substitutes for native effects and observations or for the second materially
-different objective.
+that a real model uses later evidence to change an earlier choice and select a
+useful nonlocal continuation. Neither proof substitutes for native effects and
+observations or for the second materially different objective.
 
 ### 4. Endpoint, AD, and cloud expansion
 

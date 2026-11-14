@@ -182,10 +182,11 @@ Product tests should prove:
 - Execute requires a compatible profile, explicit scope, and approval;
 - AI Off performs no provider call;
 - Assist persists every actionable v2 proposal and pauses before mutation;
-- Auto can apply a policy-valid Simulate choice for the exact next edge, compatible behavior, bounded primitive parameters, or one retry;
+- in the legacy exact-plan path, Auto can apply a policy-valid Simulate choice for the exact next edge, compatible behavior, bounded primitive parameters, or one retry;
 - Execute proposal acceptance never reuses the original approval and instead performs a fresh-workspace full replay behind a fresh exact approval;
 - any action choice is already registered and enabled by the exact profile;
-- the model cannot select a cross-outcome edge, invent an action/command, or expand graph/profile/scope/tier/policy authority;
+- the legacy exact-plan model cannot select a cross-outcome edge, invent an action/command, or expand graph/profile/scope/tier/policy authority;
+- objective-level continuation can reconsider an earlier choice only through a versioned grant, exact saved source references, compatibility and freshness checks, and new attempt identities; it must not repeat completed effects merely to reuse a result;
 - control blocks and counterfactuals remain distinct;
 - receipt cleanup reconciles to zero in disposable runs;
 - replay lineage and comparison deltas are correct;

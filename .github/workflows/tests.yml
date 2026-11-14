@@ -153,6 +153,19 @@ jobs:
         run: >-
           python -c "import hashlib, os, shutil; from pathlib import Path; source = Path(os.environ['GITHUB_WORKSPACE']) / 'runner' / 'target' / 'debug' / ('bluefire-runner.exe' if os.name == 'nt' else 'bluefire-runner'); root = Path(os.environ['RUNNER_TEMP']) / 'bluefire-python-e2e-runner'; root.mkdir(mode=0o700); target = root / source.name; shutil.copyfile(source, target); target.chmod(0o700); assert hashlib.sha256(source.read_bytes()).digest() == hashlib.sha256(target.read_bytes()).digest()"
 
+      # Replay requires a current packaged contract, independently of the
+      # environment override used by other Python Execute fixtures. This is
+      # an ephemeral test package; installed wheel proof remains in package.
+      - name: Stage current runner package for Windows replay tests
+        if: runner.os == 'Windows' && matrix.partition == 'r'
+        shell: pwsh
+        run: >-
+          python tools/stage_native_runner.py
+          --runner "${{ runner.temp }}/bluefire-python-e2e-runner/bluefire-runner.exe"
+          --output-root "${{ github.workspace }}/bluefire/native"
+          --platform windows
+          --architecture x86_64
+
       - name: Compile
         run: python -m compileall -q bluefire tests_platform
 
@@ -229,7 +242,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             platform: linux
             architecture: x86_64
             runner-path: runner/target/x86_64-unknown-linux-musl/release/bluefire-runner
@@ -256,6 +269,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Prepare protected Linux Python cache
         if: runner.os == 'Linux'
@@ -293,7 +310,7 @@ jobs:
           python -m pip install build
 
       - name: Install isolated pinned Rust toolchain
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' || matrix.platform == 'macos'
         shell: bash
         env:
           RUSTUP_HOME: ${{ runner.temp }}/bluefire-wheel-rustup
@@ -303,7 +320,8 @@ jobs:
           printf 'RUSTUP_HOME=%s\n' "$RUSTUP_HOME" >> "$GITHUB_ENV"
           channel="$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)"
           test -n "$channel"
-          rustup toolchain install "$channel" --profile minimal --component cargo --component clippy --component rustfmt
+          rustup toolchain install "$channel" --profile minimal --component cargo --component clippy --component rustfmt --force
+          rustup run "$channel" rustc -vV
           rustup run "$channel" cargo --version
           rustup show
 
@@ -387,6 +405,38 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: >-
           python -c "import os, subprocess; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-I', os.path.join(r'${{ runner.temp }}', 'verify_packaged_runner.py'), 'smoke', '--work-root', os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke-state'), '--forbid-root', os.environ['GITHUB_WORKSPACE'], '--report', os.path.join(r'${{ runner.temp }}', 'installed-wheel-smoke.json')], check=True)"
+
+      # Synthetic product mechanics only: no native Strix, Docker, live model,
+      # external target, attack effectiveness, or protected admission proof.
+      - name: Verify installed Linux deterministic engine mechanics simulation
+        id: installed-engine-mechanics
+        if: matrix.platform == 'linux'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          cp tools/verify_installed_engine_mechanics.py "$RUNNER_TEMP/verify_installed_engine_mechanics.py"
+          cp tools/installed_engine_mechanics_fixture.py "$RUNNER_TEMP/installed_engine_mechanics_fixture.py"
+          cp tools/verify_installed_engine_experiment.py "$RUNNER_TEMP/verify_installed_engine_experiment.py"
+          wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
+          test "${#wheels[@]}" = 1
+          test -f "${wheels[0]}"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -I -B verify_installed_engine_mechanics.py \
+            --source-revision "$GITHUB_SHA" \
+            --forbid-root "$GITHUB_WORKSPACE" \
+            --wheel "${wheels[0]}" \
+            --fixture "$RUNNER_TEMP/installed_engine_mechanics_fixture.py" \
+            --binding-helper "$RUNNER_TEMP/verify_installed_engine_experiment.py" \
+            --output "$RUNNER_TEMP/bluefire-installed-engine-mechanics-evidence"
+
+      - name: Upload installed Linux deterministic engine mechanics public summary
+        if: always() && matrix.platform == 'linux' && steps.installed-engine-mechanics.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-installed-deterministic-engine-mechanics-linux-x86_64-${{ github.sha }}
+          path: ${{ runner.temp }}/bluefire-installed-engine-mechanics-evidence/public-summary.json
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Verify installed macOS file-access protocol capability
         if: matrix.platform == 'macos' && matrix.architecture == 'aarch64'
@@ -525,6 +575,8 @@ jobs:
           cp frontend/tests/installed/receiver-guards.mjs "$RUNNER_TEMP/receiver-guards.mjs"
           cp frontend/tests/installed/receiver-knowledge.mjs "$RUNNER_TEMP/receiver-knowledge.mjs"
           cp frontend/tests/installed/receiver-evidence-proposal.mjs "$RUNNER_TEMP/receiver-evidence-proposal.mjs"
+          cp frontend/tests/installed/receiver-retained.mjs "$RUNNER_TEMP/receiver-retained.mjs"
+          cp frontend/tests/installed/receiver-retained-proof.mjs "$RUNNER_TEMP/receiver-retained-proof.mjs"
           cp frontend/tests/installed/receiver-deadline.mjs "$RUNNER_TEMP/receiver-deadline.mjs"
           wheels=("$GITHUB_WORKSPACE"/wheel-source/dist/*.whl)
           test "${#wheels[@]}" = 1

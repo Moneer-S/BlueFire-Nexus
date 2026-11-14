@@ -6,12 +6,12 @@ import { URL } from "node:url";
 export const sameJson = isDeepStrictEqual;
 export const receiverApprovalAcknowledgementName = /^I approve this exact immutable job envelope once\s*Unchecked by default and never stored in browser persistence$/;
 
-// Two separately reviewed purposes and one cleanup visit mount these inert reads.
-// Cleanup reuses its Settings document across purpose grants and bounded retries.
+// Three separately reviewed purposes and one cleanup visit mount these inert reads.
+// Cleanup reuses its Settings document for the other purposes and bounded retries.
 export function createReceiverSettingsReadPolicy() {
   const reads = new Map([["/api/v1/settings", 0], ["/api/v1/build-info", 0]]);
   return (url, method) => {
-    if (method !== "GET" || url.search || !reads.has(url.pathname) || reads.get(url.pathname) >= 3) return false;
+    if (method !== "GET" || url.search || !reads.has(url.pathname) || reads.get(url.pathname) >= 4) return false;
     reads.set(url.pathname, reads.get(url.pathname) + 1);
     return true;
   };

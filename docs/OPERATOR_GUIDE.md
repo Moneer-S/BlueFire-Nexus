@@ -61,6 +61,46 @@ the full procedure, allowed effects, limits, observations, and cleanup before cr
 approval-gated job. Approve that particular request only when its scope is correct. A changed
 or expired request needs a fresh review; reopening a result never grants approval or reruns it.
 
+### External-engine development boundary
+
+The installed external-engine path is development work, not an RC2 capability. Its admission
+remains closed: normal BlueFire wheels contain no Strix package or qualified sandbox image, the
+maintained installed adapter still selects Strix's stock Docker backend, and no concrete installed
+factory yet binds the controlled backend and relays. Do not install Strix beside BlueFire or start
+the stock backend as a substitute for that missing admission. See
+[engine provenance](engine-provenance.md) and
+[runtime admission](strix-runtime-admission.md) for the exact current boundary.
+
+When a later exact development candidate reports that boundary as admitted, qualify it in a
+separate copied workspace selected with `--runs-dir`. Review the saved objective, target scope,
+provider, model, limits, defensive change, legitimate-use check, and cleanup disposition before
+accepting each prepared action. A controlled response must appear as **Test provider** and is not
+live inference. Keep these records distinct:
+
+- engine-reported progress, findings, report, and process exit;
+- controller-retained raw artifacts and lifecycle state;
+- independently observed target activity; and
+- the applied defense, original-mechanism retest, fresh adaptive attempt, legitimate-use result,
+  and cleanup or retained-hardening disposition.
+
+Strix headless exit `2` means it reported findings; it is not an execution failure. Exit `0` does
+not prove the target is secure, and neither exit alone establishes completeness. Inspect the
+retained run and coverage artifacts and their caveats. Upstream token and cost caps can be
+exceeded by already-started work, so BlueFire's controller limits and recorded usage remain
+authoritative. Treat upstream cleanup as best effort until BlueFire independently verifies owned
+process, container, relay, workspace, and target custody.
+
+Local-directory targets must be disposable copies, never an operator's original checkout. An API
+specification URL still requires exact admitted target scope; the document cannot grant access to
+the hosts it names. Strix's MCP client support does not turn BlueFire or the target into a remote
+scan server and does not authorize an arbitrary tool server.
+
+If the browser disconnects or the service restarts, reopen the same workspace and exact attempt.
+Use **Reconcile saved custody** when it is offered; that check must not start, resume, or resubmit
+the engine. A cancellation request is not proof that descendants stopped or cleanup completed.
+Never submit a replacement attempt merely because the prior response was lost. Preserve the
+original job, evidence, and uncertain state until reconciliation establishes what happened.
+
 ## 5. Develop and test a detection from the result
 
 Choose **Open Detection Lab** from a result to retain its source run. Inspect the available

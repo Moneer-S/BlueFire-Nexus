@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime
 from typing import Any
 
 from . import (
@@ -14,9 +13,10 @@ from . import (
     composition_context,
     composition_file_access,
     composition_macos_file_access,
+    retained_artifacts,
 )
 from .capability_composition import compile_initial_graph, compile_revision
-from .capability_facts import seal_facts, validate_facts
+from .capability_facts import validate_facts
 from .capability_grant import validate_grant
 from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, grant_pack, review_pack
 from .composition_authority import GrantExecution, native_envelope
@@ -133,7 +133,7 @@ class CompositionJobs:
         )
         return grant, current
 
-    def _facts(self, grant, prior_attempt_id=None):
+    def _facts(self, grant, prior_attempt_id=None, *, owner_id=None):
         if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
             if prior_attempt_id is not None:
                 raise ProductStoreError(
@@ -146,83 +146,18 @@ class CompositionJobs:
                     "The fixed file-access route is exhausted; review the retained control explicitly."
                 )
             return capability_file_access.seal_facts(grant)
-        environment = grant["environment"]
-
-        def fact(identity, kind, source, value, observed=None):
-            return {
-                "fact_id": identity,
-                "kind": kind,
-                "provenance": "observed",
-                "source": source,
-                "observed_at_ms": grant["created_at_ms"] if observed is None else observed,
-                "valid_until_ms": grant["expires_at_ms"],
-                "environment_digest": content_hash(environment),
-                "control_digest": environment["control_digest"],
-                "attempt_id": None if kind == "retained_policy" else prior_attempt_id,
-                "value": value,
-            }
-
-        rows = [
-            fact(
-                "policy",
-                "retained_policy",
-                {
-                    "kind": "control_record",
-                    "id": environment["control_owner_id"],
-                    "digest": environment["control_digest"],
-                },
-                {"status": "retained", "policy_digest": environment["policy_digest"]},
-            )
-        ]
-        prior_graph = None
-        if prior_attempt_id is not None:
-            attempt = self.store.get_capability_attempt(prior_attempt_id)
-            prior_job = self.store.get_job(attempt["lease"]["job_id"])
-            marker = prior_job["request"].get("composition_attempt", {})
-            prior_owner = self._owner(marker.get("parent_job_id"))
-            if (
-                attempt["lease"]["grant_id"] != grant["grant_id"]
-                or attempt["lease"]["grant_digest"] != grant["grant_digest"]
-                or prior_job["kind"] != ATTEMPT_KIND
-                or marker.get("attempt_id") != prior_attempt_id
-                or prior_owner["request"]["grant_id"] != grant["grant_id"]
-                or prior_owner["request"]["grant_digest"] != grant["grant_digest"]
-            ):
-                raise ProductStoreError("Prior evidence belongs to another delegated objective.")
-            if attempt["state"] != "settled":
-                raise ProductStoreError("Prior owned effects must settle before a revision.")
-            result = self._verified_result(attempt)
-            source = {
-                "kind": "run_evidence",
-                "id": result["run_id"],
-                "digest": content_hash(result["source_binding"]),
-            }
-            finalized = result["source_binding"]["finalized_at"]
-            observed = int(
-                datetime.fromisoformat(finalized.replace("Z", "+00:00")).timestamp() * 1000
-            )
-            rows += [
-                fact("result", "receiver_result", source, result["receiver_result"], observed),
-                fact("cleanup", "cleanup", source, result["cleanup"], observed),
-            ]
-            prior_graph = attempt["compiled"]["semantic_digest"]
-        return seal_facts(
-            {
-                "schema_version": "bluefire.composition-facts.v1",
-                "environment_digest": content_hash(environment),
-                "control_digest": environment["control_digest"],
-                "prior_attempt_id": prior_attempt_id,
-                "prior_graph_digest": prior_graph,
-                "facts": rows,
-            }
-        )
+        return composition_context.receiver_facts(self, grant, prior_attempt_id, owner_id=owner_id)
 
     def validate_proposal(self, owner_id, proposal, *, prior_attempt_id=None, _retry_job_id=None):
         owner = self._owner(owner_id)
         if owner["state"] != "completed" or owner["progress"].get("stopped"):
             raise ProductStoreError("The reviewed objective is not admitted for fresh work.")
         grant, current = self._current(owner)
-        facts = self._facts(grant, prior_attempt_id)
+        facts = self._facts(
+            grant,
+            prior_attempt_id,
+            **({"owner_id": owner_id} if grant_pack(grant) == retained_artifacts.PACK else {}),
+        )
         compiler = compile_initial_graph if prior_attempt_id is None else compile_revision
         prior_graphs = []
         for job in self._children(owner_id):
@@ -253,6 +188,9 @@ class CompositionJobs:
             facts=facts,
             expected_facts_digest=facts["facts_digest"],
             now_ms=self.clock(),
+            retained_source_resolver=lambda source_ref: retained_artifacts.resolve_for_grant(
+                self, grant, source_ref, owner_id=owner_id
+            ),
             **({"previous_semantic_digests": prior_graphs} if prior_attempt_id is not None else {}),
         )
 
@@ -407,6 +345,16 @@ class CompositionJobs:
             _, fresh = self._current(self._owner(marker["parent_job_id"]), allow_exhausted=True)
             return fresh
 
+        materialize_retained, retain_output = retained_artifacts.execution_callbacks(
+            self,
+            marker=marker,
+            compiled=compiled,
+            grant=grant,
+            current=current,
+            lease=lease,
+            check=check,
+        )
+
         def watch():
             while not done.wait(0.1):
                 observed = self.clock()
@@ -553,6 +501,20 @@ class CompositionJobs:
                 registered.add(task_id)
                 return
             fresh = check()
+            if step.action_id == retained_artifacts.METHOD:
+                materialization = materialize_retained(step)
+                source = materialization["source"]
+                if manifest.get("params") != {
+                    "source_ref": source["source_ref"],
+                    "expected_sha256": source["sha256"],
+                    "expected_size": source["size_bytes"],
+                    "payload_hex_chunks": retained_artifacts.wire_chunks(
+                        materialization["payload"]
+                    ),
+                }:
+                    raise ProductStoreError(
+                        "Materialization dispatch differs from its sealed source."
+                    )
             material = (
                 None
                 if retained_file
@@ -646,6 +608,8 @@ class CompositionJobs:
             before_task,
             after_task,
             cleanup_authority,
+            materialize_retained if grant_pack(grant) == retained_artifacts.PACK else None,
+            retain_output if grant_pack(grant) == retained_artifacts.PACK else None,
         )
         monitor = threading.Thread(
             target=watch, name="composition-deadline-" + attempt_id[-8:], daemon=True
@@ -813,6 +777,7 @@ class CompositionJobs:
         self.store.settle_capability_attempt(marker["attempt_id"], receipt)
         self._publish(job_id, {"settlement": "settled"})
         if run_result is not None:
+            retained_artifacts.publish_continuation(self, marker, job_id)
             try:
                 result = self._verified_result(
                     self.store.get_capability_attempt(marker["attempt_id"])
@@ -883,9 +848,15 @@ class CompositionJobs:
             and job["request"].get("composition_attempt", {}).get("parent_job_id") == owner_id
         ]
 
-    def proposal_context(self, owner_id, *, prior_attempt_id=None):
+    def proposal_context(
+        self, owner_id: str, *, prior_attempt_id: str | None = None
+    ) -> dict[str, Any]:
         grant, current = self._current(self._owner(owner_id))
-        facts = self._facts(grant, prior_attempt_id)
+        facts = self._facts(
+            grant,
+            prior_attempt_id,
+            **({"owner_id": owner_id} if grant_pack(grant) == retained_artifacts.PACK else {}),
+        )
         validate_facts(
             facts,
             expected_digest=facts["facts_digest"],
@@ -911,8 +882,10 @@ class CompositionJobs:
             elif grant_pack(grant) == FILE_ACCESS_PACK:
                 initial = capability_file_access.initial_proposal()
                 initial_scenario = self.validate_proposal(owner_id, initial)["scenario"]
-                return composition_file_access.proposal_context(
-                    grant, facts, initial, initial_scenario
+                return dict(
+                    composition_file_access.proposal_context(
+                        grant, facts, initial, initial_scenario
+                    )
                 )
             source = current["source_context"]["scenario"]
             scenario = ScenarioDefinition.from_mapping(source)
@@ -945,7 +918,7 @@ class CompositionJobs:
                 "rationale": "Exercise the saved material route under the retained receiver policy.",
             }
             initial_scenario = self.validate_proposal(owner_id, initial)["scenario"]
-        return {
+        body = {
             "schema_version": "bluefire.composition-proposal-context.v1",
             "grant_id": grant["grant_id"],
             "objective": grant["objective"],
@@ -954,6 +927,11 @@ class CompositionJobs:
             "initial_proposal": initial,
             "initial_scenario": initial_scenario,
         }
+        return (
+            composition_context.retained_proposal_context(self, grant, body, owner_id=owner_id)
+            if grant_pack(grant) == retained_artifacts.PACK
+            else body
+        )
 
     def stop(self, owner_id, *, revoke=False):
         owner = self._owner(owner_id)

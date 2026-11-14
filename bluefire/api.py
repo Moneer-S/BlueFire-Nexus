@@ -471,8 +471,8 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     file_access[1]
                 ),
                 "control": lambda: self.platform_server.service.file_access_control(file_access[1]),
-                "assistant-context": lambda: self.platform_server.service.file_access_assistance_context(
-                    file_access[1]
+                "assistant-context": lambda: (
+                    self.platform_server.service.file_access_assistance_context(file_access[1])
                 ),
                 "reconciliation": lambda: self.platform_server.service.file_access_reconciliation(
                     file_access[1], file_access[2]
@@ -523,6 +523,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         from .api_s3_access import dispatch_s3_access
 
         if dispatch_s3_access(self, path):
+            return
+        from .engine_experiment_api import dispatch_engine_experiments
+
+        if dispatch_engine_experiments(self, path):
             return
         receiver = self._routes._receiver_defense_request(path, listing=True)
         if receiver is not None:
@@ -1124,8 +1128,8 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 "objective-list": lambda: self.platform_server.service.list_composition_objectives(
                     body
                 ),
-                "proposal-context": lambda: self.platform_server.service.composition_proposal_context(
-                    composition[1], body
+                "proposal-context": lambda: (
+                    self.platform_server.service.composition_proposal_context(composition[1], body)
                 ),
                 "knowledge": lambda: self.platform_server.service.composition_knowledge(
                     composition[1], body
@@ -1158,6 +1162,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         from .api_s3_access import dispatch_s3_access
 
         if dispatch_s3_access(self, path, body):
+            return
+        from .engine_experiment_api import dispatch_engine_experiments
+
+        if dispatch_engine_experiments(self, path, body):
             return
         receiver = self._routes._receiver_defense_request(path)
         if receiver is not None:
