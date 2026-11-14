@@ -70,6 +70,28 @@ pub mod service_payload;
 #[cfg(target_os = "linux")]
 pub mod service_query_reader;
 pub mod service_reservation;
+#[cfg(target_os = "linux")]
+pub mod strix_worker_boundary;
+#[cfg(target_os = "linux")]
+mod strix_worker_boundary_cgroup;
+#[cfg(target_os = "linux")]
+mod strix_worker_boundary_channel;
+#[cfg(target_os = "linux")]
+mod strix_worker_boundary_contract;
+#[cfg(target_os = "linux")]
+mod strix_worker_boundary_exec;
+#[cfg(target_os = "linux")]
+mod strix_worker_boundary_identity;
+#[cfg(target_os = "linux")]
+mod strix_worker_boundary_root;
+#[cfg(target_os = "linux")]
+mod strix_worker_boundary_seccomp;
+#[cfg(target_os = "linux")]
+pub mod strix_worker_runtime_cli;
+#[cfg(target_os = "linux")]
+mod strix_worker_runtime_exec;
+#[cfg(target_os = "linux")]
+mod strix_worker_runtime_support;
 
 pub use actions::{inventory, ActionDescriptor, ACTION_SDK_SCHEMA_VERSION};
 pub use cancellation_witness::{run_internal_cancellation_descendant, INTERNAL_DESCENDANT_VERB};

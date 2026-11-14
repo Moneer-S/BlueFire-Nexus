@@ -135,6 +135,18 @@ fn dispatch(args: &[String]) -> Result<i32, String> {
             }
             bluefire_runner::ad_smb_worker::run_fixed()
         }
+        #[cfg(target_os = "linux")]
+        "strix-worker-boundary-self-test" => {
+            bluefire_runner::strix_worker_boundary::run_fixed_self_test(&args[1..])
+        }
+        #[cfg(target_os = "linux")]
+        "strix-worker-runtime" => {
+            bluefire_runner::strix_worker_runtime_cli::run_fixed_runtime_cli(&args[1..])
+        }
+        #[cfg(target_os = "linux")]
+        "__bluefire-strix-worker-boundary-self-test-child" => {
+            bluefire_runner::strix_worker_boundary::run_fixed_self_test_child(&args[1..])
+        }
         INTERNAL_DESCENDANT_VERB => {
             if args.len() != 1 {
                 return Err("the internal cancellation descendant accepts no arguments".to_string());
