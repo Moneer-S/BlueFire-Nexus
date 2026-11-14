@@ -28,17 +28,18 @@ function SavedExperiment({ head }: { head: EngineExperimentHead }) {
 export function EngineExperimentLibrary() {
   const [page, setPage] = useState(0);
   const client = useQueryClient();
-  const history = useQuery({ queryKey: ["engine-experiment-library", "list"], queryFn: () => engineExperimentApi.list(), enabled: !DEMO_MODE, retry: false });
-  const heads = [...history.data?.experiments ?? []].sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.experiment_id.localeCompare(b.experiment_id));
-  const currentPage = Math.min(page, Math.max(0, Math.ceil(heads.length / PAGE_SIZE) - 1));
-  const offset = currentPage * PAGE_SIZE;
+  const offset = page * PAGE_SIZE;
+  const history = useQuery({ queryKey: ["engine-experiment-library", "list", page], queryFn: () => engineExperimentApi.list({ limit: PAGE_SIZE + 1, offset }), enabled: !DEMO_MODE, retry: false });
+  const heads = history.data?.experiments ?? [];
+  const visible = heads.slice(0, PAGE_SIZE);
+  const hasNext = heads.length > PAGE_SIZE;
   return <div className="page engine-experiment-library">
     <Link className="engine-back-link" to="/composition"><ArrowLeft aria-hidden="true" />Composition workspace</Link>
-    <PageHeader title="Saved defense experiments" description="Resume a controller-owned experiment with its recorded evidence and reviewed actions." actions={<Button size="small" variant="secondary" disabled={DEMO_MODE || history.isFetching} onClick={() => { void client.invalidateQueries({ queryKey: ["engine-experiment-library"] }); }}><RefreshCw aria-hidden="true" />Refresh saved list</Button>} />
+    <PageHeader title="Saved defense experiments" description="Resume a controller-owned experiment with its recorded evidence and reviewed actions." actions={<Button size="small" variant="secondary" disabled={DEMO_MODE || history.isFetching} onClick={() => { setPage(0); void client.invalidateQueries({ queryKey: ["engine-experiment-library"] }); }}><RefreshCw aria-hidden="true" />Refresh saved list</Button>} />
     <Panel>
       {DEMO_MODE ? <p>Saved defense experiments are available in the installed workspace.</p> : <>
         {history.isError ? <ErrorState title="Saved experiments unavailable" error={history.error} retry={() => { void history.refetch(); }} /> : null}
-        {history.isPending ? <LoadingState label="Loading saved experiments" /> : history.isSuccess ? heads.length ? <><p className="engine-evidence-note" role="status">Showing {offset + 1} to {Math.min(offset + PAGE_SIZE, heads.length)} of {heads.length} saved experiments.</p><ul className="engine-library-list">{heads.slice(offset, offset + PAGE_SIZE).map(head => <SavedExperiment key={`${head.experiment_id}:${head.active_revision}:${head.active_digest}`} head={head} />)}</ul><nav className="engine-library-pagination" aria-label="Saved experiment pages"><Button size="small" variant="secondary" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous</Button><span>Page {currentPage + 1} of {Math.ceil(heads.length / PAGE_SIZE)}</span><Button size="small" variant="secondary" disabled={offset + PAGE_SIZE >= heads.length} onClick={() => setPage(currentPage + 1)}>Next</Button></nav></> : <div className="engine-empty-evidence"><FlaskConical aria-hidden="true" /><div><strong>No saved defense experiment</strong><p>An authorized controller must supply the reviewed objective, environment, and scope before an experiment can appear here.</p></div></div> : null}
+        {history.isPending ? <LoadingState label="Loading saved experiments" /> : history.isSuccess ? visible.length ? <><p className="engine-evidence-note" role="status">Showing {offset + 1} to {offset + visible.length} saved experiments.</p><ul className="engine-library-list">{visible.map(head => <SavedExperiment key={`${head.experiment_id}:${head.active_revision}:${head.active_digest}`} head={head} />)}</ul><nav className="engine-library-pagination" aria-label="Saved experiment pages"><Button size="small" variant="secondary" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</Button><span>Page {page + 1}</span><Button size="small" variant="secondary" disabled={!hasNext} onClick={() => setPage(page + 1)}>Next</Button></nav></> : page > 0 ? <div className="engine-empty-evidence"><FlaskConical aria-hidden="true" /><div><strong>No saved experiments on this page</strong><Button size="small" variant="secondary" onClick={() => setPage(page - 1)}>Previous page</Button></div></div> : <div className="engine-empty-evidence"><FlaskConical aria-hidden="true" /><div><strong>No saved defense experiment</strong><p>An authorized controller must supply the reviewed objective, environment, and scope before an experiment can appear here.</p></div></div> : null}
       </>}
     </Panel>
   </div>;

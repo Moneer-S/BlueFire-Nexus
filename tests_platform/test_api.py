@@ -41,8 +41,10 @@ class StubEngineExperimentService:
     def __init__(self, calls: list[tuple[Any, ...]]) -> None:
         self.calls = calls
 
-    def list(self, *, limit: int = 100):
-        self.calls.append(("engine_experiments", limit))
+    def list(self, *, limit: int = 100, offset: int = 0):
+        self.calls.append(
+            ("engine_experiments", limit, offset) if offset else ("engine_experiments", limit)
+        )
         return {"schema_version": "bluefire.engine-experiment-list.v1", "experiments": []}
 
     def get(self, experiment_id: str):

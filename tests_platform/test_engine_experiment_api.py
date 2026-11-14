@@ -23,8 +23,8 @@ class _Service:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
 
-    def list(self, *, limit: int = 100):
-        self.calls.append(("list", limit))
+    def list(self, *, limit: int = 100, offset: int = 0):
+        self.calls.append(("list", limit, offset) if offset else ("list", limit))
         return {"listed": True}
 
     def get(self, experiment_id: str):
@@ -221,6 +221,32 @@ def test_engine_reads_dispatch_only_canonical_paths(path: str, expected: tuple[A
     assert dispatch_engine_experiments(handler, path)
     assert handler.service.calls == [expected]
     assert handler.errors == [] and handler.allowed == []
+
+
+def test_engine_collection_paginates_canonical_saved_heads() -> None:
+    handler = _Handler(ROOT + "?limit=6&offset=100")
+    assert dispatch_engine_experiments(handler, ROOT)
+    assert handler.service.calls == [("list", 6, 100)]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "limit=0&offset=0",
+        "limit=101&offset=0",
+        "limit=6&offset=01",
+        "offset=0&limit=6",
+        "limit=6&limit=6",
+        "limit=6",
+        "limit=6&offset=-1",
+        "limit=6&offset=1000001",
+    ],
+)
+def test_engine_collection_rejects_ambiguous_or_unbounded_pages(query: str) -> None:
+    handler = _Handler(f"{ROOT}?{query}")
+    assert dispatch_engine_experiments(handler, ROOT)
+    assert handler.service.calls == []
+    assert handler.errors[0][1] == "engine_experiment_invalid"
 
 
 def test_engine_creation_and_attempt_submission_keep_exact_envelopes() -> None:
@@ -641,7 +667,7 @@ def test_query_and_encoded_command_paths_never_dispatch() -> None:
     handler = _Handler(ROOT + "?limit=1000")
     assert dispatch_engine_experiments(handler, ROOT)
     assert handler.service.calls == []
-    assert handler.errors[0][1] == "invalid_management_query"
+    assert handler.errors[0][1] == "engine_experiment_invalid"
 
 
 def test_service_refusals_keep_stable_safe_api_codes() -> None:

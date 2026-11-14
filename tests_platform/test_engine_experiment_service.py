@@ -91,9 +91,11 @@ class _History:
         selected = self.experiment if revision is None else self.versions[revision]
         return self._record(selected)
 
-    def list_engine_experiments(self, *, limit=100):
+    def list_engine_experiments(self, *, limit=100, offset=0):
         assert limit > 0
         if self.experiment is None:
+            return []
+        if offset:
             return []
         return [
             {

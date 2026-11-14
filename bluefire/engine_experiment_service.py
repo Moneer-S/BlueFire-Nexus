@@ -112,7 +112,7 @@ class EngineExperimentHistory(Protocol):
         self, experiment_id: str, *, revision: int | None = None
     ) -> Mapping[str, Any]: ...
 
-    def list_engine_experiments(self, *, limit: int = 100) -> list[Mapping[str, Any]]: ...
+    def list_engine_experiments(self, *, limit: int = 100, offset: int = 0) -> list[Mapping[str, Any]]: ...
 
     def compare_and_swap_engine_attempt_observation(
         self,
@@ -324,12 +324,13 @@ class EngineExperimentService:
             )
         )
 
-    def list(self, *, limit: int = 100) -> Mapping[str, Any]:
+    def list(self, *, limit: int = 100, offset: int = 0) -> Mapping[str, Any]:
         """List bounded active heads without exposing experiment documents."""
 
         def operation() -> Mapping[str, Any]:
             heads = [
-                self._head(value) for value in self._history.list_engine_experiments(limit=limit)
+                self._head(value)
+                for value in self._history.list_engine_experiments(limit=limit, offset=offset)
             ]
             return {
                 "schema_version": "bluefire.engine-experiment-list.v1",

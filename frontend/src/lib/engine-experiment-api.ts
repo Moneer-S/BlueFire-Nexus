@@ -173,7 +173,12 @@ export const engineExperimentApi = {
     if (!engineExperimentId(prepared.experiment_id) || !DIGEST.test(prepared.preparation_id) || !DIGEST.test(prepared.protected_request_ref)) throw new Error("The prepared engine action identity is invalid.");
     return checkedEngineActionAcceptance(await request<unknown>(`/engine-experiments/${prepared.experiment_id}/actions/submit`, { method: "POST", body: JSON.stringify({ schema_version: "bluefire.engine-action-submit.v1", preparation_id: prepared.preparation_id, protected_request_ref: prepared.protected_request_ref }) }), prepared);
   },
-  list: async (): Promise<EngineExperimentList> => checkedEngineExperimentList(await request<unknown>("/engine-experiments")),
+  list: async (page?: { limit: number; offset: number }): Promise<EngineExperimentList> => {
+    if (page && (!Number.isSafeInteger(page.limit) || page.limit < 1 || page.limit > 100
+      || !Number.isSafeInteger(page.offset) || page.offset < 0 || page.offset > 1_000_000)) throw new Error("The saved experiment page is invalid.");
+    const query = page ? `?limit=${page.limit}&offset=${page.offset}` : "";
+    return checkedEngineExperimentList(await request<unknown>(`/engine-experiments${query}`));
+  },
   workspace: async (experimentId: string, selection?: EngineWorkspaceSelection | null): Promise<EngineExperiment> => {
     if (!engineExperimentId(experimentId)) throw new Error("The engine experiment identity is invalid.");
     const selected = checkedSelection(selection);

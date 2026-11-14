@@ -53,12 +53,24 @@ it("uses the existing Home active-work model without inventing readiness or a la
     { label: "Worker / target cleanup", value: "Verified absent", tone: "positive" },
   ]);
   expect(summary.links).toEqual([
-    { label: "Baseline exploration run evidence", href: `/runs/${baselineRun}` },
-    { label: "Original mechanism retest run evidence", href: `/runs/${checkRun}` },
+    { label: "Baseline exploration attempt evidence", href: `/composition?engine_experiment=${experimentId}&attempt=engine-attempt-${"b".repeat(32)}` },
+    { label: "Original mechanism retest check evidence", href: `/composition?engine_experiment=${experimentId}&check=controller-check-${"c".repeat(32)}` },
   ]);
   expect(activeWorkHref(reference)).toBe(summary.href);
   expect(summary.results.map(item => item.label)).not.toContain("Coverage");
   expect(summary.results.map(item => item.label)).not.toContain("Readiness");
+});
+
+it("does not link an engine run when two saved records claim its identity", async () => {
+  vi.mocked(engineExperimentApi.workspace).mockResolvedValue({
+    ...value,
+    projection: {
+      ...value.projection,
+      checks: [{ ...value.projection.checks[0]!, run_id: baselineRun }],
+    },
+  } as EngineExperiment);
+  const summary = await loadActiveWork({ family: "engine", id: experimentId });
+  expect(summary.links).toEqual([]);
 });
 
 it("does not present a completed experiment as settled while cleanup is unknown", async () => {

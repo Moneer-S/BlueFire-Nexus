@@ -71,6 +71,15 @@ it("strictly validates bounded saved experiment heads", () => {
   expect(() => checkedEngineExperimentList({ ...value, experiments: [{ ...value.experiments[0], updated_at: "2026-02-31T12:01:00Z" }] })).toThrow(/invalid/i);
 });
 
+it("requests a bounded saved page and rejects an invalid page before transport", async () => {
+  vi.mocked(request).mockResolvedValue({ schema_version: "bluefire.engine-experiment-list.v1", experiments: [] });
+  await engineExperimentApi.list({ limit: 6, offset: 100 });
+  expect(request).toHaveBeenCalledWith("/engine-experiments?limit=6&offset=100");
+  vi.mocked(request).mockClear();
+  await expect(engineExperimentApi.list({ limit: 101, offset: 0 })).rejects.toThrow(/page is invalid/i);
+  expect(request).not.toHaveBeenCalled();
+});
+
 it("refuses a response whose selected context does not match the requested item", async () => {
   const experimentId = `experiment-${"a".repeat(32)}`;
   const checkId = `controller-check-${"c".repeat(32)}`;

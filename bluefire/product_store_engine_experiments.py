@@ -494,6 +494,7 @@ class EngineExperimentStoreMixin:
         self: EngineExperimentStore,
         *,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[Mapping[str, Any]]:
         if (
             isinstance(limit, bool)
@@ -503,6 +504,12 @@ class EngineExperimentStoreMixin:
             raise ProductStoreError(
                 f"engine experiment list limit must be between 1 and {_MAX_LIST_LIMIT}"
             )
+        if (
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or not 0 <= offset <= 1_000_000
+        ):
+            raise ProductStoreError("engine experiment list offset must be between 0 and 1000000")
         with self._connection() as connection:
             rows = connection.execute(
                 """
@@ -517,9 +524,9 @@ class EngineExperimentStoreMixin:
                   ON active.experiment_id = head.experiment_id
                  AND active.revision = head.active_revision
                 ORDER BY head.updated_at DESC, head.experiment_id
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (limit,),
+                (limit, offset),
             ).fetchall()
         if any(
             row["created_at"] is None

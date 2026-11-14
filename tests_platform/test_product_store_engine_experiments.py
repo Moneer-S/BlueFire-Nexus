@@ -99,6 +99,27 @@ def test_engine_experiment_history_survives_restart_and_lists_bounded_heads(
     ]
 
 
+def test_engine_experiment_list_reaches_heads_beyond_first_hundred(tmp_path: Path) -> None:
+    store = ProductStore(tmp_path / "bluefire.db")
+    for index in range(101):
+        experiment_id = f"experiment-{index:032x}"
+        store.create_engine_experiment(
+            experiment_id,
+            _document(experiment_id, revision=1),
+            validator=_validator,
+        )
+
+    first = store.list_engine_experiments(limit=100, offset=0)
+    older = store.list_engine_experiments(limit=100, offset=100)
+    assert len(first) == 100
+    assert len(older) == 1
+    assert older[0]["experiment_id"] not in {item["experiment_id"] for item in first}
+    assert (
+        store.get_engine_experiment(str(older[0]["experiment_id"]))["document"]["experiment_id"]
+        == older[0]["experiment_id"]
+    )
+
+
 def test_engine_experiment_save_is_append_only_cas_and_exact_retry_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -389,3 +410,10 @@ def test_engine_experiment_list_bounds(limit: object, tmp_path: Path) -> None:
     store = ProductStore(tmp_path / "bluefire.db")
     with pytest.raises(ProductStoreError, match="list limit"):
         store.list_engine_experiments(limit=limit)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("offset", [-1, 1_000_001, True])
+def test_engine_experiment_list_offset_bounds(offset: object, tmp_path: Path) -> None:
+    store = ProductStore(tmp_path / "bluefire.db")
+    with pytest.raises(ProductStoreError, match="list offset"):
+        store.list_engine_experiments(offset=offset)  # type: ignore[arg-type]

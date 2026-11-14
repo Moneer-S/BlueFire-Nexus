@@ -169,6 +169,46 @@ def _workspace_selection(
     return True, value if key == "attempt" else None, value if key == "check" else None
 
 
+def _collection_page(handler: Any) -> tuple[bool, int, int]:
+    parsed = urlsplit(handler.path)
+    if parsed.fragment or len(parsed.query) > 48:
+        _request_error(handler, "Saved experiment pagination is invalid.")
+        return False, 0, 0
+    if not parsed.query:
+        return True, 100, 0
+    try:
+        pairs = parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+            strict_parsing=True,
+            max_num_fields=2,
+        )
+    except ValueError:
+        _request_error(handler, "Saved experiment pagination is invalid.")
+        return False, 0, 0
+    if len(pairs) != 2 or [key for key, _value in pairs] != ["limit", "offset"]:
+        _request_error(handler, "Saved experiment pagination is invalid.")
+        return False, 0, 0
+    limit_text, offset_text = (value for _key, value in pairs)
+    if (
+        not limit_text.isascii()
+        or not limit_text.isdecimal()
+        or not offset_text.isascii()
+        or not offset_text.isdecimal()
+    ):
+        _request_error(handler, "Saved experiment pagination is invalid.")
+        return False, 0, 0
+    limit, offset = int(limit_text), int(offset_text)
+    if (
+        not 1 <= limit <= 100
+        or not 0 <= offset <= 1_000_000
+        or parsed.query != f"limit={limit}&offset={offset}"
+    ):
+        _request_error(handler, "Saved experiment pagination is invalid.")
+        return False, 0, 0
+    return True, limit, offset
+
+
 def _text(value: Any, *, maximum: int) -> bool:
     return (
         isinstance(value, str)
@@ -382,8 +422,14 @@ def dispatch_engine_experiments(
     operation, arguments = parsed
     selected_attempt_id: str | None = None
     selected_check_id: str | None = None
+    list_limit = 100
+    list_offset = 0
     if operation == "workspace":
         valid, selected_attempt_id, selected_check_id = _workspace_selection(handler)
+        if not valid:
+            return True
+    elif operation == "collection" and body is None:
+        valid, list_limit, list_offset = _collection_page(handler)
         if not valid:
             return True
     elif not handler._routes._management_query_free():
@@ -391,8 +437,13 @@ def dispatch_engine_experiments(
     service: EngineExperimentAPIService = handler.platform_server.service.engine_experiment_service
 
     if body is None:
+        def list_collection() -> Mapping[str, Any]:
+            if urlsplit(handler.path).query:
+                return service.list(limit=list_limit, offset=list_offset)
+            return service.list(limit=100)
+
         reads = {
-            "collection": lambda: service.list(limit=100),
+            "collection": list_collection,
             "read": lambda: service.get(arguments[0]),
             "workspace": lambda: service.workspace(
                 arguments[0],

@@ -7,7 +7,7 @@ import { phaseName, s3Api, validS3Job, type S3Exercise } from "./s3-access";
 import { objectives } from "./objectives";
 import { workFamilies, type WorkFamily } from "./saved-defensive-work";
 import { savedExperimentPath } from "./receiver-navigation";
-import { engineExperimentApi, engineExperimentId, engineExperimentPath } from "./engine-experiment-api";
+import { engineExperimentApi, engineExperimentId, engineExperimentPath, engineExperimentRunHref } from "./engine-experiment-api";
 import { engineAttemptLabel, engineControllerCheckLabel, engineWorkflowLabel, type EngineExperiment } from "./engine-experiment";
 
 export type ActiveWorkReference = { family: WorkFamily; id: string };
@@ -215,10 +215,13 @@ function engineSummary(reference: ActiveWorkReference, value: EngineExperiment):
     result("Legitimate use", humanize(conclusion.legitimate_use.status), conclusion.legitimate_use.status === "passed" ? "positive" : conclusion.legitimate_use.status === "failed" ? "caution" : "neutral"),
     result("Worker / target cleanup", humanize(conclusion.cleanup.status), conclusion.cleanup.status === "verified_absent" ? "positive" : ["unknown", "residue"].includes(conclusion.cleanup.status) ? "caution" : "neutral"),
   ];
-  const links = runLinks([
-    ...value.projection.attempts.map(item => ({ id: item.run_id, label: `${engineAttemptLabel(item.role)} run evidence` })),
-    ...value.projection.checks.map(item => ({ id: item.run_id, label: `${engineControllerCheckLabel(item.role)} run evidence` })),
-  ]);
+  const links = [
+    ...value.projection.attempts.map(item => ({ id: item.run_id, label: `${engineAttemptLabel(item.role)} attempt evidence` })),
+    ...value.projection.checks.map(item => ({ id: item.run_id, label: `${engineControllerCheckLabel(item.role)} check evidence` })),
+  ].flatMap(item => {
+    const href = engineExperimentRunHref(value, item.id);
+    return href ? [{ label: item.label, href }] : [];
+  });
   return {
     reference,
     title: value.objective.title,
