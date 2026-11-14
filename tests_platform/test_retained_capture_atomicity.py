@@ -890,24 +890,9 @@ def test_service_startup_invokes_retained_capture_reconciliation(tmp_path, monke
         service.close()
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows DACL contract")
-@pytest.mark.parametrize(
-    ("relative", "directory"),
-    [
-        ((), True),
-        (("retained",), True),
-        (("retained", "bundle.jsonl"), False),
-    ],
-)
-def test_windows_broadened_private_dacl_is_refused(tmp_path, relative, directory):
+def _set_windows_broadened_dacl(path: Path, *, directory: bool) -> None:
     import msvcrt
 
-    store = RunStore(tmp_path / "runs")
-    run_id, payload, prepared = _capture(store)
-    _publish(store, run_id, payload, prepared)
-    path = store.root / run_id
-    for part in relative:
-        path /= part
     descriptor = owner_acl._windows_open_descriptor(path, directory=directory, write_dac=True)
     advapi32, kernel32 = owner_acl._configure_apis()
     sid = owner_acl.current_user_sid()
@@ -928,6 +913,68 @@ def test_windows_broadened_private_dacl_is_refused(tmp_path, relative, directory
     finally:
         kernel32.LocalFree(seeded)
         os.close(descriptor)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows DACL contract")
+def test_windows_existing_workspace_migrates_before_retained_capture(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    run_id, payload, prepared = _capture(store)
+    run_path = store.root / run_id
+    _set_windows_broadened_dacl(run_path, directory=True)
+    _set_windows_broadened_dacl(store.root, directory=True)
+    try:
+        upgraded = RunStore(store.root)
+        for path in (upgraded.root, run_path):
+            descriptor = owner_acl._windows_open_descriptor(path, directory=True)
+            try:
+                owner_acl.verify_owner_private_acl(descriptor, directory=True)
+            finally:
+                os.close(descriptor)
+        _publish(upgraded, run_id, payload, prepared)
+        assert upgraded.read_retained_payload(run_id) == payload
+    finally:
+        for path in (store.root, run_path):
+            descriptor = owner_acl._windows_open_descriptor(path, directory=True, write_dac=True)
+            try:
+                owner_acl.apply_owner_private_acl(descriptor, directory=True)
+            finally:
+                os.close(descriptor)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows DACL contract")
+def test_windows_existing_capture_prevents_root_acl_migration(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    run_id, payload, prepared = _capture(store)
+    _publish(store, run_id, payload, prepared)
+    _set_windows_broadened_dacl(store.root, directory=True)
+    try:
+        with pytest.raises(RunStoreError, match="DACL"):
+            RunStore(store.root)
+    finally:
+        descriptor = owner_acl._windows_open_descriptor(store.root, directory=True, write_dac=True)
+        try:
+            owner_acl.apply_owner_private_acl(descriptor, directory=True)
+        finally:
+            os.close(descriptor)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows DACL contract")
+@pytest.mark.parametrize(
+    ("relative", "directory"),
+    [
+        ((), True),
+        (("retained",), True),
+        (("retained", "bundle.jsonl"), False),
+    ],
+)
+def test_windows_broadened_private_dacl_is_refused(tmp_path, relative, directory):
+    store = RunStore(tmp_path / "runs")
+    run_id, payload, prepared = _capture(store)
+    _publish(store, run_id, payload, prepared)
+    path = store.root / run_id
+    for part in relative:
+        path /= part
+    _set_windows_broadened_dacl(path, directory=directory)
     try:
         with pytest.raises(RunStoreError, match="DACL"):
             RunStore(store.root).read_retained_payload(run_id)

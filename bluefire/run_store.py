@@ -118,6 +118,12 @@ class RunStore:
             created = True
         except FileExistsError:
             pass
+        if os.name == "nt":
+            try:
+                if self._is_link_or_reparse(candidate.lstat()):
+                    raise RunStoreError("run store root is unsafe")
+            except OSError:
+                raise RunStoreError("run store root is unavailable") from None
         self.root = candidate.resolve(strict=True)
         if not self.root.is_dir():
             raise RunStoreError("run store root must be a directory")
@@ -130,6 +136,8 @@ class RunStore:
                 except OSError:
                     pass
                 raise
+        elif os.name == "nt":
+            self._migrate_legacy_windows_private_entries()
         self._locks_guard = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
 
@@ -967,6 +975,66 @@ class RunStore:
             int(getattr(details, "st_file_attributes", 0)) & _REPARSE_POINT
         )
 
+    def _windows_legacy_run_paths(self) -> list[Path]:
+        """Inventory only run namespaces; a retained capture forbids ACL migration."""
+
+        try:
+            children = sorted(self.root.iterdir(), key=lambda child: child.name)
+            runs = [child for child in children if RUN_ID_RE.fullmatch(child.name)]
+            for run in runs:
+                details = run.lstat()
+                if self._is_link_or_reparse(details) or not stat.S_ISDIR(details.st_mode):
+                    raise RunStoreError("legacy run namespace is unsafe")
+            return runs
+        except OSError:
+            raise RunStoreError("legacy run namespace is unavailable") from None
+
+    @staticmethod
+    def _windows_has_retained_content(run_path: Path) -> bool:
+        try:
+            return any(
+                child.name == RETAINED_PAYLOAD_DIRECTORY
+                or child.name.startswith(_RETAINED_TEMP_PREFIX)
+                for child in run_path.iterdir()
+            )
+        except OSError:
+            raise RunStoreError("legacy run namespace is unavailable") from None
+
+    def _migrate_legacy_windows_private_entries(self) -> None:
+        """Harden owner-owned pre-retention roots and runs once, refusing changed captures."""
+
+        if os.name != "nt":
+            raise RunStoreError("Windows private migration is unavailable")
+
+        def migrate(path: Path, *, root: bool) -> None:
+            try:
+                self._verify_retained_entry(path, directory=True)
+                return
+            except RunStoreError as exc:
+                if str(exc) != "retained private DACL is unsafe":
+                    raise
+
+            try:
+                identity = self._filesystem_identity(path.lstat())
+            except OSError:
+                raise RunStoreError("legacy run namespace is unavailable") from None
+            run_paths = self._windows_legacy_run_paths() if root else [path]
+            if any(self._windows_has_retained_content(run) for run in run_paths):
+                raise RunStoreError("retained private DACL is unsafe")
+            try:
+                current_identity = self._filesystem_identity(path.lstat())
+            except OSError:
+                raise RunStoreError("legacy run namespace is unavailable") from None
+            if current_identity != identity:
+                raise RunStoreError("legacy run namespace changed")
+            self._harden_retained_entry(path, directory=True, _expected_identity=identity)
+            if any(self._windows_has_retained_content(run) for run in run_paths):
+                raise RunStoreError("retained private DACL is unsafe")
+
+        migrate(self.root, root=True)
+        for run in self._windows_legacy_run_paths():
+            migrate(run, root=False)
+
     @staticmethod
     def _posix_euid() -> int:
         getter = getattr(os, "geteuid", None)
@@ -981,8 +1049,14 @@ class RunStore:
             raise RunStoreError("retained POSIX permission hardening is unavailable")
         chmod(descriptor, mode)
 
-    def _harden_retained_entry(self, path: Path, *, directory: bool) -> None:
-        """Harden an exact object just created by this store, then verify it."""
+    def _harden_retained_entry(
+        self,
+        path: Path,
+        *,
+        directory: bool,
+        _expected_identity: tuple[int, int, int] | None = None,
+    ) -> None:
+        """Harden an exact owner-owned object, then verify it."""
 
         if os.name == "nt":
             descriptor: int | None = None
@@ -999,6 +1073,9 @@ class RunStore:
                 )
                 if self._filesystem_identity(os.fstat(descriptor)) != self._filesystem_identity(
                     details
+                ) or (
+                    _expected_identity is not None
+                    and self._filesystem_identity(details) != _expected_identity
                 ):
                     raise RunStoreError("retained private object changed")
                 apply_owner_private_acl(descriptor, directory=directory)
