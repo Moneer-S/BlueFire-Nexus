@@ -5,7 +5,7 @@
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::mem::{size_of, zeroed};
+use std::mem::{size_of, size_of_val, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
@@ -376,7 +376,7 @@ pub(crate) fn send_packet(channel: RawFd, payload: &[u8], rights: &[RawFd]) -> R
         if rights.is_empty() {
             0
         } else {
-            unsafe { libc::CMSG_SPACE((rights.len() * size_of::<RawFd>()) as _) as usize }
+            unsafe { libc::CMSG_SPACE(size_of_val(rights) as _) as usize }
         }
     ];
     let mut iov = libc::iovec {
@@ -388,19 +388,21 @@ pub(crate) fn send_packet(channel: RawFd, payload: &[u8], rights: &[RawFd]) -> R
     message.msg_iovlen = 1;
     if !rights.is_empty() {
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = control.len();
+        message.msg_controllen = control.len().try_into().map_err(|_| REFUSAL)?;
         unsafe {
             let header = libc::CMSG_FIRSTHDR(&message);
             require(!header.is_null())?;
             (*header).cmsg_level = libc::SOL_SOCKET;
             (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN((rights.len() * size_of::<RawFd>()) as _) as usize;
+            (*header).cmsg_len = libc::CMSG_LEN(size_of_val(rights) as _)
+                .try_into()
+                .map_err(|_| REFUSAL)?;
             ptr::copy_nonoverlapping(
                 rights.as_ptr().cast(),
                 libc::CMSG_DATA(header),
-                rights.len() * size_of::<RawFd>(),
+                size_of_val(rights),
             );
-            message.msg_controllen = control.len();
+            message.msg_controllen = control.len().try_into().map_err(|_| REFUSAL)?;
         }
     }
     require(
@@ -433,7 +435,7 @@ pub(crate) fn receive_packet(
     message.msg_iov = &mut iov;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control.len();
+    message.msg_controllen = control.len().try_into().map_err(|_| REFUSAL)?;
     let read = unsafe { libc::recvmsg(channel, &mut message, libc::MSG_CMSG_CLOEXEC) };
     require(read > 0 && message.msg_flags == 0)?;
     payload.truncate(read as usize);
@@ -446,7 +448,9 @@ pub(crate) fn receive_packet(
         while !header.is_null() {
             if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
                 rights_seen = rights_seen.checked_add(1).ok_or(REFUSAL)?;
-                let bytes = (*header).cmsg_len - libc::CMSG_LEN(0) as usize;
+                let length = usize::try_from((*header).cmsg_len).map_err(|_| REFUSAL)?;
+                let base = usize::try_from(libc::CMSG_LEN(0)).map_err(|_| REFUSAL)?;
+                let bytes = length.checked_sub(base).ok_or(REFUSAL)?;
                 require(bytes == right_count * size_of::<RawFd>())?;
                 let data = libc::CMSG_DATA(header).cast::<RawFd>();
                 for index in 0..right_count {
@@ -456,6 +460,11 @@ pub(crate) fn receive_packet(
                 && (*header).cmsg_type == libc::SCM_CREDENTIALS
             {
                 credentials_seen = credentials_seen.checked_add(1).ok_or(REFUSAL)?;
+                require(
+                    usize::try_from((*header).cmsg_len).map_err(|_| REFUSAL)?
+                        == usize::try_from(libc::CMSG_LEN(size_of::<libc::ucred>() as _))
+                            .map_err(|_| REFUSAL)?,
+                )?;
                 credentials = Some(*libc::CMSG_DATA(header).cast::<libc::ucred>());
             } else {
                 return Err(REFUSAL.into());
@@ -628,16 +637,14 @@ fn control_fact(fd: RawFd, expected_path: &str) -> Result<ListenerFact, String> 
 }
 
 pub(crate) fn verify_listeners(
-    endpoint: RawFd,
-    control: RawFd,
-    model: RawFd,
-    caido: RawFd,
-    uid: u32,
-    gid: u32,
+    listeners: [RawFd; 4],
+    owner: (u32, u32),
     control_path: &str,
-    model_port: u16,
-    caido_port: u16,
+    ports: (u16, u16),
 ) -> Result<ListenerFacts, String> {
+    let [endpoint, control, model, caido] = listeners;
+    let (uid, gid) = owner;
+    let (model_port, caido_port) = ports;
     let mut directory: libc::stat = unsafe { zeroed() };
     require(unsafe { libc::fstat(endpoint, &mut directory) } == 0)?;
     require(
@@ -652,7 +659,7 @@ pub(crate) fn verify_listeners(
         unsafe {
             libc::fstatat(
                 endpoint,
-                b"controller.sock\0".as_ptr().cast(),
+                c"controller.sock".as_ptr(),
                 &mut path,
                 libc::AT_SYMLINK_NOFOLLOW,
             )
@@ -799,6 +806,62 @@ pub(crate) fn await_two_phase(
     let mut extra = [0_u8; 1];
     require(unsafe { libc::recv(channel, extra.as_mut_ptr().cast(), 1, 0) } == 0)?;
     Ok(payload)
+}
+
+#[cfg(test)]
+mod packet_tests {
+    use super::*;
+
+    #[test]
+    fn packet_round_trip_requires_credentials_and_exact_rights() {
+        let mut pair = [-1; 2];
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    pair.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        let sender = unsafe { OwnedFd::from_raw_fd(pair[0]) };
+        let receiver = unsafe { OwnedFd::from_raw_fd(pair[1]) };
+        let passcred: libc::c_int = 1;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    receiver.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PASSCRED,
+                    (&passcred as *const libc::c_int).cast(),
+                    size_of::<libc::c_int>() as _,
+                )
+            },
+            0
+        );
+        let file = File::open("/dev/null").unwrap();
+        send_packet(sender.as_raw_fd(), b"probe", &[file.as_raw_fd()]).unwrap();
+        let (payload, rights) = receive_packet(
+            receiver.as_raw_fd(),
+            1,
+            (
+                unsafe { libc::getpid() },
+                unsafe { libc::getuid() },
+                unsafe { libc::getgid() },
+            ),
+        )
+        .unwrap();
+        assert_eq!(payload, b"probe");
+        assert_eq!(rights.len(), 1);
+        let mut received: libc::stat = unsafe { zeroed() };
+        assert_eq!(
+            unsafe { libc::fstat(rights[0].as_raw_fd(), &mut received) },
+            0
+        );
+        assert_eq!(received.st_mode & libc::S_IFMT, libc::S_IFCHR);
+    }
 }
 
 #[cfg(test)]
