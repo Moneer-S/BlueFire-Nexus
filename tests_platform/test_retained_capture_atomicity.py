@@ -119,6 +119,57 @@ def test_exact_retry_reopens_one_private_capture_and_one_event(tmp_path):
     assert events[0]["data"]["capture_digest"] == prepared["receipt"]["capture_digest"]
 
 
+def test_saved_capture_and_zero_observation_engine_run_reopen_together(tmp_path):
+    """A terminal engine attempt remains visible without invented observations."""
+
+    store = RunStore(tmp_path / "runs")
+    retained_run_id, payload, prepared = _capture(store)
+    _publish(store, retained_run_id, payload, prepared)
+    store.finalize(
+        retained_run_id,
+        result={"status": "completed", "kind": "retained_composition"},
+        evidence=(),
+        detections=(),
+    )
+
+    engine_run_id = "run-20261113T120000Z-2222222222222222"
+    publication = {
+        "created_at": "2026-11-13T12:00:00Z",
+        "finalized_at": "2026-11-13T12:00:09Z",
+        "scenario": {"schema_version": "bluefire.engine-observation-scenario.v1"},
+        "plan": {"schema_version": "bluefire.engine-observation-plan.v1"},
+        "policy": {"schema_version": "bluefire.engine-observation-policy.v1"},
+        "profile": {"controller_attested": True, "observation_count": 0},
+        "result": {
+            "schema_version": "bluefire.engine-observation-result.v1",
+            "status": "unknown",
+            "verification_status": "unverified",
+            "observation_count": 0,
+        },
+        "evidence": (),
+        "detections": (),
+    }
+    manifest = store.publish_finalized_run(engine_run_id, **publication)
+
+    reopened = RunStore(store.root)
+    assert reopened.recover_interrupted_runs() == 0
+    assert reopened.retained_capture(retained_run_id) == prepared["publication"]
+    assert reopened.read_retained_payload(retained_run_id) == payload
+    assert reopened.get_run(retained_run_id, require_finalized=True)["status"] == "completed"
+    engine = reopened.get_run(engine_run_id, require_finalized=True)
+    assert engine["status"] == "unknown"
+    assert engine["verification_status"] == "unverified"
+    assert engine["evidence"]["records"] == []
+    assert "engine_execution_proof" not in engine
+    assert reopened.publish_finalized_run(engine_run_id, **publication) == manifest
+    with pytest.raises(RunStoreError, match="byte-identical"):
+        reopened.publish_finalized_run(
+            engine_run_id,
+            **{**publication, "evidence": ({"invented": True},)},
+        )
+    assert reopened.get_run(engine_run_id, require_finalized=True) == engine
+
+
 def test_conflicting_retry_preserves_first_capture(tmp_path):
     store = RunStore(tmp_path / "runs")
     run_id, payload, prepared = _capture(store)
