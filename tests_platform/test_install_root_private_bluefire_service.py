@@ -135,6 +135,18 @@ class WheelhouseTests(unittest.TestCase):
 
 
 class CleanupGuardTests(unittest.TestCase):
+    def test_mount_check_reads_to_eof_before_cleanup(self) -> None:
+        root = Path("/root/bluefire-ci-123-1")
+        first = b"1 0 0:1 / / rw - tmpfs tmpfs rw\n"
+        second = b"2 1 0:1 / " + os.fsencode(root) + b"/venv/lib rw - tmpfs tmpfs rw\n"
+        with (
+            mock.patch.object(installer.os, "open", return_value=19),
+            mock.patch.object(installer.os, "read", side_effect=(first, second, b"")),
+            mock.patch.object(installer.os, "close"),
+        ):
+            with self.assertRaisesRegex(installer.InstallError, "cleanup_mount_refused"):
+                installer._assert_no_mounts(root)
+
     @unittest.skipUnless(os.name == "posix", "POSIX venv aliases")
     def test_cleanup_unlinks_only_conventional_venv_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

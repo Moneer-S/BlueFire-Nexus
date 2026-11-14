@@ -622,11 +622,16 @@ def _assert_no_mounts(root: Path) -> None:
 
     descriptor = os.open("/proc/self/mountinfo", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        mountinfo = os.read(descriptor, 4 * 1024 * 1024 + 1)
+        chunks: list[bytes] = []
+        total = 0
+        while block := os.read(descriptor, 65_536):
+            total += len(block)
+            if total > 4 * 1024 * 1024:
+                raise InstallError("mount_inventory_bound")
+            chunks.append(block)
     finally:
         os.close(descriptor)
-    if len(mountinfo) > 4 * 1024 * 1024:
-        raise InstallError("mount_inventory_bound")
+    mountinfo = b"".join(chunks)
     prefix = os.fsencode(root)
     for line in mountinfo.splitlines():
         fields = line.split(b" ")
