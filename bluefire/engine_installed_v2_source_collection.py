@@ -11,6 +11,7 @@ import os
 import re
 import stat
 import threading
+import time
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ from .engine_artifact_store import (
     _CONTROLLER_SOURCE_AUTHORITY,
     EngineArtifactPublicationBinding,
     EngineArtifactStore,
+    EngineArtifactStoreError,
     ReopenedEngineArtifactAttempt,
     SourceCollectionSeal,
     source_collection_tree_digest,
@@ -40,6 +42,7 @@ _SCHEMA = "bluefire.installed-strix-v2-source-collection-terminal.v1"
 _ROLE = "source_collection"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ATTEMPT = re.compile(r"engine-attempt-[0-9a-f]{32}\Z")
+_EXPORT_TIMEOUT_SECONDS = 30.0
 
 
 class InstalledStrixV2SourceCollectionError(RuntimeError):
@@ -301,7 +304,13 @@ class InstalledStrixV2SourceCollection:
         bindings = dict(activation.role_bindings)
         if _ROLE not in bindings:
             raise InstalledStrixV2SourceCollectionError("source activation lacks its resource")
-        if not isinstance(host_attempt_directory, Path) or not host_attempt_directory.is_dir():
+        if (
+            not isinstance(host_attempt_directory, Path)
+            or not host_attempt_directory.is_absolute()
+            or host_attempt_directory.name != attempt_id
+            or host_attempt_directory.is_symlink()
+            or not host_attempt_directory.is_dir()
+        ):
             raise InstalledStrixV2SourceCollectionError("source attempt directory is unavailable")
         if not isinstance(expected_target, str) or not expected_target.startswith("http://"):
             raise InstalledStrixV2SourceCollectionError("source target binding is invalid")
@@ -436,6 +445,7 @@ class InstalledStrixV2SourceCollection:
             "process_exit_code": exit_code,
             "cancellation_requested": cancellation,
             "cessation_verified": True,
+            "deadline_monotonic": time.monotonic() + _EXPORT_TIMEOUT_SECONDS,
         }
         if state == "published":
             return reopen_strix_workspace_export(**kwargs)
@@ -468,6 +478,34 @@ class InstalledStrixV2SourceCollection:
                 }
             ),
         )
+
+    def _require_artifact_store_absent(self) -> None:
+        """Treat only the Store's exact missing result as an empty publication."""
+
+        try:
+            self._artifact_store.reopen_attempt(self.attempt_id)
+        except EngineArtifactStoreError as exc:
+            # The Store verifies its protected root before reporting this
+            # precise missing state. Pending/corrupt/permission errors remain
+            # unknown rather than becoming a no-run claim.
+            if str(exc) == "artifact publication is unavailable":
+                return
+            raise
+        raise InstalledStrixV2SourceCollectionError("absent run has artifact publication")
+
+    @staticmethod
+    def _require_same_artifacts(
+        exported: StrixWorkspaceExport, published: ReopenedEngineArtifactAttempt
+    ) -> None:
+        reviewed = tuple(item.to_manifest_row() for item in exported.reviewed_files)
+        retained = tuple(item.to_manifest_row() for item in published.artifacts)
+        if (
+            retained != reviewed
+            or tuple(item["name"] for item in reviewed) != exported.selected_names
+        ):
+            raise InstalledStrixV2SourceCollectionError(
+                "saved artifacts differ from reviewed Strix output"
+            )
 
     def _publish(self, exported: StrixWorkspaceExport, terminal: dict[str, Any]):
         source = exported.source_run_dir
@@ -512,21 +550,23 @@ class InstalledStrixV2SourceCollection:
             not published.recovery_eligible
             or published.artifact_publication_ref is None
             or published.publication_binding != binding
-            or tuple(item.name for item in published.artifacts) != exported.selected_names
         ):
             raise InstalledStrixV2SourceCollectionError("source publication was not retained")
+        self._require_same_artifacts(exported, published)
         return published, content_hash(seal.to_dict())
 
     def seal_and_observe(self) -> SourceCollectionTerminalReceipt:
         with self._lock:
-            reopened = self.reopen_terminal()
-            if reopened is not None:
-                self._terminal = reopened
-                self._cleanup_uncertain = False
-                return reopened
-            if self._terminal is not None:
-                raise InstalledStrixV2SourceCollectionError("retained source terminal disappeared")
             try:
+                reopened = self.reopen_terminal()
+                if reopened is not None:
+                    self._terminal = reopened
+                    self._cleanup_uncertain = False
+                    return reopened
+                if self._terminal is not None:
+                    raise InstalledStrixV2SourceCollectionError(
+                        "retained source terminal disappeared"
+                    )
                 observed, qualified, terminal, workspace_fd = self._native_terminal()
                 exported = self._export(observed, terminal, workspace_fd)
                 publication_ref: str | None = None
@@ -536,6 +576,8 @@ class InstalledStrixV2SourceCollection:
                     published, seal_ref = self._publish(exported, terminal)
                     publication_ref = published.artifact_publication_ref
                     export_ref = exported.manifest_ref
+                else:
+                    self._require_artifact_store_absent()
                 state = "verified_settled" if exported is not None else "verified_absent"
                 evidence_ref = publication_ref or content_hash(
                     {
@@ -602,6 +644,7 @@ class InstalledStrixV2SourceCollection:
                 process_exit_code=receipt.native_terminal.get("exit_code"),
                 cancellation_requested=receipt.native_terminal.get("reason") == "cancelled",
                 cessation_verified=True,
+                deadline_monotonic=time.monotonic() + _EXPORT_TIMEOUT_SECONDS,
             )
             published = self._artifact_store.reopen_attempt(self.attempt_id)
             if (
@@ -610,9 +653,9 @@ class InstalledStrixV2SourceCollection:
                 or published.source_collection_seal_ref != receipt.source_seal_ref
                 or published.publication_binding
                 != self._publication_binding(exported, receipt.native_terminal)
-                or tuple(item.name for item in published.artifacts) != exported.selected_names
             ):
                 raise InstalledStrixV2SourceCollectionError("source publication changed")
+            self._require_same_artifacts(exported, published)
         elif (
             inspect_retained_strix_export_state(
                 attempt_id=self.attempt_id, host_attempt_directory=self._host_attempt_directory
@@ -620,6 +663,8 @@ class InstalledStrixV2SourceCollection:
             != "absent"
         ):
             raise InstalledStrixV2SourceCollectionError("absent source has retained export")
+        else:
+            self._require_artifact_store_absent()
         return receipt
 
     def reopen_terminal(self) -> SourceCollectionTerminalReceipt | None:
@@ -681,6 +726,7 @@ class InstalledStrixV2SourceCollection:
                 process_exit_code=terminal.native_terminal.get("exit_code"),
                 cancellation_requested=terminal.native_terminal.get("reason") == "cancelled",
                 cessation_verified=True,
+                deadline_monotonic=time.monotonic() + _EXPORT_TIMEOUT_SECONDS,
             )
             artifacts = self.reopen_artifact_attempt()
             if artifacts is None or exported.manifest_ref != terminal.export_manifest_ref:

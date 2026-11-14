@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 import bluefire.engine_installed_v2_source_collection as source_module
+from bluefire.engine_artifact_store import EngineArtifactStoreError
 from bluefire.engine_installed_v2_authority import InstalledStrixV2ActivationReceipt
 from bluefire.engine_installed_v2_source_collection import (
     InstalledStrixV2SourceCollection,
@@ -51,13 +53,14 @@ class _TerminalJournal:
         return None
 
 
-def _native_receipts(*, reason="cancelled", exit_code=None):
+def _native_receipts(*, reason="cancelled", exit_code=None, workspace_fact=None):
+    workspace_fact = WORKSPACE_FACT if workspace_fact is None else workspace_fact
     observed = {
         "schema_version": "bluefire.strix-worker-runtime-observation.v1",
         "attempt_id": ATTEMPT,
         "plan_ref": _digest("plan"),
-        "workspace": WORKSPACE_FACT,
-        "workspace_ref": content_hash(WORKSPACE_FACT),
+        "workspace": workspace_fact,
+        "workspace_ref": content_hash(workspace_fact),
     }
     observed["observation_ref"] = content_hash(observed)
     qualified = {
@@ -104,15 +107,27 @@ class _Worker:
         return dict(self._terminal)
 
 
-def _owner(tmp_path, monkeypatch, *, reason="cancelled", exit_code=None):
-    monkeypatch.setattr(source_module, "_workspace_identity", lambda _fd: WORKSPACE_FACT)
-    observed, qualified, terminal = _native_receipts(reason=reason, exit_code=exit_code)
+class _ArtifactStore:
+    def reopen_attempt(self, _attempt):
+        raise EngineArtifactStoreError("artifact publication is unavailable")
+
+
+def _owner(tmp_path, monkeypatch, *, reason="cancelled", exit_code=None, real_workspace=False):
     workspace = tmp_path / "workspace"
-    # Windows cannot open a directory as a regular fd; the presence reader is
-    # stubbed in these controller-contract tests. Linux exporter tests use a
-    # real pinned directory descriptor.
-    workspace.write_bytes(b"")
-    fd = os.open(workspace, os.O_RDONLY)
+    if real_workspace:
+        workspace.mkdir(mode=0o700)
+        fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+        workspace_fact = source_module._workspace_identity(fd)
+    else:
+        # Windows cannot open a directory as a regular fd; the presence reader
+        # is stubbed in these controller-contract tests.
+        workspace.write_bytes(b"")
+        fd = os.open(workspace, os.O_RDONLY)
+        workspace_fact = WORKSPACE_FACT
+        monkeypatch.setattr(source_module, "_workspace_identity", lambda _fd: workspace_fact)
+    observed, qualified, terminal = _native_receipts(
+        reason=reason, exit_code=exit_code, workspace_fact=workspace_fact
+    )
     activation = object.__new__(InstalledStrixV2ActivationReceipt)
     binding_ref = _digest("actual-source-binding")
     for name, value in {
@@ -141,10 +156,10 @@ def _owner(tmp_path, monkeypatch, *, reason="cancelled", exit_code=None):
             "binding_ref": prelaunch_binding_ref,
         }
     )
-    host_attempt = tmp_path / "host-attempt"
-    host_attempt.mkdir()
+    host_attempt = tmp_path / ATTEMPT
+    host_attempt.mkdir(mode=0o700)
     worker = _Worker(fd, observed, qualified, terminal)
-    store = SimpleNamespace()
+    store = _ArtifactStore()
     owner = InstalledStrixV2SourceCollection(
         transaction_ref=transaction_ref,
         attempt_id=ATTEMPT,
@@ -188,6 +203,17 @@ def test_cancelled_no_run_retains_verified_absence_and_reopens(tmp_path, monkeyp
         os.close(fd)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux private directory descriptors")
+def test_linux_pinned_workspace_no_run_and_owner_private_destination(tmp_path, monkeypatch):
+    owner, _worker, _store, fd = _owner(tmp_path, monkeypatch, real_workspace=True)
+    try:
+        terminal = owner.seal_and_observe()
+        assert terminal.state == "verified_absent"
+        assert owner.reopen_terminal() == terminal
+    finally:
+        os.close(fd)
+
+
 @pytest.mark.parametrize("exit_code", (0, 2))
 def test_completed_success_without_saved_run_remains_unknown(tmp_path, monkeypatch, exit_code):
     owner, _worker, _store, fd = _owner(
@@ -222,6 +248,25 @@ def test_partial_export_cannot_be_declared_absent(tmp_path, monkeypatch):
         os.close(fd)
 
 
+def test_orphan_artifact_publication_cannot_be_hidden_by_no_run(tmp_path, monkeypatch):
+    owner, _worker, store, fd = _owner(tmp_path, monkeypatch)
+    try:
+        monkeypatch.setattr(
+            source_module, "inspect_retained_strix_export_state", lambda **_: "absent"
+        )
+        monkeypatch.setattr(
+            source_module, "inspect_guest_strix_run_presence", lambda _: "no_run_record"
+        )
+        store.reopen_attempt = lambda _attempt: SimpleNamespace(
+            artifact_publication_ref=_digest("orphan-publication")
+        )
+        with pytest.raises(InstalledStrixV2SourceCollectionError, match="artifact publication"):
+            owner.seal_and_observe()
+        assert owner.reopen_terminal() is None
+    finally:
+        os.close(fd)
+
+
 def test_saved_run_publication_reopens_exact_manifest_and_artifacts(tmp_path, monkeypatch):
     owner, worker, store, fd = _owner(tmp_path, monkeypatch, reason="completed", exit_code=0)
     try:
@@ -231,8 +276,13 @@ def test_saved_run_publication_reopens_exact_manifest_and_artifacts(tmp_path, mo
             to_dict=lambda: {"attempt_state": "completed"},
         )
         selected = "strix_runs/run/run.json"
+        reviewed_row = {"name": selected, "size_bytes": 4, "sha256": _digest("saved-bytes")}
+        reviewed_file = SimpleNamespace(to_manifest_row=lambda: reviewed_row)
         exported = SimpleNamespace(
-            manifest_ref=_digest("manifest"), snapshot=snapshot, selected_names=(selected,)
+            manifest_ref=_digest("manifest"),
+            snapshot=snapshot,
+            selected_names=(selected,),
+            reviewed_files=(reviewed_file,),
         )
         publication_ref = _digest("artifact-publication")
         seal_ref = _digest("source-seal")
@@ -251,7 +301,7 @@ def test_saved_run_publication_reopens_exact_manifest_and_artifacts(tmp_path, mo
             manifest_ref=_digest("artifact-manifest"),
             recovery_eligible=True,
             publication_binding=binding,
-            artifacts=(SimpleNamespace(name=selected),),
+            artifacts=(SimpleNamespace(to_manifest_row=lambda: reviewed_row),),
         )
         receipt = owner.seal_and_observe()
         assert receipt.state == "verified_settled"
@@ -261,14 +311,28 @@ def test_saved_run_publication_reopens_exact_manifest_and_artifacts(tmp_path, mo
         assert owner.reopen_artifact_attempt().manifest_ref == _digest("artifact-manifest")
         assert owner.retained_result().snapshot is snapshot
         assert owner.retained_result().artifact_manifest_ref == _digest("artifact-manifest")
+        changed_row = {**reviewed_row, "sha256": _digest("same-size-different-bytes")}
+        store.reopen_attempt = lambda _attempt: SimpleNamespace(
+            attempt_id=ATTEMPT,
+            artifact_publication_ref=publication_ref,
+            source_collection_seal_ref=seal_ref,
+            publication_binding=binding,
+            artifacts=(SimpleNamespace(to_manifest_row=lambda: changed_row),),
+        )
+        with pytest.raises(InstalledStrixV2SourceCollectionError, match="reviewed Strix output"):
+            owner.reopen_terminal()
         store.reopen_attempt = lambda _attempt: SimpleNamespace(
             artifact_publication_ref=_digest("changed"),
             source_collection_seal_ref=seal_ref,
             publication_binding=binding,
-            artifacts=(SimpleNamespace(name=selected),),
+            artifacts=(SimpleNamespace(to_manifest_row=lambda: reviewed_row),),
         )
         with pytest.raises(InstalledStrixV2SourceCollectionError, match="publication changed"):
             owner.reopen_terminal()
+        owner._terminal = None
+        with pytest.raises(InstalledStrixV2SourceCollectionError, match="publication changed"):
+            owner.seal_and_observe()
+        assert owner.cleanup_uncertain is True
     finally:
         os.close(fd)
 
