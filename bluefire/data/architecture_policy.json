@@ -855,6 +855,7 @@
     }
   ],
   "allowed_python_dependencies": {
+    "controlled_worker": ["controlled_worker", "domain", "foundation"],
     "foundation": ["foundation"],
     "domain": ["domain", "foundation"],
     "persistence": ["persistence", "domain", "foundation"],
