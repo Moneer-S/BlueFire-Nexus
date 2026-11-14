@@ -539,9 +539,13 @@ def test_windows_long_roots_persist_reload_and_preserve_bundle_integrity(
     with pytest.raises(RunStoreError, match="unsupported bundle file"):
         reopened.write_json(handle.run_id, "../outside.json", {})
     outside_id = "run-20260101T000000Z-0000000000000009"
-    (store.root / outside_id).symlink_to(tmp_path, target_is_directory=True)
+    outside_link = store.root / outside_id
+    outside_link.symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(RunStoreError, match="escapes the configured output root"):
         reopened.get_run(outside_id)
+    # Restore the safe namespace before independently checking bundle integrity
+    # through a fresh store, whose constructor now rejects unsafe run entries.
+    outside_link.rmdir()
     (handle.path / "policy.json").write_text('{"altered":true}', encoding="utf-8")
     with pytest.raises(RunStoreError, match="integrity"):
         RunStore(root).get_run(handle.run_id)
