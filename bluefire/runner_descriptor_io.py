@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ctypes
 import os
-import stat
 import sys
+
+from . import native_filesystem_identity
+from .native_filesystem_identity import _ordinary as _ordinary
 
 _LINUX_AT_EMPTY_PATH = 0x1000
 _LINUX_STATX_MNT_ID = 0x1000
@@ -26,49 +28,10 @@ def identity_format() -> str:
     return "windows-file-id-info.v1" if sys.platform == "win32" else "posix-stat.v1"
 
 
-def _ordinary(details: os.stat_result, *, directory: bool) -> None:
-    good_type = (
-        stat.S_ISDIR(details.st_mode)
-        if directory
-        else stat.S_ISREG(details.st_mode) and details.st_nlink == 1
-    )
-    if not good_type or int(getattr(details, "st_file_attributes", 0)) & 0x400:
-        raise ValueError("lab state must use ordinary, unlinked files and directories")
-
-
 def _windows_file_identity(descriptor: int) -> tuple[int, int]:
-    """Read the full 64-bit volume and 128-bit file ID on every Python version."""
-
-    if sys.platform != "win32":
-        raise OSError("native Windows file identity is available only on Windows")
-
-    import msvcrt
-    from ctypes import wintypes
-
-    class FileIdInfo(ctypes.Structure):
-        _fields_ = [("VolumeSerialNumber", ctypes.c_ulonglong), ("FileId", ctypes.c_ubyte * 16)]
-
-    class FileAttributeTagInfo(ctypes.Structure):
-        _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
-
-    operation = ctypes.WinDLL("kernel32", use_last_error=True).GetFileInformationByHandleEx
-    operation.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
-    operation.restype = wintypes.BOOL
-    handle = msvcrt.get_osfhandle(descriptor)
-    information = FileIdInfo()
-    if handle == -1 or not operation(
-        wintypes.HANDLE(handle), 18, ctypes.byref(information), ctypes.sizeof(information)
-    ):
-        raise OSError("full Windows lab file identity is unavailable")
-    attributes = FileAttributeTagInfo()
-    if (
-        not operation(
-            wintypes.HANDLE(handle), 9, ctypes.byref(attributes), ctypes.sizeof(attributes)
-        )
-        or attributes.FileAttributes & 0x400
-    ):
-        raise OSError("ordinary Windows lab file identity is unavailable")
-    return int(information.VolumeSerialNumber), int.from_bytes(information.FileId, "little")
+    return native_filesystem_identity._windows_file_identity(
+        descriptor, platform=sys.platform, ctypes_module=ctypes
+    )
 
 
 def descriptor_identity(descriptor: int, *, directory: bool = False) -> tuple[int, int]:
@@ -84,7 +47,6 @@ def _descriptor_mount_identity(descriptor: int) -> int | None:
 
     if not sys.platform.startswith("linux"):
         return None
-    import ctypes
     import errno
 
     buffer = (ctypes.c_ubyte * 256)()

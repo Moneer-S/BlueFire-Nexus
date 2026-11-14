@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 from . import file_access_method, macos_file_access_method
 from . import runner_provider_values as provider_values
 from .collection_methods import (
-    COLLECTION_METHODS,
+    COLLECTION_ACTION_IDS,
     CollectionMethodError,
     collection_artifacts,
     collection_request,
@@ -238,7 +238,7 @@ class RunnerActionAdapter:
 
     action_ids = frozenset(
         {
-            *COLLECTION_METHODS,
+            *COLLECTION_ACTION_IDS,
             *READ_ACTIONS,
             *macos_file_access_method.METHODS,
             "sandbox.fixture.create.v1",
@@ -272,6 +272,7 @@ class RunnerActionAdapter:
         bound_inputs: Mapping[str, Any],
         receipt_ids: Sequence[str],
         loopback_host: str = "127.0.0.1",
+        _retained_material: Mapping[str, Any] | None = None,
     ) -> AdaptedAction:
         action_id = step.action_id
         provider = _provider_binding(step)
@@ -300,10 +301,10 @@ class RunnerActionAdapter:
             adapted = AdaptedAction(
                 params=params, filesystem_scope=(path,), observable_paths=(path,)
             )
-        elif action_id in COLLECTION_METHODS:
+        elif action_id in COLLECTION_ACTION_IDS:
             try:
                 params, scope, observed = collection_request(
-                    action_id, step.parameters, bound_inputs
+                    action_id, step.parameters, bound_inputs, retained_material=_retained_material
                 )
             except CollectionMethodError as exc:
                 raise RunnerAdapterError(str(exc)) from exc
@@ -989,7 +990,7 @@ class RunnerActionAdapter:
                     "receipt_ids": list(receipt_ids),
                 }
             }
-        if action_id in COLLECTION_METHODS:
+        if action_id in COLLECTION_ACTION_IDS:
             try:
                 return collection_artifacts(
                     action_id, step.parameters, bound_inputs, runner_output, receipt_ids

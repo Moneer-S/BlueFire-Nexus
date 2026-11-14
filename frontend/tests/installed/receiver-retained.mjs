@@ -1,0 +1,598 @@
+import assert from "node:assert/strict";
+import { isDeepStrictEqual as same } from "node:util";
+import { URL, URLSearchParams } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { createReceiverReloadContextCorrelation } from "./receiver-guards.mjs";
+import { readReceiverCompositionUi } from "./receiver-diagnostics.mjs";
+import { verifyReceiverKnowledge } from "./receiver-knowledge.mjs";
+import { RETAINED_PACK, RETAINED_METHOD, RETAINED_PURPOSE_LABEL, RETAINED_QUESTION, RETAINED_REVIEWER,
+  exact, assertMetadataOnly, assertRetainedSource, verifyRetainedOriginal, verifyRetainedContinuation } from "./receiver-retained-proof.mjs";
+
+const submissionId = value => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+const jobId = value => `job-${value.replaceAll("-", "")}`;
+const reviewBody = controlId => ({ schema_version: "bluefire.composition-review-request.v2", pack: RETAINED_PACK,
+  control_owner_id: controlId, question: RETAINED_QUESTION, limits: null });
+export const retainedState = () => ({ active: false, ownerId: undefined, proposals: [], attempts: [],
+  initialContext: undefined, historyContext: undefined, review: undefined, first: undefined, source: undefined,
+  knowledge: undefined, candidate: undefined, comparisonSubmitted: false, snapshotId: undefined });
+
+// The rendered action must become ready before a response observer is armed.
+// Both local windows are inside the existing work budget, never its cleanup reserve.
+export async function submitRetainedAttempt(page, options) {
+  const { origin, ownerId, controlId, proposalId, prefix, remainingMs, setStage, onDiagnostic } = options;
+  assert.ok(["retained-original", "retained-continuation"].includes(prefix));
+  const diagnostic = {
+    schema_version: "bluefire.installed-retained-interaction.v1", step: "readiness",
+    recorded_candidate_present: options.candidatePresent === true,
+    route_matches: false, button_present: false, button_visible: false, button_enabled: false,
+    readiness_error: "unavailable", click_completed: false, response_received: false,
+  };
+  const update = step => {
+    diagnostic.step = step;
+    setStage(`${prefix}-${step}`);
+    onDiagnostic?.({ ...diagnostic });
+  };
+  const deadline = Date.now() + Math.min(20000, remainingMs());
+  const localBudget = until => {
+    const value = Math.min(until - Date.now(), remainingMs());
+    if (value <= 0) throw new Error("Retained attempt local deadline exceeded");
+    return value;
+  };
+  update("readiness");
+  try {
+    while (true) {
+      const timeout = localBudget(deadline);
+      const snapshot = await Promise.race([
+        page.evaluate(readReceiverCompositionUi, { origin, owner: ownerId, control: controlId, proposal: proposalId }),
+        delay(timeout, null, { ref: false }),
+      ]);
+      if (!snapshot) throw new Error("Retained attempt readiness observation timed out");
+      for (const key of ["route_matches", "button_present", "button_visible", "button_enabled"]) diagnostic[key] = snapshot[key] === true;
+      diagnostic.readiness_error = !diagnostic.route_matches ? "route_mismatch"
+        : snapshot.dispatch_unavailable ? "dispatch_unavailable"
+        : snapshot.context_fetching ? "context_fetching"
+        : snapshot.candidate_mismatch ? "candidate_mismatch"
+        : snapshot.confirmation_pending ? "confirmation_pending"
+        : !diagnostic.button_present ? "action_missing"
+        : !diagnostic.button_visible ? "action_hidden"
+        : !diagnostic.button_enabled ? "action_disabled" : "none";
+      onDiagnostic?.({ ...diagnostic });
+      localBudget(deadline);
+      if (diagnostic.route_matches && diagnostic.button_visible && diagnostic.button_enabled) break;
+      await delay(Math.min(200, localBudget(deadline)));
+    }
+  } catch (error) {
+    // Optional image capture gets at most one further second of work time.
+    // It cannot borrow from the cleanup reserve or replace the original failure.
+    try {
+      const timeout = Math.min(1000, remainingMs());
+      if (timeout > 0 && options.captureFailure) await options.captureFailure(`${prefix}-readiness-failed-1440x900`, timeout);
+    } catch { /* Preserve the readiness failure, including when work time is spent. */ }
+    throw error;
+  }
+  // Keep the response observer ahead of the one normal click, but after readiness.
+  // Its rejection is observed immediately even if the click fails.
+  const responseDeadline = Date.now() + Math.min(20000, remainingMs());
+  update("response");
+  const pending = page.waitForResponse(response => response.request().method() === "POST"
+    && response.url() === `${origin}/api/v1/composition/objectives/${ownerId}/attempts`,
+  { timeout: localBudget(responseDeadline) }).then(value => ({ value }), error => ({ error }));
+  update("click");
+  try {
+    await page.getByRole("button", { name: "Start fresh attempt within grant", exact: true }).click({ timeout: localBudget(responseDeadline) });
+    diagnostic.click_completed = true;
+  } catch (error) {
+    await pending;
+    throw error;
+  }
+  update("response");
+  const submitted = await pending;
+  if (submitted.error) throw submitted.error;
+  diagnostic.response_received = true;
+  onDiagnostic?.({ ...diagnostic });
+  assert.ok(submitted.value.ok());
+  update("settlement");
+  return submitted.value;
+}
+
+export function retainedReadAllowed(state, url) {
+  return !url.search && ((state.ownerId && url.pathname === `/api/v1/composition/objectives/${state.ownerId}`)
+    || state.proposals.some(id => url.pathname === `/api/v1/composition/proposals/${id}`)
+    || state.snapshotId && url.pathname === `/api/v1/comparison-snapshots/${state.snapshotId}`);
+}
+
+// Return undefined for unrelated routes so the pre-existing journey retains its guards.
+export function retainedPostAllowed(state, url, body, { origin, controlId, providerId, count }) {
+  if (url.origin !== origin || url.search) return undefined;
+  const path = url.pathname;
+  if (state.active && path === "/api/v1/composition/objective-list") return exact(body, ["control_owner_id"])
+    && body.control_owner_id === controlId && count("retained_list");
+  if (path === "/api/v1/composition/context" && body?.pack === RETAINED_PACK) {
+    return state.active && same(body, reviewBody(controlId)) && count("retained_review");
+  }
+  if (path === "/api/v1/composition/objectives" && body?.review?.pack === RETAINED_PACK) {
+    const ok = state.active && exact(body, ["submission_id", "review", "reviewed_by", "review_digest"])
+      && submissionId(body.submission_id) && same(body.review, reviewBody(controlId))
+      && body.reviewed_by === RETAINED_REVIEWER && body.review_digest === state.review?.review_digest && count("retained_grant");
+    if (ok) state.ownerId = jobId(body.submission_id);
+    return Boolean(ok);
+  }
+  if (state.ownerId && path === `/api/v1/composition/objectives/${state.ownerId}/proposal-context`) {
+    if (body?.schema_version === "bluefire.composition-evidence-context-query.v1") {
+      return exact(body, ["schema_version", "prior_attempt_id", "attempt_ids", "knowledge_digest"])
+        && Boolean(state.first && state.knowledge) && body.prior_attempt_id === state.first.attempt_id
+        && same(body.attempt_ids, [state.first.attempt_id]) && body.knowledge_digest === state.knowledge.knowledge_digest
+        && count("retained_history_context");
+    }
+    return !state.first && exact(body, ["prior_attempt_id"]) && body.prior_attempt_id === null && count("retained_initial_context");
+  }
+  if (state.ownerId && path === `/api/v1/composition/objectives/${state.ownerId}/proposals`) {
+    const history = state.proposals.length === 1;
+    const keys = ["submission_id", "provider_id", "context_digest", "prior_attempt_id"];
+    if (history) keys.push("schema_version", "attempt_ids", "knowledge_digest");
+    const current = history ? state.historyContext : state.initialContext;
+    const ok = state.proposals.length < 2 && exact(body, keys) && submissionId(body.submission_id)
+      && body.provider_id === providerId && Boolean(current) && body.context_digest === current.context_digest
+      && body.prior_attempt_id === (history ? state.first?.attempt_id : null)
+      && (!history || body.schema_version === "bluefire.composition-evidence-proposal-request.v1"
+        && same(body.attempt_ids, [state.first.attempt_id]) && body.knowledge_digest === state.knowledge?.knowledge_digest)
+      && count("retained_proposal");
+    if (ok) state.proposals.push(jobId(body.submission_id));
+    return Boolean(ok);
+  }
+  if (state.ownerId && path === `/api/v1/composition/objectives/${state.ownerId}/attempts`) {
+    const ok = state.attempts.length < 2 && state.proposals.length === state.attempts.length + 1
+      && exact(body, ["submission_id", "proposal", "prior_attempt_id"])
+      && submissionId(body.submission_id) && Boolean(state.candidate) && same(body.proposal, state.candidate)
+      && body.prior_attempt_id === (state.attempts.length ? state.first?.attempt_id : null) && count("retained_attempt");
+    if (ok) state.attempts.push(jobId(body.submission_id));
+    return Boolean(ok);
+  }
+  if (state.ownerId && path === `/api/v1/composition/objectives/${state.ownerId}/knowledge`) {
+    return Boolean(state.first) && exact(body, ["schema_version", "attempt_ids"])
+      && body.schema_version === "bluefire.composition-knowledge-query.v1" && same(body.attempt_ids, [state.first.attempt_id])
+      && count("retained_knowledge");
+  }
+  if (state.ownerId && path === `/api/v1/composition/objectives/${state.ownerId}/revoke`) {
+    return exact(body, []) && count("retained_revoke");
+  }
+  if (state.active && path === "/api/v1/comparisons") {
+    const ok = Boolean(state.first && state.second) && exact(body, ["run_ids"])
+      && same(body.run_ids, [state.first.run_id, state.second.run_id]) && count("retained_comparison");
+    if (ok) state.comparisonSubmitted = true;
+    return Boolean(ok);
+  }
+  return undefined;
+}
+
+export function retainedResponse(state, path, body, data) {
+  if (path === "/api/v1/composition/context" && body?.pack === RETAINED_PACK) { state.review = data; return true; }
+  if (path === "/api/v1/composition/objectives" && body?.review?.pack === RETAINED_PACK) return true;
+  if (state.ownerId && path.startsWith(`/api/v1/composition/objectives/${state.ownerId}/`)) {
+    if (path.endsWith("/proposal-context")) {
+      if (body?.schema_version === "bluefire.composition-evidence-context-query.v1") state.historyContext = data;
+      else state.initialContext = data;
+    }
+    return true;
+  }
+  if (state.active && path === "/api/v1/comparisons" && state.comparisonSubmitted) { state.snapshotId = data.saved_snapshot?.snapshot_id; return true; }
+  return false;
+}
+
+export function assertRetainedSavedRunProfile(run, profileId, onVerification) {
+  onVerification?.({ schema_version: "bluefire.installed-retained-verification.v1", step: "saved_run" });
+  assert.equal(run.profile.id, profileId);
+}
+
+const retainedVerification = (onVerification, step, readOutcome) => onVerification?.({
+  schema_version: "bluefire.installed-retained-verification.v1", step,
+  ...(readOutcome ? { read_outcome: readOutcome } : {}),
+});
+
+const objectiveReadOutcomes = new Set(["ok", "not_found", "conflict", "authorization_rejected",
+  "client_error", "server_error", "session_unavailable", "timeout", "transport_error", "invalid_response"]);
+const retainedAttemptStates = new Set(["queued", "planning", "awaiting_approval", "running", "paused",
+  "cancelling", "cancelled", "completed", "failed", "interrupted"]);
+const retainedAttemptTerminalFailures = new Set(["cancelled", "failed", "interrupted"]);
+const retainedAttemptErrorCodes = new Set(["execution_callback_failed", "replay_cleanup_deferred",
+  "replay_record_incomplete", "run_cleanup_deferred", "run_record_incomplete"]);
+const retainedAttemptErrorTypes = new Set(["APIError", "AssertionError", "CapabilityContractError",
+  "EvidenceError", "FileNotFoundError", "JobCancelled", "JobRuntimeError", "OSError",
+  "OrchestrationError", "PayloadUnavailable", "PermissionError", "ProductStoreError",
+  "ReceiverSessionError", "RunnerAdapterError", "RunnerContractError", "RunnerTransportError",
+  "RunStoreError", "TimeoutError", "TypeError", "ValueError"]);
+const retainedAttemptErrorCode = value => retainedAttemptErrorCodes.has(value) ? value : "unknown";
+const retainedAttemptErrorType = value => retainedAttemptErrorTypes.has(value) ? value : "other";
+const retainedProposalErrorCodes = new Set(["execution_callback_failed"]);
+const retainedProposalErrorTypes = new Set([
+  "APIError", "AssertionError", "CapabilityContractError", "ConfigError", "DatabaseError",
+  "IntegrityError", "JobCancelled", "KeyError", "LocalLockError", "OperationalError",
+  "OSError", "PayloadUnavailable", "PermissionError", "ProductStoreError", "ProgrammingError",
+  "RecursionError", "RunStoreError", "RuntimeError", "TimeoutError", "TypeError", "UnicodeError",
+  "ValueError",
+]);
+const retainedProposalErrorCode = value => retainedProposalErrorCodes.has(value) ? value : "unknown";
+const retainedProposalErrorType = value => retainedProposalErrorTypes.has(value) ? value : "other";
+
+export async function waitForRetainedSavedAttempt({ readObjective, attemptId, remainingMs,
+  maximum = 110000, onVerification }) {
+  const budgetRemaining = () => {
+    try { return Math.max(0, remainingMs()); }
+    catch { return 0; }
+  };
+  const startedRemaining = budgetRemaining();
+  const until = Date.now() + Math.min(maximum, Math.max(0, startedRemaining));
+  let readOutcome = "pending";
+  let attemptOutcome = "not_observed";
+  let attemptState = "not_observed";
+  let attemptErrorCode;
+  let attemptErrorType;
+  const update = waitOutcome => onVerification?.({
+    schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
+    read_outcome: readOutcome, attempt_state: attemptState,
+    attempt_outcome: attemptOutcome, wait_outcome: waitOutcome,
+    ...(attemptErrorCode ? { attempt_error_code: attemptErrorCode } : {}),
+    ...(attemptErrorType ? { attempt_error_type: attemptErrorType } : {}),
+  });
+  update("pending");
+  while (Date.now() < until) {
+    let loaded;
+    try { loaded = await readObjective(); }
+    catch {
+      readOutcome = "transport_error";
+      attemptState = "unavailable";
+      attemptOutcome = "unavailable";
+      update(budgetRemaining() <= 0 ? "budget_exhausted" : "read_failed");
+      throw new Error("The retained-result objective could not be read");
+    }
+    readOutcome = objectiveReadOutcomes.has(loaded?.outcome) ? loaded.outcome : "invalid_response";
+    if (readOutcome !== "ok" || !loaded?.run || !Array.isArray(loaded.run.attempts)) {
+      if (readOutcome === "ok") readOutcome = "invalid_response";
+      attemptState = "unavailable";
+      attemptOutcome = "unavailable";
+      update("read_failed");
+      throw new Error("The retained-result objective read was not usable");
+    }
+    let attempt;
+    for (const item of loaded.run.attempts) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        readOutcome = "invalid_response";
+        attemptState = "unavailable";
+        attemptOutcome = "unavailable";
+        update("read_failed");
+        throw new Error("The retained-result objective contained an invalid attempt");
+      }
+      if (item.job_id === attemptId) { attempt = item; break; }
+    }
+    if (attempt && !retainedAttemptStates.has(attempt.state)) {
+      readOutcome = "invalid_response";
+      attemptState = "invalid_response";
+      attemptOutcome = "unavailable";
+      update("read_failed");
+      throw new Error("The retained-result attempt state was invalid");
+    }
+    attemptState = attempt?.state ?? "not_observed";
+    if (attempt?.state === "completed" && (!attempt.progress || typeof attempt.progress !== "object" || Array.isArray(attempt.progress))) {
+      readOutcome = "invalid_response";
+      attemptOutcome = "unavailable";
+      update("read_failed");
+      throw new Error("The retained-result attempt progress was invalid");
+    }
+    if (retainedAttemptTerminalFailures.has(attemptState)) {
+      attemptErrorCode = retainedAttemptErrorCode(attempt?.error?.code);
+      attemptErrorType = retainedAttemptErrorType(attempt?.error?.exception_type);
+      attemptOutcome = "terminal_failure";
+      update("terminal_failure");
+      throw new Error("The retained-result attempt ended before its saved proof was ready");
+    }
+    attemptOutcome = !attempt ? "not_observed" : attempt.state !== "completed" ? "not_completed"
+      : attempt.progress?.settlement !== "settled" ? "not_settled"
+      : !attempt.progress?.verified_result ? "verified_result_missing" : "ready";
+    update(attemptOutcome === "ready" ? "ready" : "pending");
+    if (attemptOutcome === "ready") return loaded.run;
+    const delayMs = Math.min(400, budgetRemaining(), Math.max(0, until - Date.now()));
+    if (delayMs <= 0) break;
+    await delay(delayMs);
+  }
+  update(budgetRemaining() <= 0 ? "budget_exhausted" : "bounded_wait_expired");
+  throw new Error("The retained-result proof did not reach its bounded saved state");
+}
+
+export async function verifyRetainedHistoryAfterContinuation({ current, first, original, readOriginalRun, onVerification }) {
+  retainedVerification(onVerification, "history_attempts");
+  assert.equal(current.attempts.length, 2);
+  const originalAgain = current.attempts.find(item => item.job_id === first.attempt.job_id);
+  retainedVerification(onVerification, "history_result");
+  assert.deepEqual(originalAgain.progress.verified_result, first.attempt.progress.verified_result);
+  retainedVerification(onVerification, "history_capture");
+  assert.deepEqual(originalAgain.progress.retained_artifact_capture, first.attempt.progress.retained_artifact_capture);
+  retainedVerification(onVerification, "source_run_reload", "pending");
+  let loaded;
+  try {
+    loaded = await readOriginalRun(original.run_id);
+  } catch {
+    retainedVerification(onVerification, "source_run_reload", "transport_error");
+    throw new Error("The original source run could not be reloaded");
+  }
+  const outcome = loaded?.outcome;
+  const allowed = new Set(["ok", "not_found", "conflict", "authorization_rejected", "client_error",
+    "server_error", "session_unavailable", "timeout", "transport_error", "invalid_response"]);
+  retainedVerification(onVerification, "source_run_reload", allowed.has(outcome) ? outcome : "invalid_response");
+  assert.equal(outcome, "ok");
+  retainedVerification(onVerification, "source_manifest");
+  assert.deepEqual(loaded.run.manifest, first.run.manifest);
+  retainedVerification(onVerification, "source_evidence");
+  assert.deepEqual(loaded.run.evidence, first.run.evidence);
+}
+
+export async function authorizeRetainedPurpose(page, { origin, model, reviewer }) {
+  await page.goto(`${origin}/#/settings`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: `Edit Responses API · ${model}`, exact: true }).click();
+  await page.getByRole("checkbox", { name: RETAINED_PURPOSE_LABEL, exact: true }).check();
+  for (const [label, value] of [["Total request attempts", "2"], ["Total request bytes", "524288"], ["Total reserved output tokens", "2048"], ["Authorization duration in seconds", "300"]]) {
+    await page.getByLabel(label, { exact: false }).fill(value);
+  }
+  await page.getByLabel("Operator identity for model usage", { exact: true }).fill(reviewer);
+  await page.getByRole("checkbox", { name: "I authorize requests to this loopback endpoint.", exact: true }).check();
+  await page.getByRole("checkbox", { name: "I authorize the selected model work, reviewed lab data and these usage limits.", exact: true }).check();
+  await page.getByRole("button", { name: "Authorize reviewed model usage", exact: true }).click();
+  await page.getByText("Authorization saved. No model request was sent. Select this provider in Assistant or run setup when ready.", { exact: true }).waitFor();
+}
+
+export async function runRetainedJourney(page, state, options) {
+  const { origin, controlId, providerId, model, read, remainingMs, capture, setStage } = options;
+  const postResponse = path => page.waitForResponse(response => response.request().method() === "POST" && response.url() === `${origin}/api/v1${path}`);
+  const wait = async (get, predicate, maximum) => {
+    const until = Date.now() + Math.min(maximum, remainingMs());
+    while (Date.now() < until) {
+      const value = await get();
+      if (predicate(value)) return value;
+      await delay(Math.min(400, remainingMs(), Math.max(1, until - Date.now())));
+    }
+    throw new Error("The retained-result proof did not reach its bounded saved state");
+  };
+  state.active = true;
+  setStage("retained-objective-review");
+  await page.goto(`${origin}/#/composition?${new URLSearchParams({ control: controlId })}`, { waitUntil: "domcontentloaded" });
+  await page.getByLabel("Objective question", { exact: true }).fill(RETAINED_QUESTION);
+  await page.getByRole("checkbox", { name: "Keep generated results for reuse within this objective", exact: true }).check();
+  const reviewResponse = postResponse("/composition/context");
+  await page.getByRole("button", { name: "Review finite delegation", exact: true }).click();
+  const reviewed = await reviewResponse;
+  setStage("retained-review-response");
+  assert.ok(reviewed.ok());
+  state.review = await reviewed.json();
+  setStage("retained-review-binding");
+  assert.equal(state.review.pack, RETAINED_PACK);
+  assert.equal(state.review.environment.control_owner_id, controlId);
+  assert.equal(state.review.limits.per_attempt_wall_ms, 90000);
+  await page.getByLabel("Delegation reviewed by", { exact: true }).fill(RETAINED_REVIEWER);
+  await page.getByRole("checkbox", { name: "I authorize the reviewed finite capabilities, data effects, cleanup reserve and cumulative budgets for this objective.", exact: true }).check();
+  const grantResponse = postResponse("/composition/objectives");
+  await page.getByRole("button", { name: "Issue capability grant", exact: true }).click();
+  const issued = await grantResponse;
+  assert.ok(issued.ok());
+  const objective = await issued.json();
+  assert.equal(objective.owner.job_id, state.ownerId);
+  const grant = objective.grant.document;
+  assert.equal(grant.schema_version, "bluefire.capability-grant.v2");
+  assert.equal(grant.pack, RETAINED_PACK);
+  assert.equal(grant.environment.control_digest, options.controlDigest);
+  assert.equal(grant.snapshot.artifact_context.retention.max_bytes_per_attempt, 262144);
+  assert.equal(grant.snapshot.artifact_context.retention.max_artifacts_per_attempt, 1);
+  assert.ok(grant.snapshot.methods.some(item => item.behavior_id === RETAINED_METHOD));
+  const workspace = `${origin}/#/composition?${new URLSearchParams({ control: controlId, objective: state.ownerId })}`;
+  const recordProposalVerification = (historyAware, checkpoint, value) => options.onProposalVerification?.({
+    schema_version: "bluefire.installed-retained-proposal-verification.v1",
+    history_aware: historyAware,
+    checkpoint,
+    ...(value ? {
+      job_state: ["queued", "planning", "running", "completed", "failed", "cancelled", "interrupted"].includes(value.job?.state)
+        ? value.job.state : "unreported",
+      provider_outcome: ["pending", "requesting", "candidate", "refused", "unknown", "unavailable", "invalid", "context_refused", "cancelled"].includes(value.provider_outcome)
+        ? value.provider_outcome : "unreported",
+      candidate_ready: value.candidate_ready === true,
+      proposal_present: Boolean(value.proposal),
+      ...(value.job?.state === "failed" && value.job?.error ? {
+        job_error_code: retainedProposalErrorCode(value.job.error.code),
+        job_error_type: retainedProposalErrorType(value.job.error.exception_type),
+      } : {}),
+    } : {}),
+  });
+  const requestProposal = async (history) => {
+    const proposalDiagnostic = (checkpoint, value) => recordProposalVerification(history, checkpoint, value);
+    proposalDiagnostic("selection");
+    await page.getByRole("combobox", { name: "Configured model provider", exact: true }).selectOption(providerId);
+    const pending = postResponse(`/composition/objectives/${state.ownerId}/proposals`);
+    await page.getByRole("button", { name: history ? "Request history-aware revision" : "Request AI graph", exact: true }).click();
+    const response = await pending;
+    proposalDiagnostic("response");
+    assert.ok(response.ok());
+    let value = await response.json();
+    proposalDiagnostic("accepted", value);
+    value = await wait(() => read(`/composition/proposals/${value.job.job_id}`), item =>
+      ["completed", "failed", "cancelled", "interrupted"].includes(item.job?.state), 20000);
+    proposalDiagnostic("terminal", value);
+    assert.equal(value.job.state, "completed");
+    proposalDiagnostic("job-binding", value);
+    assert.equal(value.job.job_id, state.proposals[history ? 1 : 0]);
+    assert.equal(value.job.request.owner_id, state.ownerId);
+    assert.equal(value.proposal.owner_id, state.ownerId);
+    assert.equal(value.proposal.proposal_job_id, value.job.job_id);
+    proposalDiagnostic("context-binding", value);
+    assert.equal(value.job.request.context.grant_id, grant.grant_id);
+    assert.equal(value.proposal.context_digest, value.job.request.context.context_digest);
+    assert.equal(value.job.request.submitted_request.context_digest, value.proposal.context_digest);
+    assert.equal(value.proposal.prior_attempt_id, history ? state.first.attempt_id : null);
+    assert.equal(value.proposal.schema_version, "bluefire.composition-ai-result.v3");
+    proposalDiagnostic("provider-binding", value);
+    assert.equal(value.proposal.provider.provider_id, providerId);
+    assert.equal(value.proposal.provider.model, model);
+    assert.equal(value.proposal.provider.attempts, 1);
+    assert.equal(value.proposal.provider.used_fallback, false);
+    assert.equal(value.candidate_ready, true);
+    assert.equal(value.provider_outcome, "candidate");
+    proposalDiagnostic("metadata-bound", value);
+    assertMetadataOnly(value.job.request.context);
+    state.candidate = value.proposal.candidate;
+    proposalDiagnostic("verified", value);
+    return value;
+  };
+  setStage("retained-original-proposal");
+  const firstProposal = await requestProposal(false);
+  assert.deepEqual(firstProposal.proposal.candidate, state.initialContext.initial_proposal);
+  assert.equal(firstProposal.proposal.reconsideration, null);
+  assert.deepEqual(firstProposal.job.request.context.retained_artifacts.available_sources, []);
+  const execute = async index => {
+    await submitRetainedAttempt(page, { origin, ownerId: state.ownerId, controlId,
+      proposalId: state.proposals[index], candidatePresent: Boolean(state.candidate),
+      prefix: index === 0 ? "retained-original" : "retained-continuation",
+      remainingMs, setStage, onDiagnostic: options.onInteraction,
+      captureFailure: capture ? (name, timeout) => capture(name, { failure: true, timeout }) : undefined });
+    const id = state.attempts[index];
+    const current = await waitForRetainedSavedAttempt({
+      readObjective: () => options.readObjective(state.ownerId), attemptId: id, remainingMs,
+      onVerification: options.onVerification,
+    });
+    options.onVerification?.({ schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt" });
+    const attempt = current.attempts.find(item => item.job_id === id);
+    const run = await read(`/runs/${attempt.request.composition_attempt.run_id}`);
+    assertRetainedSavedRunProfile(run, options.profileId, options.onVerification);
+    return { current, attempt, run };
+  };
+  const first = await execute(0);
+  const originalProof = verifyRetainedOriginal(first.attempt, first.run, {
+    ownerId: state.ownerId, grant, onVerifyStep: options.onVerification,
+  });
+  state.first = originalProof.original;
+  state.source = originalProof.source;
+  setStage("retained-history-selection");
+  const knowledgeResponse = postResponse(`/composition/objectives/${state.ownerId}/knowledge`);
+  await page.getByRole("button", { name: "Findings across attempts", exact: true }).click();
+  const knowledgeResult = await knowledgeResponse;
+  assert.ok(knowledgeResult.ok());
+  state.knowledge = await knowledgeResult.json();
+  verifyReceiverKnowledge(state.knowledge, { ownerId: state.ownerId, attempt: first.attempt,
+    run: first.run, sourceBinding: first.attempt.progress.verified_result.source_binding });
+  await page.getByRole("checkbox", { name: "Use selected historical findings to reconsider earlier choices", exact: true }).check();
+  setStage("retained-continuation-proposal");
+  const secondProposal = await requestProposal(true);
+  recordProposalVerification(true, "history-schema");
+  const captured = secondProposal.job.request.context;
+  assert.equal(captured.schema_version, "bluefire.retained-composition-evidence-context.v1");
+  recordProposalVerification(true, "history-knowledge");
+  assert.equal(captured.historical_context.knowledge_digest, state.knowledge.knowledge_digest);
+  recordProposalVerification(true, "history-fact");
+  assert.equal(captured.facts.facts.find(fact => fact.kind === "receiver_result")?.value.decision, "policy_refused");
+  recordProposalVerification(true, "history-attempts");
+  assert.deepEqual(captured.historical_context.attempts, state.knowledge.attempts);
+  recordProposalVerification(true, "retained-source-list");
+  assert.deepEqual(captured.retained_artifacts.available_sources, [state.source]);
+  recordProposalVerification(true, "retained-source-shape");
+  assertRetainedSource(captured.retained_artifacts.available_sources[0]);
+  recordProposalVerification(true, "revised-graph-prefix");
+  const revised = secondProposal.proposal;
+  assert.equal(revised.candidate.steps[0].id, "reuse_retained_bundle");
+  assert.equal(revised.candidate.steps[0].behavior_id, RETAINED_METHOD);
+  assert.deepEqual(revised.candidate.steps[0].parameters, { source_ref: state.source.source_ref });
+  recordProposalVerification(true, "revised-graph-shape");
+  const priorSteps = firstProposal.proposal.candidate.steps;
+  const after = revised.candidate.steps;
+  assert.equal(after.length, priorSteps.length);
+  assert.deepEqual(after.slice(1).map(step => step.behavior_id), priorSteps.slice(1).map(step => step.behavior_id));
+  assert.equal(after.find(step => step.behavior_id === "sandbox.fixture.transform.v1").parameters.redact_values, true);
+  assert.ok(!after.some(step => step.behavior_id === "sandbox.fixture.create.v1"));
+  recordProposalVerification(true, "reasoning-shape");
+  const reasoning = revised.reconsideration.reconsidered_choices;
+  assert.equal(reasoning.length, 1);
+  assert.equal(reasoning[0].attempt_id, state.first.attempt_id);
+  assert.equal(reasoning[0].compiled_digest, first.attempt.request.composition_attempt.compiled_digest);
+  assert.equal(reasoning[0].step_id, "transform_fixture");
+  recordProposalVerification(true, "reasoning-citation");
+  assert.ok(reasoning[0].finding_refs.some(ref => state.knowledge.attempts[0].findings.some(finding =>
+    finding.finding_id === ref.finding_id && same(finding.record_ref, ref.record_ref) && finding.step_id === state.source.step_id)));
+  recordProposalVerification(true, "verified");
+  const inspectSources = async () => {
+    const panel = page.getByRole("region", { name: "Captured available results", exact: true });
+    await panel.waitFor({ state: "visible" });
+    const detail = panel.locator("details").first();
+    if (!await detail.evaluate(element => element.open)) await detail.locator("summary").click();
+    const link = detail.getByRole("link", { name: "Inspect retained source run", exact: true });
+    assert.ok((await link.getAttribute("href")).endsWith(`/runs/${state.source.run_id}`));
+    for (const text of [state.source.source_ref, state.source.sha256, state.source.run_id]) await detail.getByText(text, { exact: true }).waitFor();
+    await page.getByRole("region", { name: "Captured historical reasoning", exact: true }).waitFor();
+    return panel;
+  };
+  await inspectSources();
+  setStage("retained-proposal-reopen");
+  await page.goto("about:blank", { waitUntil: "domcontentloaded" });
+  const correlation = createReceiverReloadContextCorrelation(
+    request => request.isNavigationRequest() && request.frame() === page.mainFrame() && new URL(request.url()).origin === origin,
+    request => request.method() === "POST" && request.url() === `${origin}/api/v1/composition/objectives/${state.ownerId}/proposal-context`
+      && request.postDataJSON()?.schema_version === "bluefire.composition-evidence-context-query.v1",
+  );
+  const reopenedResponse = page.waitForResponse(correlation.response, { timeout: Math.min(20000, remainingMs()) });
+  const reopenedRequest = page.waitForRequest(correlation.request, { timeout: Math.min(20000, remainingMs()) });
+  await page.goto(`${workspace}&proposal=${state.proposals[1]}`, { waitUntil: "domcontentloaded" });
+  await reopenedRequest;
+  assert.ok((await reopenedResponse).ok());
+  const reopened = await read(`/composition/proposals/${state.proposals[1]}`);
+  assert.deepEqual(reopened.proposal, revised);
+  assert.deepEqual(reopened.job.request.context, captured);
+  assert.equal(reopened.candidate_ready, true);
+  await inspectSources();
+  const refreshed = postResponse(`/composition/objectives/${state.ownerId}/proposal-context`);
+  await page.getByRole("button", { name: "Refresh available results", exact: true }).click();
+  const refreshedResponse = await refreshed;
+  assert.ok(refreshedResponse.ok());
+  assert.deepEqual((await refreshedResponse.json()).retained_artifacts.available_sources, [state.source]);
+  if (capture) await capture("receiver-retained-source-1440x900");
+  const second = await execute(1);
+  state.second = verifyRetainedContinuation(second.attempt, second.run, { ownerId: state.ownerId, grant,
+    source: state.source, original: state.first, onVerifyStep: options.onVerification });
+  await verifyRetainedHistoryAfterContinuation({ current: second.current, first, original: state.first,
+    readOriginalRun: options.readOriginalRun, onVerification: options.onVerification });
+  setStage("retained-grant-revoke");
+  const revokeResponse = postResponse(`/composition/objectives/${state.ownerId}/revoke`);
+  await page.getByRole("button", { name: "Revoke", exact: true }).click();
+  const revokedResponse = await revokeResponse;
+  assert.ok(revokedResponse.ok());
+  const revoked = await revokedResponse.json();
+  assert.equal(revoked.grant.status, "revoked");
+  assert.equal(revoked.grant.cleanup_state, "settled");
+  options.onRevoked();
+  setStage("retained-result-comparison");
+  const query = new URLSearchParams({ compare_context: "1" });
+  for (const id of [state.first.run_id, state.second.run_id]) query.append("compare_run", id);
+  await page.goto(`${origin}/#/compare?${query}`);
+  const comparisonResponse = postResponse("/comparisons");
+  await page.getByRole("button", { name: "Compare selected", exact: true }).click();
+  const compared = await comparisonResponse;
+  assert.ok(compared.ok());
+  const comparison = await compared.json();
+  state.snapshotId = comparison.saved_snapshot.snapshot_id;
+  assert.deepEqual(comparison.run_ids, [state.first.run_id, state.second.run_id]);
+  assert.deepEqual(comparison.summaries.map(item => item.capability_objective.established), [false, true]);
+  const delta = comparison.deltas[0];
+  assert.equal(delta.objective_comparability, "comparable");
+  assert.equal(delta.objective_changed, true);
+  assert.ok(delta.signals.includes("objective_recovered"));
+  await page.goto(`${origin}/#/compare?snapshot=${state.snapshotId}`);
+  await page.getByRole("region", { name: "Comparison results", exact: true }).waitFor();
+  const saved = await read(`/comparison-snapshots/${state.snapshotId}`);
+  assert.equal(saved.source_integrity.status, "verified");
+  assert.deepEqual(saved.comparison.run_ids, comparison.run_ids);
+  assert.deepEqual(saved.comparison.summaries.map(item => item.capability_objective.established), [false, true]);
+  if (capture) await capture("receiver-retained-fresh-comparison-1440x900");
+  state.active = false;
+  return { schema_version: "bluefire.installed-retained-execution.v1", pack: RETAINED_PACK,
+    owner_id: state.ownerId, control_owner_id: controlId, grant_id: grant.grant_id, grant_status: "revoked",
+    policy_digest: grant.environment.policy_digest, source: state.source, original: state.first, continuation: state.second,
+    model: { purpose: "bluefire_receiver_retained_composition_proposal", requests: 2, authorization_max_requests: 2,
+      initial_job_id: state.proposals[0], revised_job_id: state.proposals[1], metadata_only: true,
+      reopened: true, reasoning_rendered: true, current_sources_rechecked: true },
+    capture_before_cleanup: true, original_failure_preserved: true, source_metadata_preserved_after_cleanup: true,
+    source_disposition: "sealed_until_run_bundle_deleted", comparison: { snapshot_id: state.snapshotId,
+      snapshot_digest: saved.digest, run_ids: comparison.run_ids, source_integrity: "verified",
+      objective_comparability: "comparable", objective_changed: true, objective_recovered: true, reopened: true } };
+}

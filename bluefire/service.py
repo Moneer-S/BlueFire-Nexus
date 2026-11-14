@@ -330,6 +330,8 @@ class BlueFireService(
 
         self.product_store.interrupt_active_capability_grants(now_ms=now_ms())
         self.composition = CompositionJobs(self)
+        self.retained_capture_recovery = self.composition.recover_retained_captures()
+        self.retained_attempt_recovery = self.composition.recover_retained_attempts()
         from .file_access_control import FileAccessControl
 
         self._file_access = FileAccessControl(self)
@@ -348,6 +350,36 @@ class BlueFireService(
         )
         self._refresh_runtime_configuration()
         self._synchronize_run_index()
+        self._retained_recovery_stop = threading.Event()
+        self._retained_recovery_thread: threading.Thread | None = None
+        if (
+            isinstance(self.retained_attempt_recovery, Mapping)
+            and self.retained_attempt_recovery.get("pending", 0) > 0
+        ):
+            self._retained_recovery_thread = threading.Thread(
+                target=self._retry_retained_attempts,
+                name="bluefire-retained-attempt-recovery",
+                daemon=True,
+            )
+            self._retained_recovery_thread.start()
+
+    def _retry_retained_attempts(
+        self, *, interval_seconds: float = 0.5, max_interval_seconds: float = 30.0
+    ) -> None:
+        """Reconcile a running original WAL task without dispatching business work."""
+
+        delay = interval_seconds
+        while not self._retained_recovery_stop.wait(delay):
+            try:
+                summary = self.composition.recover_retained_attempts(
+                    stop_event=self._retained_recovery_stop
+                )
+                self.retained_attempt_recovery = summary
+                if summary["pending"] == 0:
+                    return
+            except Exception as exc:
+                self.retained_attempt_recovery_error = type(exc).__name__
+            delay = min(max_interval_seconds, delay * 2)
 
     def _load_action_catalog_snapshot(
         self,
@@ -3808,6 +3840,10 @@ class BlueFireService(
 
     def close(self) -> None:
         """Cooperatively stop locally managed workers."""
+
+        self._retained_recovery_stop.set()
+        if self._retained_recovery_thread is not None:
+            self._retained_recovery_thread.join()
 
         try:
             self._provider_access.close()

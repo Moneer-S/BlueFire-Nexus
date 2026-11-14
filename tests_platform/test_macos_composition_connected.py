@@ -27,7 +27,7 @@ from bluefire.contracts import SafetyTier
 from bluefire.execution_contracts import execution_task_identity
 from bluefire.file_access_control import FileAccessControl
 from bluefire.planner import PlanStep
-from bluefire.product_store import ProductStore
+from bluefire.product_store import SCHEMA_VERSION, ProductStore
 from bluefire.product_store_errors import ProductStoreError
 from bluefire.product_store_serialization import canonical_json
 from bluefire.runner_adapter import RunnerActionAdapter
@@ -536,7 +536,7 @@ def connected(original, pack_state, tmp_path, monkeypatch):
 
 def test_actual_store_compiled_grant_and_original_fake_bridge_settle_complete_chain(connected):
     context = connected
-    assert context.store.schema_version == 13
+    assert context.store.schema_version == SCHEMA_VERSION
     assert context.execute(0)["status"] == "success"
     assert context.producer._used_budget == 5
     assert context.execute(1)["status"] == "success"

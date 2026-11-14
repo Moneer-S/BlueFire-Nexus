@@ -124,6 +124,12 @@ def after_result(execution, step, manifest, task_id, result, receipts):
         execution.after_task(step, manifest, task_id, result, observed_receipt_ids=tuple(receipts))
 
 
+def before_dispatch(execution, step, manifest, task_id):
+    callback = getattr(execution, "before_dispatch", None)
+    if callback is not None:
+        callback(step, manifest, task_id)
+
+
 def after_cancellation(execution, step, manifest, task_id, cancellation):
     if execution is not None and cancellation.control_cleanup_verified:
         execution.after_task(

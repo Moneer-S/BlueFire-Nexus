@@ -810,10 +810,16 @@ def validate_transport_recovery_report(value: Any) -> None:
         "recovery interruption",
     )
     cleanup_result = _runner_result(recovery.get("cleanup_result"), "recovery cleanup result")
+    cleanup_value = cleanup_result.get("cleanup")
     cleanup = _exact(
-        cleanup_result.get("cleanup"),
+        cleanup_value,
         _fields(
             "requested_receipts removed_paths already_absent_receipts retained_paths errors verification_performed verified_removed_paths verified_absent_paths verified_receipts"
+        )
+        | (
+            {"verified_receipt_ids"}
+            if isinstance(cleanup_value, dict) and "verified_receipt_ids" in cleanup_value
+            else set()
         ),
         "recovery cleanup",
     )
@@ -839,7 +845,7 @@ def validate_transport_recovery_report(value: Any) -> None:
         }
         and cleanup_result.get("action_id") == "sandbox.cleanup.v1"
         and recovery.get("cleanup_result_digest") == content_hash(cleanup_result)
-        and cleanup
+        and {key: value for key, value in cleanup.items() if key != "verified_receipt_ids"}
         == {
             "requested_receipts": 1,
             "removed_paths": ["gate11-recovery/transport-recovery.jsonl", "gate11-recovery"],
@@ -851,6 +857,7 @@ def validate_transport_recovery_report(value: Any) -> None:
             "verified_absent_paths": 0,
             "verified_receipts": 1,
         }
+        and cleanup.get("verified_receipt_ids", [receipt_id]) == [receipt_id]
         and recovery.get("receipt_ids_after_cleanup") == []
         and recovery.get("receipt_commit_ids_after_cleanup") == []
         and recovery.get("effect_exists_after_cleanup") is False

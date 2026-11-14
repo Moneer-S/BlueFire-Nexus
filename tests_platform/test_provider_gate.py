@@ -1437,12 +1437,13 @@ def _install_passing_fakes(
 
 def test_provider_gate_core_action_count_distinguishes_reserved_metadata() -> None:
     """Advertised descriptors are not the ordinary registry's dispatch authority."""
-    assert len(BUILTIN_RUNNER_ACTION_IDS) == 26
+    assert len(BUILTIN_RUNNER_ACTION_IDS) == 27
     assert "owned.aws.s3_access.v1" not in BUILTIN_RUNNER_ACTION_IDS
     assert provider_gate_validation._CORE_ACTION_COUNT == len(BUILTIN_RUNNER_ACTION_IDS) + 1
     assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.permission.chmod.v1"] == "1.0.0"
     assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.probe.non_owner.v1"] == "1.0.0"
     assert BUILTIN_RUNNER_ACTION_VERSIONS["file_access.verify.owner.v1"] == "1.0.0"
+    assert BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.collection.materialize-retained.v1"] == "1.0.0"
 
 
 def test_provider_gate_counts_the_actual_reserved_descriptor_shape() -> None:
@@ -1456,7 +1457,7 @@ def test_provider_gate_counts_the_actual_reserved_descriptor_shape() -> None:
     }
     inventory = {"actions": actions + [reserved]}
     count = provider_gate_runtime_evidence._advertised_core_action_count(inventory)
-    assert count == 27
+    assert count == 28
     report = _journey_report()
     report["packaged_runner"]["inventory_contract"]["core_action_count"] = count
     provider_gate._validate_journey(report)

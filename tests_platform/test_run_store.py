@@ -4,10 +4,35 @@ import json
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from bluefire.run_store import RunStore, RunStoreError
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows stat timestamp contract")
+def test_windows_private_identity_uses_stable_birth_time() -> None:
+    common = {
+        "st_dev": 3,
+        "st_ino": 5,
+        "st_mode": 0o100600,
+        "st_nlink": 1,
+        "st_size": 17,
+        "st_mtime_ns": 19,
+        "st_birthtime_ns": 23,
+    }
+    named = SimpleNamespace(**common, st_ctime_ns=29)
+    opened = SimpleNamespace(**common, st_ctime_ns=31)
+
+    assert RunStore._cross_view_private_identity(named) == RunStore._cross_view_private_identity(
+        opened
+    )
+    assert RunStore._stable_private_identity(named) != RunStore._stable_private_identity(opened)
+    changed = SimpleNamespace(**{**common, "st_birthtime_ns": 37}, st_ctime_ns=31)
+    assert RunStore._cross_view_private_identity(named) != RunStore._cross_view_private_identity(
+        changed
+    )
 
 
 def _create(store: RunStore):
@@ -514,9 +539,13 @@ def test_windows_long_roots_persist_reload_and_preserve_bundle_integrity(
     with pytest.raises(RunStoreError, match="unsupported bundle file"):
         reopened.write_json(handle.run_id, "../outside.json", {})
     outside_id = "run-20260101T000000Z-0000000000000009"
-    (store.root / outside_id).symlink_to(tmp_path, target_is_directory=True)
+    outside_link = store.root / outside_id
+    outside_link.symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(RunStoreError, match="escapes the configured output root"):
         reopened.get_run(outside_id)
+    # Restore the safe namespace before independently checking bundle integrity
+    # through a fresh store, whose constructor now rejects unsafe run entries.
+    outside_link.rmdir()
     (handle.path / "policy.json").write_text('{"altered":true}', encoding="utf-8")
     with pytest.raises(RunStoreError, match="integrity"):
         RunStore(root).get_run(handle.run_id)

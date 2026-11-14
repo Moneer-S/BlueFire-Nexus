@@ -47,6 +47,22 @@ test("composition diagnostics distinguish response wait and collapse unknown val
   assert.equal(JSON.stringify(result).includes("private"), false);
 });
 
+test("composition attempt failure exposes only bounded response and child state", () => {
+  const jobId = "job-" + "b".repeat(32);
+  const result = receiverCompositionInteractionDiagnostic("settlement", {}, {
+    attempts: [{ job_id: jobId, state: "running", progress: { settlement: "settled", private: "private task" } }],
+  }, undefined, undefined, 10, {
+    job_id: jobId, response_status: 500, response_error_code: "invalid_service_response",
+    checkpoint: "child_state", private: "/private/path",
+  });
+  assert.equal(result.response_status, 500);
+  assert.equal(result.response_error_code, "invalid_service_response");
+  assert.equal(result.checkpoint, "child_state");
+  assert.equal(result.child_state, "running");
+  assert.equal(result.child_settlement, "settled");
+  assert.equal(JSON.stringify(result).includes("private"), false);
+});
+
 test("projects bounded owner and preparation status plus shared preflight labels", () => {
   const owner = {
     status: "active",

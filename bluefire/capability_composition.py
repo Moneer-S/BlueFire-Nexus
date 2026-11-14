@@ -8,6 +8,7 @@ from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
 from . import capability_file_access, capability_macos_file_access
+from . import retained_artifact_contract as retained_contract
 from .capability_facts import validate_facts
 from .capability_grant import digest, text, validate_grant
 from .capability_packs import FILE_ACCESS_PACK, MACOS_FILE_ACCESS_PACK, grant_pack
@@ -74,11 +75,15 @@ def _step_id(value: Any) -> str:
 
 
 def _graph(
-    proposal: Mapping[str, Any], grant: Mapping[str, Any], registry: BehaviorRegistry
+    proposal: Mapping[str, Any],
+    grant: Mapping[str, Any],
+    registry: BehaviorRegistry,
+    retained_source_resolver=None,
 ) -> tuple[ScenarioDefinition, Mapping[str, Any], str]:
     methods = {row["behavior_id"]: row for row in grant["snapshot"]["methods"]}
     steps = {}
     selected_inputs = {}
+    retained_sources = {}
     for raw in proposal["steps"]:
         fields = {"id", "behavior_id", "parameters"}
         if isinstance(raw, Mapping) and "inputs" in raw:
@@ -102,6 +107,21 @@ def _graph(
             raise CapabilityContractError("graph parameters expand the capability domain")
         parameters = {}
         for spec in registry.get_behavior(row["behavior_id"]).parameters:
+            if row["behavior_id"] == retained_contract.METHOD:
+                if grant_pack(grant) != retained_contract.PACK or retained_source_resolver is None:
+                    raise CapabilityContractError(
+                        "retained materialization requires verified source resolution"
+                    )
+                value = row["parameters"].get("source_ref")
+                digest(value, "retained source reference")
+                retained_source = retained_contract.source_reference(
+                    retained_source_resolver(value)
+                )
+                if retained_source["source_ref"] != value:
+                    raise CapabilityContractError("resolved retained source reference differs")
+                retained_sources[identity] = retained_source
+                parameters[spec.name] = value
+                continue
             domain = domains[spec.name]
             default = domain[0] if len(domain) == 1 else spec.default
             value = row["parameters"].get(spec.name, default)
@@ -195,6 +215,8 @@ def _graph(
             else _receiver_details(steps, successors, predecessors, routes, grant)
         )
     )
+    if retained_sources:
+        details = {**details, "retained_sources": retained_sources}
     reservation = reserve_resources(list(steps.values()), grant["limits"], pack=grant_pack(grant))
     indexes = {identity: index for index, identity in enumerate(order)}
     semantic = {
@@ -277,6 +299,7 @@ def compile_revision(
     expected_facts_digest: str,
     now_ms: int,
     previous_semantic_digests: Sequence[str] = (),
+    retained_source_resolver=None,
 ) -> dict[str, Any]:
     return _compile(
         proposal,
@@ -290,6 +313,7 @@ def compile_revision(
         now_ms=now_ms,
         previous_semantic_digests=previous_semantic_digests,
         revision=True,
+        retained_source_resolver=retained_source_resolver,
     )
 
 
@@ -304,6 +328,7 @@ def compile_initial_graph(
     facts: Mapping[str, Any],
     expected_facts_digest: str,
     now_ms: int,
+    retained_source_resolver=None,
 ) -> dict[str, Any]:
     return _compile(
         proposal,
@@ -317,6 +342,7 @@ def compile_initial_graph(
         now_ms=now_ms,
         previous_semantic_digests=(),
         revision=False,
+        retained_source_resolver=retained_source_resolver,
     )
 
 
@@ -333,6 +359,7 @@ def _compile(
     now_ms: int,
     previous_semantic_digests: Sequence[str],
     revision: bool,
+    retained_source_resolver=None,
 ) -> dict[str, Any]:
     if (
         not isinstance(previous_semantic_digests, (tuple, list))
@@ -373,9 +400,15 @@ def _compile(
             else {"receiver_result", "cleanup"} if revision else {"retained_policy"}
         )
     )
+    if (
+        revision
+        and grant_pack(grant) == retained_contract.PACK
+        and any(row["kind"] == "retained_artifact_result" for row in facts["facts"])
+    ):
+        required = {"retained_artifact_result", "cleanup"}
     if not required <= {by_id[key]["kind"] for key in references}:
         raise CapabilityContractError("proposal omits its supporting evidence references")
-    scenario, details, semantic_digest = _graph(proposal, grant, registry)
+    scenario, details, semantic_digest = _graph(proposal, grant, registry, retained_source_resolver)
     if revision and semantic_digest in {facts["prior_graph_digest"], *previous_semantic_digests}:
         raise CapabilityContractError("equivalent attempted graph offers no new permitted route")
     body = {

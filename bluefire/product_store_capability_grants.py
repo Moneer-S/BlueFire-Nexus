@@ -687,7 +687,9 @@ def start_preparation(store, attempt_id, *, now_ms, current_environment):
         )
 
 
-def bind_receiver(store, attempt_id, *, session_generation, review_digest):
+def bind_receiver(
+    store, attempt_id, *, session_generation, review_digest, process_id=None, creation_identity=None
+):
     """Publish already-owned process identity even when Stop won during preparation."""
     identifier(session_generation, "receiver session generation")
     digest(review_digest, "receiver review")
@@ -699,12 +701,30 @@ def bind_receiver(store, attempt_id, *, session_generation, review_digest):
         )
         if _settled(store, connection, attempt_id):
             raise ProductStoreError("A settled attempt cannot acquire another receiver.")
+        if (process_id is None) != (creation_identity is None):
+            raise ProductStoreError("Exact receiver process binding is incomplete.")
+        if process_id is not None and (
+            type(process_id) is not int
+            or process_id <= 1
+            or not isinstance(creation_identity, str)
+            or re.fullmatch(r"[1-9][0-9]{0,31}", creation_identity) is None
+        ):
+            raise ProductStoreError("Exact receiver process binding is invalid.")
         document = {
-            "schema_version": "bluefire.capability-receiver-binding.v1",
+            "schema_version": (
+                "bluefire.capability-receiver-binding.v2"
+                if process_id is not None
+                else "bluefire.capability-receiver-binding.v1"
+            ),
             "attempt_id": attempt_id,
             "lease_digest": lease["lease_digest"],
             "session_generation": session_generation,
             "review_digest": review_digest,
+            **(
+                {"process_id": process_id, "creation_identity": creation_identity}
+                if process_id is not None
+                else {}
+            ),
         }
         previous = connection.execute(
             "SELECT * FROM capability_receiver_bindings WHERE attempt_id=?", (attempt_id,)
@@ -727,6 +747,20 @@ def record_task_terminal(store, task_id, *, request_hash, terminal_digest):
         task = _one(connection, "SELECT * FROM capability_task_claims WHERE task_id=?", task_id)
         if task["request_hash"] != request_hash:
             raise ProductStoreError("Task terminal belongs to another request.")
+        if (
+            terminal_digest
+            == content_hash(
+                {
+                    "schema_version": "bluefire.task-not-sent.v1",
+                    "task_id": task_id,
+                    "request_hash": request_hash,
+                }
+            )
+            and connection.execute(
+                "SELECT 1 FROM capability_task_dispatch_intents WHERE task_id=?", (task_id,)
+            ).fetchone()
+        ):
+            raise ProductStoreError("Original task may already have been sent.")
         document = {
             "schema_version": "bluefire.capability-task-terminal.v1",
             "task_id": task_id,
@@ -754,6 +788,38 @@ def _settlement(store, connection, attempt_id, receipt):
     from .capability_packs import MACOS_FILE_ACCESS_PACK, grant_pack
 
     _, grant, _ = _grant_at(connection, lease["grant_id"])
+    if receipt.get("schema_version") == "bluefire.capability-attempt-settlement.v2":
+        if grant_pack(grant) != "bluefire.receiver-composition-pack.v2":
+            raise ProductStoreError("Interrupted settlement is outside the retained pack.")
+        return store._capability_validate_interrupted_settlement(
+            connection, attempt_id, lease, receipt
+        )
+    if grant_pack(grant) == "bluefire.receiver-composition-pack.v2":
+        receiver_binding = connection.execute(
+            "SELECT * FROM capability_receiver_bindings WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()
+        if (
+            receiver_binding is not None
+            and _document(receiver_binding).get("schema_version")
+            == "bluefire.capability-receiver-binding.v2"
+        ):
+            closure = connection.execute(
+                "SELECT * FROM capability_receiver_closure_proofs WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            if closure is None:
+                raise ProductStoreError(
+                    "Retained settlement lacks separate receiver closure proof."
+                )
+            proven = _document(closure)
+            if (
+                proven.get("verified_closed") is not True
+                or receipt.get("receiver", {}).get("session_generation")
+                != proven.get("session_generation")
+                or receipt.get("receiver", {}).get("review_digest") != proven.get("review_digest")
+            ):
+                raise ProductStoreError("Retained receiver closure differs from settlement.")
     if grant_pack(grant) == MACOS_FILE_ACCESS_PACK:
         return store._validate_macos_capability_settlement(connection, attempt_id, receipt)
     store._validate_capability_dependency(connection, attempt_id, lease, receipt)
@@ -832,6 +898,16 @@ def get_attempt(store, attempt_id) -> dict[str, Any]:
         ).fetchone()
         claim = _claim_at(connection, attempt_id, lease)[1] if claimed else None
         settled = _settled(store, connection, attempt_id)
+        settlement = (
+            _document(records_row)
+            if (
+                records_row := connection.execute(
+                    "SELECT * FROM capability_attempt_settlements WHERE attempt_id=?", (attempt_id,)
+                ).fetchone()
+            )
+            is not None
+            else None
+        )
         tasks = connection.execute(
             "SELECT task_id,step_id,request_hash FROM capability_task_claims WHERE attempt_id=? ORDER BY task_id",
             (attempt_id,),
@@ -840,6 +916,7 @@ def get_attempt(store, attempt_id) -> dict[str, Any]:
             "lease": lease,
             "compiled": compiled,
             "state": "settled" if settled else "claimed" if claimed else "reserved",
+            "settlement": settlement,
             "claim": (
                 {"document": claim, "document_digest": claimed["document_digest"]}
                 if claimed

@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { boundedLocalTimeout, createDeadlineBudget } from "./receiver-deadline.mjs";
 
 describe("installed receiver deadline budget", () => {
+  it("adds only two finite attempt allowances and retains the original cleanup reserve", () => {
+    const budget = createDeadlineBudget(0, 295_000 + 2 * 90_000, 60_000);
+    expect(budget.remaining(475_000)).toBe(0);
+    expect(budget.beginCleanup(475_000)).toBe(535_000);
+    expect(budget.remaining(475_000)).toBe(60_000);
+    expect(budget.beginCleanup(534_000)).toBe(535_000);
+    expect(budget.remaining(535_000)).toBe(0);
+  });
+
   it("caps journey waits at the shared deadline", () => {
     const budget = createDeadlineBudget(1_000, 300_000, 60_000);
     expect(budget.remaining(11_000)).toBe(290_000);

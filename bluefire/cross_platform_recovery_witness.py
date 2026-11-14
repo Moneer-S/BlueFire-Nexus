@@ -563,18 +563,16 @@ def inspect_live_recovery(
 
 def _validate_cleanup_result(value: Mapping[str, Any], receipt_id: str) -> None:
     cleanup = _exact(
-        value.get("cleanup"),
-        {
-            "requested_receipts",
-            "removed_paths",
-            "already_absent_receipts",
-            "retained_paths",
-            "errors",
-            "verification_performed",
-            "verified_removed_paths",
-            "verified_absent_paths",
-            "verified_receipts",
-        },
+        (cleanup_value := value.get("cleanup")),
+        set(
+            "requested_receipts removed_paths already_absent_receipts retained_paths errors "
+            "verification_performed verified_removed_paths verified_absent_paths verified_receipts".split()
+        )
+        | (
+            {"verified_receipt_ids"}
+            if isinstance(cleanup_value, dict) and "verified_receipt_ids" in cleanup_value
+            else set()
+        ),
         "live cleanup result",
     )
     _require(
@@ -584,7 +582,7 @@ def _validate_cleanup_result(value: Mapping[str, Any], receipt_id: str) -> None:
         and value.get("runner_profile_id") == _PROFILE_ID
         and value.get("platform") == "windows"
         and value.get("receipt_ids") == []
-        and cleanup
+        and {key: item for key, item in cleanup.items() if key != "verified_receipt_ids"}
         == {
             "requested_receipts": 1,
             "removed_paths": [_EFFECT_PATH, _EFFECT_DIRECTORY],
@@ -596,6 +594,7 @@ def _validate_cleanup_result(value: Mapping[str, Any], receipt_id: str) -> None:
             "verified_absent_paths": 0,
             "verified_receipts": 1,
         }
+        and cleanup.get("verified_receipt_ids", [receipt_id]) == [receipt_id]
         and _RAW_DIGEST.fullmatch(receipt_id) is not None,
         "live cleanup result did not reconcile the exact receipt",
     )

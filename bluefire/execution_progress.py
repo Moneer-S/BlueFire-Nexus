@@ -8,6 +8,10 @@ from .contracts import StepOutcome
 from .evidence import EvidenceProvenance, EvidenceRecord
 from .planner import ExecutionPlan, PlanStep
 from .run_store import RunStore
+from .runner_result_contract import (
+    RunnerResultContractError,
+    validate_cleanup_result_contract,
+)
 from .runner_transport_errors import RunnerTaskCancelled, RunnerTransportError
 
 
@@ -193,60 +197,7 @@ def validate_cleanup_result(
     manifest: Mapping[str, Any],
     result: Mapping[str, Any],
 ) -> None:
-    execution_binding = manifest.get("execution_binding")
-    bound_opcode = (
-        execution_binding.get("runner_opcode") if isinstance(execution_binding, Mapping) else None
-    )
-    if manifest.get("action_id") != "sandbox.cleanup.v1" and bound_opcode != ("sandbox.cleanup.v1"):
-        return
-    cleanup = result.get("cleanup")
-    if not isinstance(cleanup, Mapping):
-        raise RunnerTransportError("cleanup result is missing its cleanup report")
-    expected_cleanup_fields = {
-        "requested_receipts",
-        "removed_paths",
-        "already_absent_receipts",
-        "retained_paths",
-        "errors",
-        "verification_performed",
-        "verified_removed_paths",
-        "verified_absent_paths",
-        "verified_receipts",
-    }
-    if set(cleanup) != expected_cleanup_fields:
-        raise RunnerTransportError("cleanup report shape is invalid")
-    for field in (
-        "removed_paths",
-        "already_absent_receipts",
-        "retained_paths",
-        "errors",
-    ):
-        values = cleanup.get(field)
-        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
-            raise RunnerTransportError("cleanup report lists are invalid")
-    for field in (
-        "requested_receipts",
-        "verified_removed_paths",
-        "verified_absent_paths",
-        "verified_receipts",
-    ):
-        value = cleanup.get(field)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise RunnerTransportError("cleanup verification counters are invalid")
-    output = result.get("output")
-    if not isinstance(output, Mapping) or dict(output) != dict(cleanup):
-        raise RunnerTransportError("cleanup output does not match its authoritative report")
-    params = manifest.get("params")
-    requested = params.get("receipt_ids") if isinstance(params, Mapping) else None
-    if not isinstance(requested, list):
-        raise RunnerTransportError("cleanup manifest has no receipt list")
-    if result.get("status") != "success":
-        return
-    if cleanup.get("requested_receipts") != len(requested):
-        raise RunnerTransportError("cleanup report does not cover every requested receipt")
-    if cleanup.get("errors") != [] or cleanup.get("retained_paths") != []:
-        raise RunnerTransportError("cleanup reported success with retained artifacts")
-    if cleanup.get("verification_performed") is not True:
-        raise RunnerTransportError("cleanup success lacks verified postconditions")
-    if cleanup.get("verified_receipts") != len(requested):
-        raise RunnerTransportError("cleanup did not verify every requested receipt")
+    try:
+        validate_cleanup_result_contract(manifest, result)
+    except RunnerResultContractError as exc:
+        raise RunnerTransportError(str(exc)) from None

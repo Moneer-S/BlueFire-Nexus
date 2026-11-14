@@ -133,6 +133,7 @@ _REVIEWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, Any]] = {
     "sandbox.peer.handoff.v1": {"method": "POST"},
     "sandbox.archive.tar.v1": {"archive_format": "ustar"},
     "sandbox.cleanup.v1": {},
+    "sandbox.collection.materialize-retained.v1": {},
     "sandbox.collection.stage.v1": {},
     "sandbox.collection.records.v1": {},
     "sandbox.collection.archive.v1": {},

@@ -22,14 +22,15 @@ COMPILED_DIGEST = "sha256:" + "f" * 64
 
 
 class _Cursor:
-    def __init__(self, rows=()):
+    def __init__(self, rows=(), row=None):
         self.rows = rows
+        self.row = row
 
     def fetchall(self):
         return self.rows
 
     def fetchone(self):
-        return None
+        return self.row
 
 
 class _Connection:
@@ -43,9 +44,11 @@ class _Connection:
         return False
 
     def execute(self, _query, _params=()):
+        if "coalesce(max(rowid), 0) FROM capability_attempts" in _query:
+            return _Cursor(row=(0,))
         if "capability_task_terminals" in _query:
             row = self.store.terminals.get(_params[0])
-            return _Cursor([row] if row is not None else [])
+            return _Cursor([row] if row is not None else [], row=row)
         return _Cursor(self.store.event_rows)
 
 
@@ -334,8 +337,9 @@ def test_cleanup_only_window_is_rejected_before_creator_or_attempt_reservations(
     reservation = {"reserved_attempt_ms": 10_000, "cleanup_reserve_ms": 2_000}
     charges = []
     durable_attempts = []
-    store = SimpleNamespace(
-        reserve_capability_attempt=lambda *args, **kwargs: durable_attempts.append((args, kwargs))
+    store = _Store()
+    store.reserve_capability_attempt = lambda *args, **kwargs: durable_attempts.append(
+        (args, kwargs)
     )
     jobs = CompositionJobs(
         SimpleNamespace(product_store=store, job_controller=object()), clock=lambda: 1_000
@@ -352,7 +356,7 @@ def test_cleanup_only_window_is_rejected_before_creator_or_attempt_reservations(
     }
     grant = {"expires_at_ms": 100_000, "grant_id": "grant", "grant_digest": "digest"}
     jobs._owner = lambda _owner_id: {"job_id": OWNER}
-    jobs._current = lambda _owner: (grant, current)
+    jobs._current = lambda _owner, **_kwargs: (grant, current)
     jobs._orchestrator = lambda _current: SimpleNamespace(
         planner=SimpleNamespace(
             compile=lambda *_args, **_kwargs: SimpleNamespace(to_dict=lambda: {})

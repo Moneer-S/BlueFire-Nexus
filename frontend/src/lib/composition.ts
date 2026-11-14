@@ -4,18 +4,20 @@ import { sameJson } from "./replay-review";
 import { parseScenarioDocument } from "./scenario";
 import { checkedCompositionEvidenceResult, type CompositionReconsideration } from "./composition-evidence";
 import type { CompositionKnowledge } from "./composition-knowledge";
+import { checkedRetainedArtifacts, checkedRetainedContinuation, checkedRetainedPolicy, checkedRetainedProposal, RECEIVER_RETAINED_PACK, RETAINED_MATERIALIZE_METHOD, type RetainedCompositionArtifacts, type RetainedPolicy } from "./composition-retained";
 import type { CompositionEvidenceContext } from "./composition-evidence";
 
 export const FILE_ACCESS_PACK = "bluefire.linux-file-access-pack.v1";
 export const MACOS_FILE_ACCESS_PACK = "bluefire.macos-file-access-pack.v1";
 export const RECEIVER_PACK = "bluefire.receiver-composition-pack.v1";
-export type CompositionPack = typeof FILE_ACCESS_PACK | typeof MACOS_FILE_ACCESS_PACK | typeof RECEIVER_PACK;
-export type CompositionReviewRequest = { control_owner_id: string; question: string; limits: Record<string, number> | null } & ({ schema_version?: never; pack?: never } | { schema_version: "bluefire.composition-review-request.v2"; pack: typeof FILE_ACCESS_PACK | typeof MACOS_FILE_ACCESS_PACK });
+export type CompositionPack = typeof FILE_ACCESS_PACK | typeof MACOS_FILE_ACCESS_PACK | typeof RECEIVER_PACK | typeof RECEIVER_RETAINED_PACK;
+export type CompositionReviewRequest = { control_owner_id: string; question: string; limits: Record<string, number> | null } & ({ schema_version?: never; pack?: never } | { schema_version: "bluefire.composition-review-request.v2"; pack: typeof FILE_ACCESS_PACK | typeof MACOS_FILE_ACCESS_PACK | typeof RECEIVER_RETAINED_PACK });
 export interface CompositionMethod { behavior_id: string; action_id: string; behavior: Behavior; action: ActionDefinition; implementation_digest: string; parameter_domains: Record<string, unknown[]>; cost: Record<string, unknown> }
 export interface CompositionReview {
   schema_version: string; pack?: CompositionPack; objective: { question: string; predicate: Record<string, unknown> };
   environment: { control_owner_id: string; runner_id: string; [key: string]: unknown };
   limits: Record<string, number>; snapshot: { schema_version?: string; platform?: string; pack?: CompositionPack; snapshot_digest: string; methods: CompositionMethod[]; artifact_context: Record<string, unknown> };
+  retention?: RetainedPolicy; native_materialization?: { method: string; readiness: "ready"; implementation_digest: string };
   limitations: string[]; review_digest: string;
 }
 export interface CompositionJob { job_id: string; kind: string; state: string; request: Record<string, unknown>; progress: Record<string, unknown>; error?: unknown }
@@ -29,9 +31,9 @@ export interface CompositionObjective {
 }
 export interface CompositionRefusal { schema_version: "bluefire.composition-objective.v1"; owner: CompositionJob; grant: null; attempts: [] }
 export type CompositionObjectiveState = CompositionObjective | CompositionRefusal;
-export interface CompositionCandidate { schema_version: "bluefire.composition-proposal.v1"; title: string; start: string; steps: Array<{ id: string; behavior_id: string; parameters: Record<string, unknown> }>; edges: Array<{ from_step: string; outcome: string; to_step: string }>; evidence_refs: string[]; rationale: string }
-export interface CompositionContext { schema_version: "bluefire.composition-proposal-context.v1"; grant_id: string; context_digest: string; objective: CompositionReview["objective"]; snapshot: CompositionReview["snapshot"]; facts: { facts: Array<{ fact_id: string; kind: string; value: unknown; [key: string]: unknown }>; [key: string]: unknown }; initial_proposal: CompositionCandidate | null; initial_scenario: Scenario | null }
-export interface CompositionProposal { job: CompositionJob; candidate_ready: boolean; provider_outcome: string; proposal: null | { schema_version: string; knowledge_digest?: string; model_context_digest?: string; reconsideration?: CompositionReconsideration; proposal_job_id: string; owner_id: string; context_digest: string; prior_attempt_id: string | null; candidate: CompositionCandidate; scenario: Scenario; proposal_digest: string; provider: { provider_id: string; kind: string; model: string; used_fallback: false; attempts: number } } }
+export interface CompositionCandidate { schema_version: "bluefire.composition-proposal.v1"; title: string; start: string; steps: Array<{ id: string; behavior_id: string; parameters: Record<string, unknown>; inputs?: Record<string, { from_step: string; artifact: string }> }>; edges: Array<{ from_step: string; outcome: string; to_step: string }>; evidence_refs: string[]; rationale: string }
+export interface CompositionContext { schema_version: "bluefire.composition-proposal-context.v1" | "bluefire.retained-composition-proposal-context.v1"; retained_artifacts?: RetainedCompositionArtifacts; grant_id: string; context_digest: string; objective: CompositionReview["objective"]; snapshot: CompositionReview["snapshot"]; facts: { facts: Array<{ fact_id: string; kind: string; value: unknown; [key: string]: unknown }>; [key: string]: unknown }; initial_proposal: CompositionCandidate | null; initial_scenario: Scenario | null }
+export interface CompositionProposal { job: CompositionJob; candidate_ready: boolean; provider_outcome: string; proposal: null | { schema_version: string; knowledge_digest?: string; model_context_digest?: string; reconsideration?: CompositionReconsideration | null; proposal_job_id: string; owner_id: string; context_digest: string; prior_attempt_id: string | null; candidate: CompositionCandidate; scenario: Scenario; proposal_digest: string; provider: { provider_id: string; kind: string; model: string; used_fallback: false; attempts: number } } }
 export interface CompositionList { schema_version: "bluefire.composition-objective-list.v1"; objectives: Array<{ owner_id: string; title: string; status: string; job_state: string }> }
 
 export const compositionJobValid = (value: unknown): value is string => typeof value === "string" && /^job-[0-9a-f]{32}$/.test(value);
@@ -53,6 +55,9 @@ export function compositionPack(value: Pick<CompositionReview, "schema_version" 
     && value.snapshot.schema_version === "bluefire.macos-file-access-capability-snapshot.v1" && value.snapshot.platform === "macos") return MACOS_FILE_ACCESS_PACK;
   if (["bluefire.composition-review.v2", "bluefire.capability-grant.v2"].includes(value.schema_version)
     && value.pack === FILE_ACCESS_PACK && value.snapshot?.pack === FILE_ACCESS_PACK) return FILE_ACCESS_PACK;
+  if (["bluefire.composition-review.v2", "bluefire.capability-grant.v2"].includes(value.schema_version)
+    && value.pack === RECEIVER_RETAINED_PACK && value.snapshot?.pack === RECEIVER_RETAINED_PACK
+    && value.snapshot.schema_version === "bluefire.retained-receiver-capability-snapshot.v1") return RECEIVER_RETAINED_PACK;
   if (["bluefire.composition-review.v1", "bluefire.capability-grant.v1"].includes(value.schema_version)
     && value.pack === undefined && value.snapshot?.pack === RECEIVER_PACK) return RECEIVER_PACK;
   throw bad();
@@ -61,6 +66,10 @@ export function compositionPack(value: Pick<CompositionReview, "schema_version" 
 export function checkedCompositionReview(value: CompositionReview, submitted: CompositionReviewRequest): CompositionReview {
   const pack = compositionPack(value);
   if (compositionRequestPack(submitted) !== pack || value.schema_version !== (pack === RECEIVER_PACK ? "bluefire.composition-review.v1" : "bluefire.composition-review.v2") || !digest(value.review_digest) || value.environment?.control_owner_id !== submitted.control_owner_id || value.objective?.question !== submitted.question || !Array.isArray(value.snapshot?.methods) || !value.snapshot.methods.length || !digest(value.snapshot.snapshot_digest) || !Array.isArray(value.limitations) || !Object.entries(value.limits ?? {}).every(([key, item]) => Number.isSafeInteger(item) && item >= (key === "max_edges_per_attempt" ? 0 : 1)) || (submitted.limits !== null && !sameJson(submitted.limits, value.limits))) throw bad();
+  if (pack === RECEIVER_RETAINED_PACK) {
+    checkedRetainedSnapshot(value.snapshot); checkedRetainedPolicy(value.retention);
+    if (!value.native_materialization || !exactKeys(compositionRecord(value.native_materialization), ["method", "readiness", "implementation_digest"]) || value.native_materialization.method !== RETAINED_MATERIALIZE_METHOD || value.native_materialization.readiness !== "ready" || !digest(value.native_materialization.implementation_digest) || !value.snapshot.methods.some(method => method.behavior_id === RETAINED_MATERIALIZE_METHOD && method.implementation_digest === value.native_materialization!.implementation_digest)) throw bad();
+  }
   if (pack === FILE_ACCESS_PACK) checkedFileAccessScope(value);
   if (pack === MACOS_FILE_ACCESS_PACK) checkedMacOSFileAccessScope(value);
   return value;
@@ -83,6 +92,7 @@ export function checkedCompositionObjective<T extends CompositionObjectiveState>
   const pack = compositionPack(grant);
   if (grant.schema_version !== (pack === RECEIVER_PACK ? "bluefire.capability-grant.v1" : "bluefire.capability-grant.v2")) throw bad();
   if (expectedPack && pack !== expectedPack) throw bad();
+  if (pack === RECEIVER_RETAINED_PACK) checkedRetainedSnapshot(grant.snapshot);
   if (pack === FILE_ACCESS_PACK) checkedFileAccessScope(grant);
   if (pack === MACOS_FILE_ACCESS_PACK) checkedMacOSFileAccessScope(grant);
   const ids = new Set<string>();
@@ -90,6 +100,11 @@ export function checkedCompositionObjective<T extends CompositionObjectiveState>
     const binding = attempt?.request?.composition_attempt;
     if (!compositionJobValid(attempt.job_id) || attempt.kind !== "composition.attempt" || !binding || binding.parent_job_id !== id || binding.grant_id !== grant.grant_id || binding.grant_digest !== grant.grant_digest || !/^attempt-[0-9a-f]{32}$/.test(binding.attempt_id) || ids.has(attempt.job_id)) throw bad();
     ids.add(attempt.job_id);
+    if (attempt.progress.retained_continuation !== undefined) {
+      if (pack !== RECEIVER_RETAINED_PACK || attempt.progress.settlement !== "settled") throw bad();
+      const continuation = checkedRetainedContinuation(attempt.progress.retained_continuation, binding.run_id);
+      checkedRetainedArtifacts({ policy: grant.snapshot.artifact_context.retention, available_sources: [continuation.source], availability: "available" }, value);
+    }
     if (attempt.progress.verified_result !== undefined) {
       const result = compositionRecord(attempt.progress.verified_result);
       const outcome = compositionRecord(result.objective);
@@ -101,6 +116,10 @@ export function checkedCompositionObjective<T extends CompositionObjectiveState>
     }
   }
   return value;
+}
+function checkedRetainedSnapshot(snapshot: CompositionReview["snapshot"]) {
+  checkedRetainedPolicy(snapshot.artifact_context?.retention);
+  if (snapshot.artifact_context?.materialization !== "sealed_generated_jsonl_fresh_materialization" || snapshot.artifact_context.data_class !== "generated_public_jsonl" || !digest(snapshot.artifact_context.environment_digest) || !snapshot.methods.some(method => method.behavior_id === RETAINED_MATERIALIZE_METHOD && digest(method.implementation_digest))) throw bad();
 }
 function checkedFileAccessScope(value: Pick<CompositionReview, "environment" | "objective">) {
   const environment = value.environment;
@@ -203,8 +222,9 @@ function checkedFileAccessResult(result: Record<string, unknown>, grant: Composi
   if (Object.entries(expected).some(([key, value]) => checks[key] !== value)) throw bad();
 }
 export function checkedCompositionContext(value: CompositionContext, grant: string, pack: CompositionPack = RECEIVER_PACK): CompositionContext {
-  if (value?.schema_version !== "bluefire.composition-proposal-context.v1" || value.grant_id !== grant || !digest(value.context_digest) || !Array.isArray(value.snapshot?.methods) || !Array.isArray(value.facts?.facts) || value.facts.facts.some(fact => typeof fact.fact_id !== "string" || typeof fact.kind !== "string") || Boolean(value.initial_proposal) !== Boolean(value.initial_scenario)) throw bad();
+  if (value?.schema_version !== (pack === RECEIVER_RETAINED_PACK ? "bluefire.retained-composition-proposal-context.v1" : "bluefire.composition-proposal-context.v1") || value.grant_id !== grant || !digest(value.context_digest) || !Array.isArray(value.snapshot?.methods) || !Array.isArray(value.facts?.facts) || value.facts.facts.some(fact => typeof fact.fact_id !== "string" || typeof fact.kind !== "string") || Boolean(value.initial_proposal) !== Boolean(value.initial_scenario)) throw bad();
   if (value.snapshot.pack !== pack) throw bad();
+  if (pack === RECEIVER_RETAINED_PACK) { checkedRetainedSnapshot(value.snapshot); checkedRetainedArtifacts(value.retained_artifacts); }
   if (pack === MACOS_FILE_ACCESS_PACK) {
     checkedMacOSSnapshot(value.snapshot);
     const facts = compositionRecord(value.facts);
@@ -233,8 +253,13 @@ export function checkedCompositionProposal(value: CompositionProposal, id: strin
   if (value?.job?.job_id !== id || value.job.kind !== "composition.proposal" || value.job.request.owner_id !== owner || typeof value.candidate_ready !== "boolean") throw bad();
   if (value.proposal) {
     const proposal = value.proposal;
-    if (!["bluefire.composition-ai-result.v1", "bluefire.composition-ai-result.v2"].includes(proposal.schema_version) || proposal.proposal_job_id !== id || proposal.owner_id !== owner || !digest(proposal.context_digest) || !digest(proposal.proposal_digest) || proposal.provider?.used_fallback !== false || proposal.candidate?.schema_version !== "bluefire.composition-proposal.v1") throw bad();
-    if (proposal.schema_version === "bluefire.composition-ai-result.v2") checkedCompositionEvidenceResult(value, owner);
+    if ((proposal.schema_version === "bluefire.composition-ai-result.v3") !== (compositionRecord(compositionRecord(value.job.request.context).snapshot).pack === RECEIVER_RETAINED_PACK)) throw bad();
+    if (!["bluefire.composition-ai-result.v1", "bluefire.composition-ai-result.v2", "bluefire.composition-ai-result.v3"].includes(proposal.schema_version) || proposal.proposal_job_id !== id || proposal.owner_id !== owner || !digest(proposal.context_digest) || !digest(proposal.proposal_digest) || proposal.provider?.used_fallback !== false || proposal.candidate?.schema_version !== "bluefire.composition-proposal.v1") throw bad();
+    if (proposal.schema_version === "bluefire.composition-ai-result.v3") {
+      if (compositionRecord(value.job.request.context).historical_context !== undefined) checkedCompositionEvidenceResult(value, owner);
+      else checkedRetainedProposal(value, owner);
+    }
+    else if (proposal.schema_version === "bluefire.composition-ai-result.v2") checkedCompositionEvidenceResult(value, owner);
     else if (compositionRecord(value.job.request.submitted_request).schema_version === "bluefire.composition-evidence-proposal-request.v1" || proposal.knowledge_digest !== undefined || proposal.reconsideration !== undefined) throw bad();
     parseScenarioDocument(proposal.scenario);
   }
@@ -245,7 +270,11 @@ export function checkedCompositionList(value: CompositionList): CompositionList 
   return value;
 }
 export function compositionCanRevise(attempt: CompositionAttempt, objective: CompositionObjective): boolean {
-  if (compositionPack(objective.grant.document) !== RECEIVER_PACK) return false;
+  const pack = compositionPack(objective.grant.document);
+  if (pack === RECEIVER_RETAINED_PACK && attempt.progress.retained_continuation !== undefined) {
+    try { checkedRetainedContinuation(attempt.progress.retained_continuation, attempt.request.composition_attempt.run_id); return attempt.progress.settlement === "settled"; } catch { return false; }
+  }
+  if (pack !== RECEIVER_PACK && pack !== RECEIVER_RETAINED_PACK) return false;
   const result = compositionRecord(attempt.progress.verified_result);
   const receiver = compositionRecord(result.receiver_result);
   const cleanup = compositionRecord(result.cleanup);
@@ -374,6 +403,10 @@ export function compositionRequestPack(value: Record<string, unknown>): Composit
     && (value.limits === null || (typeof value.limits === "object" && !Array.isArray(value.limits)
       && Object.entries(compositionRecord(value.limits)).every(([key, item]) => Number.isSafeInteger(item) && Number(item) >= (key === "max_edges_per_attempt" ? 0 : 1))))
     && compositionControlValid(value.control_owner_id, MACOS_FILE_ACCESS_PACK)) return MACOS_FILE_ACCESS_PACK;
+  if (value.schema_version === "bluefire.composition-review-request.v2" && value.pack === RECEIVER_RETAINED_PACK
+    && exactKeys(value, ["schema_version", "pack", "control_owner_id", "question", "limits"]) && typeof value.question === "string" && Boolean(value.question.trim()) && value.question.length <= 4000
+    && (value.limits === null || typeof value.limits === "object" && !Array.isArray(value.limits) && Object.entries(compositionRecord(value.limits)).every(([key, item]) => Number.isSafeInteger(item) && Number(item) >= (key === "max_edges_per_attempt" ? 0 : 1)))
+    && compositionControlValid(value.control_owner_id, RECEIVER_RETAINED_PACK)) return RECEIVER_RETAINED_PACK;
   if (value.schema_version === "bluefire.composition-review-request.v2" && value.pack === FILE_ACCESS_PACK) return FILE_ACCESS_PACK;
   if (value.schema_version === undefined && value.pack === undefined) return RECEIVER_PACK;
   throw bad();
