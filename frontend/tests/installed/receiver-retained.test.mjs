@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { URL } from "node:url";
 import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, submitRetainedAttempt,
-  verifyRetainedHistoryAfterContinuation, waitForRetainedSavedAttempt } from "./receiver-retained.mjs";
+  retainedFailureDiagnostic, retainedSettlementDiagnostic, verifyRetainedHistoryAfterContinuation,
+  waitForRetainedSavedAttempt } from "./receiver-retained.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
 import { retainedHash, assertRetainedSource, assertMetadataOnly, verifyRetainedOriginal, verifyRetainedContinuation, RETAINED_PACK, RETAINED_QUESTION, RETAINED_REVIEWER, RETAINED_METHOD } from "./receiver-retained-proof.mjs";
 
@@ -301,12 +302,13 @@ test("post-continuation proof retains only the fixed source-run failure category
 });
 
 test("saved-attempt wait reports only bounded readiness classifications", async () => {
-  const diagnostics = [];
+  const diagnostics = [], settlements = [], reads = [];
   const attempt = { job_id: ownerId, state: "completed", progress: { settlement: "settled", verified_result: { digest: "private" } } };
   const current = { attempts: [attempt] };
   const result = await waitForRetainedSavedAttempt({
     readObjective: async () => ({ outcome: "ok", run: current }), attemptId: ownerId,
     remainingMs: () => 1000, maximum: 1000, onVerification: value => diagnostics.push(value),
+    onSettlement: value => settlements.push(value), onSettlementRead: value => reads.push(value),
   });
   assert.equal(result, current);
   assert.deepEqual(diagnostics, [
@@ -316,19 +318,43 @@ test("saved-attempt wait reports only bounded readiness classifications", async 
     { schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
       read_outcome: "ok", attempt_state: "completed", attempt_outcome: "ready", wait_outcome: "ready" },
   ]);
+  assert.equal(settlements.length, 1);
+  assert.equal(settlements[0].job_state, "completed");
+  assert.equal(settlements[0].verified_result_present, true);
+  assert.deepEqual(reads, [{ schema_version: "bluefire.installed-retained-read-diagnostic.v1",
+    outcome: "read_succeeded", read_outcome: "ok", kind: "none" }]);
 });
 
 test("saved-attempt wait classifies objective read failure without retaining response data", async () => {
-  const diagnostics = [];
+  const diagnostics = [], settlements = [], reads = [];
   await assert.rejects(waitForRetainedSavedAttempt({
     readObjective: async () => ({ outcome: "server_error", run: { private: true } }), attemptId: ownerId,
     remainingMs: () => 1000, maximum: 1000, onVerification: value => diagnostics.push(value),
+    onSettlement: value => settlements.push(value), onSettlementRead: value => reads.push(value),
   }));
   assert.deepEqual(diagnostics.at(-1), {
     schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
     read_outcome: "server_error", attempt_state: "unavailable",
     attempt_outcome: "unavailable", wait_outcome: "read_failed",
   });
+  assert.deepEqual(settlements, []);
+  assert.deepEqual(reads, [{ schema_version: "bluefire.installed-retained-read-diagnostic.v1",
+    outcome: "read_failed", read_outcome: "server_error", kind: "http" }]);
+});
+
+test("saved-attempt wait classifies a thrown objective read without retaining its error", async () => {
+  const reads = [], settlements = [];
+  const privateError = new Error("private network route and token");
+  privateError.name = "AbortError";
+  await assert.rejects(waitForRetainedSavedAttempt({
+    readObjective: async () => { throw privateError; }, attemptId: ownerId,
+    remainingMs: () => 1000, maximum: 1000,
+    onSettlement: value => settlements.push(value), onSettlementRead: value => reads.push(value),
+  }), /objective could not be read/);
+  assert.deepEqual(settlements, []);
+  assert.deepEqual(reads, [{ schema_version: "bluefire.installed-retained-read-diagnostic.v1",
+    outcome: "read_failed", read_outcome: "transport_error", kind: "aborted" }]);
+  assert.equal(JSON.stringify(reads).includes("private"), false);
 });
 
 test("saved-attempt wait distinguishes an exhausted shared work budget", async () => {
@@ -343,19 +369,21 @@ test("saved-attempt wait distinguishes an exhausted shared work budget", async (
 });
 
 test("saved-attempt wait rejects malformed completed progress without changing the settlement proof", async () => {
-  const diagnostics = [];
+  const diagnostics = [], reads = [];
   await assert.rejects(waitForRetainedSavedAttempt({
     readObjective: async () => ({ outcome: "ok", run: {
       attempts: [{ job_id: ownerId, state: "completed", progress: null }],
     } }),
     attemptId: ownerId, remainingMs: () => 1000, maximum: 1000,
-    onVerification: value => diagnostics.push(value),
+    onVerification: value => diagnostics.push(value), onSettlementRead: value => reads.push(value),
   }));
   assert.deepEqual(diagnostics.at(-1), {
     schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
     read_outcome: "invalid_response", attempt_state: "completed",
     attempt_outcome: "unavailable", wait_outcome: "read_failed",
   });
+  assert.deepEqual(reads, [{ schema_version: "bluefire.installed-retained-read-diagnostic.v1",
+    outcome: "read_failed", read_outcome: "invalid_response", kind: "invalid_response" }]);
 });
 
 test("saved-attempt wait keeps one read per poll and the exact settlement gate", async () => {
@@ -410,16 +438,21 @@ test.each(["failed", "cancelled", "interrupted"])(
 );
 
 test("saved-attempt wait retains only fixed public failure classifications", async () => {
-  const diagnostics = [];
+  const diagnostics = [], settlements = [], reads = [];
   await assert.rejects(waitForRetainedSavedAttempt({
     readObjective: async () => ({ outcome: "ok", run: { attempts: [{
-      job_id: ownerId, state: "failed", error: {
+      job_id: ownerId, state: "failed", progress: {
+        phase: "failed", settlement: "settled", prepare_started: true,
+        session: { private: "session" }, verified_result_problem: "The exact authenticated receiver observation is unavailable.",
+        operation_error: "private failure text", native_cleanup: { private: "cleanup" },
+      }, error: {
         code: "execution_callback_failed", exception_type: "ProductStoreError",
         message: "private failure message", private_path: "/private/path",
       },
     }] } }),
     attemptId: ownerId, remainingMs: () => 1000, maximum: 1000,
     onVerification: value => diagnostics.push(value),
+    onSettlement: value => settlements.push(value), onSettlementRead: value => reads.push(value),
   }));
   assert.deepEqual(diagnostics.at(-1), {
     schema_version: "bluefire.installed-retained-verification.v1", step: "saved_attempt_wait",
@@ -427,6 +460,34 @@ test("saved-attempt wait retains only fixed public failure classifications", asy
     attempt_outcome: "terminal_failure", wait_outcome: "terminal_failure",
     attempt_error_code: "execution_callback_failed", attempt_error_type: "ProductStoreError",
   });
+  assert.equal(settlements.length, 1);
+  assert.equal(settlements[0].phase, "failed");
+  assert.equal(settlements[0].error_type, "ProductStoreError");
+  assert.equal(settlements[0].error_code, "execution_callback_failed");
+  assert.equal(settlements[0].verified_result_problem_kind, "receiver_observation");
+  assert.equal(settlements[0].session_present, true);
+  assert.equal(settlements[0].native_cleanup_present, true);
+  assert.equal(JSON.stringify(settlements).includes("private"), false);
+  assert.deepEqual(reads, [{ schema_version: "bluefire.installed-retained-read-diagnostic.v1",
+    outcome: "read_succeeded", read_outcome: "ok", kind: "none" }]);
+});
+
+test("retained failure location and current wait errors expose only bounded categories", () => {
+  const error = new Error("private generated-record path");
+  error.stack = "Error: private generated-record path\n    at execute (file:///tmp/private/receiver-retained.mjs:330:17)";
+  assert.deepEqual(retainedFailureDiagnostic(error), {
+    schema_version: "bluefire.installed-retained-failure-diagnostic.v1", kind: "other",
+    http_status: null, source: "receiver-retained.mjs", line: 330,
+  });
+  assert.equal(JSON.stringify(retainedFailureDiagnostic(error)).includes("private"), false);
+  assert.equal(retainedFailureDiagnostic(new Error("The retained-result attempt ended before its saved proof was ready")).kind,
+    "terminal_without_verified_result");
+  assert.equal(retainedFailureDiagnostic(new Error("The retained-result objective could not be read")).kind,
+    "objective_read_failed");
+  assert.equal(retainedFailureDiagnostic(new Error("The retained-result proof did not reach its bounded saved state")).kind,
+    "settlement_wait_expired");
+  assert.equal(retainedSettlementDiagnostic({ attempts: [{ job_id: ownerId, state: "private" }] }, ownerId).job_state,
+    "other");
 });
 
 test("saved-attempt wait rejects an unreviewed state without retaining it", async () => {

@@ -976,6 +976,132 @@ def test_retained_saved_attempt_wait_projection_keeps_only_fixed_classifications
     }
 
 
+def test_retained_settlement_failure_projection_keeps_only_bounded_categories() -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-continuation-settlement",
+            "kind": "journey_failed",
+            "retained_settlement": {
+                "schema_version": "bluefire.installed-retained-settlement-diagnostic.v1",
+                "attempt_present": True,
+                "job_state": "failed",
+                "phase": "failed",
+                "settlement": "settled",
+                "verified_result_present": False,
+                "verified_result_problem_present": True,
+                "verified_result_problem_kind": "receiver_observation",
+                "operation_error_present": False,
+                "error_present": True,
+                "error_type": "ReceiverSessionError",
+                "error_code": "execution_callback_failed",
+                "receiver_closed": True,
+                "cleanup_receipt_present": True,
+                "finalized_run_present": False,
+                "prepare_started": True,
+                "session_present": True,
+                "task_binding_present": False,
+                "native_cleanup_present": True,
+                "owner_id": "private identity",
+                "error_message": "private target response",
+            },
+            "retained_settlement_read": {
+                "schema_version": "bluefire.installed-retained-read-diagnostic.v1",
+                "outcome": "read_failed",
+                "read_outcome": "server_error",
+                "kind": "http",
+                "http_status": 503,
+                "url": "private target route",
+            },
+            "retained_failure": {
+                "schema_version": "bluefire.installed-retained-failure-diagnostic.v1",
+                "kind": "objective_read_failed",
+                "http_status": 503,
+                "source": "receiver-retained.mjs",
+                "line": 377,
+                "stack": "private machine path",
+            },
+        }
+    ]
+    error = _receiver_report_for_receipt(report)["errors"][0]
+    assert error["retained_settlement"] == {
+        key: value
+        for key, value in report["errors"][0]["retained_settlement"].items()
+        if key not in {"owner_id", "error_message"}
+    }
+    assert error["retained_settlement_read"] == {
+        key: value
+        for key, value in report["errors"][0]["retained_settlement_read"].items()
+        if key not in {"url", "http_status"}
+    }
+    assert error["retained_failure"] == {
+        key: value
+        for key, value in report["errors"][0]["retained_failure"].items()
+        if key != "stack"
+    }
+    assert "private" not in json.dumps(error)
+
+
+def test_retained_settlement_failure_projection_rejects_untrusted_values() -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-continuation-settlement",
+            "kind": "journey_failed",
+            "retained_settlement": {
+                "schema_version": "bluefire.installed-retained-settlement-diagnostic.v1",
+                "attempt_present": True,
+                "job_state": "failed",
+                "phase": "private",
+                "settlement": "private",
+                "error_type": "private",
+                "error_code": "private",
+                "session_present": "private",
+                "operation_error_present": 1,
+                "private_message": "private",
+            },
+            "retained_settlement_read": {
+                "schema_version": "bluefire.installed-retained-read-diagnostic.v1",
+                "outcome": "read_failed",
+                "read_outcome": "server_error",
+                "kind": "http",
+                "http_status": True,
+                "private_message": "private",
+            },
+            "retained_failure": {
+                "schema_version": "bluefire.installed-retained-failure-diagnostic.v1",
+                "kind": "other",
+                "source": "other",
+                "line": 100000,
+                "http_status": 999,
+                "private_message": "private",
+            },
+        }
+    ]
+    assert _receiver_report_for_receipt(report)["errors"] == [
+        {
+            "stage": "retained-continuation-settlement",
+            "kind": "journey_failed",
+            "retained_settlement": {
+                "schema_version": "bluefire.installed-retained-settlement-diagnostic.v1",
+                "attempt_present": True,
+                "job_state": "failed",
+            },
+            "retained_settlement_read": {
+                "schema_version": "bluefire.installed-retained-read-diagnostic.v1",
+                "outcome": "read_failed",
+                "read_outcome": "server_error",
+                "kind": "http",
+            },
+            "retained_failure": {
+                "schema_version": "bluefire.installed-retained-failure-diagnostic.v1",
+                "kind": "other",
+                "source": "other",
+            },
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -1602,9 +1728,9 @@ def test_post_driver_custody_refuses_saved_binding_changes_before_payload_read(
     report, service, jobs, attempts, view, history, reads, _ = custody_state(monkeypatch)
     proof = report["retained_execution"]
     if mutation == "owner":
-        jobs[proof["original"]["job_id"]]["request"]["composition_attempt"][
-            "parent_job_id"
-        ] = "job-other"
+        jobs[proof["original"]["job_id"]]["request"]["composition_attempt"]["parent_job_id"] = (
+            "job-other"
+        )
     elif mutation == "compiled":
         attempts[proof["original"]["attempt_id"]]["compiled"]["scenario"] = {"changed": True}
     elif mutation == "objective":

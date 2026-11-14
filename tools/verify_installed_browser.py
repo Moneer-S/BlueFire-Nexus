@@ -257,6 +257,198 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                     safe_retained[field] = item
             if safe_retained:
                 row["retained_interaction"] = safe_retained
+        retained_stage = row.get("stage")
+        settlement_stage = retained_stage in {
+            "retained-original-settlement",
+            "retained-continuation-settlement",
+        }
+        settlement = entry.get("retained_settlement")
+        if (
+            settlement_stage
+            and row.get("kind") == "journey_failed"
+            and isinstance(settlement, dict)
+            and settlement.get("schema_version")
+            == "bluefire.installed-retained-settlement-diagnostic.v1"
+        ):
+            safe_settlement: dict[str, object] = {
+                "schema_version": "bluefire.installed-retained-settlement-diagnostic.v1"
+            }
+            for field, allowed in {
+                "job_state": {
+                    "queued",
+                    "planning",
+                    "awaiting_approval",
+                    "running",
+                    "paused",
+                    "cancelling",
+                    "cancelled",
+                    "completed",
+                    "failed",
+                    "interrupted",
+                    "missing",
+                    "other",
+                },
+                "phase": {
+                    "preparing_receiver",
+                    "attempt_completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                    "missing",
+                    "other",
+                },
+                "settlement": {"settled", "pending_cleanup", "missing", "other"},
+                "verified_result_problem_kind": {
+                    "run_binding",
+                    "receiver_observation",
+                    "receiver_terminal",
+                    "staged_artifact",
+                    "none",
+                    "other",
+                },
+                "error_type": {
+                    "APIError",
+                    "AssertionError",
+                    "CapabilityContractError",
+                    "EvidenceError",
+                    "FileNotFoundError",
+                    "JobCancelled",
+                    "JobRuntimeError",
+                    "KeyError",
+                    "OSError",
+                    "OrchestrationError",
+                    "PayloadUnavailable",
+                    "PermissionError",
+                    "ProductStoreError",
+                    "ReceiverSessionError",
+                    "RunnerAdapterError",
+                    "RunnerContractError",
+                    "RunnerTransportError",
+                    "RunStoreError",
+                    "RuntimeError",
+                    "TimeoutError",
+                    "TypeError",
+                    "ValueError",
+                    "missing",
+                    "other",
+                },
+                "error_code": {
+                    "execution_callback_failed",
+                    "replay_cleanup_deferred",
+                    "replay_record_incomplete",
+                    "run_cleanup_deferred",
+                    "run_record_incomplete",
+                    "missing",
+                    "other",
+                },
+            }.items():
+                item = settlement.get(field)
+                if isinstance(item, str) and item in allowed:
+                    safe_settlement[field] = item
+            for field in (
+                "attempt_present",
+                "verified_result_present",
+                "verified_result_problem_present",
+                "operation_error_present",
+                "error_present",
+                "receiver_closed",
+                "cleanup_receipt_present",
+                "finalized_run_present",
+                "prepare_started",
+                "session_present",
+                "task_binding_present",
+                "native_cleanup_present",
+            ):
+                item = settlement.get(field)
+                if type(item) is bool:
+                    safe_settlement[field] = item
+            if "attempt_present" in safe_settlement and "job_state" in safe_settlement:
+                row["retained_settlement"] = safe_settlement
+        settlement_read = entry.get("retained_settlement_read")
+        if (
+            settlement_stage
+            and row.get("kind") == "journey_failed"
+            and isinstance(settlement_read, dict)
+            and settlement_read.get("schema_version")
+            == "bluefire.installed-retained-read-diagnostic.v1"
+        ):
+            safe_read: dict[str, object] = {
+                "schema_version": "bluefire.installed-retained-read-diagnostic.v1"
+            }
+            for field, allowed in {
+                "outcome": {"read_succeeded", "read_failed"},
+                "read_outcome": {
+                    "ok",
+                    "not_found",
+                    "conflict",
+                    "authorization_rejected",
+                    "client_error",
+                    "server_error",
+                    "session_unavailable",
+                    "timeout",
+                    "transport_error",
+                    "invalid_response",
+                },
+                "kind": {
+                    "none",
+                    "http",
+                    "session_unavailable",
+                    "timeout",
+                    "aborted",
+                    "transport_error",
+                    "invalid_response",
+                    "other",
+                },
+            }.items():
+                item = settlement_read.get(field)
+                if isinstance(item, str) and item in allowed:
+                    safe_read[field] = item
+            if {"outcome", "read_outcome", "kind"} <= safe_read.keys():
+                row["retained_settlement_read"] = safe_read
+        failure = entry.get("retained_failure")
+        if (
+            row.get("kind") == "journey_failed"
+            and isinstance(retained_stage, str)
+            and (
+                retained_stage.startswith("retained-original-")
+                or retained_stage.startswith("retained-continuation-")
+            )
+            and isinstance(failure, dict)
+            and failure.get("schema_version") == "bluefire.installed-retained-failure-diagnostic.v1"
+        ):
+            safe_failure: dict[str, object] = {
+                "schema_version": "bluefire.installed-retained-failure-diagnostic.v1"
+            }
+            for field, allowed in {
+                "kind": {
+                    "owned_read_http",
+                    "settlement_wait_expired",
+                    "terminal_without_verified_result",
+                    "objective_read_failed",
+                    "objective_read_unusable",
+                    "invalid_saved_attempt",
+                    "invalid_saved_progress",
+                    "local_deadline",
+                    "work_deadline",
+                    "session_unavailable",
+                    "timeout",
+                    "aborted",
+                    "assertion",
+                    "other",
+                },
+                "source": {"receiver-retained.mjs", "installed-receiver.mjs", "other"},
+            }.items():
+                item = failure.get(field)
+                if isinstance(item, str) and item in allowed:
+                    safe_failure[field] = item
+            status = failure.get("http_status")
+            if type(status) is int and 400 <= status <= 599:
+                safe_failure["http_status"] = status
+            line = failure.get("line")
+            if type(line) is int and 1 <= line <= 99999:
+                safe_failure["line"] = line
+            if "kind" in safe_failure and "source" in safe_failure:
+                row["retained_failure"] = safe_failure
         verification = entry.get("retained_verification")
         if isinstance(verification, dict):
             schema = verification.get("schema_version")
@@ -367,6 +559,7 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                         "FileNotFoundError",
                         "JobCancelled",
                         "JobRuntimeError",
+                        "KeyError",
                         "OSError",
                         "OrchestrationError",
                         "PayloadUnavailable",
@@ -377,6 +570,7 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                         "RunnerContractError",
                         "RunnerTransportError",
                         "RunStoreError",
+                        "RuntimeError",
                         "TimeoutError",
                         "TypeError",
                         "ValueError",
@@ -977,10 +1171,13 @@ def _valid_retained_execution(report: dict) -> bool:
         model["initial_job_id"],
         model["revised_job_id"],
     ]
-    attempts, runs = [original["attempt_id"], continuation["attempt_id"]], [
-        original["run_id"],
-        continuation["run_id"],
-    ]
+    attempts, runs = (
+        [original["attempt_id"], continuation["attempt_id"]],
+        [
+            original["run_id"],
+            continuation["run_id"],
+        ],
+    )
     if not (
         all(_receiver_text_matches(item, r"job-[0-9a-f]{32}") for item in jobs)
         and all(_receiver_text_matches(item, r"attempt-[0-9a-f]{32}") for item in attempts)
@@ -2346,7 +2543,9 @@ def _receiver_fixture_request_allowed(request: object, **kwargs: object) -> bool
         == (
             OUTPUT_SCHEMA
             if index == 0
-            else EVIDENCE_OUTPUT_SCHEMA if index == 1 else RETAINED_OUTPUT_SCHEMA
+            else EVIDENCE_OUTPUT_SCHEMA
+            if index == 1
+            else RETAINED_OUTPUT_SCHEMA
         )
         and (index < 2 or _receiver_retained_fixture_phase(request, revision=index == 3))
     )
