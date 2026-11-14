@@ -904,6 +904,109 @@ def test_retained_interaction_projection_rejects_untyped_state_and_unknown_categ
     ]
 
 
+def test_retained_settlement_failure_projection_preserves_only_bounded_categories() -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-continuation-settlement",
+            "kind": "journey_failed",
+            "retained_settlement": {
+                "schema_version": "bluefire.installed-retained-settlement-diagnostic.v1",
+                "attempt_present": True,
+                "job_state": "failed",
+                "phase": "failed",
+                "settlement": "settled",
+                "verified_result_present": False,
+                "verified_result_problem_present": True,
+                "verified_result_problem_kind": "receiver_observation",
+                "operation_error_present": False,
+                "error_present": True,
+                "error_type": "ReceiverSessionError",
+                "error_code": "execution_callback_failed",
+                "receiver_closed": True,
+                "cleanup_receipt_present": True,
+                "finalized_run_present": False,
+                "prepare_started": True,
+                "session_present": True,
+                "task_binding_present": False,
+                "native_cleanup_present": True,
+                "owner_id": "private identity",
+                "error_message": "private target response",
+            },
+            "retained_settlement_read": {
+                "schema_version": "bluefire.installed-retained-read-diagnostic.v1",
+                "outcome": "read_failed",
+                "kind": "http",
+                "http_status": 503,
+                "url": "private target route",
+            },
+            "retained_failure": {
+                "schema_version": "bluefire.installed-retained-failure-diagnostic.v1",
+                "kind": "owned_read_http",
+                "http_status": 503,
+                "source": "receiver-retained.mjs",
+                "line": 377,
+                "stack": "private machine path",
+            },
+        }
+    ]
+    error = _receiver_report_for_receipt(report)["errors"][0]
+    assert error["retained_settlement"] == {
+        "schema_version": "bluefire.installed-retained-settlement-diagnostic.v1",
+        "attempt_present": True,
+        "job_state": "failed",
+        "phase": "failed",
+        "settlement": "settled",
+        "verified_result_present": False,
+        "verified_result_problem_present": True,
+        "verified_result_problem_kind": "receiver_observation",
+        "operation_error_present": False,
+        "error_present": True,
+        "error_type": "ReceiverSessionError",
+        "error_code": "execution_callback_failed",
+        "receiver_closed": True,
+        "cleanup_receipt_present": True,
+        "finalized_run_present": False,
+        "prepare_started": True,
+        "session_present": True,
+        "task_binding_present": False,
+        "native_cleanup_present": True,
+    }
+    assert error["retained_settlement_read"] == {
+        "schema_version": "bluefire.installed-retained-read-diagnostic.v1",
+        "outcome": "read_failed",
+        "kind": "http",
+        "http_status": 503,
+    }
+    assert error["retained_failure"] == {
+        "schema_version": "bluefire.installed-retained-failure-diagnostic.v1",
+        "kind": "owned_read_http",
+        "http_status": 503,
+        "source": "receiver-retained.mjs",
+        "line": 377,
+    }
+    assert "private" not in json.dumps(error)
+
+
+def test_retained_settlement_failure_projection_drops_untrusted_values() -> None:
+    report = receiver_report()
+    report["errors"] = [
+        {
+            "stage": "retained-continuation-settlement",
+            "kind": "journey_failed",
+            "retained_settlement": {"job_state": "private", "attempt_present": 1},
+            "retained_settlement_read": {"kind": "private", "http_status": 999},
+            "retained_failure": {"source": "private/path", "line": 100000, "http_status": True},
+        }
+    ]
+    assert _receiver_report_for_receipt(report)["errors"] == [
+        {
+            "stage": "retained-continuation-settlement",
+            "kind": "journey_failed",
+        }
+    ]
+
+
 @pytest.mark.parametrize("legacy_fields", ["runner", "baseline", "both"])
 def test_receiver_current_candidate_rejects_legacy_profile_without_relabeling(
     legacy_fields,
@@ -1436,9 +1539,9 @@ def test_post_driver_custody_refuses_saved_binding_changes_before_payload_read(
     report, service, jobs, attempts, view, history, reads, _ = custody_state(monkeypatch)
     proof = report["retained_execution"]
     if mutation == "owner":
-        jobs[proof["original"]["job_id"]]["request"]["composition_attempt"][
-            "parent_job_id"
-        ] = "job-other"
+        jobs[proof["original"]["job_id"]]["request"]["composition_attempt"]["parent_job_id"] = (
+            "job-other"
+        )
     elif mutation == "compiled":
         attempts[proof["original"]["attempt_id"]]["compiled"]["scenario"] = {"changed": True}
     elif mutation == "objective":

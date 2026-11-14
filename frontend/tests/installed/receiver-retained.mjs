@@ -26,8 +26,10 @@ export function retainedSettlementPollBudget(remainingWorkMs) {
 
 const RETAINED_JOB_STATES = new Set(["queued", "planning", "running", "awaiting_approval", "completed", "failed", "cancelled", "interrupted"]);
 const RETAINED_SETTLEMENTS = new Set(["settled", "pending_cleanup"]);
-const RETAINED_PHASES = new Set(["preparing_receiver", "attempt_completed"]);
-const RETAINED_ERROR_TYPES = new Set(["ProductStoreError", "ReceiverSessionError", "RunnerTransportError", "JobRuntimeError", "TimeoutError"]);
+const RETAINED_PHASES = new Set(["preparing_receiver", "attempt_completed", "failed", "cancelled", "interrupted"]);
+const RETAINED_ERROR_TYPES = new Set(["APIError", "AssertionError", "JobRuntimeError", "KeyError", "OrchestrationError",
+  "ProductStoreError", "ReceiverSessionError", "RunnerTransportError", "RuntimeError", "TimeoutError", "TypeError", "ValueError"]);
+const RETAINED_ERROR_CODES = new Set(["execution_callback_failed", "run_record_incomplete", "run_cleanup_deferred"]);
 const RETAINED_VERIFICATION_PROBLEMS = new Map([
   ["The actual finalized run differs from its grant-owned attempt.", "run_binding"],
   ["The exact authenticated receiver observation is unavailable.", "receiver_observation"],
@@ -52,10 +54,15 @@ export function retainedSettlementDiagnostic(objective, jobId) {
       ? RETAINED_VERIFICATION_PROBLEMS.get(progress.verified_result_problem) ?? "other" : "none",
     operation_error_present: typeof progress.operation_error === "string",
     error_present: Boolean(attempt?.error),
-    error_type: label(attempt?.error?.type, RETAINED_ERROR_TYPES),
+    error_type: label(attempt?.error?.exception_type, RETAINED_ERROR_TYPES),
+    error_code: label(attempt?.error?.code, RETAINED_ERROR_CODES),
     receiver_closed: progress.receiver_closed === true,
     cleanup_receipt_present: Boolean(progress.receiver_cleanup_receipt),
     finalized_run_present: typeof progress.finalized_run_id === "string",
+    prepare_started: progress.prepare_started === true,
+    session_present: Boolean(progress.session),
+    task_binding_present: Boolean(progress.task_binding),
+    native_cleanup_present: Boolean(progress.native_cleanup),
   };
 }
 

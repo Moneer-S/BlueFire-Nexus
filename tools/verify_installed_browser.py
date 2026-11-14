@@ -244,6 +244,139 @@ def _receiver_errors_for_receipt(value: object) -> list[dict[str, object]]:
                     safe_retained[field] = item
             if safe_retained:
                 row["retained_interaction"] = safe_retained
+        settlement = entry.get("retained_settlement")
+        if isinstance(settlement, dict):
+            safe_settlement: dict[str, object] = {}
+            for field, allowed in {
+                "schema_version": {"bluefire.installed-retained-settlement-diagnostic.v1"},
+                "job_state": {
+                    "queued",
+                    "planning",
+                    "running",
+                    "awaiting_approval",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                    "missing",
+                    "other",
+                },
+                "phase": {
+                    "preparing_receiver",
+                    "attempt_completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                    "missing",
+                    "other",
+                },
+                "settlement": {"settled", "pending_cleanup", "missing", "other"},
+                "verified_result_problem_kind": {
+                    "run_binding",
+                    "receiver_observation",
+                    "receiver_terminal",
+                    "staged_artifact",
+                    "other",
+                    "none",
+                },
+                "error_type": {
+                    "APIError",
+                    "AssertionError",
+                    "KeyError",
+                    "OrchestrationError",
+                    "ProductStoreError",
+                    "ReceiverSessionError",
+                    "RunnerTransportError",
+                    "JobRuntimeError",
+                    "RuntimeError",
+                    "TimeoutError",
+                    "TypeError",
+                    "ValueError",
+                    "other",
+                    "missing",
+                },
+                "error_code": {
+                    "execution_callback_failed",
+                    "run_record_incomplete",
+                    "run_cleanup_deferred",
+                    "other",
+                    "missing",
+                },
+            }.items():
+                item = settlement.get(field)
+                if isinstance(item, str) and item in allowed:
+                    safe_settlement[field] = item
+            for field in (
+                "attempt_present",
+                "verified_result_present",
+                "verified_result_problem_present",
+                "operation_error_present",
+                "error_present",
+                "receiver_closed",
+                "cleanup_receipt_present",
+                "finalized_run_present",
+                "prepare_started",
+                "session_present",
+                "task_binding_present",
+                "native_cleanup_present",
+            ):
+                item = settlement.get(field)
+                if type(item) is bool:
+                    safe_settlement[field] = item
+            if safe_settlement:
+                row["retained_settlement"] = safe_settlement
+        settlement_read = entry.get("retained_settlement_read")
+        if isinstance(settlement_read, dict):
+            safe_read: dict[str, object] = {}
+            for field, allowed in {
+                "schema_version": {"bluefire.installed-retained-read-diagnostic.v1"},
+                "outcome": {
+                    "work_deadline_exhausted",
+                    "poll_ready",
+                    "read_succeeded",
+                    "read_failed",
+                },
+                "work_time": {"under_30_seconds", "under_120_seconds", "over_120_seconds"},
+                "kind": {"http", "session_unavailable", "timeout", "aborted", "other"},
+            }.items():
+                item = settlement_read.get(field)
+                if isinstance(item, str) and item in allowed:
+                    safe_read[field] = item
+            status = settlement_read.get("http_status")
+            if type(status) is int and 400 <= status <= 599:
+                safe_read["http_status"] = status
+            if safe_read:
+                row["retained_settlement_read"] = safe_read
+        failure = entry.get("retained_failure")
+        if isinstance(failure, dict):
+            safe_failure: dict[str, object] = {}
+            for field, allowed in {
+                "schema_version": {"bluefire.installed-retained-failure-diagnostic.v1"},
+                "kind": {
+                    "owned_read_http",
+                    "settlement_wait_expired",
+                    "terminal_without_verified_result",
+                    "local_deadline",
+                    "work_deadline",
+                    "session_unavailable",
+                    "timeout",
+                    "aborted",
+                    "assertion",
+                    "other",
+                },
+                "source": {"receiver-retained.mjs", "installed-receiver.mjs", "other"},
+            }.items():
+                item = failure.get(field)
+                if isinstance(item, str) and item in allowed:
+                    safe_failure[field] = item
+            status = failure.get("http_status")
+            if type(status) is int and 400 <= status <= 599:
+                safe_failure["http_status"] = status
+            line = failure.get("line")
+            if type(line) is int and 1 <= line <= 99999:
+                safe_failure["line"] = line
+            if safe_failure:
+                row["retained_failure"] = safe_failure
         if row:
             result.append(row)
     return result
@@ -837,10 +970,13 @@ def _valid_retained_execution(report: dict) -> bool:
         model["initial_job_id"],
         model["revised_job_id"],
     ]
-    attempts, runs = [original["attempt_id"], continuation["attempt_id"]], [
-        original["run_id"],
-        continuation["run_id"],
-    ]
+    attempts, runs = (
+        [original["attempt_id"], continuation["attempt_id"]],
+        [
+            original["run_id"],
+            continuation["run_id"],
+        ],
+    )
     if not (
         all(_receiver_text_matches(item, r"job-[0-9a-f]{32}") for item in jobs)
         and all(_receiver_text_matches(item, r"attempt-[0-9a-f]{32}") for item in attempts)
@@ -2206,7 +2342,9 @@ def _receiver_fixture_request_allowed(request: object, **kwargs: object) -> bool
         == (
             OUTPUT_SCHEMA
             if index == 0
-            else EVIDENCE_OUTPUT_SCHEMA if index == 1 else RETAINED_OUTPUT_SCHEMA
+            else EVIDENCE_OUTPUT_SCHEMA
+            if index == 1
+            else RETAINED_OUTPUT_SCHEMA
         )
         and (index < 2 or _receiver_retained_fixture_phase(request, revision=index == 3))
     )

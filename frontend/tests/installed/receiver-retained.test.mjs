@@ -59,24 +59,30 @@ test("retained settlement polling is capped inside the shared work deadline", ()
 });
 
 test("retained settlement diagnostics keep fixed categories and no saved error text", () => {
-  const current = { attempts: [{ job_id: ownerId, state: "failed", error: { type: "ProductStoreError", message: "private source path" }, progress: {
+  const current = { attempts: [{ job_id: ownerId, state: "failed", error: { exception_type: "ProductStoreError", code: "execution_callback_failed", message: "private source path" }, progress: {
     phase: "preparing_receiver", settlement: "pending_cleanup", verified_result_problem: "private payload path",
     operation_error: "private operation text", receiver_closed: false, receiver_cleanup_receipt: { private: "value" },
+    prepare_started: true, session: { private: "receiver session" }, task_binding: { private: "task" },
+    native_cleanup: { private: "cleanup" },
   } }] };
   assert.deepEqual(retainedSettlementDiagnostic(current, ownerId), {
     schema_version: "bluefire.installed-retained-settlement-diagnostic.v1", attempt_present: true,
     job_state: "failed", phase: "preparing_receiver", settlement: "pending_cleanup",
     verified_result_present: false, verified_result_problem_present: true, verified_result_problem_kind: "other",
     operation_error_present: true, error_present: true,
-    error_type: "ProductStoreError", receiver_closed: false, cleanup_receipt_present: true,
-    finalized_run_present: false,
+    error_type: "ProductStoreError", error_code: "execution_callback_failed",
+    receiver_closed: false, cleanup_receipt_present: true,
+    finalized_run_present: false, prepare_started: true, session_present: true,
+    task_binding_present: true, native_cleanup_present: true,
   });
   assert.equal(JSON.stringify(retainedSettlementDiagnostic(current, ownerId)).includes("private"), false);
   assert.equal(retainedSettlementDiagnostic(current, controlId).job_state, "missing");
   current.attempts[0].state = "an unexpected private state";
-  current.attempts[0].error.type = "CustomSecretType";
+  current.attempts[0].error.exception_type = "CustomSecretType";
+  current.attempts[0].error.code = "private-code";
   assert.equal(retainedSettlementDiagnostic(current, ownerId).job_state, "other");
   assert.equal(retainedSettlementDiagnostic(current, ownerId).error_type, "other");
+  assert.equal(retainedSettlementDiagnostic(current, ownerId).error_code, "other");
   current.attempts[0].progress.verified_result_problem = "The exact authenticated receiver observation is unavailable.";
   assert.equal(retainedSettlementDiagnostic(current, ownerId).verified_result_problem_kind, "receiver_observation");
 });
