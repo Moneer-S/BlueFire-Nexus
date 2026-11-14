@@ -55,6 +55,7 @@ from .util import content_hash
 
 if TYPE_CHECKING:
     from .product_store import ProductStore
+    from .run_store import RunStore
 
 
 class InstalledStrixV2CleanupUncertain(InstalledStrixV2CompositionError):
@@ -107,6 +108,21 @@ class ControllerOwnedInstalledStrixV2Openers:
         self._execution_resources = execution_resources
         self._reconciliation_resources = reconciliation_resources
         self._runtime_builder = runtime_builder
+        self._run_store: RunStore | None = None
+
+    def bind_run_store(self, run_store: RunStore) -> None:
+        """Give the runtime builder only the run history owned by this service."""
+        if run_store is None:
+            raise InstalledStrixV2CompositionError("V2 run store is required")
+        if self._run_store is not None:
+            if self._run_store is not run_store:
+                raise InstalledStrixV2CompositionError("V2 run store belongs to another service")
+            return
+        bind = getattr(self._runtime_builder, "bind_run_store", None)
+        if not callable(bind):
+            raise InstalledStrixV2CompositionError("V2 runtime cannot retain the service run store")
+        bind(run_store)
+        self._run_store = run_store
 
     def open_execution(
         self,

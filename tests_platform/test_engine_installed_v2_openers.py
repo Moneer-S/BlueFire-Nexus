@@ -793,6 +793,18 @@ def _execute(case):
     )
 
 
+def test_v2_openers_bind_only_the_service_run_store_to_runtime_builder():
+    case = _openers()
+    bound = []
+    case["builder"].bind_run_store = bound.append
+    first = object()
+    case["openers"].bind_run_store(first)
+    case["openers"].bind_run_store(first)
+    assert bound == [first]
+    with pytest.raises(InstalledStrixV2CompositionError, match="another service"):
+        case["openers"].bind_run_store(object())
+
+
 def _prepare_reconciliation(case):
     saved_record = EngineAttemptRecord.create(case["binding"])
     reconciliation_ref = _digest("reconciliation")

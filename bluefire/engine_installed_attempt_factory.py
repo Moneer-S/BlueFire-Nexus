@@ -17,6 +17,7 @@ reviewable, but are not themselves proof that containment is effective.
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping, Protocol, cast
 
@@ -41,6 +42,7 @@ from .util import content_hash
 
 if TYPE_CHECKING:
     from .product_store import ProductStore
+    from .run_store import RunStore
 
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -504,6 +506,27 @@ class ControllerOwnedInstalledStrixAttemptFactory:
         self._store = product_store
         self._execution_opener = execution_opener
         self._reconciliation_opener = reconciliation_opener
+        self._run_store: RunStore | None = None
+        self._run_store_lock = threading.Lock()
+
+    def bind_run_store(self, run_store: RunStore) -> None:
+        """Bind the sole service run history before installed dispatch."""
+        if run_store is None:
+            raise InstalledAttemptFactoryError("installed run store is required")
+        with self._run_store_lock:
+            if self._run_store is not None:
+                if self._run_store is not run_store:
+                    raise InstalledAttemptFactoryError("installed run store belongs to another service")
+                return
+            seen: set[int] = set()
+            for opener in (self._execution_opener, self._reconciliation_opener):
+                if id(opener) in seen:
+                    continue
+                seen.add(id(opener))
+                bind = getattr(opener, "bind_run_store", None)
+                if callable(bind):
+                    bind(run_store)
+            self._run_store = run_store
 
     @property
     def reconciliation_policy(self) -> Mapping[str, str]:
