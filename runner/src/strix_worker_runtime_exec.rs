@@ -24,6 +24,7 @@ use crate::strix_worker_boundary_identity::{self, IdentityLease};
 use crate::strix_worker_runtime_support as support;
 
 const REFUSAL: &str = "the fixed installed Strix runtime launch was refused";
+const GUEST_HOME: &str = "/home/worker";
 pub(crate) const OBSERVATION_FD: RawFd = 30;
 pub(crate) const OBSERVATION_BASIS_FD: RawFd = 31;
 pub(crate) const STARTUP_TIMEOUT_MS: i32 = 30_000;
@@ -512,7 +513,7 @@ fn root_directory_fact(pid: i32, kind: &str) -> Result<Value, String> {
     ))?;
     let path = match kind {
         "root" => format!("/proc/{pid}/root"),
-        "home" => format!("/proc/{pid}/root/home/worker"),
+        "home" => format!("/proc/{pid}/root{GUEST_HOME}"),
         _ => format!("/proc/{pid}/root/{kind}"),
     };
     let details = fs::metadata(path).map_err(|_| REFUSAL)?;
@@ -893,7 +894,7 @@ fn write_private_etc(root: &Path, uid: u32, gid: u32) -> Result<(), String> {
     let rows = [
         (
             "passwd",
-            format!("worker:x:{uid}:{gid}:BlueFire worker:/home/worker:/sbin/nologin\n"),
+            format!("worker:x:{uid}:{gid}:BlueFire worker:{GUEST_HOME}:/sbin/nologin\n"),
         ),
         ("group", format!("worker:x:{gid}:\n")),
         (

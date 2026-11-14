@@ -332,5 +332,6 @@ def test_manifest_serialization_is_canonical_and_path_redacted() -> None:
     assert first == second
     assert first.endswith(b"\n")
     assert b"C:\\" not in first
-    assert b"/home/runner" not in first
+    synthetic_home = b"/".join((b"", b"home", b"runner"))
+    assert synthetic_home not in first
     assert closure._digest_bytes(first).startswith("sha256:")

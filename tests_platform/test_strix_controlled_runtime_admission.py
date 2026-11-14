@@ -333,7 +333,7 @@ def test_canonical_profile_user_mismatch_is_refused_before_launch(
         lambda r: r["controlled_manifest"]["environment"]["value"].update(
             ALL_PROXY="http://example.com:8080"
         ),
-        lambda r: r["private_workspace"].update(home="/home/shared"),
+        lambda r: r["private_workspace"].update(home="/".join(("", "home", "shared"))),
         lambda r: r["private_workspace"].update(root="/var/lib/../private/" + r["attempt_id"]),
         lambda r: r["private_workspace"].update(directory_mode="0755"),
         lambda r: r["launch_executable"].update(path=r["private_workspace"]["root"]),

@@ -176,12 +176,18 @@ _FORBIDDEN_TRACKED_SUFFIXES = frozenset(
 )
 _PRIVATE_PATH = re.compile(r"(?i)(?:[A-Z]:[\\/]Users[\\/][^\\/\s]+|/(?:home|Users)/[^/\s]+)")
 _PREPARED_LAB_HOME = "/".join(("", "home", "bluefire"))
+_STRIX_GUEST_HOME = "/".join(("", "home", "worker"))
 _PUBLIC_SOURCE_PATHS: Mapping[str, tuple[str, ...]] = {
     "bluefire/prepared_lab.py": (_PREPARED_LAB_HOME,),
     "bluefire/prepared_lab_guest.py": (_PREPARED_LAB_HOME,),
     "bluefire/prepared_lab_runtime.py": (_PREPARED_LAB_HOME,),
     "bluefire/prepared_lab_install.py": (_PREPARED_LAB_HOME,),
     "docs/PREPARED_LINUX_LAB.md": (_PREPARED_LAB_HOME + "/lab-isolation.json",),
+    "bluefire/strix_controlled_worker_invocation.py": (_STRIX_GUEST_HOME,),
+    "bluefire/strix_linux_runtime_closure.py": (_STRIX_GUEST_HOME,),
+    "docs/strix-worker-rpc.md": (_STRIX_GUEST_HOME,),
+    "runner/src/strix_worker_boundary_root.rs": (_STRIX_GUEST_HOME + "/probe",),
+    "runner/src/strix_worker_runtime_exec.rs": (_STRIX_GUEST_HOME,),
 }
 
 

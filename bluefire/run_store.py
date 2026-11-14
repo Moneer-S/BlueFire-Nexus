@@ -1403,6 +1403,12 @@ class RunStore:
     def _validated_publication_root_identity(self) -> tuple[int, int, int]:
         # Reuse the newer retained-store custody check, including Darwin ACLs
         # and an exact owner-private mode, before publishing any engine result.
+        try:
+            candidate = self.root.lstat()
+        except OSError:
+            raise RunStoreError("atomic run publication root changed") from None
+        if self._filesystem_identity(candidate) != self._publication_root_identity:
+            raise RunStoreError("atomic run publication root changed")
         details = self._verify_retained_entry(self.root, directory=True)
         if self._filesystem_identity(details) != self._publication_root_identity:
             raise RunStoreError("atomic run publication root changed")

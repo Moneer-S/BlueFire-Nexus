@@ -501,7 +501,7 @@ def test_publication_refuses_foreign_owned_private_ancestor(
 
 
 @pytest.mark.skipif(run_store_module.os.name != "nt", reason="Windows DACL invariant")
-def test_publication_refuses_preexisting_root_without_private_dacl(
+def test_publication_refuses_root_when_private_dacl_verification_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "runs"
@@ -513,7 +513,7 @@ def test_publication_refuses_preexisting_root_without_private_dacl(
         raise WindowsOwnerAclError("untrusted inherited principal")
 
     monkeypatch.setattr(run_store_module, "verify_owner_private_acl", refuse_private_acl)
-    with pytest.raises(RunStoreError, match="owner-private DACL") as caught:
+    with pytest.raises(RunStoreError, match="retained private DACL is unsafe") as caught:
         _publish(store)
     assert "untrusted inherited principal" not in str(caught.value)
     assert not (root / RUN_ID).exists()

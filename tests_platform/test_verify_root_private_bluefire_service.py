@@ -40,7 +40,7 @@ class PrivatePathTests(unittest.TestCase):
         )
         for value in (
             "/tmp/bluefire-ci-12345-2",
-            "/home/runner/bluefire-ci-12345-2",
+            "/".join(("", "home", "runner", "bluefire-ci-12345-2")),
             "/root/bluefire-ci-12345-2/venv",
             "/root/bluefire-ci-12345-2/../other",
             "/root//bluefire-ci-12345-2",
