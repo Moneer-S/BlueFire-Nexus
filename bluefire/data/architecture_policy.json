@@ -478,6 +478,7 @@
         "bluefire.controlled_provider_forwarder",
         "bluefire.controlled_provider_runtime",
         "bluefire.controlled_strix_provider",
+        "bluefire.controlled_strix_scenario",
         "bluefire.engine_caido_channel",
         "bluefire.engine_caido_socket",
         "bluefire.engine_caido_wire",

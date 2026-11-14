@@ -38,6 +38,12 @@ from .controlled_strix_provider import (
     ControlledProviderState,
     TargetInspectionSeed,
 )
+from .controlled_strix_scenario import (
+    ControlledScenarioManifest,
+    ControlledScenarioProviderState,
+    ControlledScenarioTrace,
+    ScenarioObservationSource,
+)
 from .engine_relay import (
     BoundedRelayAudit,
     ControlledModelGateway,
@@ -454,13 +460,25 @@ class ControllerOwnedTestProviderRuntime:
         *,
         manifest: ControlledProviderManifest | None = None,
         target_seed_verifier: Callable[[TargetInspectionSeed], bool] | None = None,
+        scenario_observation_source: ScenarioObservationSource | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
     ) -> None:
+        scenario_manifest = type(manifest) is ControlledScenarioManifest
         if not isinstance(policy, ModelGatewayPolicy) or (
             manifest is not None and not isinstance(manifest, ControlledProviderManifest)
         ):
             raise ValueError("controlled runtime policy or manifest is invalid")
+        if (
+            scenario_manifest
+            and (
+                not isinstance(scenario_observation_source, ScenarioObservationSource)
+                or scenario_observation_source.binding_ref
+                != manifest.scenario.observation_source_ref
+                or target_seed_verifier is not None
+            )
+        ) or (not scenario_manifest and scenario_observation_source is not None):
+            raise ValueError("controlled scenario observation source differs")
         if (
             policy.model_id != MODEL_ID
             or not policy.allow_controlled_test_sse
@@ -469,7 +487,7 @@ class ControllerOwnedTestProviderRuntime:
             or not 32 <= len(gateway_bearer) <= 512
             or any(ord(char) < 33 or ord(char) > 126 for char in gateway_bearer)
             or _digest_bytes(gateway_bearer.encode("ascii")) != policy.authorization_digest
-            or policy.max_requests > 3
+            or policy.max_requests > (5 if scenario_manifest else 3)
             or (
                 manifest is not None
                 and (
@@ -494,6 +512,7 @@ class ControllerOwnedTestProviderRuntime:
         self._preflight_done = False
         self._manifest = manifest
         self._target_seed_verifier = target_seed_verifier
+        self._scenario_observation_source = scenario_observation_source
         self._state: ControlledProviderState | None = None
         self._provider_bearer = secrets.token_urlsafe(48)
         if hmac.compare_digest(gateway_bearer, self._provider_bearer):
@@ -607,6 +626,12 @@ class ControllerOwnedTestProviderRuntime:
             self._verify_target_seed()
             return self.binding
 
+    def scenario_trace(self) -> ControlledScenarioTrace | None:
+        with self._lock:
+            if isinstance(self._state, ControlledScenarioProviderState):
+                return self._state.trace()
+            return None
+
     def _verify_target_seed(self) -> None:
         if self._manifest is not None and self._manifest.target_inspection_seed is not None:
             if (
@@ -641,12 +666,21 @@ class ControllerOwnedTestProviderRuntime:
                         "controlled tools require completed preflight and enrolled manifest"
                     )
                 if self._state is None:
-                    self._state = ControlledProviderState(
-                        self._manifest,
-                        self._provider_bearer,
-                        sequence_offset=1,
-                        target_seed_verifier=self._target_seed_verifier,
-                    )
+                    if type(self._manifest) is ControlledScenarioManifest:
+                        assert self._scenario_observation_source is not None
+                        self._state = ControlledScenarioProviderState(
+                            self._manifest,
+                            self._provider_bearer,
+                            sequence_offset=1,
+                            observation_source=self._scenario_observation_source,
+                        )
+                    else:
+                        self._state = ControlledProviderState(
+                            self._manifest,
+                            self._provider_bearer,
+                            sequence_offset=1,
+                            target_seed_verifier=self._target_seed_verifier,
+                        )
                 payload = self._state.respond(body)
                 stream = _parse_controlled_sse(
                     payload,
