@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::time::{Duration, Instant};
 
+use linux_raw_sys::general::{statx, STATX_BASIC_STATS, STATX_MNT_ID};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -300,21 +301,20 @@ fn process_identity(pid: i32, uid: u32, gid: u32) -> Result<Value, String> {
 
 fn private_root_identity(pid: i32) -> Result<Value, String> {
     let path = CString::new(format!("/proc/{pid}/root")).map_err(|_| REFUSAL)?;
-    let mut details: libc::statx = unsafe { zeroed() };
+    let mut details: statx = unsafe { zeroed() };
     require(
         unsafe {
-            libc::statx(
+            libc::syscall(
+                libc::SYS_statx,
                 libc::AT_FDCWD,
                 path.as_ptr(),
                 0,
-                libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
+                STATX_BASIC_STATS | STATX_MNT_ID,
                 &mut details,
             )
         } == 0,
     )?;
-    require(
-        details.stx_mask & libc::STATX_MNT_ID != 0 && details.stx_mnt_id > 0 && details.stx_ino > 0,
-    )?;
+    require(details.stx_mask & STATX_MNT_ID != 0 && details.stx_mnt_id > 0 && details.stx_ino > 0)?;
     Ok(
         json!({"mount_id":details.stx_mnt_id,"device":libc::makedev(details.stx_dev_major, details.stx_dev_minor),"inode":details.stx_ino}),
     )
@@ -455,20 +455,21 @@ fn controller_mount_fact(
     if let Some(magic) = expected_magic {
         require(filesystem.f_type == magic)?;
     }
-    let mut statx: libc::statx = unsafe { zeroed() };
+    let mut statx: statx = unsafe { zeroed() };
     require(
         unsafe {
-            libc::statx(
+            libc::syscall(
+                libc::SYS_statx,
                 directory.as_raw_fd(),
-                b"\0".as_ptr().cast(),
+                c"".as_ptr(),
                 libc::AT_EMPTY_PATH,
-                libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
+                STATX_BASIC_STATS | STATX_MNT_ID,
                 &mut statx,
             )
         } == 0,
     )?;
     require(
-        statx.stx_mask & libc::STATX_MNT_ID != 0
+        statx.stx_mask & STATX_MNT_ID != 0
             && statx.stx_mnt_id > 0
             && statx.stx_ino == details.st_ino
             && libc::makedev(statx.stx_dev_major, statx.stx_dev_minor) == details.st_dev,
@@ -650,19 +651,20 @@ fn validate_launch(launch: &FixedRuntimeLaunch) -> Result<(), String> {
     require(boot_id.trim() == bindings.controller_boot_id)?;
     let helper = File::open("/proc/self/exe").map_err(|_| REFUSAL)?;
     require(digest_fd(helper.as_raw_fd(), MAX_PINNED_FILE)?.0 == bindings.boundary_helper_digest)?;
-    let mut root_stat: libc::statx = unsafe { zeroed() };
+    let mut root_stat: statx = unsafe { zeroed() };
     require(
         unsafe {
-            libc::statx(
+            libc::syscall(
+                libc::SYS_statx,
                 launch.descriptors.closure_mount.as_raw_fd(),
-                b"\0".as_ptr().cast(),
+                c"".as_ptr(),
                 libc::AT_EMPTY_PATH,
-                libc::STATX_MNT_ID | libc::STATX_BASIC_STATS,
+                STATX_MNT_ID | STATX_BASIC_STATS,
                 &mut root_stat,
             )
         } == 0,
     )?;
-    require(root_stat.stx_mask & libc::STATX_MNT_ID != 0 && root_stat.stx_mnt_id > 0)?;
+    require(root_stat.stx_mask & STATX_MNT_ID != 0 && root_stat.stx_mnt_id > 0)?;
     let source_root = json!({
         "schema_version":"bluefire.strix-runtime-source-root-identity.v1",
         "role":"strix-linux-runtime-closure-root",
@@ -772,7 +774,7 @@ fn make_mount_private() -> Result<(), String> {
         unsafe {
             libc::mount(
                 ptr::null(),
-                b"/\0".as_ptr().cast(),
+                c"/".as_ptr(),
                 ptr::null(),
                 (libc::MS_REC | libc::MS_PRIVATE) as _,
                 ptr::null(),
@@ -983,17 +985,9 @@ fn prepare_private_mounts(
 fn pivot_to(root: &Path) -> Result<(), String> {
     let root_c = CString::new(root.as_os_str().as_bytes()).map_err(|_| REFUSAL)?;
     require(unsafe { libc::chdir(root_c.as_ptr()) } == 0)?;
-    require(
-        unsafe {
-            libc::syscall(
-                libc::SYS_pivot_root,
-                b".\0".as_ptr().cast::<libc::c_char>(),
-                b".\0".as_ptr().cast::<libc::c_char>(),
-            )
-        } == 0,
-    )?;
-    require(unsafe { libc::umount2(b".\0".as_ptr().cast(), libc::MNT_DETACH) } == 0)?;
-    require(unsafe { libc::chdir(b"/\0".as_ptr().cast()) } == 0)
+    require(unsafe { libc::syscall(libc::SYS_pivot_root, c".".as_ptr(), c".".as_ptr()) } == 0)?;
+    require(unsafe { libc::umount2(c".".as_ptr(), libc::MNT_DETACH) } == 0)?;
+    require(unsafe { libc::chdir(c"/".as_ptr()) } == 0)
 }
 
 fn bring_loopback_up() -> Result<(), String> {
@@ -1092,17 +1086,11 @@ fn verify_endpoint_directory(fd: RawFd, uid: u32, gid: u32) -> Result<(), String
 }
 
 fn remove_endpoint(fd: RawFd) -> Result<(), String> {
-    let name = b"controller.sock\0";
-    require(unsafe { libc::unlinkat(fd, name.as_ptr().cast(), 0) } == 0)?;
+    let name = c"controller.sock";
+    require(unsafe { libc::unlinkat(fd, name.as_ptr(), 0) } == 0)?;
     let mut details: libc::stat = unsafe { zeroed() };
-    let observed = unsafe {
-        libc::fstatat(
-            fd,
-            name.as_ptr().cast(),
-            &mut details,
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    };
+    let observed =
+        unsafe { libc::fstatat(fd, name.as_ptr(), &mut details, libc::AT_SYMLINK_NOFOLLOW) };
     require(observed == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT))
 }
 
@@ -1130,7 +1118,7 @@ fn duplicate_basis(source: RawFd) -> Result<(), String> {
 fn open_endpoint_directory() -> Result<OwnedFd, String> {
     let raw = unsafe {
         libc::open(
-            b"/run/bluefire\0".as_ptr().cast(),
+            c"/run/bluefire".as_ptr(),
             libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )
     };
@@ -1141,7 +1129,7 @@ fn open_endpoint_directory() -> Result<OwnedFd, String> {
 fn open_workspace_directory(uid: u32, gid: u32) -> Result<OwnedFd, String> {
     let raw = unsafe {
         libc::open(
-            b"/workspace\0".as_ptr().cast(),
+            c"/workspace".as_ptr(),
             libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )
     };
@@ -1183,7 +1171,7 @@ fn exec_python(interpreter: RawFd) -> Result<(), String> {
             libc::syscall(
                 libc::SYS_execveat,
                 interpreter,
-                b"\0".as_ptr().cast::<libc::c_char>(),
+                c"".as_ptr(),
                 argv_ptrs.as_ptr(),
                 environment_ptrs.as_ptr(),
                 libc::AT_EMPTY_PATH,
@@ -1245,7 +1233,7 @@ fn child_main(
         // Linux clears PDEATHSIG when effective UID or GID changes. Restore it
         // before creating listeners or allowing the fixed interpreter to run.
         arm_parent_death_signal(owner_pid)?;
-        require(unsafe { libc::chdir(b"/workspace\0".as_ptr().cast()) } == 0)?;
+        require(unsafe { libc::chdir(c"/workspace".as_ptr()) } == 0)?;
         let control = unix_listener()?;
         let model = tcp_listener(MODEL_RELAY_PORT)?;
         let caido = tcp_listener(CAIDO_RELAY_PORT)?;
@@ -1290,15 +1278,15 @@ fn receive_listeners(
     let [endpoint, control, model, caido, workspace]: [OwnedFd; 5] =
         rights.try_into().map_err(|_| REFUSAL)?;
     support::verify_listeners(
-        endpoint.as_raw_fd(),
-        control.as_raw_fd(),
-        model.as_raw_fd(),
-        caido.as_raw_fd(),
-        uid,
-        gid,
+        [
+            endpoint.as_raw_fd(),
+            control.as_raw_fd(),
+            model.as_raw_fd(),
+            caido.as_raw_fd(),
+        ],
+        (uid, gid),
         CONTROL_SOCKET_PATH,
-        MODEL_RELAY_PORT,
-        CAIDO_RELAY_PORT,
+        (MODEL_RELAY_PORT, CAIDO_RELAY_PORT),
     )?;
     let mut details: libc::stat = unsafe { zeroed() };
     require(unsafe { libc::fstat(workspace.as_raw_fd(), &mut details) } == 0)?;
@@ -1311,10 +1299,10 @@ fn receive_listeners(
     Ok([endpoint, control, model, caido, workspace])
 }
 
-fn runtime_observation(
+struct RuntimeObservationInputs<'a> {
     pid: i32,
     pidfd: RawFd,
-    cgroup: &CgroupLeaf,
+    cgroup: &'a CgroupLeaf,
     uid: u32,
     gid: u32,
     endpoint: RawFd,
@@ -1322,10 +1310,27 @@ fn runtime_observation(
     model: RawFd,
     caido: RawFd,
     workspace: RawFd,
-    launch: &FixedRuntimeLaunch,
-    attempt_id: &str,
-    plan_ref: &str,
-) -> Result<Value, String> {
+    launch: &'a FixedRuntimeLaunch,
+    attempt_id: &'a str,
+    plan_ref: &'a str,
+}
+
+fn runtime_observation(inputs: RuntimeObservationInputs<'_>) -> Result<Value, String> {
+    let RuntimeObservationInputs {
+        pid,
+        pidfd,
+        cgroup,
+        uid,
+        gid,
+        endpoint,
+        control,
+        model,
+        caido,
+        workspace,
+        launch,
+        attempt_id,
+        plan_ref,
+    } = inputs;
     let worker = process_identity(pid, uid, gid)?;
     let mut pidfd_stat: libc::stat = unsafe { zeroed() };
     require(unsafe { libc::fstat(pidfd, &mut pidfd_stat) } == 0)?;
@@ -1343,15 +1348,10 @@ fn runtime_observation(
         "cpu_max":strix_worker_boundary_cgroup::read_trimmed(&cgroup.path.join("cpu.max"))?,
     });
     let listeners = support::verify_listeners(
-        endpoint,
-        control,
-        model,
-        caido,
-        uid,
-        gid,
+        [endpoint, control, model, caido],
+        (uid, gid),
         CONTROL_SOCKET_PATH,
-        MODEL_RELAY_PORT,
-        CAIDO_RELAY_PORT,
+        (MODEL_RELAY_PORT, CAIDO_RELAY_PORT),
     )?;
     let listeners_value = serde_json::to_value(&listeners).map_err(|_| REFUSAL)?;
     let namespaces = json!({
@@ -1547,21 +1547,21 @@ pub(crate) fn launch_fixed_runtime(
     let plan_ref = launch.identity.plan_ref.clone();
     let prelaunch_bindings = launch.identity.prelaunch_bindings.clone();
     let seccomp_profile_digest = launch.identity.seccomp_profile_digest.clone();
-    let observed = runtime_observation(
+    let observed = runtime_observation(RuntimeObservationInputs {
         pid,
-        pidfd.as_raw_fd(),
-        &cgroup,
-        identity.uid,
-        identity.gid,
-        endpoint_directory.as_raw_fd(),
-        control_listener.as_raw_fd(),
-        model_listener.as_raw_fd(),
-        caido_listener.as_raw_fd(),
-        workspace_directory.as_raw_fd(),
-        &launch,
-        &prelaunch_bindings.attempt_id,
-        &plan_ref,
-    );
+        pidfd: pidfd.as_raw_fd(),
+        cgroup: &cgroup,
+        uid: identity.uid,
+        gid: identity.gid,
+        endpoint: endpoint_directory.as_raw_fd(),
+        control: control_listener.as_raw_fd(),
+        model: model_listener.as_raw_fd(),
+        caido: caido_listener.as_raw_fd(),
+        workspace: workspace_directory.as_raw_fd(),
+        launch: &launch,
+        attempt_id: &prelaunch_bindings.attempt_id,
+        plan_ref: &plan_ref,
+    });
     let observation = match observed {
         Ok(value) => value,
         Err(error) => {
