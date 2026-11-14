@@ -484,6 +484,45 @@ def test_wheel_inspection_expands_compressed_filename_tags(tmp_path: Path) -> No
     assert receipt["tags"] == ["py2.py3", "none", "any"]
 
 
+def test_wheel_tag_mismatch_reports_bounded_public_identity_without_accepting_it(
+    tmp_path: Path,
+) -> None:
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "x") as archive:
+        archive.writestr(
+            "demo-1.0.dist-info/METADATA",
+            "Metadata-Version: 2.4\nName: demo\nVersion: 1.0\n\n",
+        )
+        archive.writestr(
+            "demo-1.0.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py2-none-any\n",
+        )
+    with pytest.raises(qualification.StrixRuntimeQualificationError) as caught:
+        qualification._inspect_wheel(wheel)
+    message = str(caught.value)
+    assert "wheel=demo-1.0-py3-none-any.whl" in message
+    assert "filename_only=1, declared_only=1" in message
+    assert f"sha256={hashlib.sha256(wheel.read_bytes()).hexdigest()}" in message
+    assert "wheel_metadata_sha256=" in message
+
+
+def test_wheel_tag_mismatch_does_not_print_untrusted_metadata(tmp_path: Path) -> None:
+    wheel = tmp_path / "demo-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "x") as archive:
+        archive.writestr(
+            "demo-1.0.dist-info/METADATA",
+            "Metadata-Version: 2.4\nName: demo\nVersion: 1.0\n\n",
+        )
+        archive.writestr(
+            "demo-1.0.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-PRIVATE_TOKEN\n",
+        )
+    with pytest.raises(qualification.StrixRuntimeQualificationError) as caught:
+        qualification._inspect_wheel(wheel)
+    assert "declared_only=1" in str(caught.value)
+    assert "PRIVATE_TOKEN" not in str(caught.value)
+
+
 def test_oci_resolution_binds_index_child_config_and_layers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
