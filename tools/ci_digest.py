@@ -7,8 +7,8 @@ reported by the installed-product verifiers. Reading the tail of this one job's
 log is enough to know what to fix; no 90 KB job listing or separate log
 downloads.
 
-Uses the Actions REST API with the workflow's token (``actions: read``). Always
-exits 0: the failed jobs themselves are the red checks.
+Uses the public Actions REST API without a token in CI. Always exits 0: the
+failed jobs themselves are the red checks.
 """
 
 from __future__ import annotations
@@ -145,14 +145,26 @@ def render(jobs: Iterable[Mapping[str, Any]], signals: Mapping[int, list[str]]) 
 
 
 def _request(url: str, token: str) -> urllib.request.Request:
-    return urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return urllib.request.Request(url, headers=headers)
+
+
+def _fetch_error(error: OSError | ValueError) -> str:
+    if isinstance(error, urllib.error.HTTPError):
+        rate_limited = error.code == 429 or (
+            error.code == 403
+            and (
+                error.headers.get("X-RateLimit-Remaining") == "0"
+                or error.headers.get("Retry-After") is not None
+            )
+        )
+        return f"HTTP {error.code}" + (" (rate limited)" if rate_limited else "")
+    return type(error).__name__
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -185,8 +197,8 @@ def main(environ: Mapping[str, str] = os.environ) -> int:
     repository = environ.get("GITHUB_REPOSITORY", "")
     run_id = environ.get("GITHUB_RUN_ID", "")
     token = environ.get("GITHUB_TOKEN", "")
-    if not (repository and run_id and token):
-        print("ci_digest: GITHUB_REPOSITORY, GITHUB_RUN_ID and GITHUB_TOKEN are required")
+    if not (repository and run_id):
+        print("ci_digest: GITHUB_REPOSITORY and GITHUB_RUN_ID are required")
         return 0
     base = f"{api}/repos/{repository}/actions"
     jobs: list[Mapping[str, Any]] = []
@@ -197,7 +209,7 @@ def main(environ: Mapping[str, str] = os.environ) -> int:
             if len(jobs) >= int(batch.get("total_count", 0)):
                 break
     except (OSError, ValueError) as error:
-        print(f"ci_digest: could not list jobs ({type(error).__name__})")
+        print(f"ci_digest: could not list jobs ({_fetch_error(error)})")
         return 0
     signals: dict[int, list[str]] = {}
     for job in jobs:
@@ -207,7 +219,7 @@ def main(environ: Mapping[str, str] = os.environ) -> int:
                     _get_log(f"{base}/jobs/{job['id']}/logs", token)
                 )
             except (OSError, ValueError) as error:
-                signals[int(job["id"])] = [f"(log unavailable: {type(error).__name__})"]
+                signals[int(job["id"])] = [f"(log unavailable: {_fetch_error(error)})"]
     lines = render(jobs, signals)
     print("\n".join(lines))
     summary = environ.get("GITHUB_STEP_SUMMARY")

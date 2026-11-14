@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import urllib.error
+import urllib.request
+from io import BytesIO
 from pathlib import Path
 
 import yaml
@@ -134,8 +137,47 @@ def test_missing_environment_is_reported_without_failing(capsys) -> None:
     assert ci_digest.main({}) == 0
     assert capsys.readouterr().out.splitlines() == [
         ci_digest.HEADER,
-        "ci_digest: GITHUB_REPOSITORY, GITHUB_RUN_ID and GITHUB_TOKEN are required",
+        "ci_digest: GITHUB_REPOSITORY and GITHUB_RUN_ID are required",
     ]
+
+
+def test_digest_uses_public_api_without_a_token(monkeypatch, capsys) -> None:
+    jobs = {"total_count": 1, "jobs": [{"id": 1, "name": "frontend", "conclusion": "success"}]}
+    requests: list[urllib.request.Request] = []
+
+    def urlopen(request: urllib.request.Request, *, timeout: int) -> BytesIO:
+        requests.append(request)
+        return BytesIO(json.dumps(jobs).encode("utf-8"))
+
+    monkeypatch.setattr(ci_digest.urllib.request, "urlopen", urlopen)
+    assert ci_digest.main({"GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "1"}) == 0
+    assert requests and all(request.get_header("Authorization") is None for request in requests)
+    assert (
+        ci_digest._request("https://api.github.com", "t").get_header("Authorization") == "Bearer t"
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        ci_digest.HEADER,
+        "All jobs passed.",
+        "Jobs: 1 success",
+    ]
+
+
+def test_rate_limit_is_reported_without_claiming_success(monkeypatch, capsys) -> None:
+    def rate_limited(url: str, token: str) -> None:
+        raise urllib.error.HTTPError(url, 403, "Forbidden", {"X-RateLimit-Remaining": "0"}, None)
+
+    monkeypatch.setattr(ci_digest, "_get_json", rate_limited)
+    assert ci_digest.main({"GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "1"}) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        ci_digest.HEADER,
+        "ci_digest: could not list jobs (HTTP 403 (rate limited))",
+    ]
+    assert (
+        ci_digest._fetch_error(
+            urllib.error.HTTPError("https://api.github.com", 404, "Not Found", {}, None)
+        )
+        == "HTTP 404"
+    )
 
 
 def test_digest_output_starts_with_a_searchable_header(monkeypatch, capsys) -> None:
@@ -157,5 +199,6 @@ def test_workflow_runs_the_digest_after_every_other_job() -> None:
     assert digest["name"] == ci_digest.DIGEST_JOB_NAME
     assert set(digest["needs"]) == set(jobs) - {"digest"}
     assert digest["if"] == "${{ !cancelled() }}"
-    # It reads job results and logs; it never writes.
-    assert digest["permissions"] == {"contents": "read", "actions": "read"}
+    assert digest["permissions"] == {"contents": "read"}
+    assert digest["steps"][0]["with"]["persist-credentials"] is False
+    assert "GITHUB_TOKEN" not in digest["steps"][-1].get("env", {})
