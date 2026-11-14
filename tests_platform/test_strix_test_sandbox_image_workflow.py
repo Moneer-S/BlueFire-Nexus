@@ -65,11 +65,14 @@ APPROVED_STEP_ORDER = (
     "Build and qualify the runner-private image",
     "Build the packaged Linux service from the archived source",
     "Bind the exact packaged service wheel",
-    "Install the full service in its own clean environment",
-    "Smoke the installed service outside checkout",
+    "Prepare the locked full-service dependency wheelhouse",
+    "Copy the exact service installer under root custody",
+    "Install and verify the root-private full service",
     "Remove this run's exact private image resources",
+    "Retain private root-service installation verification",
     "Remove exact private service build materials",
     "Retain bounded private producer identities",
+    "Remove the exact root-private service after retaining its result",
     "Remove exact protected fixed-bootstrap stage and image handoff",
     "Remove exact private candidate and worker materials",
 )
@@ -78,7 +81,7 @@ APPROVED_RUN_SHA256 = {
         "ab54a8015eafb51b42820c78fe448dbcb799f0330a75d569b918c970bcb553b8"
     ),
     "Require the exact private qualification implementation": (
-        "73d269e571b8af388aecd161b9df4f5806165be4c2dce63dd355d9fc8ec76e25"
+        "0c236983e86e56a4c60a8d4bc7460627c306ff805b77471e05e3a4550191be41"
     ),
     "Rebuild the provenance-bound Strix candidate": (
         "852989e7371d5748e9626fe7205e51d6dab9a956a0a870e0626b662b89162867"
@@ -131,20 +134,29 @@ APPROVED_RUN_SHA256 = {
     "Bind the exact packaged service wheel": (
         "dff1a3575d8a0c3f0ad97e8d76708c3655081de9b71aaccdecbc6b2fa5b8027a"
     ),
-    "Install the full service in its own clean environment": (
-        "bc816a07d719d2b5874258a7c64123d51eab80c300b319a46a3095570296c6ea"
+    "Prepare the locked full-service dependency wheelhouse": (
+        "b318f1360c166ea0cc165ef1211a6a024fc716de46a6e45dca83dd0dab51d081"
     ),
-    "Smoke the installed service outside checkout": (
-        "da0385c842e6be403fc420d382a155e6c6c1f3b9df3636af48c474ac7d070dd5"
+    "Copy the exact service installer under root custody": (
+        "16fbf2067bdac028df62b4048a9094bd133c962f2c87c5860066c8935a6f0a99"
+    ),
+    "Install and verify the root-private full service": (
+        "b5dc754e9967df5cb1705850d70c377412d10847cf524560fc8941251d7d1bd8"
     ),
     "Remove this run's exact private image resources": (
         "1f1ef25c9df87776c59965ddb098c32810bf76dd35517eace4bf4ff5eb83140d"
     ),
+    "Retain private root-service installation verification": (
+        "da7ac197dc6ff387e8004b6382ad2a4d96b63727d8115ab7291c3ec3978d6e6e"
+    ),
     "Remove exact private service build materials": (
-        "83d55240ce21675b6b46501411085102bf8f8ae15b7c8e7b1c4d284b79065fcb"
+        "8ab9af6a8c3d6f90da947f93992b8e55b3418678a54f5e35726a10a213675c01"
     ),
     "Retain bounded private producer identities": (
-        "9bcdfccd1f0b1a92697d5551d701aa054d70b98462e58b5e0e4a5b1ad903a8ba"
+        "f945c5647105469af99bf1a5401a5d3f617c5378a9f7f0c3156f48c3abe124d0"
+    ),
+    "Remove the exact root-private service after retaining its result": (
+        "10d8ebac26a9992ae75ceec1a836170ffe0d518b7cf08395eb9629888396a008"
     ),
     "Remove exact protected fixed-bootstrap stage and image handoff": (
         "8fce200699e41529999e8cae38fba6da5d22f4fb60384883855e1ae5d08b9fa4"
@@ -266,6 +278,10 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "tools/prepare_strix_linux_runtime_closure.py",
         "tools/qualify_strix_linux_fixed_exec.py",
         "tools/build_native_runner.py",
+        "tools/prepare_root_private_service_wheelhouse.py",
+        "tools/install_root_private_bluefire_service.py",
+        "tools/verify_root_private_bluefire_service.py",
+        "tools/verify_installed_engine_experiment.py",
         "tools/strix_runtime_closure_prepare_core.py",
         "bluefire/test_caido_protocol_entry.py",
         "bluefire/test_caido_protocol_provider.py",
@@ -480,14 +496,50 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
     ):
         assert required in product["run"]
 
-    installed = _step(workflow, "Install the full service in its own clean environment")
-    assert 'python -m venv "$RUNNER_TEMP/bluefire-installed-service"' in installed["run"]
-    assert '"${{ steps.product.outputs.wheel }}"' in installed["run"]
-    smoke = _step(workflow, "Smoke the installed service outside checkout")
-    assert 'cd "$RUNNER_TEMP"' in smoke["run"]
-    assert '"$RUNNER_TEMP/bluefire-installed-service/bin/python" -I -B' in smoke["run"]
-    assert '--forbid-root "$GITHUB_WORKSPACE"' in smoke["run"]
-    assert "bluefire-installed-service-smoke.json" in smoke["run"]
+    wheelhouse = _step(workflow, "Prepare the locked full-service dependency wheelhouse")
+    assert wheelhouse["id"] == "service_wheelhouse"
+    for required in (
+        'cd "$RUNNER_TEMP/bluefire-product-source"',
+        "python -m tools.prepare_root_private_service_wheelhouse",
+        '--source-revision "${{ github.sha }}"',
+        '"$RUNNER_TEMP/bluefire-service-wheelhouse"',
+        "service-wheelhouse-receipt.json",
+        'print(f"directory={directory}")',
+    ):
+        assert required in wheelhouse["run"]
+
+    bootstrap = _step(workflow, "Copy the exact service installer under root custody")
+    assert bootstrap["id"] == "service_bootstrap"
+    for required in (
+        "sudo -n /usr/bin/env -i",
+        "/usr/bin/python3.12 -I -B -",
+        'stage != Path("/var/tmp") / f"bluefire-strix-fixed-{run_id}"',
+        'bootstrap = root / f"bluefire-bootstrap-{run_id}"',
+        "install_root_private_bluefire_service.py",
+        "verify_root_private_bluefire_service.py",
+        "verify_installed_engine_experiment.py",
+        "SOURCE_DIGEST",
+        "bootstrap.mkdir(mode=0o700)",
+        'print(f"{key}={copied_digest}")',
+    ):
+        assert required in bootstrap["run"]
+
+    root_service = _step(workflow, "Install and verify the root-private full service")
+    assert root_service["id"] == "root_service"
+    for required in (
+        '"${{ steps.product.outputs.wheel }}"',
+        '"${{ steps.service_wheelhouse.outputs.directory }}"',
+        "/usr/bin/python3.12 -I -B",
+        "install_root_private_bluefire_service.py",
+        '--expected-installer-sha256 "${{ steps.service_bootstrap.outputs.installer }}"',
+        '--expected-verifier-sha256 "${{ steps.service_bootstrap.outputs.verifier }}"',
+        '--expected-helper-sha256 "${{ steps.service_bootstrap.outputs.helper }}"',
+        '--expected-wheel-sha256 "${{ steps.product.outputs.digest }}"',
+        '--expected-source-revision "${{ github.sha }}"',
+        '--forbid-root "$GITHUB_WORKSPACE"',
+    ):
+        assert required in root_service["run"]
+    assert "bluefire-installed-service" not in root_service["run"]
 
     cleanup = _step(workflow, "Remove this run's exact private image resources")
     assert cleanup.get("if") == "${{ always() }}"
@@ -499,7 +551,26 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
     assert '{"reserved", "image-bound", "qualified"}' in cleanup["run"]
     assert 'output="$RUNNER_TEMP/bluefire-strix-test-sandbox-output"' in cleanup["run"]
     assert 'test ! -e "$ledger"' in cleanup["run"]
-    assert job["steps"][-5] is cleanup
+    assert job["steps"][-7] is cleanup
+
+    service_verification = _step(workflow, "Retain private root-service installation verification")
+    assert service_verification["id"] == "service_verification"
+    assert (
+        service_verification["if"] == "${{ always() && steps.root_service.outcome == 'success' }}"
+    )
+    for required in (
+        'summary="$evidence/service-install-verification.json"',
+        '"bluefire.root-private-installed-service-verification.v1"',
+        '"bluefire.root-private-service-install.v1"',
+        '"proof_scope": "root-private-installation-only"',
+        '"service_started": False',
+        '"ui_digest": verified["ui_digest"]',
+        'receipt = bootstrap / "retained-evidence-receipt.json"',
+        '"schema_version": "bluefire.root-private-evidence-retention.v1"',
+        'print("receipt=sha256:" + hashlib.sha256(payload).hexdigest())',
+    ):
+        assert required in service_verification["run"]
+    assert job["steps"][-6] is service_verification
 
     service_cleanup = _step(workflow, "Remove exact private service build materials")
     assert service_cleanup.get("if") == "${{ always() }}"
@@ -509,15 +580,14 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         '"bluefire-product-source"',
         '"bluefire-product-rustup"',
         '"bluefire-product-cargo"',
-        '"bluefire-installed-service"',
-        '"bluefire-installed-service-state"',
-        '"verify_packaged_runner.py"',
+        '"bluefire-service-wheelhouse"',
+        '"bluefire-service-wheelhouse-result.json"',
         "path.is_symlink()",
         "shutil.rmtree(path)",
         "private service build material remains",
     ):
         assert required in service_cleanup["run"]
-    assert job["steps"][-4] is service_cleanup
+    assert job["steps"][-5] is service_cleanup
 
     identity = _step(workflow, "Retain bounded private producer identities")
     assert identity.get("if") == "${{ always() }}"
@@ -545,9 +615,28 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "os.open(path, flags, 0o600)",
         "StrixTestSandboxImageContractV1(manifest.read_bytes())",
         "StrixTestSandboxImageCleanupReceiptV1(cleanup.read_bytes())",
+        '"root_service_install_summary_digest": install_summary_digest',
     ):
         assert required in identity["run"]
-    assert job["steps"][-3] is identity
+    assert job["steps"][-4] is identity
+
+    root_cleanup = _step(
+        workflow, "Remove the exact root-private service after retaining its result"
+    )
+    assert root_cleanup.get("if") == "${{ always() }}"
+    for required in (
+        "sudo -n /usr/bin/env -i",
+        'installer="${{ steps.service_bootstrap.outputs.installer }}"',
+        'retention="${{ steps.service_verification.outputs.receipt }}"',
+        'summary_digest="${{ steps.service_verification.outputs.summary }}"',
+        "install_root_private_bluefire_service.py",
+        'cleanup --run-id "$run_id"',
+        '--retained-evidence-digest "$retention"',
+        'if [[ "$cleanup_status" -eq 3 && "${{ steps.root_service.outcome }}" != success ]]',
+        "root-private service cleanup incomplete",
+    ):
+        assert required in root_cleanup["run"]
+    assert job["steps"][-3] is root_cleanup
 
     protected_cleanup = _step(
         workflow, "Remove exact protected fixed-bootstrap stage and image handoff"
