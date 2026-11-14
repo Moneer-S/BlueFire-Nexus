@@ -689,6 +689,7 @@
         "bluefire.strix_controlled_runtime_admission",
         "bluefire.strix_controlled_worker_channel",
         "bluefire.strix_image_contract",
+        "bluefire.strix_test_sandbox_image",
         "bluefire.strix_policy_overlay",
         "bluefire.strix_redistribution_review",
         "bluefire.strix_run_bytes",
