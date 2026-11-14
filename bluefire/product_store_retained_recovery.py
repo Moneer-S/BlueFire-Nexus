@@ -93,9 +93,67 @@ def _optional(connection, table, key, value, *, payload=False):
 def _latest_generation(connection, attempt_id):
     return connection.execute(
         "SELECT * FROM capability_recovery_generations WHERE attempt_id=? "
-        "ORDER BY created_at_ms DESC,rowid DESC LIMIT 1",
+        "ORDER BY rowid DESC LIMIT 1",
         (attempt_id,),
     ).fetchone()
+
+
+_SAME_SURVIVOR_RETRY_LIMIT = 8
+_SAME_SURVIVOR_RETRY_DELAY_MS = 1000
+
+
+def _same_survivor_retry_ready(connection, attempt_id, row, receipts, now_ms):
+    """Allow finite, delayed retries only for an exact failed cleanup survivor set."""
+
+    if not receipts:
+        return False
+    streak = 0
+    generations = connection.execute(
+        "SELECT generation FROM capability_recovery_generations WHERE attempt_id=? "
+        "ORDER BY rowid DESC",
+        (attempt_id,),
+    ).fetchall()
+    for generation in generations:
+        claim = _optional(
+            connection, "capability_recovery_claims", "generation", generation["generation"]
+        )
+        task = connection.execute(
+            "SELECT task_id FROM capability_recovery_task_claims WHERE generation=?",
+            (generation["generation"],),
+        ).fetchone()
+        terminal = (
+            _optional(connection, "capability_recovery_terminals", "task_id", task["task_id"])
+            if task is not None
+            else None
+        )
+        if task is None:
+            # An expired claim without a task never attempted cleanup and must
+            # not replenish the finite retry allowance.
+            continue
+        if (
+            claim is None
+            or terminal is None
+            or claim["receipts"] != receipts
+            or terminal.get("remaining_receipts") != receipts
+            or terminal.get("result", {}).get("status") not in {"partial", "cleanup_failed"}
+        ):
+            break
+        streak += 1
+    if not streak or streak >= _SAME_SURVIVOR_RETRY_LIMIT:
+        return False
+    delay = min(30000, _SAME_SURVIVOR_RETRY_DELAY_MS * (2 ** (streak - 1)))
+    # A clock correction must not hide an append-only generation indefinitely.
+    return now_ms < row["created_at_ms"] or now_ms - row["created_at_ms"] >= delay
+
+
+def same_survivor_retry_ready(store, attempt_id, receipts, now_ms):
+    records._time(now_ms)
+    with store._connection() as connection:
+        _retained(connection, attempt_id)
+        row = _latest_generation(connection, attempt_id)
+        return row is not None and _same_survivor_retry_ready(
+            connection, attempt_id, row, receipts, now_ms
+        )
 
 
 def no_dispatch_digest(attempt_id, lease_digest):
@@ -108,18 +166,32 @@ def no_dispatch_digest(attempt_id, lease_digest):
     )
 
 
-def list_pending(store, *, after_rowid=0, limit=128):
+def max_attempt_rowid(store):
+    """Capture the last attempt present before this service accepts new work."""
+
+    with store._connection() as connection:
+        return int(
+            connection.execute(
+                "SELECT coalesce(max(rowid), 0) FROM capability_attempts"
+            ).fetchone()[0]
+        )
+
+
+def list_pending(store, *, after_rowid=0, upper_rowid, limit=128):
     if (
         type(after_rowid) is not int
         or after_rowid < 0
+        or type(upper_rowid) is not int
+        or upper_rowid < 0
         or type(limit) is not int
         or not 1 <= limit <= 256
     ):
         raise ProductStoreError("Recovery page is invalid.")
     with store._connection() as connection:
         rows = connection.execute(
-            "SELECT rowid,attempt_id FROM capability_attempts WHERE rowid>? ORDER BY rowid LIMIT ?",
-            (after_rowid, limit),
+            "SELECT rowid,attempt_id FROM capability_attempts "
+            "WHERE rowid>? AND rowid<=? ORDER BY rowid LIMIT ?",
+            (after_rowid, upper_rowid, limit),
         ).fetchall()
         return [(int(row["rowid"]), str(row["attempt_id"])) for row in rows]
 
@@ -432,14 +504,25 @@ def begin_generation(store, attempt_id, now_ms):
                 if task is not None
                 else None
             )
+            prior_claim = (
+                _optional(connection, "capability_recovery_claims", "generation", row["generation"])
+                if claim is not None
+                else None
+            )
             partial_progress = (
                 terminal is not None
                 and bool(terminal.get("remaining_receipts"))
-                and len(terminal["remaining_receipts"])
-                < len(
-                    _optional(
-                        connection, "capability_recovery_claims", "generation", row["generation"]
-                    )["receipts"]
+                and len(terminal["remaining_receipts"]) < len(prior_claim["receipts"])
+            )
+            same_survivor_retry = (
+                terminal is not None
+                and prior_claim is not None
+                and _same_survivor_retry_ready(
+                    connection,
+                    attempt_id,
+                    row,
+                    prior_claim["receipts"],
+                    now_ms,
                 )
             )
             if (
@@ -447,7 +530,7 @@ def begin_generation(store, attempt_id, now_ms):
                 or task is None
                 and claim["expires_at_ms"] > now_ms
                 or task is not None
-                and not partial_progress
+                and not (partial_progress or same_survivor_retry)
             ):
                 return str(row["generation"])
             # The expired claim never acquired a task. Preserve it and create
@@ -490,7 +573,7 @@ def claim_cleanup(store, attempt_id, *, generation, workspace_id, receipts, now_
             raise ProductStoreError("Recovery generation is changed or settled.")
         previous_generation = connection.execute(
             "SELECT generation FROM capability_recovery_generations "
-            "WHERE attempt_id=? AND generation<>? ORDER BY created_at_ms DESC,rowid DESC LIMIT 1",
+            "WHERE attempt_id=? AND generation<>? ORDER BY rowid DESC LIMIT 1",
             (attempt_id, generation),
         ).fetchone()
         if previous_generation is not None:
@@ -505,17 +588,23 @@ def claim_cleanup(store, attempt_id, *, generation, workspace_id, receipts, now_
                     "task_id",
                     previous_task["task_id"],
                 )
+                previous_claim = _optional(
+                    connection,
+                    "capability_recovery_claims",
+                    "generation",
+                    previous_generation["generation"],
+                )
                 if (
                     previous_terminal is None
                     or previous_terminal.get("remaining_receipts") != receipts
-                    or len(receipts)
-                    >= len(
-                        _optional(
-                            connection,
-                            "capability_recovery_claims",
-                            "generation",
-                            previous_generation["generation"],
-                        )["receipts"]
+                    or previous_claim is None
+                    or (
+                        len(receipts) >= len(previous_claim["receipts"])
+                        and (
+                            receipts != previous_claim["receipts"]
+                            or previous_terminal.get("result", {}).get("status")
+                            not in {"partial", "cleanup_failed"}
+                        )
                     )
                 ):
                     raise ProductStoreError("Recovery survivor list changed between generations.")
@@ -750,8 +839,7 @@ def record_cleanup_terminal(
 
 def _validate_cleanup_chain(connection, attempt_id, generation, inspection_digest, terminal_digest):
     generations = connection.execute(
-        "SELECT generation FROM capability_recovery_generations WHERE attempt_id=? "
-        "ORDER BY created_at_ms,rowid",
+        "SELECT generation FROM capability_recovery_generations WHERE attempt_id=? ORDER BY rowid",
         (attempt_id,),
     ).fetchall()
     if not generations or generations[-1]["generation"] != generation:

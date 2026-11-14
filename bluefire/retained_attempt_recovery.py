@@ -597,7 +597,10 @@ def recover_one(jobs, attempt_id, *, stop_event=None):
         if latest_terminal is not None:
             last_count = len(snapshot["recovery_task"]["manifest"]["params"]["receipt_ids"])
             if len(receipts) >= last_count:
-                return "pending"
+                if not ledger.same_survivor_retry_ready(
+                    jobs.store, attempt_id, receipts, jobs.clock()
+                ):
+                    return "pending"
         if stop_event is not None and stop_event.is_set():
             return "pending"
         raw_execute, wrapped_execute, profile = _runner(jobs, workspace, execution=True)
@@ -640,13 +643,15 @@ def recover_one(jobs, attempt_id, *, stop_event=None):
     return "settled"
 
 
-def recover_all(jobs, *, stop_event=None):
+def recover_all(jobs, *, stop_event=None, upper_rowid=None):
     summary = {"examined": 0, "settled": 0, "pending": 0}
+    if upper_rowid is None:
+        upper_rowid = ledger.max_attempt_rowid(jobs.store)
     cursor = 0
     while True:
         if stop_event is not None and stop_event.is_set():
             break
-        page = ledger.list_pending(jobs.store, after_rowid=cursor)
+        page = ledger.list_pending(jobs.store, after_rowid=cursor, upper_rowid=upper_rowid)
         if not page:
             break
         for rowid, attempt_id in page:

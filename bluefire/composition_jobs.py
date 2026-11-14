@@ -13,6 +13,7 @@ from . import (
     composition_context,
     composition_file_access,
     composition_macos_file_access,
+    product_store_retained_recovery,
     retained_artifacts,
 )
 from .capability_composition import compile_initial_graph, compile_revision
@@ -56,6 +57,9 @@ class CompositionJobs:
         self.clock = clock
         self._authorization_lock = threading.Lock()
         self._retained_recovery_lock = threading.Lock()
+        self._retained_recovery_upper_rowid = product_store_retained_recovery.max_attempt_rowid(
+            self.store
+        )
         self._macos_recovery_lock = threading.Lock()
         self._macos_recoveries: dict[str, dict[str, Any]] = {}
         self.owners = OwnedReceiverRegistry(
@@ -929,7 +933,11 @@ class CompositionJobs:
         from .retained_attempt_recovery import recover_all
 
         with self._retained_recovery_lock:
-            return recover_all(self, stop_event=stop_event)
+            return recover_all(
+                self,
+                stop_event=stop_event,
+                upper_rowid=self._retained_recovery_upper_rowid,
+            )
 
     def read(self, owner_id):
         owner = self._owner(owner_id)

@@ -21,6 +21,7 @@ from bluefire import retained_artifacts as retained
 from bluefire import retained_attempt_recovery as runtime
 from bluefire.adaptive_dispatch import reviewed_operation
 from bluefire.composition_authority import native_envelope
+from bluefire.composition_jobs import CompositionJobs
 from bluefire.contracts import ExecutionMode, ScenarioDefinition
 from bluefire.evidence import EvidenceProvenance, EvidenceRecord
 from bluefire.execution_contracts import execution_task_identity
@@ -285,6 +286,49 @@ class _PartialRecoveryWal(_RecoveryWal):
         return result
 
 
+class _NoProgressRecoveryWal(_RecoveryWal):
+    def __init__(self, original_manifest, original_profile, *, first_status, fail_count=1):
+        super().__init__()
+        self.original_manifest = original_manifest
+        self.original_profile = original_profile
+        self.first_status = first_status
+        self.fail_count = fail_count
+
+    def execute_task(self, manifest, runner_profile, *, task_id, **kwargs):
+        result = dict(super().execute_task(manifest, runner_profile, task_id=task_id, **kwargs))
+        if self.execute_actions.count("sandbox.cleanup.v1") > self.fail_count:
+            return result
+        survivor = manifest["params"]["receipt_ids"][0]
+        assert _write_bound_receipt(self.original_manifest, self.original_profile) == survivor
+        report = dict(result["cleanup"])
+        report.update(
+            removed_paths=[],
+            retained_paths=["fixtures/input.jsonl"],
+            errors=["temporary cleanup failure"],
+            verified_removed_paths=0,
+            verified_receipts=0,
+            verified_receipt_ids=[],
+        )
+        result.update(
+            status=self.first_status,
+            output=report,
+            cleanup=report,
+            error={"code": "cleanup_failed", "message": "temporary cleanup failure"},
+        )
+        _, request_hash = execution_task_identity(manifest, runner_profile)
+        self.results[(task_id, request_hash)] = result
+        return result
+
+
+def _bind_manifest_clock(monkeypatch, clock):
+    build = runtime.build_execution_manifest
+
+    def build_at_clock(**kwargs):
+        return build(**kwargs, now=datetime.fromtimestamp(clock[0] / 1000, timezone.utc))
+
+    monkeypatch.setattr(runtime, "build_execution_manifest", build_at_clock)
+
+
 def _recovery_jobs(store, runs_path, registry, selected):
     run_store = RunStore(runs_path)
     service = SimpleNamespace(
@@ -516,7 +560,7 @@ def test_runner_start_retries_pending_retained_recovery(has_stop_event):
         _runner_lifecycle_profile=lambda _profile_id: SimpleNamespace(id="profile"),
         _managed_host_profile_budget=lambda: 42,
         runner_lifecycle=SimpleNamespace(
-            start=lambda **kwargs: (calls.append(("start", kwargs)) or {"status": "running"})
+            start=lambda **kwargs: calls.append(("start", kwargs)) or {"status": "running"}
         ),
         composition=SimpleNamespace(
             recover_retained_attempts=lambda **kwargs: (
@@ -832,12 +876,67 @@ def test_startup_scan_reaches_retained_attempt_after_256_rows(saved, tmp_path, m
     monkeypatch.setattr(
         runtime,
         "recover_one",
-        lambda _jobs, attempt_id, **_kwargs: (visited.append(attempt_id) or "pending"),
+        lambda _jobs, attempt_id, **_kwargs: visited.append(attempt_id) or "pending",
     )
     jobs = SimpleNamespace(store=store, clock=lambda: 5000)
     summary = runtime.recover_all(jobs)
     assert summary == {"examined": 257, "settled": 0, "pending": 257}
     assert visited == attempts
+
+
+def test_startup_recovery_never_closes_new_live_receiver(saved, tmp_path, monkeypatch):
+    store, old_lease, _ = _bound(saved, tmp_path)
+    service = SimpleNamespace(product_store=store, job_controller=object())
+    jobs = CompositionJobs(service, clock=lambda: 5000)
+    other_state = state.__wrapped__()
+    other_state["grant"] = {
+        **other_state["grant"],
+        "grant_id": "grant-" + uuid.uuid4().hex,
+    }
+    other_state["current_environment"] = {
+        **other_state["current_environment"],
+        "environment_id": "owned-lab-2.v1",
+        "environment_generation": "generation-2",
+        "runner_id": "runner-2",
+        "port": 4318,
+    }
+    original_save = ProductStore.save_capability_grant
+
+    def save_separate_lineage(self, document, **context):
+        return original_save(self, document, **{**context, "lineage_id": "lineage-2"})
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ProductStore, "save_capability_grant", save_separate_lineage)
+        other_saved = _saved_fixture.__wrapped__(v2_state(other_state), tmp_path)
+    new_lease = reserve(other_saved, now_ms=4600)
+    claim(other_saved, new_lease, now_ms=4700)
+    other_store = other_saved[0]
+    other_store.start_capability_preparation(
+        new_lease["attempt_id"],
+        now_ms=4800,
+        current_environment=other_saved[1]["current_environment"],
+    )
+    other_store.bind_capability_receiver(
+        new_lease["attempt_id"],
+        session_generation="generation-" + new_lease["attempt_id"],
+        review_digest=content_hash("new-live-session"),
+        process_id=424243,
+        creation_identity="123456790",
+    )
+    new_attempt_id = new_lease["attempt_id"]
+    visited = []
+
+    def recover_one(current_jobs, attempt_id, **kwargs):
+        visited.append(attempt_id)
+        if attempt_id == new_attempt_id:
+            pytest.fail("startup recovery reached a new live receiver")
+        return "pending"
+
+    monkeypatch.setattr(runtime, "recover_one", recover_one)
+    expected = {"examined": 1, "settled": 0, "pending": 1}
+    assert jobs.recover_retained_attempts() == expected
+    assert jobs.recover_retained_attempts() == expected
+    assert visited == [old_lease["attempt_id"], old_lease["attempt_id"]]
 
 
 def test_missing_terminal_recovers_original_wal_then_runs_only_new_cleanup(
@@ -936,6 +1035,96 @@ def test_partial_recovery_cleanup_reissues_only_verified_survivor(saved, tmp_pat
     for receipt_id in (first, survivor):
         path = root / ".bluefire" / "receipts" / f"{receipt_id}.json"
         assert not (_windows_extended_path(path) if os.name == "nt" else path).exists()
+
+
+@pytest.mark.parametrize("first_status", ["partial", "cleanup_failed"])
+@pytest.mark.parametrize("clock_delta", [1000, -1000])
+def test_zero_progress_cleanup_retries_exact_receipt_after_delay_or_clock_correction(
+    saved, tmp_path, monkeypatch, first_status, clock_delta
+):
+    store, lease, root, selected, profile, manifest, task_id, transport_hash, _ = _effect_bound(
+        saved, tmp_path
+    )
+    wal = _NoProgressRecoveryWal(manifest, profile, first_status=first_status)
+    original = wal.remember(manifest, profile, task_id, transport_hash)
+    survivor = original["receipt_ids"][0]
+    monkeypatch.setattr(runtime, "_runner", lambda *_args, **_kwargs: (wal, wal, selected))
+    monkeypatch.setattr(
+        runtime,
+        "close_exact_receiver",
+        lambda process_id, creation_identity: {
+            "schema_version": "bluefire.receiver-closure-proof.v1",
+            "process_id": process_id,
+            "creation_identity": creation_identity,
+            "session_member_count": 0,
+            "verified_closed": True,
+        },
+    )
+    jobs = _recovery_jobs(store, tmp_path / "runs", saved[1]["registry"], selected)
+    clock = [int(datetime.now(timezone.utc).timestamp() * 1000)]
+    first_clock = clock[0]
+    jobs.clock = lambda: clock[0]
+    _bind_manifest_clock(monkeypatch, clock)
+    assert runtime.recover_one(jobs, lease["attempt_id"]) == "pending"
+    first = recovery.snapshot(store, lease["attempt_id"])
+    assert first["recovery_terminal"]["result"]["status"] == first_status
+    assert [row["receipt_id"] for row in first["recovery_terminal"]["remaining_receipts"]] == [
+        survivor
+    ]
+    assert runtime.recover_one(jobs, lease["attempt_id"]) == "pending"
+    assert wal.execute_actions == ["sandbox.cleanup.v1"]
+
+    clock[0] = first_clock + clock_delta
+    assert runtime.recover_one(jobs, lease["attempt_id"]) == "settled"
+    finished = recovery.snapshot(store, lease["attempt_id"])
+    assert len(finished["recovery_history"]) == 2
+    assert (
+        finished["recovery_history"][0]["task"]["task_id"]
+        != finished["recovery_history"][1]["task"]["task_id"]
+    )
+    assert finished["generation"]["created_at_ms"] == clock[0]
+    assert finished["settlement"]["disposition"] == "interrupted_unusable"
+    assert wal.execute_actions == ["sandbox.cleanup.v1", "sandbox.cleanup.v1"]
+    receipt_path = root / ".bluefire" / "receipts" / f"{survivor}.json"
+    assert not (_windows_extended_path(receipt_path) if os.name == "nt" else receipt_path).exists()
+
+
+def test_zero_progress_cleanup_has_finite_generation_cap(saved, tmp_path, monkeypatch):
+    store, lease, _, selected, profile, manifest, task_id, transport_hash, _ = _effect_bound(
+        saved, tmp_path
+    )
+    wal = _NoProgressRecoveryWal(manifest, profile, first_status="cleanup_failed", fail_count=8)
+    wal.remember(manifest, profile, task_id, transport_hash)
+    monkeypatch.setattr(runtime, "_runner", lambda *_args, **_kwargs: (wal, wal, selected))
+    monkeypatch.setattr(
+        runtime,
+        "close_exact_receiver",
+        lambda process_id, creation_identity: {
+            "schema_version": "bluefire.receiver-closure-proof.v1",
+            "process_id": process_id,
+            "creation_identity": creation_identity,
+            "session_member_count": 0,
+            "verified_closed": True,
+        },
+    )
+    jobs = _recovery_jobs(store, tmp_path / "runs", saved[1]["registry"], selected)
+    clock = [int(datetime.now(timezone.utc).timestamp() * 1000)]
+    jobs.clock = lambda: clock[0]
+    _bind_manifest_clock(monkeypatch, clock)
+    for _ in range(8):
+        assert runtime.recover_one(jobs, lease["attempt_id"]) == "pending"
+        clock[0] += 30000
+    last_snapshot = recovery.snapshot(store, lease["attempt_id"])
+    assert len(last_snapshot["recovery_history"]) == 8
+    assert runtime.recover_one(jobs, lease["attempt_id"]) == "pending"
+    assert wal.execute_actions == ["sandbox.cleanup.v1"] * 8
+    survivors = last_snapshot["recovery_terminal"]["remaining_receipts"]
+    with store._connection(write=True) as connection:
+        connection.execute(
+            "INSERT INTO capability_recovery_generations VALUES(?,?,?)",
+            ("recovery-taskless-gap", lease["attempt_id"], clock[0]),
+        )
+    assert not recovery.same_survivor_retry_ready(store, lease["attempt_id"], survivors, clock[0])
 
 
 def test_partial_cleanup_without_exact_verified_ids_stays_pending(saved, tmp_path, monkeypatch):
