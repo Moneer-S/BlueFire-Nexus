@@ -1,6 +1,7 @@
 """Immutable saved comparison explanations with real bundles and mocked providers."""
 
 import json
+import threading
 from copy import deepcopy
 from dataclasses import replace
 
@@ -420,6 +421,42 @@ def test_durable_analysis_replay_is_idempotent_without_children(explanation, aut
             == "[EVIDENCE CONTENT OMITTED]"
         )
         assert observations["observed_artifacts"] == 1
+
+
+def test_analysis_answer_stays_working_until_terminal_job_state(explanation, monkeypatch):
+    service, access, body, _, _, _ = explanation
+    original_checkpoint = service.job_controller._checkpoint
+    progress_published = threading.Event()
+    release_completion = threading.Event()
+
+    def hold_after_result_progress(control, *, progress, replace_progress):
+        original_checkpoint(
+            control,
+            progress=progress,
+            replace_progress=replace_progress,
+        )
+        if progress and progress.get("planning_complete") and progress.get("plan") == []:
+            progress_published.set()
+            assert release_completion.wait(10)
+
+    monkeypatch.setattr(service.job_controller, "_checkpoint", hold_after_result_progress)
+    submitted = service.submit_assistance_turn(body)
+    job_id = submitted["job"]["job_id"]
+    try:
+        assert progress_published.wait(10)
+        in_flight = service.assistance_turn(job_id)
+        assert in_flight["job"]["state"] == "running"
+        assert in_flight["turn"]["status"] == "working"
+        assert in_flight["turn"]["next_action"] is None
+        assert not in_flight["turn"]["can_start_new_turn"]
+    finally:
+        release_completion.set()
+
+    service.job_controller.wait(job_id, timeout=15)
+    completed = service.assistance_turn(job_id)
+    assert completed["job"]["state"] == "completed"
+    assert completed["turn"]["status"] == "completed"
+    assert access.calls == [PURPOSE]
 
 
 def test_forged_capability_cannot_dispatch(explanation):
