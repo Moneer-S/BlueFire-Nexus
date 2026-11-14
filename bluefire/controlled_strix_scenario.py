@@ -484,11 +484,20 @@ class ScenarioObservationRequest:
     call_id: str
     tool_name: str
     arguments_digest: str
+    arguments_json: str
     target_url: str
     authorized_url_set_ref: str
     model_result_digest: str
     model_result_bytes: int
     model_result: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.arguments_json, str)
+            or not self.arguments_json
+            or _sha256(self.arguments_json.encode("ascii")) != self.arguments_digest
+        ):
+            raise ControlledProviderError(409, "observation_unverified", "tool arguments differ")
 
     @property
     def digest(self) -> str:
@@ -972,6 +981,7 @@ class ControlledScenarioProviderState(ControlledProviderState):
             call_id=self._pending_call_id,
             tool_name=self._pending_tool_name,
             arguments_digest=_sha256(self._pending_arguments_json.encode("ascii")),
+            arguments_json=self._pending_arguments_json,
             target_url=self._pending_target_url,
             authorized_url_set_ref=self.manifest.scenario.authorized_url_set_ref,
             model_result_digest=_sha256(content.encode("utf-8")),
