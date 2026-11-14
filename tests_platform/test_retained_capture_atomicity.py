@@ -344,6 +344,8 @@ def test_completed_capture_intent_exact_retry_and_pending_filter(saved_state):
     reopened = ProductStore(store.path)
     assert reopened.begin_retained_artifact_capture(lease["job_id"], intent) == intent
     assert reopened.list_retained_artifact_capture_intents() == []
+    assert reopened.get_retained_artifact_capture_intent(lease["attempt_id"]) == intent
+    assert reopened.get_retained_artifact_capture(lease["attempt_id"]) == receipt
 
 
 def test_intent_lost_ack_reopens_exactly_before_filesystem_publication(saved_state, monkeypatch):
@@ -424,7 +426,8 @@ def test_append_only_receipt_refuses_conflicting_progress_mirror(saved_state):
     assert changed["capture_digest"] not in persisted
 
 
-def test_restart_reconciliation_commits_journal_without_native_replay(tmp_path):
+@pytest.mark.parametrize("already_committed", [False, True])
+def test_restart_reconciliation_commits_journal_without_native_replay(tmp_path, already_committed):
     run_store = RunStore(tmp_path / "runs")
     run_id, payload, prepared = _capture(run_store)
     _publish(run_store, run_id, payload, prepared)
@@ -487,7 +490,15 @@ def test_restart_reconciliation_commits_journal_without_native_replay(tmp_path):
             return receipt
 
         def list_retained_artifact_capture_intents(self):
-            return [prepared["intent"]]
+            return [] if already_committed else [prepared["intent"]]
+
+        def get_retained_artifact_capture_intent(self, attempt_id):
+            calls.append(("read intent", attempt_id))
+            return prepared["intent"] if already_committed else None
+
+        def get_retained_artifact_capture(self, attempt_id):
+            calls.append(("read receipt", attempt_id))
+            return prepared["receipt"] if already_committed else None
 
     jobs = SimpleNamespace(
         store=Store(),
@@ -499,12 +510,20 @@ def test_restart_reconciliation_commits_journal_without_native_replay(tmp_path):
         "pending": 0,
         "refused": 0,
     }
-    assert calls == [
-        ("load", prepared["intent"]["attempt_id"]),
-        ("begin", prepared["intent"]["job_id"]),
-        ("commit", prepared["intent"]["job_id"]),
-    ]
-    assert receipts[prepared["intent"]["job_id"]] == prepared["receipt"]
+    if already_committed:
+        assert calls == [
+            ("read intent", prepared["intent"]["attempt_id"]),
+            ("read receipt", prepared["intent"]["attempt_id"]),
+            ("load", prepared["intent"]["attempt_id"]),
+        ]
+        assert receipts == {}
+    else:
+        assert calls == [
+            ("load", prepared["intent"]["attempt_id"]),
+            ("begin", prepared["intent"]["job_id"]),
+            ("commit", prepared["intent"]["job_id"]),
+        ]
+        assert receipts[prepared["intent"]["job_id"]] == prepared["receipt"]
 
 
 def test_receipt_requires_exact_sealed_evidence_records(tmp_path):
@@ -613,6 +632,9 @@ def test_orphan_journal_cannot_retroactively_create_intent_or_repair_projection(
         def list_retained_artifact_capture_intents(self):
             return []
 
+        def get_retained_artifact_capture_intent(self, _attempt_id):
+            return None
+
         def get_capability_attempt(self, _attempt_id):
             raise AssertionError("orphan journal must not look up or create authority")
 
@@ -627,6 +649,42 @@ def test_orphan_journal_cannot_retroactively_create_intent_or_repair_projection(
         "refused": 1,
     }
     assert not artifacts_path.exists()
+    assert run_store.read_retained_payload(run_id) == payload
+
+
+@pytest.mark.parametrize("changed_record", ["intent", "receipt"])
+def test_committed_capture_requires_exact_sql_records(tmp_path, changed_record):
+    run_store = RunStore(tmp_path / "runs")
+    run_id, payload, prepared = _capture(run_store)
+    _publish(run_store, run_id, payload, prepared)
+
+    class Store:
+        def list_retained_artifact_capture_intents(self):
+            return []
+
+        def get_retained_artifact_capture_intent(self, _attempt_id):
+            if changed_record == "intent":
+                return {**prepared["intent"], "step_id": "different"}
+            return prepared["intent"]
+
+        def get_retained_artifact_capture(self, _attempt_id):
+            if changed_record == "receipt":
+                return {**prepared["receipt"], "capture_digest": "0" * 64}
+            return prepared["receipt"]
+
+        def get_capability_attempt(self, _attempt_id):
+            raise AssertionError("changed SQL records must not reach attempt repair")
+
+    jobs = SimpleNamespace(
+        store=Store(),
+        service=SimpleNamespace(detection_lab=SimpleNamespace(run_store=RunStore(run_store.root))),
+    )
+    assert retained.reconcile_captures(jobs) == {
+        "examined": 1,
+        "reconciled": 0,
+        "pending": 0,
+        "refused": 1,
+    }
     assert run_store.read_retained_payload(run_id) == payload
 
 

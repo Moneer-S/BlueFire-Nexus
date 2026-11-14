@@ -585,6 +585,17 @@ class CapabilityStoreMixin:
                 raise ProductStoreError("Retained capture progress mirror changed.")
             return receipt
 
+    def get_retained_artifact_capture_intent(self, attempt_id: str) -> Mapping[str, Any] | None:
+        """Read the exact durable intent, including after its receipt was committed."""
+
+        store = cast(Any, self)
+        with store._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM capability_retained_capture_intents WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            return None if row is None else _retained_capture_intent_row(row)
+
     def list_retained_artifact_capture_intents(self) -> list[Mapping[str, Any]]:
         """Return pending intents, including rows beyond the first recovery page."""
 

@@ -520,17 +520,29 @@ def reconcile_captures(jobs):
             journal = run_store.retained_capture(run_id, reconcile=False)
             intent = journal["intent"]
             receipt = journal["receipt"]
+            pending_intent = intents_by_run.get(run_id)
             if (
                 not isinstance(intent, Mapping)
                 or not isinstance(receipt, Mapping)
                 or intent.get("run_id") != run_id
-                or intent != intents_by_run.get(run_id)
                 or journal.get("publication_digest")
                 != content_hash(
                     {key: value for key, value in journal.items() if key != "publication_digest"}
                 )
             ):
                 raise CapabilityContractError("retained capture journal changed")
+            committed_receipt = None
+            if pending_intent is None:
+                # A completed receipt removes its intent from the pending list.
+                # Admit this journal only through the exact durable SQL intent
+                # and receipt; an orphan journal cannot create either record.
+                if jobs.store.get_retained_artifact_capture_intent(intent["attempt_id"]) != intent:
+                    raise CapabilityContractError("retained capture intent changed")
+                committed_receipt = jobs.store.get_retained_artifact_capture(intent["attempt_id"])
+                if committed_receipt != receipt:
+                    raise CapabilityContractError("retained capture receipt changed")
+            elif intent != pending_intent:
+                raise CapabilityContractError("retained capture intent changed")
             attempt = jobs.store.get_capability_attempt(intent["attempt_id"])
             lease = attempt["lease"]
             if any(
@@ -559,10 +571,11 @@ def reconcile_captures(jobs):
                 raise
             sealed_run = resolve_metadata(run_store, receipt["source"])
             _verify_capture_evidence(sealed_run, journal)
-            # A private journal cannot establish its own prepublication intent.
-            # This is only an exact retry of the already durable SQL row.
-            jobs.store.begin_retained_artifact_capture(intent["job_id"], intent)
-            jobs.store.commit_retained_artifact_capture(intent["job_id"], receipt)
+            if committed_receipt is None:
+                # A private journal cannot establish its own prepublication
+                # intent. Retry only the already durable pending SQL row.
+                jobs.store.begin_retained_artifact_capture(intent["job_id"], intent)
+                jobs.store.commit_retained_artifact_capture(intent["job_id"], receipt)
             reconciled.add(intent["intent_digest"])
             summary["reconciled"] += 1
         except (
