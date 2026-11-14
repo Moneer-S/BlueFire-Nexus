@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, cast
 from . import product_store_ai_authorizations as ai_authorization_store
 from . import product_store_capability_api as capability_store_api
 from . import product_store_detection_evaluations as detection_evaluation_store
+from . import product_store_docker_exec_capture_schema as docker_exec_capture_schema
 from . import product_store_engine_action_submissions as engine_action_submission_store
 from . import product_store_engine_actions as engine_action_store
 from . import product_store_engine_execution_claims as engine_execution_claim_store
@@ -40,6 +41,7 @@ from . import product_store_proposal_reviews as proposal_review_store
 from . import product_store_strix_admission_issuer as strix_issuance_store
 from . import product_store_strix_composition_schema as strix_composition_schema
 from . import product_store_strix_controller_receipts as strix_controller_receipt_store
+from . import product_store_strix_exec_schema as strix_exec_schema
 from . import product_store_strix_model_terminal as strix_model_terminal_store
 from . import product_store_strix_runtime as strix_runtime_store
 from . import product_store_tenant_action_materials as tenant_action_material_store
@@ -86,7 +88,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 _ENGINE_RECONCILIATION_SESSION_GUARD = threading.Lock()
 
 
@@ -969,6 +971,8 @@ class ProductStore(
             strix_runtime_store.initialize_schema(connection)
             strix_model_terminal_store.initialize_schema(connection)
             strix_controller_receipt_store.initialize_schema(connection)
+            strix_exec_schema.initialize_schema(connection)
+            docker_exec_capture_schema.initialize_docker_exec_capture_schema_at(connection)
             strix_issuance_store.initialize_schema(connection)
             strix_composition_schema.initialize_schema(connection)
             self._initialize_macos_workspace_schema(connection)
