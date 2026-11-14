@@ -380,7 +380,7 @@ def test_caido_sdk_request_grammar_retains_required_defaults_and_auth_boundary()
     assert graphql["json_member_order_significant"] is False
 
 
-def test_launch_fixture_matches_the_current_controller_plan_and_records_backend_gap(
+def test_launch_fixture_matches_the_current_controller_plan_and_backend_selection(
     tmp_path: Path,
 ) -> None:
     fixture = _fixture()["launch"]
@@ -421,9 +421,9 @@ def test_launch_fixture_matches_the_current_controller_plan_and_records_backend_
     )
     assert fixture["controlled_backend"] == {
         "required_value": strix_controlled_bootstrap._BACKEND,
-        "current_adapter_value_at_capture": "docker",
-        "compatible": False,
-        "reason": fixture["controlled_backend"]["reason"],
+        "current_adapter_value_at_capture": strix_controlled_bootstrap._BACKEND,
+        "compatible": True,
+        "reason": "The adapter selects the registered controlled backend; this source-derived fixture does not prove the controller transport or a qualified installed launch.",
     }
     assert json.loads(Path(argv[argv.index("--config") + 1]).read_text(encoding="utf-8")) == {
         "env": {}

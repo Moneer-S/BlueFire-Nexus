@@ -351,9 +351,9 @@
     },
     "controlled_backend": {
       "required_value": "bluefire-controlled",
-      "current_adapter_value_at_capture": "docker",
-      "compatible": false,
-      "reason": "The controlled bootstrap requires its registered backend; changing the variable alone does not supply the concrete controller transport."
+      "current_adapter_value_at_capture": "bluefire-controlled",
+      "compatible": true,
+      "reason": "The adapter selects the registered controlled backend; this source-derived fixture does not prove the controller transport or a qualified installed launch."
     }
   }
 }
