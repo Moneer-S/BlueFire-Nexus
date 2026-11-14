@@ -98,6 +98,19 @@ from .contracts import (
 from .detection_ai_jobs import DetectionAIJobs
 from .detection_create_jobs import DetectionCreateJobs
 from .detection_lab import DetectionLabService
+from .engine_experiment_jobs import EngineAttemptRuntime
+from .engine_experiment_service import EngineControllerJobs as EngineControllerJobsAdapter
+from .engine_experiment_service import TrustedEngineController
+from .engine_experiment_workspace import EngineExperimentPresentationSource
+from .engine_service_composition import (
+    EngineActionPreparationFactory,
+    EngineActionSubmissionFactory,
+    EngineControllerJobsFactory,
+    EngineServiceComposition,
+    EngineWorkflowCompositionFactory,
+    cancel_engine_job,
+    rollback_service_initialization,
+)
 from .execution_progress import ExecutionRecordFailure
 from .graph_ai_jobs import GraphAIJobs
 from .job_runtime import (
@@ -160,6 +173,7 @@ from .s3_access_service import S3AccessServiceMixin
 from .util import content_hash, file_hash
 
 if TYPE_CHECKING:
+    from .engine_installed_composition import InstalledEngineComposition
     from .file_access_control import FileAccessControl
 
 RunnerFactory = Callable[[RunnerProfile], tuple[RunnerTransport, Path]]
@@ -222,6 +236,10 @@ def _default_collector_registry_factory(sandbox: Path) -> CollectorRegistry:
     return CollectorRegistry((FilesystemCollector(sandbox), CollectionSemanticsCollector(sandbox)))
 
 
+def _engine_service_clock() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 class BlueFireService(
     RunnerManagementServiceMixin,
     ReceiverDefenseServiceMixin,
@@ -246,122 +264,159 @@ class BlueFireService(
         ai_draft_provider_factory: AIDraftProviderFactory | None = None,
         ai_provider_access: AIProviderAccess | None = None,
         s3_access_executor: S3AccessExecutor | None = None,
+        engine_attempt_runtime: EngineAttemptRuntime | None = None,
+        engine_controller: TrustedEngineController | None = None,
+        engine_controller_jobs: EngineControllerJobsAdapter | None = None,
+        engine_controller_jobs_factory: EngineControllerJobsFactory | None = None,
+        engine_experiment_presentation_source: EngineExperimentPresentationSource | None = None,
+        engine_action_preparation_factory: EngineActionPreparationFactory | None = None,
+        engine_action_submission_factory: EngineActionSubmissionFactory | None = None,
+        engine_workflow_composition: InstalledEngineComposition | None = None,
+        engine_workflow_composition_factory: EngineWorkflowCompositionFactory | None = None,
     ) -> None:
-        root = (
-            Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
+        self._engine_assembly = EngineServiceComposition(
+            runtime=engine_attempt_runtime,
+            controller=engine_controller,
+            controller_jobs=engine_controller_jobs,
+            controller_jobs_factory=engine_controller_jobs_factory,
+            preparation_factory=engine_action_preparation_factory,
+            submission_factory=engine_action_submission_factory,
+            composition=engine_workflow_composition,
+            composition_factory=engine_workflow_composition_factory,
         )
-        self.project_root = root.resolve()
-        self._built_in_registry = registry or load_builtin_registry()
-        self.registry = self._built_in_registry
-        self.config = config or self._load_default_config(config_path)
-        self._macos_workspace_endpoint: Any | None = None
-        self.store = RunStore(runs_dir or Path.cwd() / ".bluefire-runs")
-        self.recovered_runs = self.store.recover_interrupted_runs()
-        self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())
-        self.runner_factory = runner_factory or self._managed_runner
-        self._native_tool_setup_runner_factory = runner_factory
-        self.collector_registry_factory = (
-            collector_registry_factory or _default_collector_registry_factory
-        )
-        self.ai_provider_factory = ai_provider_factory or _default_ai_provider_factory
-        self.ai_draft_provider_factory = (
-            ai_draft_provider_factory or _default_ai_draft_provider_factory
-        )
-        self._provider_check_transport = ManagedAIJSONTransport()
-        provider_access = ai_provider_access or DirectAIProviderAccess(
-            transport=self._provider_check_transport
-        )
-        self._runtime_configuration_lock = threading.RLock()
-        self._action_catalog_lock = threading.RLock()
-        self._job_retry_lock = threading.RLock()
-        self._runtime_runner_profiles = self.config.runner_profiles
-        self._runtime_ai_config = self.config.ai
-        self.product_store = ProductStore(
-            product_db_path or self.store.root / "bluefire-product.sqlite3"
-        )
-        self._authorized_provider_access = AuthorizedAIProviderAccess(
-            provider_access, self.product_store
-        )
-        self._provider_access: AIProviderAccess = self._authorized_provider_access
-        self._catalog_snapshot = self._load_action_catalog_snapshot()
-        self.registry = self._catalog_snapshot.registry
-        self._scenarios = self._load_scenarios()
-        self.detection_lab = DetectionLabService(
-            product_store=self.product_store,
-            run_store=self.store,
-            registry=self.registry,
-        )
-        self.recovered_jobs = self.product_store.recover_interrupted_jobs()
-        self.job_controller = RunJobController(
-            self.product_store,
-            self._execute_job,
-            max_workers=2,
-            max_pending_jobs=8,
-            recover_on_start=False,
-        )
-        self.detection_ai = DetectionAIJobs(
-            lab=self.detection_lab,
-            controller=self.job_controller,
-            ai_config=self._runtime_ai,
-            access=self._provider_access,
-        )
-        self.method_comparison = MethodComparisonJobs(self)
-        self.detection_create = DetectionCreateJobs(
-            lab=self.detection_lab,
-            controller=self.job_controller,
-            ai_config=self._runtime_ai,
-            access=self._provider_access,
-            configuration_lock=self._runtime_configuration_lock,
-            catalog=self._action_catalog_boundary,
-        )
-        self.graph_ai = GraphAIJobs(
-            store=self.product_store,
-            catalog=self._action_catalog_boundary,
-            controller=self.job_controller,
-            ai_config=self._runtime_ai,
-            access=self._provider_access,
-            configuration_lock=self._runtime_configuration_lock,
-        )
-        self.assistance_runs = AssistanceRunJobs(self)
-        self.receiver_defense = ReceiverDefenseJobs(self)
-        self.ad_smb = AdSmbJobs(self)
-        self.s3_access = S3AccessJobs(self, s3_access_executor or configured_executor(self))
-        from .composition_jobs import CompositionJobs, now_ms
-
-        self.product_store.interrupt_active_capability_grants(now_ms=now_ms())
-        self.composition = CompositionJobs(self)
-        self.retained_capture_recovery = self.composition.recover_retained_captures()
-        self.retained_attempt_recovery = self.composition.recover_retained_attempts()
-        from .file_access_control import FileAccessControl
-
-        self._file_access = FileAccessControl(self)
-        self.assistance = ExperimentAssistance(self)
-        self.assistance_receiver = ReceiverAssistance(self)
-        self.detection_ai.on_application = self.assistance.application_committed
-        self.graph_ai.on_application = self.assistance.application_committed
-        self.detection_create.on_application = self.assistance.application_committed
-        self.cleanup_recovery = self._recover_interrupted_cleanup()
-        self.seed_counts = seed_product_metadata(
-            self.product_store,
-            registry=self.registry,
-            config=self.config,
-            scenarios=self._scenarios,
-            ai_provider_access=self._provider_access,
-        )
-        self._refresh_runtime_configuration()
-        self._synchronize_run_index()
-        self._retained_recovery_stop = threading.Event()
-        self._retained_recovery_thread: threading.Thread | None = None
-        if (
-            isinstance(self.retained_attempt_recovery, Mapping)
-            and self.retained_attempt_recovery.get("pending", 0) > 0
-        ):
-            self._retained_recovery_thread = threading.Thread(
-                target=self._retry_retained_attempts,
-                name="bluefire-retained-attempt-recovery",
-                daemon=True,
+        try:
+            root = (
+                Path(project_root)
+                if project_root is not None
+                else Path(__file__).resolve().parents[1]
             )
-            self._retained_recovery_thread.start()
+            self.project_root = root.resolve()
+            self._built_in_registry = registry or load_builtin_registry()
+            self.registry = self._built_in_registry
+            self.config = config or self._load_default_config(config_path)
+            self._macos_workspace_endpoint: Any | None = None
+            self.store = RunStore(runs_dir or Path.cwd() / ".bluefire-runs")
+            self.recovered_runs = self.store.recover_interrupted_runs()
+            self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(
+                managed_product_root()
+            )
+            self.runner_factory = runner_factory or self._managed_runner
+            self._native_tool_setup_runner_factory = runner_factory
+            self.collector_registry_factory = (
+                collector_registry_factory or _default_collector_registry_factory
+            )
+            self.ai_provider_factory = ai_provider_factory or _default_ai_provider_factory
+            self.ai_draft_provider_factory = (
+                ai_draft_provider_factory or _default_ai_draft_provider_factory
+            )
+            self._provider_check_transport = ManagedAIJSONTransport()
+            provider_access = ai_provider_access or DirectAIProviderAccess(
+                transport=self._provider_check_transport
+            )
+            self._runtime_configuration_lock = threading.RLock()
+            self._action_catalog_lock = threading.RLock()
+            self._job_retry_lock = threading.RLock()
+            self._runtime_runner_profiles = self.config.runner_profiles
+            self._runtime_ai_config = self.config.ai
+            self.product_store = ProductStore(
+                product_db_path or self.store.root / "bluefire-product.sqlite3"
+            )
+            self._engine_assembly.after_store(self.product_store)
+            self._authorized_provider_access = AuthorizedAIProviderAccess(
+                provider_access, self.product_store
+            )
+            self._provider_access: AIProviderAccess = self._authorized_provider_access
+            self._catalog_snapshot = self._load_action_catalog_snapshot()
+            self.registry = self._catalog_snapshot.registry
+            self._scenarios = self._load_scenarios()
+            self.detection_lab = DetectionLabService(
+                product_store=self.product_store,
+                run_store=self.store,
+                registry=self.registry,
+            )
+            self.recovered_jobs = self.product_store.recover_interrupted_jobs()
+            self.job_controller = RunJobController(
+                self.product_store,
+                self._execute_job,
+                max_workers=2,
+                max_pending_jobs=8,
+                recover_on_start=False,
+            )
+            self.engine_attempt_jobs, self._engine_experiment_service = self._engine_assembly.bind(
+                store=self.product_store,
+                run_store=self.store,
+                jobs=self.job_controller,
+                presentation_source=engine_experiment_presentation_source,
+                clock=_engine_service_clock,
+            )
+            self.engine_experiment_service = self._engine_experiment_service
+            self.detection_ai = DetectionAIJobs(
+                lab=self.detection_lab,
+                controller=self.job_controller,
+                ai_config=self._runtime_ai,
+                access=self._provider_access,
+            )
+            self.method_comparison = MethodComparisonJobs(self)
+            self.detection_create = DetectionCreateJobs(
+                lab=self.detection_lab,
+                controller=self.job_controller,
+                ai_config=self._runtime_ai,
+                access=self._provider_access,
+                configuration_lock=self._runtime_configuration_lock,
+                catalog=self._action_catalog_boundary,
+            )
+            self.graph_ai = GraphAIJobs(
+                store=self.product_store,
+                catalog=self._action_catalog_boundary,
+                controller=self.job_controller,
+                ai_config=self._runtime_ai,
+                access=self._provider_access,
+                configuration_lock=self._runtime_configuration_lock,
+            )
+            self.assistance_runs = AssistanceRunJobs(self)
+            self.receiver_defense = ReceiverDefenseJobs(self)
+            self.ad_smb = AdSmbJobs(self)
+            self.s3_access = S3AccessJobs(self, s3_access_executor or configured_executor(self))
+            from .composition_jobs import CompositionJobs, now_ms
+
+            self.product_store.interrupt_active_capability_grants(now_ms=now_ms())
+            self.composition = CompositionJobs(self)
+            self.retained_capture_recovery = self.composition.recover_retained_captures()
+            self.retained_attempt_recovery = self.composition.recover_retained_attempts()
+            from .file_access_control import FileAccessControl
+
+            self._file_access = FileAccessControl(self)
+            self.assistance = ExperimentAssistance(self)
+            self.assistance_receiver = ReceiverAssistance(self)
+            self.detection_ai.on_application = self.assistance.application_committed
+            self.graph_ai.on_application = self.assistance.application_committed
+            self.detection_create.on_application = self.assistance.application_committed
+            self.cleanup_recovery = self._recover_interrupted_cleanup()
+            self.seed_counts = seed_product_metadata(
+                self.product_store,
+                registry=self.registry,
+                config=self.config,
+                scenarios=self._scenarios,
+                ai_provider_access=self._provider_access,
+            )
+            self._refresh_runtime_configuration()
+            self._synchronize_run_index()
+            self._retained_recovery_stop = threading.Event()
+            self._retained_recovery_thread: threading.Thread | None = None
+            if (
+                isinstance(self.retained_attempt_recovery, Mapping)
+                and self.retained_attempt_recovery.get("pending", 0) > 0
+            ):
+                self._retained_recovery_thread = threading.Thread(
+                    target=self._retry_retained_attempts,
+                    name="bluefire-retained-attempt-recovery",
+                    daemon=True,
+                )
+                self._retained_recovery_thread.start()
+
+        except BaseException:
+            self._rollback_initialization()
+            raise
 
     def _retry_retained_attempts(
         self, *, interval_seconds: float = 0.5, max_interval_seconds: float = 30.0
@@ -2865,6 +2920,14 @@ class BlueFireService(
             job = self.product_store.get_job(job_id)
         except ProductStoreError:
             return self._signal_job(job_id, "cancel")
+        engine_cancellation = cancel_engine_job(
+            store=self.product_store,
+            workspace=self._engine_experiment_service,
+            job_id=job_id,
+            job=job,
+        )
+        if engine_cancellation is not None:
+            return engine_cancellation
         if job["kind"] == "receiver.defense.inspect":
             self.assistance.cancel(self.assistance_receiver.cancellation_parent(job))
             return self.product_store.get_job(job_id)
@@ -3838,6 +3901,19 @@ class BlueFireService(
                 )
             raise
 
+    def _close_engine_workflow(self) -> None:
+        self._engine_assembly.close(getattr(self, "job_controller", None))
+
+    def _rollback_initialization(self) -> None:
+        """Release only owners acquired before initialization failed."""
+        stop = getattr(self, "_retained_recovery_stop", None)
+        if stop is not None:
+            stop.set()
+        thread = getattr(self, "_retained_recovery_thread", None)
+        if thread is not None:
+            thread.join()
+        rollback_service_initialization(self)
+
     def close(self) -> None:
         """Cooperatively stop locally managed workers."""
 
@@ -3852,7 +3928,7 @@ class BlueFireService(
                 self._provider_check_transport.close()
             finally:
                 try:
-                    self.job_controller.shutdown()
+                    self._close_engine_workflow()
                 finally:
                     closed = True
                     for owners in (
