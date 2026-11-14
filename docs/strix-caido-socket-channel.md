@@ -87,3 +87,8 @@ The tests use only explicitly owned local fake endpoints and provenance-bound
 wire fixtures for the pinned clients. They establish the socket, framing and
 cancellation contracts, not an installed Strix/Caido session or Docker
 execution proof.
+
+The separately identified [Test Caido protocol provider](strix-test-caido-protocol-provider.md)
+exercises the deterministic installed startup subset without a Caido binary or
+server. It is production-ineligible and cannot satisfy this live channel's
+sidecar, entitlement, or live-Caido proof requirements.

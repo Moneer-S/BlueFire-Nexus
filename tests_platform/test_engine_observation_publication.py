@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -161,6 +162,47 @@ def test_publishes_complete_run_then_releases_exact_verified_tuple(tmp_path: Pat
     combined = b"".join(_bundle_bytes(store).values())
     assert b"controlled-model" not in combined
     assert b"owned test gateway" not in combined
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="RunStore publication needs owner-private ACL unavailable in local test container",
+)
+def test_unobserved_terminal_attempt_keeps_target_result_unverified(tmp_path: Path) -> None:
+    store, record, observation = _case(tmp_path)
+
+    assert (
+        publish_finalized_engine_observations(
+            store=store,
+            record=record,
+            observations=(),
+            finalized_at=FINALIZED_AT,
+        )
+        == ()
+    )
+    before = _bundle_bytes(store)
+    with pytest.raises(EngineObservationPublicationError, match="failed safely"):
+        publish_finalized_engine_observations(
+            store=store,
+            record=record,
+            observations=(observation,),
+            finalized_at=FINALIZED_AT,
+        )
+    assert _bundle_bytes(store) == before
+
+    run = store.get_run(RUN_ID, require_finalized=True)
+    assert run["observation_count"] == 0
+    assert run["evidence"]["records"] == []
+    assert "engine_execution_proof" not in run
+    assert (
+        publish_finalized_engine_observations(
+            store=store,
+            record=record,
+            observations=(),
+            finalized_at=FINALIZED_AT,
+        )
+        == ()
+    )
 
 
 def test_reversed_exact_retry_is_byte_identical_and_deterministically_ordered(

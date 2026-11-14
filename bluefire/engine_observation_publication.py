@@ -2,10 +2,11 @@
 
 This boundary accepts only already controller-attested independent observations.
 It never interprets engine output, creates an observation from an engine assertion,
-or writes ProductStore state.  A caller may pass the returned tuple into an
-``EngineRuntimeSettlement`` only after this module has atomically published the
-complete run and verified every record byte-for-byte through the ordinary
-finalized-run projection check.
+or writes ProductStore state. A terminal attempt with no independently observed
+response may publish an empty run, which records that absence without implying
+the target accepted or prevented an action. A caller may pass the returned tuple
+into an ``EngineRuntimeSettlement`` only after this module has atomically
+published the complete run and verified every present record byte-for-byte.
 """
 
 from __future__ import annotations
@@ -58,10 +59,12 @@ def publish_finalized_engine_observations(
     """Publish and verify one attempt's complete independent-observation run.
 
     The run identifier and all security-relevant scope come from the immutable
-    attempt binding.  Publication is deterministic, so an exact retry reopens
+    attempt binding. Publication is deterministic, so an exact retry reopens
     the same bundle while a partial or conflicting run remains untouched and is
-    refused.  The function returns no partial result: every observation must be
-    present byte-for-byte in the finalized bundle before the tuple is released.
+    refused. Every present observation must be byte-identical in the finalized
+    bundle. An empty tuple establishes no target response. The caller must wait
+    for all accepted target and relay work to settle before using the empty
+    case, because finalization cannot later add observations to this run ID.
     """
 
     try:
@@ -92,7 +95,7 @@ def _publish_finalized_engine_observations(
         raise EngineObservationPublicationError("observation publication input is invalid")
     checked_record = EngineAttemptRecord.from_mapping(record.to_dict())
     checked_binding = checked_record.binding
-    if type(observations) is not tuple or not 1 <= len(observations) <= _MAX_OBSERVATIONS:
+    if type(observations) is not tuple or len(observations) > _MAX_OBSERVATIONS:
         raise EngineObservationPublicationError("observation publication count is invalid")
 
     created = _canonical_timestamp(checked_binding.created_at)
@@ -211,6 +214,7 @@ def _publish_finalized_engine_observations(
         },
         result={
             "schema_version": "bluefire.engine-observation-result.v1",
+            # This is publication completion, not attack or target success.
             "status": "completed",
             "experiment_id": checked_binding.experiment_id,
             "attempt_id": checked_binding.attempt_id,

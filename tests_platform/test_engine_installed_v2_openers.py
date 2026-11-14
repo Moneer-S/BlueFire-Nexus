@@ -379,6 +379,7 @@ class _ExecutionTransaction:
         invalid_cleanup=False,
         effects_started=False,
         fail_model_adapter=False,
+        transaction_ref=None,
     ) -> None:
         self.snapshot = snapshot
         self.activation = activation
@@ -388,7 +389,7 @@ class _ExecutionTransaction:
         self.invalid_cleanup = invalid_cleanup
         self.effects_started = effects_started
         self.fail_model_adapter = fail_model_adapter
-        self.transaction_ref = _digest("execution-transaction")
+        self.transaction_ref = transaction_ref or _digest("execution-transaction")
         self.resources = None
         self.pending_lease = None
 
@@ -447,6 +448,8 @@ class _ExecutionTransaction:
                 resources=rows,
             ),
         )
+        if self.observed_identity is not None:
+            return self.resources, activation, self.observed_identity
         return self.resources
 
     def commit(self) -> None:
@@ -486,6 +489,7 @@ class _ExecutionFactory:
         self.changes = changes
         self.transaction = None
         self.activation = None
+        self.observed_identity = None
 
     def begin_execution(self, **values):
         self.events.append("begin")
@@ -494,19 +498,21 @@ class _ExecutionFactory:
             activation=self.activation,
             guard=values["authority_guard"],
             events=self.events,
+            transaction_ref=values.get("resource_transaction_ref"),
             **self.changes,
         )
+        self.transaction.observed_identity = self.observed_identity
         return self.transaction
 
 
 class _ReconciliationTransaction:
     effects_started = False
 
-    def __init__(self, *, snapshot, reconciliation_ref, events) -> None:
+    def __init__(self, *, snapshot, reconciliation_ref, events, transaction_ref=None) -> None:
         self.snapshot = snapshot
         self.reconciliation_ref = reconciliation_ref
         self.events = events
-        self.transaction_ref = _digest("reconciliation-transaction")
+        self.transaction_ref = transaction_ref or _digest("reconciliation-transaction")
 
     def reopen(self):
         self.events.append("reopen-resources")
@@ -560,6 +566,7 @@ class _ReconciliationFactory:
             snapshot=values["snapshot"],
             reconciliation_ref=values["reconciliation_ref"],
             events=self.events,
+            transaction_ref=values.get("resource_transaction_ref"),
         )
 
 

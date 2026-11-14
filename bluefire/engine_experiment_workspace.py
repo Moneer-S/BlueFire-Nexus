@@ -1,9 +1,7 @@
 """Strict, service-owned presenter for external-engine experiment workspaces.
 
-The presenter is intentionally read-only.  It accepts controller-owned display
-metadata, projects the canonical experiment through the evidence verifier, and
-returns the closed object consumed by the desktop frontend.  It never accepts
-engine-authored conclusions or selected-record summaries.
+It projects controller-owned metadata and canonical evidence into the closed
+desktop object, without accepting engine-authored conclusions or summaries.
 """
 
 from __future__ import annotations
@@ -12,6 +10,7 @@ import re
 from typing import Any, Mapping, Protocol, cast
 
 from .engine_attempt_contract import EvidenceCategory
+from .engine_execution_proof import EngineExecutionProofError, load_entry_execution_proof
 from .engine_experiment import (
     ControllerCheckRole,
     EngineAttemptEntry,
@@ -78,7 +77,7 @@ from .util import content_hash, json_clone, parse_iso8601_datetime
 
 
 class EngineExperimentSelectionNotFound(EngineExperimentWorkspaceError):
-    """Raised when a well-formed selected work identity is not in the experiment."""
+    """A well-formed selected work identity is not in the experiment."""
 
 
 class EngineExperimentPresentationSource(Protocol):
@@ -566,7 +565,7 @@ def _actions(
 def _independent_summary(assessment: str) -> str:
     return {
         "unauthorized_disclosure": "Independent observation confirmed protected data exposure.",
-        "authorization_denied": "Independent observation confirmed the operation was denied.",
+        "authorization_denied": "Independent target observation confirmed the target denied the operation.",
         "legitimate_use_succeeded": "Independent observation confirmed legitimate use succeeded.",
         "no_protected_effect": "Independent observation found no protected effect.",
         "unknown": "Independent observation could not establish the outcome.",
@@ -592,7 +591,10 @@ def _safe_session_id(value: str | None) -> str | None:
 def _selected_attempt(
     experiment: EngineExperiment,
     projection: Mapping[str, Any],
+    run_source: EngineRunSource,
     attempt_id: str,
+    *,
+    model_test_provider: bool,
 ) -> dict[str, Any]:
     entry = next(
         item for item in experiment.attempts if item.record.binding.attempt_id == attempt_id
@@ -641,7 +643,7 @@ def _selected_attempt(
                 "attempt_id": attempt_id,
                 "category": "independent_security_outcome",
                 "provenance": (
-                    "control_blocked" if assessment == "authorization_denied" else "observed"
+                    "target_observed_denial" if assessment == "authorization_denied" else "observed"
                 ),
                 "summary": _independent_summary(assessment),
                 "producer": _safe_producer(observation.evidence.producer),
@@ -665,6 +667,15 @@ def _selected_attempt(
         exit_reason = record.exit_reason or (
             "The attempt did not complete with full evidence. Inspect its saved run."
         )
+    try:
+        retained = load_entry_execution_proof(
+            run_source,
+            entry,
+            tuple(sorted(verified_ids)),
+            model_test_provider=model_test_provider,
+        )
+    except EngineExecutionProofError as exc:
+        raise EngineExperimentWorkspaceError("selected attempt execution proof is invalid") from exc
     return {
         "attempt_id": attempt_id,
         "role": binding.role.value,
@@ -678,16 +689,14 @@ def _selected_attempt(
         "finished_at": record.ended_at,
         "usage": {
             "duration_ms": duration_ms,
-            "model_requests": None,
-            "input_tokens": None,
-            "output_tokens": None,
-            "tool_calls": None,
-            "cost_microusd": None,
+            **retained["usage"],
         },
-        "findings": None,
+        "execution_proof": retained["execution_proof"],
+        "tool_events": retained["tool_events"],
+        "findings": retained["findings"],
         "observations": observations,
         "artifact_manifest_ref": entry.artifact_manifest_ref,
-        "artifacts": None,
+        "artifacts": retained["artifacts"],
         "cleanup": {
             "state": entry.cleanup_state.value,
             "receipt_ref": entry.cleanup_evidence_ref,
@@ -729,7 +738,7 @@ def _selected_check(
                     else "independent_security_outcome"
                 ),
                 "provenance": (
-                    "control_blocked" if assessment == "authorization_denied" else "observed"
+                    "target_observed_denial" if assessment == "authorization_denied" else "observed"
                 ),
                 "summary": _independent_summary(assessment),
                 "producer": _safe_producer(item.evidence.producer),
@@ -764,7 +773,10 @@ def _selected_check(
 def _selected_context(
     experiment: EngineExperiment,
     projection: Mapping[str, Any],
+    run_source: EngineRunSource,
     selection: Mapping[str, Any] | None,
+    *,
+    model_test_provider: bool,
 ) -> dict[str, Any] | None:
     if selection is None:
         return None
@@ -772,7 +784,13 @@ def _selected_context(
     if selection["kind"] == "engine_attempt":
         return {
             "kind": "engine_attempt",
-            "attempt": _selected_attempt(experiment, projection, selected_id),
+            "attempt": _selected_attempt(
+                experiment,
+                projection,
+                run_source,
+                selected_id,
+                model_test_provider=model_test_provider,
+            ),
         }
     return {
         "kind": "controller_check",
@@ -784,6 +802,7 @@ def _workspace_limitations(
     supplied: list[str],
     presentation: Mapping[str, Any],
     experiment: EngineExperiment,
+    selected_context: Mapping[str, Any] | None,
 ) -> list[str]:
     rows = list(supplied)
     if cast(Mapping[str, Any], presentation["engine_setup"])["model"]["test_provider"]:
@@ -794,9 +813,12 @@ def _workspace_limitations(
         presentation["selection"] is not None
         and presentation["selection"]["kind"] == "engine_attempt"
     ):
-        rows.append(
-            "Model-token, request, and tool-call counters are not retained in canonical experiment state."
-        )
+        if (
+            selected_context is None
+            or cast(Mapping[str, Any], selected_context["attempt"])["execution_proof"]["status"]
+            == "unverified"
+        ):
+            rows.append("Usage counters require a finalized controller result for this attempt.")
         selected_id = cast(Mapping[str, Any], presentation["selection"])["id"]
         selected_entry = next(
             entry for entry in experiment.attempts if entry.record.binding.attempt_id == selected_id
@@ -848,6 +870,15 @@ def project_engine_experiment_workspace(
         raise EngineExperimentWorkspaceError("current target projection changed")
 
     selection = cast(Mapping[str, Any] | None, checked["selection"])
+    selected_context = _selected_context(
+        experiment,
+        projection,
+        run_source,
+        selection,
+        model_test_provider=cast(Mapping[str, Any], checked["engine_setup"])["model"][
+            "test_provider"
+        ],
+    )
     payload = {
         "schema_version": "bluefire.engine-experiment-workspace.v1",
         "experiment_id": experiment.experiment_id,
@@ -861,9 +892,12 @@ def project_engine_experiment_workspace(
         "defensive_change": checked["defensive_change"],
         "projection": projection,
         "actions": _actions(projection, checked_target),
-        "selected_context": _selected_context(experiment, projection, selection),
+        "selected_context": selected_context,
         "limitations": _workspace_limitations(
-            cast(list[str], checked["limitations"]), checked, experiment
+            cast(list[str], checked["limitations"]),
+            checked,
+            experiment,
+            selected_context,
         ),
     }
     result = {

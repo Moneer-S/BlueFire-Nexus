@@ -669,9 +669,19 @@ class InstalledStrixV2AuthoritySource(Protocol):
         activation_ref: str,
         resource_transaction_ref: str,
         observed_identity_ref: str,
-    ) -> None: ...
+    ) -> InstalledStrixV2AuthoritySnapshot: ...
 
     def require_current(
+        self,
+        *,
+        product_store: ProductStore,
+        accepted: AcceptedPreparedEngineAttempt,
+        binding: EngineAttemptBinding,
+        delegation: EngineCapabilityDelegation,
+        expected_resolution_ref: str,
+    ) -> InstalledStrixV2AuthoritySnapshot: ...
+
+    def require_active(
         self,
         *,
         product_store: ProductStore,
@@ -812,6 +822,34 @@ class InstalledStrixV2AuthorityGuard:
                 self._snapshot_ref = snapshot.snapshot_ref
             elif self._snapshot_ref != snapshot.snapshot_ref:
                 raise InstalledStrixV2CompositionError("V2 authority changed after allocation")
+        return snapshot
+
+    def require_active(self) -> InstalledStrixV2AuthoritySnapshot:
+        try:
+            snapshot = self._source.require_active(
+                product_store=self._store,
+                accepted=self._accepted,
+                binding=self._binding,
+                delegation=self._delegation,
+                expected_resolution_ref=self._accepted.runtime_resolution_ref,
+            )
+        except Exception as exc:
+            raise InstalledStrixV2CompositionError(
+                "V2 execution resources are not durably active"
+            ) from exc
+        if not isinstance(snapshot, InstalledStrixV2AuthoritySnapshot):
+            raise InstalledStrixV2CompositionError(
+                "V2 active authority source returned invalid value"
+            )
+        snapshot.validate(
+            accepted=self._accepted, binding=self._binding, delegation=self._delegation
+        )
+        with self._lock:
+            if (
+                self._prelaunch_ref != snapshot.prelaunch_ref
+                or self._snapshot_ref != snapshot.snapshot_ref
+            ):
+                raise InstalledStrixV2CompositionError("V2 active authority changed")
         return snapshot
 
 

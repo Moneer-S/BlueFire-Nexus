@@ -745,6 +745,8 @@ class InstalledStrixV2ExecutionResourceFactory(Protocol):
         snapshot: InstalledStrixV2PrelaunchSnapshot,
         launch_plan: StrixControlledLaunchPlanV2,
         authority_guard: InstalledStrixV2AuthorityGuard,
+        resource_transaction_ref: str,
+        resource_owner_bindings: tuple[tuple[str, str, str], ...],
     ) -> InstalledStrixV2ExecutionAllocation: ...
 
 
@@ -758,6 +760,8 @@ class InstalledStrixV2ReconciliationResourceFactory(Protocol):
         snapshot: InstalledStrixV2HistoricalSnapshot,
         saved_record: EngineAttemptRecord,
         reconciliation_ref: str,
+        resource_transaction_ref: str,
+        resource_owner_bindings: tuple[tuple[str, str, str], ...],
     ) -> InstalledStrixV2ReconciliationReopen: ...
 
 

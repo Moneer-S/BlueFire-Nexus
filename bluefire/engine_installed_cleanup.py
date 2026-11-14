@@ -156,7 +156,7 @@ class InstalledEngineBundleCleanupReceipt:
         if len(set(roles)) != len(roles) or len(set(refs)) != len(refs):
             raise InstalledEngineCleanupError("cleanup receipt repeats a resource")
         terminal = all(outcome.state != "unknown" for outcome in self.outcomes)
-        if (self.state == "verified_absent") is not terminal:
+        if self.state == "verified_absent" and not terminal:
             raise InstalledEngineCleanupError("cleanup bundle state contradicts its outcomes")
         if self.receipt_ref != content_hash(self.unsigned_document()):
             raise InstalledEngineCleanupError("cleanup receipt digest is invalid")

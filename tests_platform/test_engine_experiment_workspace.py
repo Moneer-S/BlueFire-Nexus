@@ -13,6 +13,7 @@ from bluefire.engine_attempt_contract import (
     EngineEvidenceItem,
     EvidenceCategory,
 )
+from bluefire.engine_execution_proof import execution_proof_receipt
 from bluefire.engine_experiment import (
     CleanupState,
     EngineExperiment,
@@ -451,7 +452,7 @@ def test_selected_controller_check_has_no_engine_or_model_provenance() -> None:
     assert context["check"]["performer"] == "bluefire.controller"
     assert "engine" not in context["check"]
     assert "model" not in context["check"]
-    assert context["check"]["observations"][0]["provenance"] == "control_blocked"
+    assert context["check"]["observations"][0]["provenance"] == "target_observed_denial"
 
 
 def test_unknown_target_is_null_and_only_reconciliation_is_actionable() -> None:
@@ -550,6 +551,8 @@ def test_selected_attempt_omits_raw_engine_content_artifact_bodies_and_local_pat
     assert "engine says success" not in serialized
     assert attempt["findings"] is None
     assert attempt["artifacts"] is None
+    assert attempt["execution_proof"]["status"] == "unverified"
+    assert attempt["tool_events"] is None
     assert attempt["artifact_manifest_ref"] == _digest("d")
     assert attempt["usage"] == {
         "duration_ms": 120_000,
@@ -582,6 +585,93 @@ def test_selected_attempt_preserves_established_zero_duration_without_inventing_
     assert attempt["usage"]["tool_calls"] is None
     assert attempt["findings"] is None
     assert attempt["artifacts"] is None
+    assert attempt["execution_proof"]["status"] == "unverified"
+
+
+def test_selected_attempt_projects_fixture_execution_receipt_shape() -> None:
+    experiment = build_completed_experiment()
+    source = _RunSource(experiment)
+    presentation = _presentation(experiment, selection=_selection(experiment, "engine_attempt"))
+    initial = project_engine_experiment_workspace(experiment, source, presentation)
+    entry = experiment.attempts[0]
+    binding = entry.record.binding
+    independent_refs = sorted(
+        item["evidence_id"]
+        for item in initial["projection"]["observations"]
+        if item["attempt_id"] == binding.attempt_id
+    )
+    proof = {
+        "schema_version": "bluefire.installed-engine-execution-proof.v1",
+        "attempt_id": binding.attempt_id,
+        "run_id": binding.run_id,
+        "controller_receipt_ref": _digest("0"),
+        "runtime": {
+            "engine_id": "strix",
+            "engine_revision": binding.engine_revision,
+            "engine_package_digest": binding.engine_package_digest,
+            "runtime_identity_ref": _digest("1"),
+            "image_identity_ref": _digest("2"),
+            "runtime_activation_ref": _digest("3"),
+            "runtime_closure_ref": _digest("4"),
+            "fixed_exec_receipt_ref": _digest("5"),
+            "startup_overlay_ref": _digest("6"),
+            "installed_service_started": True,
+            "native_worker_started": True,
+        },
+        "tool_execution": {
+            "executed": True,
+            "events": [
+                {
+                    "event_id": "engine-tool-event-" + "7" * 24,
+                    "tool_name": "http_request",
+                    "state": "completed",
+                    "receipt_ref": _digest("7"),
+                    "occurred_at": entry.record.ended_at,
+                }
+            ],
+        },
+        "target": {
+            "response_observed": True,
+            "response_receipt_ref": _digest("8"),
+            "independent_evidence_refs": independent_refs,
+        },
+        "model": {
+            "kind": "test",
+            "provider": binding.model_provider,
+            "id": binding.model_id,
+            "live_model_proof": False,
+            "requests": 1,
+            "input_tokens": 50,
+            "output_tokens": 20,
+            "cost_microusd": 0,
+            "lease_revocation_receipt_ref": _digest("9"),
+            "bearer_redaction_attested": True,
+        },
+        "protocol_provider": {
+            "kind": "test_caido_protocol",
+            "identity_ref": _digest("a"),
+            "live_caido_proof": False,
+        },
+        "artifact_manifest_ref": entry.artifact_manifest_ref,
+        "artifacts": [],
+        "findings": [],
+    }
+    proof["controller_receipt_ref"] = execution_proof_receipt(proof)
+    document = dict(source.documents[binding.run_id])
+    document["engine_execution_proof"] = proof
+    source.documents[binding.run_id] = document
+
+    workspace = project_engine_experiment_workspace(experiment, source, presentation)
+    attempt = workspace["selected_context"]["attempt"]
+
+    assert attempt["execution_proof"]["status"] == "target_observed"
+    assert attempt["execution_proof"]["model"]["kind"] == "test"
+    assert attempt["execution_proof"]["model"]["live_model_proof"] is False
+    assert attempt["execution_proof"]["protocol_provider"]["kind"] == "test_caido_protocol"
+    assert attempt["usage"]["tool_calls"] == 1
+    assert attempt["tool_events"][0]["tool_name"] == "http_request"
+    assert attempt["findings"] == []
+    assert attempt["artifacts"] == []
 
 
 def test_active_selected_attempt_reports_unavailable_duration_instead_of_zero() -> None:

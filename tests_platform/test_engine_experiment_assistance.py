@@ -176,9 +176,22 @@ def test_attempt_context_is_analysis_only_bounded_and_separates_evidence() -> No
     selected = summary["selected_record"]
     assert selected["kind"] == "engine_attempt"
     assert all(
-        item["provenance"] in {"engine_reported", "runner_reported", "observed", "control_blocked"}
+        item["provenance"]
+        in {"engine_reported", "runner_reported", "observed", "target_observed_denial"}
         for item in selected["observations"]
     )
+    assert selected["execution_proof"] == {
+        "status": "unverified",
+        "installed_service_started": False,
+        "native_worker_started": False,
+        "tool_execution_proven": False,
+        "target_response_proven": False,
+        "model_kind": "unverified",
+        "live_model_proof": False,
+        "protocol_provider_kind": "unverified",
+        "live_caido_proof": False,
+        "tool_event_count": None,
+    }
     serialized = json.dumps(context, sort_keys=True)
     assert "ignore this untrusted engine summary" not in serialized
     assert "sk-this-must-never-appear" not in serialized
@@ -205,7 +218,8 @@ def test_controller_check_selection_never_acquires_engine_provenance() -> None:
     assert selected["kind"] == "controller_check"
     assert selected["performer"] == "bluefire.controller"
     assert all(
-        item["provenance"] in {"observed", "control_blocked"} for item in selected["observations"]
+        item["provenance"] in {"observed", "target_observed_denial"}
+        for item in selected["observations"]
     )
     assert "engine" not in selected and "model" not in selected
 

@@ -28,6 +28,7 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _EXPERIMENT_ID = re.compile(r"^experiment-[0-9a-f]{32}$")
 _ATTEMPT_ID = re.compile(r"^engine-attempt-[0-9a-f]{32}$")
 _CHECK_ID = re.compile(r"^controller-check-[0-9a-f]{32}$")
+_TOOL_EVENT_ID = re.compile(r"^engine-tool-event-[0-9a-f]{24}$")
 _LOCAL_PATH = re.compile(
     r"(?ix)(?:"
     r"(?<![A-Za-z0-9])[a-z]:[\\/]"
@@ -102,10 +103,12 @@ _ALLOWED_CONTEXT_KEYS = frozenset(
         "environment",
         "evidence_id",
         "expected_sources",
+        "execution_proof",
         "experiment_id",
         "headline",
         "id",
         "independent_observations",
+        "installed_service_started",
         "items",
         "job_id",
         "kind",
@@ -113,10 +116,14 @@ _ALLOWED_CONTEXT_KEYS = frozenset(
         "limit_qualified",
         "limitations",
         "live_model_inference_proven",
+        "live_model_proof",
+        "live_caido_proof",
         "mechanism_ref",
         "missing_sources",
         "model_id",
         "model_provider",
+        "model_kind",
+        "native_worker_started",
         "objective",
         "observations",
         "original_mechanism",
@@ -124,6 +131,7 @@ _ALLOWED_CONTEXT_KEYS = frozenset(
         "platform",
         "producer",
         "proof_scope",
+        "protocol_provider_kind",
         "provenance",
         "provider",
         "receipt_ref",
@@ -143,9 +151,12 @@ _ALLOWED_CONTEXT_KEYS = frozenset(
         "status",
         "summary",
         "support_refs",
+        "target_response_proven",
         "telemetry_health",
         "test_provider",
         "timestamp",
+        "tool_event_count",
+        "tool_execution_proven",
         "title",
         "unknowns",
         "verified_sources",
@@ -251,6 +262,8 @@ _ATTEMPT_DETAIL_FIELDS = frozenset(
         "started_at",
         "finished_at",
         "usage",
+        "execution_proof",
+        "tool_events",
         "findings",
         "observations",
         "artifact_manifest_ref",
@@ -259,6 +272,36 @@ _ATTEMPT_DETAIL_FIELDS = frozenset(
         "resume_supported",
     }
 )
+_EXECUTION_PROOF_FIELDS = frozenset(
+    {
+        "status",
+        "controller_receipt_ref",
+        "runtime_identity_ref",
+        "image_identity_ref",
+        "runtime_activation_ref",
+        "runtime_closure_ref",
+        "fixed_exec_receipt_ref",
+        "startup_overlay_ref",
+        "target_response_receipt_ref",
+        "installed_service_started",
+        "native_worker_started",
+        "tool_execution_proven",
+        "target_response_proven",
+        "model",
+        "protocol_provider",
+        "limitations",
+    }
+)
+_MODEL_PROOF_FIELDS = frozenset(
+    {
+        "kind",
+        "live_model_proof",
+        "lease_revocation_receipt_ref",
+        "bearer_redaction_attested",
+    }
+)
+_PROTOCOL_PROOF_FIELDS = frozenset({"kind", "identity_ref", "live_caido_proof"})
+_TOOL_EVENT_FIELDS = frozenset({"event_id", "tool_name", "state", "receipt_ref", "occurred_at"})
 _CHECK_DETAIL_FIELDS = frozenset(
     {
         "check_id",
@@ -783,6 +826,89 @@ def _validate_workspace(
     return dict(cast(dict[str, Any], json_clone(row)))
 
 
+def _execution_proof_summary(proof_value: Any, tool_events_value: Any) -> dict[str, Any]:
+    proof = _exact(proof_value, _EXECUTION_PROOF_FIELDS, "selected execution proof")
+    model = _exact(proof["model"], _MODEL_PROOF_FIELDS, "selected model proof")
+    protocol = _exact(proof["protocol_provider"], _PROTOCOL_PROOF_FIELDS, "selected protocol proof")
+    status = proof["status"]
+    model_kind = model["kind"]
+    protocol_kind = protocol["kind"]
+    if (
+        status not in {"unverified", "runtime_started", "tool_executed", "target_observed"}
+        or model_kind not in {"unverified", "test", "live"}
+        or protocol_kind not in {"unverified", "test_caido_protocol", "live_caido", "unavailable"}
+    ):
+        raise EngineExperimentAssistanceError("selected execution proof changed")
+    boolean_fields = (
+        proof["installed_service_started"],
+        proof["native_worker_started"],
+        proof["tool_execution_proven"],
+        proof["target_response_proven"],
+        model["live_model_proof"],
+        model["bearer_redaction_attested"],
+        protocol["live_caido_proof"],
+    )
+    if any(type(item) is not bool for item in boolean_fields):
+        raise EngineExperimentAssistanceError("selected execution proof changed")
+    refs = (
+        proof["controller_receipt_ref"],
+        proof["runtime_identity_ref"],
+        proof["image_identity_ref"],
+        proof["runtime_activation_ref"],
+        proof["runtime_closure_ref"],
+        proof["fixed_exec_receipt_ref"],
+        proof["startup_overlay_ref"],
+        proof["target_response_receipt_ref"],
+        model["lease_revocation_receipt_ref"],
+        protocol["identity_ref"],
+    )
+    for index, reference in enumerate(refs):
+        _optional_digest(reference, f"selected execution proof reference {index}")
+    _strings(proof["limitations"], "selected execution proof limitations", maximum=8)
+    if tool_events_value is None:
+        tool_event_count = None
+        completed_tool_event = False
+    elif isinstance(tool_events_value, list) and len(tool_events_value) <= 128:
+        seen: set[str] = set()
+        completed_tool_event = False
+        for item in tool_events_value:
+            event = _exact(item, _TOOL_EVENT_FIELDS, "selected tool event")
+            event_id = _text(event["event_id"], "selected tool event identity", maximum=80)
+            if _TOOL_EVENT_ID.fullmatch(event_id) is None or event_id in seen:
+                raise EngineExperimentAssistanceError("selected tool event identity changed")
+            seen.add(event_id)
+            _text(event["tool_name"], "selected tool name", maximum=120)
+            if event["state"] not in {"completed", "failed", "refused", "cancelled"}:
+                raise EngineExperimentAssistanceError("selected tool event state changed")
+            completed_tool_event |= event["state"] == "completed"
+            _digest(event["receipt_ref"], "selected tool event receipt")
+            _text(event["occurred_at"], "selected tool event time", maximum=40)
+        tool_event_count = len(tool_events_value)
+    else:
+        raise EngineExperimentAssistanceError("selected tool events changed")
+    if (
+        (status == "unverified") != (tool_event_count is None)
+        or proof["tool_execution_proven"] != completed_tool_event
+        or proof["tool_execution_proven"] != (status in {"tool_executed", "target_observed"})
+        or proof["target_response_proven"] != (status == "target_observed")
+        or (proof["target_response_receipt_ref"] is not None) != proof["target_response_proven"]
+        or (model_kind == "test" and model["live_model_proof"])
+    ):
+        raise EngineExperimentAssistanceError("selected tool execution truth changed")
+    return {
+        "status": status,
+        "installed_service_started": proof["installed_service_started"],
+        "native_worker_started": proof["native_worker_started"],
+        "tool_execution_proven": proof["tool_execution_proven"],
+        "target_response_proven": proof["target_response_proven"],
+        "model_kind": model_kind,
+        "live_model_proof": model["live_model_proof"],
+        "protocol_provider_kind": protocol_kind,
+        "live_caido_proof": protocol["live_caido_proof"],
+        "tool_event_count": tool_event_count,
+    }
+
+
 def _selected_summary(
     workspace: Mapping[str, Any], selection: Mapping[str, Any]
 ) -> dict[str, Any] | None:
@@ -845,6 +971,13 @@ def _selected_summary(
                 raise EngineExperimentAssistanceError("selected artifact changed")
             _digest(artifact["sha256"], "artifact digest")
             _text(artifact["media_type"], "artifact media type", maximum=100)
+        execution_proof = _execution_proof_summary(detail["execution_proof"], detail["tool_events"])
+        configured_test_provider = workspace["engine_setup"]["model"]["test_provider"]
+        if (
+            execution_proof["model_kind"] != "unverified"
+            and (execution_proof["model_kind"] == "test") != configured_test_provider
+        ):
+            raise EngineExperimentAssistanceError("selected model proof changed")
         return {
             "kind": "engine_attempt",
             "id": attempt_id,
@@ -853,6 +986,7 @@ def _selected_summary(
             "run_id": detail["run_id"],
             "state": detail["state"],
             "completeness": detail["completeness"],
+            "execution_proof": execution_proof,
             "observations": observations,
             "cleanup": _cleanup_summary(detail["cleanup"]),
         }
@@ -913,7 +1047,7 @@ def _selected_observations(
             or (category == "tool_result" and provenance != "runner_reported")
             or (
                 category not in {"engine_assertion", "tool_result"}
-                and provenance not in {"observed", "control_blocked"}
+                and provenance not in {"observed", "target_observed_denial"}
             )
         ):
             raise EngineExperimentAssistanceError("selected observation provenance changed")
@@ -953,6 +1087,13 @@ def _reference_summary(
     if not isinstance(model.get("test_provider"), bool):
         raise EngineExperimentAssistanceError("model provider classification changed")
 
+    selected_record = _selected_summary(workspace, selection)
+    selected_live_model_proof = bool(
+        selected_record is not None
+        and selected_record["kind"] == "engine_attempt"
+        and selected_record["execution_proof"]["live_model_proof"]
+    )
+
     return {
         "schema_version": "bluefire.engine-experiment-assistance-summary.v1",
         "proof_scope": "saved_engine_experiment_only",
@@ -977,7 +1118,7 @@ def _reference_summary(
             "model_id": model["id"],
             "data_destination": model["data_destination"],
             "test_provider": model["test_provider"],
-            "live_model_inference_proven": False,
+            "live_model_inference_proven": selected_live_model_proof,
         },
         "attempts": [
             {
@@ -1014,7 +1155,7 @@ def _reference_summary(
             for item in observations
         ],
         "conclusion": _validated_conclusion(projection["conclusion"]),
-        "selected_record": _selected_summary(workspace, selection),
+        "selected_record": selected_record,
     }
 
 
