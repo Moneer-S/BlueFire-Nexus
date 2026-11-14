@@ -40,6 +40,8 @@ def _without_engine_schema(monkeypatch: pytest.MonkeyPatch) -> None:
         store_module.tenant_generation_journal_store,
         store_module.tenant_action_material_store,
         store_module.strix_runtime_store,
+        store_module.strix_model_terminal_store,
+        store_module.strix_controller_receipt_store,
         store_module.strix_issuance_store,
         store_module.strix_composition_schema,
     ):

@@ -39,6 +39,8 @@ from . import product_store_file_access as file_access_store
 from . import product_store_proposal_reviews as proposal_review_store
 from . import product_store_strix_admission_issuer as strix_issuance_store
 from . import product_store_strix_composition_schema as strix_composition_schema
+from . import product_store_strix_controller_receipts as strix_controller_receipt_store
+from . import product_store_strix_model_terminal as strix_model_terminal_store
 from . import product_store_strix_runtime as strix_runtime_store
 from . import product_store_tenant_action_materials as tenant_action_material_store
 from . import product_store_tenant_generation_journals as tenant_generation_journal_store
@@ -84,7 +86,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 26
 _ENGINE_RECONCILIATION_SESSION_GUARD = threading.Lock()
 
 
@@ -965,6 +967,8 @@ class ProductStore(
             tenant_generation_journal_store.initialize_schema(connection)
             tenant_action_material_store.initialize_schema(connection)
             strix_runtime_store.initialize_schema(connection)
+            strix_model_terminal_store.initialize_schema(connection)
+            strix_controller_receipt_store.initialize_schema(connection)
             strix_issuance_store.initialize_schema(connection)
             strix_composition_schema.initialize_schema(connection)
             self._initialize_macos_workspace_schema(connection)

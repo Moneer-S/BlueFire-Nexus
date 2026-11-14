@@ -17,6 +17,8 @@ TABLES = (
     "strix_composition_historical_records",
     "strix_composition_authority_records",
     "strix_composition_prelaunch_records",
+    "strix_model_lease_terminals",
+    "strix_controller_receipts",
 )
 RETAINED_TABLES = (
     "capability_task_dispatch_intents",

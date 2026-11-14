@@ -7,17 +7,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+import bluefire.service as service_module
 from bluefire.engine_experiment_service import EngineExperimentServiceError
+from bluefire.job_runtime import JobContext, RunJobController
+from bluefire.product_store import ProductStoreError
+from bluefire.service import BlueFireService
 from tests_platform.test_engine_action_service_composition import PREPARE_REQUEST, SUBMIT_REQUEST
 from tests_platform.test_engine_experiment import EXPERIMENT_ID
 from tests_platform.test_engine_installed_composition import _configured, _Resource
 from tests_platform.test_engine_product_service_splice import _create_request
 from tests_platform.test_product_store_engine_presentations import _initial_target, _profile
-
-import bluefire.service as service_module
-from bluefire.job_runtime import JobContext, RunJobController
-from bluefire.product_store import ProductStoreError
-from bluefire.service import BlueFireService
 
 
 def _service(tmp_path: Path, **values: Any) -> BlueFireService:
@@ -52,6 +52,35 @@ def test_supplied_composition_wires_exact_shared_owners_and_inert_factories(tmp_
         assert service.product_store.list_jobs() == []
     finally:
         service.close()
+
+
+def test_retained_recovery_joins_before_owned_engine_resources_close(tmp_path, monkeypatch):
+    from bluefire.composition_jobs import CompositionJobs
+
+    entered = threading.Event()
+
+    def recover(_self, *, stop_event=None):
+        if stop_event is None:
+            return {"examined": 1, "pending": 1, "settled": 0}
+        entered.set()
+        assert stop_event.wait(5)
+        return {"examined": 1, "pending": 0, "settled": 1}
+
+    monkeypatch.setattr(CompositionJobs, "recover_retained_attempts", recover)
+    configured = _configured()
+    service = _service(tmp_path, engine_workflow_composition=configured.composition)
+    assert entered.wait(3)
+    thread = service._retained_recovery_thread
+    assert thread is not None and thread.is_alive()
+    original_close = configured.composition.close
+
+    def close_after_recovery():
+        assert not thread.is_alive()
+        original_close()
+
+    monkeypatch.setattr(configured.composition, "close", close_after_recovery)
+    service.close()
+    assert service.retained_attempt_recovery["pending"] == 0
 
 
 @pytest.mark.parametrize(
@@ -346,7 +375,6 @@ def test_composition_reuse_is_rejected_before_service_resource_allocation(
 
 def test_composition_generic_controller_submission_fails_closed_with_stable_error(tmp_path):
     from bluefire.engine_experiment_service import EngineControllerJobAction
-
     from bluefire.util import content_hash
 
     configured = _configured()
