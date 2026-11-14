@@ -24,6 +24,41 @@ export function retainedSettlementPollBudget(remainingWorkMs) {
   return Math.min(remainingWorkMs, RETAINED_SETTLEMENT_POLL_CAP_MS);
 }
 
+const RETAINED_JOB_STATES = new Set(["queued", "planning", "running", "awaiting_approval", "completed", "failed", "cancelled", "interrupted"]);
+const RETAINED_SETTLEMENTS = new Set(["settled", "pending_cleanup"]);
+const RETAINED_PHASES = new Set(["preparing_receiver", "attempt_completed"]);
+const RETAINED_ERROR_TYPES = new Set(["ProductStoreError", "ReceiverSessionError", "RunnerTransportError", "JobRuntimeError", "TimeoutError"]);
+const RETAINED_VERIFICATION_PROBLEMS = new Map([
+  ["The actual finalized run differs from its grant-owned attempt.", "run_binding"],
+  ["The exact authenticated receiver observation is unavailable.", "receiver_observation"],
+  ["The receiver lacks a bound terminal and clean process exit.", "receiver_terminal"],
+  ["Authenticated receiver bytes do not match the staged native artifact.", "staged_artifact"],
+]);
+
+// The installed report keeps only fixed categories, never run data or error text.
+export function retainedSettlementDiagnostic(objective, jobId) {
+  const attempt = Array.isArray(objective?.attempts) ? objective.attempts.find(item => item?.job_id === jobId) : undefined;
+  const progress = attempt?.progress && typeof attempt.progress === "object" ? attempt.progress : {};
+  const label = (value, allowed) => value == null ? "missing" : allowed.has(value) ? value : "other";
+  return {
+    schema_version: "bluefire.installed-retained-settlement-diagnostic.v1",
+    attempt_present: Boolean(attempt),
+    job_state: label(attempt?.state, RETAINED_JOB_STATES),
+    phase: label(progress.phase, RETAINED_PHASES),
+    settlement: label(progress.settlement, RETAINED_SETTLEMENTS),
+    verified_result_present: Boolean(progress.verified_result),
+    verified_result_problem_present: typeof progress.verified_result_problem === "string",
+    verified_result_problem_kind: typeof progress.verified_result_problem === "string"
+      ? RETAINED_VERIFICATION_PROBLEMS.get(progress.verified_result_problem) ?? "other" : "none",
+    operation_error_present: typeof progress.operation_error === "string",
+    error_present: Boolean(attempt?.error),
+    error_type: label(attempt?.error?.type, RETAINED_ERROR_TYPES),
+    receiver_closed: progress.receiver_closed === true,
+    cleanup_receipt_present: Boolean(progress.receiver_cleanup_receipt),
+    finalized_run_present: typeof progress.finalized_run_id === "string",
+  };
+}
+
 // The rendered action must become ready before a response observer is armed.
 // Both local windows are inside the existing work budget, never its cleanup reserve.
 export async function submitRetainedAttempt(page, options) {
@@ -284,6 +319,7 @@ export async function runRetainedJourney(page, state, options) {
   assert.equal(firstProposal.proposal.reconsideration, null);
   assert.deepEqual(firstProposal.job.request.context.retained_artifacts.available_sources, []);
   const execute = async index => {
+    options.onSettlement?.(undefined);
     await submitRetainedAttempt(page, { origin, ownerId: state.ownerId, controlId,
       proposalId: state.proposals[index], candidatePresent: Boolean(state.candidate),
       prefix: index === 0 ? "retained-original" : "retained-continuation",
@@ -292,8 +328,16 @@ export async function runRetainedJourney(page, state, options) {
     const id = state.attempts[index];
     const settlementPollBudget = retainedSettlementPollBudget(remainingMs());
     if (settlementPollBudget <= 0) throw new Error("The retained-result proof has no work time left");
-    const current = await wait(readBudget => read(`/composition/objectives/${state.ownerId}`, readBudget), value => value.attempts.some(attempt =>
-      attempt.job_id === id && attempt.state === "completed" && attempt.progress.settlement === "settled" && attempt.progress.verified_result), settlementPollBudget);
+    const current = await wait(readBudget => read(`/composition/objectives/${state.ownerId}`, readBudget), value => {
+      const attempt = value.attempts.find(item => item.job_id === id);
+      const diagnostic = retainedSettlementDiagnostic(value, id);
+      options.onSettlement?.(diagnostic);
+      const verified = attempt?.state === "completed" && attempt.progress.settlement === "settled" && attempt.progress.verified_result;
+      if (!verified && ["completed", "failed", "cancelled", "interrupted"].includes(attempt?.state)) {
+        throw new Error("The retained attempt ended without a verified result");
+      }
+      return verified;
+    }, settlementPollBudget);
     setStage(`${index === 0 ? "retained-original" : "retained-continuation"}-result-binding`);
     const attempt = current.attempts.find(item => item.job_id === id);
     const run = await read(`/runs/${attempt.request.composition_attempt.run_id}`);

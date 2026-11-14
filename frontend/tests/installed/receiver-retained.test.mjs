@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { URL } from "node:url";
-import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, retainedSettlementPollBudget, submitRetainedAttempt } from "./receiver-retained.mjs";
+import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, retainedSettlementDiagnostic, retainedSettlementPollBudget, submitRetainedAttempt } from "./receiver-retained.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
 import { retainedHash, assertRetainedSource, assertMetadataOnly, verifyRetainedOriginal, verifyRetainedContinuation, RETAINED_PACK, RETAINED_QUESTION, RETAINED_REVIEWER, RETAINED_METHOD } from "./receiver-retained-proof.mjs";
 
@@ -56,6 +56,29 @@ test("retained settlement polling is capped inside the shared work deadline", ()
   assert.equal(retainedSettlementPollBudget(budget.remaining(325000)), 150000);
   assert.equal(retainedSettlementPollBudget(budget.remaining(425000)), 50000);
   assert.equal(retainedSettlementPollBudget(budget.remaining(475000)), 0);
+});
+
+test("retained settlement diagnostics keep fixed categories and no saved error text", () => {
+  const current = { attempts: [{ job_id: ownerId, state: "failed", error: { type: "ProductStoreError", message: "private source path" }, progress: {
+    phase: "preparing_receiver", settlement: "pending_cleanup", verified_result_problem: "private payload path",
+    operation_error: "private operation text", receiver_closed: false, receiver_cleanup_receipt: { private: "value" },
+  } }] };
+  assert.deepEqual(retainedSettlementDiagnostic(current, ownerId), {
+    schema_version: "bluefire.installed-retained-settlement-diagnostic.v1", attempt_present: true,
+    job_state: "failed", phase: "preparing_receiver", settlement: "pending_cleanup",
+    verified_result_present: false, verified_result_problem_present: true, verified_result_problem_kind: "other",
+    operation_error_present: true, error_present: true,
+    error_type: "ProductStoreError", receiver_closed: false, cleanup_receipt_present: true,
+    finalized_run_present: false,
+  });
+  assert.equal(JSON.stringify(retainedSettlementDiagnostic(current, ownerId)).includes("private"), false);
+  assert.equal(retainedSettlementDiagnostic(current, controlId).job_state, "missing");
+  current.attempts[0].state = "an unexpected private state";
+  current.attempts[0].error.type = "CustomSecretType";
+  assert.equal(retainedSettlementDiagnostic(current, ownerId).job_state, "other");
+  assert.equal(retainedSettlementDiagnostic(current, ownerId).error_type, "other");
+  current.attempts[0].progress.verified_result_problem = "The exact authenticated receiver observation is unavailable.";
+  assert.equal(retainedSettlementDiagnostic(current, ownerId).verified_result_problem_kind, "receiver_observation");
 });
 
 test("retained submission observes visible enabled action before arming and clicks exactly once", async () => {
