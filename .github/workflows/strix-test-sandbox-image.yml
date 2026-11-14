@@ -82,6 +82,8 @@ jobs:
           test -f tools/install_root_private_bluefire_service.py
           test -f tools/verify_root_private_bluefire_service.py
           test -f tools/verify_installed_engine_experiment.py
+          test -f tools/retain_tenant_sidecar_image_inputs.py
+          test -f bluefire/tenant_record_sidecar_image.py
           test -f tools/strix_runtime_closure_prepare_core.py
           test -f bluefire/test_caido_protocol_entry.py
           test -f bluefire/test_caido_protocol_provider.py
@@ -1037,6 +1039,433 @@ jobs:
             --expected-source-revision "${{ github.sha }}" \
             --forbid-root "$GITHUB_WORKSPACE"
 
+      - name: Preload the exact official Python target base once
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='docker.io/library/python@sha256:1aaa65a85fda306ffb8b910824d4e93bdce61e212c7e87168123ea3073b41a1a'
+          mkdir -m 700 "$RUNNER_TEMP/bluefire-target-docker-config"
+          export DOCKER_CONFIG="$RUNNER_TEMP/bluefire-target-docker-config"
+          if ! docker image inspect "$base" >/dev/null 2>&1; then
+            docker pull --platform linux/amd64 "$base"
+          fi
+          docker image inspect "$base" --format '{{.Id}} {{.Os}}/{{.Architecture}}' \
+            > "$RUNNER_TEMP/bluefire-target-base-preload.txt"
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          row = (Path(os.environ["RUNNER_TEMP"]) / "bluefire-target-base-preload.txt").read_text(encoding="ascii").strip()
+          if re.fullmatch(r"sha256:[0-9a-f]{64} linux/amd64", row) is None:
+              raise SystemExit("preloaded target Python base platform differs")
+          PY
+
+      - name: Stage exact target-image helpers under the installed service
+        id: target_helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i \
+            RUN_ID="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            SOURCE_SHA="${{ github.sha }}" \
+            SOURCE_DIGEST="${{ steps.source.outputs.digest }}" \
+            STAGE="${{ steps.protected.outputs.stage }}" \
+            PATH=/usr/bin:/bin /usr/bin/python3.12 -I -B - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import os
+          import re
+          import stat
+          from pathlib import Path
+
+          run_id = os.environ["RUN_ID"]
+          revision = os.environ["SOURCE_SHA"]
+          if re.fullmatch(r"[1-9][0-9]{0,19}-[1-9][0-9]{0,4}", run_id) is None or (
+              re.fullmatch(r"[0-9a-f]{40}", revision) is None
+          ):
+              raise SystemExit("target helper source identity differs")
+          stage = Path(os.environ["STAGE"])
+          source = stage / "source"
+          service = Path(f"/root/bluefire-ci-{run_id}")
+          for path in (stage, source, service):
+              info = path.lstat()
+              if path.is_symlink() or info.st_uid != 0 or (
+                  not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700
+              ):
+                  raise SystemExit("target helper source or service custody differs")
+          if stage != Path("/var/tmp") / f"bluefire-strix-fixed-{run_id}" or (
+              "sha256:" + hashlib.sha256((stage / "source.tar").read_bytes()).hexdigest()
+          ) != os.environ["SOURCE_DIGEST"] or (
+              source / "bluefire/_source_revision.txt"
+          ).read_text(encoding="ascii").strip() != revision:
+              raise SystemExit("target helper source archive differs")
+          destination = service / "tools"
+          destination.mkdir(mode=0o700)
+          marker = destination / "__init__.py"
+          marker.touch(mode=0o600, exist_ok=False)
+          for name, key in (
+              ("retain_tenant_sidecar_image_inputs.py", "retainer"),
+              ("verify_installed_engine_experiment.py", "binding_helper"),
+          ):
+              original = source / "tools" / name
+              info = original.lstat()
+              if original.is_symlink() or info.st_uid != 0 or (
+                  not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022
+                  or info.st_nlink != 1 or not 0 < info.st_size <= 256 * 1024
+              ):
+                  raise SystemExit("target helper source is unsafe")
+              copied = destination / name
+              data = original.read_bytes()
+              with copied.open("xb") as stream:
+                  stream.write(data)
+                  stream.flush()
+                  os.fsync(stream.fileno())
+              copied.chmod(0o600)
+              expected = "sha256:" + hashlib.sha256(data).hexdigest()
+              if copied.lstat().st_uid != 0 or (
+                  "sha256:" + hashlib.sha256(copied.read_bytes()).hexdigest()
+              ) != expected:
+                  raise SystemExit("target helper protected copy differs")
+              print(f"{key}={expected}")
+          PY
+
+      - name: Qualify and reopen the installed target-sidecar image
+        id: target_image
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          evidence="$RUNNER_TEMP/bluefire-strix-evidence"
+          mkdir -m 700 -p "$evidence"
+          test ! -L "$evidence"
+          test "$(stat -c %a "$evidence")" = 700
+          summary="$evidence/target-image-preparation.json"
+          test ! -e "$summary"
+          root="/root/bluefire-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          sudo -n /usr/bin/env -i \
+            RUN_ID="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            SOURCE_SHA="${{ github.sha }}" \
+            WHEEL_DIGEST="${{ steps.product.outputs.digest }}" \
+            RETAINER_DIGEST="${{ steps.target_helpers.outputs.retainer }}" \
+            HELPER_DIGEST="${{ steps.target_helpers.outputs.binding_helper }}" \
+            PATH=/usr/bin:/bin HOME="$root" PYTHONNOUSERSITE=1 \
+            "$root/venv/bin/python3.12" -I -B - > "$summary" <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import stat
+          import sys
+          from pathlib import Path
+
+          run_id = os.environ["RUN_ID"]
+          revision = os.environ["SOURCE_SHA"]
+          digest = re.compile(r"sha256:[0-9a-f]{64}\Z")
+          if re.fullmatch(r"[1-9][0-9]{0,19}-[1-9][0-9]{0,4}", run_id) is None or (
+              re.fullmatch(r"[0-9a-f]{40}", revision) is None
+          ) or any(digest.fullmatch(os.environ[name]) is None for name in (
+              "WHEEL_DIGEST", "RETAINER_DIGEST", "HELPER_DIGEST",
+          )):
+              raise SystemExit("installed target-image identity differs")
+          service = Path(f"/root/bluefire-ci-{run_id}")
+          installed_path = service / "installed-service-inputs.json"
+          installed = json.loads(installed_path.read_text(encoding="utf-8"))
+          if installed.get("schema_version") != "bluefire.root-private-service-install.v1" or (
+              installed.get("source_revision") != revision
+              or installed.get("wheel_sha256") != os.environ["WHEEL_DIGEST"]
+          ):
+              raise SystemExit("installed service receipt differs from target candidate")
+          purelib = Path(installed["service_purelib"])
+          wheel = Path(installed["staged_wheel"])
+          if not purelib.is_relative_to(service / "venv") or (
+              not wheel.is_relative_to(service / "staged")
+          ):
+              raise SystemExit("installed target source escaped private service")
+          import bluefire
+
+          if bluefire.__file__ is None or not Path(bluefire.__file__).resolve().is_relative_to(purelib):
+              raise SystemExit("target qualifier did not import installed BlueFire")
+          tools = service / "tools"
+          tools_info = tools.lstat()
+          if tools.is_symlink() or tools_info.st_uid != 0 or (
+              not stat.S_ISDIR(tools_info.st_mode) or stat.S_IMODE(tools_info.st_mode) != 0o700
+          ):
+              raise SystemExit("installed target helper custody differs")
+          marker = tools / "__init__.py"
+          if marker.is_symlink() or marker.stat().st_size != 0 or marker.stat().st_uid != 0:
+              raise SystemExit("installed target helper package marker differs")
+          for name, env_name in (
+              ("retain_tenant_sidecar_image_inputs.py", "RETAINER_DIGEST"),
+              ("verify_installed_engine_experiment.py", "HELPER_DIGEST"),
+          ):
+              helper = tools / name
+              info = helper.lstat()
+              if helper.is_symlink() or info.st_uid != 0 or (
+                  not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+              ) or "sha256:" + hashlib.sha256(helper.read_bytes()).hexdigest() != os.environ[env_name]:
+                  raise SystemExit("installed target helper digest differs")
+          sys.path.insert(0, str(service))
+          from tools.retain_tenant_sidecar_image_inputs import (
+              retain_pinned_python_base, retain_target_sidecar_build_inputs,
+          )
+          import tools as bound_tools
+          import tools.retain_tenant_sidecar_image_inputs as bound_retainer
+          import tools.verify_installed_engine_experiment as bound_helper
+          from bluefire.tenant_record_sidecar_image import (
+              FileTargetSidecarBaseAdmissionSource, FileTargetSidecarBuildInputSource,
+              FileTenantSidecarImageQualificationSource, PINNED_PYTHON_BASE,
+              qualify_target_sidecar_image,
+          )
+          if bound_tools.__file__ is None or Path(bound_tools.__file__).resolve() != marker or (
+              Path(bound_retainer.__file__).resolve() != tools / "retain_tenant_sidecar_image_inputs.py"
+              or Path(bound_helper.__file__).resolve() != tools / "verify_installed_engine_experiment.py"
+          ):
+              raise SystemExit("target helper import escaped protected service")
+
+          if PINNED_PYTHON_BASE != (
+              "docker.io/library/python@sha256:"
+              "1aaa65a85fda306ffb8b910824d4e93bdce61e212c7e87168123ea3073b41a1a"
+          ):
+              raise SystemExit("installed target base pin differs")
+          target_root = service
+          base = retain_pinned_python_base(root=target_root)
+          inputs = retain_target_sidecar_build_inputs(
+              root=target_root,
+              staged_wheel=wheel,
+              service_purelib=purelib,
+              installed_version=installed["installed_version"],
+              expected_candidate_revision=revision,
+              expected_product_wheel_digest=os.environ["WHEEL_DIGEST"],
+              base_admission=FileTargetSidecarBaseAdmissionSource(target_root),
+              base_ref=base["base_ref"],
+          )
+          receipt = qualify_target_sidecar_image(
+              build_inputs=FileTargetSidecarBuildInputSource(target_root),
+              input_ref=inputs["input_ref"],
+              root=target_root,
+          )
+          reopened = FileTenantSidecarImageQualificationSource(target_root).reopen_qualification(
+              receipt["receipt_ref"]
+          )
+          if reopened != receipt or receipt.get("offline_no_pull_verified") is not True or (
+              receipt.get("source_artifact_digest") != os.environ["WHEEL_DIGEST"]
+              or receipt.get("base_image_digest") != base["base_image_id"]
+          ):
+              raise SystemExit("installed target-image qualification failed to reopen")
+          summary = {
+              "schema_version": "bluefire.strix-private-target-image-preparation.v1",
+              "source_revision": revision,
+              "wheel_sha256": os.environ["WHEEL_DIGEST"],
+              "installed_payload_digest": inputs["installed_payload_digest"],
+              "base_ref": base["base_ref"],
+              "base_image_id": base["base_image_id"],
+              "base_config_ref": base["base_config_ref"],
+              "input_ref": inputs["input_ref"],
+              "qualification_ref": receipt["receipt_ref"],
+              "image_id": receipt["image_id"],
+              "image_config_ref": receipt["image_config_ref"],
+              "offline_no_pull_verified": True,
+              "sidecar_started": False,
+              "engine_started": False,
+              "proof_scope": "installed-target-image-preparation-only",
+          }
+          print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+          PY
+
+      - name: Remove and verify the exact target-sidecar image
+        id: target_cleanup
+        if: ${{ always() && steps.root_service.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          evidence="$RUNNER_TEMP/bluefire-strix-evidence"
+          mkdir -m 700 -p "$evidence"
+          test ! -L "$evidence"
+          test "$(stat -c %a "$evidence")" = 700
+          summary="$evidence/target-image-cleanup.json"
+          test ! -e "$summary"
+          root="/root/bluefire-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          sudo -n /usr/bin/env -i \
+            RUN_ID="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            SOURCE_SHA="${{ github.sha }}" \
+            QUALIFICATION_OUTCOME="${{ steps.target_image.outcome }}" \
+            PATH=/usr/bin:/bin HOME="$root" PYTHONNOUSERSITE=1 \
+            "$root/venv/bin/python3.12" -I -B - > "$summary" <<'PY'
+          import json
+          import os
+          import re
+          import stat
+          from pathlib import Path
+
+          run_id = os.environ["RUN_ID"]
+          revision = os.environ["SOURCE_SHA"]
+          if re.fullmatch(r"[1-9][0-9]{0,19}-[1-9][0-9]{0,4}", run_id) is None or (
+              re.fullmatch(r"[0-9a-f]{40}", revision) is None
+          ):
+              raise SystemExit("target-image cleanup identity differs")
+          service = Path(f"/root/bluefire-ci-{run_id}")
+          private = service
+          status = "no-intent"
+          terminal_ref = None
+          qualified_ref = None
+          if private.exists() or private.is_symlink():
+              details = private.lstat()
+              if private.is_symlink() or details.st_uid != 0 or (
+                  not stat.S_ISDIR(details.st_mode) or stat.S_IMODE(details.st_mode) != 0o700
+              ):
+                  raise SystemExit("target-image cleanup source custody differs")
+              import bluefire
+
+              purelib = Path(json.loads((service / "installed-service-inputs.json").read_text())[
+                  "service_purelib"
+              ])
+              if bluefire.__file__ is None or not Path(bluefire.__file__).resolve().is_relative_to(purelib):
+                  raise SystemExit("target-image cleanup did not import installed BlueFire")
+              from bluefire.tenant_record_sidecar_image import cleanup_target_sidecar_images
+
+              try:
+                  records = cleanup_target_sidecar_images(root=private)
+              except Exception:
+                  print(json.dumps({
+                      "schema_version": "bluefire.strix-private-target-image-cleanup.v1",
+                      "source_revision": revision,
+                      "state": "unknown",
+                      "terminal_ref": None,
+                      "qualified_ref": None,
+                      "sidecar_started": False,
+                      "engine_started": False,
+                      "proof_scope": "target-image-cleanup-only",
+                  }, sort_keys=True, separators=(",", ":")), flush=True)
+                  raise SystemExit("target-image cleanup is unknown") from None
+              if len(records) > 1:
+                  raise SystemExit("target-image cleanup inventory is ambiguous")
+              if records:
+                  record = records[0]
+                  status = record["state"]
+                  terminal_ref = record["cleanup_ref"]
+                  qualified_ref = record["qualified_ref"]
+                  if record["tag_absent_at_check"] is not True:
+                      raise SystemExit("target-image tag absence is unverified")
+          if os.environ["QUALIFICATION_OUTCOME"] == "success" and status != "qualified_tag_absent":
+              raise SystemExit("qualified target image did not reach terminal cleanup")
+          summary = {
+              "schema_version": "bluefire.strix-private-target-image-cleanup.v1",
+              "source_revision": revision,
+              "state": status,
+              "terminal_ref": terminal_ref,
+              "qualified_ref": qualified_ref,
+              "sidecar_started": False,
+              "engine_started": False,
+              "proof_scope": "target-image-cleanup-only",
+          }
+          print(json.dumps(summary, sort_keys=True, separators=(",", ":")), flush=True)
+          if status == "unqualified_build_unsettled":
+              raise SystemExit("unqualified target-image build remains unsettled")
+          PY
+
+      - name: Seal the target-image terminal receipt under root custody
+        id: target_seal
+        if: ${{ always() && steps.root_service.outcome == 'success' && steps.target_cleanup.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="/root/bluefire-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          sudo -n /usr/bin/env -i \
+            RUN_ID="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            SOURCE_SHA="${{ github.sha }}" \
+            WHEEL_DIGEST="${{ steps.product.outputs.digest }}" \
+            PATH=/usr/bin:/bin HOME="$root" PYTHONNOUSERSITE=1 \
+            "$root/venv/bin/python3.12" -I -B - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import json
+          import os
+          import re
+          import stat
+          from pathlib import Path
+
+          run_id = os.environ["RUN_ID"]
+          revision = os.environ["SOURCE_SHA"]
+          wheel_digest = os.environ["WHEEL_DIGEST"]
+          if re.fullmatch(r"[1-9][0-9]{0,19}-[1-9][0-9]{0,4}", run_id) is None or (
+              re.fullmatch(r"[0-9a-f]{40}", revision) is None
+              or re.fullmatch(r"sha256:[0-9a-f]{64}", wheel_digest) is None
+          ):
+              raise SystemExit("target-image terminal identity differs")
+          service = Path(f"/root/bluefire-ci-{run_id}")
+          info = service.lstat()
+          if service.is_symlink() or info.st_uid != 0 or (
+              not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700
+          ):
+              raise SystemExit("target-image terminal source custody differs")
+          import bluefire
+
+          installed = json.loads((service / "installed-service-inputs.json").read_text(encoding="utf-8"))
+          purelib = Path(installed["service_purelib"])
+          if bluefire.__file__ is None or not Path(bluefire.__file__).resolve().is_relative_to(purelib) or (
+              installed.get("source_revision") != revision
+              or installed.get("wheel_sha256") != wheel_digest
+          ):
+              raise SystemExit("target-image terminal did not use installed BlueFire")
+          from bluefire.tenant_record_sidecar_image import (
+              FileTenantSidecarImageQualificationSource, cleanup_target_sidecar_images,
+          )
+          from bluefire.util import content_hash
+
+          terminal = cleanup_target_sidecar_images(root=service)
+          if not terminal:
+              raise SystemExit(0)
+          if len(terminal) != 1 or terminal[0].get("state") != "qualified_tag_absent" or (
+              terminal[0].get("tag_absent_at_check") is not True
+          ):
+              raise SystemExit("target-image terminal cleanup is not qualified")
+          cleanup = terminal[0]
+          qualified_ref = cleanup["qualified_ref"]
+          receipt = FileTenantSidecarImageQualificationSource(service).reopen_qualification(
+              qualified_ref
+          )
+          if receipt.get("receipt_ref") != qualified_ref or (
+              receipt.get("source_artifact_digest") != wheel_digest
+              or receipt.get("offline_no_pull_verified") is not True
+          ):
+              raise SystemExit("target-image terminal qualification changed")
+          base = Path("/var/tmp")
+          base_info = base.lstat()
+          handoff = base / f"bluefire-strix-handoff-{run_id}"
+          handoff_info = handoff.lstat()
+          if base_info.st_uid != 0 or stat.S_IMODE(base_info.st_mode) != 0o1777 or (
+              handoff.is_symlink() or handoff_info.st_uid != 0
+              or not stat.S_ISDIR(handoff_info.st_mode)
+              or stat.S_IMODE(handoff_info.st_mode) != 0o755
+          ):
+              raise SystemExit("target-image terminal handoff custody differs")
+          document = {
+              "schema_version": "bluefire.strix-target-image-terminal-handoff.v1",
+              "source_revision": revision,
+              "wheel_sha256": wheel_digest,
+              "qualification_ref": qualified_ref,
+              "image_id": receipt["image_id"],
+              "image_config_ref": receipt["image_config_ref"],
+              "base_image_id": receipt["base_image_digest"],
+              "cleanup_ref": cleanup["cleanup_ref"],
+              "cleanup_state": "qualified_tag_absent",
+              "tag_absent_at_check": True,
+              "sidecar_started": False,
+              "engine_started": False,
+              "proof_scope": "installed-target-image-preparation-only",
+          }
+          document["receipt_ref"] = content_hash(document)
+          payload = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+          path = handoff / "target-image-terminal-handoff.json"
+          descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+          with os.fdopen(descriptor, "wb") as stream:
+              stream.write(payload)
+              stream.flush()
+              os.fsync(stream.fileno())
+              os.fchmod(stream.fileno(), 0o644)
+          print("receipt=sha256:" + hashlib.sha256(payload).hexdigest())
+          PY
+
       - name: Remove this run's exact private image resources
         if: ${{ always() }}
         shell: bash
@@ -1262,6 +1691,8 @@ jobs:
               "bluefire-product-cargo",
               "bluefire-service-wheelhouse",
               "bluefire-service-wheelhouse-result.json",
+              "bluefire-target-docker-config",
+              "bluefire-target-base-preload.txt",
           )
           if not shutil.rmtree.avoids_symlink_attacks:
               raise SystemExit("private service cleanup requires symlink-safe removal")
@@ -1278,6 +1709,7 @@ jobs:
           PY
 
       - name: Retain bounded private producer identities
+        id: producer_identity
         if: ${{ always() }}
         shell: bash
         run: |
@@ -1295,6 +1727,7 @@ jobs:
               StrixTestSandboxImageCleanupReceiptV1,
               StrixTestSandboxImageContractV1,
           )
+          from bluefire.util import content_hash
 
           digest_pattern = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -1374,6 +1807,7 @@ jobs:
               handoff_root.exists() and (
                   handoff_root.resolve(strict=True).parent != Path("/var/tmp")
                   or handoff_root.stat().st_uid != 0
+                  or stat.S_IMODE(handoff_root.stat().st_mode) != 0o755
               )
           ):
               raise SystemExit("fixed bootstrap handoff root is invalid")
@@ -1394,6 +1828,7 @@ jobs:
           if install_summary.is_symlink():
               raise SystemExit("private installation summary is a symbolic link")
           install_summary_digest = None
+          install_row = None
           if install_summary.is_file():
               payload = install_summary.read_bytes()
               if not 0 < len(payload) <= 8192:
@@ -1407,6 +1842,123 @@ jobs:
               ):
                   raise SystemExit("private installation summary scope differs")
               install_summary_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+
+          def target_summary(name, schema, scope):
+              path = root / "bluefire-strix-evidence" / name
+              if path.is_symlink():
+                  raise SystemExit("private target-image summary is a symbolic link")
+              if not path.is_file():
+                  return None, "missing", None
+              payload = path.read_bytes()
+              if not payload:
+                  return None, "incomplete", None
+              if len(payload) > 8192:
+                  raise SystemExit("private target-image summary is unbounded")
+              row = json.loads(payload)
+              if row.get("schema_version") != schema or (
+                  row.get("source_revision") != source_revision
+                  or row.get("proof_scope") != scope
+                  or row.get("sidecar_started") is not False
+                  or row.get("engine_started") is not False
+              ):
+                  raise SystemExit("private target-image summary scope differs")
+              if schema == "bluefire.strix-private-target-image-preparation.v1":
+                  if "state" in row:
+                      raise SystemExit("private target-image preparation has an unexpected state")
+                  state = "qualified"
+              else:
+                  state = row.get("state")
+                  if state not in {
+                      "no-intent", "qualified_tag_absent", "unqualified_build_unsettled", "unknown",
+                  }:
+                      raise SystemExit("private target-image cleanup state differs")
+              return "sha256:" + hashlib.sha256(payload).hexdigest(), state, row
+
+          target_preparation_digest, target_preparation_state, target_preparation = target_summary(
+              "target-image-preparation.json",
+              "bluefire.strix-private-target-image-preparation.v1",
+              "installed-target-image-preparation-only",
+          )
+          target_cleanup_digest, target_cleanup_state, target_cleanup = target_summary(
+              "target-image-cleanup.json",
+              "bluefire.strix-private-target-image-cleanup.v1",
+              "target-image-cleanup-only",
+          )
+          if target_preparation is not None:
+              if set(target_preparation) != {
+                  "schema_version", "source_revision", "wheel_sha256", "installed_payload_digest",
+                  "base_ref", "base_image_id", "base_config_ref", "input_ref",
+                  "qualification_ref", "image_id", "image_config_ref",
+                  "offline_no_pull_verified", "sidecar_started", "engine_started", "proof_scope",
+              } or target_preparation["wheel_sha256"] != artifacts["bluefire_wheel_digest"] or (
+                  target_preparation["offline_no_pull_verified"] is not True
+              ) or any(digest_pattern.fullmatch(target_preparation[name]) is None for name in (
+                  "installed_payload_digest", "base_ref", "base_image_id", "base_config_ref",
+                  "input_ref", "qualification_ref", "image_id", "image_config_ref",
+              )):
+                  raise SystemExit("private target-image qualification identity differs")
+              if install_row is None or (
+                  target_preparation["installed_payload_digest"] != install_row["installed_payload_digest"]
+              ):
+                  raise SystemExit("private target image and installed service payload differ")
+          if target_cleanup is not None:
+              if set(target_cleanup) != {
+                  "schema_version", "source_revision", "state", "terminal_ref",
+                  "qualified_ref", "sidecar_started", "engine_started", "proof_scope",
+              } or any(value is not None and digest_pattern.fullmatch(value) is None for value in (
+                  target_cleanup["terminal_ref"], target_cleanup["qualified_ref"],
+              )):
+                  raise SystemExit("private target-image cleanup identity differs")
+              if target_cleanup_state == "qualified_tag_absent" and (
+                  target_cleanup["terminal_ref"] is None or target_cleanup["qualified_ref"] is None
+              ):
+                  raise SystemExit("private target-image terminal receipt is incomplete")
+          target_handoff = handoff_root / "target-image-terminal-handoff.json"
+          if target_handoff.is_symlink():
+              raise SystemExit("root target-image handoff is a symbolic link")
+          target_handoff_digest = None
+          target_image_qualified = False
+          target_handoff_row = None
+          if target_handoff.is_file():
+              handoff_info = target_handoff.lstat()
+              if handoff_info.st_uid != 0 or not stat.S_ISREG(handoff_info.st_mode) or (
+                  stat.S_IMODE(handoff_info.st_mode) != 0o644 or handoff_info.st_nlink != 1
+                  or not 0 < handoff_info.st_size <= 8192
+              ):
+                  raise SystemExit("root target-image handoff custody differs")
+              handoff_payload = target_handoff.read_bytes()
+              target_handoff_row = json.loads(handoff_payload)
+              if set(target_handoff_row) != {
+                  "schema_version", "source_revision", "wheel_sha256", "qualification_ref",
+                  "image_id", "image_config_ref", "base_image_id", "cleanup_ref",
+                  "cleanup_state", "tag_absent_at_check", "sidecar_started",
+                  "engine_started", "proof_scope", "receipt_ref",
+              } or target_handoff_row["schema_version"] != "bluefire.strix-target-image-terminal-handoff.v1" or (
+                  target_handoff_row["source_revision"] != source_revision
+                  or target_handoff_row["wheel_sha256"] != artifacts["bluefire_wheel_digest"]
+                  or target_handoff_row["cleanup_state"] != "qualified_tag_absent"
+                  or target_handoff_row["tag_absent_at_check"] is not True
+                  or target_handoff_row["sidecar_started"] is not False
+                  or target_handoff_row["engine_started"] is not False
+                  or target_handoff_row["proof_scope"] != "installed-target-image-preparation-only"
+              ) or any(digest_pattern.fullmatch(target_handoff_row[name]) is None for name in (
+                  "qualification_ref", "image_id", "image_config_ref", "base_image_id",
+                  "cleanup_ref", "receipt_ref",
+              )) or target_handoff_row["receipt_ref"] != content_hash({
+                  key: value for key, value in target_handoff_row.items() if key != "receipt_ref"
+              }):
+                  raise SystemExit("root target-image handoff identity differs")
+              if target_preparation is None or target_cleanup is None or (
+                  target_cleanup_state != "qualified_tag_absent"
+                  or target_preparation["qualification_ref"] != target_handoff_row["qualification_ref"]
+                  or target_preparation["image_id"] != target_handoff_row["image_id"]
+                  or target_preparation["image_config_ref"] != target_handoff_row["image_config_ref"]
+                  or target_cleanup["qualified_ref"] != target_handoff_row["qualification_ref"]
+                  or target_cleanup["terminal_ref"] != target_handoff_row["cleanup_ref"]
+              ):
+                  raise SystemExit("root target-image receipt and private summaries do not join")
+              target_handoff_digest = "sha256:" + hashlib.sha256(handoff_payload).hexdigest()
+              target_image_qualified = True
 
           document = {
               "schema_version": "bluefire.strix-private-producer-identities.v1",
@@ -1425,6 +1977,19 @@ jobs:
               "image_cleanup_receipt_digest": image_cleanup_receipt_digest,
               "fixed_bootstrap_handoff_receipt_digest": handoff_receipt_digest,
               "root_service_install_summary_digest": install_summary_digest,
+              "target_image_preparation_digest": target_preparation_digest,
+              "target_image_preparation_state": target_preparation_state,
+              "target_image_cleanup_digest": target_cleanup_digest,
+              "target_image_cleanup_state": target_cleanup_state,
+              "target_image_root_receipt_digest": target_handoff_digest,
+              "target_image_qualification_ref": (
+                  target_handoff_row["qualification_ref"] if target_handoff_row is not None else None
+              ),
+              "target_image_id": target_handoff_row["image_id"] if target_handoff_row is not None else None,
+              "target_image_cleanup_ref": (
+                  target_handoff_row["cleanup_ref"] if target_handoff_row is not None else None
+              ),
+              "target_image_qualified": target_image_qualified,
               "proof_scope": "identities-only-no-installed-execution-proof",
           }
           evidence = root / "bluefire-strix-evidence"
@@ -1449,6 +2014,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${{ steps.root_service.outcome }}" == success && \
+                ( "${{ steps.target_cleanup.outcome }}" != success || \
+                  "${{ steps.target_seal.outcome }}" != success || \
+                  "${{ steps.producer_identity.outcome }}" != success ) ]]; then
+            printf '%s\n' 'Target image or evidence cleanup is uncertain; protected intent retained.' >&2
+            exit 2
+          fi
           run_id="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           installer="${{ steps.service_bootstrap.outputs.installer }}"
           verifier="${{ steps.service_bootstrap.outputs.verifier }}"

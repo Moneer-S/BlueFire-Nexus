@@ -68,6 +68,11 @@ APPROVED_STEP_ORDER = (
     "Prepare the locked full-service dependency wheelhouse",
     "Copy the exact service installer under root custody",
     "Install and verify the root-private full service",
+    "Preload the exact official Python target base once",
+    "Stage exact target-image helpers under the installed service",
+    "Qualify and reopen the installed target-sidecar image",
+    "Remove and verify the exact target-sidecar image",
+    "Seal the target-image terminal receipt under root custody",
     "Remove this run's exact private image resources",
     "Retain private root-service installation verification",
     "Remove exact private service build materials",
@@ -81,7 +86,7 @@ APPROVED_RUN_SHA256 = {
         "ab54a8015eafb51b42820c78fe448dbcb799f0330a75d569b918c970bcb553b8"
     ),
     "Require the exact private qualification implementation": (
-        "0c236983e86e56a4c60a8d4bc7460627c306ff805b77471e05e3a4550191be41"
+        "d5365e3b903cdc184ac11a1ff3668b5a93db380c13f9dd54c21e4a94b16fbe68"
     ),
     "Rebuild the provenance-bound Strix candidate": (
         "852989e7371d5748e9626fe7205e51d6dab9a956a0a870e0626b662b89162867"
@@ -143,6 +148,21 @@ APPROVED_RUN_SHA256 = {
     "Install and verify the root-private full service": (
         "b5dc754e9967df5cb1705850d70c377412d10847cf524560fc8941251d7d1bd8"
     ),
+    "Preload the exact official Python target base once": (
+        "3278b8bca704831de6bf635e1b77de603deb3a15984163ab0043f80c1380920c"
+    ),
+    "Stage exact target-image helpers under the installed service": (
+        "f8d36948d032ce1de426a490094c40e4743da2c5450e3fc5e727c74d6cf45c11"
+    ),
+    "Qualify and reopen the installed target-sidecar image": (
+        "f9882df8c203499ccb5838df0278b6984fd1e3a1ee060583d526bfd82db75a87"
+    ),
+    "Remove and verify the exact target-sidecar image": (
+        "ecd769cd11c1c1a204ff32106ac493df495a2c9b6a40284aa43b44365798a0ef"
+    ),
+    "Seal the target-image terminal receipt under root custody": (
+        "06ba1774e049ac145cc682e5486f558d6ba2daaa3d3d69183d90267a0e46f748"
+    ),
     "Remove this run's exact private image resources": (
         "1f1ef25c9df87776c59965ddb098c32810bf76dd35517eace4bf4ff5eb83140d"
     ),
@@ -150,13 +170,13 @@ APPROVED_RUN_SHA256 = {
         "da7ac197dc6ff387e8004b6382ad2a4d96b63727d8115ab7291c3ec3978d6e6e"
     ),
     "Remove exact private service build materials": (
-        "8ab9af6a8c3d6f90da947f93992b8e55b3418678a54f5e35726a10a213675c01"
+        "c33c7dbffadd747bb667f89298f174c7492d9cfbdacf60fa0770d22bf4add0fb"
     ),
     "Retain bounded private producer identities": (
-        "f945c5647105469af99bf1a5401a5d3f617c5378a9f7f0c3156f48c3abe124d0"
+        "85acef7e2e39c77b06855e3963465ae4fbf5f41ae85c436deafe332cce6567e5"
     ),
     "Remove the exact root-private service after retaining its result": (
-        "10d8ebac26a9992ae75ceec1a836170ffe0d518b7cf08395eb9629888396a008"
+        "8ea833faeeef683a139876b5b9afc61d9166cddeac534cd567d8babecaf65553"
     ),
     "Remove exact protected fixed-bootstrap stage and image handoff": (
         "8fce200699e41529999e8cae38fba6da5d22f4fb60384883855e1ae5d08b9fa4"
@@ -282,6 +302,8 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "tools/install_root_private_bluefire_service.py",
         "tools/verify_root_private_bluefire_service.py",
         "tools/verify_installed_engine_experiment.py",
+        "tools/retain_tenant_sidecar_image_inputs.py",
+        "bluefire/tenant_record_sidecar_image.py",
         "tools/strix_runtime_closure_prepare_core.py",
         "bluefire/test_caido_protocol_entry.py",
         "bluefire/test_caido_protocol_provider.py",
@@ -541,6 +563,76 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         assert required in root_service["run"]
     assert "bluefire-installed-service" not in root_service["run"]
 
+    base = _step(workflow, "Preload the exact official Python target base once")
+    for required in (
+        "docker.io/library/python@sha256:1aaa65a85fda306ffb8b910824d4e93bdce61e212c7e87168123ea3073b41a1a",
+        "docker pull --platform linux/amd64",
+        "docker image inspect",
+        "bluefire-target-docker-config",
+        "linux/amd64",
+    ):
+        assert required in base["run"]
+
+    helpers = _step(workflow, "Stage exact target-image helpers under the installed service")
+    assert helpers["id"] == "target_helpers"
+    for required in (
+        "sudo -n /usr/bin/env -i",
+        'source / "bluefire/_source_revision.txt"',
+        'destination = service / "tools"',
+        'marker = destination / "__init__.py"',
+        "retain_tenant_sidecar_image_inputs.py",
+        "verify_installed_engine_experiment.py",
+        'print(f"{key}={expected}")',
+    ):
+        assert required in helpers["run"]
+
+    target = _step(workflow, "Qualify and reopen the installed target-sidecar image")
+    assert target["id"] == "target_image"
+    for required in (
+        '"$root/venv/bin/python3.12" -I -B -',
+        "Path(bluefire.__file__).resolve().is_relative_to(purelib)",
+        "sys.path.insert(0, str(service))",
+        "bound_retainer.__file__",
+        "retain_pinned_python_base(root=target_root)",
+        "retain_target_sidecar_build_inputs(",
+        "FileTargetSidecarBaseAdmissionSource(target_root)",
+        "qualify_target_sidecar_image(",
+        "FileTenantSidecarImageQualificationSource(target_root).reopen_qualification(",
+        "target_root = service",
+        '"sidecar_started": False',
+        '"engine_started": False',
+        '"proof_scope": "installed-target-image-preparation-only"',
+    ):
+        assert required in target["run"]
+
+    target_cleanup = _step(workflow, "Remove and verify the exact target-sidecar image")
+    assert target_cleanup["id"] == "target_cleanup"
+    assert target_cleanup["if"] == "${{ always() && steps.root_service.outcome == 'success' }}"
+    for required in (
+        "cleanup_target_sidecar_images(root=private)",
+        "private = service",
+        '"qualified_tag_absent"',
+        '"unqualified_build_unsettled"',
+        '"state": "unknown"',
+        '"proof_scope": "target-image-cleanup-only"',
+    ):
+        assert required in target_cleanup["run"]
+
+    seal = _step(workflow, "Seal the target-image terminal receipt under root custody")
+    assert seal["id"] == "target_seal"
+    assert "steps.target_cleanup.outcome == 'success'" in seal["if"]
+    for required in (
+        "cleanup_target_sidecar_images(root=service)",
+        "FileTenantSidecarImageQualificationSource(service).reopen_qualification(",
+        'handoff = base / f"bluefire-strix-handoff-{run_id}"',
+        '"cleanup_state": "qualified_tag_absent"',
+        '"tag_absent_at_check": True',
+        '"sidecar_started": False',
+        '"engine_started": False',
+        "os.fchmod(stream.fileno(), 0o644)",
+    ):
+        assert required in seal["run"]
+
     cleanup = _step(workflow, "Remove this run's exact private image resources")
     assert cleanup.get("if") == "${{ always() }}"
     assert "python -m tools.qualify_strix_test_sandbox_image cleanup" in cleanup["run"]
@@ -582,6 +674,8 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         '"bluefire-product-cargo"',
         '"bluefire-service-wheelhouse"',
         '"bluefire-service-wheelhouse-result.json"',
+        '"bluefire-target-docker-config"',
+        '"bluefire-target-base-preload.txt"',
         "path.is_symlink()",
         "shutil.rmtree(path)",
         "private service build material remains",
@@ -616,8 +710,14 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "StrixTestSandboxImageContractV1(manifest.read_bytes())",
         "StrixTestSandboxImageCleanupReceiptV1(cleanup.read_bytes())",
         '"root_service_install_summary_digest": install_summary_digest',
+        '"target_image_root_receipt_digest": target_handoff_digest',
+        '"target_image_qualification_ref": (',
+        '"target_image_cleanup_ref": (',
+        '"target_image_qualified": target_image_qualified',
+        'target_handoff_row["receipt_ref"] != content_hash({',
     ):
         assert required in identity["run"]
+    assert identity["id"] == "producer_identity"
     assert job["steps"][-4] is identity
 
     root_cleanup = _step(
@@ -632,6 +732,9 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "install_root_private_bluefire_service.py",
         'cleanup --run-id "$run_id"',
         '--retained-evidence-digest "$retention"',
+        '"${{ steps.target_cleanup.outcome }}" != success',
+        '"${{ steps.target_seal.outcome }}" != success',
+        '"${{ steps.producer_identity.outcome }}" != success',
         'if [[ "$cleanup_status" -eq 3 && "${{ steps.root_service.outcome }}" != success ]]',
         "root-private service cleanup incomplete",
     ):
