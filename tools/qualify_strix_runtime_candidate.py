@@ -126,6 +126,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$")
+_SAFE_WHEEL_BASENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,249}\.whl$")
 _REQUIREMENT = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,.-]+\])?==[^\s;\\]+"
     r"(?:\s*;\s*[^\\]+)?(?:\s+--hash=sha256:[0-9a-f]{64})+$"
@@ -732,8 +733,17 @@ def _inspect_wheel(path: Path) -> dict[str, Any]:
         for platform_tag in pieces[-1].split(".")
     }
     wheel_metadata = BytesParser(policy=email_policy).parsebytes(wheel_payload)
-    if set(wheel_metadata.get_all("Tag", [])) != expected_tags:
-        raise StrixRuntimeQualificationError("wheel filename and declared tags disagree")
+    declared_tags = set(wheel_metadata.get_all("Tag", []))
+    if declared_tags != expected_tags:
+        filename = path.name if _SAFE_WHEEL_BASENAME.fullmatch(path.name) else "unreportable"
+        filename_only = expected_tags - declared_tags
+        declared_only = declared_tags - expected_tags
+        raise StrixRuntimeQualificationError(
+            "wheel filename and declared tags disagree "
+            f"(wheel={filename}, sha256={_sha256(payload)}, "
+            f"wheel_metadata_sha256={_sha256(wheel_payload)}, "
+            f"filename_only={len(filename_only)}, declared_only={len(declared_only)})"
+        )
     return {
         "filename": path.name,
         "size": len(payload),
