@@ -44,6 +44,10 @@ from bluefire.strix_controlled_runtime_admission import (
     StrixControlledRuntimeAdmissionV2,
     build_controlled_launch_plan,
 )
+from bluefire.strix_v2_role_terminal_observer import (
+    InstalledStrixV2ProtectedRoleTerminalObserver,
+    StrixV2ProtectedRoleEvidence,
+)
 from bluefire.util import content_hash, parse_iso8601_datetime
 from tests_platform import test_product_store_engine_execution_claims as execution
 from tests_platform import test_product_store_strix_runtime as old_runtime
@@ -1022,3 +1026,71 @@ def test_postcommit_role_source_swap_and_caller_events_refuse(f):
                 document={},
             )
     assert repository.load_settlement(active.transaction_ref).generation == snapshot.generation
+
+
+def test_composed_role_observer_joins_exact_saved_owner_and_refuses_missing_source(f):
+    active = _commit_active_bundle(f)
+    role, actual_ref = active.actual_role_bindings[-1]
+    source_ref = content_hash("protected-worker-terminal")
+    evidence_ref = content_hash("protected-worker-absence")
+
+    class ProtectedFixtureSource:
+        source_identity_ref = content_hash("protected-worker-source")
+
+        def __init__(self):
+            self.evidence_ref = evidence_ref
+            self.state = "verified_revoked"
+
+        def reopen_source(self, receipt_ref, expected):
+            assert receipt_ref == source_ref
+            assert expected.attempt_id == active.attempt_id
+            assert expected.claim_ref == active.claim_ref
+            assert expected.runtime_activation_ref == active.runtime_activation_ref
+            assert expected.resource_ref == actual_ref
+            assert expected.role == role
+            return StrixV2ProtectedRoleEvidence(
+                source_receipt_ref=receipt_ref,
+                evidence_ref=self.evidence_ref,
+                state=self.state,
+                source_observed_at=None,
+            )
+
+    source = ProtectedFixtureSource()
+    observer = InstalledStrixV2ProtectedRoleTerminalObserver(
+        product_store=f.store,
+        transaction_ref=active.transaction_ref,
+        sources={role: source},
+    )
+    repository = ProductStoreInstalledStrixV2TransactionRepository(
+        product_store=f.store,
+        clock=lambda: f.now[0],
+        role_terminal_observer=observer,
+    )
+    repository.begin_settlement(
+        transaction_ref=active.transaction_ref,
+        expected_generation=active.generation,
+        cleanup_ref=active.cleanup_ref,
+    )
+    snapshot = repository.load_settlement(active.transaction_ref)
+    with pytest.raises(ResourceConflictError, match="source is unavailable"):
+        observer.role_identity_ref(active.actual_role_bindings[0][0])
+    repository.claim_role_stop(
+        transaction_ref=snapshot.transaction_ref,
+        expected_generation=snapshot.generation,
+        role=role,
+    )
+    snapshot = repository.load_settlement(active.transaction_ref)
+    with pytest.raises(ResourceConflictError, match="identity changed"):
+        observer.reopen_role_terminal(role=role, source_receipt_ref=source_ref)
+    source.state = "verified_absent"
+    repository.record_role_terminal(
+        transaction_ref=snapshot.transaction_ref,
+        expected_generation=snapshot.generation,
+        role=role,
+        receipt=SimpleNamespace(receipt_ref=source_ref),
+    )
+    settled = repository.load_settlement(active.transaction_ref)
+    assert settled.role_outcomes[-1].evidence_ref == evidence_ref
+    source.evidence_ref = content_hash("changed-worker-absence")
+    with pytest.raises(ResourceConflictError, match="source changed"):
+        repository.load_settlement(active.transaction_ref)
