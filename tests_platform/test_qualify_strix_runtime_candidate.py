@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -922,6 +923,90 @@ def test_installed_launcher_must_bind_runtime_interpreter(tmp_path: Path) -> Non
             hashlib.sha256(prompt.read_bytes()).hexdigest(),
             hashlib.sha256(startup.read_bytes()).hexdigest(),
         )
+
+
+def test_installed_record_accepts_empty_file_only_with_verified_identity(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    site = runtime / "lib/python3.12/site-packages"
+    dist = site / "strix_agent-1.7.0.dist-info"
+    prompt = site / qualification.candidate.PROMPT_PATH
+    startup = site / qualification.candidate.STARTUP_PATH
+    empty = site / "strix/__init__.py"
+    cli = runtime / ("Scripts/strix.exe" if os.name == "nt" else "bin/strix")
+    interpreter = runtime / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    for directory in (dist, prompt.parent, startup.parent, empty.parent, cli.parent):
+        directory.mkdir(parents=True, exist_ok=True)
+    prompt.write_bytes(b"reviewed prompt\n")
+    startup.write_bytes(b"reviewed startup\n")
+    empty.write_bytes(b"")
+    (dist / "entry_points.txt").write_text(
+        "[console_scripts]\nstrix = strix.interface.main:main\n", encoding="utf-8"
+    )
+    cli_payload = (
+        b"installed launcher"
+        if os.name == "nt"
+        else f"#!{interpreter}\nfrom strix.interface.main import main\n".encode()
+    )
+    cli.write_bytes(cli_payload)
+    cli.chmod(0o700)
+
+    def record_row(path: str, payload: bytes, *, size: int | None = None) -> str:
+        digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).rstrip(b"=").decode()
+        return f"{path},sha256={digest},{len(payload) if size is None else size}\n"
+
+    empty_row = record_row("strix/__init__.py", b"")
+    record_text = "".join(
+        (
+            record_row(qualification.candidate.PROMPT_PATH, prompt.read_bytes()),
+            record_row(qualification.candidate.STARTUP_PATH, startup.read_bytes()),
+            empty_row,
+            f"{dist.name}/RECORD,,\n",
+        )
+    )
+    record = dist / "RECORD"
+    record.write_text(record_text, encoding="utf-8")
+    installed = {
+        "strix-agent": {
+            "name": "strix-agent",
+            "version": qualification.candidate.DECLARED_PACKAGE_VERSION,
+            "dist_info": dist.name,
+        }
+    }
+
+    def inspect() -> dict[str, Any]:
+        return qualification._inspect_installed_candidate(
+            runtime,
+            interpreter,
+            site,
+            installed,
+            hashlib.sha256(prompt.read_bytes()).hexdigest(),
+            hashlib.sha256(startup.read_bytes()).hexdigest(),
+        )
+
+    assert inspect()["package_record"]["verified_files"] == 4
+    record.write_text(
+        record_text.replace(empty_row, record_row("strix/__init__.py", b"wrong", size=0)),
+        encoding="utf-8",
+    )
+    with pytest.raises(qualification.StrixRuntimeQualificationError, match="RECORD hash mismatch"):
+        inspect()
+    record.write_text(
+        record_text.replace(empty_row, record_row("strix/__init__.py", b"", size=1)),
+        encoding="utf-8",
+    )
+    with pytest.raises(qualification.StrixRuntimeQualificationError, match="RECORD size mismatch"):
+        inspect()
+    if os.name != "nt":
+        record.write_text(record_text, encoding="utf-8")
+        target = empty.with_name("empty-target.py")
+        target.write_bytes(b"")
+        empty.unlink()
+        empty.symlink_to(target)
+        with pytest.raises(
+            qualification.StrixRuntimeQualificationError,
+            match="bounded standalone regular file: __init__.py",
+        ):
+            inspect()
 
 
 def test_workflow_is_single_pr_trigger_read_only_pinned_and_non_executing() -> None:

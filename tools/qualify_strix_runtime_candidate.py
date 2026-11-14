@@ -886,7 +886,8 @@ def _inspect_installed_candidate(
     if _sha256(startup_payload) != startup_sha256:
         raise StrixRuntimeQualificationError("installed Strix startup module drifted")
 
-    record_payload = _read_regular(dist_info / "RECORD", 32 * 1024 * 1024)
+    record_path = dist_info / "RECORD"
+    record_payload = _read_regular(record_path, 32 * 1024 * 1024)
     aggregate_rows: list[str] = []
     recorded_paths: set[str] = set()
     count = 0
@@ -899,20 +900,22 @@ def _inspect_installed_candidate(
             if relative in recorded_paths:
                 raise StrixRuntimeQualificationError("installed RECORD contains duplicate paths")
             recorded_paths.add(relative)
-            target = (site_packages / relative).resolve(strict=True)
+            logical_path = site_packages / relative
+            target = logical_path.resolve(strict=True)
             if target != runtime_root and runtime_root not in target.parents:
                 raise StrixRuntimeQualificationError("installed RECORD escapes runtime root")
-            payload = _read_regular(target, MAX_DOWNLOAD_BYTES)
+            payload = _read_regular(logical_path, MAX_DOWNLOAD_BYTES, allow_empty=True)
             digest = _sha256(payload)
+            is_record = logical_path == record_path
             if encoded_hash:
                 expected = base64.urlsafe_b64encode(bytes.fromhex(digest)).rstrip(b"=").decode()
                 if encoded_hash != f"sha256={expected}":
                     raise StrixRuntimeQualificationError("installed RECORD hash mismatch")
-            elif target != (dist_info / "RECORD").resolve(strict=True):
+            elif not is_record:
                 raise StrixRuntimeQualificationError("installed RECORD omits a file hash")
             if encoded_size and encoded_size != str(len(payload)):
                 raise StrixRuntimeQualificationError("installed RECORD size mismatch")
-            if not encoded_size and target != (dist_info / "RECORD").resolve(strict=True):
+            if not encoded_size and not is_record:
                 raise StrixRuntimeQualificationError("installed RECORD omits a file size")
             aggregate_rows.append(f"{relative}\0{len(payload)}\0{digest}\n")
             count += 1
