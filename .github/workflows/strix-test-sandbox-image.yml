@@ -1,0 +1,568 @@
+name: Strix test sandbox image qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strix-test-sandbox-image-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Build, start, inventory, and remove the runner-private test image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact BlueFire revision without retained credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up exact Python toolchain
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12.14"
+          check-latest: false
+
+      - name: Set up exact Go toolchain for the candidate build hook
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.24.10"
+          cache: false
+
+      - name: Read reviewed uv build version
+        id: uv-version
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import ast
+          import re
+          from pathlib import Path
+
+          source = Path("tools/build_strix_engine_candidate.py").read_text(encoding="utf-8")
+          tree = ast.parse(source)
+          values = [
+              node.value.value
+              for node in tree.body
+              if isinstance(node, ast.Assign)
+              and any(
+                  isinstance(target, ast.Name) and target.id == "UV_VERSION"
+                  for target in node.targets
+              )
+              and isinstance(node.value, ast.Constant)
+              and isinstance(node.value.value, str)
+          ]
+          if len(values) != 1 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", values[0]):
+              raise SystemExit("candidate build must define one exact uv version")
+          print(f"version={values[0]}")
+          PY
+
+      - name: Set up exact uv frontend without a shared cache
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ steps.uv-version.outputs.version }}
+          enable-cache: false
+
+      - name: Require the exact private qualification implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f tools/qualify_strix_test_sandbox_image.py
+          test -f tools/qualify_strix_runtime_candidate.py
+          test -f tools/build_strix_worker_runtime_artifact.py
+          test -f tools/prepare_strix_linux_runtime_closure.py
+          test -f tools/strix_runtime_closure_prepare_core.py
+          test -f bluefire/test_caido_protocol_entry.py
+          test -f bluefire/test_caido_protocol_provider.py
+          test -f bluefire/test_caido_protocol_server.py
+          test -S /var/run/docker.sock
+          docker version --format '{{json .Server}}'
+          docker buildx inspect default
+          skopeo --version
+          dpkg-query -W -f='${Version}\n' skopeo
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+
+      - name: Rebuild the provenance-bound Strix candidate
+        shell: bash
+        run: >-
+          python -m tools.build_strix_engine_candidate
+          --work-root "$RUNNER_TEMP/bluefire-strix-candidate-work"
+          --output-root "$RUNNER_TEMP/bluefire-strix-candidate-output"
+          --bluefire-source-revision "${{ github.sha }}"
+
+      - name: Resolve the single exact candidate wheel
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t wheels < <(
+            find "$RUNNER_TEMP/bluefire-strix-candidate-output" -maxdepth 1 -type f \
+              -name 'strix_agent-1.7.0-*.whl' -print
+          )
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            printf '%s\n' 'Expected exactly one provenance-bound Strix wheel.' >&2
+            exit 2
+          fi
+          wheel_digest="sha256:$(sha256sum "${wheels[0]}" | cut -d ' ' -f 1)"
+          printf 'wheel=%s\n' "${wheels[0]}" >> "$GITHUB_OUTPUT"
+          printf 'digest=%s\n' "$wheel_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare the pinned Strix runtime without execution
+        shell: bash
+        run: >-
+          python -m tools.qualify_strix_runtime_candidate
+          --candidate-root "$RUNNER_TEMP/bluefire-strix-candidate-output"
+          --source-root "$RUNNER_TEMP/bluefire-strix-candidate-work/source"
+          --work-root "$RUNNER_TEMP/bluefire-strix-qualification-work"
+          --output-root "$RUNNER_TEMP/bluefire-strix-qualification-output"
+          --bluefire-source-revision "${{ github.sha }}"
+
+      - name: Build the minimal worker artifact from this revision
+        id: worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.build_strix_worker_runtime_artifact \
+            --repository "$GITHUB_WORKSPACE" \
+            --source-revision "${{ github.sha }}" \
+            --output-directory "$RUNNER_TEMP/bluefire-worker-artifact" \
+            > "$RUNNER_TEMP/bluefire-worker-build-result.json"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import json
+          import os
+          import re
+          import zipfile
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]).resolve()
+          row = json.loads((root / "bluefire-worker-build-result.json").read_text())
+          artifact_path = Path(row["artifact_path"])
+          if artifact_path.is_symlink():
+              raise SystemExit("worker artifact is a symbolic link")
+          artifact = artifact_path.resolve(strict=True)
+          if row.get("schema_version") != "bluefire.strix-worker-runtime-build-result.v1":
+              raise SystemExit("worker artifact result schema differs")
+          if artifact.parent != root / "bluefire-worker-artifact":
+              raise SystemExit("worker artifact escaped its private output root")
+          if row.get("worker_source_revision") != "${{ github.sha }}":
+              raise SystemExit("worker artifact was built from another revision")
+          digest = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+          if row.get("artifact_digest") != digest:
+              raise SystemExit("worker artifact digest differs")
+          manifest = row.get("manifest_path")
+          if not isinstance(manifest, str) or not manifest.endswith(
+              ".dist-info/bluefire_worker_runtime.json"
+          ):
+              raise SystemExit("worker artifact manifest path differs")
+          with zipfile.ZipFile(artifact) as archive:
+              record = manifest.rsplit("/", 1)[0] + "/RECORD"
+              observed_manifest = "sha256:" + hashlib.sha256(archive.read(manifest)).hexdigest()
+              observed_record = "sha256:" + hashlib.sha256(archive.read(record)).hexdigest()
+          if row.get("manifest_digest") != observed_manifest:
+              raise SystemExit("worker artifact manifest digest differs")
+          if row.get("worker_record_digest") != observed_record:
+              raise SystemExit("worker artifact RECORD digest differs")
+          if re.fullmatch(r"sha256:[0-9a-f]{64}", observed_record) is None:
+              raise SystemExit("worker artifact RECORD identity is invalid")
+          print(f"artifact={artifact}")
+          print(f"sha256={digest.removeprefix('sha256:')}")
+          print(f"digest={digest}")
+          print(f"record={observed_record}")
+          PY
+
+      - name: Prepare the sealed worker runtime without claiming execution
+        id: prelaunch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.prepare_strix_linux_runtime_closure \
+            --qualification-root "$RUNNER_TEMP/bluefire-strix-qualification-output" \
+            --runtime-root "$RUNNER_TEMP/bluefire-strix-qualification-work/runtime" \
+            --strix-wheel "${{ steps.candidate.outputs.wheel }}" \
+            --worker-artifact "${{ steps.worker.outputs.artifact }}" \
+            --worker-artifact-sha256 "${{ steps.worker.outputs.sha256 }}" \
+            --base-python "$pythonLocation/bin/python" \
+            --output-root "$RUNNER_TEMP/bluefire-strix-runtime-preparation" \
+            > "$RUNNER_TEMP/bluefire-strix-prelaunch-result.json"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          from tools.strix_runtime_closure_prepare_core import runtime_inventory_digest
+
+          root = Path(os.environ["RUNNER_TEMP"]).resolve()
+          row = json.loads((root / "bluefire-strix-prelaunch-result.json").read_text())
+          closure = Path(row["closure_root"]).resolve(strict=True)
+          manifest = Path(row["preparation_manifest"]).resolve(strict=True)
+          expected = root / "bluefire-strix-runtime-preparation"
+          if row.get("schema_version") != (
+              "bluefire.strix-linux-runtime-closure-preparation-result.v1"
+          ) or closure != expected / "strix-linux-runtime-root" or manifest != (
+              expected / "strix-linux-runtime-preparation-manifest.json"
+          ):
+              raise SystemExit("prelaunch runtime output location differs")
+          if row.get("production_ready") is not False:
+              raise SystemExit("prelaunch runtime improperly claims readiness")
+          inventory = runtime_inventory_digest(closure)
+          if row.get("inventory_digest") != inventory:
+              raise SystemExit("prelaunch runtime inventory differs")
+          manifest_payload = manifest.read_bytes()
+          manifest_ref = "sha256:" + hashlib.sha256(manifest_payload).hexdigest()
+          document = json.loads(manifest_payload)
+          if row.get("preparation_manifest_ref") != manifest_ref:
+              raise SystemExit("prelaunch manifest digest differs")
+          if document.get("status") != "prepared-not-startup-qualified":
+              raise SystemExit("prelaunch manifest misstates native execution")
+          if document.get("worker_source_revision") != "${{ github.sha }}":
+              raise SystemExit("prelaunch worker source revision differs")
+          components = document.get("components", {})
+          if components.get("worker_artifact_digest") != "${{ steps.worker.outputs.digest }}":
+              raise SystemExit("prelaunch worker artifact differs")
+          if components.get("worker_record_digest") != "${{ steps.worker.outputs.record }}":
+              raise SystemExit("prelaunch worker RECORD differs")
+          if re.fullmatch(r"sha256:[0-9a-f]{64}", inventory) is None:
+              raise SystemExit("prelaunch inventory identity is invalid")
+          print(f"root={closure}")
+          print(f"manifest={manifest}")
+          print(f"inventory={inventory}")
+          PY
+
+      # The reviewed native fixed-exec qualifier must create this composite in
+      # this job. Runtime preparation alone is not runtime qualification.
+      - name: Require finalized same-job runtime composite
+        shell: bash
+        run: |
+          set -euo pipefail
+          for required in \
+            "${{ steps.prelaunch.outputs.root }}" \
+            "${{ steps.prelaunch.outputs.manifest }}" \
+            "$RUNNER_TEMP/bluefire-strix-runtime-composite/strix-linux-runtime-root" \
+            "$RUNNER_TEMP/bluefire-strix-runtime-composite/strix-linux-runtime-composite.json"
+          do
+            if [[ ! -e "$required" ]]; then
+              printf '%s\n' \
+                'Final native fixed-exec runtime qualification is not produced by this candidate.' \
+                'Add the reviewed same-job qualifier before dispatching this workflow.' >&2
+              exit 2
+            fi
+          done
+
+      - name: Bind the finalized same-job runtime composite
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import re
+          from pathlib import Path
+
+          from bluefire.strix_test_sandbox_image import installed_worker_invocation_digest
+
+          path = Path(
+              "${{ runner.temp }}/bluefire-strix-runtime-composite/"
+              "strix-linux-runtime-composite.json"
+          )
+          row = json.loads(path.read_text(encoding="utf-8"))
+          reference = row.get("composite_ref")
+          if (
+              row.get("schema_version")
+              != "bluefire.strix-linux-qualified-runtime-composite.v1"
+          ):
+              raise SystemExit("runtime composite is not a final qualified closure")
+          digest = re.compile(r"sha256:[0-9a-f]{64}")
+          for name in (
+              "composite_ref",
+              "prelaunch_plan_ref",
+              "fixed_exec_qualification_ref",
+              "strix_candidate_digest",
+              "worker_artifact_digest",
+              "worker_record_digest",
+              "installed_distributions_digest",
+          ):
+              if not isinstance(row.get(name), str) or digest.fullmatch(row[name]) is None:
+                  raise SystemExit(f"runtime composite {name} is invalid")
+          if row.get("worker_distribution") != "bluefire-strix-worker":
+              raise SystemExit("runtime composite worker distribution differs")
+          if row.get("strix_candidate_digest") != "${{ steps.candidate.outputs.digest }}":
+              raise SystemExit("runtime composite Strix candidate differs")
+          if row.get("worker_source_revision") != "${{ github.sha }}":
+              raise SystemExit("runtime composite worker revision differs")
+          if row.get("worker_invocation_digest") != installed_worker_invocation_digest():
+              raise SystemExit("runtime composite worker invocation differs")
+          if row.get("full_product_wheel_present") is not False:
+              raise SystemExit("runtime composite contains the full product wheel")
+          print(f"ref={reference}")
+          PY
+
+      - name: Capture the separate controller Test Caido provider descriptor
+        id: provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m bluefire.test_caido_protocol_provider --describe \
+          > "$RUNNER_TEMP/bluefire-strix-test-provider-descriptor.json"
+          test -s "$RUNNER_TEMP/bluefire-strix-test-provider-descriptor.json"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import re
+          from pathlib import Path
+
+          from tools.qualify_strix_test_sandbox_image import provider_source_digest
+
+          path = Path("${{ runner.temp }}/bluefire-strix-test-provider-descriptor.json")
+          row = json.loads(path.read_text(encoding="utf-8"))
+          digest = row.get("provider_source_digest")
+          if row.get("schema_version") != "bluefire.test-caido-protocol-provider-descriptor.v1":
+              raise SystemExit("installed Test Caido provider descriptor schema differs")
+          if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+              raise SystemExit("installed Test Caido provider digest is invalid")
+          checkout_digest = provider_source_digest(
+              [
+                  Path("bluefire/test_caido_protocol_entry.py"),
+                  Path("bluefire/test_caido_protocol_provider.py"),
+                  Path("bluefire/test_caido_protocol_server.py"),
+              ]
+          )
+          if checkout_digest != digest:
+              raise SystemExit("installed and checkout Test Caido provider digests differ")
+          print(f"digest={digest}")
+          PY
+
+      - name: Prefetch exact packages and reviewed SBOM tool
+        shell: bash
+        run: >-
+          python -m tools.qualify_strix_test_sandbox_image prepare-inputs
+          --package-root "$RUNNER_TEMP/bluefire-strix-test-sandbox-packages"
+          --tool-root "$RUNNER_TEMP/bluefire-strix-test-sandbox-tools"
+
+      - name: Preload the exact reviewed Debian base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="docker.io/library/debian@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251"
+          docker pull "$base"
+          docker image inspect "$base" --format '{{json .Id}}'
+
+      - name: Build and qualify the runner-private image
+        shell: bash
+        run: >-
+          timeout --signal=TERM --kill-after=30s 20m
+          python -m tools.qualify_strix_test_sandbox_image qualify
+          --bluefire-source-revision "${{ github.sha }}"
+          --qualifier-revision "${{ github.sha }}"
+          --runtime-root "$RUNNER_TEMP/bluefire-strix-runtime-composite/strix-linux-runtime-root"
+          --runtime-composite-manifest "$RUNNER_TEMP/bluefire-strix-runtime-composite/strix-linux-runtime-composite.json"
+          --runtime-composite-ref "${{ steps.runtime.outputs.ref }}"
+          --provider-source bluefire/test_caido_protocol_entry.py
+          --provider-source bluefire/test_caido_protocol_provider.py
+          --provider-source bluefire/test_caido_protocol_server.py
+          --provider-source-digest "${{ steps.provider.outputs.digest }}"
+          --package-root "$RUNNER_TEMP/bluefire-strix-test-sandbox-packages"
+          --syft "$RUNNER_TEMP/bluefire-strix-test-sandbox-tools/syft"
+          --work-root "$RUNNER_TEMP/bluefire-strix-test-sandbox-work"
+          --output-root "$RUNNER_TEMP/bluefire-strix-test-sandbox-output"
+          --docker-socket unix:///var/run/docker.sock
+
+      - name: Archive the exact committed product source outside checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git -c tar.umask=0022 archive --format=tar \
+            --output="$RUNNER_TEMP/bluefire-product-source.tar" "${{ github.sha }}"
+          mkdir -m 700 "$RUNNER_TEMP/bluefire-product-source"
+          python -m tarfile -e "$RUNNER_TEMP/bluefire-product-source.tar" \
+            "$RUNNER_TEMP/bluefire-product-source"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          source = Path(os.environ["RUNNER_TEMP"]) / "bluefire-product-source"
+          observed = (source / "bluefire/_source_revision.txt").read_text(encoding="ascii").strip()
+          if observed != "${{ github.sha }}":
+              raise SystemExit("archived product source revision differs")
+          PY
+
+      - name: Build the packaged Linux service from the archived source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/bluefire-product-source"
+          cd "$source"
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check 'build>=1.2.2,<2'
+          mkdir -m 700 "$RUNNER_TEMP/bluefire-product-rustup"
+          mkdir -m 700 "$RUNNER_TEMP/bluefire-product-cargo"
+          export RUSTUP_HOME="$RUNNER_TEMP/bluefire-product-rustup"
+          export CARGO_HOME="$RUNNER_TEMP/bluefire-product-cargo"
+          channel="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          print(tomllib.loads(Path('rust-toolchain.toml').read_text())['toolchain']['channel'])
+          PY
+          )"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component cargo --force
+          rustup target add x86_64-unknown-linux-musl --toolchain "$channel"
+          rustup run "$channel" rustc -vV
+          python tools/build_native_runner.py --target x86_64-unknown-linux-musl
+          python tools/stage_native_runner.py \
+            --runner "$source/runner/target/x86_64-unknown-linux-musl/release/bluefire-runner" \
+            --output-root "$source/bluefire/native" \
+            --platform linux --architecture x86_64
+          python -m build --wheel
+          python tools/verify_packaged_runner.py inspect \
+            --wheel-dir dist --platform linux --architecture x86_64 \
+            --wheel-platform-tag linux_x86_64 \
+            --report dist/package-inspection.json
+
+      - name: Bind the exact packaged service wheel
+        id: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import json
+          import os
+          import re
+          import zipfile
+          from pathlib import Path
+
+          source = Path(os.environ["RUNNER_TEMP"]) / "bluefire-product-source"
+          wheels = list((source / "dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit("expected exactly one product wheel")
+          wheel = wheels[0].resolve(strict=True)
+          with zipfile.ZipFile(wheel) as archive:
+              members = [name for name in archive.namelist() if name == (
+                  "bluefire/_build_info.json"
+              ) or re.fullmatch(
+                  r"[^/]+\.data/(?:purelib|platlib)/bluefire/_build_info\.json", name
+              )]
+              if len(members) != 1:
+                  raise SystemExit("product wheel source metadata is ambiguous")
+              metadata = json.loads(archive.read(members[0]))
+          if metadata.get("source_revision") != "${{ github.sha }}" or (
+              metadata.get("source_provenance") != "git_archive"
+          ):
+              raise SystemExit("product wheel does not match the archived revision")
+          digest = "sha256:" + hashlib.sha256(wheel.read_bytes()).hexdigest()
+          print(f"wheel={wheel}")
+          print(f"digest={digest}")
+          PY
+
+      - name: Install the full service in its own clean environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/bluefire-installed-service"
+          "$RUNNER_TEMP/bluefire-installed-service/bin/python" -m pip install \
+            --disable-pip-version-check --no-input \
+            "${{ steps.product.outputs.wheel }}"
+          cp "$RUNNER_TEMP/bluefire-product-source/tools/verify_packaged_runner.py" \
+            "$RUNNER_TEMP/verify_packaged_runner.py"
+
+      - name: Smoke the installed service outside checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/bluefire-installed-service/bin/python" -I -B \
+            "$RUNNER_TEMP/verify_packaged_runner.py" smoke \
+            --work-root "$RUNNER_TEMP/bluefire-installed-service-state" \
+            --forbid-root "$GITHUB_WORKSPACE" \
+            --report "$RUNNER_TEMP/bluefire-installed-service-smoke.json"
+
+      - name: Remove this run's exact private image resources
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/bluefire-strix-test-sandbox-output"
+          manifest="$output/strix-test-sandbox-image-manifest.json"
+          ledger="$output/strix-test-sandbox-private-ledger.json"
+          if [[ ! -e "$ledger" ]]; then
+            if [[ -e "$manifest" ]]; then
+              printf '%s\n' 'Qualified manifest exists without its private ledger.' >&2
+              exit 2
+            fi
+            printf '%s\n' 'No private image resources were reserved.'
+            exit 0
+          fi
+          state="$(python - "$ledger" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          row = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if row.get("schema_version") != "bluefire.strix-test-sandbox-private-ledger.v2":
+              raise SystemExit("private cleanup ledger schema differs")
+          state = row.get("state")
+          if state not in {"reserved", "image-bound", "qualified"}:
+              raise SystemExit("private cleanup ledger state differs")
+          print(state)
+          PY
+          )"
+          if [[ "$state" == qualified ]]; then
+            test -f "$manifest"
+            python -m tools.qualify_strix_test_sandbox_image cleanup \
+              --manifest "$manifest" \
+              --ledger "$ledger" \
+              --output-root "$output" \
+              --docker-socket unix:///var/run/docker.sock
+          else
+            python -m tools.qualify_strix_test_sandbox_image cleanup-partial \
+              --ledger "$ledger" \
+              --output-root "$output" \
+              --docker-socket unix:///var/run/docker.sock
+          fi
+          test ! -e "$ledger"
+
+      # Nothing from this job is uploaded. The image, OCI layout, runtime,
+      # provider descriptor, packages, SBOM, and receipts remain runner-private.
+      # Cleanup reopens either the qualified manifest plus exact ledger or the
+      # provisional exact ledger before removing and verifying private resources.
+
+      - name: Remove exact private service build materials
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          names = (
+              "bluefire-product-source.tar",
+              "bluefire-product-source",
+              "bluefire-product-rustup",
+              "bluefire-product-cargo",
+              "bluefire-installed-service",
+              "bluefire-installed-service-state",
+              "verify_packaged_runner.py",
+          )
+          for name in names:
+              path = root / name
+              if path.is_symlink():
+                  raise SystemExit("private service cleanup encountered a symbolic link")
+              if path.is_dir():
+                  shutil.rmtree(path)
+              elif path.exists():
+                  path.unlink()
+              if path.exists():
+                  raise SystemExit("private service build material remains")
+          PY
