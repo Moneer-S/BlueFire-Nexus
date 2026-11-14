@@ -28,6 +28,7 @@ from bluefire.engine_docker_exec_journal import (
     SQLiteDockerExecOperationJournal,
 )
 from bluefire.engine_exec_operation_custody import VerifiedExecLifetimeCustodyV2
+from bluefire.util import content_hash
 from tests_platform.test_engine_delegation import _binding, _delegation
 from tests_platform.test_engine_docker_control import policy_v2
 from tests_platform.test_engine_docker_exec_admission import admission
@@ -196,11 +197,12 @@ def gate(
     operation="container_exec_create",
     exec_id=None,
     deadline=6_000_000_000,
+    request_digest=RAW,
 ):
     return value.gate(
         admitted,
         operation=operation,
-        request_digest=RAW,
+        request_digest=request_digest,
         deadline_monotonic_ns=deadline,
         cancellation=cancel,
         custody_plan_digest=CUSTODY_PLAN,
@@ -233,6 +235,167 @@ def test_reservation_is_persistent_before_transport_and_unknown_create_never_rep
         gate(reconstructed, admitted, Cancel())
     assert row(fresh_store, admitted)["reservation_ref"] == reserved.reservation_ref
     fresh_connection.close()
+
+
+def test_historical_reservation_reopens_without_regranting_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "exec.sqlite"
+    value, store, connection, admitted, *_rest, cancel = runtime(path)
+    create_digest = content_hash("create request")
+    start_digest = content_hash("start request")
+    inspect_digest = content_hash("inspect request")
+    reserved = gate(value, admitted, cancel, request_digest=create_digest)
+    value.record_created(admitted, EXEC_ID)
+    gate(
+        value,
+        admitted,
+        cancel,
+        operation="exec_start",
+        exec_id=EXEC_ID,
+        request_digest=start_digest,
+    )
+    value.record_started(admitted)
+    gate(
+        value,
+        admitted,
+        cancel,
+        operation="exec_inspect",
+        exec_id=EXEC_ID,
+        request_digest=inspect_digest,
+    )
+    value.record_complete(admitted)
+    original = row(store, admitted)
+    assert original is not None
+    connection.close()
+
+    monkeypatch.setattr(journal_module, "_CLOCK_EPOCH_REF", content_hash("new process epoch"))
+    reopened_connection = sqlite3.connect(path, check_same_thread=False)
+    reopened = SQLiteDockerExecOperationJournal(reopened_connection)
+    historical = reopened.reopen_historical(
+        attempt_id=admitted.profile.attempt_id,
+        operation_id=admitted.request.operation_id,
+    )
+    assert historical is not None
+    assert historical["reservation_ref"] == reserved.reservation_ref
+    assert historical["admission_ref"] == admitted.admission_digest
+    assert historical["phase"] == "complete"
+    assert historical["request_digest_fields_present"] is True
+    assert historical["create_request_digest"] == create_digest
+    assert historical["start_request_digest"] == start_digest
+    assert historical["inspect_request_digest"] == inspect_digest
+    with pytest.raises(TypeError):
+        historical["phase"] = "complete"  # type: ignore[index]
+    with pytest.raises(DockerExecJournalError, match="clock epoch continuity"):
+        reopened.snapshot(
+            attempt_id=admitted.profile.attempt_id,
+            operation_id=admitted.request.operation_id,
+        )
+    with pytest.raises(DockerExecJournalError, match="clock epoch continuity"):
+        reopened.claim_dispatch(
+            admission=admitted.to_dict(),
+            operation="container_exec_create",
+            request_digest=RAW,
+            deadline_monotonic_ns=6_000_000_000,
+            authority_ref=value.authority.authority_ref,
+        )
+    reopened_connection.close()
+
+
+def test_legacy_completed_reservation_reopens_as_partial_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "exec.sqlite"
+    value, _store, connection, admitted, *_rest, cancel = runtime(path)
+    gate(value, admitted, cancel)
+    value.record_created(admitted, EXEC_ID)
+    gate(value, admitted, cancel, operation="exec_start", exec_id=EXEC_ID)
+    value.record_started(admitted)
+    gate(value, admitted, cancel, operation="exec_inspect", exec_id=EXEC_ID)
+    value.record_complete(admitted)
+    connection.close()
+    with sqlite3.connect(path) as legacy:
+        legacy.execute(
+            "CREATE TABLE previous ("
+            "attempt_id TEXT NOT NULL, operation_id TEXT NOT NULL, "
+            "admission_ref TEXT NOT NULL, admission_json TEXT NOT NULL, "
+            "authority_ref TEXT NOT NULL, create_request_digest TEXT NOT NULL, "
+            "dispatch_request_digest TEXT NOT NULL, deadline_ns INTEGER NOT NULL, "
+            "reservation_ref TEXT NOT NULL UNIQUE, phase TEXT NOT NULL, "
+            "exec_id TEXT, clock_epoch_ref TEXT, PRIMARY KEY(attempt_id,operation_id))"
+        )
+        legacy.execute(
+            "INSERT INTO previous SELECT attempt_id,operation_id,admission_ref,"
+            "admission_json,authority_ref,create_request_digest,dispatch_request_digest,"
+            "deadline_ns,reservation_ref,phase,exec_id,clock_epoch_ref "
+            "FROM docker_exec_operations_v2"
+        )
+        legacy.execute("DROP TABLE docker_exec_operations_v2")
+        legacy.execute("ALTER TABLE previous RENAME TO docker_exec_operations_v2")
+    monkeypatch.setattr(journal_module, "_CLOCK_EPOCH_REF", content_hash("upgraded epoch"))
+    reopened_connection = sqlite3.connect(path, check_same_thread=False)
+    reopened = SQLiteDockerExecOperationJournal(reopened_connection)
+    historical = reopened.reopen_historical(
+        attempt_id=admitted.profile.attempt_id,
+        operation_id=admitted.request.operation_id,
+    )
+    assert historical is not None
+    assert historical["phase"] == "complete"
+    assert historical["request_digest_fields_present"] is False
+    assert historical["start_request_digest"] is None
+    assert historical["inspect_request_digest"] is None
+    with pytest.raises(DockerExecJournalError, match="clock epoch continuity"):
+        reopened.snapshot(
+            attempt_id=admitted.profile.attempt_id,
+            operation_id=admitted.request.operation_id,
+        )
+    reopened_connection.close()
+
+
+def test_target_activation_scope_serializes_stop_and_refuses_revoked_claim() -> None:
+    admitted = admission()
+    authority, fence, claims, _mapping = controller(admitted)
+    entered = threading.Event()
+    release = threading.Event()
+    stopped = threading.Event()
+    errors: list[BaseException] = []
+    scope_ref = content_hash("owned target policy")
+
+    def activate() -> None:
+        try:
+            with authority.target_activation_scope(
+                attempt_id=admitted.profile.attempt_id,
+                target_scope_admission_ref=scope_ref,
+            ):
+                entered.set()
+                assert release.wait(2)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def stop() -> None:
+        assert entered.wait(2)
+        with fence.lock:
+            fence.active = False
+        stopped.set()
+
+    sender = threading.Thread(target=activate)
+    stopper = threading.Thread(target=stop)
+    sender.start()
+    stopper.start()
+    assert entered.wait(2)
+    assert stopped.wait(0.05) is False
+    release.set()
+    sender.join(2)
+    stopper.join(2)
+    assert errors == []
+    assert stopped.is_set()
+    assert claims.calls == 1
+    with pytest.raises(RuntimeError, match="controller fence was revoked"):
+        with authority.target_activation_scope(
+            attempt_id=admitted.profile.attempt_id,
+            target_scope_admission_ref=scope_ref,
+        ):
+            pytest.fail("revoked target activation was admitted")
 
 
 def test_single_use_send_holds_live_fence_and_mapping_then_releases_before_attach_read(

@@ -8,6 +8,10 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
 from .engine_docker_custody import DockerCustodyProductStore
+from .engine_exec_operation_supervisor import (
+    EngineExecOperationSupervisorError,
+    ExecLifetimeTerminalReceiptV2,
+)
 from .linux_exec_supervisor_docker import (
     SupervisorDockerCleanupResult,
     SupervisorDockerContainerIdentity,
@@ -17,6 +21,112 @@ from .util import content_hash
 
 class InstalledV2ExecAttachmentError(RuntimeError):
     """The installed exec attachment cannot establish its protected scope."""
+
+
+def _reopen_supervisor_sources(document: Mapping[str, Any]) -> bool:
+    pending = document.get("pending_lease_refs")
+    operations = document.get("pending_operation_refs")
+    saved = document.get("supervisor_close_receipts")
+    if (
+        type(pending) is not list
+        or type(operations) is not list
+        or type(saved) is not list
+        or len(pending) != len(saved)
+        or len(operations) != len(pending)
+        or len(pending) > 128
+    ):
+        return False
+    rows: list[tuple[str, str, int]] = []
+    operation_rows: list[tuple[str, str, str, int]] = []
+    receipts: list[ExecLifetimeTerminalReceiptV2] = []
+    try:
+        for item in pending:
+            if type(item) is not list or len(item) != 3:
+                return False
+            rows.append((item[0], item[1], item[2]))
+        for item in operations:
+            if (
+                type(item) is not list
+                or len(item) != 4
+                or type(item[0]) is not str
+                or re.fullmatch(r"operation-[0-9a-f]{32}", item[0]) is None
+            ):
+                return False
+            operation_rows.append((item[0], item[1], item[2], item[3]))
+        for item in saved:
+            if (
+                type(item) is not dict
+                or item.get("schema_version") != "bluefire.exec-lifetime-terminal-receipt.v2"
+            ):
+                return False
+            receipt = ExecLifetimeTerminalReceiptV2(
+                **{key: value for key, value in item.items() if key != "schema_version"}
+            )
+            if receipt.document() != item:
+                return False
+            receipts.append(receipt)
+    except (TypeError, ValueError, EngineExecOperationSupervisorError):
+        return False
+    return (
+        tuple(sorted(set(rows))) == tuple(rows)
+        and tuple(sorted(set(operation_rows))) == tuple(operation_rows)
+        and {(item[1], item[2], item[3]) for item in operation_rows} == set(rows)
+        and {(item.request_ref, item.lease_ref, item.lease_generation) for item in receipts}
+        == set(rows)
+        and all(
+            item.outcome == "verified_absent"
+            and item.background_work_absent is True
+            and item.container_absent is True
+            for item in receipts
+        )
+    )
+
+
+def _valid_cleanup_sources(document: Mapping[str, Any]) -> bool:
+    results = document.get("source_results")
+    identity = document.get("container_identity_digest")
+    if (
+        type(results) is not list
+        or len(results) != 2
+        or not isinstance(identity, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None
+    ):
+        return False
+    daemons: set[str] = set()
+    for item in results:
+        if type(item) is not dict or set(item) != set(
+            SupervisorDockerCleanupResult.__dataclass_fields__
+        ):
+            return False
+        if (
+            item.get("container_id") != document.get("container_id")
+            or item.get("container_identity_digest") != identity
+            or item.get("live_daemon_proof") is not True
+            or item.get("test_provider") is not False
+            or item.get("absent_verified") is not True
+            or item.get("cleanup_uncertain") is not False
+            or type(item.get("stop_sent")) is not bool
+            or type(item.get("remove_sent")) is not bool
+        ):
+            return False
+        digests: list[Any] = [
+            item.get("daemon_instance_digest"),
+            item.get("final_inventory_digest"),
+        ]
+        for field in ("request_digests", "response_digests"):
+            value = item.get(field)
+            if type(value) is not list or not 1 <= len(value) <= 20:
+                return False
+            digests.extend(value)
+        if len(item["request_digests"]) != len(item["response_digests"]):
+            return False
+        if any(
+            not isinstance(value, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None
+            for value in digests
+        ):
+            return False
+        daemons.add(item["daemon_instance_digest"])
+    return len(daemons) == 1
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -34,6 +144,9 @@ class ExecAttachmentTerminalReceiptV2:
     supervisor_activation_ref: str
     docker_custody_journal_ref: str
     cancellation_audit_tail_ref: str | None
+    pending_lease_refs: tuple[tuple[str, str, int], ...]
+    pending_operation_refs: tuple[tuple[str, str, str, int], ...]
+    supervisor_close_receipts: tuple[ExecLifetimeTerminalReceiptV2, ...]
     source_results: tuple[SupervisorDockerCleanupResult, SupervisorDockerCleanupResult]
     receipt_ref: str
 
@@ -51,6 +164,9 @@ class ExecAttachmentTerminalReceiptV2:
         supervisor_activation_ref: str,
         docker_custody_journal_ref: str,
         cancellation_audit_tail_ref: str | None,
+        pending_lease_refs: tuple[tuple[str, str, int], ...],
+        pending_operation_refs: tuple[tuple[str, str, str, int], ...],
+        supervisor_close_receipts: tuple[ExecLifetimeTerminalReceiptV2, ...],
         source_results: tuple[SupervisorDockerCleanupResult, SupervisorDockerCleanupResult],
     ) -> ExecAttachmentTerminalReceiptV2:
         if (
@@ -67,6 +183,38 @@ class ExecAttachmentTerminalReceiptV2:
                 for item in source_results
             )
             or source_results[0].daemon_instance_digest != source_results[1].daemon_instance_digest
+            or type(pending_lease_refs) is not tuple
+            or type(supervisor_close_receipts) is not tuple
+            or len(pending_lease_refs) != len(supervisor_close_receipts)
+            or len(pending_lease_refs) > 128
+            or tuple(sorted(set(pending_lease_refs))) != pending_lease_refs
+            or type(pending_operation_refs) is not tuple
+            or len(pending_operation_refs) != len(pending_lease_refs)
+            or tuple(sorted(set(pending_operation_refs))) != pending_operation_refs
+            or any(
+                type(item) is not tuple
+                or len(item) != 4
+                or type(item[0]) is not str
+                or re.fullmatch(r"operation-[0-9a-f]{32}", item[0]) is None
+                for item in pending_operation_refs
+            )
+            or {(item[1], item[2], item[3]) for item in pending_operation_refs}
+            != set(pending_lease_refs)
+            or any(
+                type(item) is not ExecLifetimeTerminalReceiptV2
+                for item in supervisor_close_receipts
+            )
+            or {
+                (item.request_ref, item.lease_ref, item.lease_generation)
+                for item in supervisor_close_receipts
+            }
+            != set(pending_lease_refs)
+            or any(
+                item.outcome != "verified_absent"
+                or item.background_work_absent is not True
+                or item.container_absent is not True
+                for item in supervisor_close_receipts
+            )
         ):
             raise InstalledV2ExecAttachmentError("V2 terminal Docker absence is unverified")
         values = {
@@ -81,6 +229,9 @@ class ExecAttachmentTerminalReceiptV2:
             "supervisor_activation_ref": supervisor_activation_ref,
             "docker_custody_journal_ref": docker_custody_journal_ref,
             "cancellation_audit_tail_ref": cancellation_audit_tail_ref,
+            "pending_lease_refs": pending_lease_refs,
+            "pending_operation_refs": pending_operation_refs,
+            "supervisor_close_receipts": supervisor_close_receipts,
             "source_results": source_results,
         }
         document = _terminal_document(values)
@@ -95,7 +246,16 @@ class ExecAttachmentTerminalReceiptV2:
         return self.receipt_ref
 
     def document(self) -> dict[str, Any]:
-        return {**_terminal_document(asdict(self)), "receipt_ref": self.receipt_ref}
+        return {
+            **_terminal_document(
+                {
+                    name: getattr(self, name)
+                    for name in self.__dataclass_fields__
+                    if name != "receipt_ref"
+                }
+            ),
+            "receipt_ref": self.receipt_ref,
+        }
 
 
 def _terminal_document(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -118,8 +278,20 @@ def _terminal_document(values: Mapping[str, Any]) -> dict[str, Any]:
             )
         },
         "source_results": [
-            asdict(item) if isinstance(item, SupervisorDockerCleanupResult) else item
+            {
+                **asdict(item),
+                "request_digests": list(item.request_digests),
+                "response_digests": list(item.response_digests),
+            }
+            if isinstance(item, SupervisorDockerCleanupResult)
+            else item
             for item in values["source_results"]
+        ],
+        "pending_lease_refs": [list(item) for item in values["pending_lease_refs"]],
+        "pending_operation_refs": [list(item) for item in values["pending_operation_refs"]],
+        "supervisor_close_receipts": [
+            item.document() if isinstance(item, ExecLifetimeTerminalReceiptV2) else item
+            for item in values["supervisor_close_receipts"]
         ],
     }
 
@@ -248,6 +420,9 @@ class _ExecAttachmentTerminalStore:
                 "supervisor_activation_ref",
                 "docker_custody_journal_ref",
                 "cancellation_audit_tail_ref",
+                "pending_lease_refs",
+                "pending_operation_refs",
+                "supervisor_close_receipts",
                 "source_results",
                 "receipt_ref",
             }
@@ -256,17 +431,8 @@ class _ExecAttachmentTerminalStore:
             or document["receipt_ref"] != saved_ref
             or content_hash({key: value for key, value in document.items() if key != "receipt_ref"})
             != saved_ref
-            or not isinstance(document["source_results"], list)
-            or len(document["source_results"]) != 2
-            or any(
-                type(item) is not dict
-                or item.get("container_id") != self._binding["container_id"]
-                or item.get("container_identity_digest") != document["container_identity_digest"]
-                or item.get("live_daemon_proof") is not True
-                or item.get("absent_verified") is not True
-                or item.get("cleanup_uncertain") is not False
-                for item in document["source_results"]
-            )
+            or not _valid_cleanup_sources(document)
+            or not _reopen_supervisor_sources(document)
         ):
             raise InstalledV2ExecAttachmentError("V2 terminal source failed replay validation")
         if receipt_ref is not None and saved_ref != receipt_ref:

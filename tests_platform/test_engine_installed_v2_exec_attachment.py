@@ -121,17 +121,6 @@ def test_other_activation_cannot_reuse_network_receipt(tmp_path: Path) -> None:
     assert transport.seen == []
 
 
-def test_target_callback_runs_under_same_held_network_gate(tmp_path: Path) -> None:
-    dispatch, transport, _active, held, _activation = _guarded(tmp_path)
-    with dispatch.with_network_dispatch_gate(
-        container_id=CONTAINER_ID, cancellation=Cancel()
-    ) as receipt:
-        assert held[0] is True
-        assert receipt.container_id == CONTAINER_ID
-        assert len(transport.seen) == 1
-    assert held[0] is False
-
-
 def test_seeded_owned_container_cannot_become_installed_attachment(tmp_path: Path) -> None:
     policy = policy_v2()
     custody = ProductStoreDockerProxyCustody(

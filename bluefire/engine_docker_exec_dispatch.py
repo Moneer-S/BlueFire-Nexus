@@ -287,6 +287,34 @@ class ControllerExecDispatchAuthorityV2(Generic[_Claim]):
                 yield
 
     @contextmanager
+    def target_activation_scope(
+        self, *, attempt_id: str, target_scope_admission_ref: str
+    ) -> Iterator[None]:
+        """Pin the live accepted job for one owned target activation.
+
+        The caller must also hold the ProductStore active execution lease and
+        compare its observed activation target-scope ref with the admitted
+        target policy before signaling the exact owned sidecar. This scope
+        grants no general target request or Docker operation.
+        """
+
+        _digest(target_scope_admission_ref)
+        with self._fence.hold_current(
+            claim_ref=self.claim_ref, controller_fence=self.controller_fence
+        ):
+            self._validate_claim()
+            if attempt_id != self._binding.attempt_id or self._binding.engine_id != "strix":
+                raise DockerExecDispatchError(
+                    "target activation attempt differs from accepted claim"
+                )
+            self._accepted_jobs.require_current(
+                accepted=self._accepted,
+                binding=self._binding,
+                delegation=self._delegation,
+            )
+            yield
+
+    @contextmanager
     def cleanup_scope(self, admission: DockerExecAdmissionV2) -> Iterator[None]:
         with self._fence.hold_cleanup(
             claim_ref=self.claim_ref, controller_fence=self.controller_fence
@@ -454,6 +482,7 @@ class DockerExecSendGateV2:
         self.reservation_ref = _digest(reservation_ref)
         self.request_digest = _digest(request_digest)
         self.operation = operation
+        self.operation_id = admission.request.operation_id
         self.admission_digest = admission.admission_digest
         self._continuous_custody = continuous_custody
         self._custody_proof = custody_proof

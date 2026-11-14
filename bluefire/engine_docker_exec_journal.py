@@ -19,6 +19,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from types import MappingProxyType
 from typing import Any, Iterator, Mapping
 
 from .util import content_hash
@@ -108,7 +109,8 @@ class SQLiteDockerExecOperationJournal:
             attempt_id TEXT NOT NULL, operation_id TEXT NOT NULL,
             admission_ref TEXT NOT NULL, admission_json TEXT NOT NULL,
             authority_ref TEXT NOT NULL, create_request_digest TEXT NOT NULL,
-            dispatch_request_digest TEXT NOT NULL, deadline_ns INTEGER NOT NULL,
+            dispatch_request_digest TEXT NOT NULL, start_request_digest TEXT,
+            inspect_request_digest TEXT, deadline_ns INTEGER NOT NULL,
             reservation_ref TEXT NOT NULL UNIQUE, phase TEXT NOT NULL,
             exec_id TEXT, clock_epoch_ref TEXT, PRIMARY KEY(attempt_id, operation_id))"""
         )
@@ -121,14 +123,21 @@ class SQLiteDockerExecOperationJournal:
             connection.execute(
                 "ALTER TABLE docker_exec_operations_v2 ADD COLUMN clock_epoch_ref TEXT"
             )
+        for name in ("start_request_digest", "inspect_request_digest"):
+            if name not in columns:
+                # Older reservations cannot prove every later request digest.
+                connection.execute(f"ALTER TABLE docker_exec_operations_v2 ADD COLUMN {name} TEXT")
         connection.commit()
 
     def _require_current_epoch(self) -> None:
         if self._clock_epoch_ref != _CLOCK_EPOCH_REF:
             raise DockerExecJournalError("exec clock epoch continuity is unavailable")
 
-    def _row(self, attempt: str, operation: str) -> dict[str, Any] | None:
-        self._require_current_epoch()
+    def _row(
+        self, attempt: str, operation: str, *, historical: bool = False
+    ) -> dict[str, Any] | None:
+        if not historical:
+            self._require_current_epoch()
         cursor = self._connection.execute(
             "SELECT * FROM docker_exec_operations_v2 WHERE attempt_id=? AND operation_id=?",
             (attempt, operation),
@@ -137,7 +146,9 @@ class SQLiteDockerExecOperationJournal:
         if row is None:
             return None
         result = dict(zip((item[0] for item in cursor.description), row, strict=True))
-        if result.get("clock_epoch_ref") != self._clock_epoch_ref:
+        if historical:
+            _text(result.get("clock_epoch_ref"), _DIGEST)
+        elif result.get("clock_epoch_ref") != self._clock_epoch_ref:
             raise DockerExecJournalError("exec clock epoch continuity is unavailable")
         try:
             saved = json.loads(result["admission_json"])
@@ -156,6 +167,26 @@ class SQLiteDockerExecOperationJournal:
                 "reservation_ref",
             ):
                 _text(result[field], _DIGEST)
+            for field in ("start_request_digest", "inspect_request_digest"):
+                if result[field] is not None:
+                    _text(result[field], _DIGEST)
+            if not historical:
+                if (
+                    result["phase"]
+                    in {
+                        "start_reserved",
+                        "started",
+                        "inspect_reserved",
+                        "complete",
+                    }
+                    and result["start_request_digest"] is None
+                ):
+                    raise ValueError("start request digest unavailable")
+                if (
+                    result["phase"] in {"inspect_reserved", "complete"}
+                    and result["inspect_request_digest"] is None
+                ):
+                    raise ValueError("inspect request digest unavailable")
             if result["exec_id"] is not None:
                 _text(result["exec_id"], _ID)
             expected_ref = content_hash(
@@ -259,15 +290,17 @@ class SQLiteDockerExecOperationJournal:
                         raise DockerExecJournalError(
                             "exec dispatch has no matching durable custody"
                         )
+                    phase = "start_reserved" if operation == "exec_start" else "inspect_reserved"
+                    digest_column = (
+                        "start_request_digest"
+                        if operation == "exec_start"
+                        else "inspect_request_digest"
+                    )
                     self._connection.execute(
-                        "UPDATE docker_exec_operations_v2 SET phase=?, dispatch_request_digest=? "
+                        f"UPDATE docker_exec_operations_v2 SET phase=?, "
+                        f"dispatch_request_digest=?, {digest_column}=? "
                         "WHERE attempt_id=? AND operation_id=?",
-                        (
-                            "start_reserved" if operation == "exec_start" else "inspect_reserved",
-                            request_digest,
-                            attempt,
-                            operation_id,
-                        ),
+                        (phase, request_digest, request_digest, attempt, operation_id),
                     )
                 result = self._row(attempt, operation_id)
                 if result is None:
@@ -364,3 +397,32 @@ class SQLiteDockerExecOperationJournal:
         self._require_current_epoch()
         with self._lock:
             return self._row(_text(attempt_id, _ATTEMPT), _text(operation_id, _OPERATION))
+
+    def reopen_historical(self, *, attempt_id: str, operation_id: str) -> Mapping[str, Any] | None:
+        """Read saved operational state without restoring dispatch rights.
+
+        All mutation and send paths continue to use the current clock epoch.
+        The returned immutable row carries saved admission and phase data only;
+        the row itself is mutable in storage and is not independent evidence.
+        Verify its stage digests against accepted, published Docker custody
+        audits before using them to establish an observed operation.
+        """
+
+        with self._lock:
+            row = self._row(
+                _text(attempt_id, _ATTEMPT),
+                _text(operation_id, _OPERATION),
+                historical=True,
+            )
+            if row is None:
+                return None
+            return MappingProxyType(
+                {
+                    **row,
+                    "request_digest_fields_present": (
+                        row["phase"] == "complete"
+                        and row["start_request_digest"] is not None
+                        and row["inspect_request_digest"] is not None
+                    ),
+                }
+            )

@@ -12,9 +12,8 @@ import re
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Iterator, cast
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, cast
 
 from .engine_docker_cancellation_audit_store import ProductStoreDockerExecCancellationAuditV2
 from .engine_docker_control import DockerApiPolicyV2
@@ -44,7 +43,10 @@ from .engine_exec_operation_supervisor import (
     ControllerOwnedExecOperationCustodyV2,
     ExecLifetimeSupervisorBindingV2,
 )
-from .engine_installed_v2_authority import InstalledStrixV2ActivationReceipt
+from .engine_installed_v2_authority import (
+    InstalledStrixV2ActivationReceipt,
+    InstalledStrixV2AuthorityGuard,
+)
 from .engine_installed_v2_exec_terminal import (
     ExecAttachmentTerminalReceiptV2,
     InstalledV2ExecAttachmentError,
@@ -64,6 +66,9 @@ from .linux_exec_supervisor_docker import (
 )
 from .strix_controlled_runtime_admission import StrixControlledLaunchPlanV2
 from .util import content_hash
+
+if TYPE_CHECKING:
+    from .product_store_strix_v2_resources import ProductStoreInstalledStrixV2TransactionRepository
 
 _CONTAINER_EXEC_CREATE = re.compile(r"/v1\.[0-9]{2}/containers/[0-9a-f]{64}/exec\Z")
 _EXEC_START = re.compile(r"/v1\.[0-9]{2}/exec/[0-9a-f]{64}/start\Z")
@@ -361,20 +366,6 @@ class ControllerOwnedV2NetworkDispatch:
                 raise InstalledV2ExecAttachmentError("V2 held activation changed")
             return receipt
 
-    @contextmanager
-    def with_network_dispatch_gate(
-        self, *, container_id: str, cancellation: DockerProxyCancellation
-    ) -> Iterator[DockerV2EffectiveNetworkReceipt]:
-        """Hold the same active scope across inspect and a target relay send."""
-
-        with self._lock, self._hold_active_scope() as held:
-            if held != self._active():
-                raise InstalledV2ExecAttachmentError("V2 held activation changed")
-            receipt = self._inspect_under_hold(container_id=container_id, cancellation=cancellation)
-            if held != self._active():
-                raise InstalledV2ExecAttachmentError("V2 held activation changed")
-            yield receipt
-
     def handle(
         self,
         raw_request: bytes,
@@ -492,8 +483,8 @@ class ControllerOwnedStrixV2ExecAttachment:
         controller_instance_ref: str,
         supervisor_qualification_ref: str,
         dispatch_authority: ControllerExecDispatchAuthorityV2,
-        require_active_activation: Callable[[], InstalledStrixV2ActivationReceipt],
-        hold_active_scope: Callable[[], ContextManager[InstalledStrixV2ActivationReceipt]],
+        repository: ProductStoreInstalledStrixV2TransactionRepository,
+        authority_guard: InstalledStrixV2AuthorityGuard,
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
     ) -> ControllerOwnedStrixV2ExecAttachment:
         """Attach after the exact container is durably owned, before effects."""
@@ -506,8 +497,7 @@ class ControllerOwnedStrixV2ExecAttachment:
             or type(dispatch_authority) is not ControllerExecDispatchAuthorityV2
             or not isinstance(state_directory, Path)
             or not state_directory.is_absolute()
-            or not callable(require_active_activation)
-            or not callable(hold_active_scope)
+            or type(authority_guard) is not InstalledStrixV2AuthorityGuard
             or not callable(monotonic_ns)
             or any(
                 not isinstance(item, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None
@@ -520,6 +510,32 @@ class ControllerOwnedStrixV2ExecAttachment:
             )
         ):
             raise InstalledV2ExecAttachmentError("V2 installed exec inputs are incomplete")
+        # This concrete ProductStore owner is absent from older exact-plan
+        # installations. Do not fall back to a caller-supplied currentness
+        # callback when the V2 transaction repository is unavailable.
+        from .product_store_strix_v2_resources import (
+            ProductStoreInstalledStrixV2TransactionRepository,
+        )
+
+        if type(repository) is not ProductStoreInstalledStrixV2TransactionRepository:
+            raise InstalledV2ExecAttachmentError("V2 active transaction owner is unavailable")
+        repository.require_product_store(cast(Any, store))
+
+        def require_active_activation() -> InstalledStrixV2ActivationReceipt:
+            snapshot = cast(Any, authority_guard).require_active()
+            return cast(InstalledStrixV2ActivationReceipt, snapshot.activation)
+
+        def hold_active_scope() -> ContextManager[InstalledStrixV2ActivationReceipt]:
+            return cast(
+                ContextManager[InstalledStrixV2ActivationReceipt],
+                repository.hold_active_execution(
+                    transaction_ref=transaction_ref,
+                    claim_ref=dispatch_authority.claim_ref,
+                    controller_fence=dispatch_authority.controller_fence,
+                    authority_guard=authority_guard,
+                ),
+            )
+
         if (
             launch_plan.to_dict()["admission"]["attempt_id"] != policy.attempt_id
             or dispatch_authority.claim_ref
@@ -750,25 +766,6 @@ class ControllerOwnedStrixV2ExecAttachment:
                 container_id=self._identity.container_id, cancellation=cancellation
             )
 
-    def dispatch_target(
-        self,
-        callback: Callable[[DockerV2EffectiveNetworkReceipt], Any],
-        *,
-        cancellation: DockerProxyCancellation,
-    ) -> Any:
-        """Invoke one target relay send under inspected placement and active scope."""
-
-        if not callable(callback):
-            raise InstalledV2ExecAttachmentError("V2 target dispatch callback is unavailable")
-        with self._lock:
-            if self._closed or self.cleanup_uncertain:
-                raise InstalledV2ExecAttachmentError("V2 exec attachment is unavailable")
-            with self._network_dispatch.with_network_dispatch_gate(
-                container_id=self._identity.container_id,
-                cancellation=cancellation,
-            ) as receipt:
-                return callback(receipt)
-
     def close_and_observe(self) -> ExecAttachmentTerminalReceiptV2:
         """Close the guardian, then prove exact owned-container absence twice."""
 
@@ -788,6 +785,7 @@ class ControllerOwnedStrixV2ExecAttachment:
                 self._watchdog.close()
             except Exception as exc:
                 failures.append(exc)
+            close_receipts = self._watchdog.close_terminal_receipts
             # The guardian does not cover the container before its first arm.
             try:
                 source_results = self._resource_custody.observe_absence_twice()
@@ -799,10 +797,21 @@ class ControllerOwnedStrixV2ExecAttachment:
                 audits = self._cancellation_audit.reopen()
                 if custody.unresolved_operations or custody.state.reconciliation_required:
                     raise InstalledV2ExecAttachmentError("V2 Docker custody remains unresolved")
-                if len(source_results) != 2 or pending_leases:
-                    # The present supervisor close API discards receipts for
-                    # leases it terminates. Until it retains those receipts,
-                    # whole-container absence alone cannot settle that join.
+                expected_close = {(row[0], row[2], row[3]) for row in pending_leases}
+                observed_close = {
+                    (row.request_ref, row.lease_ref, row.lease_generation) for row in close_receipts
+                }
+                if (
+                    len(source_results) != 2
+                    or len(observed_close) != len(close_receipts)
+                    or expected_close != observed_close
+                    or any(
+                        row.outcome != "verified_absent"
+                        or row.background_work_absent is not True
+                        or row.container_absent is not True
+                        for row in close_receipts
+                    )
+                ):
                     raise InstalledV2ExecAttachmentError(
                         "V2 exec terminal operation evidence is incomplete"
                     )
@@ -819,6 +828,13 @@ class ControllerOwnedStrixV2ExecAttachment:
                     supervisor_activation_ref=self._watchdog.activation_ref,
                     docker_custody_journal_ref=custody.journal_digest,
                     cancellation_audit_tail_ref=(audits[-1].entry_ref if audits else None),
+                    pending_lease_refs=tuple(
+                        sorted((row[0], row[2], row[3]) for row in pending_leases)
+                    ),
+                    pending_operation_refs=tuple(
+                        sorted((row[1], row[0], row[2], row[3]) for row in pending_leases)
+                    ),
+                    supervisor_close_receipts=close_receipts,
                     source_results=source_results,
                 )
                 self._terminal_store.retain(receipt)
