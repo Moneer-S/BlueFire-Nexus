@@ -9,7 +9,10 @@ from types import SimpleNamespace
 import pytest
 
 import bluefire.engine_installed_v2_source_collection as source_module
-from bluefire.engine_artifact_store import EngineArtifactStoreError
+from bluefire.engine_artifact_store import (
+    EngineArtifactPublicationMissing,
+    EngineArtifactStoreError,
+)
 from bluefire.engine_installed_v2_authority import InstalledStrixV2ActivationReceipt
 from bluefire.engine_installed_v2_source_collection import (
     InstalledStrixV2SourceCollection,
@@ -109,7 +112,7 @@ class _Worker:
 
 class _ArtifactStore:
     def reopen_attempt(self, _attempt):
-        raise EngineArtifactStoreError("artifact publication is unavailable")
+        raise EngineArtifactPublicationMissing("artifact publication is unavailable")
 
 
 def _owner(tmp_path, monkeypatch, *, reason="cancelled", exit_code=None, real_workspace=False):
@@ -265,6 +268,51 @@ def test_orphan_artifact_publication_cannot_be_hidden_by_no_run(tmp_path, monkey
         assert owner.reopen_terminal() is None
     finally:
         os.close(fd)
+
+
+def test_store_io_failure_cannot_be_interpreted_as_absence(tmp_path, monkeypatch):
+    owner, _worker, store, fd = _owner(tmp_path, monkeypatch)
+    try:
+        monkeypatch.setattr(
+            source_module, "inspect_retained_strix_export_state", lambda **_: "absent"
+        )
+        monkeypatch.setattr(
+            source_module, "inspect_guest_strix_run_presence", lambda _: "no_run_record"
+        )
+
+        def inaccessible(_attempt):
+            raise EngineArtifactStoreError("artifact publication is unavailable")
+
+        store.reopen_attempt = inaccessible
+        with pytest.raises(EngineArtifactStoreError, match="unavailable"):
+            owner.seal_and_observe()
+        assert owner.cleanup_uncertain is True
+        assert owner.reopen_terminal() is None
+    finally:
+        os.close(fd)
+
+
+def test_artifact_inventory_accepts_different_valid_sort_orders():
+    first = {"name": "strix_runs/run/vulnerabilities/B.md", "size_bytes": 1, "sha256": _digest("B")}
+    second = {
+        "name": "strix_runs/run/vulnerabilities/a.md",
+        "size_bytes": 1,
+        "sha256": _digest("a"),
+    }
+    exported = SimpleNamespace(
+        reviewed_files=(
+            SimpleNamespace(to_manifest_row=lambda: first),
+            SimpleNamespace(to_manifest_row=lambda: second),
+        ),
+        selected_names=(first["name"], second["name"]),
+    )
+    published = SimpleNamespace(
+        artifacts=(
+            SimpleNamespace(to_manifest_row=lambda: second),
+            SimpleNamespace(to_manifest_row=lambda: first),
+        )
+    )
+    InstalledStrixV2SourceCollection._require_same_artifacts(exported, published)
 
 
 def test_saved_run_publication_reopens_exact_manifest_and_artifacts(tmp_path, monkeypatch):

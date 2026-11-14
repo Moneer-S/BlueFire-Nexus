@@ -14,6 +14,7 @@ from bluefire.engine_artifact_store import (
     _CONTROLLER_SOURCE_AUTHORITY,
     MAX_SOURCE_TREE_ENTRIES,
     EngineArtifactPublicationBinding,
+    EngineArtifactPublicationMissing,
     EngineArtifactPublicationUnknown,
     EngineArtifactStore,
     EngineArtifactStoreError,
@@ -27,6 +28,27 @@ from bluefire.windows_owner_acl import _windows_extended_path
 
 ATTEMPT = "engine-attempt-" + "1" * 32
 _PRODUCTION_PREPARE_ROOT = EngineArtifactStore._prepare_root
+
+
+def test_missing_publication_is_distinct_from_unreadable_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = EngineArtifactStore(tmp_path / "artifacts")
+    with pytest.raises(EngineArtifactPublicationMissing):
+        store.reopen_attempt(ATTEMPT)
+
+    attempt_root = store.root / ATTEMPT
+    original_lstat = Path.lstat
+
+    def inaccessible_attempt(path: Path):
+        if path == attempt_root:
+            raise PermissionError("generated unreadable inventory")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", inaccessible_attempt)
+    with pytest.raises(EngineArtifactStoreError, match="inventory is unavailable") as failure:
+        store.reopen_attempt(ATTEMPT)
+    assert not isinstance(failure.value, EngineArtifactPublicationMissing)
 
 
 @pytest.fixture(autouse=True)

@@ -20,8 +20,8 @@ from typing import Any, Mapping, Protocol
 from .engine_artifact_store import (
     _CONTROLLER_SOURCE_AUTHORITY,
     EngineArtifactPublicationBinding,
+    EngineArtifactPublicationMissing,
     EngineArtifactStore,
-    EngineArtifactStoreError,
     ReopenedEngineArtifactAttempt,
     SourceCollectionSeal,
     source_collection_tree_digest,
@@ -484,13 +484,8 @@ class InstalledStrixV2SourceCollection:
 
         try:
             self._artifact_store.reopen_attempt(self.attempt_id)
-        except EngineArtifactStoreError as exc:
-            # The Store verifies its protected root before reporting this
-            # precise missing state. Pending/corrupt/permission errors remain
-            # unknown rather than becoming a no-run claim.
-            if str(exc) == "artifact publication is unavailable":
-                return
-            raise
+        except EngineArtifactPublicationMissing:
+            return
         raise InstalledStrixV2SourceCollectionError("absent run has artifact publication")
 
     @staticmethod
@@ -499,9 +494,15 @@ class InstalledStrixV2SourceCollection:
     ) -> None:
         reviewed = tuple(item.to_manifest_row() for item in exported.reviewed_files)
         retained = tuple(item.to_manifest_row() for item in published.artifacts)
+        reviewed_by_name = {item["name"]: item for item in reviewed}
+        retained_by_name = {item["name"]: item for item in retained}
         if (
-            retained != reviewed
-            or tuple(item["name"] for item in reviewed) != exported.selected_names
+            any(set(item) != {"name", "size_bytes", "sha256"} for item in (*reviewed, *retained))
+            or len(reviewed_by_name) != len(reviewed)
+            or len(retained_by_name) != len(retained)
+            or len(set(exported.selected_names)) != len(exported.selected_names)
+            or set(exported.selected_names) != set(reviewed_by_name)
+            or retained_by_name != reviewed_by_name
         ):
             raise InstalledStrixV2SourceCollectionError(
                 "saved artifacts differ from reviewed Strix output"

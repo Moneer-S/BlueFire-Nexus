@@ -27,6 +27,10 @@ class EngineArtifactStoreError(ValueError):
     """Raised when an engine artifact is outside the reviewed intake contract."""
 
 
+class EngineArtifactPublicationMissing(EngineArtifactStoreError):
+    """The exact attempt publication is absent from a verified store root."""
+
+
 class EngineArtifactPublicationUnknown(EngineArtifactStoreError):
     """A complete attempt was renamed into place but commit durability is unknown."""
 
@@ -898,8 +902,14 @@ class EngineArtifactStore:
             attempt_root = self.root / attempt_id
             try:
                 attempt_details = attempt_root.lstat()
+            except FileNotFoundError:
+                raise EngineArtifactPublicationMissing(
+                    "artifact publication is unavailable"
+                ) from None
             except OSError:
-                raise EngineArtifactStoreError("artifact publication is unavailable") from None
+                raise EngineArtifactStoreError(
+                    "artifact publication inventory is unavailable"
+                ) from None
             if (
                 attempt_root.is_symlink()
                 or _is_reparse(attempt_details)
