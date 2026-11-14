@@ -483,6 +483,11 @@ class DockerExecSendGateV2:
         self.request_digest = _digest(request_digest)
         self.operation = operation
         self.operation_id = admission.request.operation_id
+        self.attempt_id = admission.profile.attempt_id
+        self.container_id = admission.container_id
+        self.policy_digest = admission.policy_digest
+        self.claim_ref = authority.claim_ref
+        self.controller_fence = authority.controller_fence
         self.admission_digest = admission.admission_digest
         self._continuous_custody = continuous_custody
         self._custody_proof = custody_proof

@@ -223,6 +223,12 @@ def test_reservation_is_persistent_before_transport_and_unknown_create_never_rep
     path = tmp_path / "exec.sqlite"
     value, store, connection, admitted, *_rest, cancel = runtime(path)
     reserved = gate(value, admitted, cancel)
+    assert reserved.operation_id == admitted.request.operation_id
+    assert reserved.attempt_id == admitted.profile.attempt_id
+    assert reserved.container_id == admitted.container_id
+    assert reserved.policy_digest == admitted.policy_digest
+    assert reserved.claim_ref == value.authority.claim_ref
+    assert reserved.controller_fence == value.authority.controller_fence
     assert not reserved.entered and not reserved.sent
     snapshot = row(store, admitted)
     assert snapshot["phase"] == "reserved"
