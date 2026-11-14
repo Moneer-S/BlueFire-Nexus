@@ -22,6 +22,7 @@ from typing import Any
 
 from .engine_relay import EngineRelayError
 from .tenant_http_target_profile import canonical_tenant_http_request
+from .tenant_record_controller_contract import tenant_target_snapshot_ref
 from .tenant_record_observer import AUDIT_SCHEMA, TenantAuditRow, _response_headers_digest
 from .util import canonical_json_bytes, content_hash
 
@@ -57,6 +58,8 @@ _BINDING_FIELDS = frozenset(
         "target_alias",
         "target_address",
         "target_snapshot_ref",
+        "target_snapshot_id",
+        "fixture_digest",
         "service_generation",
         "owner_journal_ref",
     }
@@ -123,7 +126,7 @@ def _binding(value: Mapping[str, Any]) -> dict[str, str]:
         or _CONTAINER.fullmatch(row["network_id"]) is None
     ):
         raise TenantSidecarObservationError("sidecar container or network identity is invalid")
-    for field_name in ("image_digest", "target_snapshot_ref", "owner_journal_ref"):
+    for field_name in ("image_digest", "target_snapshot_ref", "fixture_digest", "owner_journal_ref"):
         if not isinstance(row[field_name], str) or _DIGEST.fullmatch(row[field_name]) is None:
             raise TenantSidecarObservationError("sidecar source digest is invalid")
     if (
@@ -133,8 +136,16 @@ def _binding(value: Mapping[str, Any]) -> dict[str, str]:
         or not row["target_address"]
         or not isinstance(row["service_generation"], str)
         or not row["service_generation"]
+        or not isinstance(row["target_snapshot_id"], str)
+        or not row["target_snapshot_id"]
     ):
         raise TenantSidecarObservationError("sidecar network or generation binding is invalid")
+    if row["target_snapshot_ref"] != tenant_target_snapshot_ref(
+        fixture_digest=row["fixture_digest"],
+        target_snapshot_id=row["target_snapshot_id"],
+        service_generation=row["service_generation"],
+    ):
+        raise TenantSidecarObservationError("sidecar target snapshot binding changed")
     return row
 
 
@@ -152,6 +163,8 @@ def _private_root(path: Path) -> Path:
         if current == path:
             if details.st_uid != os.geteuid() or mode != 0o700:
                 raise TenantSidecarObservationError("sidecar observation root is not private")
+        elif details.st_uid not in {0, os.geteuid()}:
+            raise TenantSidecarObservationError("sidecar observation ancestor has another owner")
         elif mode & 0o022:
             # A root-owned sticky /tmp is the only shared ancestor permitted.
             if not (current == Path("/tmp") and details.st_uid == 0 and mode & stat.S_ISVTX):
@@ -200,7 +213,7 @@ def _checked_record(
         raise TenantSidecarObservationError("sidecar observation identity changed")
     path = value["request_target"]
     try:
-        route, _record, _tenant, _assertion, _headers = canonical_tenant_http_request(path, ())
+        route, record, tenant, _assertion, _headers = canonical_tenant_http_request(path, ())
     except (EngineRelayError, ValueError, TypeError) as exc:
         raise TenantSidecarObservationError(
             "sidecar request path is outside the lab grammar"
@@ -232,8 +245,15 @@ def _checked_record(
         audit.request_id != value["target_request_id"]
         or headers.get("x-bluefire-lab-request") != audit.request_id
         or audit.route != route
+        or (tenant is not None and audit.requested_tenant != tenant)
+        or (
+            record is not None
+            and audit.response_status == 200
+            and audit.returned_record_ids != (record,)
+        )
         or audit.source_identity != "engine_worker"
         or audit.service_generation != binding["service_generation"]
+        or audit.target_snapshot_id != binding["target_snapshot_id"]
         or value["response_status"] != audit.response_status
         or len(body) != audit.response_bytes
         or "sha256:" + hashlib.sha256(body).hexdigest() != audit.response_sha256
@@ -268,14 +288,16 @@ class OwnedTenantSidecarObservationReader:
         source_binding: Mapping[str, Any],
         read_owned_logs: Callable[[int], bytes],
         observed_identity: Callable[[], Mapping[str, Any]],
-        max_log_bytes: int = 4 * 1024 * 1024,
+        max_log_bytes: int = 31 * 1024 * 1024,
     ) -> None:
         if os.name != "posix" or not callable(read_owned_logs) or not callable(observed_identity):
             raise TenantSidecarObservationError("sidecar observation requires Linux owner")
-        if type(max_log_bytes) is not int or not 4096 <= max_log_bytes <= 8 * 1024 * 1024:
+        if type(max_log_bytes) is not int or not 4096 <= max_log_bytes <= 31 * 1024 * 1024:
             raise TenantSidecarObservationError("sidecar log bound is invalid")
         self.source_binding = _binding(source_binding)
         self.root = _private_root(Path(root))
+        root_details = self.root.stat()
+        self._root_identity = (root_details.st_dev, root_details.st_ino)
         self._read_owned_logs = read_owned_logs
         self._observed_identity = observed_identity
         if _binding(self._observed_identity()) != self.source_binding:
@@ -286,6 +308,16 @@ class OwnedTenantSidecarObservationReader:
         if not isinstance(request_id, str) or _REQUEST.fullmatch(request_id) is None:
             raise TenantSidecarObservationError("sidecar request ID is invalid")
         return self.root / f"{request_id}.json"
+
+    def _open_root(self) -> int:
+        if _private_root(self.root) != self.root:
+            raise TenantSidecarObservationError("sidecar observation root changed")
+        descriptor = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != self._root_identity:
+            os.close(descriptor)
+            raise TenantSidecarObservationError("sidecar observation root changed")
+        return descriptor
 
     def observe_request(self, target_request_id: str) -> SidecarTargetObservation:
         path = self._path(target_request_id)
@@ -341,22 +373,29 @@ class OwnedTenantSidecarObservationReader:
         }
         source_ref = content_hash(source_document)
         encoded = canonical_json_bytes({**source_document, "source_receipt_ref": source_ref})
+        directory = self._open_root()
         try:
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        except FileExistsError:
-            return self.reopen_request(self.source_binding["attempt_id"], target_request_id)
-        try:
+            try:
+                descriptor = os.open(
+                    path.name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=directory,
+                )
+            except FileExistsError:
+                return self.reopen_request(self.source_binding["attempt_id"], target_request_id)
             with os.fdopen(descriptor, "wb", closefd=True) as output:
                 output.write(encoded)
                 output.flush()
                 os.fsync(output.fileno())
-            directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
                 os.fsync(directory)
-            finally:
-                os.close(directory)
+            except OSError as exc:
+                raise TenantSidecarObservationError("sidecar source retention is uncertain") from exc
         except OSError as exc:
             raise TenantSidecarObservationError("sidecar source retention is uncertain") from exc
+        finally:
+            os.close(directory)
         reopened = self.reopen_request(self.source_binding["attempt_id"], target_request_id)
         if reopened.source_receipt_ref != source_ref:
             raise TenantSidecarObservationError("sidecar source changed during retention")
@@ -366,16 +405,24 @@ class OwnedTenantSidecarObservationReader:
         if attempt_id != self.source_binding["attempt_id"]:
             raise TenantSidecarObservationError("sidecar attempt changed")
         path = self._path(target_request_id)
-        details = path.lstat()
+        directory = self._open_root()
+        try:
+            return self._reopen_from_directory(directory, path.name, target_request_id)
+        finally:
+            os.close(directory)
+
+    def _reopen_from_directory(
+        self, directory: int, filename: str, target_request_id: str
+    ) -> SidecarTargetObservation:
+        details = os.stat(filename, dir_fd=directory, follow_symlinks=False)
         if (
-            path.is_symlink()
-            or not stat.S_ISREG(details.st_mode)
+            not stat.S_ISREG(details.st_mode)
             or details.st_uid != os.geteuid()
             or stat.S_IMODE(details.st_mode) != 0o600
             or details.st_size > 128 * 1024
         ):
             raise TenantSidecarObservationError("sidecar retained source is unsafe")
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
         try:
             opened = os.fstat(descriptor)
             if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != (
@@ -388,7 +435,7 @@ class OwnedTenantSidecarObservationReader:
             raw = os.read(descriptor, 128 * 1024 + 1)
         finally:
             os.close(descriptor)
-        current = path.lstat()
+        current = os.stat(filename, dir_fd=directory, follow_symlinks=False)
         if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != (
             details.st_dev,
             details.st_ino,

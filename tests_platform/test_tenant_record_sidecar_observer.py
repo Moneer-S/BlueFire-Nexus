@@ -15,6 +15,7 @@ from bluefire.tenant_record_sidecar_observer import (
     READY_SCHEMA,
     OwnedTenantSidecarObservationReader,
     TenantSidecarObservationError,
+    _binding,
     _checked_record,
 )
 from bluefire.util import canonical_json_bytes, content_hash
@@ -23,8 +24,12 @@ ATTEMPT = "engine-attempt-" + "a" * 32
 REQUEST = "request-" + "b" * 24
 
 
-def _observation():  # type: ignore[no-untyped-def]
+def _observation(path: str = "/health"):  # type: ignore[no-untyped-def]
     fixture = generate_tenant_record_fixture(b"sidecar-observer-seed-000000000001")
+    if path == "/exports?tenant={probe}":
+        path = f"/exports?tenant={fixture.probe_tenant_id}"
+    if path == "/records/{probe}":
+        path = f"/records/{fixture.records_for(fixture.probe_tenant_id)[0].record_id}"
     config = baseline_defense_config(fixture)
     audit = BoundedTenantAuditLog()
     app = TenantRecordApplication(
@@ -34,9 +39,10 @@ def _observation():  # type: ignore[no-untyped-def]
         clock=lambda: datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc),
         request_id_factory=lambda: REQUEST,
     )
-    response = app.handle(
-        "GET", "/health", {"host": "tenant-record.test"}, source_identity="engine_worker"
-    )
+    headers = {"host": "tenant-record.test"}
+    if path.startswith("/exports") or path.startswith("/records/"):
+        headers["x-bluefire-lab-tenant"] = fixture.probe_tenant_id
+    response = app.handle("GET", path, headers, source_identity="engine_worker")
     row = audit.row(REQUEST)
     snapshot = tenant_target_snapshot_ref(
         fixture_digest=fixture.digest,
@@ -52,6 +58,8 @@ def _observation():  # type: ignore[no-untyped-def]
         "target_alias": "bf-target-" + "a" * 32,
         "target_address": "172.28.40.2",
         "target_snapshot_ref": snapshot,
+        "target_snapshot_id": config.target_snapshot_id,
+        "fixture_digest": fixture.digest,
         "service_generation": config.service_generation,
         "owner_journal_ref": content_hash("sidecar-owner"),
     }
@@ -60,7 +68,7 @@ def _observation():  # type: ignore[no-untyped-def]
         "attempt_id": ATTEMPT,
         "target_snapshot_ref": snapshot,
         "service_generation": config.service_generation,
-        "request_target": "/health",
+        "request_target": path,
         "target_request_id": REQUEST,
         "source_identity": "engine_worker",
         "response_status": response.status,
@@ -107,6 +115,30 @@ def test_sidecar_record_refuses_changed_body_or_audit() -> None:
     binding, record = _observation()
     record["response_body_b64"] = base64.urlsafe_b64encode(b"changed").decode("ascii").rstrip("=")
     with pytest.raises(TenantSidecarObservationError):
+        _checked_record(record, binding)
+
+
+def test_sidecar_record_refuses_changed_snapshot_or_export_tenant() -> None:
+    binding, record = _observation()
+    binding["target_snapshot_id"] = "snapshot-changed"
+    with pytest.raises(TenantSidecarObservationError, match="response differs"):
+        _checked_record(record, binding)
+
+    with pytest.raises(TenantSidecarObservationError, match="snapshot binding"):
+        _binding(binding)
+
+
+def test_sidecar_record_refuses_relabelled_successful_record_lookup() -> None:
+    binding, record = _observation("/records/{probe}")
+    assert record["response_status"] == 200
+    record["request_target"] = "/records/record-aaaaaaaaaaaaaaaaaaaa"
+    with pytest.raises(TenantSidecarObservationError, match="response differs"):
+        _checked_record(record, binding)
+
+    binding, record = _observation("/exports?tenant={probe}")
+    assert record["response_status"] == 200
+    record["request_target"] = "/exports?tenant=tenant-other"
+    with pytest.raises(TenantSidecarObservationError, match="response differs"):
         _checked_record(record, binding)
 
 
@@ -159,4 +191,21 @@ def test_sidecar_observation_refuses_truncated_docker_log(tmp_path) -> None:  # 
         observed_identity=lambda: binding,
     )
     with pytest.raises(TenantSidecarObservationError, match="incomplete"):
+        reader.observe_request(REQUEST)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="owner-private sidecar source is Linux-only")
+def test_sidecar_observation_refuses_replaced_private_directory(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    binding, record = _observation()
+    root = tmp_path / "sidecar-observations"
+    root.mkdir(mode=0o700)
+    reader = OwnedTenantSidecarObservationReader(
+        root=root,
+        source_binding=binding,
+        read_owned_logs=lambda _limit: _log(binding, record),
+        observed_identity=lambda: binding,
+    )
+    root.rename(tmp_path / "old-sidecar-observations")
+    root.mkdir(mode=0o700)
+    with pytest.raises(TenantSidecarObservationError, match="root changed"):
         reader.observe_request(REQUEST)
