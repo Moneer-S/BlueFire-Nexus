@@ -76,6 +76,8 @@ jobs:
           test -f tools/qualify_strix_runtime_candidate.py
           test -f tools/build_strix_worker_runtime_artifact.py
           test -f tools/prepare_strix_linux_runtime_closure.py
+          test -f tools/qualify_strix_linux_fixed_exec.py
+          test -f tools/build_native_runner.py
           test -f tools/strix_runtime_closure_prepare_core.py
           test -f bluefire/test_caido_protocol_entry.py
           test -f bluefire/test_caido_protocol_provider.py
@@ -236,22 +238,379 @@ jobs:
           print(f"inventory={inventory}")
           PY
 
-      # The reviewed native fixed-exec qualifier must create this composite in
-      # this job. Runtime preparation alone is not runtime qualification.
+      - name: Archive the exact committed product source outside checkout
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git -c tar.umask=0022 archive --format=tar \
+            --output="$RUNNER_TEMP/bluefire-product-source.tar" "${{ github.sha }}"
+          mkdir -m 700 "$RUNNER_TEMP/bluefire-product-source"
+          python -m tarfile -e "$RUNNER_TEMP/bluefire-product-source.tar" \
+            "$RUNNER_TEMP/bluefire-product-source"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          source = root / "bluefire-product-source"
+          observed = (source / "bluefire/_source_revision.txt").read_text(encoding="ascii").strip()
+          if observed != "${{ github.sha }}":
+              raise SystemExit("archived product source revision differs")
+          print("digest=sha256:" + hashlib.sha256((root / "bluefire-product-source.tar").read_bytes()).hexdigest())
+          PY
+
+      - name: Build the exact native runner from the archived source
+        id: native_runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/bluefire-product-source"
+          cd "$source"
+          mkdir -m 700 "$RUNNER_TEMP/bluefire-product-rustup"
+          mkdir -m 700 "$RUNNER_TEMP/bluefire-product-cargo"
+          export RUSTUP_HOME="$RUNNER_TEMP/bluefire-product-rustup"
+          export CARGO_HOME="$RUNNER_TEMP/bluefire-product-cargo"
+          channel="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          print(tomllib.loads(Path('rust-toolchain.toml').read_text())['toolchain']['channel'])
+          PY
+          )"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --component cargo --force
+          rustup target add x86_64-unknown-linux-musl --toolchain "$channel"
+          rustup run "$channel" rustc -vV
+          python tools/build_native_runner.py --target x86_64-unknown-linux-musl
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import os
+          import stat
+          from pathlib import Path
+
+          source = Path(os.environ["RUNNER_TEMP"]) / "bluefire-product-source"
+          runner = source / "runner/target/x86_64-unknown-linux-musl/release/bluefire-runner"
+          if runner.is_symlink() or not runner.is_file():
+              raise SystemExit("archived-source native runner is not a regular file")
+          details = runner.stat()
+          if details.st_nlink != 1 or not (details.st_mode & stat.S_IXUSR):
+              raise SystemExit("archived-source native runner is not a single executable")
+          print(f"path={runner}")
+          print("digest=sha256:" + hashlib.sha256(runner.read_bytes()).hexdigest())
+          PY
+
+      - name: Stage exact source and fixed-bootstrap inputs under root custody
+        id: protected
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i \
+            RUNNER_TEMP="$RUNNER_TEMP" GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            GITHUB_SHA="${{ github.sha }}" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            SOURCE_DIGEST="${{ steps.source.outputs.digest }}" \
+            RUNNER_PATH="${{ steps.native_runner.outputs.path }}" \
+            RUNNER_DIGEST="${{ steps.native_runner.outputs.digest }}" \
+            WORKER_PATH="${{ steps.worker.outputs.artifact }}" \
+            WORKER_DIGEST="${{ steps.worker.outputs.digest }}" \
+            PRELAUNCH_INVENTORY="${{ steps.prelaunch.outputs.inventory }}" \
+            PATH=/usr/bin:/bin /usr/bin/python3 -I -B - <<'PY'
+          import hashlib
+          import os
+          import re
+          import shutil
+          import stat
+          import sys
+          import tarfile
+          from pathlib import Path
+
+          def required_digest(name):
+              value = os.environ[name]
+              if re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+                  raise SystemExit(f"{name} is not a canonical digest")
+              return value
+
+          root_path = Path(os.environ["RUNNER_TEMP"])
+          workspace_path = Path(os.environ["GITHUB_WORKSPACE"])
+          if any(not path.is_absolute() or path.is_symlink() for path in (root_path, workspace_path)):
+              raise SystemExit("hosted source paths are invalid")
+          root = root_path.resolve(strict=True)
+          workspace = workspace_path.resolve(strict=True)
+          if len(workspace.parents) < 2 or root != workspace.parents[1] / "_temp":
+              raise SystemExit("runner temp is not the workspace sibling")
+          revision = os.environ["GITHUB_SHA"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          if re.fullmatch(r"[0-9a-f]{40}", revision) is None or any(
+              re.fullmatch(r"[0-9]{1,20}", value) is None for value in (run_id, attempt)
+          ):
+              raise SystemExit("hosted revision or attempt identity is invalid")
+          for name in ("SOURCE_DIGEST", "RUNNER_DIGEST", "WORKER_DIGEST", "PRELAUNCH_INVENTORY"):
+              required_digest(name)
+          base = Path("/var/tmp")
+          base_details = base.lstat()
+          if not stat.S_ISDIR(base_details.st_mode) or base_details.st_uid != 0 or (
+              stat.S_IMODE(base_details.st_mode) != 0o1777
+          ):
+              raise SystemExit("protected staging parent is not root-owned sticky temp")
+          stage = base / f"bluefire-strix-fixed-{run_id}-{attempt}"
+          stage.mkdir(mode=0o700)
+          source_dir = stage / "source"
+          source_dir.mkdir(mode=0o700)
+          inputs = stage / "inputs"
+          inputs.mkdir(mode=0o700)
+
+          archive_source = root / "bluefire-product-source.tar"
+          if archive_source.is_symlink() or not archive_source.is_file():
+              raise SystemExit("committed source archive is unavailable")
+          archive = stage / "source.tar"
+          with archive_source.open("rb") as source, archive.open("xb") as destination:
+              shutil.copyfileobj(source, destination)
+          archive.chmod(0o600)
+          if "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest() != os.environ["SOURCE_DIGEST"]:
+              raise SystemExit("protected source archive differs from committed source")
+          with tarfile.open(archive, "r:") as source:
+              source.extractall(source_dir, filter="data")
+          marker = source_dir / "bluefire/_source_revision.txt"
+          if marker.read_text(encoding="ascii").strip() != revision:
+              raise SystemExit("protected source revision differs")
+          for path in source_dir.rglob("*"):
+              details = path.lstat()
+              if path.is_symlink() or details.st_uid != 0 or details.st_mode & 0o022:
+                  raise SystemExit("protected source contains a mutable or linked entry")
+          sys.path.insert(0, str(source_dir))
+          from tools.strix_runtime_closure_prepare_core import runtime_inventory_digest
+
+          preparation_source = root / "bluefire-strix-runtime-preparation"
+          if preparation_source.is_symlink() or not preparation_source.is_dir():
+              raise SystemExit("prelaunch runtime source is invalid")
+          preparation = inputs / "preparation"
+          shutil.copytree(preparation_source, preparation, symlinks=True)
+          runtime = preparation / "strix-linux-runtime-root"
+          if runtime_inventory_digest(runtime) != os.environ["PRELAUNCH_INVENTORY"]:
+              raise SystemExit("protected prelaunch inventory differs")
+          for path in preparation.rglob("*"):
+              if path.is_symlink() or path.lstat().st_uid != 0:
+                  raise SystemExit("protected runtime contains a linked or nonroot entry")
+
+          def copy_regular(source, destination, expected_digest=None, mode=0o444):
+              if source.is_symlink() or not source.is_file() or source.stat().st_nlink != 1:
+                  raise SystemExit("protected input source is invalid")
+              destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+              with source.open("rb") as original, destination.open("xb") as protected:
+                  shutil.copyfileobj(original, protected)
+              destination.chmod(mode)
+              digest = "sha256:" + hashlib.sha256(destination.read_bytes()).hexdigest()
+              if expected_digest is not None and digest != expected_digest:
+                  raise SystemExit("protected input digest differs")
+              return digest
+
+          copy_regular(
+              root / "bluefire-strix-candidate-output/strix-engine-candidate-manifest.json",
+              inputs / "candidate/strix-engine-candidate-manifest.json",
+          )
+          copy_regular(
+              root / "bluefire-strix-qualification-output/strix-runtime-qualification-manifest.json",
+              inputs / "qualification/strix-runtime-qualification-manifest.json",
+          )
+          worker_source = Path(os.environ["WORKER_PATH"])
+          if worker_source.parent.resolve(strict=True) != root / "bluefire-worker-artifact":
+              raise SystemExit("minimal worker source escaped its exact output root")
+          copy_regular(worker_source, inputs / "worker" / worker_source.name, os.environ["WORKER_DIGEST"])
+          runner_source = Path(os.environ["RUNNER_PATH"])
+          if runner_source != root / "bluefire-product-source/runner/target/x86_64-unknown-linux-musl/release/bluefire-runner":
+              raise SystemExit("native runner source path differs")
+          copy_regular(runner_source, inputs / "runner/bluefire-runner", os.environ["RUNNER_DIGEST"], 0o555)
+          PY
+          printf 'stage=/var/tmp/bluefire-strix-fixed-%s-%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Qualify the protected fixed bootstrap without model or tool work
+        id: fixed
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i \
+            STAGE="${{ steps.protected.outputs.stage }}" \
+            RUNNER_TEMP="$RUNNER_TEMP" GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            SOURCE_SHA="${{ github.sha }}" \
+            SOURCE_DIGEST="${{ steps.source.outputs.digest }}" \
+            RUNNER_DIGEST="${{ steps.native_runner.outputs.digest }}" \
+            PRELAUNCH_INVENTORY="${{ steps.prelaunch.outputs.inventory }}" \
+            PATH=/usr/bin:/bin /usr/bin/python3 -I -B - \
+            > "$RUNNER_TEMP/bluefire-strix-fixed-bootstrap-result.json" <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          import stat
+          import sys
+          from pathlib import Path
+
+          stage = Path(os.environ["STAGE"])
+          source = stage / "source"
+          for path, mode in ((stage, 0o700), (source, 0o700), (stage / "inputs", 0o700)):
+              details = path.lstat()
+              if path.is_symlink() or details.st_uid != 0 or stat.S_IMODE(details.st_mode) != mode:
+                  raise SystemExit("protected qualifier source or ancestor changed")
+          if re.fullmatch(r"[0-9a-f]{40}", os.environ["SOURCE_SHA"]) is None:
+              raise SystemExit("protected qualifier source revision is invalid")
+          archive_digest = "sha256:" + hashlib.sha256((stage / "source.tar").read_bytes()).hexdigest()
+          if archive_digest != os.environ["SOURCE_DIGEST"] or (
+              source / "bluefire/_source_revision.txt"
+          ).read_text(encoding="ascii").strip() != os.environ["SOURCE_SHA"]:
+              raise SystemExit("protected qualifier source digest or revision changed")
+          runner = stage / "inputs/runner/bluefire-runner"
+          if runner.is_symlink() or runner.stat().st_uid != 0 or (
+              "sha256:" + hashlib.sha256(runner.read_bytes()).hexdigest()
+          ) != os.environ["RUNNER_DIGEST"]:
+              raise SystemExit("protected native runner changed")
+          wheels = list((stage / "inputs/worker").glob("*.whl"))
+          if len(wheels) != 1 or wheels[0].is_symlink():
+              raise SystemExit("protected worker wheel is ambiguous")
+          sys.path.insert(0, str(source))
+          from tools.qualify_strix_linux_fixed_exec import main
+          from tools.strix_runtime_closure_prepare_core import runtime_inventory_digest
+
+          marker = stage / "qualifier-started"
+          marker.touch(mode=0o600, exist_ok=False)
+          result = main([
+              "--runtime-root", str(stage / "inputs/preparation/strix-linux-runtime-root"),
+              "--preparation-manifest", str(stage / "inputs/preparation/strix-linux-runtime-preparation-manifest.json"),
+              "--qualification-manifest", str(stage / "inputs/qualification/strix-runtime-qualification-manifest.json"),
+              "--candidate-manifest", str(stage / "inputs/candidate/strix-engine-candidate-manifest.json"),
+              "--worker-artifact", str(wheels[0]),
+              "--runner-path", str(runner),
+              "--runner-sha256", os.environ["RUNNER_DIGEST"],
+              "--expected-worker-source-revision", os.environ["SOURCE_SHA"],
+              "--output-root", str(stage / "composite"),
+          ])
+          if result != 0:
+              raise SystemExit("fixed bootstrap qualification failed")
+          root_path = Path(os.environ["RUNNER_TEMP"])
+          workspace_path = Path(os.environ["GITHUB_WORKSPACE"])
+          if any(not path.is_absolute() or path.is_symlink() for path in (root_path, workspace_path)):
+              raise SystemExit("fixed bootstrap handoff roots are invalid")
+          temp = root_path.resolve(strict=True)
+          workspace = workspace_path.resolve(strict=True)
+          if len(workspace.parents) < 2 or temp != workspace.parents[1] / "_temp":
+              raise SystemExit("fixed bootstrap handoff left the hosted runner temp")
+          source_output = stage / "composite"
+          source_root = source_output / "strix-linux-runtime-root"
+          expected_inventory = os.environ["PRELAUNCH_INVENTORY"]
+          if runtime_inventory_digest(source_root) != expected_inventory:
+              raise SystemExit("qualified source runtime inventory differs")
+          base = Path("/var/tmp")
+          base_details = base.lstat()
+          if not stat.S_ISDIR(base_details.st_mode) or base_details.st_uid != 0 or (
+              stat.S_IMODE(base_details.st_mode) != 0o1777
+          ) or stage.parent != base or not stage.name.startswith("bluefire-strix-fixed-"):
+              raise SystemExit("fixed bootstrap handoff parent differs")
+          handoff = stage.with_name(stage.name.replace("bluefire-strix-fixed-", "bluefire-strix-handoff-", 1))
+          handoff.mkdir(mode=0o755)
+          copied_root = handoff / "strix-linux-runtime-root"
+          shutil.copytree(source_root, copied_root, symlinks=True)
+          if runtime_inventory_digest(copied_root) != expected_inventory:
+              raise SystemExit("copied runtime inventory differs from qualified source")
+          document_digests = {}
+          for name in (
+              "strix-linux-prelaunch-plan.json",
+              "strix-linux-fixed-exec-qualification.json",
+              "strix-linux-runtime-composite.json",
+          ):
+              original = source_output / name
+              copied = handoff / name
+              if original.is_symlink() or not original.is_file():
+                  raise SystemExit("qualified handoff document is invalid")
+              shutil.copy2(original, copied)
+              original_digest = "sha256:" + hashlib.sha256(original.read_bytes()).hexdigest()
+              copied_digest = "sha256:" + hashlib.sha256(copied.read_bytes()).hexdigest()
+              if copied_digest != original_digest:
+                  raise SystemExit("qualified handoff document copy differs")
+              document_digests[name] = copied_digest
+          qualification = json.loads((handoff / "strix-linux-fixed-exec-qualification.json").read_bytes())
+          composite = json.loads((handoff / "strix-linux-runtime-composite.json").read_bytes())
+          if qualification.get("verified_absent") is not True or (
+              qualification.get("qualification_ref") != composite.get("fixed_exec_qualification_ref")
+              or composite.get("inventory_digest") != expected_inventory
+          ):
+              raise SystemExit("qualified handoff lacks native absence binding")
+          receipt = {
+              "schema_version": "bluefire.strix-fixed-bootstrap-image-handoff.v1",
+              "source_revision": os.environ["SOURCE_SHA"],
+              "scope": "fixed-exec-bootstrap-copy-after-verified-absence",
+              "runtime_inventory_digest": expected_inventory,
+              "source_runtime_identity": {
+                  "device": source_root.stat().st_dev, "inode": source_root.stat().st_ino,
+              },
+              "copied_runtime_identity": {
+                  "device": copied_root.stat().st_dev, "inode": copied_root.stat().st_ino,
+              },
+              "document_digests": document_digests,
+              "composite_ref": composite["composite_ref"],
+              "qualification_ref": qualification["qualification_ref"],
+              "verified_absent": True,
+          }
+          receipt_path = handoff / "strix-linux-fixed-bootstrap-handoff.json"
+          descriptor = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+          with os.fdopen(descriptor, "wb") as output:
+              output.write((json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode())
+              output.flush()
+              os.fsync(output.fileno())
+          PY
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          row = json.loads((Path(os.environ["RUNNER_TEMP"]) / "bluefire-strix-fixed-bootstrap-result.json").read_text())
+          stage = Path("${{ steps.protected.outputs.stage }}")
+          expected = stage.with_name(stage.name.replace("bluefire-strix-fixed-", "bluefire-strix-handoff-", 1))
+          root = expected / "strix-linux-runtime-root"
+          manifest = expected / "strix-linux-runtime-composite.json"
+          qualification = expected / "strix-linux-fixed-exec-qualification.json"
+          plan = expected / "strix-linux-prelaunch-plan.json"
+          handoff = expected / "strix-linux-fixed-bootstrap-handoff.json"
+          source_output = Path("${{ steps.protected.outputs.stage }}") / "composite"
+          if row.get("scope") != "fixed-exec-bootstrap" or (
+              row.get("runtime_root") != str(source_output / "strix-linux-runtime-root")
+              or row.get("composite_manifest") != str(source_output / "strix-linux-runtime-composite.json")
+          ) or any(path.is_symlink() or not path.exists() for path in (root, manifest, qualification, plan, handoff)):
+              raise SystemExit("fixed bootstrap result paths differ")
+          reference = row.get("composite_ref")
+          if not isinstance(reference, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", reference) is None:
+              raise SystemExit("fixed bootstrap composite reference is invalid")
+          print(f"root={root}")
+          print(f"manifest={manifest}")
+          print(f"qualification={qualification}")
+          print(f"plan={plan}")
+          print(f"handoff={handoff}")
+          print(f"ref={reference}")
+          PY
+
+      # The qualified bootstrap is a lower-bound proof. Worker entrypoint,
+      # target, model, and product execution require later installed proof.
       - name: Require finalized same-job runtime composite
         shell: bash
         run: |
           set -euo pipefail
           for required in \
-            "${{ steps.prelaunch.outputs.root }}" \
             "${{ steps.prelaunch.outputs.manifest }}" \
-            "$RUNNER_TEMP/bluefire-strix-runtime-composite/strix-linux-runtime-root" \
-            "$RUNNER_TEMP/bluefire-strix-runtime-composite/strix-linux-runtime-composite.json"
+            "${{ steps.fixed.outputs.root }}" \
+            "${{ steps.fixed.outputs.manifest }}" \
+            "${{ steps.fixed.outputs.qualification }}" \
+            "${{ steps.fixed.outputs.plan }}" \
+            "${{ steps.fixed.outputs.handoff }}"
           do
             if [[ ! -e "$required" ]]; then
               printf '%s\n' \
-                'Final native fixed-exec runtime qualification is not produced by this candidate.' \
-                'Add the reviewed same-job qualifier before dispatching this workflow.' >&2
+                'Observed fixed-bootstrap qualification is unavailable for this candidate.' \
+                'Image admission cannot proceed without its same-job native receipt.' >&2
               exit 2
             fi
           done
@@ -262,18 +621,70 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
           import json
+          import os
           import re
+          import stat
           from pathlib import Path
 
+          from bluefire.strix_linux_runtime_closure import StrixLinuxRuntimeClosurePlan
           from bluefire.strix_test_sandbox_image import installed_worker_invocation_digest
+          from bluefire.util import content_hash
+          from tools.strix_runtime_closure_prepare_core import runtime_inventory_digest
 
-          path = Path(
-              "${{ runner.temp }}/bluefire-strix-runtime-composite/"
-              "strix-linux-runtime-composite.json"
+          path = Path("${{ steps.fixed.outputs.manifest }}")
+          qualified_path = Path("${{ steps.fixed.outputs.qualification }}")
+          plan_path = Path("${{ steps.fixed.outputs.plan }}")
+          runtime_root = Path("${{ steps.fixed.outputs.root }}")
+          handoff_path = Path("${{ steps.fixed.outputs.handoff }}")
+          if any(item.is_symlink() for item in (path, qualified_path, plan_path, runtime_root, handoff_path)):
+              raise SystemExit("fixed bootstrap handoff is a symbolic link")
+          protected_stage = Path("${{ steps.protected.outputs.stage }}")
+          handoff_root = protected_stage.with_name(
+              protected_stage.name.replace("bluefire-strix-fixed-", "bluefire-strix-handoff-", 1)
           )
+          base = Path("/var/tmp")
+          base_details = base.lstat()
+          handoff_details = handoff_root.lstat()
+          if handoff_root.parent != base or base_details.st_uid != 0 or (
+              stat.S_IMODE(base_details.st_mode) != 0o1777
+              or handoff_root.is_symlink() or handoff_details.st_uid != 0
+              or stat.S_IMODE(handoff_details.st_mode) != 0o755
+          ):
+              raise SystemExit("fixed bootstrap handoff custody differs")
+          if any(item.parent != handoff_root for item in (path, qualified_path, plan_path, runtime_root, handoff_path)):
+              raise SystemExit("fixed bootstrap handoff escaped its exact output")
+          for item in (path, qualified_path, plan_path, runtime_root, handoff_path):
+              details = item.lstat()
+              if details.st_uid != 0 or stat.S_IMODE(details.st_mode) & 0o022:
+                  raise SystemExit("fixed bootstrap handoff entry is mutable")
+              if item != runtime_root and (not stat.S_ISREG(details.st_mode) or details.st_nlink != 1):
+                  raise SystemExit("fixed bootstrap handoff document is not a regular file")
+          handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+          if handoff.get("schema_version") != "bluefire.strix-fixed-bootstrap-image-handoff.v1" or (
+              handoff.get("source_revision") != "${{ github.sha }}"
+              or handoff.get("scope") != "fixed-exec-bootstrap-copy-after-verified-absence"
+              or handoff.get("verified_absent") is not True
+          ):
+              raise SystemExit("fixed bootstrap copy receipt scope differs")
+          copied_identity = handoff.get("copied_runtime_identity", {})
+          copied_stat = runtime_root.stat()
+          if copied_identity != {"device": copied_stat.st_dev, "inode": copied_stat.st_ino}:
+              raise SystemExit("fixed bootstrap copied runtime identity differs")
+          document_digests = handoff.get("document_digests", {})
+          for document in (path, qualified_path, plan_path):
+              actual_digest = "sha256:" + hashlib.sha256(document.read_bytes()).hexdigest()
+              if document_digests.get(document.name) != actual_digest:
+                  raise SystemExit("fixed bootstrap copied document differs")
           row = json.loads(path.read_text(encoding="utf-8"))
+          qualification = json.loads(qualified_path.read_text(encoding="utf-8"))
+          plan = StrixLinuxRuntimeClosurePlan.from_mapping(json.loads(plan_path.read_text(encoding="utf-8")))
           reference = row.get("composite_ref")
+          if handoff.get("composite_ref") != reference or (
+              handoff.get("qualification_ref") != row.get("fixed_exec_qualification_ref")
+          ):
+              raise SystemExit("fixed bootstrap copy receipt does not bind source proof")
           if (
               row.get("schema_version")
               != "bluefire.strix-linux-qualified-runtime-composite.v1"
@@ -293,10 +704,56 @@ jobs:
                   raise SystemExit(f"runtime composite {name} is invalid")
           if row.get("worker_distribution") != "bluefire-strix-worker":
               raise SystemExit("runtime composite worker distribution differs")
+          if row.get("composite_ref") != "${{ steps.fixed.outputs.ref }}" or row.get("composite_ref") != content_hash({
+              "schema_version": "bluefire.strix-linux-qualified-runtime-composite.v1",
+              "prelaunch_plan_ref": row["prelaunch_plan_ref"],
+              "fixed_exec_qualification_ref": row["fixed_exec_qualification_ref"],
+          }):
+              raise SystemExit("runtime composite reference differs")
+          qualification_ref = qualification.pop("qualification_ref", None)
+          if qualification.get("schema_version") != "bluefire.strix-linux-fixed-exec-qualification.v1" or (
+              qualification_ref != content_hash(qualification)
+              or qualification_ref != row["fixed_exec_qualification_ref"]
+          ):
+              raise SystemExit("fixed bootstrap qualification reference differs")
+          if (
+              qualification.get("scope") != "fixed-exec-bootstrap"
+              or qualification.get("installed_worker_entrypoint_executed") is not None
+              or qualification.get("installed_worker_entrypoint_qualified") is not False
+              or qualification.get("product_activation") is not False
+              or qualification.get("model_tool_target_effects") is not False
+              or qualification.get("verified_absent") is not True
+          ):
+              raise SystemExit("fixed bootstrap receipt overstates or lacks its proof scope")
+          if qualification.get("plan_ref") != plan.plan_ref or row.get("prelaunch_plan_ref") != plan.plan_ref:
+              raise SystemExit("fixed bootstrap plan binding differs")
+          if qualification.get("worker_artifact_digest") != "${{ steps.worker.outputs.digest }}" or (
+              qualification.get("worker_record_digest") != "${{ steps.worker.outputs.record }}"
+              or qualification.get("runner_digest") != "${{ steps.native_runner.outputs.digest }}"
+          ):
+              raise SystemExit("fixed bootstrap inputs differ")
           if row.get("strix_candidate_digest") != "${{ steps.candidate.outputs.digest }}":
               raise SystemExit("runtime composite Strix candidate differs")
+          if row.get("worker_artifact_digest") != "${{ steps.worker.outputs.digest }}" or (
+              row.get("worker_record_digest") != "${{ steps.worker.outputs.record }}"
+          ):
+              raise SystemExit("runtime composite worker wheel differs")
           if row.get("worker_source_revision") != "${{ github.sha }}":
               raise SystemExit("runtime composite worker revision differs")
+          if plan.worker_source_revision != "${{ github.sha }}" or (
+              plan.package_digest != "${{ steps.candidate.outputs.digest }}"
+          ):
+              raise SystemExit("fixed bootstrap plan source differs")
+          prelaunch = Path("${{ steps.prelaunch.outputs.manifest }}")
+          prelaunch_ref = "sha256:" + hashlib.sha256(prelaunch.read_bytes()).hexdigest()
+          if plan.preparation_manifest_ref != prelaunch_ref:
+              raise SystemExit("fixed bootstrap preparation manifest differs")
+          inventory = runtime_inventory_digest(runtime_root)
+          if inventory != handoff.get("runtime_inventory_digest") or (
+              inventory != "${{ steps.prelaunch.outputs.inventory }}" or
+              inventory != plan.inventory_digest or inventory != row.get("inventory_digest")
+          ):
+              raise SystemExit("fixed bootstrap runtime inventory differs")
           if row.get("worker_invocation_digest") != installed_worker_invocation_digest():
               raise SystemExit("runtime composite worker invocation differs")
           if row.get("full_product_wheel_present") is not False:
@@ -360,8 +817,8 @@ jobs:
           python -m tools.qualify_strix_test_sandbox_image qualify
           --bluefire-source-revision "${{ github.sha }}"
           --qualifier-revision "${{ github.sha }}"
-          --runtime-root "$RUNNER_TEMP/bluefire-strix-runtime-composite/strix-linux-runtime-root"
-          --runtime-composite-manifest "$RUNNER_TEMP/bluefire-strix-runtime-composite/strix-linux-runtime-composite.json"
+          --runtime-root "${{ steps.fixed.outputs.root }}"
+          --runtime-composite-manifest "${{ steps.fixed.outputs.manifest }}"
           --runtime-composite-ref "${{ steps.runtime.outputs.ref }}"
           --provider-source bluefire/test_caido_protocol_entry.py
           --provider-source bluefire/test_caido_protocol_provider.py
@@ -373,26 +830,6 @@ jobs:
           --output-root "$RUNNER_TEMP/bluefire-strix-test-sandbox-output"
           --docker-socket unix:///var/run/docker.sock
 
-      - name: Archive the exact committed product source outside checkout
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
-          git -c tar.umask=0022 archive --format=tar \
-            --output="$RUNNER_TEMP/bluefire-product-source.tar" "${{ github.sha }}"
-          mkdir -m 700 "$RUNNER_TEMP/bluefire-product-source"
-          python -m tarfile -e "$RUNNER_TEMP/bluefire-product-source.tar" \
-            "$RUNNER_TEMP/bluefire-product-source"
-          python - <<'PY'
-          import os
-          from pathlib import Path
-
-          source = Path(os.environ["RUNNER_TEMP"]) / "bluefire-product-source"
-          observed = (source / "bluefire/_source_revision.txt").read_text(encoding="ascii").strip()
-          if observed != "${{ github.sha }}":
-              raise SystemExit("archived product source revision differs")
-          PY
-
       - name: Build the packaged Linux service from the archived source
         shell: bash
         run: |
@@ -401,24 +838,10 @@ jobs:
           cd "$source"
           python -m pip install --disable-pip-version-check --upgrade pip
           python -m pip install --disable-pip-version-check 'build>=1.2.2,<2'
-          mkdir -m 700 "$RUNNER_TEMP/bluefire-product-rustup"
-          mkdir -m 700 "$RUNNER_TEMP/bluefire-product-cargo"
-          export RUSTUP_HOME="$RUNNER_TEMP/bluefire-product-rustup"
-          export CARGO_HOME="$RUNNER_TEMP/bluefire-product-cargo"
-          channel="$(python - <<'PY'
-          import tomllib
-          from pathlib import Path
-
-          print(tomllib.loads(Path('rust-toolchain.toml').read_text())['toolchain']['channel'])
-          PY
-          )"
-          test -n "$channel"
-          rustup toolchain install "$channel" --profile minimal --component cargo --force
-          rustup target add x86_64-unknown-linux-musl --toolchain "$channel"
-          rustup run "$channel" rustc -vV
-          python tools/build_native_runner.py --target x86_64-unknown-linux-musl
+          test "sha256:$(sha256sum "${{ steps.native_runner.outputs.path }}" | cut -d ' ' -f 1)" = \
+            "${{ steps.native_runner.outputs.digest }}"
           python tools/stage_native_runner.py \
-            --runner "$source/runner/target/x86_64-unknown-linux-musl/release/bluefire-runner" \
+            --runner "${{ steps.native_runner.outputs.path }}" \
             --output-root "$source/bluefire/native" \
             --platform linux --architecture x86_64
           python -m build --wheel
@@ -655,6 +1078,30 @@ jobs:
               if receipt.to_dict()["contract_digest"] != image_contract_digest:
                   raise SystemExit("image cleanup receipt contract differs")
               image_cleanup_receipt_digest = receipt.receipt_digest
+          run_id = os.environ["GITHUB_RUN_ID"]
+          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          if any(re.fullmatch(r"[0-9]{1,20}", value) is None for value in (run_id, attempt)):
+              raise SystemExit("fixed bootstrap handoff identity is invalid")
+          handoff_root = Path("/var/tmp") / f"bluefire-strix-handoff-{run_id}-{attempt}"
+          if handoff_root.is_symlink() or (
+              handoff_root.exists() and (
+                  handoff_root.resolve(strict=True).parent != Path("/var/tmp")
+                  or handoff_root.stat().st_uid != 0
+              )
+          ):
+              raise SystemExit("fixed bootstrap handoff root is invalid")
+          handoff_receipt = handoff_root / "strix-linux-fixed-bootstrap-handoff.json"
+          if handoff_receipt.is_symlink():
+              raise SystemExit("fixed bootstrap handoff receipt is a symbolic link")
+          handoff_receipt_digest = None
+          if handoff_receipt.is_file():
+              receipt_row = json.loads(handoff_receipt.read_bytes())
+              if receipt_row.get("schema_version") != "bluefire.strix-fixed-bootstrap-image-handoff.v1" or (
+                  receipt_row.get("source_revision") != source_revision
+                  or receipt_row.get("verified_absent") is not True
+              ):
+                  raise SystemExit("fixed bootstrap handoff receipt differs")
+              handoff_receipt_digest = "sha256:" + hashlib.sha256(handoff_receipt.read_bytes()).hexdigest()
 
           document = {
               "schema_version": "bluefire.strix-private-producer-identities.v1",
@@ -671,6 +1118,7 @@ jobs:
               "worker_record_digest": optional_digest("${{ steps.worker.outputs.record }}"),
               "image_contract_digest": image_contract_digest,
               "image_cleanup_receipt_digest": image_cleanup_receipt_digest,
+              "fixed_bootstrap_handoff_receipt_digest": handoff_receipt_digest,
               "proof_scope": "identities-only-no-installed-execution-proof",
           }
           evidence = root / "bluefire-strix-evidence"
@@ -688,6 +1136,103 @@ jobs:
               stream.flush()
               os.fsync(stream.fileno())
           print("Private producer identity digest: sha256:" + hashlib.sha256(payload).hexdigest())
+          PY
+
+      - name: Remove exact protected fixed-bootstrap stage and image handoff
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i \
+            RUNNER_TEMP="$RUNNER_TEMP" GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            PATH=/usr/bin:/bin /usr/bin/python3 -I -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          import stat
+          from pathlib import Path
+
+          base = Path("/var/tmp")
+          base_details = base.lstat()
+          if not stat.S_ISDIR(base_details.st_mode) or base_details.st_uid != 0 or (
+              stat.S_IMODE(base_details.st_mode) != 0o1777
+          ):
+              raise SystemExit("protected stage parent differs")
+          run_id = os.environ["GITHUB_RUN_ID"]
+          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          if any(re.fullmatch(r"[0-9]{1,20}", value) is None for value in (run_id, attempt)):
+              raise SystemExit("protected stage identity differs")
+          root_path = Path(os.environ["RUNNER_TEMP"])
+          workspace_path = Path(os.environ["GITHUB_WORKSPACE"])
+          if any(not path.is_absolute() or path.is_symlink() for path in (root_path, workspace_path)):
+              raise SystemExit("protected cleanup runner paths differ")
+          root = root_path.resolve(strict=True)
+          workspace = workspace_path.resolve(strict=True)
+          if len(workspace.parents) < 2 or root != workspace.parents[1] / "_temp":
+              raise SystemExit("protected cleanup runner temp differs")
+          stage = base / f"bluefire-strix-fixed-{run_id}-{attempt}"
+          handoff = base / f"bluefire-strix-handoff-{run_id}-{attempt}"
+          if handoff.is_symlink():
+              raise SystemExit("fixed bootstrap handoff is a symbolic link")
+          if not stage.exists():
+              if stage.is_symlink():
+                  raise SystemExit("protected stage is a symbolic link")
+              if handoff.exists():
+                  raise SystemExit("protected stage missing; handoff retained for review")
+              raise SystemExit(0)
+          details = stage.lstat()
+          if stage.is_symlink() or not stat.S_ISDIR(details.st_mode) or (
+              details.st_uid != 0 or stat.S_IMODE(details.st_mode) != 0o700
+              or stage.resolve(strict=True).parent != base
+          ):
+              raise SystemExit("protected stage ownership or path differs")
+          ledger = root / "bluefire-strix-test-sandbox-output/strix-test-sandbox-private-ledger.json"
+          if ledger.exists() or ledger.is_symlink():
+              raise SystemExit("image cleanup unresolved; protected stage and handoff retained")
+          if handoff.exists():
+              handoff_details = handoff.lstat()
+              if not stat.S_ISDIR(handoff_details.st_mode) or (
+                  handoff_details.st_uid != 0
+                  or stat.S_IMODE(handoff_details.st_mode) != 0o755
+                  or handoff.resolve(strict=True).parent != base
+              ):
+                  raise SystemExit("fixed bootstrap handoff ownership or path differs")
+              for entry in handoff.rglob("*"):
+                  entry_details = entry.lstat()
+                  if entry.is_symlink() or entry_details.st_uid != 0 or (
+                      stat.S_IMODE(entry_details.st_mode) & 0o022
+                  ):
+                      raise SystemExit("fixed bootstrap handoff contains a mutable or linked entry")
+          if (stage / "qualifier-started").exists():
+              qualification_path = stage / "composite/strix-linux-fixed-exec-qualification.json"
+              composite_path = stage / "composite/strix-linux-runtime-composite.json"
+              if any(path.is_symlink() or not path.is_file() for path in (qualification_path, composite_path)):
+                  raise SystemExit("native cleanup unverified; protected stage retained")
+              qualification = json.loads(qualification_path.read_bytes())
+              composite = json.loads(composite_path.read_bytes())
+              reference = qualification.pop("qualification_ref", None)
+              expected = "sha256:" + hashlib.sha256(json.dumps(
+                  qualification, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+              ).encode()).hexdigest()
+              if reference != expected or reference != composite.get("fixed_exec_qualification_ref") or (
+                  qualification.get("scope") != "fixed-exec-bootstrap"
+                  or qualification.get("verified_absent") is not True
+              ):
+                  raise SystemExit("native absence unverified; protected stage and handoff retained")
+          elif handoff.exists():
+              raise SystemExit("handoff exists without native qualification; both retained")
+          if not shutil.rmtree.avoids_symlink_attacks:
+              raise SystemExit("protected stage and handoff removal is not symlink-safe")
+          if handoff.exists():
+              shutil.rmtree(handoff)
+              if handoff.exists() or handoff.is_symlink():
+                  raise SystemExit("fixed bootstrap handoff remains")
+          shutil.rmtree(stage)
+          if stage.exists() or stage.is_symlink():
+              raise SystemExit("protected stage remains")
           PY
 
       - name: Remove exact private candidate and worker materials

@@ -53,13 +53,16 @@ APPROVED_STEP_ORDER = (
     "Prepare the pinned Strix runtime without execution",
     "Build the minimal worker artifact from this revision",
     "Prepare the sealed worker runtime without claiming execution",
+    "Archive the exact committed product source outside checkout",
+    "Build the exact native runner from the archived source",
+    "Stage exact source and fixed-bootstrap inputs under root custody",
+    "Qualify the protected fixed bootstrap without model or tool work",
     "Require finalized same-job runtime composite",
     "Bind the finalized same-job runtime composite",
     "Capture the separate controller Test Caido provider descriptor",
     "Prefetch exact packages and reviewed SBOM tool",
     "Preload the exact reviewed Debian base",
     "Build and qualify the runner-private image",
-    "Archive the exact committed product source outside checkout",
     "Build the packaged Linux service from the archived source",
     "Bind the exact packaged service wheel",
     "Install the full service in its own clean environment",
@@ -67,6 +70,7 @@ APPROVED_STEP_ORDER = (
     "Remove this run's exact private image resources",
     "Remove exact private service build materials",
     "Retain bounded private producer identities",
+    "Remove exact protected fixed-bootstrap stage and image handoff",
     "Remove exact private candidate and worker materials",
 )
 APPROVED_RUN_SHA256 = {
@@ -74,7 +78,7 @@ APPROVED_RUN_SHA256 = {
         "ab54a8015eafb51b42820c78fe448dbcb799f0330a75d569b918c970bcb553b8"
     ),
     "Require the exact private qualification implementation": (
-        "7e9d80ce94c4eb1c7f5d49242bea059c110c7dcf3061d20839974793d9ba429b"
+        "73d269e571b8af388aecd161b9df4f5806165be4c2dce63dd355d9fc8ec76e25"
     ),
     "Rebuild the provenance-bound Strix candidate": (
         "852989e7371d5748e9626fe7205e51d6dab9a956a0a870e0626b662b89162867"
@@ -91,11 +95,23 @@ APPROVED_RUN_SHA256 = {
     "Prepare the sealed worker runtime without claiming execution": (
         "5d353b227fe523018a49c83f2babafe6c4b709c1a155f210d55614d1082ce6e7"
     ),
+    "Archive the exact committed product source outside checkout": (
+        "6f58334fc11cdf8148cfc4093beb9d9ae53c236047edfc9c43332cbc2a991054"
+    ),
+    "Build the exact native runner from the archived source": (
+        "6c4bfe71908a35d1527850f31d6735af37a8f2e21287d830a01f2f1be6226f32"
+    ),
+    "Stage exact source and fixed-bootstrap inputs under root custody": (
+        "4475bdedb2a6f2d9efad43c530d9f0eec75fab8a1db2b98abbebb3e2f859aa0c"
+    ),
+    "Qualify the protected fixed bootstrap without model or tool work": (
+        "19e82c34b80c1c268712a1c98955ff2c33cda8ecce1482346650293d21477541"
+    ),
     "Require finalized same-job runtime composite": (
-        "5301475efebd931222648462892dfcbd573c0e96ee5d1382ea38587099442100"
+        "59dcf48bc1b5f33ef5c0586fa2531ef226451d780393abb9ef82ece5f19e6b23"
     ),
     "Bind the finalized same-job runtime composite": (
-        "bdd2e9101b65eaa1d8c79a6d2a14e533b3104bd05cda1e180a009e1503838ca9"
+        "0ea2f15a8aed27698673aa4e38994597dcee0da28c5d40b1977730d944600d45"
     ),
     "Capture the separate controller Test Caido provider descriptor": (
         "a7d559a54a4fbd1e87b38e3d38cde8c7f9a7e632fe13b6f8cb208843a092cff0"
@@ -107,13 +123,10 @@ APPROVED_RUN_SHA256 = {
         "4ebf143eb4253ac640fa3de855c6edff75000e1c05480093c36d0abab3562e9d"
     ),
     "Build and qualify the runner-private image": (
-        "37a7dee1b7b5b0a38908ca3b56fdaae25b881b3040eb382a3b2ec2c1dcbac6e0"
-    ),
-    "Archive the exact committed product source outside checkout": (
-        "f0d17ace616d3785cda189f2b2b32a3c6df0f87aeb72dd04d1cb710a8270e3d8"
+        "c070575eb121e2beadc87f146eb1fc28c512eae76c128f1513d4dc0a5b052ef5"
     ),
     "Build the packaged Linux service from the archived source": (
-        "01138e281fef71386d3ee46417a2a5004ccc220f32ba17d0510f97208ac29cdc"
+        "296dc9c59012a845b9786077a5829e72f1a2b82dae24138780fb5453e1bfd050"
     ),
     "Bind the exact packaged service wheel": (
         "dff1a3575d8a0c3f0ad97e8d76708c3655081de9b71aaccdecbc6b2fa5b8027a"
@@ -131,7 +144,10 @@ APPROVED_RUN_SHA256 = {
         "83d55240ce21675b6b46501411085102bf8f8ae15b7c8e7b1c4d284b79065fcb"
     ),
     "Retain bounded private producer identities": (
-        "b89ea5e367f08ed47b2983d7d185b9d27f019d5c93376d0912c4588c50d4fbde"
+        "9bcdfccd1f0b1a92697d5551d701aa054d70b98462e58b5e0e4a5b1ad903a8ba"
+    ),
+    "Remove exact protected fixed-bootstrap stage and image handoff": (
+        "8fce200699e41529999e8cae38fba6da5d22f4fb60384883855e1ae5d08b9fa4"
     ),
     "Remove exact private candidate and worker materials": (
         "b3dd800584d27e5d2977c8d869dfb4de9a47e51fa11294fe8dd209151f0369eb"
@@ -248,6 +264,8 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "tools/qualify_strix_runtime_candidate.py",
         "tools/build_strix_worker_runtime_artifact.py",
         "tools/prepare_strix_linux_runtime_closure.py",
+        "tools/qualify_strix_linux_fixed_exec.py",
+        "tools/build_native_runner.py",
         "tools/strix_runtime_closure_prepare_core.py",
         "bluefire/test_caido_protocol_entry.py",
         "bluefire/test_caido_protocol_provider.py",
@@ -262,14 +280,16 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         assert required in prerequisite
 
     final_inputs = _step(workflow, "Require finalized same-job runtime composite")["run"]
-    assert "Final native fixed-exec runtime qualification is not produced" in final_inputs
-    assert "Add the reviewed same-job qualifier before dispatching" in final_inputs
+    assert "Observed fixed-bootstrap qualification is unavailable" in final_inputs
+    assert "Image admission cannot proceed without its same-job native receipt" in final_inputs
     assert "exit 2" in final_inputs
     for required in (
-        "steps.prelaunch.outputs.root",
         "steps.prelaunch.outputs.manifest",
-        "bluefire-strix-runtime-composite/strix-linux-runtime-root",
-        "bluefire-strix-runtime-composite/strix-linux-runtime-composite.json",
+        "steps.fixed.outputs.root",
+        "steps.fixed.outputs.manifest",
+        "steps.fixed.outputs.qualification",
+        "steps.fixed.outputs.plan",
+        "steps.fixed.outputs.handoff",
     ):
         assert required in final_inputs
 
@@ -288,6 +308,15 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "worker_source_revision",
         "installed_worker_invocation_digest",
         "full_product_wheel_present",
+        "bluefire.strix-fixed-bootstrap-image-handoff.v1",
+        "StrixLinuxRuntimeClosurePlan.from_mapping",
+        "runtime_inventory_digest(runtime_root)",
+        'qualification.get("scope") != "fixed-exec-bootstrap"',
+        'qualification.get("installed_worker_entrypoint_executed") is not None',
+        'qualification.get("installed_worker_entrypoint_qualified") is not False',
+        'qualification.get("product_activation") is not False',
+        'qualification.get("model_tool_target_effects") is not False',
+        'qualification.get("verified_absent") is not True',
     ):
         assert required in runtime
 
@@ -305,6 +334,8 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
     for required in (
         "python -m tools.build_strix_worker_runtime_artifact",
         '--source-revision "${{ github.sha }}"',
+        "import os",
+        'root = Path(os.environ["RUNNER_TEMP"]).resolve()',
         "bluefire.strix-worker-runtime-build-result.v1",
         "worker_record_digest",
         "manifest_digest",
@@ -326,6 +357,67 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
     ):
         assert required in prelaunch["run"]
 
+    archive = _step(workflow, "Archive the exact committed product source outside checkout")
+    assert archive["id"] == "source"
+    for required in (
+        'test "$(git rev-parse HEAD)" = "${{ github.sha }}"',
+        "git -c tar.umask=0022 archive --format=tar",
+        '"${{ github.sha }}"',
+        "bluefire/_source_revision.txt",
+        "bluefire-product-source.tar",
+        'print("digest=sha256:"',
+    ):
+        assert required in archive["run"]
+
+    native = _step(workflow, "Build the exact native runner from the archived source")
+    assert native["id"] == "native_runner"
+    for required in (
+        'source="$RUNNER_TEMP/bluefire-product-source"',
+        "RUSTUP_HOME=",
+        "CARGO_HOME=",
+        "rustup target add x86_64-unknown-linux-musl",
+        "python tools/build_native_runner.py --target x86_64-unknown-linux-musl",
+        'print(f"path={runner}")',
+        'print("digest=sha256:"',
+    ):
+        assert required in native["run"]
+
+    protected = _step(workflow, "Stage exact source and fixed-bootstrap inputs under root custody")
+    assert protected["id"] == "protected"
+    for required in (
+        "sudo -n /usr/bin/env -i",
+        "PATH=/usr/bin:/bin /usr/bin/python3 -I -B -",
+        'root != workspace.parents[1] / "_temp"',
+        'base = Path("/var/tmp")',
+        "stat.S_IMODE(base_details.st_mode) != 0o1777",
+        "stage.mkdir(mode=0o700)",
+        'source.extractall(source_dir, filter="data")',
+        'source_dir / "bluefire/_source_revision.txt"',
+        "runtime_inventory_digest(runtime)",
+        'inputs / "worker" / worker_source.name',
+        'inputs / "runner/bluefire-runner"',
+        'os.environ["RUNNER_DIGEST"], 0o555',
+    ):
+        assert required in protected["run"]
+
+    fixed = _step(workflow, "Qualify the protected fixed bootstrap without model or tool work")
+    assert fixed["id"] == "fixed"
+    for required in (
+        "sudo -n /usr/bin/env -i",
+        "PATH=/usr/bin:/bin /usr/bin/python3 -I -B -",
+        'source / "bluefire/_source_revision.txt"',
+        "from tools.qualify_strix_linux_fixed_exec import main",
+        '"--worker-artifact", str(wheels[0])',
+        '"--runner-sha256", os.environ["RUNNER_DIGEST"]',
+        '"--expected-worker-source-revision", os.environ["SOURCE_SHA"]',
+        'marker = stage / "qualifier-started"',
+        "runtime_inventory_digest(copied_root)",
+        '"bluefire.strix-fixed-bootstrap-image-handoff.v1"',
+        '"fixed-exec-bootstrap-copy-after-verified-absence"',
+        'print(f"handoff={handoff}")',
+    ):
+        assert required in fixed["run"]
+
     provider = _step(workflow, "Capture the separate controller Test Caido provider descriptor")[
         "run"
     ]
@@ -340,8 +432,8 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "python -m tools.qualify_strix_test_sandbox_image qualify",
         '--bluefire-source-revision "${{ github.sha }}"',
         '--qualifier-revision "${{ github.sha }}"',
-        '--runtime-root "$RUNNER_TEMP/bluefire-strix-runtime-composite/strix-linux-runtime-root"',
-        '--runtime-composite-manifest "$RUNNER_TEMP/bluefire-strix-runtime-composite/strix-linux-runtime-composite.json"',
+        '--runtime-root "${{ steps.fixed.outputs.root }}"',
+        '--runtime-composite-manifest "${{ steps.fixed.outputs.manifest }}"',
         '--runtime-composite-ref "${{ steps.runtime.outputs.ref }}"',
         "--provider-source bluefire/test_caido_protocol_entry.py",
         "--provider-source bluefire/test_caido_protocol_provider.py",
@@ -364,22 +456,11 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
     assert 'docker pull "$base"' in base
     assert 'docker image inspect "$base"' in base
 
-    archive = _step(workflow, "Archive the exact committed product source outside checkout")
-    for required in (
-        'test "$(git rev-parse HEAD)" = "${{ github.sha }}"',
-        "git -c tar.umask=0022 archive --format=tar",
-        '"${{ github.sha }}"',
-        "bluefire/_source_revision.txt",
-    ):
-        assert required in archive["run"]
-
     package = _step(workflow, "Build the packaged Linux service from the archived source")
     for required in (
         'source="$RUNNER_TEMP/bluefire-product-source"',
-        "RUSTUP_HOME=",
-        "CARGO_HOME=",
-        "rustup target add x86_64-unknown-linux-musl",
-        "python tools/build_native_runner.py --target x86_64-unknown-linux-musl",
+        "steps.native_runner.outputs.path",
+        "steps.native_runner.outputs.digest",
         "python tools/stage_native_runner.py",
         "python -m build --wheel",
         "python tools/verify_packaged_runner.py inspect",
@@ -418,7 +499,7 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
     assert '{"reserved", "image-bound", "qualified"}' in cleanup["run"]
     assert 'output="$RUNNER_TEMP/bluefire-strix-test-sandbox-output"' in cleanup["run"]
     assert 'test ! -e "$ledger"' in cleanup["run"]
-    assert job["steps"][-4] is cleanup
+    assert job["steps"][-5] is cleanup
 
     service_cleanup = _step(workflow, "Remove exact private service build materials")
     assert service_cleanup.get("if") == "${{ always() }}"
@@ -436,7 +517,7 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "private service build material remains",
     ):
         assert required in service_cleanup["run"]
-    assert job["steps"][-3] is service_cleanup
+    assert job["steps"][-4] is service_cleanup
 
     identity = _step(workflow, "Retain bounded private producer identities")
     assert identity.get("if") == "${{ always() }}"
@@ -466,6 +547,28 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "StrixTestSandboxImageCleanupReceiptV1(cleanup.read_bytes())",
     ):
         assert required in identity["run"]
+    assert job["steps"][-3] is identity
+
+    protected_cleanup = _step(
+        workflow, "Remove exact protected fixed-bootstrap stage and image handoff"
+    )
+    assert protected_cleanup.get("if") == "${{ always() }}"
+    for required in (
+        "sudo -n /usr/bin/env -i",
+        'base = Path("/var/tmp")',
+        'stage = base / f"bluefire-strix-fixed-{run_id}-{attempt}"',
+        'handoff = base / f"bluefire-strix-handoff-{run_id}-{attempt}"',
+        "stat.S_IMODE(base_details.st_mode) != 0o1777",
+        "stat.S_IMODE(handoff_details.st_mode) != 0o755",
+        'root != workspace.parents[1] / "_temp"',
+        'raise SystemExit("image cleanup unresolved; protected stage and handoff retained")',
+        'qualification.get("verified_absent") is not True',
+        "shutil.rmtree.avoids_symlink_attacks",
+        "shutil.rmtree(handoff)",
+        "shutil.rmtree(stage)",
+    ):
+        assert required in protected_cleanup["run"]
+    assert job["steps"][-2] is protected_cleanup
 
     candidate_cleanup = _step(workflow, "Remove exact private candidate and worker materials")
     assert candidate_cleanup.get("if") == "${{ always() }}"
@@ -492,7 +595,6 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         assert required in candidate_cleanup["run"]
     assert "bluefire-strix-evidence" not in candidate_cleanup["run"]
     assert "bluefire-strix-test-sandbox-output" not in candidate_cleanup["run"]
-    assert job["steps"][-2] is identity
     assert job["steps"][-1] is candidate_cleanup
 
     scripts = "\n".join(step["run"] for step in job["steps"] if "run" in step).lower()
