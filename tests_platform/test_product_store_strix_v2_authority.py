@@ -684,8 +684,12 @@ class _WholeAbsenceObserver:
 
     def __init__(self):
         self.rows = {}
+        self.role_reader = None
+        self.transaction_ref = None
 
     def reopen_absence(self, *, observation_ref):
+        if self.role_reader is not None:
+            assert len(self.role_reader.load_terminal_observations(self.transaction_ref)) == 6
         return self.rows[observation_ref]
 
 
@@ -882,15 +886,27 @@ def test_postcommit_settlement_needs_protected_roles_and_whole_absence(f):
             cleanup_ref=active.cleanup_ref,
         )
     snapshot = repository.load_settlement(active.transaction_ref)
+    with pytest.raises(ResourceConflictError, match="every protected role"):
+        repository.load_terminal_observations(active.transaction_ref)
     for role, _actual_ref in reversed(snapshot.actual_role_bindings):
         snapshot = _role_terminal(f, repository, roles, snapshot, role)
     assert all(outcome is not None for outcome in snapshot.role_outcomes)
+    f.now[0] = _time(f.now[0], 1)
+    assert (
+        repository.load_settlement(snapshot.transaction_ref).role_outcomes == snapshot.role_outcomes
+    )
+    terminal_rows = repository.load_terminal_observations(snapshot.transaction_ref)
+    assert tuple(row["role"] for row in terminal_rows) == tuple(
+        role for role, _resource_ref in snapshot.actual_role_bindings
+    )
     with pytest.raises(ResourceConflictError):
         repository.retain_bundle_receipt(
             transaction_ref=snapshot.transaction_ref,
             expected_generation=snapshot.generation,
             receipt=_bundle_receipt(f, snapshot, state="verified_absent"),
         )
+    absence.role_reader = repository
+    absence.transaction_ref = snapshot.transaction_ref
     snapshot = _whole_absence(f, repository, absence, snapshot)
     receipt = _bundle_receipt(f, snapshot, state="verified_absent")
     repository.retain_bundle_receipt(
@@ -918,6 +934,7 @@ def test_postcommit_settlement_needs_protected_roles_and_whole_absence(f):
         repository.load_settlement(closed.transaction_ref)
     roles.rows[(role, source_ref)] = saved
     absence.rows.clear()
+    assert repository.load_terminal_observations(closed.transaction_ref) == terminal_rows
     with pytest.raises(ResourceConflictError, match="cannot be reopened"):
         repository.load_settlement(closed.transaction_ref)
 

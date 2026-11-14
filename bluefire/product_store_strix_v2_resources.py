@@ -1148,7 +1148,7 @@ class ProductStoreInstalledStrixV2TransactionRepository:
         if observer is not self._role_observer:
             raise ProductStoreError("V2 resource journal has a different role terminal owner")
 
-    def _verify_protected_settlement_sources(self, replay: _Replay) -> None:
+    def _verify_protected_role_sources(self, replay: _Replay) -> None:
         if replay.role_terminal_observations:
             observer = self._role_observer
             if observer is None:
@@ -1167,6 +1167,9 @@ class ProductStoreInstalledStrixV2TransactionRepository:
                     ) from exc
                 if reopened != saved or identity != saved["source_identity_ref"]:
                     raise ResourceConflictError("V2 protected role terminal source changed")
+
+    def _verify_protected_settlement_sources(self, replay: _Replay) -> None:
+        self._verify_protected_role_sources(replay)
         if replay.bundle_absence is not None:
             observer = self._observer
             if observer is None:
@@ -1197,6 +1200,30 @@ class ProductStoreInstalledStrixV2TransactionRepository:
             snapshot = _settlement_snapshot_at(connection, index, replay)
         self._verify_protected_settlement_sources(replay)
         return snapshot
+
+    def load_terminal_observations(self, transaction_ref: str) -> tuple[dict[str, Any], ...]:
+        """Reopen every role source without recursively reopening whole absence.
+
+        The whole-set observer uses this read during both its first observation
+        and later by-ref replay. Missing or changed role sources remain unknown.
+        """
+
+        _digest(transaction_ref, "V2 terminal observation transaction")
+        with self._store._connection() as connection:
+            if not connection.in_transaction:
+                connection.execute("BEGIN")
+            index, replay = _read_at(connection, transaction_ref)
+            snapshot = _settlement_snapshot_at(connection, index, replay)
+            roles = tuple(role for role, _actual_ref in snapshot.actual_role_bindings)
+            if len(replay.role_terminal_observations) != len(roles) or any(
+                role not in replay.role_terminal_observations for role in roles
+            ):
+                raise ResourceConflictError("V2 bundle lacks every protected role terminal")
+            observations = tuple(
+                _copy_document(replay.role_terminal_observations[role]) for role in roles
+            )
+        self._verify_protected_role_sources(replay)
+        return observations
 
     @contextmanager
     def hold_active_execution(
