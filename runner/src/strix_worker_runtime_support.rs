@@ -118,6 +118,14 @@ fn ancillary_len_as_usize<T: TryInto<usize>>(length: T) -> Result<usize, String>
     length.try_into().map_err(|_| REFUSAL.into())
 }
 
+fn ancillary_storage(bytes: usize) -> Vec<libc::cmsghdr> {
+    // A byte vector has no alignment guarantee for cmsghdr. The kernel and
+    // CMSG_* helpers inspect these entries through typed pointers.
+    (0..bytes.div_ceil(size_of::<libc::cmsghdr>()))
+        .map(|_| unsafe { zeroed() })
+        .collect()
+}
+
 fn digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
@@ -381,14 +389,12 @@ pub(crate) fn seal_closure_root(root: &Path) -> Result<(), String> {
 
 pub(crate) fn send_packet(channel: RawFd, payload: &[u8], rights: &[RawFd]) -> Result<(), String> {
     require(!payload.is_empty() && payload.len() <= 64 * 1024 && rights.len() <= 16)?;
-    let mut control = vec![
-        0_u8;
-        if rights.is_empty() {
-            0
-        } else {
-            unsafe { libc::CMSG_SPACE(size_of_val(rights) as _) as usize }
-        }
-    ];
+    let control_bytes = if rights.is_empty() {
+        0
+    } else {
+        unsafe { libc::CMSG_SPACE(size_of_val(rights) as _) as usize }
+    };
+    let mut control = ancillary_storage(control_bytes);
     let mut iov = libc::iovec {
         iov_base: payload.as_ptr().cast_mut().cast(),
         iov_len: payload.len(),
@@ -398,7 +404,7 @@ pub(crate) fn send_packet(channel: RawFd, payload: &[u8], rights: &[RawFd]) -> R
     message.msg_iovlen = 1;
     if !rights.is_empty() {
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = checked_ancillary_len(control.len())?;
+        message.msg_controllen = checked_ancillary_len(control_bytes)?;
         unsafe {
             let header = libc::CMSG_FIRSTHDR(&message);
             require(!header.is_null())?;
@@ -412,7 +418,7 @@ pub(crate) fn send_packet(channel: RawFd, payload: &[u8], rights: &[RawFd]) -> R
                 libc::CMSG_DATA(header),
                 size_of_val(rights),
             );
-            message.msg_controllen = checked_ancillary_len(control.len())?;
+            message.msg_controllen = checked_ancillary_len(control_bytes)?;
         }
     }
     require(
@@ -431,11 +437,10 @@ pub(crate) fn receive_packet(
     } else {
         unsafe { libc::CMSG_SPACE((right_count * size_of::<RawFd>()) as _) as usize }
     };
-    let mut control = vec![
-        0_u8;
-        rights_space
-            + unsafe { libc::CMSG_SPACE(size_of::<libc::ucred>() as _) as usize }
-    ];
+    let control_bytes = rights_space
+        .checked_add(unsafe { libc::CMSG_SPACE(size_of::<libc::ucred>() as _) as usize })
+        .ok_or(REFUSAL)?;
+    let mut control = ancillary_storage(control_bytes);
     let mut payload = vec![0_u8; 64 * 1024];
     let mut iov = libc::iovec {
         iov_base: payload.as_mut_ptr().cast(),
@@ -445,7 +450,7 @@ pub(crate) fn receive_packet(
     message.msg_iov = &mut iov;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = checked_ancillary_len(control.len())?;
+    message.msg_controllen = checked_ancillary_len(control_bytes)?;
     let read = unsafe { libc::recvmsg(channel, &mut message, libc::MSG_CMSG_CLOEXEC) };
     require(read > 0 && message.msg_flags == 0)?;
     payload.truncate(read as usize);
