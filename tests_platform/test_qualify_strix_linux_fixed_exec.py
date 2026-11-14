@@ -6,11 +6,15 @@ import hashlib
 import json
 import os
 import stat
+import sys
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+if sys.platform != "linux":
+    pytest.skip("Linux native fixed-exec qualification", allow_module_level=True)
 
 from bluefire.strix_linux_fixed_exec import StrixLinuxFixedExecReceipt
 from bluefire.strix_linux_native_endpoint_cleanup import _ATTEMPT

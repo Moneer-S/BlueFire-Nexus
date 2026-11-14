@@ -496,6 +496,7 @@
         "bluefire.engine_relay",
         "bluefire.engine_worker_runtime",
         "bluefire.strix_linux_native_launch_material",
+        "bluefire.strix_linux_native_endpoint_cleanup",
         "bluefire.strix_linux_native_worker",
         "bluefire.strix_worker_containment_authority",
         "bluefire.strix_worker_fixed_bootstrap",

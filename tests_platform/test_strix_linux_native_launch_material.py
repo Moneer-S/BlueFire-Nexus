@@ -13,6 +13,9 @@ from typing import Any
 
 import pytest
 
+if sys.platform != "linux":
+    pytest.skip("Linux memfd contract", allow_module_level=True)
+
 fcntl = pytest.importorskip("fcntl")
 
 from bluefire import strix_linux_native_launch_material as launch  # noqa: E402
