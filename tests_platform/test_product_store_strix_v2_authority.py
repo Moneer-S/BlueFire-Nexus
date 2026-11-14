@@ -1108,6 +1108,19 @@ def test_composed_role_observer_joins_exact_saved_owner_and_refuses_missing_sour
     )
     settled = repository.load_settlement(active.transaction_ref)
     assert settled.role_outcomes[-1].evidence_ref == evidence_ref
+    reopened_observer = InstalledStrixV2ProtectedRoleTerminalObserver(
+        product_store=f.store,
+        transaction_ref=active.transaction_ref,
+        sources={role: source},
+    )
+    reopened_repository = ProductStoreInstalledStrixV2TransactionRepository(
+        product_store=f.store,
+        clock=lambda: f.now[0],
+        role_terminal_observer=reopened_observer,
+    )
+    assert reopened_repository.load_settlement(active.transaction_ref).role_outcomes == (
+        settled.role_outcomes
+    )
     source.evidence_ref = content_hash("changed-worker-absence")
     with pytest.raises(ResourceConflictError, match="source changed"):
-        repository.load_settlement(active.transaction_ref)
+        reopened_repository.load_settlement(active.transaction_ref)
