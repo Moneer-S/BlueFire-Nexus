@@ -101,7 +101,8 @@ The reusable candidate workflow uses:
 - a standard `ubuntu-24.04` GitHub-hosted runner with a 30-minute job limit;
 - Python 3.12.14, Go 1.24.10, and uv 0.13.6 from commit-pinned setup actions;
 - the upstream frozen `uv.lock` and `uv export --frozen --no-dev --format cyclonedx1.5`;
-- `uv build --wheel --frozen`, with a separately reviewed Hatchling 1.32.4 closure pinned to
+- `uv build --wheel --build-constraint <build-constraints.txt> --require-build-hashes`, with a
+  separately reviewed Hatchling 1.32.4 closure pinned to
   exact PyPI wheel URLs and SHA-256 hashes (and shared dependency versions cross-checked against
   `uv.lock`), plus Go modules restricted to the checksum-verified public proxy;
 - an isolated HOME, temporary area, uv cache, and Go caches; and

@@ -241,6 +241,7 @@ def _run(
 ) -> str:
     if not arguments or not all(isinstance(item, str) and item for item in arguments):
         raise StrixCandidateBuildError("refusing an empty or malformed build command")
+    stage = _command_diagnostic_stage(arguments)
     try:
         completed = subprocess.run(  # noqa: S603  # nosec B603 - fixed argv; no shell.
             list(arguments),
@@ -255,15 +256,79 @@ def _run(
             errors="replace",
             timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise StrixCandidateBuildError(f"candidate command failed to run: {arguments[0]}") from exc
+    except subprocess.TimeoutExpired:
+        raise StrixCandidateBuildError(
+            f"candidate command failed (stage={stage}, category=timeout)"
+        ) from None
+    except OSError:
+        raise StrixCandidateBuildError(
+            f"candidate command failed (stage={stage}, category=launch-error)"
+        ) from None
     if completed.returncode != 0:
         # Command output can contain untrusted upstream text. Keep the public
         # failure concise instead of copying it into logs or the manifest.
         raise StrixCandidateBuildError(
-            f"candidate command returned {completed.returncode}: {arguments[0]}"
+            "candidate command failed "
+            f"(stage={stage}, category=nonzero-exit, exit={completed.returncode})"
         )
     return completed.stdout.rstrip("\r\n")
+
+
+def _command_diagnostic_stage(arguments: Sequence[str]) -> str:
+    """Return a bounded stage label without retaining command arguments."""
+
+    executable = Path(arguments[0]).name.lower()
+    if executable.endswith(".exe"):
+        executable = executable[:-4]
+    if executable == "uv":
+        if len(arguments) >= 3 and tuple(arguments[1:3]) == ("self", "version"):
+            return "uv-self-version"
+        if len(arguments) >= 2:
+            return {
+                "-V": "uv-version-short",
+                "--version": "uv-version",
+                "export": "uv-export-sbom",
+                "build": "uv-build-wheel",
+            }.get(arguments[1], "uv-other")
+        return "uv-other"
+    if executable == "git":
+        if len(arguments) >= 2 and arguments[1] in {
+            "cat-file",
+            "checkout",
+            "config",
+            "diff",
+            "fetch",
+            "hash-object",
+            "init",
+            "remote",
+            "rev-parse",
+            "status",
+        }:
+            return f"git-{arguments[1]}"
+        return "git-other"
+    if executable == "go" and len(arguments) >= 2 and arguments[1] == "version":
+        return "go-version"
+    return "other"
+
+
+def _uv_build_arguments(work: Path, output: Path) -> list[str]:
+    """Return the exact uv 0.13.6 wheel-build command.
+
+    ``uv build`` does not accept the project-command ``--frozen`` option. The
+    source revision, lock, and hash-pinned build constraints are verified by
+    the surrounding candidate build before this command is admitted.
+    """
+
+    return [
+        "uv",
+        "build",
+        "--wheel",
+        "--build-constraint",
+        str(work / "build-constraints.txt"),
+        "--require-build-hashes",
+        "--out-dir",
+        str(output),
+    ]
 
 
 def build_sanitized_environment(work_root: Path, inherited: Mapping[str, str]) -> dict[str, str]:
@@ -1128,17 +1193,7 @@ def build_candidate(
     )
 
     _run(
-        [
-            "uv",
-            "build",
-            "--wheel",
-            "--frozen",
-            "--build-constraint",
-            str(work / "build-constraints.txt"),
-            "--require-build-hashes",
-            "--out-dir",
-            str(output),
-        ],
+        _uv_build_arguments(work, output),
         cwd=source,
         environment=environment,
     )

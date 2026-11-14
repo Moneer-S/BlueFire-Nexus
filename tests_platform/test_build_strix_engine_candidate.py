@@ -265,6 +265,85 @@ def test_build_backend_constraints_are_hash_pinned_and_cross_checked(tmp_path: P
     assert receipt["sha256"] == hashlib.sha256(destination.read_bytes()).hexdigest()
 
 
+def test_uv_build_uses_the_exact_0136_command_surface(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    output = tmp_path / "output"
+    assert candidate._uv_build_arguments(work, output) == [
+        "uv",
+        "build",
+        "--wheel",
+        "--build-constraint",
+        str(work / "build-constraints.txt"),
+        "--require-build-hashes",
+        "--out-dir",
+        str(output),
+    ]
+    assert "--frozen" not in candidate._uv_build_arguments(work, output)
+
+
+def test_candidate_command_failure_is_stage_bounded_and_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private = "PRIVATE_SOURCE_URL_AND_TOKEN_MUST_NOT_APPEAR"
+
+    def failed(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            ["uv", "build", private],
+            2,
+            stdout=private,
+            stderr=private,
+        )
+
+    monkeypatch.setattr(candidate.subprocess, "run", failed)
+    with pytest.raises(candidate.StrixCandidateBuildError) as caught:
+        candidate._run(
+            ["uv", "build", private],
+            cwd=tmp_path,
+            environment={"PATH": private},
+        )
+    assert str(caught.value) == (
+        "candidate command failed (stage=uv-build-wheel, category=nonzero-exit, exit=2)"
+    )
+    assert private not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [
+        (OSError("PRIVATE_LAUNCH_DETAIL"), "launch-error"),
+        (
+            subprocess.TimeoutExpired(
+                ["uv", "export", "PRIVATE_TIMEOUT_DETAIL"],
+                1,
+                output="PRIVATE_TIMEOUT_DETAIL",
+            ),
+            "timeout",
+        ),
+    ],
+)
+def test_candidate_command_launch_failures_are_stage_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+    category: str,
+) -> None:
+    def fail(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise failure
+
+    monkeypatch.setattr(candidate.subprocess, "run", fail)
+    with pytest.raises(candidate.StrixCandidateBuildError) as caught:
+        candidate._run(
+            ["uv", "export", "PRIVATE_ARGUMENT"],
+            cwd=tmp_path,
+            environment={"PATH": "PRIVATE_ENVIRONMENT"},
+        )
+    assert str(caught.value) == (
+        f"candidate command failed (stage=uv-export-sbom, category={category})"
+    )
+    assert caught.value.__cause__ is None
+    assert "PRIVATE" not in str(caught.value)
+
+
 def test_toolchain_validation_binds_exact_uv_release_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
