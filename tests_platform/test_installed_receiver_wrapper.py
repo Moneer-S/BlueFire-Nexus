@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
@@ -1728,10 +1729,22 @@ def test_retained_settlement_poll_uses_a_capped_shared_work_budget() -> None:
     driver = (
         Path(__file__).parents[1] / "frontend" / "tests" / "installed" / "receiver-retained.mjs"
     ).read_text(encoding="utf-8")
-    assert "retainedSettlementPollBudget(remainingMs())" in driver
+    cap_call = re.search(
+        r"\bconst\s+[A-Za-z_$][\w$]*\s*=\s*"
+        r"retainedSettlementPollBudget\(\s*(?P<work_variable>[A-Za-z_$][\w$]*)\s*\)",
+        driver,
+    )
+    assert cap_call is not None
+    work_variable = re.escape(cap_call.group("work_variable"))
+    assert re.search(rf"\b{work_variable}\s*=\s*remainingMs\(\)", driver)
     assert "RETAINED_SETTLEMENT_POLL_CAP_MS = 150_000" in driver
+    assert "const until = Date.now() + Math.min(maximum, remainingMs());" in driver
+    assert "const readBudget = Math.min(until - Date.now(), remainingMs());" in driver
     assert "const value = await get(readBudget)" in driver
-    assert "readBudget => read(`/composition/objectives/${state.ownerId}`, readBudget)" in driver
+    assert re.search(
+        r"read\(`/composition/objectives/\$\{state\.ownerId\}`,\s*readBudget\)",
+        driver,
+    )
     assert "assertRetainedSavedRunProfile(run, options.profileId)" in driver
     assert "assert.equal(run.profile.id, profileId)" in driver
     assert "assert.equal(run.runner_profile_id, profileId)" in driver
