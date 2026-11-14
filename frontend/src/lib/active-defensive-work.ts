@@ -7,6 +7,8 @@ import { phaseName, s3Api, validS3Job, type S3Exercise } from "./s3-access";
 import { objectives } from "./objectives";
 import { workFamilies, type WorkFamily } from "./saved-defensive-work";
 import { savedExperimentPath } from "./receiver-navigation";
+import { engineExperimentApi, engineExperimentId, engineExperimentPath } from "./engine-experiment-api";
+import { engineAttemptLabel, engineControllerCheckLabel, engineWorkflowLabel, type EngineExperiment } from "./engine-experiment";
 
 export type ActiveWorkReference = { family: WorkFamily; id: string };
 export type ActiveWorkResult = { label: string; value: string; tone?: "positive" | "caution" | "neutral" };
@@ -25,7 +27,7 @@ export type ActiveWorkSummary = {
 };
 
 const notRecorded = "Not recorded";
-const purposeId: Record<WorkFamily, string> = {
+const purposeId: Record<Exclude<WorkFamily, "engine">, string> = {
   handoff: "data-handoff",
   file: "file-access",
   domain: "ad-access",
@@ -33,13 +35,16 @@ const purposeId: Record<WorkFamily, string> = {
 };
 
 function purpose(reference: ActiveWorkReference): string {
-  return objectives.find(item => item.id === purposeId[reference.family])?.question ?? notRecorded;
+  const family = reference.family;
+  if (family === "engine") return notRecorded;
+  return objectives.find(item => item.id === purposeId[family])?.question ?? notRecorded;
 }
 
 function isActiveWorkReference(value: unknown): value is ActiveWorkReference {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const reference = value as Record<string, unknown>;
   if (Object.keys(reference).sort().join(",") !== "family,id" || typeof reference.id !== "string") return false;
+  if (reference.family === "engine") return engineExperimentId(reference.id);
   if (reference.family === "handoff") return receiverJobValid(reference.id);
   if (reference.family === "file") return fileAccessControlIdValid(reference.id);
   if (reference.family === "domain") return adJobValid(reference.id);
@@ -53,6 +58,7 @@ export function parseActiveWorkReference(value: unknown): ActiveWorkReference | 
 
 export function activeWorkHref(reference: ActiveWorkReference): string {
   if (!isActiveWorkReference(reference)) throw new Error("This saved work reference is invalid.");
+  if (reference.family === "engine") return engineExperimentPath(reference.id);
   const family = workFamilies.find(item => item.id === reference.family)!;
   const queryKey = { handoff: "receiver_job", file: "control", domain: "workflow", cloud: "exercise" }[reference.family];
   const query = new URLSearchParams({ goal: purposeId[reference.family], [queryKey]: reference.id });
@@ -200,10 +206,41 @@ function cloudSummary(reference: ActiveWorkReference, value: S3Exercise): Active
     change: `Recorded policy: ${humanize(value.policy_state)}`, results, href: activeWorkHref(reference), links: operationLinks };
 }
 
+function engineSummary(reference: ActiveWorkReference, value: EngineExperiment): ActiveWorkSummary {
+  const conclusion = value.projection.conclusion;
+  const results: ActiveWorkResult[] = [
+    result("Original mechanism", humanize(conclusion.original_mechanism.status), conclusion.original_mechanism.status === "established" ? "caution" : "neutral"),
+    result("Original mechanism retest", humanize(conclusion.retained_reproducer.status), conclusion.retained_reproducer.status === "blocked" ? "positive" : conclusion.retained_reproducer.status === "still_succeeds" ? "caution" : "neutral"),
+    result("Fresh adaptive search", humanize(conclusion.adaptive_search.status), conclusion.adaptive_search.status === "remaining_path_found" ? "caution" : "neutral"),
+    result("Legitimate use", humanize(conclusion.legitimate_use.status), conclusion.legitimate_use.status === "passed" ? "positive" : conclusion.legitimate_use.status === "failed" ? "caution" : "neutral"),
+  ];
+  const links = runLinks([
+    ...value.projection.attempts.map(item => ({ id: item.run_id, label: `${engineAttemptLabel(item.role)} run evidence` })),
+    ...value.projection.checks.map(item => ({ id: item.run_id, label: `${engineControllerCheckLabel(item.role)} run evidence` })),
+  ]);
+  return {
+    reference,
+    title: value.objective.title,
+    objective: value.objective.summary,
+    environment: `${value.environment.display_name} · ${humanize(value.environment.platform)}`,
+    phase: engineWorkflowLabel(value.projection.workflow_state),
+    recordedState: value.current_target === null ? "current_target_unknown" : value.projection.workflow_state,
+    change: value.defensive_change ? `${humanize(value.defensive_change.kind)}: ${value.defensive_change.summary}` : "No defensive change recorded",
+    results,
+    href: engineExperimentPath(value.experiment_id),
+    links,
+    runContexts: [
+      ...value.projection.attempts.map(item => ({ runId: item.run_id, phase: engineAttemptLabel(item.role) })),
+      ...value.projection.checks.map(item => ({ runId: item.run_id, phase: engineControllerCheckLabel(item.role) })),
+    ],
+  };
+}
+
 /** Fetch and summarize one selected retained control by its direct read endpoint. */
 export async function loadActiveWork(reference: ActiveWorkReference): Promise<ActiveWorkSummary> {
   const selected = parseActiveWorkReference(reference);
   if (!selected) throw new Error("Choose a valid saved work item first.");
+  if (selected.family === "engine") return engineSummary(selected, await engineExperimentApi.workspace(selected.id));
   if (selected.family === "handoff") {
     const record = checkedReceiverTest(await api.receiverTest(selected.id), selected.id);
     return handoffSummary(selected, record);
