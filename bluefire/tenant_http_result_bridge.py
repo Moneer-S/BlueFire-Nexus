@@ -190,6 +190,7 @@ def _bridge(
         or result.operation_digest != operation.digest
         or result.relay_request_id != operation.request_id
         or result.generation_digest != generation.digest
+        or result.request_target != operation.target
     ):
         raise TenantHttpResultBridgeError("v2 request/operation pairing changed")
     if (
@@ -251,6 +252,7 @@ def _bridge(
             "target_request_id": row.request_id,
             "generation_digest": generation.digest,
             "target_snapshot_ref": snapshot,
+            "request_target": operation.target,
             "audit_row_digest": row.digest,
             "audit_binding_digest": retained.digest,
             "audit_retention_ref": retained_audit_ref,

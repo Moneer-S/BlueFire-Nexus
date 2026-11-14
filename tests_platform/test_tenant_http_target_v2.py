@@ -443,6 +443,15 @@ def test_v2_target_secret_stays_private_and_bridge_rejects_relabeling(tmp_path):
     )
     with pytest.raises(TenantHttpResultBridgeError):
         _bridge(case, replace(request, target="/openapi.json"), forwarded)
+    with pytest.raises(TenantHttpResultBridgeError, match="request/operation pairing changed"):
+        _bridge(
+            case,
+            request,
+            replace(
+                forwarded,
+                result=replace(forwarded.result, request_target="/openapi.json"),
+            ),
+        )
     with pytest.raises(TenantHttpResultBridgeError):
         _bridge(
             case,
