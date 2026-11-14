@@ -658,6 +658,7 @@
         "bluefire.engine_experiment_presentation",
         "bluefire.strix_admission_contract",
         "bluefire.tenant_record_controller_contract",
+        "bluefire.tenant_record_experiment_fixture",
         "bluefire.engine_attempt_contract",
         "bluefire.engine_container_custody",
         "bluefire.engine_delegation",
