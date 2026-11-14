@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import ctypes
 import os
+import stat
+import subprocess
+import sys
 import uuid
 from hashlib import sha256
 from pathlib import Path
@@ -12,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from bluefire import retained_artifacts as retained
+from bluefire import run_store as run_store_module
 from bluefire import windows_owner_acl as owner_acl
 from bluefire.capability_resources import METHODS
 from bluefire.composition_jobs import CompositionJobs
@@ -624,6 +628,103 @@ def test_orphan_journal_cannot_retroactively_create_intent_or_repair_projection(
     }
     assert not artifacts_path.exists()
     assert run_store.read_retained_payload(run_id) == payload
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative custody")
+@pytest.mark.parametrize("secured_path", ["root", "bundle"])
+def test_posix_retained_read_rejects_descriptor_security_failure(
+    tmp_path, monkeypatch, secured_path
+):
+    store = RunStore(tmp_path / "runs")
+    run_id, payload, prepared = _capture(store)
+    _publish(store, run_id, payload, prepared)
+    target = (
+        store.root if secured_path == "root" else store.root / run_id / "retained" / "bundle.jsonl"
+    )
+    target_identity = (target.stat().st_dev, target.stat().st_ino)
+    original_validate = run_store_module._validate_darwin_descriptor_security
+    rejected = False
+
+    def reject_target(descriptor):
+        nonlocal rejected
+        details = os.fstat(descriptor)
+        if (details.st_dev, details.st_ino) == target_identity:
+            rejected = True
+            raise OSError("injected unsafe Darwin ACL or mount")
+        original_validate(descriptor)
+
+    monkeypatch.setattr(run_store_module, "_validate_darwin_descriptor_security", reject_target)
+    with pytest.raises(RunStoreError):
+        store.read_retained_payload(run_id)
+    assert rejected
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative custody")
+def test_posix_retained_read_rechecks_private_descriptor_after_read(tmp_path, monkeypatch):
+    store = RunStore(tmp_path / "runs")
+    run_id, payload, prepared = _capture(store)
+    _publish(store, run_id, payload, prepared)
+    target = store.root / run_id / "retained" / "bundle.jsonl"
+    target_identity = (target.stat().st_dev, target.stat().st_ino)
+    original_validate = run_store_module._validate_darwin_descriptor_security
+    checks = 0
+
+    def reject_second_check(descriptor):
+        nonlocal checks
+        details = os.fstat(descriptor)
+        if (details.st_dev, details.st_ino) == target_identity:
+            checks += 1
+            if checks == 2:
+                raise OSError("injected ACL change during read")
+        original_validate(descriptor)
+
+    monkeypatch.setattr(
+        run_store_module, "_validate_darwin_descriptor_security", reject_second_check
+    )
+    with pytest.raises(RunStoreError, match="permissions changed while it was read"):
+        store.read_retained_payload(run_id)
+    assert checks == 2
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin extended ACL integration")
+@pytest.mark.parametrize("secured_path", ["root", "run", "retained", "bundle"])
+def test_darwin_retained_read_rejects_real_extended_acl_without_mode_change(tmp_path, secured_path):
+    store = RunStore(tmp_path / "runs")
+    run_id, payload, prepared = _capture(store)
+    _publish(store, run_id, payload, prepared)
+    target, expected_mode, acl_entry = {
+        "root": (store.root, 0o700, "everyone allow list"),
+        "run": (store.root / run_id, 0o700, "everyone allow list"),
+        "retained": (store.root / run_id / "retained", 0o700, "everyone allow list"),
+        "bundle": (
+            store.root / run_id / "retained" / "bundle.jsonl",
+            0o600,
+            "everyone allow read",
+        ),
+    }[secured_path]
+    assert store.read_retained_payload(run_id) == payload
+    added = subprocess.run(
+        ["/bin/chmod", "+a", acl_entry, os.fspath(target)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert added.returncode == 0, added.stderr
+    try:
+        assert stat.S_IMODE(target.stat().st_mode) == expected_mode
+        with pytest.raises(RunStoreError):
+            store.read_retained_payload(run_id)
+    finally:
+        removed = subprocess.run(
+            ["/bin/chmod", "-N", os.fspath(target)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert removed.returncode == 0, removed.stderr
+    assert store.read_retained_payload(run_id) == payload
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-relative custody")

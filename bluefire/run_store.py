@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, cast
 
 from .retained_artifact_contract import MAX_BYTES as MAX_RETAINED_PAYLOAD_BYTES
+from .secret_store import _validate_darwin_descriptor_security
 from .util import canonical_json_bytes, content_hash, file_hash, json_clone
 from .windows_owner_acl import (
     WindowsOwnerAclError,
@@ -1048,6 +1049,7 @@ class RunStore:
                     flags |= getattr(os, "O_DIRECTORY", 0)
                 descriptor = os.open(path, flags)
                 opened = os.fstat(descriptor)
+                _validate_darwin_descriptor_security(descriptor)
                 get_effective_user = getattr(os, "geteuid", None)
                 if (
                     self._filesystem_identity(opened) != self._filesystem_identity(details)
@@ -1098,6 +1100,7 @@ class RunStore:
         try:
             descriptor = os.open(name, flags, dir_fd=parent_descriptor)
             opened = os.fstat(descriptor)
+            _validate_darwin_descriptor_security(descriptor)
             get_effective_user = getattr(os, "geteuid", None)
             if (
                 self._filesystem_identity(opened) != self._filesystem_identity(details)
@@ -1146,6 +1149,7 @@ class RunStore:
                 flags |= getattr(os, "O_DIRECTORY", 0)
                 root_descriptor = os.open(self.root, flags)
                 descriptors.append(root_descriptor)
+                _validate_darwin_descriptor_security(root_descriptor)
                 if self._filesystem_identity(
                     os.fstat(root_descriptor)
                 ) != self._filesystem_identity(root_details):
@@ -1161,6 +1165,8 @@ class RunStore:
             descriptors.append(run_descriptor)
             yield run_descriptor
             if os.name != "nt":
+                _validate_darwin_descriptor_security(root_descriptor)
+                _validate_darwin_descriptor_security(run_descriptor)
                 named_run = os.stat(run_path.name, dir_fd=root_descriptor, follow_symlinks=False)
                 opened_run = os.fstat(run_descriptor)
                 named_root = self.root.lstat()
@@ -1319,12 +1325,23 @@ class RunStore:
                 verify_owner_private_acl(descriptor, directory=False)
             except WindowsOwnerAclError:
                 raise RunStoreError("retained private DACL changed while it was read") from None
+        else:
+            try:
+                _validate_darwin_descriptor_security(descriptor)
+            except OSError:
+                raise RunStoreError(
+                    "retained private permissions changed while it was read"
+                ) from None
         return payload
 
     def _verify_pinned_retained_directory(
         self, run_descriptor: int, name: str, descriptor: int, details: os.stat_result
     ) -> None:
         opened = os.fstat(descriptor)
+        try:
+            _validate_darwin_descriptor_security(descriptor)
+        except OSError:
+            raise RunStoreError("retained private directory permissions changed") from None
         named = os.stat(name, dir_fd=run_descriptor, follow_symlinks=False)
         if (
             self._stable_private_identity(details) != self._stable_private_identity(opened)
