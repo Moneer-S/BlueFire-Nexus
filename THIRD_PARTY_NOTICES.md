@@ -48,12 +48,15 @@ qualified image containing them exists, that their complete dependency closure h
 or that redistribution rights have been cleared. A later journey record must preserve the exact
 resolved lock closure and its digest rather than treating this short list as a complete inventory.
 
-BlueFire changes one file in the candidate source,
-`strix/agents/prompts/system_prompt.jinja`, through a hash-pinned replacement. The modification
-removes upstream blanket-authorization and refusal-avoidance directives, substitutes accurate
-controller-scope and provider-safeguard language, and includes an inert modification notice in the
-file. No other upstream source change is admitted. See
-[Strix engine candidate provenance](docs/engine-provenance.md) for exact build and prompt hashes.
+BlueFire changes two files in the candidate source through separately hash-pinned replacements.
+The modification to `strix/agents/prompts/system_prompt.jinja` removes upstream
+blanket-authorization and refusal-avoidance directives, substitutes accurate controller-scope
+and provider-safeguard language, and includes an inert modification notice. The modification to
+`strix/interface/main.py` selects the registered runtime backend before Docker preflight and
+avoids persisting the attempt-scoped model relay bearer for `bluefire-controlled`; it carries
+BlueFire modification notices for both startup changes. No other upstream source change is
+admitted. See [Strix engine candidate provenance](docs/engine-provenance.md) for the exact build,
+prompt, and startup identities.
 
 The candidate workflow does not run or publish Strix, its tools, a target, a model, or the external
 sandbox image. The OCI index is not bundled or redistributed, and its tools and transitive licenses
