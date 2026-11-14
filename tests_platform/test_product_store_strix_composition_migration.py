@@ -95,9 +95,13 @@ def test_v23_migration_ddl_and_marker_roll_back_together(tmp_path: Path, monkeyp
     assert _old_rows(store.path) == before
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 23
-        assert not connection.execute(
-            "SELECT name FROM sqlite_master WHERE name LIKE 'strix_composition_%' OR name LIKE 'capability_recovery_%'"
-        ).fetchall()
+        assert all(
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            is None
+            for table in (*TABLES, *RETAINED_TABLES)
+        )
 
 
 def test_schema_requires_an_owning_transaction() -> None:
