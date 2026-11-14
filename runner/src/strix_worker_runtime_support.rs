@@ -108,6 +108,16 @@ fn require(value: bool) -> Result<(), String> {
     }
 }
 
+// Linux libc uses size_t for these fields on GNU and socklen_t on musl.
+// The bounded ancillary buffers still need a checked conversion at the ABI edge.
+fn checked_ancillary_len<T: TryFrom<usize>>(bytes: usize) -> Result<T, String> {
+    T::try_from(bytes).map_err(|_| REFUSAL.into())
+}
+
+fn ancillary_len_as_usize<T: TryInto<usize>>(length: T) -> Result<usize, String> {
+    length.try_into().map_err(|_| REFUSAL.into())
+}
+
 fn digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
@@ -388,21 +398,21 @@ pub(crate) fn send_packet(channel: RawFd, payload: &[u8], rights: &[RawFd]) -> R
     message.msg_iovlen = 1;
     if !rights.is_empty() {
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = control.len().try_into().map_err(|_| REFUSAL)?;
+        message.msg_controllen = checked_ancillary_len(control.len())?;
         unsafe {
             let header = libc::CMSG_FIRSTHDR(&message);
             require(!header.is_null())?;
             (*header).cmsg_level = libc::SOL_SOCKET;
             (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN(size_of_val(rights) as _)
-                .try_into()
-                .map_err(|_| REFUSAL)?;
+            (*header).cmsg_len = checked_ancillary_len(
+                usize::try_from(libc::CMSG_LEN(size_of_val(rights) as _)).map_err(|_| REFUSAL)?,
+            )?;
             ptr::copy_nonoverlapping(
                 rights.as_ptr().cast(),
                 libc::CMSG_DATA(header),
                 size_of_val(rights),
             );
-            message.msg_controllen = control.len().try_into().map_err(|_| REFUSAL)?;
+            message.msg_controllen = checked_ancillary_len(control.len())?;
         }
     }
     require(
@@ -435,7 +445,7 @@ pub(crate) fn receive_packet(
     message.msg_iov = &mut iov;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control.len().try_into().map_err(|_| REFUSAL)?;
+    message.msg_controllen = checked_ancillary_len(control.len())?;
     let read = unsafe { libc::recvmsg(channel, &mut message, libc::MSG_CMSG_CLOEXEC) };
     require(read > 0 && message.msg_flags == 0)?;
     payload.truncate(read as usize);
@@ -448,7 +458,7 @@ pub(crate) fn receive_packet(
         while !header.is_null() {
             if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
                 rights_seen = rights_seen.checked_add(1).ok_or(REFUSAL)?;
-                let length = usize::try_from((*header).cmsg_len).map_err(|_| REFUSAL)?;
+                let length = ancillary_len_as_usize((*header).cmsg_len)?;
                 let base = usize::try_from(libc::CMSG_LEN(0)).map_err(|_| REFUSAL)?;
                 let bytes = length.checked_sub(base).ok_or(REFUSAL)?;
                 require(bytes == right_count * size_of::<RawFd>())?;
@@ -461,7 +471,7 @@ pub(crate) fn receive_packet(
             {
                 credentials_seen = credentials_seen.checked_add(1).ok_or(REFUSAL)?;
                 require(
-                    usize::try_from((*header).cmsg_len).map_err(|_| REFUSAL)?
+                    ancillary_len_as_usize((*header).cmsg_len)?
                         == usize::try_from(libc::CMSG_LEN(size_of::<libc::ucred>() as _))
                             .map_err(|_| REFUSAL)?,
                 )?;
