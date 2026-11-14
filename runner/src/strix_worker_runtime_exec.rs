@@ -1026,6 +1026,25 @@ fn exec_python(interpreter: RawFd) -> Result<(), String> {
     )
 }
 
+fn arm_parent_death_signal(owner_pid: i32) -> Result<(), String> {
+    require(owner_pid > 1)?;
+    require(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } == 0)?;
+    let mut signal: libc::c_int = 0;
+    require(
+        unsafe {
+            libc::prctl(
+                libc::PR_GET_PDEATHSIG,
+                &mut signal as *mut libc::c_int,
+                0,
+                0,
+                0,
+            )
+        } == 0
+            && signal == libc::SIGKILL,
+    )?;
+    require(unsafe { libc::getppid() } == owner_pid)
+}
+
 fn child_main(
     launch: FixedRuntimeLaunch,
     channel: OwnedFd,
@@ -1035,9 +1054,8 @@ fn child_main(
     owner_pid: i32,
 ) -> ! {
     let result = (|| -> Result<(), String> {
-        // A helper lost before this check cannot leave a runnable worker.
-        require(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } == 0)?;
-        require(unsafe { libc::getppid() } == owner_pid)?;
+        // Cover the privileged setup interval before changing credentials.
+        arm_parent_death_signal(owner_pid)?;
         receive_exact_byte(channel.as_raw_fd(), BARRIER_GO)?;
         // `/proc` is intentionally absent after pivot. Mark the complete
         // inherited inventory now; only the fixed observation fd is cleared
@@ -1058,6 +1076,9 @@ fn child_main(
         set_private_hostname()?;
         bring_loopback_up()?;
         strix_worker_boundary_identity::drop_privileges(uid, gid)?;
+        // Linux clears PDEATHSIG when effective UID or GID changes. Restore it
+        // before creating listeners or allowing the fixed interpreter to run.
+        arm_parent_death_signal(owner_pid)?;
         require(unsafe { libc::chdir(b"/workspace\0".as_ptr().cast()) } == 0)?;
         let control = unix_listener()?;
         let model = tcp_listener(MODEL_RELAY_PORT)?;
@@ -1217,6 +1238,45 @@ fn runtime_observation(
     }))
 }
 
+fn cleanup_failed_launch(
+    pid: i32,
+    pidfd: RawFd,
+    mut cgroup: Option<&mut CgroupLeaf>,
+    identity: &mut IdentityLease,
+    endpoint: Option<RawFd>,
+    staging_root: &Path,
+) -> Result<(), String> {
+    let result = (|| -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_millis(REAP_TIMEOUT_MS as u64);
+        if let Some(leaf) = cgroup.as_deref_mut() {
+            stop_exact(pid, pidfd, &leaf.path, deadline)?;
+        } else {
+            require(
+                unsafe { libc::syscall(libc::SYS_pidfd_send_signal, pidfd, libc::SIGKILL, 0, 0) }
+                    == 0,
+            )?;
+            wait_exact(pid, pidfd, deadline)?;
+        }
+        if let Some(listener) = endpoint {
+            remove_endpoint(listener)?;
+        }
+        if let Some(leaf) = cgroup.as_deref_mut() {
+            require(leaf.remove()?)?;
+        }
+        if staging_root.exists() {
+            fs::remove_dir(staging_root).map_err(|_| REFUSAL)?;
+        }
+        require(!staging_root.exists())?;
+        require(identity.release()?)
+    })();
+    if result.is_err() {
+        // A surviving child or descendant must keep its allocated UID/GID.
+        // The retained lease path is the recovery marker after this helper exits.
+        identity.retain_for_recovery();
+    }
+    result
+}
+
 /// Launch the exact installed worker. The returned observation fd remains the
 /// only pre-opened child authority and must yield the post-bootstrap native
 /// receipt before any model or effect lease is released.
@@ -1255,30 +1315,14 @@ pub(crate) fn launch_fixed_runtime(
         Ok(value) => value,
         Err(error) => {
             let (_message, mut partial) = error.into_parts();
-            let signalled = unsafe {
-                libc::syscall(
-                    libc::SYS_pidfd_send_signal,
-                    pidfd.as_raw_fd(),
-                    libc::SIGKILL,
-                    0,
-                    0,
-                )
-            } == 0;
-            let stopped = if signalled {
-                wait_exact(
-                    pid,
-                    pidfd.as_raw_fd(),
-                    Instant::now() + Duration::from_millis(REAP_TIMEOUT_MS as u64),
-                )
-            } else {
-                Err(REFUSAL.into())
-            };
-            if let Some(leaf) = partial.as_mut() {
-                let _ = leaf.remove();
-            }
-            let _ = identity.release();
-            let _ = fs::remove_dir(&staging_root);
-            stopped?;
+            let _ = cleanup_failed_launch(
+                pid,
+                pidfd.as_raw_fd(),
+                partial.as_mut(),
+                &mut identity,
+                None,
+                &staging_root,
+            );
             return Err(REFUSAL.into());
         }
     };
@@ -1298,31 +1342,28 @@ pub(crate) fn launch_fixed_runtime(
         match ready {
             Ok(value) => value,
             Err(error) => {
-                let _ = stop_exact(
+                let _ = cleanup_failed_launch(
                     pid,
                     pidfd.as_raw_fd(),
-                    &cgroup.path,
-                    Instant::now() + Duration::from_millis(REAP_TIMEOUT_MS as u64),
+                    Some(&mut cgroup),
+                    &mut identity,
+                    None,
+                    &staging_root,
                 );
-                let _ = cgroup.remove();
-                let _ = identity.release();
-                let _ = fs::remove_dir(&staging_root);
                 return Err(error);
             }
         };
     if let Err(error) =
         verify_endpoint_directory(endpoint_directory.as_raw_fd(), identity.uid, identity.gid)
     {
-        let _ = stop_exact(
+        let _ = cleanup_failed_launch(
             pid,
             pidfd.as_raw_fd(),
-            &cgroup.path,
-            Instant::now() + Duration::from_millis(REAP_TIMEOUT_MS as u64),
+            Some(&mut cgroup),
+            &mut identity,
+            Some(endpoint_directory.as_raw_fd()),
+            &staging_root,
         );
-        let _ = remove_endpoint(endpoint_directory.as_raw_fd());
-        let _ = cgroup.remove();
-        let _ = identity.release();
-        let _ = fs::remove_dir(&staging_root);
         return Err(error);
     }
     let plan_ref = launch.identity.plan_ref.clone();
@@ -1346,16 +1387,14 @@ pub(crate) fn launch_fixed_runtime(
     let observation = match observed {
         Ok(value) => value,
         Err(error) => {
-            let _ = stop_exact(
+            let _ = cleanup_failed_launch(
                 pid,
                 pidfd.as_raw_fd(),
-                &cgroup.path,
-                Instant::now() + Duration::from_millis(REAP_TIMEOUT_MS as u64),
+                Some(&mut cgroup),
+                &mut identity,
+                Some(endpoint_directory.as_raw_fd()),
+                &staging_root,
             );
-            let _ = remove_endpoint(endpoint_directory.as_raw_fd());
-            let _ = cgroup.remove();
-            let _ = identity.release();
-            let _ = fs::remove_dir(&staging_root);
             return Err(error);
         }
     };
@@ -1561,17 +1600,17 @@ impl Drop for FixedRuntimeProcess {
         if self.pid <= 0 {
             return;
         }
-        let _ = stop_exact(
+        if stop_exact(
             self.pid,
             self.pidfd.as_raw_fd(),
             &self.cgroup.path,
             Instant::now() + Duration::from_millis(REAP_TIMEOUT_MS as u64),
-        );
-        self.pid = 0;
-        let _ = remove_endpoint(self.endpoint_directory.as_raw_fd());
-        let _ = self.cgroup.remove();
-        let _ = self.identity.release();
-        let _ = fs::remove_dir(&self.staging_root);
+        )
+        .is_err()
+            || self.cleanup_reaped().is_err()
+        {
+            self.identity.retain_for_recovery();
+        }
     }
 }
 

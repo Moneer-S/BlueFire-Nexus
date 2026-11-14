@@ -381,6 +381,17 @@ class InstalledStrixLinuxWorkerController:
                     if type(source) is int:
                         with contextlib.suppress(OSError):
                             os.close(source)
+                spawned = locals().get("pid")
+                if type(spawned) is int and spawned > 1:
+                    deadline = time.monotonic() + 5.0
+                    while time.monotonic() < deadline:
+                        try:
+                            reaped, _status = os.waitpid(spawned, os.WNOHANG)
+                        except ChildProcessError:
+                            break
+                        if reaped == spawned:
+                            break
+                        time.sleep(0.01)
             raise _refuse() from None
 
     def _descriptor(self, name: str) -> int:
@@ -417,8 +428,12 @@ class InstalledStrixLinuxWorkerController:
         return self._descriptor("workspace")
 
     def open_containment_descriptors(self) -> OpenedWorkerContainmentDescriptors:
-        """Open and cross-check the existing live verifier's full descriptor set."""
-        if self._closed or self.observed is None or self.qualified_receipt_ref is None:
+        """Open observed live handles while the guest is still held before basis.
+
+        These handles support a source-backed containment ref; opening them
+        does not release the worker or grant model or effect authority.
+        """
+        if self._closed or self.observed is None:
             raise _refuse()
         opened: list[int] = []
 
