@@ -484,6 +484,8 @@ class ScenarioObservationRequest:
     call_id: str
     tool_name: str
     arguments_digest: str
+    target_url: str
+    authorized_url_set_ref: str
     model_result_digest: str
     model_result_bytes: int
     model_result: str
@@ -500,6 +502,8 @@ class ScenarioObservationRequest:
                     "call_id": self.call_id,
                     "tool_name": self.tool_name,
                     "arguments_digest": self.arguments_digest,
+                    "target_url": self.target_url,
+                    "authorized_url_set_ref": self.authorized_url_set_ref,
                     "model_result_digest": self.model_result_digest,
                     "model_result_bytes": self.model_result_bytes,
                 }
@@ -523,7 +527,11 @@ class VerifiedScenarioObservation:
     attachment_ref: str
     terminal_ref: str
     target_response_ref: str
+    independent_evidence_ref: str
+    evidence_retention_ref: str
     target_snapshot_ref: str
+    admitted_target_url: str
+    authorized_url_set_ref: str
     service_generation: str
     target_request_id: str
     target_audit_ref: str
@@ -555,7 +563,11 @@ class VerifiedScenarioObservation:
             "attachment_ref": self.attachment_ref,
             "terminal_ref": self.terminal_ref,
             "target_response_ref": self.target_response_ref,
+            "independent_evidence_ref": self.independent_evidence_ref,
+            "evidence_retention_ref": self.evidence_retention_ref,
             "target_snapshot_ref": self.target_snapshot_ref,
+            "admitted_target_url": self.admitted_target_url,
+            "authorized_url_set_ref": self.authorized_url_set_ref,
             "service_generation": self.service_generation,
             "target_request_id": self.target_request_id,
             "target_audit_ref": self.target_audit_ref,
@@ -581,7 +593,10 @@ class VerifiedScenarioObservation:
             self.attachment_ref,
             self.terminal_ref,
             self.target_response_ref,
+            self.independent_evidence_ref,
+            self.evidence_retention_ref,
             self.target_snapshot_ref,
+            self.authorized_url_set_ref,
             self.target_audit_ref,
         ):
             _digest(value, "observation reference")
@@ -595,6 +610,9 @@ class VerifiedScenarioObservation:
             or self.arguments_digest != request.arguments_digest
             or self.model_result_digest != request.model_result_digest
             or self.model_result_bytes != request.model_result_bytes
+            or self.admitted_target_url != request.target_url
+            or self.authorized_url_set_ref != request.authorized_url_set_ref
+            or self.evidence_retention_ref == self.independent_evidence_ref
             or type(self.status_code) is not int
             or not 100 <= self.status_code <= 599
             or _IDENTITY.fullmatch(self.service_generation) is None
@@ -644,6 +662,15 @@ class VerifiedScenarioObservation:
 
 @runtime_checkable
 class ScenarioObservationSource(Protocol):
+    """Trusted controller source, not a parser of model-reported success.
+
+    ``verify`` must inspect the exact admitted relay operation and captured
+    terminal result, bind them to one protected target audit event, persist the
+    independent EvidenceRecord, and reopen its durable retention receipt before
+    returning.  Missing or uncertain links must raise instead of projecting an
+    observation from tool text or an unretained in-memory record.
+    """
+
     @property
     def binding_ref(self) -> str: ...
 
@@ -656,6 +683,7 @@ class _ScenarioCall:
     tool_name: str
     arguments: Mapping[str, Any]
     route_name: str | None = None
+    target_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -667,6 +695,8 @@ class ControlledScenarioTrace:
     status: str
     provider_requests: int
     completed_observation_refs: tuple[str, ...]
+    independent_evidence_refs: tuple[str, ...]
+    evidence_retention_refs: tuple[str, ...]
     attempted_routes: tuple[str, ...]
     last_target_status: int | None
     fixture_usage_estimate: bool = True
@@ -683,6 +713,8 @@ class ControlledScenarioTrace:
             "status": self.status,
             "provider_requests": self.provider_requests,
             "completed_observation_refs": list(self.completed_observation_refs),
+            "independent_evidence_refs": list(self.independent_evidence_refs),
+            "evidence_retention_refs": list(self.evidence_retention_refs),
             "attempted_routes": list(self.attempted_routes),
             "last_target_status": self.last_target_status,
             "fixture_usage_estimate": self.fixture_usage_estimate,
@@ -720,10 +752,13 @@ class ControlledScenarioProviderState(ControlledProviderState):
         self._pending_tool_name: str | None = None
         self._pending_arguments_json: str | None = None
         self._pending_route: str | None = None
+        self._pending_target_url: str | None = None
         self._discovery: VerifiedScenarioObservation | None = None
         self._attempted_routes: tuple[str, ...] = ()
         self._last_target_status: int | None = None
         self._observation_refs: tuple[str, ...] = ()
+        self._evidence_refs: tuple[str, ...] = ()
+        self._retention_refs: tuple[str, ...] = ()
         self._target_request_ids: tuple[str, ...] = ()
 
     def trace(self) -> ControlledScenarioTrace:
@@ -742,6 +777,8 @@ class ControlledScenarioProviderState(ControlledProviderState):
                 status,
                 self._request_count,
                 self._observation_refs,
+                self._evidence_refs,
+                self._retention_refs,
                 self._attempted_routes,
                 self._last_target_status,
             )
@@ -812,6 +849,8 @@ class ControlledScenarioProviderState(ControlledProviderState):
                     observation.target_snapshot_ref != self.manifest.scenario.target_snapshot_ref
                     or observation.service_generation != self.manifest.scenario.service_generation
                     or observation.target_request_id in self._target_request_ids
+                    or observation.independent_evidence_ref in self._evidence_refs
+                    or observation.evidence_retention_ref in self._retention_refs
                     or (
                         self._pending_phase_id == "discover_target"
                         and observation.target_route != "metadata"
@@ -875,6 +914,7 @@ class ControlledScenarioProviderState(ControlledProviderState):
             self._pending_tool_name = call.tool_name
             self._pending_arguments_json = arguments_json
             self._pending_route = call.route_name
+            self._pending_target_url = call.target_url
             self._completed_call_ids = completed_ids
             return response
 
@@ -919,7 +959,12 @@ class ControlledScenarioProviderState(ControlledProviderState):
         content = matches[0].get("content")
         if not isinstance(content, str) or not content or len(content.encode("utf-8")) > self.manifest.max_response_bytes:
             raise ControlledProviderError(409, "unexpected_history", "tool result content is invalid")
-        assert self._pending_phase_id and self._pending_tool_name and self._pending_arguments_json
+        assert (
+            self._pending_phase_id
+            and self._pending_tool_name
+            and self._pending_arguments_json
+            and self._pending_target_url
+        )
         return ScenarioObservationRequest(
             attempt_id=self.manifest.attempt_id,
             scenario_ref=self.manifest.scenario.digest,
@@ -927,6 +972,8 @@ class ControlledScenarioProviderState(ControlledProviderState):
             call_id=self._pending_call_id,
             tool_name=self._pending_tool_name,
             arguments_digest=_sha256(self._pending_arguments_json.encode("ascii")),
+            target_url=self._pending_target_url,
+            authorized_url_set_ref=self.manifest.scenario.authorized_url_set_ref,
             model_result_digest=_sha256(content.encode("utf-8")),
             model_result_bytes=len(content.encode("utf-8")),
             model_result=content,
@@ -970,6 +1017,10 @@ class ControlledScenarioProviderState(ControlledProviderState):
         if self._pending_phase_id and self._pending_phase_id.startswith("try_"):
             if observation.kind != "target_response":
                 raise ControlledProviderError(409, "observation_unverified", "target response is missing")
+            if self._discovery is None or not set(observation.returned_record_ids) <= set(self._discovery.record_directory):
+                raise ControlledProviderError(
+                    409, "observation_unverified", "returned records differ from observed directory"
+                )
             attempted = (*self._attempted_routes, self._pending_route) if self._pending_route else self._attempted_routes
             if self._discovery is not None and not set(observation.returned_record_ids) - set(self._discovery.own_record_ids):
                 remaining = [name for name, _shape in self._discovery.routes if name not in attempted]
@@ -981,7 +1032,7 @@ class ControlledScenarioProviderState(ControlledProviderState):
     def _discovery_call(self) -> _ScenarioCall:
         url = self.manifest.scenario.target_origin + "/openapi.json"
         command = f"curl --silent --show-error --include --max-time 5 {shlex.quote(url)}"
-        return _ScenarioCall("discover_target", "exec_command", {"cmd": command, "yield_time_ms": 5000})
+        return _ScenarioCall("discover_target", "exec_command", {"cmd": command, "yield_time_ms": 5000}, target_url=url)
 
     def _effect_call(self, discovery: VerifiedScenarioObservation, route: str) -> _ScenarioCall:
         other_tenants = [item for item in discovery.known_tenants if item != discovery.starting_tenant_id]
@@ -1001,7 +1052,7 @@ class ControlledScenarioProviderState(ControlledProviderState):
             + shlex.quote(url)
         )
         phase = "try_" + route
-        return _ScenarioCall(phase, "exec_command", {"cmd": command, "yield_time_ms": 5000}, route)
+        return _ScenarioCall(phase, "exec_command", {"cmd": command, "yield_time_ms": 5000}, route, url)
 
     def _finish_call(self, status: int, attempted: Sequence[str]) -> _ScenarioCall:
         routes = ", ".join(attempted) if attempted else "none"
@@ -1015,6 +1066,8 @@ class ControlledScenarioProviderState(ControlledProviderState):
 
     def _apply_observation(self, observation: VerifiedScenarioObservation) -> None:
         self._observation_refs = (*self._observation_refs, observation.observation_ref)
+        self._evidence_refs = (*self._evidence_refs, observation.independent_evidence_ref)
+        self._retention_refs = (*self._retention_refs, observation.evidence_retention_ref)
         self._target_request_ids = (*self._target_request_ids, observation.target_request_id)
         if observation.kind == "discovery":
             self._discovery = observation
@@ -1039,7 +1092,11 @@ class ControlledScenarioProviderState(ControlledProviderState):
             "attachment_ref": observation.attachment_ref,
             "terminal_ref": observation.terminal_ref,
             "target_response_ref": observation.target_response_ref,
+            "independent_evidence_ref": observation.independent_evidence_ref,
+            "evidence_retention_ref": observation.evidence_retention_ref,
             "target_snapshot_ref": observation.target_snapshot_ref,
+            "admitted_target_url": observation.admitted_target_url,
+            "authorized_url_set_ref": observation.authorized_url_set_ref,
             "service_generation": observation.service_generation,
             "target_request_id": observation.target_request_id,
             "target_audit_ref": observation.target_audit_ref,

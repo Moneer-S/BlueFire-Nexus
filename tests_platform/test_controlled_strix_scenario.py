@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -108,9 +109,16 @@ def _manifest(tools: list[dict[str, Any]]) -> dict[str, Any]:
 class _ObservedSource:
     binding_ref = DIGEST
 
-    def __init__(self, *, first_status: int = 200, first_returns_foreign: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        first_status: int = 200,
+        first_returns_foreign: bool = True,
+        returned_record_override: str | None = None,
+    ) -> None:
         self.first_status = first_status
         self.first_returns_foreign = first_returns_foreign
+        self.returned_record_override = returned_record_override
         self.requests: list[ScenarioObservationRequest] = []
 
     def verify(self, request: ScenarioObservationRequest) -> VerifiedScenarioObservation:
@@ -137,7 +145,11 @@ class _ObservedSource:
             attachment_ref=DIGEST,
             terminal_ref=DIGEST,
             target_response_ref=DIGEST,
+            independent_evidence_ref="sha256:" + f"{len(self.requests):064x}",
+            evidence_retention_ref="sha256:" + f"{len(self.requests) + 100:064x}",
             target_snapshot_ref=DIGEST,
+            admitted_target_url=request.target_url,
+            authorized_url_set_ref=request.authorized_url_set_ref,
             service_generation="service-generation-0001",
             target_request_id="request-" + f"{len(self.requests):024x}",
             target_audit_ref=DIGEST,
@@ -152,7 +164,7 @@ class _ObservedSource:
             own_record_ids=(OWN_RECORD,) if discovery else (),
             known_tenants=(TENANT, OTHER) if discovery else (),
             record_directory=(OWN_RECORD, OTHER_RECORD) if discovery else (),
-            returned_record_ids=(OTHER_RECORD,) if (
+            returned_record_ids=((self.returned_record_override or OTHER_RECORD),) if (
                 not discovery and status == 200 and self.first_returns_foreign
             ) else (),
         )
@@ -250,6 +262,8 @@ def test_synthetic_observed_target_turns_select_and_finish(
     assert state.trace().attempted_routes == expected_routes
     assert len(source.requests) == 1 + len(expected_routes)
     assert len(state.trace().completed_observation_refs) == len(source.requests)
+    assert len(state.trace().independent_evidence_refs) == len(source.requests)
+    assert len(state.trace().evidence_retention_refs) == len(source.requests)
 
 
 def test_changed_or_missing_controller_observation_stops_attempt(
@@ -275,3 +289,50 @@ def test_scenario_binding_requires_generation_and_full_attempt_origin() -> None:
     del mapping["scenario"]["engine_brief"]["target_snapshot_ref"]
     with pytest.raises(ControlledProviderError, match="engine brief"):
         ControlledScenarioManifest.from_mapping(mapping)
+
+
+def test_out_of_directory_returned_record_cannot_end_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _ObservedSource(returned_record_override="record-not-advertised-0001")
+    state, tools = _state(monkeypatch, source)
+    history: list[dict[str, Any]] = [{"role": "user", "content": "authorized lab"}]
+    first = _call(state.respond(_request(history, tools)))
+    _append_result(history, first, "discover_target")
+    second = _call(state.respond(_request(history, tools)))
+    _append_result(history, second, "try_record_lookup")
+
+    with pytest.raises(ControlledProviderError, match="observed directory"):
+        state.respond(_request(history, tools))
+    assert state.trace().status == "unknown"
+
+
+def test_missing_retention_receipt_or_changed_admitted_url_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BadSource(_ObservedSource):
+        def verify(self, request: ScenarioObservationRequest) -> VerifiedScenarioObservation:
+            observed = super().verify(request)
+            return replace(observed, evidence_retention_ref="not-retained")
+
+    source = BadSource()
+    state, tools = _state(monkeypatch, source)
+    history: list[dict[str, Any]] = [{"role": "user", "content": "authorized lab"}]
+    first = _call(state.respond(_request(history, tools)))
+    _append_result(history, first, "discover_target")
+    with pytest.raises(ControlledProviderError, match="observation reference"):
+        state.respond(_request(history, tools))
+    assert state.trace().status == "unknown"
+
+    class WrongUrlSource(_ObservedSource):
+        def verify(self, request: ScenarioObservationRequest) -> VerifiedScenarioObservation:
+            observed = super().verify(request)
+            return replace(observed, admitted_target_url=ORIGIN + "/health")
+
+    wrong = WrongUrlSource()
+    state, tools = _state(monkeypatch, wrong)
+    history = [{"role": "user", "content": "authorized lab"}]
+    first = _call(state.respond(_request(history, tools)))
+    _append_result(history, first, "discover_target")
+    with pytest.raises(ControlledProviderError, match="tool observation differs"):
+        state.respond(_request(history, tools))
