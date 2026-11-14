@@ -20,7 +20,7 @@ const securityConclusion = (value: EngineExperimentConclusion): EngineComparison
     case "original_mechanism_still_succeeds":
       return { title: "The original mechanism still works", detail: "The independent reproducer did not establish prevention.", tone: "danger" };
     case "original_blocked_legitimate_use_failed":
-      return { title: "The change disrupted legitimate use", detail: "Review or roll back the defensive change before treating this result as an improvement.", tone: "danger" };
+      return { title: "Legitimate use failed after the change", detail: "Review or roll back the defensive change before treating this result as an improvement.", tone: "danger" };
     case "original_blocked_alternate_path_found":
       return { title: "Original route blocked; another path remains", detail: "The retained reproducer was prevented, while a fresh adaptive attempt found a different observed route toward the objective.", tone: "warning" };
     case "original_blocked_no_remaining_path_observed_within_limits":
@@ -40,9 +40,9 @@ export function engineComparisonConclusion(value: EngineExperimentConclusion): E
   if (value.defense.state === "unknown" || value.defense.current_target_snapshot_ref === null) return { title: "Current target state needs reconciliation", detail: "Recorded outcomes remain available as history, but they cannot establish the target’s current state after an uncertain defensive operation.", tone: "warning" };
   const conclusion = securityConclusion(value);
   if (conclusion.tone === "danger" || value.headline === "original_blocked_alternate_path_found") return conclusion;
-  if (value.cleanup.status === "residue") return { title: "Retest recorded; cleanup left residue", detail: "Keep the security result and retained worker or target effects separate. Review cleanup evidence before disposition.", tone: "danger" };
-  if (value.cleanup.status === "unknown") return { title: "Retest recorded; cleanup remains unknown", detail: "Worker or target cleanup is not established, so the experiment is not fully settled.", tone: "warning" };
-  if (value.cleanup.status === "pending" || value.cleanup.status === "not_started") return { title: "Retest recorded; cleanup is not complete", detail: "Wait for verified cessation or review an explicit cleanup result before disposition.", tone: "warning" };
+  if (value.cleanup.status === "residue") return { title: "Cleanup left residue", detail: "Keep the security result and retained worker or target effects separate. Review cleanup evidence before disposition.", tone: "danger" };
+  if (value.cleanup.status === "unknown") return { title: "Cleanup remains unknown", detail: "Worker or target cleanup is not established, so the experiment is not fully settled.", tone: "warning" };
+  if ((value.cleanup.status === "pending" || value.cleanup.status === "not_started") && value.cleanup.items.length) return { title: "Cleanup is not complete", detail: "Wait for verified cessation or review an explicit cleanup result before disposition.", tone: "warning" };
   if (value.telemetry_health.status !== "complete" && value.headline === "original_blocked_no_remaining_path_observed_within_limits") return { title: "Original route blocked; observation is incomplete", detail: "Missing target-side telemetry means an absent adaptive finding cannot establish that no route was observed.", tone: "warning" };
   return conclusion;
 }
@@ -129,7 +129,7 @@ export function EngineRetestComparison({ conclusion: value, evidence, defensiveC
   const fullComparisonHref = comparisonHref === undefined ? null : internalResultHref(comparisonHref);
   const Icon = conclusion.tone === "success" ? ShieldCheck : conclusion.tone === "danger" ? ShieldAlert : conclusion.tone === "warning" ? TriangleAlert : CircleHelp;
   const observationIncomplete = value.telemetry_health.status !== "complete";
-  const cleanupUnsettled = value.cleanup.status !== "verified_absent";
+  const cleanupUnsettled = value.cleanup.status === "residue" || value.cleanup.status === "unknown" || value.cleanup.items.length > 0 && value.cleanup.status !== "verified_absent";
   return <Panel className={`engine-retest-comparison is-${conclusion.tone}`} aria-label="Attack, defense and fresh retest conclusion">
     <header className="engine-comparison-conclusion"><Icon aria-hidden="true" /><div><p>Attack → defense → fresh retest</p><h2>{conclusion.title}</h2><span>{conclusion.detail}</span></div></header>
     {observationIncomplete ? <Callout tone="warning" title="Observation is incomplete"><p>Verified {value.telemetry_health.verified_sources.length} of {value.telemetry_health.expected_sources.length} expected telemetry sources. An absent engine finding cannot be interpreted as prevention.</p>{value.telemetry_health.missing_sources.length ? <p>Missing: {value.telemetry_health.missing_sources.join(", ")}.</p> : null}</Callout> : null}

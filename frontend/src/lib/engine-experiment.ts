@@ -333,7 +333,7 @@ const parseProjection = (value: unknown): EngineExperimentProjection => {
   const adaptiveTerminal = adaptive ? ["completed", "partial", "failed", "cancelled", "budget_exhausted", "unknown"].includes(adaptive.state) : false;
   const adaptiveBounded = Boolean(adaptive && adaptiveObservations.length && [...adaptiveAssessments].every(item => item === "authorization_denied" || item === "no_protected_effect") && adaptive.state === "completed" && adaptive.completeness === "complete");
   const expectedAdaptiveStatus = !adaptive ? "not_attempted" : adaptiveAssessments.has("unauthorized_disclosure") ? "remaining_path_found" : adaptiveBounded ? "no_path_observed_within_limits" : adaptiveTerminal ? "inconclusive" : "pending";
-  const expectedLegitimateStatus = !legitimate ? "not_attempted" : legitimateAssessments.has("legitimate_use_succeeded") ? "passed" : legitimateAssessments.has("authorization_denied") ? "failed" : "unknown";
+  const expectedLegitimateStatus = !legitimate ? "not_attempted" : legitimateAssessments.has("authorization_denied") ? "failed" : legitimateAssessments.size === 1 && legitimateAssessments.has("legitimate_use_succeeded") ? "passed" : "unknown";
   if (result.conclusion.original_mechanism.status !== expectedOriginalStatus || result.conclusion.retained_reproducer.status !== expectedReproducerStatus || result.conclusion.adaptive_search.status !== expectedAdaptiveStatus || result.conclusion.legitimate_use.status !== expectedLegitimateStatus) throw new Error("Conclusion status changed.");
   const conclusionOwners = [
     [result.conclusion.original_mechanism, baseline, baselineObservations],
@@ -409,8 +409,8 @@ export function checkedEngineExperiment(value: unknown, expectedExperimentId?: s
   if (projection.conclusion.defense.current_target_snapshot_ref !== (result.current_target?.snapshot_ref ?? null)) throw new Error("Current target projection changed.");
   if ((projection.conclusion.defense.state === "unknown") !== (result.current_target === null)) throw new Error("Current target availability changed.");
   if (result.current_target === null) {
-    const enabled = actions.filter(action => action.enabled);
-    if (projection.conclusion.defense.state !== "unknown" || enabled.length !== 1 || enabled[0]?.kind !== "reconcile_defense" || enabled[0].primary !== true) throw new Error("Unknown target recovery changed.");
+    const recovery = actions[0];
+    if (projection.conclusion.defense.state !== "unknown" || actions.length !== 1 || recovery?.kind !== "reconcile_defense" || recovery.enabled || !recovery.primary || !recovery.reason) throw new Error("Unknown target recovery changed.");
   }
   if (selectedContext?.kind === "engine_attempt") {
     const detail = selectedContext.attempt;

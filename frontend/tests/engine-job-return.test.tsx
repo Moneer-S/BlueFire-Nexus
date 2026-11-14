@@ -42,6 +42,33 @@ it.each(["engine-attempt", "engine-controller-check"] as const)("links the exact
   expect(engineExperimentJobLink(value)).toBe(path);
 });
 
+it("returns a trusted legitimate-use check to its saved experiment", () => {
+  const value = job("engine-controller-check");
+  value.request!.role = "legitimate_use";
+  value.request!.performer = "bluefire.trusted-client";
+  expect(engineExperimentJobLink(value)).toBe(`/composition?engine_experiment=${experimentId}&check=${checkId}`);
+  value.request!.performer = "bluefire.controller";
+  expect(engineExperimentJobLink(value)).toBeUndefined();
+});
+
+it("accepts the exact installed execution claim policy while keeping legacy jobs readable", () => {
+  const value = job();
+  const expected = `/composition?engine_experiment=${experimentId}&attempt=${attemptId}`;
+  expect(engineExperimentJobLink(value)).toBe(expected);
+  value.request!.schema_version = "bluefire.engine-attempt-job.v2";
+  const policy = {
+    schema_version: "bluefire.engine-execution-claim-policy.v1",
+    claim_protocol: "bluefire.engine-attempt-execution-claim.v1",
+    accepted_jobs_adapter: "bluefire.product-store-accepted-engine-jobs.v1",
+  };
+  value.request!.execution_claim_policy = policy;
+  expect(engineExperimentJobLink(value)).toBe(expected);
+  value.request!.execution_claim_policy = { ...policy, claim_protocol: "substituted" };
+  expect(engineExperimentJobLink(value)).toBeUndefined();
+  value.request!.schema_version = "bluefire.engine-attempt-job.v1";
+  expect(engineExperimentJobLink(value)).toBeUndefined();
+});
+
 const invalid: Array<[string, (value: RunJob) => void]> = [
   ["wrong job schema", value => { value.schema_version = "bluefire.job.v2"; }],
   ["wrong kind", value => { value.kind = "scenario.run"; }],

@@ -219,6 +219,7 @@ export function EngineExperimentWorkspace({ experiment, workspaceEvidenceState =
   });
   const baselineIntegrity = baseline ? integrityFor(baseline.run_id) : undefined;
   const baselineEvidenceIntegrity = baselineEvidence.map(item => integrityFor(item.run_id));
+  const baselineEvidenceCurrent = Boolean(currentSnapshot && baselineEvidence.every(item => item.target_snapshot_ref === currentSnapshot));
   const verificationState = !baseline
     ? phaseState("not_attempted", "Not attempted")
     : activeAttemptState(baseline.state)
@@ -229,7 +230,9 @@ export function EngineExperimentWorkspace({ experiment, workspaceEvidenceState =
           ? phaseState("unknown", "Incomplete")
           : !baselineEvidence.length || baselineEvidence.some(item => item.assessment === "unknown")
             ? phaseState("unknown", "Outcome unknown")
-            : recordedOrCurrent(workspaceEvidenceState, Boolean(currentSnapshot && baselineEvidence.every(item => item.target_snapshot_ref === currentSnapshot)));
+            : projection.conclusion.original_mechanism.status === "not_established"
+              ? phaseState(workspaceEvidenceState === "current" && baselineEvidenceCurrent ? "current" : "recorded", "Mechanism not established")
+              : recordedOrCurrent(workspaceEvidenceState, baselineEvidenceCurrent);
   const defenseState = !experiment.defensive_change
     ? phaseState("not_attempted", "Not attempted")
     : experiment.defensive_change.state === "unknown" || experiment.current_target === null
@@ -310,7 +313,7 @@ export function EngineExperimentWorkspace({ experiment, workspaceEvidenceState =
       <div className="engine-workspace-actions"><div><span>Workflow</span><strong>{engineWorkflowLabel(projection.workflow_state)}</strong></div><div><span>Revision</span><strong>{experiment.revision.toLocaleString()}</strong></div>{primaryAction && onPrimaryAction ? <Button type="button" variant="primary" disabled={!primaryAction.enabled} onClick={() => onPrimaryAction(primaryAction.kind)}>{primaryAction.label}<ArrowRight aria-hidden="true" /></Button> : null}{activeAttempt && activeAttempt.state !== "stopping" && onCancelAttempt ? <Button type="button" variant="danger" disabled={cancellingAttemptId === activeAttempt.attempt_id} onClick={() => onCancelAttempt(activeAttempt.attempt_id)}><Square aria-hidden="true" />{cancellingAttemptId === activeAttempt.attempt_id ? "Requesting cancellation" : "Cancel attempt"}</Button> : activeAttempt?.state === "stopping" ? <Button type="button" disabled><Square aria-hidden="true" />Stopping</Button> : null}</div>
     </header>
     {!completed && primaryAction?.reason ? <Callout tone={primaryAction.enabled && onPrimaryAction ? "info" : "warning"} title={primaryAction.enabled && onPrimaryAction ? "Next useful action" : primaryAction.enabled ? "Next action is not available here" : "Action not available"}><p>{primaryAction.reason}</p></Callout> : null}
-    {experiment.current_target === null ? <Callout tone="warning" title="Current target state is not established"><p>BlueFire preserved the earlier evidence, but it cannot treat that history as proof of the target’s current state. Reconcile the defensive operation before starting another effect or drawing a current-state conclusion.</p></Callout> : null}
+    {experiment.current_target === null ? <Callout tone="warning" title="Current target state is not established"><p>Earlier evidence remains available as history. Review the retained operation and independently verify the disposable target before starting another effect or drawing a current-state conclusion.</p></Callout> : null}
     {activeCheck ? <span className="sr-only" role="status">Trusted check in progress: {engineControllerCheckLabel(activeCheck.role)}</span> : null}
     <span className="sr-only" id={phaseHintId}>This path scrolls horizontally when space is constrained. Focus it and use the arrow keys to review every phase.</span>
     <ol className="engine-phase-rail" aria-label="Experiment phases" aria-describedby={phaseHintId} tabIndex={0}>{phases.map((phase, index) => <li className={["active", "current"].includes(phase.state.kind) ? "is-current" : phase.state.kind === "recorded" ? "is-recorded" : undefined} data-state={phase.state.kind} aria-current={phase.state.kind === "active" ? "step" : undefined} key={phase.key}><span>{index + 1}</span><phase.icon aria-hidden="true" /><div><strong>{phase.label}</strong><small>{phase.state.label}</small></div></li>)}</ol>

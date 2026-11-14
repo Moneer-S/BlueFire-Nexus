@@ -212,6 +212,17 @@ it("does not call independent verification complete while the baseline is incomp
   expect(verification).toHaveAttribute("data-state", "unknown");
 });
 
+it("labels a verified negative baseline without implying the mechanism succeeded", () => {
+  const baseline = attemptSummary("baseline", "4");
+  const value = experiment({ attempts: [baseline], checks: [] });
+  value.projection.observations = [{ evidence_id: `evidence-${"f".repeat(20)}`, run_id: baseline.run_id, attempt_id: baseline.attempt_id, check_id: null, mechanism_ref: digest("a"), target_snapshot_ref: digest("9"), assessment: "no_protected_effect", record_hash: digest("f") }];
+  value.projection.conclusion.original_mechanism.status = "not_established";
+  renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} />);
+  const verification = within(screen.getByRole("list", { name: "Experiment phases" })).getByText("Independent verification").closest("li");
+  expect(verification).toHaveTextContent("Mechanism not established");
+  expect(verification).not.toHaveTextContent("Current and verified");
+});
+
 it("requires the defensive application receipt before calling the change current", () => {
   const value = experiment();
   value.projection.conclusion = { ...value.projection.conclusion, defense: { ...value.projection.conclusion.defense, application_receipt_ref: null } };
@@ -349,11 +360,12 @@ it("makes unknown target state visible and exposes only reconciliation", () => {
   value.defensive_change = value.defensive_change ? { ...value.defensive_change, state: "unknown" } : null;
   value.projection.conclusion = { ...value.projection.conclusion, defense: { ...value.projection.conclusion.defense, state: "unknown", current_target_snapshot_ref: null } };
   value.projection.workflow_state = "reconcile_defense";
-  value.actions = [{ kind: "reconcile_defense", label: "Reconcile defensive change", enabled: true, reason: "Inspect the target before continuing.", primary: true }];
+  value.actions = [{ kind: "reconcile_defense", label: "Reconcile defensive change", enabled: false, reason: "Review the retained operation and verify the disposable target before resuming.", primary: true }];
 
   renderWorkspace(<EngineExperimentWorkspace experiment={value} onSelectAttempt={vi.fn()} onPrimaryAction={vi.fn()} />);
   expect(screen.getByText("Current target state is not established").closest('[role="status"]')).toBeInTheDocument();
   expect(screen.getByText("Unavailable until reconciliation")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Reconcile defensive change" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Reconcile defensive change" })).toBeDisabled();
+  expect(screen.getByText("Review the retained operation and verify the disposable target before resuming.")).toBeVisible();
   expect(screen.queryByRole("button", { name: "Start fresh adaptive search" })).not.toBeInTheDocument();
 });

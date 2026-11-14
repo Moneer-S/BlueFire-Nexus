@@ -112,3 +112,20 @@ it("withholds the composer when the strict context is stale or tampered", async 
   expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
   expect(submit).not.toHaveBeenCalled();
 });
+
+it("labels validated live model proof without attributing it to a test provider", async () => {
+  const live = JSON.parse(JSON.stringify(context));
+  live.reference_summary.provider.test_provider = false;
+  live.reference_summary.provider.live_model_inference_proven = true;
+  live.reference_summary.selected_record.execution_proof = {
+    status: "tool_executed", installed_service_started: true, native_worker_started: true,
+    tool_execution_proven: true, target_response_proven: false,
+    model_kind: "live", live_model_proof: true,
+    protocol_provider_kind: "unavailable", live_caido_proof: false, tool_event_count: 1,
+  };
+  expect(() => checkedEngineExperimentAssistanceContext(live, selection)).not.toThrow();
+  vi.mocked(request).mockResolvedValue(live);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><Selection /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
+  expect(await screen.findByText("Recorded source provider · live inference verified")).toBeVisible();
+});

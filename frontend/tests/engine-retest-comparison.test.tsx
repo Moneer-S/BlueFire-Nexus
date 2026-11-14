@@ -64,7 +64,7 @@ it("keeps a bounded no-path search qualified instead of declaring remediation", 
 
 it("keeps legitimate-use failure separate and dominant", () => {
   const value = conclusion({ headline: "original_blocked_legitimate_use_failed", legitimate_use: { status: "failed", run_id: run("4", "04"), support_refs: [`evidence-${"4".repeat(20)}`] } });
-  expect(engineComparisonConclusion(value)).toMatchObject({ tone: "danger", title: "The change disrupted legitimate use" });
+  expect(engineComparisonConclusion(value)).toMatchObject({ tone: "danger", title: "Legitimate use failed after the change" });
 });
 
 it("does not hide unknown cleanup behind a favorable security result", () => {
@@ -73,7 +73,7 @@ it("does not hide unknown cleanup behind a favorable security result", () => {
     adaptive_search: { status: "no_path_observed_within_limits", run_id: run("3", "03"), support_refs: [], limit_qualified: true },
     cleanup: { status: "unknown", items: [] },
   });
-  expect(engineComparisonConclusion(value)).toMatchObject({ tone: "warning", title: "Retest recorded; cleanup remains unknown" });
+  expect(engineComparisonConclusion(value)).toMatchObject({ tone: "warning", title: "Cleanup remains unknown" });
   renderComparison(value);
   expect(screen.getByText("Cleanup is not verified")).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "Choose what happens to the applied change" })).not.toBeInTheDocument();
@@ -112,6 +112,21 @@ it("states when a conclusion has no supporting run route", () => {
   });
   renderComparison(value, null);
   expect(screen.getByText("Supporting runs unavailable")).toBeInTheDocument();
+});
+
+it("does not claim a retest or unfinished cleanup before the first attempt", () => {
+  const value = conclusion({
+    headline: "inconclusive_original_mechanism",
+    original_mechanism: { status: "not_attempted", run_id: null, support_refs: [] },
+    retained_reproducer: { status: "not_attempted", run_id: null, support_refs: [] },
+    adaptive_search: { status: "not_attempted", run_id: null, support_refs: [] },
+    legitimate_use: { status: "not_attempted", run_id: null, support_refs: [] },
+    cleanup: { status: "not_started", items: [] },
+  });
+  renderComparison(value, null);
+  expect(screen.getByRole("heading", { name: "The original mechanism was not established" })).toBeVisible();
+  expect(screen.queryByText("Cleanup is not verified")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Retest recorded/i)).not.toBeInTheDocument();
 });
 
 it("refuses external result routes instead of creating full-page navigation", () => {

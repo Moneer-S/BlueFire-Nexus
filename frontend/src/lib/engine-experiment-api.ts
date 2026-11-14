@@ -8,6 +8,11 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const UTC_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?Z$/;
 const ATTEMPT_ID = /^engine-attempt-[0-9a-f]{32}$/;
 const CHECK_ID = /^controller-check-[0-9a-f]{32}$/;
+const INSTALLED_CLAIM_POLICY = {
+  schema_version: "bluefire.engine-execution-claim-policy.v1",
+  claim_protocol: "bluefire.engine-attempt-execution-claim.v1",
+  accepted_jobs_adapter: "bluefire.product-store-accepted-engine-jobs.v1",
+} as const;
 
 export interface EngineExperimentHead {
   schema_version: "bluefire.engine-experiment-head.v1";
@@ -76,6 +81,11 @@ function checkedSelection(value?: EngineWorkspaceSelection | null): EngineWorksp
   throw new Error(value.kind === "engine_attempt" ? "The engine attempt identity is invalid." : value.kind === "controller_check" ? "The controller check identity is invalid." : "The engine workspace selection is invalid.");
 }
 
+function installedClaimPolicy(value: unknown): boolean {
+  return exact(value, Object.keys(INSTALLED_CLAIM_POLICY))
+    && Object.entries(INSTALLED_CLAIM_POLICY).every(([field, expected]) => value[field] === expected);
+}
+
 export function engineExperimentPath(experimentId: string, selection?: { kind: "engine_attempt" | "controller_check"; id: string } | null): string {
   if (!engineExperimentId(experimentId)) throw new Error("The engine experiment identity is invalid.");
   const selected = checkedSelection(selection);
@@ -101,8 +111,9 @@ export function engineExperimentJobLink(job?: RunJob | null): string | undefined
   if (digestFields.some(field => typeof request[field] !== "string" || !DIGEST.test(request[field]))) return;
   let selection: EngineWorkspaceSelection;
   if (job.kind === "engine-attempt") {
-    if (!exact(request, ["schema_version", "experiment_id", "attempt_id", ...digestFields, "execution_approval_id"])
-      || request.schema_version !== "bluefire.engine-attempt-job.v1"
+    const installed = request.schema_version === "bluefire.engine-attempt-job.v2";
+    if (!exact(request, ["schema_version", "experiment_id", "attempt_id", ...digestFields, "execution_approval_id", ...(installed ? ["execution_claim_policy"] : [])])
+      || (installed ? !installedClaimPolicy(request.execution_claim_policy) : request.schema_version !== "bluefire.engine-attempt-job.v1")
       || typeof request.attempt_id !== "string" || !ATTEMPT_ID.test(request.attempt_id)
       || typeof request.execution_approval_id !== "string" || !/^approval-[0-9a-f]{32}$/.test(request.execution_approval_id)) return;
     selection = { kind: "engine_attempt", id: request.attempt_id };
@@ -113,7 +124,8 @@ export function engineExperimentJobLink(job?: RunJob | null): string | undefined
       || typeof request.run_id !== "string" || !/^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(request.run_id)
       || typeof request.experiment_revision !== "number" || !Number.isSafeInteger(request.experiment_revision) || request.experiment_revision < 1
       || typeof request.role !== "string" || !["retained_reproducer", "legitimate_use"].includes(request.role)
-      || request.performer !== "bluefire.controller" || !timestamp(request.reserved_at)) return;
+      || request.performer !== (request.role === "retained_reproducer" ? "bluefire.controller" : "bluefire.trusted-client")
+      || !timestamp(request.reserved_at)) return;
     selection = { kind: "controller_check", id: request.check_id };
   } else return;
   const progress = job.progress;

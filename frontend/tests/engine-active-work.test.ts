@@ -28,6 +28,7 @@ const value = {
       retained_reproducer: { status: "blocked" },
       adaptive_search: { status: "not_started" },
       legitimate_use: { status: "not_started" },
+      cleanup: { status: "verified_absent" },
     },
   },
 } as unknown as EngineExperiment;
@@ -49,6 +50,7 @@ it("uses the existing Home active-work model without inventing readiness or a la
     { label: "Original mechanism retest", value: "Blocked", tone: "positive" },
     { label: "Fresh adaptive search", value: "Not started", tone: "neutral" },
     { label: "Legitimate use", value: "Not started", tone: "neutral" },
+    { label: "Worker / target cleanup", value: "Verified absent", tone: "positive" },
   ]);
   expect(summary.links).toEqual([
     { label: "Baseline exploration run evidence", href: `/runs/${baselineRun}` },
@@ -57,4 +59,14 @@ it("uses the existing Home active-work model without inventing readiness or a la
   expect(activeWorkHref(reference)).toBe(summary.href);
   expect(summary.results.map(item => item.label)).not.toContain("Coverage");
   expect(summary.results.map(item => item.label)).not.toContain("Readiness");
+});
+
+it("does not present a completed experiment as settled while cleanup is unknown", async () => {
+  vi.mocked(engineExperimentApi.workspace).mockResolvedValue({
+    ...value,
+    projection: { ...value.projection, workflow_state: "complete", conclusion: { ...value.projection.conclusion, cleanup: { status: "unknown" } } },
+  } as EngineExperiment);
+  const summary = await loadActiveWork({ family: "engine", id: experimentId });
+  expect(summary.recordedState).toBe("cleanup_needs_review");
+  expect(summary.results).toContainEqual({ label: "Worker / target cleanup", value: "Unknown", tone: "caution" });
 });

@@ -213,6 +213,7 @@ function engineSummary(reference: ActiveWorkReference, value: EngineExperiment):
     result("Original mechanism retest", humanize(conclusion.retained_reproducer.status), conclusion.retained_reproducer.status === "blocked" ? "positive" : conclusion.retained_reproducer.status === "still_succeeds" ? "caution" : "neutral"),
     result("Fresh adaptive search", humanize(conclusion.adaptive_search.status), conclusion.adaptive_search.status === "remaining_path_found" ? "caution" : "neutral"),
     result("Legitimate use", humanize(conclusion.legitimate_use.status), conclusion.legitimate_use.status === "passed" ? "positive" : conclusion.legitimate_use.status === "failed" ? "caution" : "neutral"),
+    result("Worker / target cleanup", humanize(conclusion.cleanup.status), conclusion.cleanup.status === "verified_absent" ? "positive" : ["unknown", "residue"].includes(conclusion.cleanup.status) ? "caution" : "neutral"),
   ];
   const links = runLinks([
     ...value.projection.attempts.map(item => ({ id: item.run_id, label: `${engineAttemptLabel(item.role)} run evidence` })),
@@ -224,7 +225,7 @@ function engineSummary(reference: ActiveWorkReference, value: EngineExperiment):
     objective: value.objective.summary,
     environment: `${value.environment.display_name} · ${humanize(value.environment.platform)}`,
     phase: engineWorkflowLabel(value.projection.workflow_state),
-    recordedState: value.current_target === null ? "current_target_unknown" : value.projection.workflow_state,
+    recordedState: value.current_target === null ? "current_target_unknown" : value.projection.workflow_state === "complete" && conclusion.cleanup.status !== "verified_absent" ? "cleanup_needs_review" : value.projection.workflow_state,
     change: value.defensive_change ? `${humanize(value.defensive_change.kind)}: ${value.defensive_change.summary}` : "No defensive change recorded",
     results,
     href: engineExperimentPath(value.experiment_id),

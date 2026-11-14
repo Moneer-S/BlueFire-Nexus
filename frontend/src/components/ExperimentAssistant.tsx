@@ -471,7 +471,9 @@ function EngineExperimentAssistanceEvidence({ summary }: { summary: EngineExperi
     : null;
   const sourceProvider = summary.provider.test_provider
     ? "Labeled test provider · application mechanics only"
-    : "Recorded source provider · live inference not established";
+    : summary.provider.live_model_inference_proven
+      ? "Recorded source provider · live inference verified"
+      : "Recorded source provider · live inference not established";
   return <>
     <div className="assistant-comparison-summary" role="group" aria-label="Saved defense experiment summary">
       <strong>{sentence(summary.conclusion.headline as string)}</strong>

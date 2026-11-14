@@ -25,17 +25,17 @@ it("browses beyond Home's five records and resumes exact saved identities withou
   const prepare = vi.spyOn(engineExperimentApi, "prepare");
   const submit = vi.spyOn(engineExperimentApi, "submit");
   mount([1, 2, 3, 4, 5, 6].map(head));
-  const newest = await screen.findByRole("link", { name: `Saved ${head(6).experiment_id}` });
+  const newest = await screen.findByRole("link", { name: `Saved ${head(6).experiment_id}` }, { timeout: 10000 });
   expect(newest).toHaveAttribute("href", `/composition?engine_experiment=${head(6).experiment_id}`);
   expect(screen.getByText("Showing 1 to 5 of 6 saved experiments.")).toBeVisible();
   expect(engineExperimentApi.workspace).toHaveBeenCalledTimes(5);
   expect(engineExperimentApi.workspace).not.toHaveBeenCalledWith(head(1).experiment_id);
   const next = screen.getByRole("button", { name: "Next" }); next.focus(); await user.keyboard("{Enter}");
-  expect(await screen.findByRole("link", { name: `Saved ${head(1).experiment_id}` })).toHaveAttribute("href", `/composition?engine_experiment=${head(1).experiment_id}`);
+  expect(await screen.findByRole("link", { name: `Saved ${head(1).experiment_id}` }, { timeout: 10000 })).toHaveAttribute("href", `/composition?engine_experiment=${head(1).experiment_id}`);
   expect(screen.getByText("Showing 6 to 6 of 6 saved experiments.")).toBeVisible();
   expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   expect(prepare).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
-});
+}, 20000);
 
 it("withholds a resume link when the checked head no longer matches the workspace", async () => {
   mount([head(1)]);

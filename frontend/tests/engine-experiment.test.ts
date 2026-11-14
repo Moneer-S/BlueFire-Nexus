@@ -202,6 +202,21 @@ describe("engine experiment workspace parser", () => {
     expect(parsed.selected_context.attempt.execution_proof.target_response_receipt_ref).toBe(digest("9"));
   });
 
+  it("keeps a denied legitimate operation failed even when another operation succeeded", () => {
+    const value = engineExperimentFixture();
+    const denied = { ...value.projection.observations[3], evidence_id: id("evidence", "f", 20), assessment: "authorization_denied", record_hash: digest("f") };
+    value.projection.observations.push(denied);
+    value.projection.checks[1].independent_evidence_refs.push(denied.evidence_id);
+    value.projection.conclusion.legitimate_use.support_refs.push(denied.evidence_id);
+    value.projection.conclusion.legitimate_use.status = "failed";
+    value.projection.conclusion.headline = "original_blocked_legitimate_use_failed";
+
+    expect(checkedEngineExperiment(value).projection.conclusion.legitimate_use.status).toBe("failed");
+    value.projection.conclusion.legitimate_use.status = "passed";
+    value.projection.conclusion.headline = "original_blocked_no_remaining_path_observed_within_limits";
+    expect(() => checkedEngineExperiment(value)).toThrow(/conclusion status changed/i);
+  });
+
   it.each([
     ["unknown workflow state", (value: any) => { value.projection.workflow_state = "paused"; }],
     ["unsupported resume", (value: any) => { value.selected_context.attempt.resume_supported = true; }],
@@ -249,11 +264,15 @@ describe("engine experiment workspace parser", () => {
     value.projection.conclusion.defense.state = "unknown";
     value.projection.conclusion.defense.current_target_snapshot_ref = null;
     value.projection.workflow_state = "reconcile_defense";
-    value.actions = [{ kind: "reconcile_defense", label: "Reconcile defensive change", enabled: true, reason: "Inspect the target before continuing.", primary: true }];
+    value.actions = [{ kind: "reconcile_defense", label: "Reconcile defensive change", enabled: false, reason: "Review the retained operation and verify the disposable target before resuming.", primary: true }];
 
     const parsed = checkedEngineExperiment(value);
     expect(parsed.current_target).toBeNull();
-    expect(parsed.actions.filter(action => action.enabled).map(action => action.kind)).toEqual(["reconcile_defense"]);
+    expect(parsed.actions).toMatchObject([{ kind: "reconcile_defense", enabled: false, primary: true }]);
+
+    value.actions[0].enabled = true;
+    expect(() => checkedEngineExperiment(value)).toThrow(/recovery changed/i);
+    value.actions[0].enabled = false;
 
     value.actions[0].kind = "start_adaptive_search";
     expect(() => checkedEngineExperiment(value)).toThrow(/recovery changed/i);
