@@ -17,6 +17,7 @@ import re
 import shlex
 import sqlite3
 import stat
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +46,7 @@ from .windows_owner_acl import (
 SCHEMA = "bluefire.controlled-scenario-observation-retention.v1"
 SEAL_SCHEMA = "bluefire.controlled-scenario-observation-seal.v1"
 TOOL_SCHEMA = "bluefire.controlled-scenario-settled-exec.v1"
+SOURCE_TERMINAL_SCHEMA = "bluefire.installed-strix-v2-source-collection-terminal.v1"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ATTEMPT = re.compile(r"engine-attempt-[0-9a-f]{32}\Z")
 _MAX_RECORDS = 64
@@ -149,8 +151,13 @@ class ControllerScenarioObservationJournal:
     """Bounded append-only SQLite journal in an owner-private controller path."""
 
     def __init__(self, path: str | Path) -> None:
+        if sys.platform == "darwin":
+            raise ScenarioObservationJournalError(
+                "macOS observation retention needs a separately verified ACL boundary"
+            )
         candidate = Path(path).expanduser()
         self._verify_private_path(candidate.parent, directory=True)
+        self._verify_ancestor_chain(candidate.parent)
         preexisting = candidate.exists()
         try:
             self.path, self._identity = prepare_owner_private_database_file(candidate)
@@ -220,6 +227,24 @@ class ControllerScenarioObservationJournal:
                 """CREATE TRIGGER IF NOT EXISTS settled_execs_no_delete
                    BEFORE DELETE ON settled_execs BEGIN SELECT RAISE(ABORT, 'immutable'); END"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS role_terminals (
+                    attempt_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    owner_ref TEXT NOT NULL,
+                    source_receipt_ref TEXT NOT NULL UNIQUE,
+                    document BLOB NOT NULL,
+                    PRIMARY KEY (attempt_id, role, owner_ref)
+                )"""
+            )
+            connection.execute(
+                """CREATE TRIGGER IF NOT EXISTS role_terminals_no_update
+                   BEFORE UPDATE ON role_terminals BEGIN SELECT RAISE(ABORT, 'immutable'); END"""
+            )
+            connection.execute(
+                """CREATE TRIGGER IF NOT EXISTS role_terminals_no_delete
+                   BEFORE DELETE ON role_terminals BEGIN SELECT RAISE(ABORT, 'immutable'); END"""
+            )
 
     def _connection(self, *, write: bool):
         """Pin the exact private database around each short SQLite operation."""
@@ -236,7 +261,11 @@ class ControllerScenarioObservationJournal:
                         try:
                             pinned_regular_file_identity(self.path, expected=self._identity)
                             connection.execute("PRAGMA busy_timeout=5000")
-                            connection.execute("PRAGMA journal_mode=DELETE")
+                            mode = connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+                            if mode != "delete":
+                                raise ScenarioObservationJournalError(
+                                    "observation rollback journal mode is unavailable"
+                                )
                             connection.execute("PRAGMA synchronous=EXTRA")
                             if connection.execute("PRAGMA synchronous").fetchone()[0] != 3:
                                 raise ScenarioObservationJournalError(
@@ -263,7 +292,39 @@ class ControllerScenarioObservationJournal:
     def _verify_private_storage(self) -> None:
         """Do not place raw generated target or shell bytes in a shared path."""
         self._verify_private_path(self.path.parent, directory=True)
+        self._verify_ancestor_chain(self.path.parent)
         self._verify_private_path(self.path, directory=False)
+
+    @staticmethod
+    def _verify_ancestor_chain(root: Path) -> None:
+        if os.name == "nt":
+            return
+        getuid = getattr(os, "geteuid", None)
+        if not callable(getuid):
+            raise ScenarioObservationJournalError("observation owner identity is unavailable")
+        owner = getuid()
+        child = root
+        while True:
+            parent = child.parent
+            try:
+                child_details = child.lstat()
+                parent_details = parent.lstat()
+            except OSError as exc:
+                raise ScenarioObservationJournalError("observation ancestor is unavailable") from exc
+            if (
+                child.is_symlink()
+                or parent.is_symlink()
+                or not stat.S_ISDIR(child_details.st_mode)
+                or not stat.S_ISDIR(parent_details.st_mode)
+                or parent_details.st_uid not in {0, owner}
+            ):
+                raise ScenarioObservationJournalError("observation ancestor is unsafe")
+            if parent_details.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                if not parent_details.st_mode & stat.S_ISVTX or child_details.st_uid != owner:
+                    raise ScenarioObservationJournalError("observation ancestor permits replacement")
+            if parent == child:
+                return
+            child = parent
 
     @staticmethod
     def _verify_private_path(path: Path, *, directory: bool) -> None:
@@ -764,3 +825,100 @@ class ControllerScenarioObservationJournal:
             return row[0], reopened
         except (KeyError, TypeError, ValueError, RecursionError) as exc:
             raise ScenarioObservationJournalError("observation seal is invalid") from exc
+
+    def retain_role_terminal(self, document: Mapping[str, Any]) -> str:
+        """Retain an already verified source-collection terminal receipt.
+
+        This stores owner bytes for crash reopen. It does not independently
+        decide that the worker stopped or that artifact publication settled.
+        """
+        try:
+            checked = json_clone(document)
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ScenarioObservationJournalError("role terminal document is invalid") from exc
+        if not isinstance(checked, dict) or checked.get("schema_version") != SOURCE_TERMINAL_SCHEMA:
+            raise ScenarioObservationJournalError("role terminal schema is unsupported")
+        attempt_id = checked.get("attempt_id")
+        owner_ref = checked.get("owner_ref")
+        source_ref = checked.get("receipt_ref")
+        if (
+            not isinstance(attempt_id, str)
+            or _ATTEMPT.fullmatch(attempt_id) is None
+            or not isinstance(owner_ref, str)
+            or _DIGEST.fullmatch(owner_ref) is None
+            or not isinstance(source_ref, str)
+            or _DIGEST.fullmatch(source_ref) is None
+            or source_ref != content_hash({key: value for key, value in checked.items() if key != "receipt_ref"})
+        ):
+            raise ScenarioObservationJournalError("role terminal identity differs")
+        payload = canonical_json_bytes(checked)
+        if len(payload) > _MAX_RECORD_BYTES:
+            raise ScenarioObservationJournalError("role terminal receipt exceeds its byte bound")
+        with self._connection(write=True) as connection:
+            existing = connection.execute(
+                "SELECT source_receipt_ref, document FROM role_terminals "
+                "WHERE attempt_id=? AND role='source_collection' AND owner_ref=?",
+                (attempt_id, owner_ref),
+            ).fetchone()
+            if existing is None:
+                count, total = connection.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(LENGTH(document)), 0) FROM role_terminals"
+                ).fetchone()
+                if count >= _MAX_RECORDS or total + len(payload) > _MAX_TOTAL_BYTES:
+                    raise ScenarioObservationJournalError("role terminal capacity is exhausted")
+                try:
+                    connection.execute(
+                        "INSERT INTO role_terminals VALUES (?, ?, ?, ?, ?)",
+                        (attempt_id, "source_collection", owner_ref, source_ref, payload),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ScenarioObservationJournalError("role terminal identity was reused") from exc
+            elif existing != (source_ref, payload):
+                raise ScenarioObservationJournalError("role terminal retry differs")
+        if self.reopen_role_terminal(source_ref) != checked:
+            raise ScenarioObservationJournalError("role terminal reopen differs")
+        return source_ref
+
+    def reopen_role_terminal(self, source_receipt_ref: str) -> Mapping[str, Any]:
+        if not isinstance(source_receipt_ref, str) or _DIGEST.fullmatch(source_receipt_ref) is None:
+            raise ScenarioObservationJournalError("role terminal reference is invalid")
+        with self._connection(write=False) as connection:
+            row = connection.execute(
+                "SELECT attempt_id, role, owner_ref, document FROM role_terminals "
+                "WHERE source_receipt_ref=?", (source_receipt_ref,),
+            ).fetchone()
+        if row is None or type(row[3]) is not bytes or len(row[3]) > _MAX_RECORD_BYTES:
+            raise ScenarioObservationJournalError("role terminal receipt is unavailable")
+        try:
+            checked = json.loads(row[3])
+            if (
+                not isinstance(checked, dict)
+                or checked.get("schema_version") != SOURCE_TERMINAL_SCHEMA
+                or checked.get("attempt_id") != row[0]
+                or row[1] != "source_collection"
+                or checked.get("owner_ref") != row[2]
+                or checked.get("receipt_ref") != source_receipt_ref
+                or source_receipt_ref != content_hash({key: value for key, value in checked.items() if key != "receipt_ref"})
+                or canonical_json_bytes(checked) != row[3]
+            ):
+                raise ValueError("role terminal bytes changed")
+            return checked
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ScenarioObservationJournalError("role terminal receipt is invalid") from exc
+
+    def reopen_latest_role_terminal(
+        self, attempt_id: str, role: str, owner_ref: str
+    ) -> Mapping[str, Any] | None:
+        if (
+            not isinstance(attempt_id, str) or _ATTEMPT.fullmatch(attempt_id) is None
+            or role != "source_collection"
+            or not isinstance(owner_ref, str) or _DIGEST.fullmatch(owner_ref) is None
+        ):
+            raise ScenarioObservationJournalError("role terminal owner identity is invalid")
+        with self._connection(write=False) as connection:
+            row = connection.execute(
+                "SELECT source_receipt_ref FROM role_terminals "
+                "WHERE attempt_id=? AND role=? AND owner_ref=?",
+                (attempt_id, role, owner_ref),
+            ).fetchone()
+        return None if row is None else self.reopen_role_terminal(row[0])

@@ -305,7 +305,7 @@ def test_reopened_byte_tampering_refused(tmp_path, monkeypatch):
         journal.reopen(request.digest)
 
 
-def test_seal_rejects_missing_or_reordered_provider_trace(tmp_path, monkeypatch):
+def test_seal_rejects_missing_provider_trace(tmp_path, monkeypatch):
     journal = _journal(tmp_path, monkeypatch)
     request, links, evidence, docs = _case(journal)
     journal.retain(request=request, links=links, evidence=evidence, source_documents=docs)
@@ -313,3 +313,24 @@ def test_seal_rejects_missing_or_reordered_provider_trace(tmp_path, monkeypatch)
         journal.seal_attempt(ATTEMPT, ())
     with pytest.raises(ScenarioObservationJournalError, match="not sealed"):
         journal.reopen_sealed_attempt(ATTEMPT)
+
+
+def test_role_terminal_receipt_reopens_by_exact_owner(tmp_path, monkeypatch):
+    journal = _journal(tmp_path, monkeypatch)
+    document = {
+        "schema_version": "bluefire.installed-strix-v2-source-collection-terminal.v1",
+        "attempt_id": ATTEMPT,
+        "owner_ref": REF,
+        "state": "verified_absent",
+        "evidence_ref": REF,
+    }
+    document["receipt_ref"] = content_hash(document)
+    ref = journal.retain_role_terminal(document)
+    assert ref == document["receipt_ref"]
+    assert journal.reopen_role_terminal(ref) == document
+    assert journal.reopen_latest_role_terminal(ATTEMPT, "source_collection", REF) == document
+    assert journal.reopen_latest_role_terminal(ATTEMPT, "source_collection", "sha256:" + "2" * 64) is None
+    changed = {**document, "state": "verified_settled"}
+    changed["receipt_ref"] = content_hash({key: value for key, value in changed.items() if key != "receipt_ref"})
+    with pytest.raises(ScenarioObservationJournalError, match="retry differs"):
+        journal.retain_role_terminal(changed)
