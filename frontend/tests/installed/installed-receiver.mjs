@@ -216,6 +216,7 @@ let compositionInteractionUi;
 let compositionSettlementCheckpoint = "not_started";
 let retainedInteraction;
 let retainedSettlement;
+let retainedSettlementRead;
 const settingsReadAllowed = createReceiverSettingsReadPolicy();
 let activeOwnerRole = "original";
 const phaseOrders = { original: ["baseline", "protected", "legitimate"], linked: ["protected", "legitimate"] };
@@ -686,7 +687,7 @@ async function appApi(path, requestedTimeout = remainingMs()) {
       headers: { "X-BlueFire-Session": token, Accept: "application/json" },
       signal: AbortSignal.timeout(timeout),
     });
-    if (!response.ok) throw new Error("Owned status read failed");
+    if (!response.ok) throw new Error(`Owned status read failed (${response.status})`);
     return response.json();
   }, { apiPath: path, timeout });
 }
@@ -1928,6 +1929,7 @@ try {
     read: (path, requestedTimeout) => appApi(path, requestedTimeout), remainingMs, setStage: value => { stage = value; },
     onInteraction: value => { retainedInteraction = value; },
     onSettlement: value => { retainedSettlement = value; },
+    onSettlementRead: value => { retainedSettlementRead = value; },
     onRevoked: () => { report.cleanup = { ...(report.cleanup ?? {}), retained_grant_revoked: true }; },
     capture: async (name, options = {}) => {
       assert.ok(connected);
@@ -2293,6 +2295,9 @@ try {
   }
   if (/^retained-(original|continuation)-settlement$/.test(stage) && retainedSettlement) {
     failure.retained_settlement = retainedSettlement;
+  }
+  if (/^retained-(original|continuation)-settlement$/.test(stage) && retainedSettlementRead) {
+    failure.retained_settlement_read = retainedSettlementRead;
   }
   if (stage === "composition-attempt" || stage === "composition-model-proposal-reopen") {
     // A spent journey budget must not delay the cleanup reserve for diagnostics.

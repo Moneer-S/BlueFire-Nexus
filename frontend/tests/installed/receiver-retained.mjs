@@ -59,6 +59,18 @@ export function retainedSettlementDiagnostic(objective, jobId) {
   };
 }
 
+export function retainedReadFailureDiagnostic(error) {
+  const status = /^Owned status read failed \((\d{3})\)$/.exec(error?.message ?? "");
+  const httpStatus = status ? Number(status[1]) : null;
+  return {
+    schema_version: "bluefire.installed-retained-read-diagnostic.v1",
+    outcome: "read_failed",
+    kind: status ? "http" : error?.message === "Session unavailable" ? "session_unavailable"
+      : error?.name === "TimeoutError" ? "timeout" : error?.name === "AbortError" ? "aborted" : "other",
+    http_status: httpStatus && httpStatus >= 400 && httpStatus <= 599 ? httpStatus : null,
+  };
+}
+
 // The rendered action must become ready before a response observer is armed.
 // Both local windows are inside the existing work budget, never its cleanup reserve.
 export async function submitRetainedAttempt(page, options) {
@@ -320,15 +332,33 @@ export async function runRetainedJourney(page, state, options) {
   assert.deepEqual(firstProposal.job.request.context.retained_artifacts.available_sources, []);
   const execute = async index => {
     options.onSettlement?.(undefined);
+    options.onSettlementRead?.(undefined);
     await submitRetainedAttempt(page, { origin, ownerId: state.ownerId, controlId,
       proposalId: state.proposals[index], candidatePresent: Boolean(state.candidate),
       prefix: index === 0 ? "retained-original" : "retained-continuation",
       remainingMs, setStage, onDiagnostic: options.onInteraction,
       captureFailure: capture ? (name, timeout) => capture(name, { failure: true, timeout }) : undefined });
     const id = state.attempts[index];
-    const settlementPollBudget = retainedSettlementPollBudget(remainingMs());
+    let availableWork;
+    try { availableWork = remainingMs(); }
+    catch (error) {
+      options.onSettlementRead?.({ schema_version: "bluefire.installed-retained-read-diagnostic.v1", outcome: "work_deadline_exhausted" });
+      throw error;
+    }
+    const settlementPollBudget = retainedSettlementPollBudget(availableWork);
+    options.onSettlementRead?.({ schema_version: "bluefire.installed-retained-read-diagnostic.v1", outcome: "poll_ready",
+      work_time: availableWork <= 30_000 ? "under_30_seconds" : availableWork <= 120_000 ? "under_120_seconds" : "over_120_seconds" });
     if (settlementPollBudget <= 0) throw new Error("The retained-result proof has no work time left");
-    const current = await wait(readBudget => read(`/composition/objectives/${state.ownerId}`, readBudget), value => {
+    const current = await wait(async readBudget => {
+      try {
+        const value = await read(`/composition/objectives/${state.ownerId}`, readBudget);
+        options.onSettlementRead?.({ schema_version: "bluefire.installed-retained-read-diagnostic.v1", outcome: "read_succeeded" });
+        return value;
+      } catch (error) {
+        options.onSettlementRead?.(retainedReadFailureDiagnostic(error));
+        throw error;
+      }
+    }, value => {
       const attempt = value.attempts.find(item => item.job_id === id);
       const diagnostic = retainedSettlementDiagnostic(value, id);
       options.onSettlement?.(diagnostic);

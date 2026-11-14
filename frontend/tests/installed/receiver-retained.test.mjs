@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { URL } from "node:url";
-import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, retainedSettlementDiagnostic, retainedSettlementPollBudget, submitRetainedAttempt } from "./receiver-retained.mjs";
+import { assertRetainedSavedRunProfile, retainedState, retainedPostAllowed, retainedReadFailureDiagnostic, retainedSettlementDiagnostic, retainedSettlementPollBudget, submitRetainedAttempt } from "./receiver-retained.mjs";
 import { createDeadlineBudget } from "./receiver-deadline.mjs";
 import { retainedHash, assertRetainedSource, assertMetadataOnly, verifyRetainedOriginal, verifyRetainedContinuation, RETAINED_PACK, RETAINED_QUESTION, RETAINED_REVIEWER, RETAINED_METHOD } from "./receiver-retained-proof.mjs";
 
@@ -79,6 +79,16 @@ test("retained settlement diagnostics keep fixed categories and no saved error t
   assert.equal(retainedSettlementDiagnostic(current, ownerId).error_type, "other");
   current.attempts[0].progress.verified_result_problem = "The exact authenticated receiver observation is unavailable.";
   assert.equal(retainedSettlementDiagnostic(current, ownerId).verified_result_problem_kind, "receiver_observation");
+});
+
+test("retained read failure diagnostic exposes only the HTTP status or fixed failure kind", () => {
+  assert.deepEqual(retainedReadFailureDiagnostic(new Error("Owned status read failed (503)")), {
+    schema_version: "bluefire.installed-retained-read-diagnostic.v1", outcome: "read_failed", kind: "http", http_status: 503,
+  });
+  assert.deepEqual(retainedReadFailureDiagnostic(new Error("secret local path")), {
+    schema_version: "bluefire.installed-retained-read-diagnostic.v1", outcome: "read_failed", kind: "other", http_status: null,
+  });
+  assert.equal(JSON.stringify(retainedReadFailureDiagnostic(new Error("secret local path"))).includes("secret"), false);
 });
 
 test("retained submission observes visible enabled action before arming and clicks exactly once", async () => {
