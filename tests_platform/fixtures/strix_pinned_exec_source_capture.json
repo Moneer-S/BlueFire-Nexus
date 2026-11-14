@@ -1,0 +1,181 @@
+{
+  "schema_version": "bluefire.strix-pinned-shell-source-capture.v1",
+  "capture_kind": "source_derived_static_call_chain",
+  "installed_qualification_complete": false,
+  "installed_qualification_requirement": "Repeat both tool-input cases against the genuine pinned Strix wheel and openai-agents 0.19.0 before claiming installed tool conformance.",
+  "sources": [
+    {
+      "repository": "usestrix/strix",
+      "revision": "6b7ae2ebe4d47037a927aade23265ff4e4f27e84",
+      "path": "strix/agents/factory.py",
+      "git_blob": "1b8742ba4ac9e0a9e841cd85313d7376671165cf",
+      "utf8_sha256": "sha256:7b77ddcf7b49e88f91d4129101bdb227a8e46520db0519819a5edb7ccfb43db1",
+      "bytes": 29699,
+      "symbols": [
+        "_apply_shell_output_cap",
+        "_wrap_exec_command"
+      ],
+      "line_ranges": [
+        [
+          435,
+          443
+        ],
+        [
+          483,
+          514
+        ]
+      ],
+      "url": "https://github.com/usestrix/strix/blob/6b7ae2ebe4d47037a927aade23265ff4e4f27e84/strix/agents/factory.py"
+    },
+    {
+      "repository": "openai/openai-agents-python",
+      "revision": "a2d82707d94bfcf2ffbcc62ea9746c5fb183804f",
+      "path": "src/agents/sandbox/capabilities/tools/shell_tool.py",
+      "git_blob": "8da9eddccf55116c8a299b855b106c90f07e0563",
+      "utf8_sha256": "sha256:6c82f099f18c7f46a0c4bbda0fbe8102b31c07c87f1ecb6a82560ef034d85479",
+      "bytes": 12013,
+      "symbols": [
+        "_resolve_shell",
+        "_run_one_shot_exec",
+        "ExecCommandArgs",
+        "ExecCommandTool._invoke",
+        "ExecCommandTool.run"
+      ],
+      "line_ranges": [
+        [
+          70,
+          134
+        ],
+        [
+          181,
+          246
+        ]
+      ],
+      "url": "https://github.com/openai/openai-agents-python/blob/a2d82707d94bfcf2ffbcc62ea9746c5fb183804f/src/agents/sandbox/capabilities/tools/shell_tool.py",
+      "release_tag": "v0.19.0"
+    },
+    {
+      "repository": "openai/openai-agents-python",
+      "revision": "a2d82707d94bfcf2ffbcc62ea9746c5fb183804f",
+      "path": "src/agents/sandbox/session/base_sandbox_session.py",
+      "git_blob": "ab22940734a681180da276fc8df32b2b41604bb0",
+      "utf8_sha256": "sha256:805c7fe495c39c4b3efc59c28f998fdf4ffec12b814108be1ccb26796b43916c",
+      "bytes": 49126,
+      "symbols": [
+        "BaseSandboxSession.exec",
+        "BaseSandboxSession._prepare_exec_command"
+      ],
+      "line_ranges": [
+        [
+          573,
+          595
+        ],
+        [
+          609,
+          636
+        ]
+      ],
+      "url": "https://github.com/openai/openai-agents-python/blob/a2d82707d94bfcf2ffbcc62ea9746c5fb183804f/src/agents/sandbox/session/base_sandbox_session.py",
+      "release_tag": "v0.19.0"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "default_login",
+      "tool_input": {
+        "cmd": "printf '%s\\n' first\nprintf '%s\\n' second",
+        "yield_time_ms": 5000,
+        "max_output_tokens": 128
+      },
+      "strix_context": {
+        "tool_output_max_tokens": 1024
+      },
+      "wrapper_output": {
+        "cmd": "printf '%s\\n' first\nprintf '%s\\n' second",
+        "yield_time_ms": 5000,
+        "max_output_tokens": 128,
+        "shell": "bash"
+      },
+      "sdk_validated_args": {
+        "cmd": "printf '%s\\n' first\nprintf '%s\\n' second",
+        "yield_time_ms": 5000,
+        "max_output_tokens": 128,
+        "shell": "bash",
+        "login": true,
+        "workdir": null,
+        "tty": false
+      },
+      "session_supports_pty": false,
+      "session_exec": {
+        "command": "printf '%s\\n' first\nprintf '%s\\n' second",
+        "timeout_seconds": 5,
+        "shell": [
+          "bash",
+          "-lc"
+        ],
+        "user": null
+      },
+      "controlled_exec": {
+        "argv": [
+          "bash",
+          "-lc",
+          "printf '%s\\n' first\nprintf '%s\\n' second"
+        ],
+        "timeout_seconds": 5,
+        "working_directory": "/workspace",
+        "stdin_mode": "disabled",
+        "pty": false
+      }
+    },
+    {
+      "case_id": "explicit_non_login",
+      "tool_input": {
+        "cmd": "printf '%s\\n' first\nprintf '%s\\n' second",
+        "yield_time_ms": 5000,
+        "max_output_tokens": 128,
+        "login": false
+      },
+      "strix_context": {
+        "tool_output_max_tokens": 1024
+      },
+      "wrapper_output": {
+        "cmd": "printf '%s\\n' first\nprintf '%s\\n' second",
+        "yield_time_ms": 5000,
+        "max_output_tokens": 128,
+        "login": false,
+        "shell": "bash"
+      },
+      "sdk_validated_args": {
+        "cmd": "printf '%s\\n' first\nprintf '%s\\n' second",
+        "yield_time_ms": 5000,
+        "max_output_tokens": 128,
+        "login": false,
+        "shell": "bash",
+        "workdir": null,
+        "tty": false
+      },
+      "session_supports_pty": false,
+      "session_exec": {
+        "command": "printf '%s\\n' first\nprintf '%s\\n' second",
+        "timeout_seconds": 5,
+        "shell": [
+          "bash",
+          "-c"
+        ],
+        "user": null
+      },
+      "controlled_exec": {
+        "argv": [
+          "bash",
+          "-c",
+          "printf '%s\\n' first\nprintf '%s\\n' second"
+        ],
+        "timeout_seconds": 5,
+        "working_directory": "/workspace",
+        "stdin_mode": "disabled",
+        "pty": false
+      }
+    }
+  ],
+  "capture_limitations": "Transformation outputs are derived by review of the pinned sources, not observed execution of an installed SDK or Strix wheel."
+}

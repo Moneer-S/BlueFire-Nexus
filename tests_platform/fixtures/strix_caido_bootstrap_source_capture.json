@@ -1,0 +1,51 @@
+{
+  "schema_version": "bluefire.strix-caido-bootstrap-source-capture.v1",
+  "capture_kind": "source_derived_session_call",
+  "installed_qualification_complete": false,
+  "source": {
+    "repository": "usestrix/strix",
+    "revision": "6b7ae2ebe4d47037a927aade23265ff4e4f27e84",
+    "path": "strix/runtime/caido_bootstrap.py",
+    "url": "https://github.com/usestrix/strix/blob/6b7ae2ebe4d47037a927aade23265ff4e4f27e84/strix/runtime/caido_bootstrap.py",
+    "git_blob": "a9c7c82aef87e0109e87b2d8dc02af5fb37731af",
+    "utf8_sha256": "sha256:f493e3a7c9219e52520d2fadfd8dde78782e17440056f98aa068b146a0e788af",
+    "bytes": 3976,
+    "symbol": "_login_as_guest",
+    "line_range": [
+      32,
+      78
+    ]
+  },
+  "source_session_exec": {
+    "argv": [
+      "curl",
+      "-fsS",
+      "-X",
+      "POST",
+      "-H",
+      "Content-Type: application/json",
+      "-d",
+      "{\"query\":\"mutation LoginAsGuest { loginAsGuest { token { accessToken } } }\"}",
+      "http://127.0.0.1:48080/graphql"
+    ],
+    "timeout_seconds": 15,
+    "attempts": 10
+  },
+  "controller_derivation": "SDK default shell=True joins the source API argv into sh -lc. No direct curl admission is introduced.",
+  "sdk_source": {
+    "revision": "a2d82707d94bfcf2ffbcc62ea9746c5fb183804f",
+    "release_tag": "v0.19.0",
+    "path": "src/agents/sandbox/session/base_sandbox_session.py",
+    "git_blob": "ab22940734a681180da276fc8df32b2b41604bb0",
+    "utf8_sha256": "sha256:805c7fe495c39c4b3efc59c28f998fdf4ffec12b814108be1ccb26796b43916c",
+    "bytes": 49126
+  },
+  "sdk_prepared_exec": {
+    "argv": [
+      "sh",
+      "-lc",
+      "curl -fsS -X POST -H 'Content-Type: application/json' -d '{\"query\":\"mutation LoginAsGuest { loginAsGuest { token { accessToken } } }\"}' http://127.0.0.1:48080/graphql"
+    ],
+    "timeout_seconds": 15
+  }
+}
