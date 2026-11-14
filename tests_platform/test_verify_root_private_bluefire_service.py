@@ -18,6 +18,21 @@ _SPEC.loader.exec_module(gate)
 
 
 class PrivatePathTests(unittest.TestCase):
+    def test_staged_wheel_preserves_pip_filename_and_exact_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staged = root / "staged"
+            staged.mkdir()
+            wheel = staged / "bluefire_nexus-3.0.0rc2-py3-none-any.whl"
+            wheel.write_bytes(b"fixture")
+            with mock.patch.object(gate, "_secure_path") as secure:
+                self.assertEqual(gate._staged_wheel(root), wheel)
+            secure.assert_called_once_with(staged, kind="directory", exact_mode=0o700)
+            (staged / "extra").write_bytes(b"fixture")
+            with mock.patch.object(gate, "_secure_path"):
+                with self.assertRaisesRegex(gate.VerificationError, "staged_wheel_invalid"):
+                    gate._staged_wheel(root)
+
     def test_root_is_an_exact_child_of_root_with_bounded_name(self) -> None:
         self.assertEqual(
             str(gate._private_root("/root/bluefire-ci-12345-2")),

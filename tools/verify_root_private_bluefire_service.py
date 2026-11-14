@@ -24,6 +24,10 @@ from typing import Any, Mapping, Sequence
 _ROOT = re.compile(r"/root/bluefire-ci-[a-z0-9][a-z0-9-]{0,79}\Z")
 _REVISION = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_WHEEL_FILENAME = re.compile(
+    r"bluefire_nexus-[A-Za-z0-9_.!+]+(?:-[0-9][A-Za-z0-9_.]*)?"
+    r"-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+\.whl\Z"
+)
 _MAX_TREE_ENTRIES = 4096
 _MAX_WHEEL_BYTES = 128 * 1024 * 1024
 
@@ -46,6 +50,15 @@ def _private_root(value: str) -> Path:
     if _ROOT.fullmatch(value) is None:
         raise VerificationError("private_root_invalid")
     return path
+
+
+def _staged_wheel(root: Path) -> Path:
+    staged = root / "staged"
+    _secure_path(staged, kind="directory", exact_mode=0o700)
+    names = list(staged.iterdir())
+    if len(names) != 1 or _WHEEL_FILENAME.fullmatch(names[0].name) is None:
+        raise VerificationError("staged_wheel_invalid")
+    return names[0]
 
 
 def _secure_path(path: Path, *, kind: str, exact_mode: int | None = None) -> os.stat_result:
@@ -201,7 +214,7 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
     _secure_path(root, kind="directory", exact_mode=0o700)
     script = root / "verify_root_private_bluefire_service.py"
     helper_path = root / "verify_installed_engine_experiment.py"
-    wheel = root / "candidate.whl"
+    wheel = _staged_wheel(root)
     venv = root / "venv"
     if Path(__file__) != script or Path(sys.prefix) != venv:
         raise VerificationError("installed_process_identity_invalid")
