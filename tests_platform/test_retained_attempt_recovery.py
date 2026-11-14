@@ -1127,6 +1127,43 @@ def test_zero_progress_cleanup_has_finite_generation_cap(saved, tmp_path, monkey
     assert not recovery.same_survivor_retry_ready(store, lease["attempt_id"], survivors, clock[0])
 
 
+def test_slow_zero_progress_cleanup_waits_for_next_recovery_pass(saved, tmp_path, monkeypatch):
+    store, lease, _, selected, profile, manifest, task_id, transport_hash, _ = _effect_bound(
+        saved, tmp_path
+    )
+    wal = _NoProgressRecoveryWal(manifest, profile, first_status="partial")
+    wal.remember(manifest, profile, task_id, transport_hash)
+    clock = [int(datetime.now(timezone.utc).timestamp() * 1000)]
+    _bind_manifest_clock(monkeypatch, clock)
+    execute = wal.execute_task
+
+    def slow_first_cleanup(*args, **kwargs):
+        result = execute(*args, **kwargs)
+        if wal.execute_actions.count("sandbox.cleanup.v1") == 1:
+            clock[0] += 60_000
+        return result
+
+    wal.execute_task = slow_first_cleanup
+    monkeypatch.setattr(runtime, "_runner", lambda *_args, **_kwargs: (wal, wal, selected))
+    monkeypatch.setattr(
+        runtime,
+        "close_exact_receiver",
+        lambda process_id, creation_identity: {
+            "schema_version": "bluefire.receiver-closure-proof.v1",
+            "process_id": process_id,
+            "creation_identity": creation_identity,
+            "session_member_count": 0,
+            "verified_closed": True,
+        },
+    )
+    jobs = _recovery_jobs(store, tmp_path / "runs", saved[1]["registry"], selected)
+    jobs.clock = lambda: clock[0]
+    assert runtime.recover_one(jobs, lease["attempt_id"]) == "pending"
+    assert wal.execute_actions == ["sandbox.cleanup.v1"]
+    assert runtime.recover_one(jobs, lease["attempt_id"]) == "settled"
+    assert wal.execute_actions == ["sandbox.cleanup.v1", "sandbox.cleanup.v1"]
+
+
 def test_partial_cleanup_without_exact_verified_ids_stays_pending(saved, tmp_path, monkeypatch):
     store, lease, _, selected, profile, manifest, task_id, transport_hash, _ = _effect_bound(
         saved, tmp_path

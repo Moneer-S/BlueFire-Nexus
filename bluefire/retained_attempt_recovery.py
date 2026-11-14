@@ -604,7 +604,7 @@ def recover_one(jobs, attempt_id, *, stop_event=None):
         if stop_event is not None and stop_event.is_set():
             return "pending"
         raw_execute, wrapped_execute, profile = _runner(jobs, workspace, execution=True)
-        _claim_and_dispatch_cleanup(
+        terminal = _claim_and_dispatch_cleanup(
             jobs,
             snapshot,
             raw_execute,
@@ -614,6 +614,10 @@ def recover_one(jobs, attempt_id, *, stop_event=None):
             workspace_id,
             stop_event=stop_event,
         )
+        if terminal is not None and terminal["remaining_receipts"] == receipts:
+            # Even if a slow native task outlasted the persisted backoff,
+            # retry its unchanged survivor set on a later recovery pass.
+            return "pending"
     else:
         return "pending"
     if stop_event is not None and stop_event.is_set():
