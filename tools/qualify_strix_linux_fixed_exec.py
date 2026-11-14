@@ -19,11 +19,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from bluefire.strix_linux_native_endpoint_cleanup import NativeGuestEndpointCleanupOwner
+
 from bluefire.strix_linux_fixed_exec import (
     FixedExecExpectedBindings,
     StrixLinuxFixedExecReceipt,
 )
-from bluefire.strix_linux_native_endpoint_cleanup import NativeGuestEndpointCleanupOwner
 from bluefire.strix_linux_native_launch_material import prepare_native_launch
 from bluefire.strix_linux_native_worker import (
     InstalledStrixLinuxWorkerController,
