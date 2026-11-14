@@ -265,6 +265,7 @@ def test_historical_reopen_requires_deterministic_exact_cleanup_roles():
 
         def reopen():
             result = original_reopen()
+            assert result.cleanup_owner is not None
             rows = tuple(
                 replace(
                     row,
@@ -287,10 +288,10 @@ def test_historical_reopen_requires_deterministic_exact_cleanup_roles():
                     role_bindings=tuple((row.role, row.binding_ref) for row in rows),
                 ),
                 _TestCleanupOwner(
-                    attempt_ref=arguments["snapshot"].identity.binding_digest,
-                    activation_ref=arguments["snapshot"].identity.claim_ref,
-                    runtime_activation_ref=arguments["snapshot"].identity.runtime_activation_ref,
-                    runtime_resolution_ref=arguments["snapshot"].identity.runtime_resolution_ref,
+                    attempt_ref=result.cleanup_owner.attempt_ref,
+                    activation_ref=result.cleanup_owner.activation_ref,
+                    runtime_activation_ref=result.cleanup_owner.runtime_activation_ref,
+                    runtime_resolution_ref=result.cleanup_owner.runtime_resolution_ref,
                     resources=rows,
                 ),
             )
