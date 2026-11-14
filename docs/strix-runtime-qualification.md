@@ -90,6 +90,11 @@ compared across jobs. A missing binary wheel, extra
 distribution, hash drift, source distribution, link, special file, ambiguous name, oversized
 closure, or prompt/startup/entry-point mismatch fails closed.
 
+The pinned fastuuid 0.14.0 Linux wheel publishes its two platform aliases in one dotted `WHEEL`
+`Tag` line. The wheelhouse inspector accepts a single well-formed compressed platform line only
+when expanding it gives exactly the filename's compatibility tags. Its receipt records that form;
+missing or additional tags still fail, and the wheel remains bound by its published SHA-256.
+
 This establishes a one-platform offline installation closure only. It is not proof of artifact
 reproducibility, safe runtime behavior, containment, or effectiveness.
 

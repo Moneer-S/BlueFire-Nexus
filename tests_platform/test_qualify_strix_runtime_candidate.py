@@ -482,6 +482,64 @@ def test_wheel_inspection_expands_compressed_filename_tags(tmp_path: Path) -> No
         archive.writestr("demo-1.0.dist-info/RECORD", "")
     receipt = qualification._inspect_wheel(wheel)
     assert receipt["tags"] == ["py2.py3", "none", "any"]
+    assert receipt["tag_metadata_form"] == "expanded"
+
+
+@pytest.mark.parametrize(
+    ("tag_lines", "accepted_form"),
+    [
+        (
+            "Tag: cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64\n",
+            "compressed-platform-equivalent",
+        ),
+        (
+            "Tag: cp312-cp312-manylinux_2_17_x86_64\nTag: cp312-cp312-manylinux2014_x86_64\n",
+            "expanded",
+        ),
+        ("Tag: cp312-cp312-manylinux_2_17_x86_64\n", None),
+        (
+            "Tag: cp312-cp312-manylinux_2_17_x86_64.manylinux2010_x86_64\n",
+            None,
+        ),
+        (
+            "Tag: cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64\nTag: py3-none-any\n",
+            None,
+        ),
+        (
+            "Tag: cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64\n"
+            "Tag: cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64\n",
+            None,
+        ),
+        (
+            "Tag: cp312.py3-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64\n",
+            None,
+        ),
+    ],
+)
+def test_wheel_inspection_accepts_only_equivalent_compressed_platform_tags(
+    tmp_path: Path, tag_lines: str, accepted_form: str | None
+) -> None:
+    wheel = tmp_path / "fastuuid-0.14.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    with zipfile.ZipFile(wheel, "x") as archive:
+        archive.writestr(
+            "fastuuid-0.14.0.dist-info/METADATA",
+            "Metadata-Version: 2.4\nName: fastuuid\nVersion: 0.14.0\n\n",
+        )
+        archive.writestr(
+            "fastuuid-0.14.0.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: false\n" + tag_lines,
+        )
+    if accepted_form is None:
+        with pytest.raises(qualification.StrixRuntimeQualificationError, match="tags disagree"):
+            qualification._inspect_wheel(wheel)
+    else:
+        receipt = qualification._inspect_wheel(wheel)
+        assert receipt["tag_metadata_form"] == accepted_form
+        assert receipt["tags"] == [
+            "cp312",
+            "cp312",
+            "manylinux_2_17_x86_64.manylinux2014_x86_64",
+        ]
 
 
 def test_wheel_tag_mismatch_reports_bounded_public_identity_without_accepting_it(

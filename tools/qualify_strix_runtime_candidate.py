@@ -127,6 +127,7 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$")
 _SAFE_WHEEL_BASENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,249}\.whl$")
+_SAFE_TAG_COMPONENT = re.compile(r"^[a-z0-9_]{1,80}$")
 _REQUIREMENT = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,.-]+\])?==[^\s;\\]+"
     r"(?:\s*;\s*[^\\]+)?(?:\s+--hash=sha256:[0-9a-f]{64})+$"
@@ -667,6 +668,25 @@ def _safe_zip_member(name: str) -> PurePosixPath:
     return value
 
 
+def _expand_single_compressed_platform_tag(value: str) -> set[str] | None:
+    """Decode one dotted WHEEL platform field without changing its compatibility set."""
+
+    if len(value) > 240:
+        return None
+    pieces = value.split("-")
+    if len(pieces) != 3:
+        return None
+    python_tag, abi_tag, platform_field = pieces
+    platforms = platform_field.split(".")
+    if len(platforms) < 2 or len(platforms) > 8:
+        return None
+    if not all(
+        _SAFE_TAG_COMPONENT.fullmatch(component) for component in (python_tag, abi_tag, *platforms)
+    ):
+        return None
+    return {f"{python_tag}-{abi_tag}-{platform_tag}" for platform_tag in platforms}
+
+
 def _inspect_wheel(path: Path) -> dict[str, Any]:
     payload = _read_regular(path, MAX_DOWNLOAD_BYTES)
     try:
@@ -733,8 +753,15 @@ def _inspect_wheel(path: Path) -> dict[str, Any]:
         for platform_tag in pieces[-1].split(".")
     }
     wheel_metadata = BytesParser(policy=email_policy).parsebytes(wheel_payload)
-    declared_tags = set(wheel_metadata.get_all("Tag", []))
-    if declared_tags != expected_tags:
+    raw_declared_tags = wheel_metadata.get_all("Tag", [])
+    declared_tags = set(raw_declared_tags)
+    tag_metadata_form = "expanded"
+    if declared_tags != expected_tags and (
+        len(raw_declared_tags) == 1
+        and _expand_single_compressed_platform_tag(raw_declared_tags[0]) == expected_tags
+    ):
+        tag_metadata_form = "compressed-platform-equivalent"
+    elif declared_tags != expected_tags:
         filename = path.name if _SAFE_WHEEL_BASENAME.fullmatch(path.name) else "unreportable"
         filename_only = expected_tags - declared_tags
         declared_only = declared_tags - expected_tags
@@ -752,6 +779,7 @@ def _inspect_wheel(path: Path) -> dict[str, Any]:
         "normalized_name": _canonical_name(name),
         "version": version,
         "tags": pieces[-3:],
+        "tag_metadata_form": tag_metadata_form,
     }
 
 
