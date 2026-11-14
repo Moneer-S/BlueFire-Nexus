@@ -245,6 +245,7 @@ def test_criterion_rejects_duplicate_or_unbound_records():
         "http://tenant-record.test:8080",
         "https://bf-target-111111111111:8080",
         "http://bf-target-111111111111:8080/path",
+        _origin(BASELINE_ATTEMPT) + "/",
         "http://user@bf-target-111111111111:8080",
         "http://bf-target-111111111111:0",
     ),

@@ -347,7 +347,7 @@ def _target_origin(value: object, attempt_id: str) -> str:
     if port != 8080:
         raise TenantRecordExperimentFixtureError("target origin port is invalid")
     normalized = f"http://{host.lower()}:8080"
-    if value.rstrip("/") != normalized:
+    if value != normalized:
         raise TenantRecordExperimentFixtureError("target origin is not canonical")
     return normalized
 
