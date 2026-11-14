@@ -6,6 +6,13 @@
     "existing_file": 1500,
     "exceptions": [
       {
+        "path": "bluefire/engine_exec_operation_supervisor.py",
+        "max_lines": 1080,
+        "reason": "The V2 exec owner keeps lease, deadline, verified terminal, and recovery validation in one controller boundary; the external process, Docker grammar, and journal are separate modules. This cap covers read-only close receipt custody without changing dispatch authority.",
+        "reviewed_by": "BlueFire exec integration owner (Codex), 2026-11-13",
+        "expires_after": "2027-03-31 or BlueFire Nexus v3.1.0, whichever comes first"
+      },
+      {
         "path": "bluefire/linux_exec_lifetime_supervisor_process.py",
         "max_lines": 1750,
         "reason": "The fixed Linux exec broker and per-operation guardian share one authenticated wire protocol and exact Docker cleanup path; their durable journal, controller client, and Docker cleanup grammar remain separate modules. This cap covers the reviewed crash-survival correction without adding general Docker authority.",

@@ -520,6 +520,13 @@ def test_close_stops_every_active_operation_before_backend_close(monkeypatch) ->
     owner, backend = _open()
     _live(owner)
     owner.close()
+    receipts = owner.close_terminal_receipts
+    assert len(receipts) == 1
+    assert type(receipts[0]) is ExecLifetimeTerminalReceiptV2
+    assert receipts[0].request_ref == _request().request_ref
+    assert receipts[0].outcome == "verified_absent"
+    assert receipts[0].container_absent is True
+    assert owner.close_terminal_receipts == receipts
     assert [event[0] for event in backend.events][-2:] == [
         "terminate:controller_close",
         "close",
@@ -535,6 +542,7 @@ def test_close_failure_is_sticky_and_never_publishes_clean_cleanup(monkeypatch) 
     backend.fail_terminate = True
     with pytest.raises(EngineExecOperationSupervisorError, match="cleanup is unverified"):
         owner.close()
+    assert owner.close_terminal_receipts == ()
     assert [event[0] for event in backend.events][-1] == "detach"
     assert owner.cleanup_uncertain is True
     with pytest.raises(EngineExecOperationSupervisorError, match="remains uncertain"):

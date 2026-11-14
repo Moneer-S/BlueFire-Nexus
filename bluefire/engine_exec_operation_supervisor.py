@@ -495,6 +495,7 @@ class ControllerOwnedExecOperationCustodyV2:
         self._lock = threading.RLock()
         self._active: dict[str, _ActiveOperation] = {}
         self._recovered_terminal_receipts: tuple[ExecLifetimeTerminalReceiptV2, ...] = ()
+        self._close_terminal_receipts: tuple[ExecLifetimeTerminalReceiptV2, ...] = ()
         self._closed = False
         self._cleanup_uncertain = False
         self._validate_activation(expected_action, recovery)
@@ -579,6 +580,16 @@ class ControllerOwnedExecOperationCustodyV2:
         """Durable no-launch outcomes recovered from the external supervisor."""
         with self._lock:
             return self._recovered_terminal_receipts
+
+    @property
+    def close_terminal_receipts(self) -> tuple[ExecLifetimeTerminalReceiptV2, ...]:
+        """Verified absence receipts produced while closing active operations.
+
+        A failed close may retain a verified subset. Callers must still treat
+        ``cleanup_uncertain`` as authoritative for the remaining operations.
+        """
+        with self._lock:
+            return self._close_terminal_receipts
 
     @property
     def cleanup_uncertain(self) -> bool:
@@ -857,6 +868,7 @@ class ControllerOwnedExecOperationCustodyV2:
                         active.request, reason="controller_close"
                     )
                     self._validate_terminal(active, receipt, require_absent=True)
+                    self._close_terminal_receipts += (receipt,)
                     self._active.pop(operation_id, None)
                 except Exception as exc:
                     failures.append(exc)
