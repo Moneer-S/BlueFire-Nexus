@@ -16,6 +16,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/strix-test-sandbox-image.yml"
+BUILD_REQUIREMENTS = ROOT / "tools/hosted_service_wheel_build_requirements.txt"
 APPROVED_ACTIONS = {
     "Checkout exact BlueFire revision without retained credentials": {
         "uses": "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
@@ -86,7 +87,7 @@ APPROVED_RUN_SHA256 = {
         "ab54a8015eafb51b42820c78fe448dbcb799f0330a75d569b918c970bcb553b8"
     ),
     "Require the exact private qualification implementation": (
-        "d5365e3b903cdc184ac11a1ff3668b5a93db380c13f9dd54c21e4a94b16fbe68"
+        "67606d8ee2f3ff35413c30d12ff7da6306f6ef72ead99f54011073f0b8c6fbd5"
     ),
     "Rebuild the provenance-bound Strix candidate": (
         "852989e7371d5748e9626fe7205e51d6dab9a956a0a870e0626b662b89162867"
@@ -134,7 +135,7 @@ APPROVED_RUN_SHA256 = {
         "c070575eb121e2beadc87f146eb1fc28c512eae76c128f1513d4dc0a5b052ef5"
     ),
     "Build the packaged Linux service from the archived source": (
-        "296dc9c59012a845b9786077a5829e72f1a2b82dae24138780fb5453e1bfd050"
+        "3d239540d67731f8fa6cf23dde9d5ae0ed3b93149a2edf6de9e0fe33da880d87"
     ),
     "Bind the exact packaged service wheel": (
         "dff1a3575d8a0c3f0ad97e8d76708c3655081de9b71aaccdecbc6b2fa5b8027a"
@@ -299,6 +300,7 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
         "tools/qualify_strix_linux_fixed_exec.py",
         "tools/build_native_runner.py",
         "tools/prepare_root_private_service_wheelhouse.py",
+        "tools/hosted_service_wheel_build_requirements.txt",
         "tools/install_root_private_bluefire_service.py",
         "tools/verify_root_private_bluefire_service.py",
         "tools/verify_installed_engine_experiment.py",
@@ -497,14 +499,20 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
     package = _step(workflow, "Build the packaged Linux service from the archived source")
     for required in (
         'source="$RUNNER_TEMP/bluefire-product-source"',
+        "test -f tools/hosted_service_wheel_build_requirements.txt",
+        "python -m pip --isolated install --disable-pip-version-check",
+        "--no-cache-dir --only-binary=:all: --no-deps --require-hashes",
+        "-r tools/hosted_service_wheel_build_requirements.txt",
         "steps.native_runner.outputs.path",
         "steps.native_runner.outputs.digest",
         "python tools/stage_native_runner.py",
-        "python -m build --wheel",
+        "python -m build --wheel --no-isolation",
         "python tools/verify_packaged_runner.py inspect",
         "--wheel-platform-tag linux_x86_64",
     ):
         assert required in package["run"]
+    assert "--upgrade pip" not in package["run"]
+    assert "'build>=1.2.2,<2'" not in package["run"]
 
     product = _step(workflow, "Bind the exact packaged service wheel")
     assert product["id"] == "product"
@@ -800,6 +808,33 @@ def _assert_private_workflow(workflow: dict[str, Any]) -> None:
 
 def test_workflow_is_same_job_private_qualification() -> None:
     _assert_private_workflow(_load())
+
+
+def test_hosted_service_build_toolchain_has_only_exact_hashed_wheels() -> None:
+    lines = [
+        line
+        for line in BUILD_REQUIREMENTS.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert len(lines) == 12
+    pairs = ["\n".join(lines[index : index + 2]) for index in range(0, len(lines), 2)]
+    matches = [
+        re.fullmatch(
+            r"([a-z][a-z0-9-]*)==([0-9]+(?:\.[0-9]+)+) \\\n"
+            r"    --hash=sha256:([0-9a-f]{64})",
+            pair,
+        )
+        for pair in pairs
+    ]
+    assert all(match is not None for match in matches)
+    assert {match.group(1): match.group(2) for match in matches if match is not None} == {
+        "pip": "25.3",
+        "setuptools": "84.1.0",
+        "wheel": "0.46.3",
+        "packaging": "26.2",
+        "build": "1.3.0",
+        "pyproject-hooks": "1.2.0",
+    }
 
 
 @pytest.mark.parametrize(

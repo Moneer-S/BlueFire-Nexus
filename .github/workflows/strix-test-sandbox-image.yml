@@ -79,6 +79,7 @@ jobs:
           test -f tools/qualify_strix_linux_fixed_exec.py
           test -f tools/build_native_runner.py
           test -f tools/prepare_root_private_service_wheelhouse.py
+          test -f tools/hosted_service_wheel_build_requirements.txt
           test -f tools/install_root_private_bluefire_service.py
           test -f tools/verify_root_private_bluefire_service.py
           test -f tools/verify_installed_engine_experiment.py
@@ -842,15 +843,17 @@ jobs:
           set -euo pipefail
           source="$RUNNER_TEMP/bluefire-product-source"
           cd "$source"
-          python -m pip install --disable-pip-version-check --upgrade pip
-          python -m pip install --disable-pip-version-check 'build>=1.2.2,<2'
+          test -f tools/hosted_service_wheel_build_requirements.txt
+          python -m pip --isolated install --disable-pip-version-check \
+            --no-cache-dir --only-binary=:all: --no-deps --require-hashes \
+            -r tools/hosted_service_wheel_build_requirements.txt
           test "sha256:$(sha256sum "${{ steps.native_runner.outputs.path }}" | cut -d ' ' -f 1)" = \
             "${{ steps.native_runner.outputs.digest }}"
           python tools/stage_native_runner.py \
             --runner "${{ steps.native_runner.outputs.path }}" \
             --output-root "$source/bluefire/native" \
             --platform linux --architecture x86_64
-          python -m build --wheel
+          python -m build --wheel --no-isolation
           python tools/verify_packaged_runner.py inspect \
             --wheel-dir dist --platform linux --architecture x86_64 \
             --wheel-platform-tag linux_x86_64 \
