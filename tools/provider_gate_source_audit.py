@@ -1212,6 +1212,38 @@ def _runner_lifecycle_popen_contract(path: Path) -> bool:
     )
 
 
+def _service_default_runner_lifecycle_contract(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+    services = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BlueFireService"
+    ]
+    if len(services) != 1:
+        return False
+    constructors = [
+        node
+        for node in services[0].body
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+    ]
+    if len(constructors) != 1:
+        return False
+    assignments = [
+        node
+        for node in ast.walk(constructors[0])
+        if isinstance(node, ast.Assign)
+        and any(_ast_qualified_name(target) == "self.runner_lifecycle" for target in node.targets)
+    ]
+    return (
+        len(assignments) == 1
+        and len(assignments[0].targets) == 1
+        and _expression_matches(
+            assignments[0].value,
+            "runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())",
+        )
+    )
+
+
 def _runner_darwin_popen_contract(path: Path) -> bool:
     """Lock both Darwin factory launches to their verified helper grammars."""
 
@@ -1617,7 +1649,6 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
     bootstrap_text = texts["bluefire/runner_bootstrap.py"]
     lifecycle_text = texts["bluefire/runner_lifecycle.py"]
     trust_text = texts["bluefire/runner_trust.py"]
-    service_text = (repository / "bluefire" / "service.py").read_text(encoding="utf-8")
     host_text = (repository / "bluefire" / "runner_host.py").read_text(encoding="utf-8")
     process_source = (repository / "runner" / "src" / "process.rs").read_bytes()
     checks = {
@@ -1659,7 +1690,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
                 "process = subprocess.Popen(command, shell=False, **options)",
             )
         )
-        and "ManagedRunnerLifecycle(managed_product_root())" in service_text
+        and _service_default_runner_lifecycle_contract(repository / "bluefire" / "service.py")
         and all(
             token in host_text
             for token in (
