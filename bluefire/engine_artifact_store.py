@@ -1919,7 +1919,9 @@ class EngineArtifactStore:
             encoded_name,
             len(encoded_name),
         )
-        rename_file = ctypes.WinDLL("kernel32", use_last_error=True).SetFileInformationByHandle
+        rename_file = ctypes.WinDLL(  # type: ignore[attr-defined]
+            "kernel32", use_last_error=True
+        ).SetFileInformationByHandle
         rename_file.argtypes = (
             wintypes.HANDLE,
             ctypes.c_int,
@@ -1928,12 +1930,12 @@ class EngineArtifactStore:
         )
         rename_file.restype = wintypes.BOOL
         if not rename_file(
-            wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
+            wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),  # type: ignore[attr-defined]
             3,  # FileRenameInfo
             rename_buffer,
             len(rename_buffer),
         ):
-            error = ctypes.get_last_error()
+            error = ctypes.get_last_error()  # type: ignore[attr-defined]
             if error in {80, 183}:
                 raise FileExistsError(error, "artifact publication target exists")
             raise OSError(error, "artifact publication rename failed")

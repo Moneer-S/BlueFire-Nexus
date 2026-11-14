@@ -1268,8 +1268,12 @@ def _peek_exit_code(process: subprocess.Popen[bytes]) -> int | None:
     exited = getattr(os, "WEXITED", None)
     nohang = getattr(os, "WNOHANG", None)
     nowait = getattr(os, "WNOWAIT", None)
-    if not callable(waitid) or not all(
-        isinstance(value, int) for value in (pid_kind, exited, nohang, nowait)
+    if (
+        not callable(waitid)
+        or not isinstance(pid_kind, int)
+        or not isinstance(exited, int)
+        or not isinstance(nohang, int)
+        or not isinstance(nowait, int)
     ):
         # Without a non-reaping observation primitive, do not infer natural
         # completion. The wall/cancel path can still stop the owned group.
