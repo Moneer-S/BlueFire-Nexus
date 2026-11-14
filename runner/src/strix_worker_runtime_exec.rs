@@ -54,6 +54,8 @@ const BASIS_READY: &[u8] = b"B";
 const ARMED_SCHEMA: &str = "bluefire.strix-fixed-exec-armed.v1";
 const OBSERVATION_BASIS_SCHEMA: &str = "bluefire.strix-fixed-exec-observation-basis.v1";
 const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;
+const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
+const CGROUP2_SUPER_MAGIC: libc::c_long = 0x6367_7270;
 
 #[repr(C)]
 struct CloneArgs {
@@ -336,6 +338,170 @@ fn namespace_fact(pid: i32, kind: &str) -> Result<Value, String> {
     let details = fs::metadata(format!("/proc/{pid}/ns/{kind}")).map_err(|_| REFUSAL)?;
     require(details.ino() > 0)?;
     Ok(json!({"device":details.dev(),"inode":details.ino()}))
+}
+
+fn controller_namespace_fact(kind: &str) -> Result<Value, String> {
+    require(matches!(kind, "pid" | "mnt" | "cgroup"))?;
+    let details = fs::metadata(format!("/proc/self/ns/{kind}")).map_err(|_| REFUSAL)?;
+    require(details.dev() > 0 && details.ino() > 0)?;
+    Ok(json!({"device":details.dev(),"inode":details.ino()}))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MountInfoRow {
+    mount_id: u64,
+    mount_root: String,
+    mount_point: String,
+    filesystem_type: String,
+}
+
+fn decode_mountinfo_path(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut offset = 0;
+    while offset < bytes.len() {
+        if bytes[offset] == b'\\' {
+            let escape = bytes.get(offset + 1..offset + 4).ok_or(REFUSAL)?;
+            let replacement = if escape == b"040" {
+                b' '
+            } else if escape == b"011" {
+                b'\t'
+            } else if escape == b"012" {
+                b'\n'
+            } else if escape == b"134" {
+                b'\\'
+            } else {
+                return Err(REFUSAL.into());
+            };
+            decoded.push(replacement);
+            offset += 4;
+        } else {
+            decoded.push(bytes[offset]);
+            offset += 1;
+        }
+    }
+    let path = String::from_utf8(decoded).map_err(|_| REFUSAL)?;
+    require(path.starts_with('/') && !path.contains('\0'))?;
+    Ok(path)
+}
+
+fn mount_covers(mount_point: &str, path: &str) -> bool {
+    mount_point == "/"
+        || path == mount_point
+        || path
+            .strip_prefix(mount_point)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn covering_mount_info(
+    mountinfo: &str,
+    path: &str,
+    mounted_id: u64,
+) -> Result<MountInfoRow, String> {
+    require(path.starts_with('/') && mounted_id > 0)?;
+    let mut longest = 0;
+    let mut chosen: Option<MountInfoRow> = None;
+    for line in mountinfo.lines() {
+        let (left, right) = line.split_once(" - ").ok_or(REFUSAL)?;
+        let fields: Vec<_> = left.split_whitespace().collect();
+        let tail: Vec<_> = right.split_whitespace().collect();
+        require(fields.len() >= 6 && tail.len() >= 3)?;
+        let mount_id: u64 = fields[0].parse().map_err(|_| REFUSAL)?;
+        require(mount_id > 0)?;
+        let mount_root = decode_mountinfo_path(fields[3])?;
+        let mount_point = decode_mountinfo_path(fields[4])?;
+        require(mount_point == "/" || !mount_point.ends_with('/'))?;
+        if !mount_covers(&mount_point, path) {
+            continue;
+        }
+        let length = mount_point.len();
+        if length > longest {
+            longest = length;
+            chosen = None;
+        }
+        if length == longest && mount_id == mounted_id {
+            require(chosen.is_none())?;
+            chosen = Some(MountInfoRow {
+                mount_id,
+                mount_root,
+                mount_point,
+                filesystem_type: tail[0].to_string(),
+            });
+        }
+    }
+    chosen.ok_or(REFUSAL.into())
+}
+
+fn controller_mount_fact(
+    path: &str,
+    expected_filesystem_type: Option<&str>,
+    expected_magic: Option<libc::c_long>,
+    mountinfo: &str,
+) -> Result<Value, String> {
+    let path_c = CString::new(path).map_err(|_| REFUSAL)?;
+    let raw = unsafe {
+        libc::open(
+            path_c.as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    require(raw >= 0)?;
+    let directory = unsafe { OwnedFd::from_raw_fd(raw) };
+    let mut details: libc::stat = unsafe { zeroed() };
+    require(unsafe { libc::fstat(directory.as_raw_fd(), &mut details) } == 0)?;
+    require(details.st_mode & libc::S_IFMT == libc::S_IFDIR && details.st_ino > 0)?;
+    let mut filesystem: libc::statfs = unsafe { zeroed() };
+    require(unsafe { libc::fstatfs(directory.as_raw_fd(), &mut filesystem) } == 0)?;
+    if let Some(magic) = expected_magic {
+        require(filesystem.f_type == magic)?;
+    }
+    let mut statx: libc::statx = unsafe { zeroed() };
+    require(
+        unsafe {
+            libc::statx(
+                directory.as_raw_fd(),
+                b"\0".as_ptr().cast(),
+                libc::AT_EMPTY_PATH,
+                libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
+                &mut statx,
+            )
+        } == 0,
+    )?;
+    require(
+        statx.stx_mask & libc::STATX_MNT_ID != 0
+            && statx.stx_mnt_id > 0
+            && statx.stx_ino == details.st_ino
+            && libc::makedev(statx.stx_dev_major, statx.stx_dev_minor) == details.st_dev,
+    )?;
+    let mount = covering_mount_info(mountinfo, path, statx.stx_mnt_id)?;
+    if let Some(expected) = expected_filesystem_type {
+        require(mount.filesystem_type == expected && mount.mount_point == path)?;
+    }
+    Ok(json!({
+        "mount_id":mount.mount_id,
+        "mount_root":mount.mount_root,
+        "mount_point":mount.mount_point,
+        "filesystem_type":mount.filesystem_type,
+        "device":details.st_dev,
+        "inode":details.st_ino,
+    }))
+}
+
+fn controller_view_fact(expected_boot_id: &str) -> Result<Value, String> {
+    let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id").map_err(|_| REFUSAL)?;
+    require(boot_id.trim() == expected_boot_id)?;
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo").map_err(|_| REFUSAL)?;
+    let namespaces = json!({
+        "pid":controller_namespace_fact("pid")?,
+        "mnt":controller_namespace_fact("mnt")?,
+        "cgroup":controller_namespace_fact("cgroup")?,
+    });
+    let mounts = json!({
+        "proc":controller_mount_fact("/proc", Some("proc"), Some(PROC_SUPER_MAGIC), &mountinfo)?,
+        "cgroup2":controller_mount_fact("/sys/fs/cgroup", Some("cgroup2"), Some(CGROUP2_SUPER_MAGIC), &mountinfo)?,
+        "tmp":controller_mount_fact("/tmp", None, None, &mountinfo)?,
+    });
+    Ok(json!({"boot_id":expected_boot_id,"namespaces":namespaces,"mounts":mounts}))
 }
 
 fn root_directory_fact(pid: i32, kind: &str) -> Result<Value, String> {
@@ -1215,6 +1381,9 @@ fn runtime_observation(
     });
     require(roots.get("workspace") == Some(&workspace_fact))?;
     let root = private_root_identity(pid)?;
+    let controller_view =
+        controller_view_fact(&launch.identity.prelaunch_bindings.controller_boot_id)?;
+    let controller_view_ref = value_ref(&controller_view);
     Ok(json!({
         "schema_version":"bluefire.strix-worker-runtime-observation.v1",
         "attempt_id":attempt_id,
@@ -1235,6 +1404,8 @@ fn runtime_observation(
         "workspace":workspace_fact,
         "workspace_ref":value_ref(&workspace_fact),
         "private_root":root,
+        "controller_view":controller_view,
+        "controller_view_ref":controller_view_ref,
     }))
 }
 
@@ -1620,6 +1791,56 @@ impl Drop for FixedRuntimeProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn covering_mount_is_a_path_component_prefix_and_matches_the_open_fd() {
+        let mountinfo = concat!(
+            "1 0 8:1 / / rw - ext4 /dev/root rw\n",
+            "2 1 0:1 / /proc rw - proc proc rw\n",
+            "3 1 0:2 / /proc-other rw - tmpfs tmpfs rw\n",
+            "4 1 0:3 / /tmp rw - tmpfs tmpfs rw\n",
+            "5 4 0:4 /nested /tmp/nested rw - tmpfs tmpfs rw\n",
+        );
+        let proc = covering_mount_info(mountinfo, "/proc", 2).unwrap();
+        assert_eq!(proc.mount_point, "/proc");
+        assert!(covering_mount_info(mountinfo, "/proc", 3).is_err());
+        let nested = covering_mount_info(mountinfo, "/tmp/nested/file", 5).unwrap();
+        assert_eq!(nested.mount_root, "/nested");
+        assert!(covering_mount_info(mountinfo, "/tmp/nested/file", 4).is_err());
+    }
+
+    #[test]
+    fn stacked_mounts_select_the_id_from_the_held_directory() {
+        let mountinfo = concat!(
+            "1 0 8:1 / / rw - ext4 /dev/root rw\n",
+            "2 1 0:1 / /proc rw - proc proc rw\n",
+            "3 1 0:2 / /proc rw - proc proc rw\n",
+        );
+        assert_eq!(
+            covering_mount_info(mountinfo, "/proc", 3).unwrap().mount_id,
+            3
+        );
+        assert!(covering_mount_info(mountinfo, "/proc", 4).is_err());
+    }
+
+    #[test]
+    fn mountinfo_paths_decode_only_defined_escapes() {
+        assert_eq!(
+            decode_mountinfo_path("/a\\040b\\011c\\012d\\134e").unwrap(),
+            "/a b\tc\nd\\e"
+        );
+        assert!(decode_mountinfo_path("/bad\\999").is_err());
+        assert!(decode_mountinfo_path("/bad\\04").is_err());
+    }
+
+    #[test]
+    fn controller_view_reference_changes_with_boot_identity() {
+        let first =
+            json!({"boot_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","namespaces":{},"mounts":{}});
+        let second =
+            json!({"boot_id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","namespaces":{},"mounts":{}});
+        assert_ne!(value_ref(&first), value_ref(&second));
+    }
 
     #[test]
     fn identity_release_waits_for_staging_root_removal() {
