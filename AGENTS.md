@@ -59,7 +59,11 @@ The rest of the tree (`bluefire/`, `runner/`, `frontend/`, `tests_platform/`,
 ## Checks
 
 - The scan for private paths and the secret scans run on every pull request.
-  Keep them running when other checks change.
+  Keep them running when other checks change. They are the three jobs of
+  `.github/workflows/checks.yml`. Run the first one before you push, it needs
+  nothing installed: `python3 .github/scripts/privacy_scan.py`.
+- The earlier product's workflows (`tests.yml`, `analysis.yml`) start by hand
+  only. They go when that code goes.
 - Do not skip, disable or loosen a check to make a failing change pass. Removing
   a check together with the code it guarded is a different thing, and fine.
   Checks for code that is being removed may be switched off ahead of the

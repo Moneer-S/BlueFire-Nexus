@@ -1,9 +1,9 @@
 name: tests
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  # Checks for the earlier product. Started by hand only, so that a change
+  # elsewhere does not wait an hour for them.
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -1,0 +1,67 @@
+name: checks
+
+# Runs on every pull request and on main, whatever the change touches.
+# Nothing here installs or imports code from this repository.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  privacy:
+    name: private paths and markers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Check that the scan catches planted files
+        run: python3 .github/scripts/test_privacy_scan.py
+
+      - name: Scan tracked files
+        run: python3 .github/scripts/privacy_scan.py
+
+  gitleaks:
+    name: secrets in history (gitleaks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan commits
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  detect-secrets:
+    name: secrets in tracked files (detect-secrets)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install detect-secrets
+        run: |
+          python3 -m venv "$RUNNER_TEMP/detect-secrets"
+          "$RUNNER_TEMP/detect-secrets/bin/pip" install --quiet detect-secrets==1.5.0
+
+      - name: Compare tracked files with the baseline
+        run: git ls-files -z | xargs -0 "$RUNNER_TEMP/detect-secrets/bin/detect-secrets-hook" --baseline .secrets.baseline
