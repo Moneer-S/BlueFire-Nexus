@@ -1,3 +1,8 @@
+# gitleaks' own rules, plus one exception. Without useDefault, this file would
+# replace the built-in rules with none, and gitleaks could find nothing.
+[extend]
+useDefault = true
+
 [allowlist]
 description = "detect-secrets stores one-way fingerprints, not credential values"
 paths = ['''^\.secrets\.baseline$''']

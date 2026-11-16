@@ -1,9 +1,9 @@
 name: security and quality analysis
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  # Analysis of the earlier product's package. Started by hand only. The secret
+  # scans that used to run here are in checks.yml and run on every pull request.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,15 +34,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip "setuptools==84.1.0"
           python -m pip install -e ".[dev,detections]"
-
-      - name: Scan Git history and working tree
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify detect-secrets baseline
-        run: |
-          detect-secrets-hook --baseline .secrets.baseline $(git ls-files)
 
       - name: Static security analysis
         run: python -m bandit -r bluefire -ll
