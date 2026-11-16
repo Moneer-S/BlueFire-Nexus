@@ -99,10 +99,16 @@ def telemetry() -> list[dict]:
     ]
 
 
-def see(test, events, matched=None):
+def see(test, events, matched=None, system=()):
     starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
-    known = {step["session"] for step in test["steps"]}
-    return evaluate.visibility(test, RUN, events, starts, matched or {}, RULES, known)
+    edges = [evaluate.marker_time(starts, "r1", test["order"], edge) for edge in ("start", "end")]
+    context = {
+        "account": ACCOUNT,
+        "known_sessions": {step["session"] for step in test["steps"]},
+        "windows": {test["order"]: tuple(edges)},
+        "system_commands": set(system),
+    }
+    return evaluate.visibility(test, events, starts, matched or {}, RULES, context)
 
 
 def records(events) -> list[int]:
@@ -129,10 +135,36 @@ def test_the_executors_own_commands_are_left_out_when_the_sensor_knows_their_par
     assert records(mine) == [6, 7, 8, 11]
 
 
-def test_a_test_run_as_root_does_not_own_what_the_account_starts_elsewhere() -> None:
+def test_a_test_run_as_root_owns_what_systemd_started_in_its_window_and_not_the_accounts_cron() -> None:
     _, mine = see(a_test(user="root"), telemetry())
 
+    assert records(mine) == [6, 7, 8, 12]
+    assert mine[-1]["why"] == "systemd"
+
+
+def test_what_systemd_also_runs_outside_every_window_is_the_systems_own_work() -> None:
+    _, mine = see(a_test(user="root"), telemetry(), system={("/usr/bin/apt-get", "apt-get update")})
+
     assert records(mine) == [6, 7, 8]
+
+
+def test_systemds_own_helper_is_not_part_of_a_test() -> None:
+    helper = start(15, 5.9, 301, 1, "systemd-executor --deserialize 72", sysmon.NO_SESSION, user="root")
+
+    _, mine = see(a_test(user="root"), [*telemetry(), helper])
+
+    assert records(mine) == [6, 7, 8, 12]
+
+
+def test_system_commands_are_what_systemd_started_outside_every_window() -> None:
+    window = ("2026-11-16 04:00:01.000", "2026-11-16 04:00:06.000")
+    starts = [
+        start(1, 0.5, 400, 1, "sa1 1 1", sysmon.NO_SESSION, user="root"),
+        start(2, 5.5, 401, 1, "touch /tmp/marker", sysmon.NO_SESSION, user="root"),
+        start(3, 0.6, 402, 7, "run-parts /etc/cron.daily", 55, user="root"),
+    ]
+
+    assert evaluate.system_commands(starts, [window]) == {("/usr/bin/sa1", "sa1 1 1")}
 
 
 def test_only_the_launcher_recorded_is_no_telemetry() -> None:

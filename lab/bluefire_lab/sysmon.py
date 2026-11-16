@@ -1,7 +1,9 @@
 """Read what Sysmon for Linux wrote to the journal.
 
-Sysmon writes one XML event per line. Besides events it logs a few lines of
-plain text, among them its own count of lost events when it stops.
+Sysmon writes one XML event per message, and the journal prints one message
+per line, unless the event's text itself holds a line break: a test's command
+line can. Besides events Sysmon logs a few lines of plain text, among them its
+own count of lost events when it stops.
 """
 
 from __future__ import annotations
@@ -45,19 +47,42 @@ def parse_line(line: str) -> dict[str, str] | None:
 
 
 def read(path: Path) -> tuple[list[dict[str, str]], list[str], list[str]]:
-    """Return the events, the raw line of each event, and the lines without an event."""
+    """Return the events, the raw text of each event, and the lines without an event.
+
+    An event whose text holds a line break spans several lines: they are joined.
+    Sysmon escapes "<" in event text, so a closing tag in the middle of an
+    event cannot occur.
+    """
 
     events, raw, other = [], [], []
-    with open(path, encoding="utf-8", errors="replace") as handle:
+    pending: str | None = None
+    with open(path, encoding="utf-8", errors="replace", newline="\n") as handle:
         for line in handle:
-            line = line.rstrip("\n")
+            line = line.removesuffix("\n")
+            if pending is not None:
+                line, pending = pending + "\n" + line, None
+            if line.startswith("<Event>") and "</Event>" not in line:
+                pending = line
+                continue
             event = parse_line(line)
             if event is None:
                 other.append(line)
             else:
                 events.append(event)
                 raw.append(line)
+    if pending is not None:
+        other.append(pending)  # an event cut short at the end of the export
     return events, raw, other
+
+
+def one_line(text: str) -> str:
+    """The event's text on one line, for tools that read one event per line.
+
+    A line break inside the XML text becomes a character reference, which an
+    XML parser reads back as the same line break.
+    """
+
+    return text.replace("\r", "&#13;").replace("\n", "&#10;")
 
 
 def loss(events: list[dict[str, str]], other: list[str]) -> dict[str, object]:

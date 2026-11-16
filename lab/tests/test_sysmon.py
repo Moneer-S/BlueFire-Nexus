@@ -48,6 +48,30 @@ def test_reading_a_file_keeps_events_and_other_lines_apart(tmp_path: Path) -> No
     assert other == ["Stopping....", "Lost events: 0, in 0 notifications"]
 
 
+def test_an_event_whose_text_holds_a_line_break_is_read_as_one(tmp_path: Path) -> None:
+    command = "sh -c cp /bin/sh /tmp/crond;\necho 'sleep 5' | /tmp/crond"
+    split = PROCESS_START.replace('<Data Name="CommandLine">uname -a', f'<Data Name="CommandLine">{command}')
+    path = tmp_path / "sysmon.txt"
+    path.write_text(f"{split}\n{PROCESS_START}\n", encoding="utf-8")
+
+    events, raw, other = sysmon.read(path)
+
+    assert [event["CommandLine"] for event in events] == [command, "uname -a"]
+    assert other == []
+    assert "\n" not in sysmon.one_line(raw[0])
+    assert sysmon.parse_line(sysmon.one_line(raw[0]))["CommandLine"] == command
+
+
+def test_an_event_cut_short_at_the_end_is_not_an_event(tmp_path: Path) -> None:
+    path = tmp_path / "sysmon.txt"
+    path.write_text(f"{PROCESS_START}\n{PROCESS_START[:300]}\nmore text\n", encoding="utf-8")
+
+    events, _, other = sysmon.read(path)
+
+    assert len(events) == 1
+    assert other == [f"{PROCESS_START[:300]}\nmore text"]
+
+
 def records(*numbers: int) -> list[dict[str, str]]:
     return [{"EventRecordID": str(number), "EventID": sysmon.PROCESS_START} for number in numbers]
 

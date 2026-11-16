@@ -37,6 +37,10 @@ from . import sysmon
 # and a "critical" one indicates an incident. Lower levels are for review.
 ALERT_LEVELS = ("high", "critical")
 
+# systemd 255 starts a unit's command through this helper, which then becomes
+# the command. Its start is systemd's own step, not part of what a test did.
+SYSTEMD_HELPER = "/systemd-executor"
+
 # Sigma log source category -> the Sysmon event it describes.
 CATEGORIES = {
     "process_creation": sysmon.PROCESS_START,
@@ -80,7 +84,8 @@ def run_engine(engine: Path, run_dir: Path, events: list[dict], raw: list[str]) 
         output.unlink(missing_ok=True)
         if not lines or not rules.is_dir():
             continue
-        (work / f"{category}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        text = "".join(sysmon.one_line(line) + "\n" for line in lines)
+        (work / f"{category}.txt").write_text(text, encoding="utf-8")
         subprocess.run(
             [
                 str(engine.resolve()),
@@ -116,8 +121,22 @@ def marker_time(starts: list[dict], run_id: str, order: int, edge: str) -> str |
     return next((event["UtcTime"] for event in starts if event["CommandLine"] == line), None)
 
 
+def system_commands(starts: list[dict], windows: list[tuple[str, str]]) -> set[tuple[str, str]]:
+    """The commands systemd started outside every test's window: the system's own work."""
+
+    return {
+        (event["Image"], event["CommandLine"])
+        for event in starts
+        if started_by_systemd(event) and not any(start <= event["UtcTime"] <= end for start, end in windows)
+    }
+
+
+def started_by_systemd(event: dict) -> bool:
+    return event["TerminalSessionId"] == sysmon.NO_SESSION and event["ParentProcessId"] == "1"
+
+
 def attribute(
-    test: dict, starts: list[dict], known_sessions: set[str], account: str, window: tuple[str, str]
+    test: dict, starts: list[dict], window: tuple[str, str], context: dict
 ) -> tuple[dict | None, dict[str, str]]:
     """Find the test's launcher and the processes that belong to its attack step.
 
@@ -129,9 +148,13 @@ def attribute(
     thread id without a GUID (microsoft/Sysmon-Linux issue 253), and the
     comparison holds either way.
 
-    A test that ran as the test account also owns what that account started
-    inside the test's window outside every session of the driver: that is
-    what cron or a user service starts on the account's behalf.
+    What a test schedules runs outside its session, so two more rules apply
+    inside the test's window, between its markers:
+    - a test run as the test account owns what that account started outside
+      every session of the driver: what cron starts on the account's behalf;
+    - a test run as root owns what systemd started, unless the same command
+      also ran outside every test's window. systemd's own helper, which then
+      becomes the unit's command, is left out.
 
     Returns the launcher's start event and, for each process, why it belongs.
     """
@@ -153,11 +176,16 @@ def attribute(
         )
         if event is not launcher and event["UtcTime"] >= launcher["UtcTime"] and not executors_own:
             owned[event["ProcessGuid"]] = "session"
-    if test["user"] == account:
-        for event in starts:
-            outside = event["TerminalSessionId"] not in known_sessions
-            if event["User"] == account and outside and window[0] <= event["UtcTime"] <= window[1]:
+    for event in starts:
+        if not window[0] <= event["UtcTime"] <= window[1]:
+            continue
+        if test["user"] == context["account"] == event["User"]:
+            if event["TerminalSessionId"] not in context["known_sessions"]:
                 owned.setdefault(event["ProcessGuid"], "account")
+        elif test["user"] == "root" and started_by_systemd(event):
+            system = (event["Image"], event["CommandLine"]) in context["system_commands"]
+            if not system and not event["Image"].endswith(SYSTEMD_HELPER):
+                owned.setdefault(event["ProcessGuid"], "systemd")
     return launcher, owned
 
 
@@ -216,20 +244,18 @@ def execution(test: dict) -> dict:
 
 def visibility(
     test: dict,
-    run: dict,
     events: list[dict],
     starts: list[dict],
     matched: dict[str, list[str]],
     rules: dict[str, dict],
-    known_sessions: set[str],
+    context: dict,
 ) -> tuple[dict, list[dict]]:
     """What did the defense see? Returns the answer and the test's events."""
 
-    start = marker_time(starts, run["id"], test["order"], "start")
-    end = marker_time(starts, run["id"], test["order"], "end")
+    start, end = context["windows"].get(test["order"], (None, None))
     if start is None or end is None:
         return {"answer": "inconclusive", "basis": "a marker command is missing from the telemetry"}, []
-    launcher, owned = attribute(test, starts, known_sessions, run["account"], (start, end))
+    launcher, owned = attribute(test, starts, (start, end), context)
     if launcher is None:
         basis = "the process the executor started for the test is missing from the telemetry"
         return {"answer": "inconclusive", "basis": basis, "window": [start, end]}, []
@@ -375,6 +401,20 @@ def main(run_dir: Path, engine: Path) -> int:
 
     known_sessions = {step["session"] for test in run["tests"] for step in test["steps"]}
     known_sessions |= {step["session"] for step in run.get("probes", [])}
+    windows = {
+        test["order"]: (
+            marker_time(starts, run["id"], test["order"], "start"),
+            marker_time(starts, run["id"], test["order"], "end"),
+        )
+        for test in run["tests"]
+    }
+    complete = [window for window in windows.values() if None not in window]
+    context = {
+        "account": run["account"],
+        "known_sessions": known_sessions,
+        "windows": windows,
+        "system_commands": system_commands(starts, complete),
+    }
     tests = []
     for test in run["tests"]:
         result = {
@@ -386,7 +426,7 @@ def main(run_dir: Path, engine: Path) -> int:
         if result["execution"]["answer"] == "not attempted":
             seen, mine = {"answer": "not applicable", "basis": "the test did not run"}, []
         else:
-            seen, mine = visibility(test, run, events, starts, matched, rules, known_sessions)
+            seen, mine = visibility(test, events, starts, matched, rules, context)
         result.update(visibility=seen, events=mine)
         tests.append(result)
 
