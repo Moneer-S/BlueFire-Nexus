@@ -1,0 +1,38 @@
+# The tests the lab runs, in this order. Each is a published Atomic Red Team
+# test, pinned by its GUID at the commit named in .github/workflows/lab.yml.
+# The lab checks the name against upstream before it runs a test.
+#
+#   effect   One command, run as the account the test ran as, after the test
+#            and before its cleanup. Exit status 0 means the technique took
+#            effect. Without it, the test's own exit status decides.
+#   prepare  One command that puts in place what the test acts on.
+#   args     Input arguments of the test to override.
+#   dwell    Seconds to wait before the test's window closes.
+#
+# Do not swap a test out to change the table. A test that was tried and then
+# left out goes under "dropped" with the reason, and the report lists it.
+
+# Runs first and last. The pinned rules are known to catch it: a run in which
+# it raises no alert has a broken pipeline and fails.
+canary:
+  technique: T1070.003
+  guid: a934276e-2be5-4a36-93fd-98adbb5bd4fc
+  name: Clear Bash history (rm)
+  prepare: echo "ls -la" >> ~/.bash_history
+  effect: test ! -e ~/.bash_history
+  rule: 1182f3b3-e716-4efa-99ab-d2685d04360f # History File Deletion, level high
+
+# A harmless command through the same executor. A run in which it raises an
+# alert fails.
+control:
+  technique: T1082
+  guid: 486e88ea-4f56-470f-9b57-3f4d73f39133
+  name: Hostname Discovery
+
+tests:
+  - technique: T1082
+    guid: cccb070c-df86-4216-a5bc-9fb60c74e27c
+    name: List OS Information
+    effect: test -s /tmp/T1082.txt
+
+dropped: []

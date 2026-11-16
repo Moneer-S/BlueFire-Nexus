@@ -1,7 +1,8 @@
 name: lab
 
-# Spike: what can the lab build on? Which sensors load on the hosted runner's
-# kernel, what do they record, and do the pieces of one loop fit together.
+# Runs published attack tests on a hosted runner, records what a sensor on the
+# runner saw, has a rule engine evaluate pinned detection rules over those
+# records, and publishes a report. The runner is thrown away after the job.
 # The jobs hold no secrets and a read-only token.
 
 on:
@@ -14,6 +15,9 @@ on:
     paths:
       - lab/**
       - .github/workflows/lab.yml
+  schedule:
+    # Weekly, so that a recent run always exists.
+    - cron: "23 4 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -36,35 +40,54 @@ env:
   SIGMA: SigmaHQ/sigma@552f3fee420ef232a8e5790c4fae591847e32347
   ZIRCOLITE_URL: https://github.com/wagga40/Zircolite/releases/download/v4.7.1/Zircolite-4.7.1-linux-x64.zip
   ZIRCOLITE_DIGEST: sha256:f09d3ba377ef0bf4899bba71b63ffca38d714f71765a716e46ad3549da5e316a
-  TETRAGON_IMAGE: quay.io/cilium/tetragon:v1.8.0@sha256:5ed9088a1582131d71b06c98e0d549a37a71ae63ab13aabefc7a47553c822a9d
 
 jobs:
-  spike-loop:
-    name: loop spike (Sysmon for Linux, one test)
+  package:
+    name: lab package
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
 
-      - name: Runner facts
-        run: |
-          echo "image: $ImageOS $ImageVersion"
-          uname -srvm
-          grep PRETTY_NAME /etc/os-release
-          ls -l /sys/kernel/btf/vmlinux /dev/kvm || true
-          systemctl is-active rsyslog systemd-journald auditd cron || true
-          pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+      - name: No em dash in what the lab writes
+        run: if grep -rn --exclude-dir=fixtures $'—' lab; then echo "write the sentence without the em dash"; exit 1; fi
 
-      - name: Install Sysmon for Linux
+      - name: Install
         run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet -e "lab[dev]"
+
+      - name: Lint
+        run: |
+          "$RUNNER_TEMP/venv/bin/ruff" check lab
+          "$RUNNER_TEMP/venv/bin/ruff" format --check lab
+
+      - name: Test
+        run: '"$RUNNER_TEMP/venv/bin/pytest" --rootdir lab -c lab/pyproject.toml lab/tests'
+
+  loop:
+    name: attack tests on this runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the sensor, the executor's dependency and the lab
+        run: |
+          echo "RUN=$RUNNER_TEMP/lab-run" >> "$GITHUB_ENV"
           sudo apt-get update -qq
           sudo apt-get install -y -qq "sysmonforlinux=$SYSMON_VERSION" "sysinternalsebpf=$SYSINTERNALS_EBPF_VERSION"
-          dpkg-query -W sysmonforlinux sysinternalsebpf
+          sudo pwsh -NoLogo -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module powershell-yaml -RequiredVersion $POWERSHELL_YAML_VERSION -Scope AllUsers -Force"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
 
-      - name: Fetch the executor, one technique, the rules and the rule engine
+      - name: Fetch the pinned tests, executor, rules and rule engine
         run: |
           sudo install -d -o "$USER" /opt/bluefire-lab
           fetch() {
@@ -75,271 +98,84 @@ jobs:
           fetch "$INVOKE_ATOMICREDTEAM" /opt/bluefire-lab/invoke-atomicredteam
           git -C /opt/bluefire-lab/invoke-atomicredteam checkout -q FETCH_HEAD
           fetch "$ATOMIC_RED_TEAM" /opt/bluefire-lab/atomic-red-team
-          git -C /opt/bluefire-lab/atomic-red-team sparse-checkout set atomics/T1082
+          # Only the folders of the techniques on the list are checked out.
+          grep -o 'technique: T[0-9.]*' lab/pinned-tests.yaml | cut -d' ' -f2 | sort -u \
+            | while read -r technique; do echo "atomics/$technique"; done \
+            | git -C /opt/bluefire-lab/atomic-red-team sparse-checkout set --stdin
           git -C /opt/bluefire-lab/atomic-red-team checkout -q FETCH_HEAD
           fetch "$SIGMA" /opt/bluefire-lab/sigma
           git -C /opt/bluefire-lab/sigma sparse-checkout set rules/linux
           git -C /opt/bluefire-lab/sigma checkout -q FETCH_HEAD
-          curl -fsSL -o "$RUNNER_TEMP/zircolite.zip" "$ZIRCOLITE_URL"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/zircolite.zip" "$ZIRCOLITE_URL"
           echo "${ZIRCOLITE_DIGEST#sha256:}  $RUNNER_TEMP/zircolite.zip" | sha256sum --check
           unzip -q "$RUNNER_TEMP/zircolite.zip" -d /opt/bluefire-lab/zircolite
-          find /opt/bluefire-lab/zircolite -maxdepth 2 | head -n 40
-          find /opt/bluefire-lab/sigma/rules/linux -name '*.yml' | cut -d/ -f6-7 | sort | uniq -c
-          du -sh /opt/bluefire-lab/*
+          # The rules the run used travel with its results.
+          mkdir -p "$RUN/rules"
+          cp -r /opt/bluefire-lab/sigma/rules/linux "$RUN/rules/linux"
+          cp /opt/bluefire-lab/sigma/LICENSE "$RUN/rules/LICENSE"
+          echo "${SIGMA%@*}@$(git -C /opt/bluefire-lab/sigma rev-parse HEAD)" > "$RUN/rules/SOURCE"
 
-      - name: Create the test account and give it the executor
+      - name: Create the test account and reject its outbound traffic
         run: |
-          sudo useradd --create-home --shell /bin/bash lab
-          sudo install -m 755 lab/spike/probes.sh /opt/bluefire-lab/probes.sh
-          sudo --preserve-env=POWERSHELL_YAML_VERSION -u lab -H pwsh -NoLogo -NoProfile -Command '
-            $ErrorActionPreference = "Stop"
-            Set-PSRepository PSGallery -InstallationPolicy Trusted
-            Install-Module powershell-yaml -RequiredVersion $env:POWERSHELL_YAML_VERSION -Scope CurrentUser -Force
-            Import-Module /opt/bluefire-lab/invoke-atomicredteam/Invoke-AtomicRedTeam.psd1 -Force
-            Invoke-AtomicTest T1082 -TestGuids cccb070c-df86-4216-a5bc-9fb60c74e27c -PathToAtomicsFolder /opt/bluefire-lab/atomic-red-team/atomics -ShowDetails
-          '
-
-      - name: Block outbound traffic for the test account
-        run: |
-          sudo iptables -I OUTPUT ! -o lo -m owner --uid-owner lab -j REJECT
-          sudo ip6tables -I OUTPUT ! -o lo -m owner --uid-owner lab -j REJECT
-          if sudo -u lab curl -sS --max-time 5 -o /dev/null https://github.com; then
+          sudo useradd --create-home --shell /bin/bash bluefire-lab
+          sudo iptables -I OUTPUT ! -o lo -m owner --uid-owner bluefire-lab -j REJECT
+          sudo ip6tables -I OUTPUT ! -o lo -m owner --uid-owner bluefire-lab -j REJECT
+          if sudo -u bluefire-lab curl -sS --max-time 5 -o /dev/null https://github.com; then
             echo "the test account still reaches the network"
             exit 1
           fi
-          curl -sS --max-time 10 -o /dev/null https://github.com
-          echo "the test account is blocked, the runner account is not"
 
-      - name: Start Sysmon and wait for the first probe to be reported
+      - name: Run the tests
         run: |
-          sudo sysmon -accepteula -i lab/sensors/sysmon.xml
-          nonce="bluefire-probe-${GITHUB_RUN_ID}-${RANDOM}"
-          echo "NONCE=$nonce" >> "$GITHUB_ENV"
-          for second in $(seq 1 30); do
-            /usr/bin/true "$nonce-ready"
-            sleep 1
-            # The bracket keeps this grep from matching its own command line.
-            if sudo journalctl -t sysmon --no-pager -o cat | grep -q "[t]rue $nonce-ready"; then
-              echo "Sysmon reported the probe after $second s"
-              exit 0
-            fi
-          done
-          echo "no Sysmon event for the probe after 30 s"
-          exit 1
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" run \
+            --tests lab/pinned-tests.yaml \
+            --atomics /opt/bluefire-lab/atomic-red-team/atomics \
+            --executor /opt/bluefire-lab/invoke-atomicredteam \
+            --sensor-config lab/sensors/sysmon.xml \
+            --out "$RUN"
 
-      - name: Run probes and one real test, each step in an audit session of its own
+      - name: Evaluate the rules and compute the answers
+        if: always()
         run: |
-          out="$RUNNER_TEMP/spike-loop"
-          mkdir -p "$out"
-          # run_step <label> <user> <command...>
-          # Sets the login uid, which makes the kernel start a new audit session,
-          # then runs the command as that user. Children keep the session id
-          # even when they detach from their parent.
-          run_step() {
-            local label="$1" user="$2"
-            shift 2
-            sudo sh -c 'echo "$1" > /proc/self/loginuid && echo "$2 $(cat /proc/self/sessionid)" >> "$3" && shift 3 && exec "$@"' \
-              sh "$(id -u "$user")" "$label" "$out/sessions.txt" sudo -u "$user" -H "$@"
-          }
-          invoke='Import-Module /opt/bluefire-lab/invoke-atomicredteam/Invoke-AtomicRedTeam.psd1 -Force; Invoke-AtomicTest T1082 -TestGuids cccb070c-df86-4216-a5bc-9fb60c74e27c -PathToAtomicsFolder /opt/bluefire-lab/atomic-red-team/atomics -TimeoutSeconds 60 -ExecutionLogPath /tmp/bluefire-lab-execution.csv'
+          engine=$(find /opt/bluefire-lab/zircolite -maxdepth 2 -type f -name Zircolite)
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" evaluate "$RUN" --engine "$engine"
 
-          run_step probes lab /opt/bluefire-lab/probes.sh "$NONCE"
-          run_step probes-as-root root /opt/bluefire-lab/probes.sh "$NONCE-root"
-
-          run_step marker-start lab /usr/bin/true bluefire-lab-marker start T1082-3
-          run_step attack lab pwsh -NoLogo -NoProfile -Command "$invoke"
-          run_step marker-end lab /usr/bin/true bluefire-lab-marker end T1082-3
-          if sudo -u lab test -s /tmp/T1082.txt; then
-            echo "effect check: the test wrote its output file"
-          else
-            echo "effect check: no output file"
+      - name: Write the report
+        if: always()
+        run: |
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUN"
+          cat "$RUN/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          if grep -E -o '<(script|img|link|iframe)[^>]*(src|href)=[^>]*>' "$RUN/report.html"; then
+            echo "the report must open offline: put this inline"
+            exit 1
           fi
-          run_step cleanup lab pwsh -NoLogo -NoProfile -Command "$invoke -Cleanup"
-          sleep 3
-          cat "$out/sessions.txt"
-          sudo cat /tmp/bluefire-lab-execution.csv
 
-      - name: Export and summarise the events
+      - name: Take pictures of the report
+        if: always()
+        run: |
+          google-chrome --headless=new --no-sandbox --hide-scrollbars --window-size=1440,2600 \
+            --screenshot="$RUN/report-light.png" "file://$RUN/report.html"
+          google-chrome --headless=new --no-sandbox --hide-scrollbars --window-size=1440,2600 --force-dark-mode \
+            --screenshot="$RUN/report-dark.png" "file://$RUN/report.html"
+
+      - name: Refuse to publish telemetry that contains the job token
         if: always()
         env:
           JOB_TOKEN: ${{ github.token }}
         run: |
-          out="$RUNNER_TEMP/spike-loop"
-          mkdir -p "$out"
-          sudo systemctl stop sysmon || true
-          sudo journalctl -t sysmon --no-pager -o cat --all > "$out/sysmon.txt" || true
-          sudo journalctl -u sysmon --no-pager -n 40 > "$out/sysmon-service.txt" || true
-          wc -lc "$out"/*
-          python3 lab/spike/summarise_sysmon.py "$out/sysmon.txt" "${NONCE:-none}" > "$out/summary.txt"
-          grep -E "^(/|longest|events by id)" "$out/summary.txt"
-          python3 lab/spike/summarise_sessions.py "$out/sysmon.txt" "$out/sessions.txt"
-          # Nothing recorded may carry the job's token, in clear or in base64.
           test -n "$JOB_TOKEN"
-          if grep -r -l -F -e "$JOB_TOKEN" -e "$(printf 'x-access-token:%s' "$JOB_TOKEN" | base64 -w0)" "$out"; then
-            rm -rf "$out"
+          if grep -r -l -F -e "$JOB_TOKEN" -e "$(printf 'x-access-token:%s' "$JOB_TOKEN" | base64 -w0)" "$RUN"; then
+            rm -rf "$RUN"
             echo "the telemetry contains the job token: nothing is uploaded"
             exit 1
           fi
 
-      - name: Evaluate the pinned Sigma rules with Zircolite
-        if: always()
-        run: |
-          out="$RUNNER_TEMP/spike-loop"
-          zircolite=$(find /opt/bluefire-lab/zircolite -maxdepth 2 -type f -iname 'zircolite*' ! -name '*.*' | head -n 1)
-          echo "engine: $zircolite"
-          cd "$out"
-          "$zircolite" --version || true
-          "$zircolite" --events sysmon.txt --sysmon-linux-input \
-            --ruleset /opt/bluefire-lab/sigma/rules/linux/process_creation \
-            --outfile detected.json --logfile zircolite.txt || echo "zircolite exit status $?"
-          ls -l
-          jq -r '.[] | [.rule_level, .count, .title, .id] | @tsv' detected.json | sort
-          echo "one match, all fields:"
-          jq '.[0] | {title, id, rule_level, sigmafile, sigma, match: .matches[0]}' detected.json
-
-      - name: Upload the raw events
+      # Last, so that nothing recorded after it could be missing from it.
+      - name: Upload the run
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: spike-loop
-          path: ${{ runner.temp }}/spike-loop
-          retention-days: 14
-          if-no-files-found: warn
-
-  spike-auditd:
-    name: sensor spike (auditd)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-
-      - name: Install and start auditd
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq auditd
-          dpkg-query -W auditd
-          systemctl is-active auditd
-          sudo auditctl -s
-
-      - name: Load an execve rule and run the probes in an audit session
-        run: |
-          sudo auditctl -a always,exit -F arch=b64 -S execve -k bluefire_exec
-          sudo auditctl -a always,exit -F arch=b32 -S execve -k bluefire_exec
-          sudo auditctl -l
-          nonce="bluefire-probe-${GITHUB_RUN_ID}-${RANDOM}"
-          echo "NONCE=$nonce" >> "$GITHUB_ENV"
-          long=$(head -c 6000 /dev/zero | tr '\0' 'A')
-          /usr/bin/true "$nonce-long" "$long"
-          sudo install -m 755 lab/spike/probes.sh /opt/probes.sh
-          sudo sh -c 'echo "$1" > /proc/self/loginuid && echo "session $(cat /proc/self/sessionid)" && shift && exec "$@"' \
-            sh "$(id -u)" sudo -u "$USER" /opt/probes.sh "$nonce"
-          sleep 3
-
-      - name: Export and summarise the records
-        if: always()
-        run: |
-          out="$RUNNER_TEMP/spike-auditd"
-          mkdir -p "$out"
-          sudo auditctl -s | tee "$out/auditctl-status.txt"
-          sudo cat /var/log/audit/audit.log > "$out/audit.txt"
-          wc -lc "$out/audit.txt"
-          echo "record types:"
-          grep -o '^type=[A-Z_]*' "$out/audit.txt" | sort | uniq -c | sort -rn | head -n 15
-          echo "session and parent of each probe process:"
-          for probe in direct nested detached doublefork; do
-            serial=$(grep -a "$NONCE-$probe" "$out/audit.txt" | grep -a 'type=EXECVE' | grep -o 'audit([0-9.]*:[0-9]*)' | tail -n 1 || true)
-            if [ -n "$serial" ]; then
-              echo "$probe: $(grep -a -F "$serial" "$out/audit.txt" | grep -a 'type=SYSCALL' | grep -o -E ' (ppid|pid|auid|uid|ses)=[0-9]+' | tr -d '\n')"
-            else
-              echo "$probe: no EXECVE record"
-            fi
-          done
-          echo "the long command line:"
-          grep -a "$NONCE-long" "$out/audit.txt" | grep -a 'type=EXECVE' | awk '{ print length($0), "characters;", substr($0, 1, 200) }' || true
-          echo "longest record:" "$(awk '{ if (length($0) > n) n = length($0) } END { print n }' "$out/audit.txt")" characters
-
-      - name: Upload the raw records
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: spike-auditd
-          path: ${{ runner.temp }}/spike-auditd
-          retention-days: 14
-          if-no-files-found: warn
-
-  spike-tetragon:
-    name: sensor spike (Tetragon)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Start Tetragon in a container
-        run: |
-          mkdir -p "$RUNNER_TEMP/spike-tetragon"
-          docker run -d --name bluefire-lab-tetragon --label bluefire-lab=1 \
-            --pid=host --cgroupns=host --privileged \
-            -p 127.0.0.1:2112:2112 \
-            -v /sys/kernel/btf/vmlinux:/var/lib/tetragon/btf \
-            -v "$RUNNER_TEMP/spike-tetragon:/var/log/tetragon" \
-            "$TETRAGON_IMAGE" \
-            /usr/bin/tetragon --export-filename /var/log/tetragon/tetragon.txt --metrics-server :2112
-
-      - name: Wait for the first probe to be reported
-        run: |
-          nonce="bluefire-probe-${GITHUB_RUN_ID}-${RANDOM}"
-          echo "NONCE=$nonce" >> "$GITHUB_ENV"
-          for second in $(seq 1 60); do
-            /usr/bin/true "$nonce-ready"
-            sleep 1
-            if sudo cat "$RUNNER_TEMP/spike-tetragon/tetragon.txt" 2> /dev/null \
-              | jq -c --arg probe "$nonce-ready" 'select(.process_exec.process.binary == "/usr/bin/true"
-                  and ((.process_exec.process.arguments // "") | contains($probe)))' \
-              | grep -q .; then
-              echo "Tetragon reported the probe after $second s"
-              exit 0
-            fi
-          done
-          echo "no Tetragon event for the probe after 60 s"
-          docker logs --tail 60 bluefire-lab-tetragon
-          exit 1
-
-      - name: Run the probe commands
-        run: |
-          long=$(head -c 6000 /dev/zero | tr '\0' 'A')
-          /usr/bin/true "$NONCE-long" "$long"
-          sh -c "sh -c '/usr/bin/true $NONCE-nested'"
-          (setsid sh -c "sleep 1; /usr/bin/true $NONCE-detached" > /dev/null 2>&1 &)
-          sleep 4
-
-      - name: Summarise the events
-        if: always()
-        run: |
-          out="$RUNNER_TEMP/spike-tetragon"
-          curl -s --max-time 5 http://127.0.0.1:2112/metrics > "$RUNNER_TEMP/tetragon-metrics.txt" || true
-          docker logs --tail 30 bluefire-lab-tetragon > "$RUNNER_TEMP/tetragon-service.txt" 2>&1 || true
-          docker rm -f bluefire-lab-tetragon || true
-          sudo chmod -R a+rX "$out"
-          sudo mv "$RUNNER_TEMP/tetragon-metrics.txt" "$RUNNER_TEMP/tetragon-service.txt" "$out/"
-          wc -lc "$out"/*
-          echo "event kinds:"
-          jq -r 'keys_unsorted[0]' "$out/tetragon.txt" | sort | uniq -c
-          echo "probe events:"
-          grep -a "${NONCE:-none}" "$out/tetragon.txt" | jq -c '
-            (.process_exec // .process_exit) as $e
-            | {kind: keys_unsorted[0], time, pid: $e.process.pid, binary: $e.process.binary,
-               arguments_length: ($e.process.arguments | length), arguments: $e.process.arguments[0:80],
-               uid: $e.process.uid, auid: $e.process.auid,
-               parent_pid: $e.parent.pid, parent_binary: $e.parent.binary}'
-          echo "metrics about lost or missed events:"
-          grep -i -E "lost|missed|dropped" "$out/tetragon-metrics.txt" | grep -v '^#' | head -n 30 || echo "none found"
-
-      - name: Upload the raw events
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: spike-tetragon
-          path: ${{ runner.temp }}/spike-tetragon
-          retention-days: 14
-          if-no-files-found: warn
+          name: lab-run
+          path: ${{ runner.temp }}/lab-run
+          retention-days: 90
+          if-no-files-found: error

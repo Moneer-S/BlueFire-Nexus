@@ -1,0 +1,431 @@
+"""Compute the two answers for every test from the files a run leaves behind.
+
+Input, all in the run folder: run.json (what the driver did), sysmon.txt (what
+the sensor wrote, untouched) and rules/ (the pinned Sigma rules). The rule
+engine is a separate program. Output: results.json.
+
+Every test gets two answers.
+
+Execution: "not attempted" when a prerequisite was missing, "took effect" or
+"attempted without effect" by the test's effect check. "blocked" is reserved
+for a run that compares against a baseline.
+
+Visibility: "alert" when a rule of an alert level matched an event of the test,
+"telemetry only" when the test left events but no such match, "no telemetry"
+when it left none. "inconclusive" when the measurement cannot be trusted.
+
+The executor starts a test as one shell process whose command line is the whole
+test. That process start is not counted as telemetry of the test, and a rule
+that matches nothing else is reported apart.
+"""
+
+from __future__ import annotations
+
+import collections
+import hashlib
+import json
+import re
+import subprocess
+from pathlib import Path
+
+import yaml
+
+from . import sysmon
+
+# The Sigma specification says a match of a "high" rule should trigger an alert
+# and a "critical" one indicates an incident. Lower levels are for review.
+ALERT_LEVELS = ("high", "critical")
+
+# Sigma log source category -> the Sysmon event it describes.
+CATEGORIES = {
+    "process_creation": sysmon.PROCESS_START,
+    "file_event": sysmon.FILE_CREATED,
+    "network_connection": sysmon.NETWORK,
+}
+
+
+def rule_index(rules: Path) -> dict[str, dict]:
+    """The pinned rules by id, with what a report has to say about a rule that matched."""
+
+    index = {}
+    for path in sorted(rules.rglob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        for rule in yaml.safe_load_all(text):
+            if isinstance(rule, dict) and "id" in rule and "detection" in rule:
+                index[str(rule["id"])] = {
+                    "id": str(rule["id"]),
+                    "title": rule.get("title", ""),
+                    "level": rule.get("level", "informational"),
+                    "author": rule.get("author", ""),
+                    "file": path.relative_to(rules.parent).as_posix(),
+                    "text": text,
+                }
+    return index
+
+
+def run_engine(engine: Path, run_dir: Path, events: list[dict], raw: list[str]) -> dict[str, list[str]]:
+    """Have the rule engine evaluate each folder of rules over the events it describes.
+
+    Returns, for each event record, the ids of the rules that matched it.
+    """
+
+    matched: dict[str, list[str]] = collections.defaultdict(list)
+    work = run_dir / "engine"
+    work.mkdir(exist_ok=True)
+    for category, event_id in CATEGORIES.items():
+        rules = run_dir / "rules" / "linux" / category
+        lines = [line for event, line in zip(events, raw, strict=True) if event["EventID"] == event_id]
+        output = work / f"{category}.json"
+        output.unlink(missing_ok=True)
+        if not lines or not rules.is_dir():
+            continue
+        (work / f"{category}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        subprocess.run(
+            [
+                str(engine.resolve()),
+                "--events", f"{category}.txt",
+                "--sysmon-linux-input",
+                "--logs-encoding", "utf-8",
+                "--ruleset", str(rules.resolve()),
+                "--outfile", output.name,
+                "--logfile", f"{category}-engine.txt",
+            ],
+            cwd=work,
+            check=True,
+            capture_output=True,
+            timeout=900,
+        )  # fmt: skip
+        for rule in json.loads(output.read_text(encoding="utf-8")) if output.exists() else []:
+            for match in rule["matches"]:
+                matched[str(match["EventRecordID"])].append(str(rule["id"]))
+    return matched
+
+
+def when(event: dict) -> tuple[str, int]:
+    return event["UtcTime"], int(event["EventRecordID"] or 0)
+
+
+def step_of(test: dict, label: str) -> dict | None:
+    found = [step for step in test["steps"] if step["label"] == label]
+    return found[-1] if found else None
+
+
+def marker_time(starts: list[dict], run_id: str, order: int, edge: str) -> str | None:
+    line = f"/usr/bin/true bluefire-lab-marker {run_id} {order} {edge}"
+    return next((event["UtcTime"] for event in starts if event["CommandLine"] == line), None)
+
+
+def attribute(
+    test: dict, starts: list[dict], known_sessions: set[str], account: str, window: tuple[str, str]
+) -> tuple[dict | None, dict[str, str]]:
+    """Find the test's launcher and the processes that belong to its attack step.
+
+    The launcher is the process the executor names in its own log. A process
+    belongs to the test when it is in the audit session of the attack step,
+    started no earlier than the launcher, and is not one of the commands the
+    executor runs for itself: those are the launcher's siblings, started by
+    the same executor thread, which Sysmon reports without a parent identity.
+
+    A test that ran as the test account also owns what that account started
+    inside the test's window outside every session of the driver: that is
+    what cron or a user service starts on the account's behalf.
+
+    Returns the launcher's start event and, for each process, why it belongs.
+    """
+
+    attack = step_of(test, "attack")
+    session = attack["session"] if attack else ""
+    members = sorted(
+        (event for event in starts if session and event["TerminalSessionId"] == session), key=when
+    )
+    launcher = next((event for event in members if event["ProcessId"] == str(test.get("launcher_pid"))), None)
+    if launcher is None:
+        return None, {}
+    owned = {}
+    for event in members:
+        executors_own = (
+            event["ParentProcessGuid"] == sysmon.NO_PARENT
+            and event["ParentProcessId"] == launcher["ParentProcessId"]
+            and event["ProcessId"] != launcher["ProcessId"]
+        )
+        if event is not launcher and event["UtcTime"] >= launcher["UtcTime"] and not executors_own:
+            owned[event["ProcessGuid"]] = "session"
+    if test["user"] == account:
+        for event in starts:
+            outside = event["TerminalSessionId"] not in known_sessions
+            if event["User"] == account and outside and window[0] <= event["UtcTime"] <= window[1]:
+                owned.setdefault(event["ProcessGuid"], "account")
+    return launcher, owned
+
+
+def describe(event: dict, why: str) -> dict:
+    detail = event.get("CommandLine") or event.get("TargetFilename") or ""
+    if event["EventID"] == sysmon.NETWORK:
+        detail = "{Protocol} {SourceIp}:{SourcePort} to {DestinationIp}:{DestinationPort}".format_map(
+            collections.defaultdict(str, event)
+        )
+    return {
+        "record": int(event["EventRecordID"]),
+        "time": event.get("UtcTime", ""),
+        "kind": sysmon.KINDS.get(event["EventID"], f"event {event['EventID']}"),
+        "process_id": event.get("ProcessId", ""),
+        "user": event.get("User", ""),
+        "image": event.get("Image", ""),
+        "detail": detail,
+        "why": why,
+        "fields": {name: value for name, value in event.items() if value not in ("", "-")},
+    }
+
+
+def execution(test: dict) -> dict:
+    """Did the technique take effect?"""
+
+    answer = {"prerequisites": test["prerequisites"], "exit_code": test.get("exit_code")}
+    attack, effect = step_of(test, "attack"), step_of(test, "effect")
+    answer["timed_out"] = bool(attack and attack["timed_out"])
+    if test["prerequisites"] == "not met":
+        answer.update(answer="not attempted", basis="a prerequisite of the test was not met")
+    elif "launcher_pid" not in test:
+        answer.update(answer="inconclusive", basis="the executor left no record of starting the test")
+    elif effect:
+        took = effect["exit_status"] == 0
+        answer.update(
+            answer="took effect" if took else "attempted without effect",
+            basis=f"the effect check exited with status {effect['exit_status']}",
+            effect_check={"command": test["effect"], "exit_status": effect["exit_status"],
+                          "output": (effect["output"] + effect["error"]).strip()},
+        )  # fmt: skip
+    else:
+        took = test.get("exit_code") == 0
+        answer.update(
+            answer="took effect" if took else "attempted without effect",
+            basis=f"the test has no separate effect check; its command exited with status {test.get('exit_code')}",
+        )
+    return answer
+
+
+def visibility(
+    test: dict,
+    run: dict,
+    events: list[dict],
+    starts: list[dict],
+    matched: dict[str, list[str]],
+    rules: dict[str, dict],
+    known_sessions: set[str],
+) -> tuple[dict, list[dict]]:
+    """What did the defense see? Returns the answer and the test's events."""
+
+    start = marker_time(starts, run["id"], test["order"], "start")
+    end = marker_time(starts, run["id"], test["order"], "end")
+    if start is None or end is None:
+        return {"answer": "inconclusive", "basis": "a marker command is missing from the telemetry"}, []
+    launcher, owned = attribute(test, starts, known_sessions, run["account"], (start, end))
+    if launcher is None:
+        basis = "the process the executor started for the test is missing from the telemetry"
+        return {"answer": "inconclusive", "basis": basis, "window": [start, end]}, []
+
+    mine = []
+    for event in events:
+        guid = event.get("ProcessGuid", "")
+        if guid in owned:
+            mine.append(describe(event, owned[guid]))
+        elif guid == launcher["ProcessGuid"] and event["EventID"] not in (
+            sysmon.PROCESS_START,
+            sysmon.PROCESS_END,
+        ):
+            mine.append(describe(event, "launcher"))
+    mine.sort(key=lambda event: (event["time"], event["record"]))
+
+    fired: dict[str, list[int]] = collections.defaultdict(list)
+    for event in mine:
+        for rule_id in matched.get(str(event["record"]), []):
+            fired[rule_id].append(event["record"])
+    launcher_only = [
+        rule_id for rule_id in matched.get(launcher["EventRecordID"], []) if rule_id not in fired
+    ]
+
+    def cite(rule_id: str, records: list[int]) -> dict:
+        rule = rules[rule_id]
+        return {**rule, "records": records, "alert": rule["level"] in ALERT_LEVELS}
+
+    cited = sorted((cite(rule_id, records) for rule_id, records in fired.items()), key=rule_order)
+    if any(rule["alert"] for rule in cited):
+        answer, basis = "alert", "a rule of an alert level matched an event of the test"
+    elif mine:
+        answer, basis = "telemetry only", "the test left events, and no rule of an alert level matched one"
+    else:
+        answer, basis = "no telemetry", "the sensor recorded nothing of the test besides its launcher"
+    result = {
+        "answer": answer,
+        "basis": basis,
+        "window": [start, end],
+        "events": len(mine),
+        "events_by_kind": dict(collections.Counter(event["kind"] for event in mine)),
+        "rules": cited,
+        "launcher": describe(launcher, "launcher"),
+        "launcher_only_rules": sorted(
+            (cite(rule_id, [int(launcher["EventRecordID"])]) for rule_id in launcher_only), key=rule_order
+        ),
+    }
+    return result, mine
+
+
+def rule_order(rule: dict) -> tuple[int, str]:
+    levels = ("critical", "high", "medium", "low", "informational")
+    return levels.index(rule["level"]) if rule["level"] in levels else len(levels), rule["title"]
+
+
+def check_controls(run: dict, tests: list[dict], starts: list[dict], lost: dict) -> list[dict]:
+    """The checks that keep a broken measurement from looking like a finding."""
+
+    def control(name: str, passed: bool, detail: str) -> dict:
+        return {"name": name, "passed": bool(passed), "detail": detail}
+
+    ready = run["sensor"].get("ready_after_seconds")
+    probe = f"/usr/bin/true bluefire-lab-probe {run['id']}"
+    seen = any(event["CommandLine"] == probe for event in starts)
+    checks = [
+        control(
+            "readiness",
+            ready is not None and seen,
+            f"the sensor reported a probe command {ready} s after it was started"
+            if ready is not None and seen
+            else "the sensor did not report the probe command",
+        )
+    ]
+
+    attempted = [test for test in tests if test["execution"]["answer"] != "not attempted"]
+    unmarked = [test for test in attempted if "window" not in test["visibility"]]
+    checks.append(
+        control(
+            "markers",
+            bool(attempted) and not unmarked,
+            f"both marker commands of all {len(attempted)} tests are in the telemetry"
+            if attempted and not unmarked
+            else f"{len(unmarked)} of {len(attempted)} tests miss a marker command in the telemetry",
+        )
+    )
+
+    clean = lost["sensor_reported"] and not lost["lost_events"] and not lost["bad_events"]
+    checks.append(
+        control(
+            "loss",
+            clean and not lost["missing_records"],
+            f"the sensor reported {lost['lost_events']} lost and {lost['bad_events']} bad events, and "
+            f"{lost['missing_records']} of its {lost['records'] + lost['missing_records']} records are missing "
+            "from the export"
+            if lost["sensor_reported"]
+            else "the sensor did not report its count of lost events",
+        )
+    )
+
+    canaries = [test for test in tests if test["role"] == "canary"]
+    caught = [
+        test
+        for test in canaries
+        if test["execution"]["answer"] == "took effect"
+        and any(rule["id"] == test["rule"] and rule["alert"] for rule in test["visibility"].get("rules", []))
+    ]
+    checks.append(
+        control(
+            "canary",
+            len(canaries) == 2 and len(caught) == 2,
+            f"the known-detected test took effect and raised its alert in {len(caught)} of {len(canaries)} runs, "
+            "at the start and at the end",
+        )
+    )
+
+    quiet = [test for test in tests if test["role"] == "control"]
+    noisy = [
+        test
+        for test in quiet
+        if test["visibility"]["answer"] not in ("telemetry only", "no telemetry")
+        or any(rule["alert"] for rule in test["visibility"].get("launcher_only_rules", []))
+    ]
+    checks.append(
+        control(
+            "control",
+            len(quiet) == 1 and not noisy and quiet[0]["execution"]["answer"] == "took effect",
+            "the harmless command ran through the same executor and raised no alert"
+            if len(quiet) == 1 and not noisy
+            else "the harmless command raised an alert or could not be measured",
+        )
+    )
+    return checks
+
+
+def main(run_dir: Path, engine: Path) -> int:
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    events, raw, other = sysmon.read(run_dir / "sysmon.txt")
+    starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
+    rules = rule_index(run_dir / "rules" / "linux")
+    matched = run_engine(engine, run_dir, events, raw)
+
+    known_sessions = {step["session"] for test in run["tests"] for step in test["steps"]}
+    known_sessions |= {step["session"] for step in run.get("probes", [])}
+    tests = []
+    for test in run["tests"]:
+        result = {
+            key: test[key]
+            for key in ("order", "role", "technique", "guid", "name", "executor", "elevated", "user")
+        }
+        result.update({key: test[key] for key in ("rule", "args") if key in test})
+        result["execution"] = execution(test)
+        if result["execution"]["answer"] == "not attempted":
+            seen, mine = {"answer": "not applicable", "basis": "the test did not run"}, []
+        else:
+            seen, mine = visibility(test, run, events, starts, matched, rules, known_sessions)
+        result.update(visibility=seen, events=mine)
+        tests.append(result)
+
+    version = subprocess.run(
+        [str(engine.resolve()), "--version"], capture_output=True, text=True, check=False
+    )
+    found = re.search(r"v(\d+\.\d+\.\d+)", version.stdout + version.stderr)
+    measured = [test for test in tests if test["role"] == "test"]
+    took = [test for test in measured if test["execution"]["answer"] == "took effect"]
+    results = {
+        "schema": "bluefire-lab/results/1",
+        "run": {
+            key: run.get(key)
+            for key in ("id", "started", "finished", "account", "target", "tools", "aborted")
+        },
+        "sensor": {
+            **run["sensor"],
+            "version": next((e["Version"] for e in events if e["EventID"] == "4" and "Version" in e), None),
+            "configuration_sha256": hashlib.sha256((run_dir / "sensor-config.xml").read_bytes()).hexdigest(),
+            "configuration_text": (run_dir / "sensor-config.xml").read_text(encoding="utf-8"),
+            "events": len(events),
+        },
+        "rules": {
+            "source": (run_dir / "rules" / "SOURCE").read_text(encoding="utf-8").strip(),
+            "license": "Detection Rule License 1.1, https://github.com/SigmaHQ/Detection-Rule-License",
+            "evaluated": {
+                category: sum(1 for rule in rules.values() if rule["file"].startswith(f"linux/{category}/"))
+                for category in CATEGORIES
+            },
+            "alert_levels": list(ALERT_LEVELS),
+        },
+        "engine": {"name": "Zircolite", "version": found.group(1) if found else None},
+        "controls": check_controls(run, tests, starts, sysmon.loss(events, other)),
+        "summary": {
+            "tests": len(measured),
+            "took_effect": len(took),
+            **{
+                key: sum(1 for test in took if test["visibility"]["answer"] == answer)
+                for key, answer in (
+                    ("alert", "alert"),
+                    ("telemetry_only", "telemetry only"),
+                    ("no_telemetry", "no telemetry"),
+                    ("inconclusive", "inconclusive"),
+                )
+            },
+        },
+        "tests": tests,
+        "dropped": run.get("dropped", []),
+    }
+    (run_dir / "results.json").write_text(json.dumps(results, indent=1) + "\n", encoding="utf-8")
+    failed = [check for check in results["controls"] if not check["passed"]]
+    for check in results["controls"]:
+        print(("ok      " if check["passed"] else "FAILED  ") + f"{check['name']}: {check['detail']}")
+    return 1 if failed else 0

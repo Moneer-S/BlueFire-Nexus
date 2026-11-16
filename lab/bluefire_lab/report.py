@@ -1,0 +1,364 @@
+"""Write report.html and summary.md from results.json.
+
+The report is one file that opens offline and requests nothing from the
+network. The table comes first. The events and rules behind a row are one click
+away.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+from importlib import resources
+from pathlib import Path
+
+RECOMPUTE = "bluefire-lab evaluate <folder of the unpacked artifact> --engine <path to Zircolite>"
+
+
+def e(value: object) -> str:
+    return html.escape(str(value))
+
+
+def count(number: int, noun: str) -> str:
+    return f"{number} {noun}" + ("" if number == 1 else "s")
+
+
+def sentence(text: str) -> str:
+    return text[:1].upper() + text[1:] + "."
+
+
+def tone(test: dict, answer: str) -> str:
+    """The colour of an answer. A test that did not take effect is no gap, so it gets none."""
+
+    if answer == "blocked":
+        return "good"
+    if test["execution"]["answer"] != "took effect":
+        return ""
+    return {"alert": "good", "telemetry only": "warn", "no telemetry": "bad"}.get(answer, "")
+
+
+def pill(test: dict, answer: str) -> str:
+    return f'<span class="pill {tone(test, answer)}">{e(answer)}</span>'
+
+
+def lede(results: dict) -> str:
+    summary, target = results["summary"], results["run"]["target"]
+    where = f"{target['os']}, kernel {target['kernel']}"
+    if target.get("runner_image"):
+        where = f"a GitHub-hosted runner ({where}, image {target['runner_image']})"
+    text = (
+        f"{count(summary['tests'], 'published attack test')} ran on {where} on "
+        f"{results['run']['started'][:10]}. {summary['took_effect']} took effect. Of those, "
+        f"{summary['alert']} raised an alert, {summary['telemetry_only']} left telemetry but no alert, "
+        f"and {summary['no_telemetry']} left no telemetry."
+    )
+    if summary["inconclusive"]:
+        text += f" {summary['inconclusive']} could not be measured."
+    return text
+
+
+def rule_names(test: dict, limit: int = 3) -> list[str]:
+    rules = test["visibility"].get("rules", [])
+    names = [f"{rule['level']}: {rule['title']}" for rule in rules[:limit]]
+    if len(rules) > limit:
+        names.append(f"and {len(rules) - limit} more")
+    return names
+
+
+def rule_link(rule: dict, results: dict) -> str:
+    repository, _, commit = results["rules"]["source"].partition("@")
+    return f"https://github.com/{repository}/blob/{commit}/rules/{rule['file']}"
+
+
+def results_table(tests: list[dict]) -> str:
+    rows = []
+    for test in tests:
+        seen = test["visibility"]
+        rows.append(
+            f'<tr><td class="mono">{e(test["technique"])}</td>'
+            f'<td><a href="#t{test["order"]}">{e(test["name"])}</a>'
+            f'<span class="sub">ran as {e(test["user"])}</span></td>'
+            f"<td>{pill(test, test['execution']['answer'])}</td>"
+            f"<td>{pill(test, seen['answer'])}</td>"
+            f'<td class="wide">{"<br>".join(map(e, rule_names(test))) or "none"}</td>'
+            f'<td class="num">{seen.get("events", 0)}</td></tr>'
+        )
+    head = (
+        "<tr><th>Technique</th><th>Test</th><th>Execution</th><th>Visibility</th>"
+        '<th>Rules that matched</th><th class="num">Events</th></tr>'
+    )
+    return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
+
+
+def rules_table(rules: list[dict], results: dict) -> str:
+    rows = []
+    for rule in rules:
+        rows.append(
+            f"<tr><td>{e(rule['level'])}</td>"
+            f'<td class="wide"><a href="{e(rule_link(rule, results))}">{e(rule["title"])}</a>'
+            f'<span class="sub mono">{e(rule["id"])}</span>'
+            f'<details class="inner"><summary>Rule text</summary><pre class="box">{e(rule["text"])}</pre></details></td>'
+            f'<td class="wide">{e(rule["author"])}</td>'
+            f'<td class="mono wide">{e(", ".join(map(str, rule["records"])))}</td></tr>'
+        )
+    head = "<tr><th>Level</th><th>Rule</th><th>Author</th><th>Event records</th></tr>"
+    return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
+
+
+def fields_table(fields: dict) -> str:
+    rows = "".join(
+        f'<tr><td>{e(name)}</td><td class="mono wide">{e(value)}</td></tr>' for name, value in fields.items()
+    )
+    return f'<table class="fields"><tbody>{rows}</tbody></table>'
+
+
+def events_table(events: list[dict]) -> str:
+    rows = []
+    for event in events:
+        rows.append(
+            f'<tr><td class="mono">{e(event["time"][11:])}</td><td>{e(event["kind"])}</td>'
+            f'<td class="mono">{e(event["image"])}</td>'
+            f'<td class="mono wide">{e(event["detail"])}'
+            f'<details class="inner"><summary>All fields of record {event["record"]}</summary>'
+            f"{fields_table(event['fields'])}</details></td>"
+            f"<td>{e(event['user'])}</td><td>{e(event['why'])}</td></tr>"
+        )
+    head = (
+        "<tr><th>Time (UTC)</th><th>Kind</th><th>Image</th><th>Detail</th><th>User</th><th>Tied by</th></tr>"
+    )
+    return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
+
+
+def evidence(test: dict, results: dict) -> str:
+    done, seen = test["execution"], test["visibility"]
+    exit_code = "not recorded" if done["exit_code"] is None else done["exit_code"]
+    facts = [f"Prerequisites: {done['prerequisites']}.", f"Exit code of the test: {exit_code}."]
+    if done.get("timed_out"):
+        facts.append("The test ran into its time limit.")
+    check = ""
+    if "effect_check" in done:
+        effect = done["effect_check"]
+        check = (
+            f"<p>Effect check, exit status {effect['exit_status']}:</p>"
+            f'<pre class="box">{e(effect["command"])}'
+            + (f"\n\n{e(effect['output'])}" if effect["output"] else "")
+            + "</pre>"
+        )
+    parts = [
+        '<div class="answers"><section>'
+        f"<h3>Execution</h3><p>{pill(test, done['answer'])} {e(sentence(done['basis']))}</p>"
+        f"<p>{e(' '.join(facts))}</p>{check}</section><section>"
+        f"<h3>Visibility</h3><p>{pill(test, seen['answer'])} {e(sentence(seen['basis']))}</p>"
+    ]
+    if "window" in seen:
+        parts.append(
+            f"<p>Between the markers at {e(seen['window'][0][11:])} and {e(seen['window'][1][11:])} UTC.</p>"
+        )
+    if seen.get("events_by_kind"):
+        kinds = ", ".join(f"{kind}: {number}" for kind, number in sorted(seen["events_by_kind"].items()))
+        parts.append(f"<p>Events by kind. {e(sentence(kinds))}</p>")
+    parts.append("</section></div>")
+    if seen.get("rules"):
+        parts.append(f"<h3>Rules that matched an event of the test</h3>{rules_table(seen['rules'], results)}")
+    if "launcher" in seen:
+        parts.append(
+            '<h3>Launcher</h3><p class="note">The executor starts the test as one shell process whose command '
+            "line is the whole test. This process start is not counted as telemetry of the test.</p>"
+            f'<pre class="box">{e(seen["launcher"]["detail"])}</pre>'
+        )
+    if seen.get("launcher_only_rules"):
+        parts.append(
+            '<h3>Rules that matched only the launcher</h3><p class="note">Reported, and not counted as a '
+            f"detection.</p>{rules_table(seen['launcher_only_rules'], results)}"
+        )
+    if test["events"]:
+        parts.append(f"<h3>Events of the test ({len(test['events'])})</h3>{events_table(test['events'])}")
+    role = {"canary": "known-detected test", "control": "harmless command"}.get(test["role"], "")
+    return (
+        f'<details class="test" id="t{test["order"]}"><summary>'
+        f'<span class="mono">{e(test["technique"])}</span><span class="name">{e(test["name"])}'
+        + (f" ({role})" if role else "")
+        + f"</span>{pill(test, done['answer'])}{pill(test, seen['answer'])}</summary>"
+        f'<div class="evidence">{"".join(parts)}</div></details>'
+    )
+
+
+def fact(term: str, value: str) -> str:
+    return f"<div><dt>{e(term)}</dt><dd>{value}</dd></div>"
+
+
+def html_report(results: dict) -> str:
+    package = resources.files("bluefire_lab")
+    css = package.joinpath("report.css").read_text(encoding="utf-8")
+    script = package.joinpath("report.js").read_text(encoding="utf-8")
+    run, sensor, rules, tools = results["run"], results["sensor"], results["rules"], results["run"]["tools"]
+    tests = [test for test in results["tests"] if test["role"] == "test"]
+    others = [test for test in results["tests"] if test["role"] != "test"]
+    failed = [check for check in results["controls"] if not check["passed"]]
+
+    facts = "".join(
+        [
+            fact("Run", f"{e(run['started'].replace('T', ' ').replace('Z', ' UTC'))}, id {e(run['id'])}"),
+            fact(
+                "Target",
+                f"{e(run['target']['os'])}, kernel {e(run['target']['kernel'])}"
+                + (
+                    f", runner image {e(run['target']['runner_image'])}"
+                    if run["target"].get("runner_image")
+                    else ""
+                ),
+            ),
+            fact(
+                "Sensor",
+                f"{e(sensor['name'])} {e(sensor['version'])}, {sensor['events']} events recorded. "
+                'Its <a href="#sensor">configuration</a> is below.',
+            ),
+            fact(
+                "Tests",
+                f'Atomic Red Team at commit <span class="mono">{e(tools["atomic-red-team"][:12])}</span>, run by '
+                f'Invoke-AtomicRedTeam at <span class="mono">{e(tools["invoke-atomicredteam"][:12])}</span>',
+            ),
+            fact(
+                "Rules",
+                f"{e(rules['source'].partition('@')[0])} at commit "
+                f'<span class="mono">{e(rules["source"].partition("@")[2][:12])}</span>: '
+                + ", ".join(f"{number} {e(category)}" for category, number in rules["evaluated"].items())
+                + f". Alert levels: {e(' and '.join(rules['alert_levels']))}.",
+            ),
+            fact("Rule engine", f"{e(results['engine']['name'])} {e(results['engine']['version'])}"),
+        ]
+    )
+    controls = "".join(
+        f"<li><strong>{e(check['name'])}</strong>"
+        f'<span class="pill {"good" if check["passed"] else "bad"}">{"passed" if check["passed"] else "failed"}</span>'
+        f'<span class="sub">{e(sentence(check["detail"]))}</span></li>'
+        for check in results["controls"]
+    )
+    dropped = "".join(
+        f'<tr><td class="mono">{e(item["technique"])}</td><td>{e(item["name"])}</td><td>{e(item["reason"])}</td></tr>'
+        for item in results["dropped"]
+    )
+    dropped = (
+        '<div class="table-wrap"><table><thead><tr><th>Technique</th><th>Test</th><th>Why it was dropped</th></tr>'
+        f"</thead><tbody>{dropped}</tbody></table></div>"
+        if dropped
+        else '<p class="note">No test was tried and then dropped.</p>'
+    )
+    warning = (
+        f'<p class="failed-run">{count(len(failed), "control")} failed, so this run does not support its '
+        "results: " + e("; ".join(check["detail"] for check in failed)) + ".</p>"
+        if failed or run.get("aborted")
+        else ""
+    )
+    versions = "".join(
+        f'<tr><td>{e(name)}</td><td class="mono wide">{e(value)}</td></tr>'
+        for name, value in {**tools, "rules": rules["source"], "rule license": rules["license"]}.items()
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lab report {e(run["started"][:10])}</title>
+<style>
+{css}</style>
+</head>
+<body>
+<main>
+<header>
+<div>
+<h1>Lab report</h1>
+<p class="lede">{e(lede(results))}</p>
+</div>
+<button id="theme" type="button">Light or dark</button>
+</header>
+{warning}
+<dl class="facts">{facts}</dl>
+
+<h2>Results</h2>
+{results_table(tests)}
+<p class="note">Execution says whether the technique took effect on the target. Visibility says what the
+defense saw: an alert, telemetry without an alert, or nothing. An alert is a match of a Sigma rule whose
+level is {e(" or ".join(rules["alert_levels"]))} on an event of the test. Select a test to see its events
+and rules.</p>
+
+<h2>Controls</h2>
+<p class="note">These checks keep a broken measurement from looking like a finding. A run with a failed
+control fails as a whole.</p>
+<ul class="controls">{controls}</ul>
+
+<h2>Evidence</h2>
+{"".join(evidence(test, results) for test in tests)}
+<h3>Control runs</h3>
+{"".join(evidence(test, results) for test in others)}
+
+<h2>Tests tried and dropped</h2>
+{dropped}
+
+<h2>How this was measured</h2>
+<p class="note">Each test is a published Atomic Red Team test, pinned by its GUID and run unchanged by the
+upstream executor on the target, as an unprivileged account unless the test declares that it needs root.
+A marker command runs before and after each test. Each step runs in a kernel audit session of its own,
+and an event is tied to a test when its process is in the session of the test's attack step. What the
+executor runs for itself, and the test's cleanup, are left out. The sensor's own timestamps are used
+throughout.</p>
+<p class="note">The answers can be computed again from the files of the run's artifact:</p>
+<pre class="box">{e(RECOMPUTE)}</pre>
+<h3 id="sensor">Sensor configuration</h3>
+<p class="note">"No telemetry" means none under this configuration. SHA-256
+<span class="mono">{e(sensor["configuration_sha256"])}</span>.</p>
+<pre class="box">{e(sensor["configuration_text"])}</pre>
+<h3>Pinned versions</h3>
+<div class="table-wrap"><table><tbody>{versions}</tbody></table></div>
+<p class="note">Sigma rules are the work of their authors, named with each rule above, and are used under
+the Detection Rule License 1.1.</p>
+</main>
+<script>
+{script}</script>
+</body>
+</html>
+"""
+
+
+def markdown_summary(results: dict) -> str:
+    def cell(text: object) -> str:
+        return str(text).replace("|", "\\|")
+
+    lines = ["## Lab report", "", lede(results), ""]
+    failed = [check for check in results["controls"] if not check["passed"]]
+    if failed:
+        lines += [
+            f"**{count(len(failed), 'control')} failed, so this run does not support its results.**",
+            "",
+        ]
+    lines += [
+        "| Technique | Test | Execution | Visibility | Rules that matched | Events |",
+        "|---|---|---|---|---|---:|",
+    ]
+    for test in results["tests"]:
+        if test["role"] == "test":
+            seen = test["visibility"]
+            lines.append(
+                f"| {cell(test['technique'])} | {cell(test['name'])} | {cell(test['execution']['answer'])} | "
+                f"{cell(seen['answer'])} | {cell('; '.join(rule_names(test)) or 'none')} | {seen.get('events', 0)} |"
+            )
+    lines += ["", "| Control | Result | Detail |", "|---|---|---|"]
+    for check in results["controls"]:
+        lines.append(
+            f"| {cell(check['name'])} | {'passed' if check['passed'] else '**failed**'} | {cell(check['detail'])} |"
+        )
+    levels = " or ".join(results["rules"]["alert_levels"])
+    lines += [
+        "",
+        f"An alert is a match of a Sigma rule of level {levels} on an event of the test. "
+        "The file `report.html` in this run's artifact shows the events and rules behind each row.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def main(run_dir: Path) -> int:
+    results = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
+    (run_dir / "report.html").write_text(html_report(results), encoding="utf-8")
+    (run_dir / "summary.md").write_text(markdown_summary(results), encoding="utf-8")
+    return 0

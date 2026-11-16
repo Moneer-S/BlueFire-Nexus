@@ -42,9 +42,10 @@ def scan(files: dict[str, bytes], links: dict[str, str] | None = None) -> tuple[
 
 
 class PrivacyScan(unittest.TestCase):
-    def test_tree_that_names_only_hosted_runner_accounts_passes(self) -> None:
+    def test_tree_that_names_only_runner_and_lab_accounts_passes(self) -> None:
         telemetry = (
             f'cwd={HOME}/runner/work/project image="{HOME}/runner"\n'
+            f"rm {HOME}/bluefire-lab/.bash_history\n"
             f"<Data>{MAC_HOME}/runner</Data>\n"
             f"{WINDOWS_HOME}\\runneradmin\\AppData\n"
             f'{{"path": "{WINDOWS_HOME_IN_JSON}\\\\runneradmin\\\\AppData"}}\n'
@@ -67,6 +68,9 @@ class PrivacyScan(unittest.TestCase):
             f"{HOME}/runner.old",
             f"{HOME}/Runner",
             f"{WINDOWS_HOME}\\runneradministrator",
+            f"{HOME}/bluefire-labs/notes",
+            f"{HOME}/bluefire/notes",
+            f"{MAC_HOME}/bluefire-lab",
         ]
         status, output = scan({"paths.txt": "\n".join(lines).encode()})
         self.assertEqual(status, 1)

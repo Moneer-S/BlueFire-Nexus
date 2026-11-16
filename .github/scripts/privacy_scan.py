@@ -4,8 +4,9 @@ r"""Reject private details in the files that git tracks.
 A tracked file fails the scan when it
 
 - names a path inside a user's home directory (a name under /home, /Users or
-  <drive>:\Users), unless it is the account of a GitHub-hosted runner:
-  /home/runner, /Users/runner or C:\Users\runneradmin;
+  <drive>:\Users), unless it is the account of a GitHub-hosted runner
+  (/home/runner, /Users/runner or C:\Users\runneradmin) or the account the lab
+  creates on a lab target to run its tests (/home/bluefire-lab);
 - carries a marker string that tags a file as not for publication; or
 - is a kind of file that is never committed: logs, databases, keys, and build
   or run output.
@@ -25,8 +26,9 @@ import subprocess
 import sys
 
 USER_PATH = re.compile(rb"(?i)(?:[a-z]:[\\/]+users[\\/]+|/(?:home|users)/)[^\\/\s]+")
-RUNNER_HOME = re.compile(
-    rb"(?:/home/runner|/Users/runner|C:[\\/]+Users[\\/]+runneradmin)(?![A-Za-z0-9._-])"
+# Telemetry recorded on a lab target names these accounts. They identify nobody.
+PUBLIC_HOME = re.compile(
+    rb"(?:/home/runner|/Users/runner|C:[\\/]+Users[\\/]+runneradmin|/home/bluefire-lab)(?![A-Za-z0-9._-])"
 )
 
 # Each marker is written in two parts so that this file does not carry it.
@@ -57,7 +59,7 @@ EARLIER_PRODUCT_PATHS = {
 
 ADVICE = {
     "user home path": "write the path relative to the repository or with a placeholder "
-    "such as <home>; only the hosted runner's own account paths are accepted",
+    "such as <home>; only the accounts of a hosted runner and of the lab are accepted",
     "private marker": "this file is not for publication; take it out of the commit",
     "never committed": "logs, databases, keys and build or run output stay out of git; "
     "keep a text fixture under an extension such as .txt or .jsonl",
@@ -78,7 +80,7 @@ def findings_in(relative: str, data: bytes) -> list[str]:
         for literal in EARLIER_PRODUCT_PATHS.get(relative, ()):
             text = re.sub(re.escape(literal) + rb"(?=$|[\s\"'`])", b"<accepted>", text)
         for match in USER_PATH.finditer(text):
-            if not RUNNER_HOME.match(text, match.start()):
+            if not PUBLIC_HOME.match(text, match.start()):
                 line = text.count(b"\n", 0, match.start()) + 1
                 found.add(f"{relative}:{line}: user home path")
     return sorted(found)
