@@ -109,7 +109,7 @@ def test_the_report_is_one_file_that_loads_nothing(tmp_path: Path) -> None:
 
     assert not re.search(r"<(script|img|link|iframe|source|object|embed)\b[^>]*\b(src|href|data)=", page)
     assert "url(" not in page and "@import" not in page
-    assert "—" not in page
+    assert chr(0x2014) not in page  # the em dash
 
 
 def test_the_table_comes_first_and_leads_to_the_events_and_the_rule() -> None:

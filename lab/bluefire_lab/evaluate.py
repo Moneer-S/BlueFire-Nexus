@@ -7,8 +7,9 @@ engine is a separate program. Output: results.json.
 Every test gets two answers.
 
 Execution: "not attempted" when a prerequisite was missing, "took effect" or
-"attempted without effect" by the test's effect check. "blocked" is reserved
-for a run that compares against a baseline.
+"attempted without effect" by the test's effect check: a command run after the
+test, a text only the effect prints, or failing both the test's exit status.
+"blocked" is reserved for a run that compares against a baseline.
 
 Visibility: "alert" when a rule of an alert level matched an event of the test,
 "telemetry only" when the test left events but no such match, "no telemetry"
@@ -123,8 +124,10 @@ def attribute(
     The launcher is the process the executor names in its own log. A process
     belongs to the test when it is in the audit session of the attack step,
     started no earlier than the launcher, and is not one of the commands the
-    executor runs for itself: those are the launcher's siblings, started by
-    the same executor thread, which Sysmon reports without a parent identity.
+    executor runs for itself: those are the launcher's siblings, which have
+    the launcher's parent. Sysmon for Linux 1.6.0 reports that parent as a
+    thread id without a GUID (microsoft/Sysmon-Linux issue 253), and the
+    comparison holds either way.
 
     A test that ran as the test account also owns what that account started
     inside the test's window outside every session of the driver: that is
@@ -144,7 +147,7 @@ def attribute(
     owned = {}
     for event in members:
         executors_own = (
-            event["ParentProcessGuid"] == sysmon.NO_PARENT
+            event["ParentProcessGuid"] == launcher["ParentProcessGuid"]
             and event["ParentProcessId"] == launcher["ParentProcessId"]
             and event["ProcessId"] != launcher["ProcessId"]
         )
@@ -195,6 +198,13 @@ def execution(test: dict) -> dict:
             effect_check={"command": test["effect"], "exit_status": effect["exit_status"],
                           "output": (effect["output"] + effect["error"]).strip()},
         )  # fmt: skip
+    elif "output" in test:
+        took = bool(attack) and test["output"] in attack["output"]
+        answer.update(
+            answer="took effect" if took else "attempted without effect",
+            basis=f"the test {'printed' if took else 'did not print'} the text {test['output']!r}, "
+            "which only its effect produces",
+        )
     else:
         took = test.get("exit_code") == 0
         answer.update(
@@ -307,16 +317,18 @@ def check_controls(run: dict, tests: list[dict], starts: list[dict], lost: dict)
     )
 
     clean = lost["sensor_reported"] and not lost["lost_events"] and not lost["bad_events"]
-    checks.append(
-        control(
-            "loss",
-            clean and not lost["missing_records"],
+    if lost["sensor_starts"] != 1:
+        detail = f"the sensor started {lost['sensor_starts']} times during the run, not once"
+    elif not lost["sensor_reported"]:
+        detail = "the sensor did not report its count of lost events"
+    else:
+        detail = (
             f"the sensor reported {lost['lost_events']} lost and {lost['bad_events']} bad events, and "
             f"{lost['missing_records']} of its {lost['records'] + lost['missing_records']} records are missing "
             "from the export"
-            if lost["sensor_reported"]
-            else "the sensor did not report its count of lost events",
         )
+    checks.append(
+        control("loss", clean and not lost["missing_records"] and lost["sensor_starts"] == 1, detail)
     )
 
     canaries = [test for test in tests if test["role"] == "canary"]

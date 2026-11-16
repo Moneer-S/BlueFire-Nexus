@@ -118,6 +118,17 @@ def test_a_test_owns_its_session_but_not_what_the_executor_runs_for_itself() -> 
     assert answer["launcher"]["record"] == 5
 
 
+def test_the_executors_own_commands_are_left_out_when_the_sensor_knows_their_parent() -> None:
+    events = telemetry()
+    for event in events:
+        if event.get("ParentProcessId") == "105":
+            event.update(ParentProcessId="101", ParentProcessGuid="{guid-101}")
+
+    _, mine = see(a_test(), events)
+
+    assert records(mine) == [6, 7, 8, 11]
+
+
 def test_a_test_run_as_root_does_not_own_what_the_account_starts_elsewhere() -> None:
     _, mine = see(a_test(user="root"), telemetry())
 
@@ -179,12 +190,19 @@ def test_execution_follows_the_prerequisites_and_the_effect_check() -> None:
     del by_exit_code["effect"]
     unstarted = a_test(steps=[step("attack", 11)])
     del unstarted["launcher_pid"]
+    printed = a_test(
+        steps=[{**step("attack", 11), "output": "uid=1001(bluefire-lab)\nExit code: 0\n"}], output="uid="
+    )
+    silent = a_test(steps=[step("attack", 11)], output="uid=")
+    del printed["effect"], silent["effect"]
 
     assert took["answer"] == "took effect"
     assert failed["answer"] == "attempted without effect"
     assert missing["answer"] == "not attempted"
     assert evaluate.execution(by_exit_code)["answer"] == "attempted without effect"
     assert evaluate.execution(unstarted)["answer"] == "inconclusive"
+    assert evaluate.execution(printed)["answer"] == "took effect"
+    assert evaluate.execution(silent)["answer"] == "attempted without effect"
 
 
 def measured(
@@ -199,7 +217,14 @@ def measured(
     return {"role": role, "rule": rule, "execution": {"answer": execution}, "visibility": seen}
 
 
-CLEAN = {"sensor_reported": True, "lost_events": 0, "bad_events": 0, "records": 5, "missing_records": 0}
+CLEAN = {
+    "sensor_reported": True,
+    "lost_events": 0,
+    "bad_events": 0,
+    "records": 5,
+    "missing_records": 0,
+    "sensor_starts": 1,
+}
 PROBE = [{"CommandLine": "/usr/bin/true bluefire-lab-probe r1"}]
 CAUGHT = measured("canary", visibility="alert", rules=[{"id": "high-rule", "alert": True}], rule="high-rule")
 
@@ -238,6 +263,7 @@ def test_lost_events_a_missing_marker_or_an_unseen_probe_fail_the_run() -> None:
 
     assert failed_controls(tests, lost={**CLEAN, "lost_events": 4}) == ["loss"]
     assert failed_controls(tests, lost={**CLEAN, "missing_records": 1}) == ["loss"]
+    assert failed_controls(tests, lost={**CLEAN, "sensor_starts": 2}) == ["loss"]
     assert failed_controls(tests, lost={**CLEAN, "sensor_reported": False, "lost_events": None}) == ["loss"]
     assert failed_controls([*tests, unmarked]) == ["markers"]
     assert failed_controls(tests, starts=[]) == ["readiness"]

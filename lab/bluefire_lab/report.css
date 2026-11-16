@@ -91,7 +91,7 @@ button#theme {
 }
 
 dl.facts {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 0;
   margin: 24px 0 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow: hidden;
 }
 dl.facts div { padding: 12px 16px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 0 -1px -1px 0; }

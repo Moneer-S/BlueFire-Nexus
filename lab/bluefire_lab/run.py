@@ -26,13 +26,13 @@ import yaml
 from . import sysmon
 
 # Run as root by sh: write the login uid, which makes the kernel start a new
-# audit session, print that session's id, then become the command.
-SESSION_SHIM = 'echo "$1" > /proc/self/loginuid && cat /proc/self/sessionid && shift && exec "$@"'
-KILL_SESSION = (
-    'for p in /proc/[0-9]*; do if [ "$(cat "$p/sessionid" 2>/dev/null)" = "$1" ]; '
-    'then kill -9 "${p#/proc/}" 2>/dev/null; fi; done; true'
+# audit session, print that session's id on a line of its own, then become the
+# command. The id is read with a builtin, so no extra process joins the session.
+SESSION_SHIM = (
+    'echo "$1" > /proc/self/loginuid || exit 125; '
+    'read -r session < /proc/self/sessionid; echo "$session"; shift; exec "$@"'
 )
-KEPT_OUTPUT = 4000
+KEPT_OUTPUT = 20000
 TECHNIQUE = re.compile(r"T\d{4}(\.\d{3})?")
 GUID = re.compile(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 
@@ -81,9 +81,23 @@ def step(label: str, user: str, command: list[str], timeout: float = 60) -> dict
     }
 
 
-def kill_session(session: str) -> None:
-    if session.isdigit():
-        subprocess.run(["sudo", "sh", "-c", KILL_SESSION, "sh", session], check=False)
+def kill_sessions(sessions: set[str]) -> None:
+    """Kill whatever is still running in the given audit sessions.
+
+    Only sessions the driver opened are given here. The runner itself runs in no
+    session, so that value is refused: it would kill the job.
+    """
+
+    sessions = {session for session in sessions if session.isdigit() and session != sysmon.NO_SESSION}
+    left = []
+    for process in Path("/proc").iterdir():
+        try:
+            if process.name.isdigit() and (process / "sessionid").read_text().strip() in sessions:
+                left.append(process.name)
+        except OSError:
+            continue  # the process ended while we looked
+    if left:
+        subprocess.run(["sudo", "kill", "-9", *left], check=False)
 
 
 def quoted(text: str) -> str:
@@ -161,7 +175,7 @@ def run_test(order: int, role: str, spec: dict, context: dict) -> dict:
         "user": user,
         "steps": [],
     }
-    for key in ("rule", "effect", "prepare", "args", "dwell"):
+    for key in ("rule", "effect", "output", "prepare", "args", "dwell"):
         if key in spec:
             record[key] = spec[key]
 
@@ -175,14 +189,18 @@ def run_test(order: int, role: str, spec: dict, context: dict) -> dict:
         pairs = "; ".join(f"{quoted(name)} = {quoted(value)}" for name, value in spec["args"].items())
         arguments = [f"-InputArgs @{{ {pairs} }}"]
 
-    if "prepare" in spec:
-        do("prepare", ["sh", "-c", spec["prepare"]])
     record["prerequisites"] = "none declared"
-    if upstream.get("dependencies"):
+    if "prepare" in spec and do("prepare", ["sh", "-c", spec["prepare"]])["exit_status"] != 0:
+        record["prerequisites"] = "not met"
+    elif upstream.get("dependencies"):
         check = invoke(spec, executor, atomics, "-CheckPrereqs", *arguments)
-        if "Prerequisites met" not in do("prerequisites", check, timeout=300)["output"]:
-            do("get-prerequisites", invoke(spec, executor, atomics, "-GetPrereqs", *arguments), "root", 900)
+        get = invoke(spec, executor, atomics, "-GetPrereqs", *arguments)
         met = "Prerequisites met" in do("prerequisites", check, timeout=300)["output"]
+        # The test's own account fetches first, so that what it creates is its own. Root is next.
+        for fetcher in dict.fromkeys((user, "root")):
+            if not met:
+                do("get-prerequisites", get, fetcher, 900)
+                met = "Prerequisites met" in do("prerequisites", check, timeout=300)["output"]
         record["prerequisites"] = "met" if met else "not met"
 
     if record["prerequisites"] != "not met":
@@ -203,8 +221,7 @@ def run_test(order: int, role: str, spec: dict, context: dict) -> dict:
         if "effect" in spec:
             do("effect", ["sh", "-c", spec["effect"]])
         do("cleanup", invoke(spec, executor, atomics, "-Cleanup", *arguments), timeout=limit + 60)
-    for done in record["steps"]:
-        kill_session(done["session"])
+    kill_sessions({done["session"] for done in record["steps"]} - {""})
     return record
 
 
@@ -288,6 +305,8 @@ def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: P
         *(("test", spec) for spec in plan["tests"]),
         ("canary", plan["canary"]),
     ]
+    for _, spec in sequence:
+        upstream_definition(spec, context["atomics"])  # stop before anything runs if the list is off
     since = time.time() - 1
     subprocess.run(
         ["sudo", "sysmon", "-accepteula", "-i", str(sensor_config)], check=True, capture_output=True

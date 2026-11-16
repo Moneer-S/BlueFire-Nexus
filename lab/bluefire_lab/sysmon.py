@@ -63,9 +63,10 @@ def read(path: Path) -> tuple[list[dict[str, str]], list[str], list[str]]:
 def loss(events: list[dict[str, str]], other: list[str]) -> dict[str, object]:
     """Say whether events were lost between the kernel and the exported file.
 
-    Two things are checked. Sysmon prints how many events it failed to read
-    from the kernel when it stops. And it numbers the records it writes, so a
-    record that the journal dropped leaves a hole in the numbers.
+    Three things are checked. Sysmon prints how many events it failed to read
+    from the kernel when it stops. It numbers the records it writes, so a
+    record that the journal dropped leaves a hole in the numbers. And it
+    records its own start, so a restart in the middle of a run shows.
     """
 
     text = "\n".join(other)
@@ -78,4 +79,7 @@ def loss(events: list[dict[str, str]], other: list[str]) -> dict[str, object]:
         "bad_events": int(bad.group(2)) if bad else None,
         "records": len(numbers),
         "missing_records": missing,
+        "sensor_starts": sum(
+            1 for event in events if event["EventID"] == "4" and event.get("State") == "Started"
+        ),
     }

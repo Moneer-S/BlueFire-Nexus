@@ -1,13 +1,23 @@
 # The tests the lab runs, in this order. Each is a published Atomic Red Team
 # test, pinned by its GUID at the commit named in .github/workflows/lab.yml.
-# The lab checks the name against upstream before it runs a test.
+# The lab checks every name against upstream before it starts.
 #
+# How the lab learns whether the technique took effect, in order of preference:
 #   effect   One command, run as the account the test ran as, after the test
-#            and before its cleanup. Exit status 0 means the technique took
-#            effect. Without it, the test's own exit status decides.
-#   prepare  One command that puts in place what the test acts on.
+#            and before its cleanup. Exit status 0 means it took effect.
+#   output   A text that the test prints only when it took effect.
+#   Without either, the test's own exit status decides.
+# Other keys:
+#   prepare  One command that puts in place what the test acts on. When it
+#            fails, the test is not attempted.
 #   args     Input arguments of the test to override.
-#   dwell    Seconds to wait before the test's window closes.
+#   dwell    Seconds to wait before the test's window closes, for what the
+#            test schedules to run later.
+#
+# A test belongs here when it acts only on the machine it runs on. Left out are
+# tests that read other processes' memory or environment, search the file
+# system for secrets, contact other hosts, send data out, reboot, change the
+# firewall or the network, or would stop the sensor or the job.
 #
 # Do not swap a test out to change the table. A test that was tried and then
 # left out goes under "dropped" with the reason, and the report lists it.
@@ -30,9 +40,90 @@ control:
   name: Hostname Discovery
 
 tests:
+  # Discovery
   - technique: T1082
     guid: cccb070c-df86-4216-a5bc-9fb60c74e27c
     name: List OS Information
-    effect: test -s /tmp/T1082.txt
+    effect: grep -q '^Linux ' /tmp/T1082.txt
+  - technique: T1069.001
+    guid: 952931a4-af0b-4335-bbbe-73c8c5b327ae
+    name: Permission Groups Discovery (Local)
+    output: "root:x:0:"
+  - technique: T1518.001
+    guid: 23b91cd2-c99c-4002-9e41-317c63e024a2
+    name: Security Software Discovery - ps (Linux)
+    output: "falcond|nessusd"
+
+  # Persistence
+  - technique: T1053.003
+    guid: 435057fb-74b1-410e-9403-d81baf194f75
+    name: Cron - Replace crontab with referenced file
+    effect: crontab -l | grep -qF '/tmp/evil.sh'
+    dwell: 65 # long enough for cron to run the planted line once
+  - technique: T1053.006
+    guid: f4983098-bb13-44fb-9b2c-46149961807b
+    name: Create Systemd Service and Timer
+    effect: systemctl is-active --quiet art-timer.timer
+  - technique: T1543.002
+    guid: d9e4f24f-aa67-4c6e-bcbf-85622b697a7c
+    name: Create Systemd Service
+    effect: systemctl is-enabled --quiet art-systemd-service.service && test -e /tmp/art-systemd-execstart-marker
+  - technique: T1136.001
+    guid: 40d8eabd-e394-46f6-8785-b9bfa1d011d2
+    name: Create a user account on a Linux system
+    effect: getent passwd evil_user
+  - technique: T1098.004
+    guid: 342cc723-127c-4d3a-8292-9c0c6b4ecadc
+    name: Modify SSH Authorized Keys
+    # The test rewrites the file with the same content, so only its age shows that it did.
+    prepare: >-
+      install -d -m 700 ~/.ssh
+      && echo "# planted by the lab, not a key" > ~/.ssh/authorized_keys
+      && chmod 600 ~/.ssh/authorized_keys
+      && touch -d "1 hour ago" ~/.ssh/authorized_keys
+    effect: test -n "$(find ~/.ssh/authorized_keys -newermt '30 minutes ago')"
+  - technique: T1546.004
+    guid: 0a898315-4cfa-4007-bafe-33a4646d115f
+    name: Add command to .bashrc
+    effect: grep -q 'T1546.004' ~/.bashrc
+
+  # Permissions and masquerading
+  - technique: T1222.002
+    guid: 34ca1464-de9d-40c6-8c77-690adf36a135
+    name: chmod - Change file or folder mode (numeric mode)
+    prepare: mkdir -p /tmp/AtomicRedTeam/atomics/T1222.002 && chmod 700 /tmp/AtomicRedTeam/atomics/T1222.002
+    effect: test "$(stat -c %a /tmp/AtomicRedTeam/atomics/T1222.002)" = 755
+  - technique: T1548.001
+    guid: 759055b3-3885-4582-a8ec-c00c9d64dd79
+    name: Set a SetUID flag on file
+    effect: test -u /tmp/evilBinary
+  - technique: T1036.003
+    guid: a315bfff-7a98-403b-b442-2ea1b255e556
+    name: Masquerading as FreeBSD or Linux crond process.
+    effect: cmp -s /bin/sh /tmp/crond
+
+  # Covering tracks: the canary's technique by another procedure
+  - technique: T1070.003
+    guid: 47966a1d-df4f-4078-af65-db6d9aa20739
+    name: Clear Bash history (truncate)
+    prepare: echo "ls -la" >> ~/.bash_history
+    effect: test -e ~/.bash_history && test ! -s ~/.bash_history
+
+  # Encoded and indirect execution
+  - technique: T1027
+    guid: f45df6be-2e1e-4136-a384-8f18ab3826fb
+    name: Decode base64 Data into Script
+    effect: test -x /tmp/art.sh && grep -q 'Hello from the Atomic Red Team' /tmp/art.sh
+  - technique: T1140
+    guid: 3a15c372-67c1-4430-ac8e-ec06d641ce4d
+    name: Linux Base64 Encoded Shebang in CLI
+    output: atomicsonafriday FTW
+  - technique: T1059.004
+    guid: 5bec4cc8-f41e-437b-b417-33ff60acf9af
+    name: Obfuscated command line scripts
+    output: uid=
+  - technique: T1059.004
+    guid: ee72b37d-b8f5-46a5-a9e7-0ff50035ffd5
+    name: Shell Creation using awk command
 
 dropped: []

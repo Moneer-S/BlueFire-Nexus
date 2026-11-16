@@ -53,7 +53,7 @@ jobs:
           persist-credentials: false
 
       - name: No em dash in what the lab writes
-        run: if grep -rn --exclude-dir=fixtures $'—' lab; then echo "write the sentence without the em dash"; exit 1; fi
+        run: if grep -rn --exclude-dir=fixtures $'\xe2\x80\x94' lab; then echo "write the sentence without the em dash"; exit 1; fi
 
       - name: Install
         run: |
@@ -81,6 +81,12 @@ jobs:
       - name: Install the sensor, the executor's dependency and the lab
         run: |
           echo "RUN=$RUNNER_TEMP/lab-run" >> "$GITHUB_ENV"
+          # The journal must keep every record of the sensor: no rate limit.
+          sudo install -d /etc/systemd/journald.conf.d
+          printf '[Journal]\nRateLimitIntervalSec=0\nRateLimitBurst=0\n' | sudo tee /etc/systemd/journald.conf.d/bluefire-lab.conf
+          sudo systemctl restart systemd-journald
+          # needrestart would restart the sensor when a test's prerequisite installs a package.
+          sudo apt-get remove -y -qq needrestart
           sudo apt-get update -qq
           sudo apt-get install -y -qq "sysmonforlinux=$SYSMON_VERSION" "sysinternalsebpf=$SYSINTERNALS_EBPF_VERSION"
           sudo pwsh -NoLogo -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module powershell-yaml -RequiredVersion $POWERSHELL_YAML_VERSION -Scope AllUsers -Force"

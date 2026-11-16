@@ -49,7 +49,15 @@ def test_reading_a_file_keeps_events_and_other_lines_apart(tmp_path: Path) -> No
 
 
 def records(*numbers: int) -> list[dict[str, str]]:
-    return [{"EventRecordID": str(number)} for number in numbers]
+    return [{"EventRecordID": str(number), "EventID": sysmon.PROCESS_START} for number in numbers]
+
+
+def test_loss_counts_how_often_the_sensor_started() -> None:
+    started = {"EventRecordID": "1", "EventID": "4", "State": "Started"}
+    stopped = {"EventRecordID": "9", "EventID": "4", "State": "Stopped"}
+
+    assert sysmon.loss([started, stopped], [])["sensor_starts"] == 1
+    assert sysmon.loss([started, started, stopped], [])["sensor_starts"] == 2
 
 
 def test_loss_reads_the_sensors_own_count() -> None:
