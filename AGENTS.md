@@ -60,8 +60,12 @@ The rest of the tree (`bluefire/`, `runner/`, `frontend/`, `tests_platform/`,
 
 - The scan for private paths and the secret scans run on every pull request.
   Keep them running when other checks change. They are the three jobs of
-  `.github/workflows/checks.yml`. Run the first one before you push, it needs
-  nothing installed: `python3 .github/scripts/privacy_scan.py`.
+  `.github/workflows/checks.yml`, and each first shows that it catches
+  something planted. Run the path scan before you push, it needs nothing
+  installed: `python3 .github/scripts/privacy_scan.py` for the files, and
+  `python3 .github/scripts/privacy_scan.py --commits origin/main..HEAD` for
+  every commit of your branch. A path that reached a pushed commit stays in the
+  history even after a later commit removes it.
 - The earlier product's workflows (`tests.yml`, `analysis.yml`) start by hand
   only. They go when that code goes.
 - Do not skip, disable or loosen a check to make a failing change pass. Removing
