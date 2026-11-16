@@ -155,6 +155,7 @@ jobs:
             echo "the report must open offline: put this inline"
             exit 1
           fi
+          if grep -n $'\xe2\x80\x94' "$RUN/report.html" "$RUN/summary.md"; then echo "the report must not use the em dash"; exit 1; fi
 
       - name: Take pictures of the report
         if: always()

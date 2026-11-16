@@ -147,6 +147,19 @@ def test_a_failed_control_is_said_at_the_top() -> None:
     assert "does not support its results" in report.markdown_summary(results(controls_pass=False))
 
 
+def test_a_rule_that_matched_only_the_launcher_is_shown_and_not_counted() -> None:
+    document = results()
+    document["tests"][2]["visibility"]["launcher_only_rules"] = [{**RULE, "level": "medium"}, RULE]
+
+    page, summary = report.html_report(document), report.markdown_summary(document)
+
+    assert "2 rules (high, medium) matched only the launcher line, not counted" in page
+    assert (
+        "| telemetry only | none (2 rules (high, medium) matched only the launcher line, not counted) | 1 |"
+        in summary
+    )
+
+
 def test_the_summary_is_the_same_table_in_markdown() -> None:
     summary = report.markdown_summary(results())
 

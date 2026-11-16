@@ -65,6 +65,19 @@ def rule_names(test: dict, limit: int = 3) -> list[str]:
     return names
 
 
+def launcher_note(test: dict) -> str:
+    """Rules that matched only the line that carries the whole test: shown, never counted."""
+
+    rules = test["visibility"].get("launcher_only_rules", [])
+    if not rules:
+        return ""
+    levels = ", ".join(sorted({rule["level"] for rule in rules}, key=LEVELS.index))
+    return f"{count(len(rules), 'rule')} ({levels}) matched only the launcher line, not counted"
+
+
+LEVELS = ["critical", "high", "medium", "low", "informational"]
+
+
 def rule_link(rule: dict, results: dict) -> str:
     repository, _, commit = results["rules"]["source"].partition("@")
     return f"https://github.com/{repository}/blob/{commit}/rules/{rule['file']}"
@@ -80,7 +93,9 @@ def results_table(tests: list[dict]) -> str:
             f'<span class="sub">ran as {e(test["user"])}</span></td>'
             f"<td>{pill(test, test['execution']['answer'])}</td>"
             f"<td>{pill(test, seen['answer'])}</td>"
-            f'<td class="wide">{"<br>".join(map(e, rule_names(test))) or "none"}</td>'
+            f'<td class="wide">{"<br>".join(map(e, rule_names(test))) or "none"}'
+            + (f'<span class="sub">{e(launcher_note(test))}</span>' if launcher_note(test) else "")
+            + "</td>"
             f'<td class="num">{seen.get("events", 0)}</td></tr>'
         )
     head = (
@@ -279,8 +294,9 @@ def html_report(results: dict) -> str:
 {results_table(tests)}
 <p class="note">Execution says whether the technique took effect on the target. Visibility says what the
 defense saw: an alert, telemetry without an alert, or nothing. An alert is a match of a Sigma rule whose
-level is {e(" or ".join(rules["alert_levels"]))} on an event of the test. Select a test to see its events
-and rules.</p>
+level is {e(" or ".join(rules["alert_levels"]))} on an event of the test. A test that took effect and left
+telemetry but no alert is a gap a new rule can close; one that left no telemetry needs the sensor to record
+more first. Select a test to see its events and rules.</p>
 
 <h2>Controls</h2>
 <p class="note">These checks keep a broken measurement from looking like a finding. A run with a failed
@@ -340,7 +356,9 @@ def markdown_summary(results: dict) -> str:
             seen = test["visibility"]
             lines.append(
                 f"| {cell(test['technique'])} | {cell(test['name'])} | {cell(test['execution']['answer'])} | "
-                f"{cell(seen['answer'])} | {cell('; '.join(rule_names(test)) or 'none')} | {seen.get('events', 0)} |"
+                f"{cell(seen['answer'])} | {cell('; '.join(rule_names(test)) or 'none')}"
+                + (f" ({cell(launcher_note(test))})" if launcher_note(test) else "")
+                + f" | {seen.get('events', 0)} |"
             )
     lines += ["", "| Control | Result | Detail |", "|---|---|---|"]
     for check in results["controls"]:
