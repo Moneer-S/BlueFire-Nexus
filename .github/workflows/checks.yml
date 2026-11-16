@@ -1,7 +1,8 @@
 name: checks
 
 # Runs on every pull request and on main, whatever the change touches.
-# Nothing here installs or imports code from this repository.
+# Nothing here installs or imports code from this repository. Each scan first
+# shows, in the same job, that it catches something planted.
 
 on:
   pull_request:
@@ -15,15 +16,27 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The commits this event brings: those of the pull request, or of the push.
+  BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+  HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_DIGEST: sha256:551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
 jobs:
   privacy:
     name: private paths and markers
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Checkout
+      - name: Checkout full history
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Check that the scan catches planted files
@@ -32,8 +45,11 @@ jobs:
       - name: Scan tracked files
         run: python3 .github/scripts/privacy_scan.py
 
+      - name: Scan what each commit of this change adds
+        run: python3 .github/scripts/privacy_scan.py --commits "$BASE..$HEAD"
+
   gitleaks:
-    name: secrets in history (gitleaks)
+    name: secrets in commits (gitleaks)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -43,10 +59,30 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Scan commits
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install gitleaks
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_DIGEST#sha256:}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+
+      - name: Check that gitleaks catches a planted token
+        run: |
+          planted="$RUNNER_TEMP/planted"
+          git init -q "$planted"
+          # A made-up token in GitHub's format, never printed: gitleaks redacts what it finds.
+          python3 -c 'import secrets, string; print("token = ghp_" + "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(36)))' > "$planted/settings.txt"
+          git -C "$planted" add settings.txt
+          git -C "$planted" -c user.name=lab -c user.email=lab@example.invalid commit -q -m planted
+          if "$RUNNER_TEMP/gitleaks" git "$planted" --config .gitleaks.toml --redact --no-banner \
+            --report-format json --report-path "$RUNNER_TEMP/planted.json"; then
+            echo "gitleaks did not find the planted token: check .gitleaks.toml"
+            exit 1
+          fi
+          jq -e 'any(.[]; .RuleID == "github-pat")' "$RUNNER_TEMP/planted.json"
+
+      - name: Scan the commits of this change
+        run: '"$RUNNER_TEMP/gitleaks" git . --config .gitleaks.toml --redact --no-banner --log-opts="$BASE..$HEAD"'
 
   detect-secrets:
     name: secrets in tracked files (detect-secrets)
@@ -62,6 +98,19 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/detect-secrets"
           "$RUNNER_TEMP/detect-secrets/bin/pip" install --quiet detect-secrets==1.5.0
+
+      - name: Check that detect-secrets catches a planted key
+        run: |
+          planted="$RUNNER_TEMP/planted"
+          git init -q "$planted"
+          # A made-up key in AWS's format. The hook names the kind and place of a finding, not its text.
+          python3 -c 'import secrets, string; print("aws_access_key_id = AKIA" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(16)))' > "$planted/settings.ini"
+          cd "$planted"
+          if "$RUNNER_TEMP/detect-secrets/bin/detect-secrets-hook" settings.ini > "$RUNNER_TEMP/planted.txt"; then
+            echo "detect-secrets did not find the planted key"
+            exit 1
+          fi
+          grep -q "AWS Access Key" "$RUNNER_TEMP/planted.txt"
 
       - name: Compare tracked files with the baseline
         run: git ls-files -z | xargs -0 "$RUNNER_TEMP/detect-secrets/bin/detect-secrets-hook" --baseline .secrets.baseline
