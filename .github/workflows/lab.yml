@@ -1,7 +1,7 @@
 name: lab
 
-# Sensor spike: which sensors load on the hosted runner's kernel, and what do
-# they record for a few harmless probe commands. No attack test runs here.
+# Spike: what can the lab build on? Which sensors load on the hosted runner's
+# kernel, what do they record, and do the pieces of one loop fit together.
 # The jobs hold no secrets and a read-only token.
 
 on:
@@ -28,15 +28,21 @@ defaults:
     shell: bash
 
 env:
-  TETRAGON_IMAGE: quay.io/cilium/tetragon:v1.8.0
+  SYSMON_VERSION: 1.6.0
+  SYSINTERNALS_EBPF_VERSION: 2.3.0
+  POWERSHELL_YAML_VERSION: 0.4.12
   INVOKE_ATOMICREDTEAM: redcanaryco/invoke-atomicredteam@8af478bb9e4637df568ac1e596553b025b16cd1b
   ATOMIC_RED_TEAM: redcanaryco/atomic-red-team@a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6
+  SIGMA: SigmaHQ/sigma@552f3fee420ef232a8e5790c4fae591847e32347
+  ZIRCOLITE_URL: https://github.com/wagga40/Zircolite/releases/download/v4.7.1/Zircolite-4.7.1-linux-x64.zip
+  ZIRCOLITE_DIGEST: sha256:f09d3ba377ef0bf4899bba71b63ffca38d714f71765a716e46ad3549da5e316a
+  TETRAGON_IMAGE: quay.io/cilium/tetragon:v1.8.0@sha256:5ed9088a1582131d71b06c98e0d549a37a71ae63ab13aabefc7a47553c822a9d
 
 jobs:
-  spike-sysmon:
-    name: sensor spike (Sysmon for Linux)
+  spike-loop:
+    name: loop spike (Sysmon for Linux, one test)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -49,31 +55,64 @@ jobs:
           uname -srvm
           grep PRETTY_NAME /etc/os-release
           ls -l /sys/kernel/btf/vmlinux /dev/kvm || true
-          systemctl is-active rsyslog systemd-journald auditd || true
-          ls /etc/apt/sources.list.d/
-          id
+          systemctl is-active rsyslog systemd-journald auditd cron || true
+          pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
 
       - name: Install Sysmon for Linux
         run: |
           sudo apt-get update -qq
-          if ! apt-cache policy sysmonforlinux | grep -q 'Candidate: [0-9]'; then
-            curl -fsSL -o "$RUNNER_TEMP/packages-microsoft-prod.deb" \
-              https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb
-            sudo dpkg -i "$RUNNER_TEMP/packages-microsoft-prod.deb"
-            sudo apt-get update -qq
-          fi
-          apt-cache policy sysmonforlinux sysinternalsebpf
-          sudo apt-get install -y -qq sysmonforlinux
+          sudo apt-get install -y -qq "sysmonforlinux=$SYSMON_VERSION" "sysinternalsebpf=$SYSINTERNALS_EBPF_VERSION"
           dpkg-query -W sysmonforlinux sysinternalsebpf
 
-      - name: Start Sysmon
+      - name: Fetch the executor, one technique, the rules and the rule engine
+        run: |
+          sudo install -d -o "$USER" /opt/bluefire-lab
+          fetch() {
+            git init -q "$2"
+            git -C "$2" remote add origin "https://github.com/${1%@*}"
+            git -C "$2" fetch -q --depth 1 --filter=blob:none origin "${1#*@}"
+          }
+          fetch "$INVOKE_ATOMICREDTEAM" /opt/bluefire-lab/invoke-atomicredteam
+          git -C /opt/bluefire-lab/invoke-atomicredteam checkout -q FETCH_HEAD
+          fetch "$ATOMIC_RED_TEAM" /opt/bluefire-lab/atomic-red-team
+          git -C /opt/bluefire-lab/atomic-red-team sparse-checkout set atomics/T1082
+          git -C /opt/bluefire-lab/atomic-red-team checkout -q FETCH_HEAD
+          fetch "$SIGMA" /opt/bluefire-lab/sigma
+          git -C /opt/bluefire-lab/sigma sparse-checkout set rules/linux
+          git -C /opt/bluefire-lab/sigma checkout -q FETCH_HEAD
+          curl -fsSL -o "$RUNNER_TEMP/zircolite.zip" "$ZIRCOLITE_URL"
+          echo "${ZIRCOLITE_DIGEST#sha256:}  $RUNNER_TEMP/zircolite.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/zircolite.zip" -d /opt/bluefire-lab/zircolite
+          find /opt/bluefire-lab/zircolite -maxdepth 2 | head -n 40
+          find /opt/bluefire-lab/sigma/rules/linux -name '*.yml' | cut -d/ -f6-7 | sort | uniq -c
+          du -sh /opt/bluefire-lab/*
+
+      - name: Create the test account and give it the executor
+        run: |
+          sudo useradd --create-home --shell /bin/bash lab
+          sudo install -m 755 lab/spike/probes.sh /opt/bluefire-lab/probes.sh
+          sudo --preserve-env=POWERSHELL_YAML_VERSION -u lab -H pwsh -NoLogo -NoProfile -Command '
+            $ErrorActionPreference = "Stop"
+            Set-PSRepository PSGallery -InstallationPolicy Trusted
+            Install-Module powershell-yaml -RequiredVersion $env:POWERSHELL_YAML_VERSION -Scope CurrentUser -Force
+            Import-Module /opt/bluefire-lab/invoke-atomicredteam/Invoke-AtomicRedTeam.psd1 -Force
+            Invoke-AtomicTest T1082 -TestGuids cccb070c-df86-4216-a5bc-9fb60c74e27c -PathToAtomicsFolder /opt/bluefire-lab/atomic-red-team/atomics -ShowDetails
+          '
+
+      - name: Block outbound traffic for the test account
+        run: |
+          sudo iptables -I OUTPUT ! -o lo -m owner --uid-owner lab -j REJECT
+          sudo ip6tables -I OUTPUT ! -o lo -m owner --uid-owner lab -j REJECT
+          if sudo -u lab curl -sS --max-time 5 -o /dev/null https://github.com; then
+            echo "the test account still reaches the network"
+            exit 1
+          fi
+          curl -sS --max-time 10 -o /dev/null https://github.com
+          echo "the test account is blocked, the runner account is not"
+
+      - name: Start Sysmon and wait for the first probe to be reported
         run: |
           sudo sysmon -accepteula -i lab/sensors/sysmon.xml
-          sleep 5
-          systemctl is-active sysmon
-
-      - name: Wait for the first probe to be reported
-        run: |
           nonce="bluefire-probe-${GITHUB_RUN_ID}-${RANDOM}"
           echo "NONCE=$nonce" >> "$GITHUB_ENV"
           for second in $(seq 1 30); do
@@ -88,35 +127,52 @@ jobs:
           echo "no Sysmon event for the probe after 30 s"
           exit 1
 
-      - name: Run the probe commands
+      - name: Run probes and one real test, each step in an audit session of its own
         run: |
-          long=$(head -c 6000 /dev/zero | tr '\0' 'A')
-          /usr/bin/true "$NONCE-long" "$long"
-          touch "$RUNNER_TEMP/$NONCE.file"
-          rm "$RUNNER_TEMP/$NONCE.file"
-          sh -c "sh -c '/usr/bin/true $NONCE-nested'"
-          curl -s -o /dev/null --max-time 2 "http://127.0.0.1:9/$NONCE" || true
-          (setsid sh -c "sleep 1; /usr/bin/true $NONCE-detached" > /dev/null 2>&1 &)
-          python3 -c "import os, sys; os.fork() or (os.setsid(), os.fork() and os._exit(0), os.execv('/usr/bin/true', ['true', sys.argv[1]]))" "$NONCE-doublefork"
-          sleep 4
+          out="$RUNNER_TEMP/spike-loop"
+          mkdir -p "$out"
+          # run_step <label> <user> <command...>
+          # Sets the login uid, which makes the kernel start a new audit session,
+          # then runs the command as that user. Children keep the session id
+          # even when they detach from their parent.
+          run_step() {
+            local label="$1" user="$2"
+            shift 2
+            sudo sh -c 'echo "$1" > /proc/self/loginuid && echo "$2 $(cat /proc/self/sessionid)" >> "$3" && shift 3 && exec "$@"' \
+              sh "$(id -u "$user")" "$label" "$out/sessions.txt" sudo -u "$user" -H "$@"
+          }
+          invoke='Import-Module /opt/bluefire-lab/invoke-atomicredteam/Invoke-AtomicRedTeam.psd1 -Force; Invoke-AtomicTest T1082 -TestGuids cccb070c-df86-4216-a5bc-9fb60c74e27c -PathToAtomicsFolder /opt/bluefire-lab/atomic-red-team/atomics -TimeoutSeconds 60 -ExecutionLogPath /tmp/bluefire-lab-execution.csv'
+
+          run_step probes lab /opt/bluefire-lab/probes.sh "$NONCE"
+          run_step probes-as-root root /opt/bluefire-lab/probes.sh "$NONCE-root"
+
+          run_step marker-start lab /usr/bin/true bluefire-lab-marker start T1082-3
+          run_step attack lab pwsh -NoLogo -NoProfile -Command "$invoke"
+          run_step marker-end lab /usr/bin/true bluefire-lab-marker end T1082-3
+          if sudo -u lab test -s /tmp/T1082.txt; then
+            echo "effect check: the test wrote its output file"
+          else
+            echo "effect check: no output file"
+          fi
+          run_step cleanup lab pwsh -NoLogo -NoProfile -Command "$invoke -Cleanup"
+          sleep 3
+          cat "$out/sessions.txt"
+          sudo cat /tmp/bluefire-lab-execution.csv
 
       - name: Export and summarise the events
         if: always()
         env:
           JOB_TOKEN: ${{ github.token }}
         run: |
-          out="$RUNNER_TEMP/spike-sysmon"
+          out="$RUNNER_TEMP/spike-loop"
           mkdir -p "$out"
           sudo systemctl stop sysmon || true
-          sudo journalctl -t sysmon --no-pager -o cat --all > "$out/sysmon-journal.txt" || true
-          sudo sh -c "grep -a ' sysmon' /var/log/syslog || true" > "$out/sysmon-syslog.txt"
+          sudo journalctl -t sysmon --no-pager -o cat --all > "$out/sysmon.txt" || true
           sudo journalctl -u sysmon --no-pager -n 40 > "$out/sysmon-service.txt" || true
-          sudo dmesg | tail -n 40 > "$out/dmesg-tail.txt" || true
           wc -lc "$out"/*
-          cat "$out/sysmon-service.txt"
-          python3 lab/spike/summarise_sysmon.py "$out/sysmon-journal.txt" "${NONCE:-none}"
-          python3 lab/spike/summarise_sysmon.py "$out/sysmon-syslog.txt" "${NONCE:-none}"
-          grep -i -E "lost|dropp" "$out"/sysmon-service.txt "$out"/dmesg-tail.txt || echo "no line about lost or dropped events"
+          python3 lab/spike/summarise_sysmon.py "$out/sysmon.txt" "${NONCE:-none}" > "$out/summary.txt"
+          grep -E "^(/|longest|events by id)" "$out/summary.txt"
+          python3 lab/spike/summarise_sessions.py "$out/sysmon.txt" "$out/sessions.txt"
           # Nothing recorded may carry the job's token, in clear or in base64.
           test -n "$JOB_TOKEN"
           if grep -r -l -F -e "$JOB_TOKEN" -e "$(printf 'x-access-token:%s' "$JOB_TOKEN" | base64 -w0)" "$out"; then
@@ -125,12 +181,28 @@ jobs:
             exit 1
           fi
 
+      - name: Evaluate the pinned Sigma rules with Zircolite
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/spike-loop"
+          zircolite=$(find /opt/bluefire-lab/zircolite -maxdepth 2 -type f -iname 'zircolite*' ! -name '*.*' | head -n 1)
+          echo "engine: $zircolite"
+          cd "$out"
+          "$zircolite" --version || true
+          "$zircolite" --events sysmon.txt --sysmon-linux-input \
+            --ruleset /opt/bluefire-lab/sigma/rules/linux/process_creation \
+            --outfile detected.json --logfile zircolite.txt || echo "zircolite exit status $?"
+          ls -l
+          jq -r '.[] | [.rule_level, .count, .title, .id] | @tsv' detected.json | sort
+          echo "one match, all fields:"
+          jq '.[0] | {title, id, rule_level, sigmafile, sigma, match: .matches[0]}' detected.json
+
       - name: Upload the raw events
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: spike-sysmon
-          path: ${{ runner.temp }}/spike-sysmon
+          name: spike-loop
+          path: ${{ runner.temp }}/spike-loop
           retention-days: 14
           if-no-files-found: warn
 
@@ -139,6 +211,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
       - name: Install and start auditd
         run: |
           sudo apt-get update -qq
@@ -147,7 +224,7 @@ jobs:
           systemctl is-active auditd
           sudo auditctl -s
 
-      - name: Load an execve rule and run a probe
+      - name: Load an execve rule and run the probes in an audit session
         run: |
           sudo auditctl -a always,exit -F arch=b64 -S execve -k bluefire_exec
           sudo auditctl -a always,exit -F arch=b32 -S execve -k bluefire_exec
@@ -155,9 +232,10 @@ jobs:
           nonce="bluefire-probe-${GITHUB_RUN_ID}-${RANDOM}"
           echo "NONCE=$nonce" >> "$GITHUB_ENV"
           long=$(head -c 6000 /dev/zero | tr '\0' 'A')
-          /usr/bin/true "$nonce-ready"
           /usr/bin/true "$nonce-long" "$long"
-          sh -c "sh -c '/usr/bin/true $nonce-nested'"
+          sudo install -m 755 lab/spike/probes.sh /opt/probes.sh
+          sudo sh -c 'echo "$1" > /proc/self/loginuid && echo "session $(cat /proc/self/sessionid)" && shift && exec "$@"' \
+            sh "$(id -u)" sudo -u "$USER" /opt/probes.sh "$nonce"
           sleep 3
 
       - name: Export and summarise the records
@@ -170,11 +248,17 @@ jobs:
           wc -lc "$out/audit.txt"
           echo "record types:"
           grep -o '^type=[A-Z_]*' "$out/audit.txt" | sort | uniq -c | sort -rn | head -n 15
-          echo "records of the nested probe, joined by event id:"
-          serial=$(grep -a "$NONCE-nested" "$out/audit.txt" | grep -o 'audit([0-9.]*:[0-9]*)' | head -n 1)
-          grep -a -F "$serial" "$out/audit.txt" | cut -c 1-600
-          echo "interpreted by ausearch:"
-          sudo ausearch -k bluefire_exec -i --start recent 2> /dev/null | grep -a -B2 -A6 "$NONCE-nested" | cut -c 1-600 | head -n 40
+          echo "session and parent of each probe process:"
+          for probe in direct nested detached doublefork; do
+            serial=$(grep -a "$NONCE-$probe" "$out/audit.txt" | grep -a 'type=EXECVE' | grep -o 'audit([0-9.]*:[0-9]*)' | tail -n 1 || true)
+            if [ -n "$serial" ]; then
+              echo "$probe: $(grep -a -F "$serial" "$out/audit.txt" | grep -a 'type=SYSCALL' | grep -o -E ' (ppid|pid|auid|uid|ses)=[0-9]+' | tr -d '\n')"
+            else
+              echo "$probe: no EXECVE record"
+            fi
+          done
+          echo "the long command line:"
+          grep -a "$NONCE-long" "$out/audit.txt" | grep -a 'type=EXECVE' | awk '{ print length($0), "characters;", substr($0, 1, 200) }' || true
           echo "longest record:" "$(awk '{ if (length($0) > n) n = length($0) } END { print n }' "$out/audit.txt")" characters
 
       - name: Upload the raw records
@@ -201,7 +285,6 @@ jobs:
             -v "$RUNNER_TEMP/spike-tetragon:/var/log/tetragon" \
             "$TETRAGON_IMAGE" \
             /usr/bin/tetragon --export-filename /var/log/tetragon/tetragon.txt --metrics-server :2112
-          docker image inspect "$TETRAGON_IMAGE" --format '{{index .RepoDigests 0}}'
 
       - name: Wait for the first probe to be reported
         run: |
@@ -247,10 +330,8 @@ jobs:
             (.process_exec // .process_exit) as $e
             | {kind: keys_unsorted[0], time, pid: $e.process.pid, binary: $e.process.binary,
                arguments_length: ($e.process.arguments | length), arguments: $e.process.arguments[0:80],
-               cwd: $e.process.cwd, uid: $e.process.uid, exec_id: $e.process.exec_id[0:24],
-               parent_pid: $e.parent.pid, parent_binary: $e.parent.binary, parent_exec_id: $e.parent.exec_id[0:24]}'
-          echo "one whole exec event:"
-          grep -a "$NONCE-nested" "$out/tetragon.txt" | grep -a process_exec | head -n 1 | jq .
+               uid: $e.process.uid, auid: $e.process.auid,
+               parent_pid: $e.parent.pid, parent_binary: $e.parent.binary}'
           echo "metrics about lost or missed events:"
           grep -i -E "lost|missed|dropped" "$out/tetragon-metrics.txt" | grep -v '^#' | head -n 30 || echo "none found"
 
@@ -262,47 +343,3 @@ jobs:
           path: ${{ runner.temp }}/spike-tetragon
           retention-days: 14
           if-no-files-found: warn
-
-  spike-executor:
-    name: executor spike (Invoke-AtomicRedTeam)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Fetch the executor and one technique folder at pinned commits
-        run: |
-          sudo install -d -o "$USER" /opt/bluefire-lab
-          fetch() {
-            git init -q "$2"
-            git -C "$2" remote add origin "https://github.com/${1%@*}"
-            git -C "$2" fetch -q --depth 1 --filter=blob:none origin "${1#*@}"
-          }
-          fetch "$INVOKE_ATOMICREDTEAM" /opt/bluefire-lab/invoke-atomicredteam
-          git -C /opt/bluefire-lab/invoke-atomicredteam checkout -q FETCH_HEAD
-          fetch "$ATOMIC_RED_TEAM" /opt/bluefire-lab/atomic-red-team
-          git -C /opt/bluefire-lab/atomic-red-team sparse-checkout set atomics/T1082 atomics/Indexes/Indexes-CSV
-          git -C /opt/bluefire-lab/atomic-red-team checkout -q FETCH_HEAD
-          du -sh /opt/bluefire-lab/*
-          git -C /opt/bluefire-lab/invoke-atomicredteam rev-parse HEAD
-          git -C /opt/bluefire-lab/atomic-red-team rev-parse HEAD
-
-      - name: How the executor starts a command
-        run: |
-          cd /opt/bluefire-lab/invoke-atomicredteam
-          ls Public Private
-          grep -n -i -E 'sh"|bash|/bin/|Start-Process|ProcessStartInfo|-c |elevat|timeout' \
-            Private/Invoke-ExecuteCommand.ps1 Private/Invoke-Process.ps1 | cut -c 1-220 || true
-          grep -n -i -E 'RequiredModules|ModuleVersion|powershell-yaml' Invoke-AtomicRedTeam.psd1 || true
-
-      - name: Load the executor as an unprivileged user and list one technique
-        run: |
-          pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
-          sudo useradd --create-home --shell /bin/bash lab
-          sudo -u lab -H pwsh -NoLogo -NoProfile -Command '
-            $ErrorActionPreference = "Stop"
-            Set-PSRepository PSGallery -InstallationPolicy Trusted
-            Install-Module powershell-yaml -Scope CurrentUser -Force
-            Get-Module -ListAvailable powershell-yaml | Format-Table Name, Version
-            Import-Module /opt/bluefire-lab/invoke-atomicredteam/Invoke-AtomicRedTeam.psd1 -Force
-            (Get-Module Invoke-AtomicRedTeam).Version.ToString()
-            Invoke-AtomicTest T1082 -PathToAtomicsFolder /opt/bluefire-lab/atomic-red-team/atomics -ShowDetailsBrief
-          '
