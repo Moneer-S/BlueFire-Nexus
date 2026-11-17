@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import evaluate, report, run
+from . import compare, evaluate, report, run
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -30,6 +30,12 @@ def main(arguments: list[str] | None = None) -> int:
     reporting = commands.add_parser("report", help="write report.html and summary.md from results.json")
     reporting.add_argument("folder", type=Path, help="folder with results.json")
 
+    comparing = commands.add_parser("compare", help="say which answers changed since an earlier run, and why")
+    comparing.add_argument("before", type=Path, help="folder with the earlier run's results.json")
+    comparing.add_argument(
+        "after", type=Path, help="folder with the later run's results.json; gets compare.md"
+    )
+
     options = parser.parse_args(arguments)
     if options.command == "run":
         # Attack tests run only where the machine is thrown away afterwards.
@@ -49,6 +55,8 @@ def main(arguments: list[str] | None = None) -> int:
         )
     if options.command == "evaluate":
         return evaluate.main(options.folder, options.engine)
+    if options.command == "compare":
+        return compare.main(options.before, options.after)
     return report.main(options.folder)
 
 
