@@ -105,3 +105,19 @@ def test_loss_says_when_the_sensor_did_not_report() -> None:
 
     assert lost["sensor_reported"] is False
     assert lost["lost_events"] is None
+
+
+def test_loss_needs_both_counts_once_each() -> None:
+    counts = ["Total events: 507, bad events: 0, ratio = 0", "Lost events: 0, in 0 notifications"]
+
+    assert sysmon.loss(records(1, 2), counts)["sensor_reported"] is True
+    assert sysmon.loss(records(1, 2), counts[1:])["sensor_reported"] is False
+    assert (
+        sysmon.loss(records(1, 2), [*counts, "Lost events: 7, in 2 notifications"])["sensor_reported"]
+        is False
+    )
+
+
+def test_loss_counts_a_record_number_that_repeats() -> None:
+    assert sysmon.loss(records(1, 2, 2, 3), [])["repeated_records"] == 1
+    assert sysmon.loss(records(1, 2, 3), [])["repeated_records"] == 0

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from bluefire_lab import report
@@ -107,9 +106,21 @@ def test_the_report_is_one_file_that_loads_nothing(tmp_path: Path) -> None:
     report.main(tmp_path)
     page = (tmp_path / "report.html").read_text(encoding="utf-8")
 
-    assert not re.search(r"<(script|img|link|iframe|source|object|embed)\b[^>]*\b(src|href|data)=", page)
-    assert "url(" not in page and "@import" not in page
+    assert report.loads_anything(page) == []
     assert chr(0x2014) not in page  # the em dash
+
+
+def test_the_offline_check_finds_what_would_fetch_something() -> None:
+    for page in (
+        '<img alt="" src="https://example.org/a.png">',
+        "<style>body { background: url(a.png) }</style>",
+        "<style>@import 'a.css';</style>",
+        '<object data="a.pdf"></object>',
+        '<video poster="a.png"></video>',
+        "<script>fetch('/a')</script>",
+    ):
+        assert report.loads_anything(page), page
+    assert report.loads_anything('<a href="https://github.com">a link</a><p>url(a) in text</p>') == []
 
 
 def test_the_table_comes_first_and_leads_to_the_events_and_the_rule() -> None:

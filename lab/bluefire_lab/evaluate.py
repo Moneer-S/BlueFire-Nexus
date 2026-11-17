@@ -41,12 +41,19 @@ ALERT_LEVELS = ("high", "critical")
 # the command. Its start is systemd's own step, not part of what a test did.
 SYSTEMD_HELPER = "/systemd-executor"
 
+# The programs a launcher can be, by the executor a test declares. On Ubuntu sh is dash.
+SHELLS = {"sh": ("/sh", "/dash"), "bash": ("/bash",)}
+
 # Sigma log source category -> the Sysmon event it describes.
 CATEGORIES = {
     "process_creation": sysmon.PROCESS_START,
     "file_event": sysmon.FILE_CREATED,
     "network_connection": sysmon.NETWORK,
 }
+
+# What the rule engine writes in its log about the rules it loaded and the events it read.
+_LOADED = re.compile(r"(\d[\d,]*) rules loaded")
+_READ = re.compile(r"Total events processed: (?:\[\w+\])?(\d[\d,]*)")
 
 
 def rule_index(rules: Path) -> dict[str, dict]:
@@ -68,13 +75,28 @@ def rule_index(rules: Path) -> dict[str, dict]:
     return index
 
 
-def run_engine(engine: Path, run_dir: Path, events: list[dict], raw: list[str]) -> dict[str, list[str]]:
+def engine_counts(log: str) -> tuple[int | None, int | None]:
+    """How many rules the engine loaded and how many events it read, from its own log."""
+
+    def number(found: re.Match | None) -> int | None:
+        return int(found.group(1).replace(",", "")) if found else None
+
+    return number(_LOADED.search(log)), number(_READ.search(log))
+
+
+def run_engine(
+    engine: Path, run_dir: Path, events: list[dict], raw: list[str]
+) -> tuple[dict[str, list[str]], dict[str, dict]]:
     """Have the rule engine evaluate each folder of rules over the events it describes.
 
-    Returns, for each event record, the ids of the rules that matched it.
+    Returns, for each event record, the ids of the rules that matched it, and for
+    each category what the engine said it loaded and read, beside what it was given.
+    The engine skips a rule it cannot convert and still succeeds, so its own
+    counts are the ones that say what was evaluated.
     """
 
     matched: dict[str, list[str]] = collections.defaultdict(list)
+    counts: dict[str, dict] = {}
     work = run_dir / "engine"
     work.mkdir(exist_ok=True)
     for category, event_id in CATEGORIES.items():
@@ -82,6 +104,7 @@ def run_engine(engine: Path, run_dir: Path, events: list[dict], raw: list[str]) 
         lines = [line for event, line in zip(events, raw, strict=True) if event["EventID"] == event_id]
         output = work / f"{category}.json"
         output.unlink(missing_ok=True)
+        counts[category] = {"given": len(lines), "loaded": 0, "read": 0}
         if not lines or not rules.is_dir():
             continue
         text = "".join(sysmon.one_line(line) + "\n" for line in lines)
@@ -101,10 +124,12 @@ def run_engine(engine: Path, run_dir: Path, events: list[dict], raw: list[str]) 
             capture_output=True,
             timeout=900,
         )  # fmt: skip
+        log = (work / f"{category}-engine.txt").read_text(encoding="utf-8", errors="replace")
+        counts[category]["loaded"], counts[category]["read"] = engine_counts(log)
         for rule in json.loads(output.read_text(encoding="utf-8")) if output.exists() else []:
             for match in rule["matches"]:
                 matched[str(match["EventRecordID"])].append(str(rule["id"]))
-    return matched
+    return matched, counts
 
 
 def when(event: dict) -> tuple[str, int]:
@@ -140,7 +165,8 @@ def attribute(
 ) -> tuple[dict | None, dict[str, str]]:
     """Find the test's launcher and the processes that belong to its attack step.
 
-    The launcher is the process the executor names in its own log. A process
+    The launcher is the process the executor names in its own log, and it must be
+    the shell the test declares, in the attack step's session. A process
     belongs to the test when it is in the audit session of the attack step,
     started no earlier than the launcher, and is not one of the commands the
     executor runs for itself: those are the launcher's siblings, which have
@@ -164,7 +190,15 @@ def attribute(
     members = sorted(
         (event for event in starts if session and event["TerminalSessionId"] == session), key=when
     )
-    launcher = next((event for event in members if event["ProcessId"] == str(test.get("launcher_pid"))), None)
+    shell = SHELLS.get(test.get("executor", ""), ())
+    launcher = next(
+        (
+            event
+            for event in members
+            if event["ProcessId"] == str(test.get("launcher_pid")) and event["Image"].endswith(shell)
+        ),
+        None,
+    )
     if launcher is None:
         return None, {}
     owned = {}
@@ -257,7 +291,7 @@ def visibility(
         return {"answer": "inconclusive", "basis": "a marker command is missing from the telemetry"}, []
     launcher, owned = attribute(test, starts, (start, end), context)
     if launcher is None:
-        basis = "the process the executor started for the test is missing from the telemetry"
+        basis = "the shell the executor started for the test is missing from the telemetry of the attack step"
         return {"answer": "inconclusive", "basis": basis, "window": [start, end]}, []
 
     mine = []
@@ -311,7 +345,9 @@ def rule_order(rule: dict) -> tuple[int, str]:
     return levels.index(rule["level"]) if rule["level"] in levels else len(levels), rule["title"]
 
 
-def check_controls(run: dict, tests: list[dict], starts: list[dict], lost: dict) -> list[dict]:
+def check_controls(
+    run: dict, tests: list[dict], starts: list[dict], lost: dict, engine: dict[str, dict]
+) -> list[dict]:
     """The checks that keep a broken measurement from looking like a finding."""
 
     def control(name: str, passed: bool, detail: str) -> dict:
@@ -319,42 +355,68 @@ def check_controls(run: dict, tests: list[dict], starts: list[dict], lost: dict)
 
     ready = run["sensor"].get("ready_after_seconds")
     probe = f"/usr/bin/true bluefire-lab-probe {run['id']}"
-    seen = any(event["CommandLine"] == probe for event in starts)
-    checks = [
-        control(
-            "readiness",
-            ready is not None and seen,
-            f"the sensor reported a probe command {ready} s after it was started"
-            if ready is not None and seen
-            else "the sensor did not report the probe command",
-        )
-    ]
+    seen = [event["UtcTime"] for event in starts if event["CommandLine"] == probe]
+    first = min(
+        (test["visibility"]["window"][0] for test in tests if test["visibility"].get("window")), default=None
+    )
+    in_time = bool(seen) and (first is None or min(seen) < first)
+    if ready is None or not seen:
+        detail = "the sensor did not report the probe command"
+    elif not in_time:
+        detail = "the sensor reported the probe command only after the first test began"
+    else:
+        detail = f"the sensor reported a probe command {ready} s after it was started, before the first test"
+    checks = [control("readiness", ready is not None and in_time, detail)]
 
     attempted = [test for test in tests if test["execution"]["answer"] != "not attempted"]
-    unmarked = [test for test in attempted if "window" not in test["visibility"]]
+    unmeasured = [test for test in attempted if test["visibility"]["answer"] == "inconclusive"]
     checks.append(
         control(
             "markers",
-            bool(attempted) and not unmarked,
-            f"both marker commands of all {len(attempted)} tests are in the telemetry"
-            if attempted and not unmarked
-            else f"{len(unmarked)} of {len(attempted)} tests miss a marker command in the telemetry",
+            bool(attempted) and not unmeasured,
+            f"both marker commands and the launcher of all {len(attempted)} tests are in the telemetry"
+            if attempted and not unmeasured
+            else f"{len(unmeasured)} of {len(attempted)} tests could not be measured: "
+            + "; ".join(
+                f"{test.get('name', '')}: {test['visibility'].get('basis', '')}" for test in unmeasured
+            ),
         )
     )
 
-    clean = lost["sensor_reported"] and not lost["lost_events"] and not lost["bad_events"]
+    clean = lost["sensor_reported"] and lost["lost_events"] == 0 and lost["bad_events"] == 0
+    whole = not lost["missing_records"] and not lost["repeated_records"]
     if lost["sensor_starts"] != 1:
         detail = f"the sensor started {lost['sensor_starts']} times during the run, not once"
     elif not lost["sensor_reported"]:
-        detail = "the sensor did not report its count of lost events"
+        detail = "the sensor did not report its counts of lost and bad events once each"
     else:
         detail = (
-            f"the sensor reported {lost['lost_events']} lost and {lost['bad_events']} bad events, and "
+            f"the sensor reported {lost['lost_events']} lost and {lost['bad_events']} bad events, "
             f"{lost['missing_records']} of its {lost['records'] + lost['missing_records']} records are missing "
-            "from the export"
+            f"from the export, and {lost['repeated_records']} appear more than once"
         )
+    checks.append(control("loss", clean and whole and lost["sensor_starts"] == 1, detail))
+
+    problems = []
+    for category, counts in engine.items():
+        kind = sysmon.KINDS[CATEGORIES[category]]
+        if counts["rules"] and not counts["given"]:
+            problems.append(
+                f"the sensor recorded no {kind} event, so the {category} rules were not evaluated"
+            )
+        elif counts["loaded"] != counts["rules"]:
+            problems.append(f"the engine loaded {counts['loaded']} of the {counts['rules']} {category} rules")
+        elif counts["read"] != counts["given"]:
+            problems.append(f"the engine read {counts['read']} of the {counts['given']} {kind} events")
+    rules, given = (sum(counts[key] for counts in engine.values()) for key in ("rules", "given"))
     checks.append(
-        control("loss", clean and not lost["missing_records"] and lost["sensor_starts"] == 1, detail)
+        control(
+            "engine",
+            not problems,
+            "; ".join(problems)
+            or f"the rule engine loaded all {rules} rules and read all {given} events it was given, "
+            "and the sensor recorded every kind of event the rules describe",
+        )
     )
 
     canaries = [test for test in tests if test["role"] == "canary"]
@@ -380,15 +442,14 @@ def check_controls(run: dict, tests: list[dict], starts: list[dict], lost: dict)
         if test["visibility"]["answer"] not in ("telemetry only", "no telemetry")
         or any(rule["alert"] for rule in test["visibility"].get("launcher_only_rules", []))
     ]
-    checks.append(
-        control(
-            "control",
-            len(quiet) == 1 and not noisy and quiet[0]["execution"]["answer"] == "took effect",
-            "the harmless command ran through the same executor and raised no alert"
-            if len(quiet) == 1 and not noisy
-            else "the harmless command raised an alert or could not be measured",
-        )
-    )
+    if len(quiet) != 1 or noisy:
+        detail = "the harmless command raised an alert or could not be measured"
+    elif quiet[0]["execution"]["answer"] != "took effect":
+        detail = f"the harmless command did not take effect: {quiet[0]['execution'].get('basis', '')}"
+    else:
+        detail = "the harmless command ran through the same executor and raised no alert"
+    passed = len(quiet) == 1 and not noisy and quiet[0]["execution"]["answer"] == "took effect"
+    checks.append(control("control", passed, detail))
     return checks
 
 
@@ -397,7 +458,11 @@ def main(run_dir: Path, engine: Path) -> int:
     events, raw, other = sysmon.read(run_dir / "sysmon.txt")
     starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
     rules = rule_index(run_dir / "rules" / "linux")
-    matched = run_engine(engine, run_dir, events, raw)
+    matched, counts = run_engine(engine, run_dir, events, raw)
+    for category in counts:
+        counts[category]["rules"] = sum(
+            1 for rule in rules.values() if rule["file"].startswith(f"linux/{category}/")
+        )
 
     known_sessions = {step["session"] for test in run["tests"] for step in test["steps"]}
     known_sessions |= {step["session"] for step in run.get("probes", [])}
@@ -452,14 +517,12 @@ def main(run_dir: Path, engine: Path) -> int:
         "rules": {
             "source": (run_dir / "rules" / "SOURCE").read_text(encoding="utf-8").strip(),
             "license": "Detection Rule License 1.1, https://github.com/SigmaHQ/Detection-Rule-License",
-            "evaluated": {
-                category: sum(1 for rule in rules.values() if rule["file"].startswith(f"linux/{category}/"))
-                for category in CATEGORIES
-            },
+            # What the engine says it loaded: a rule it could not convert was not evaluated.
+            "evaluated": {category: counts[category]["loaded"] for category in CATEGORIES},
             "alert_levels": list(ALERT_LEVELS),
         },
-        "engine": {"name": "Zircolite", "version": found.group(1) if found else None},
-        "controls": check_controls(run, tests, starts, sysmon.loss(events, other)),
+        "engine": {"name": "Zircolite", "version": found.group(1) if found else None, "counts": counts},
+        "controls": check_controls(run, tests, starts, sysmon.loss(events, other), counts),
         "summary": {
             "tests": len(measured),
             "took_effect": len(took),

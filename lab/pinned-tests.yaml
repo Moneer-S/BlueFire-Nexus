@@ -49,6 +49,8 @@ tests:
     guid: 952931a4-af0b-4335-bbbe-73c8c5b327ae
     name: Permission Groups Discovery (Local)
     output: "root:x:0:"
+  # ps prints this text also in its row for the test's own grep, so the check
+  # shows that ps ran, not that other processes were visible to it.
   - technique: T1518.001
     guid: 23b91cd2-c99c-4002-9e41-317c63e024a2
     name: Security Software Discovery - ps (Linux)
@@ -122,6 +124,8 @@ tests:
     guid: 5bec4cc8-f41e-437b-b417-33ff60acf9af
     name: Obfuscated command line scripts
     output: uid=
+  # No check that could fail: awk exits with status 0 whether or not the shell it
+  # starts in the background runs. Do not use it to show a change that blocks.
   - technique: T1059.004
     guid: ee72b37d-b8f5-46a5-a9e7-0ff50035ffd5
     name: Shell Creation using awk command
