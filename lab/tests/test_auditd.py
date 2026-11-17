@@ -51,11 +51,38 @@ def test_an_event_joins_its_records_by_serial(tmp_path: Path) -> None:
 
     event = auditd.events(auditd.read(path))[0]
 
-    assert event["serial"] == "178"
+    assert (event["event"], event["serial"]) == ("1794802702.086:178", "178")
     assert event["call"]["exe"] == "/usr/bin/dash"
     assert event["names"]["AUID"] == "bluefire-lab"
     assert event["paths"] == ["/home/bluefire-lab/.bashrc"]  # the parent folder is left out
     assert event["command"] == "sh -c echo hi"
+
+
+def test_records_of_different_times_are_different_events_even_with_one_serial(tmp_path: Path) -> None:
+    # The daemon numbers its own records apart from the kernel, so a serial can come twice.
+    daemon = "type=DAEMON_START msg=audit(1794802600.100:178): op=start ver=3.1.2 auid=4294967295 res=success"
+    path = tmp_path / "audit.txt"
+    path.write_bytes("\n".join([daemon, *LINES]).encode())
+
+    events = auditd.events(auditd.read(path))
+
+    assert [(event["event"], event["types"][0]) for event in events if event["serial"] == "178"] == [
+        ("1794802600.100:178", "DAEMON_START"),
+        ("1794802702.086:178", "SYSCALL"),
+    ]
+
+
+def test_a_record_a_program_writes_itself_gives_its_event_process_and_session(tmp_path: Path) -> None:
+    line = (
+        "type=ADD_USER msg=audit(1794893574.919:1477): pid=5218 uid=0 auid=1002 ses=49 subj=unconfined "
+        'msg=\'op=add-user acct="evil_user" exe="/usr/sbin/useradd" hostname=? addr=? terminal=? res=success\''
+    )
+    path = tmp_path / "audit.txt"
+    path.write_bytes(line.encode())
+
+    event = auditd.events(auditd.read(path))[0]
+
+    assert (event["call"]["pid"], event["call"]["ses"], event["call"]["acct"]) == ("5218", "49", "evil_user")
 
 
 def test_the_status_auditctl_prints_is_read_by_name() -> None:

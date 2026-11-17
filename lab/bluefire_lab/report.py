@@ -499,9 +499,10 @@ control fails as a whole.</p>
 <p class="note">Each test is a published Atomic Red Team test, pinned by its GUID and run unchanged by the
 upstream executor on the target, as an unprivileged account unless the test declares that it needs root.
 A marker command runs before and after each test. Each step runs in a kernel audit session of its own,
-and an event is tied to a test when its process is in the session of the test's attack step. What the
-executor runs for itself, and the test's cleanup, are left out, and so is a hardening change, which root
-puts in place and removes in sessions of its own. The sensor's own timestamps are used throughout.</p>
+and an event is tied to a test when its process is in the session of the test's attack step; an auditd
+record, when the process that wrote it is one of the test's. What the executor and the lab's own driver run
+for themselves, and the test's cleanup, are left out, and so is a hardening change, which root puts in place
+and removes in sessions of its own. The sensors' own timestamps are used throughout.</p>
 <p class="note">The answers can be computed again from the files of the run's artifact:</p>
 <pre class="box">{e(RECOMPUTE)}</pre>
 <h3 id="sensor">Sensor configuration</h3>
