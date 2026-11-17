@@ -45,6 +45,9 @@ def read(path: Path) -> list[dict]:
                 "type": found.group(1),
                 "time": utc(found.group(2), found.group(3)),
                 "serial": found.group(4),
+                # The kernel and the daemon count serials apart, so only the time with the
+                # serial names one event.
+                "event": f"{found.group(2)}.{found.group(3)}:{found.group(4)}",
                 "fields": fields(raw),
                 "interpreted": fields(interpreted),
                 "line": line,
@@ -63,19 +66,24 @@ def command_line(value: str) -> str:
 
 
 def events(records: list[dict]) -> list[dict]:
-    """The events of the log: the records that share a serial, joined."""
+    """The events of the log: the records that share a time and a serial, joined.
+
+    An event's process, session and account come from its system call record, or,
+    for a record a program writes itself (useradd's ADD_USER, sudo's USER_CMD),
+    from that record.
+    """
 
     joined: dict[str, dict] = {}
     for record in records:
         event = joined.setdefault(
-            record["serial"],
-            {"serial": record["serial"], "time": record["time"], "types": [], "call": {}, "names": {},
-             "paths": [], "command": ""},
+            record["event"],
+            {"event": record["event"], "serial": record["serial"], "time": record["time"], "types": [],
+             "call": {}, "names": {}, "paths": [], "command": ""},
         )  # fmt: skip
         event["types"].append(record["type"])
-        if record["type"] == "SYSCALL":
+        if record["type"] == "SYSCALL" or not event["call"]:
             event["call"], event["names"] = record["fields"], record["interpreted"]
-        elif record["type"] == "PATH" and record["fields"].get("nametype") != "PARENT":
+        if record["type"] == "PATH" and record["fields"].get("nametype") != "PARENT":
             event["paths"].append(record["fields"].get("name", ""))
         elif record["type"] == "PROCTITLE":
             event["command"] = command_line(record["fields"].get("proctitle", ""))

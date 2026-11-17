@@ -180,31 +180,25 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
             record = records[int(match["row_id"]) - 1]
             if match.get("type") != record["type"]:
                 raise SystemExit(f"the engine's line {match['row_id']} is not the record it was given there")
-            matched[f"audit {record['serial']}"].append(str(rule["id"]))
+            matched[f"audit {record['event']}"].append(str(rule["id"]))
     return matched, counts
-
-
-def watched(event: dict) -> bool:
-    """Whether one of the lab's audit rules recorded the event. The kernel also records each
-    change of login uid, which the driver makes to start every step's session: such an event
-    is the lab's own, and carries no rule's key."""
-
-    return event["call"].get("key", "(null)") not in ("", "(null)")
 
 
 def describe_audit(event: dict, why: str) -> dict:
     """An auditd event in the shape of the Sysmon events the report shows."""
 
     call, names = event["call"], event["names"]
-    action = names.get("SYSCALL", call.get("syscall", "call"))
+    action = names.get("SYSCALL") or event["types"][0]  # a record a program wrote itself has no call
+    said = " ".join(f"{name}={call[name]}" for name in ("op", "acct", "res") if call.get(name))
+    detail = ", ".join(event["paths"]) + (f" by {event['command']}" if event["command"] else "")
     return {
-        "record": f"audit {event['serial']}",
+        "record": f"audit {event['event']}",
         "time": event["time"],
         "kind": f"{action} (auditd)",
         "process_id": call.get("pid", ""),
         "user": names.get("UID", call.get("uid", "")),
         "image": call.get("exe", ""),
-        "detail": ", ".join(event["paths"]) + (f" by {event['command']}" if event["command"] else ""),
+        "detail": detail or said,
         "why": why,
         "fields": {
             "records": " ".join(event["types"]),
@@ -406,11 +400,15 @@ def visibility(
             sysmon.PROCESS_END,
         ):
             mine.append(describe(event, "launcher"))
-    # auditd's records name their audit session, so a watched event of the attack step's session is the test's.
+    # An auditd event is the test's when its process is one of the test's: the launcher or a
+    # process tied to the test above. That leaves out the driver's own records in the attack
+    # session (the change of login uid that starts it, sudo's records) as the executor's are.
     attack = step_of(test, "attack")
+    pids = {launcher["ProcessId"]} | {event["ProcessId"] for event in starts if event["ProcessGuid"] in owned}
     for event in context.get("audit_events", []):
-        if attack and attack["session"] and event["call"].get("ses") == attack["session"] and watched(event):
-            mine.append(describe_audit(event, "session"))
+        in_step = attack and attack["session"] and event["call"].get("ses") == attack["session"]
+        if event["call"].get("pid") in pids and (in_step or start <= event["time"] <= end):
+            mine.append(describe_audit(event, "session" if in_step else "window"))
     mine.sort(key=lambda event: (event["time"], str(event["record"])))
 
     fired: dict[str, list[int]] = collections.defaultdict(list)
@@ -489,8 +487,8 @@ def ordinary_activity(
         for rule_id in matched.get(event["EventRecordID"], []):
             hits[rule_id].append(int(event["EventRecordID"]))
     for event in audit_events:
-        if not watched(event):
-            continue  # auditd's own records, and the driver's changes of login uid, are no activity
+        if "LOGIN" in event["types"]:
+            continue  # the driver's change of login uid that starts a step's session
         session = event["call"].get("ses")
         if session in baseline_sessions:
             kind = "baseline_events"
@@ -501,8 +499,8 @@ def ordinary_activity(
         else:
             continue
         counts[kind] += 1
-        for rule_id in matched.get(f"audit {event['serial']}", []):
-            hits[rule_id].append(f"audit {event['serial']}")
+        for rule_id in matched.get(f"audit {event['event']}", []):
+            hits[rule_id].append(f"audit {event['event']}")
     pinned = [
         {**{key: rules[rule_id][key] for key in ("id", "title", "level")}, "events": len(records)}
         for rule_id, records in hits.items()
