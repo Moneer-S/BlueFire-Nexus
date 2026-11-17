@@ -367,12 +367,14 @@ tests:
     needs: [gcc]
     output: Loaded Atomic Red Team Library successfully!
     defenses: [tmp-noexec]
-  # The test starts the process it writes into itself.
+  # The test starts the process it writes into itself. That process sleeps for
+  # two seconds after the test starts it, and only then runs what was written.
   - technique: T1055.009
     guid: 50859b3b-b088-4c7b-973d-03a0365a9bf9
     name: Inplace Instruction Overwrite
     needs: [gcc, make]
     effect: test -f /tmp/pwned
+    dwell: 5
 
   # Collection, kept on the target
   - technique: T1560.001
