@@ -129,8 +129,8 @@ seen in a run.
 The visibility answer stays the pinned rules' alone. A second column in the
 report gives the answer with the accepted rules counted too, and a rule that is
 not accepted changes no answer. In
-[run 44017281584](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44017281584)
-(17 November 2026, kernel 7.0.0-1017-azure), with two more published procedures
+[run 44022042190](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44022042190)
+(17 November 2026, kernel 7.0.0-1014-aws), with two more published procedures
 in the list, all 19 tests took effect. One raised an alert with the pinned
 rules, and 8 with the accepted rules as well:
 
@@ -138,15 +138,18 @@ rules, and 8 with the accepted rules as well:
 | --- | --- | --- | --- |
 | [Systemd Unit File Written By A Shell](rules/linux/file_event/file_event_lnx_systemd_unit_written_by_shell.yml) | T1053.006 Create Systemd Service and Timer, T1543.002 Create Systemd Service | alerted on 2 of 2 | accepted |
 | [System Account Created With A Login Shell](rules/linux/process_creation/proc_creation_lnx_system_account_with_login_shell.yml) | T1136.001 Create a user account on a Linux system | alerted on 1 of 1 | accepted |
-| [Setuid Or Setgid Bit Set With Chmod](rules/linux/process_creation/proc_creation_lnx_chmod_setuid_setgid.yml) | T1548.001 Set a SetUID flag on file, T1548.001 Set a SetGID flag on file | alerted on 1 of 1 | accepted |
-| [Shell History File Emptied](rules/linux/process_creation/proc_creation_lnx_history_file_emptied.yml) | T1070.003 Clear Bash history (truncate), T1070.003 Clear Bash history (ln dev/null) | alerted on 1 of 1 | accepted |
+| [Setuid Or Setgid Bit Set With Chmod](rules/linux/process_creation/proc_creation_lnx_chmod_setuid_setgid.yml) | T1548.001 Set a SetUID flag on file, T1548.001 Set a SetGID flag on file | alerted on 2 of 2, one for each | accepted |
+| [Shell History File Emptied](rules/linux/process_creation/proc_creation_lnx_history_file_emptied.yml) | T1070.003 Clear Bash history (truncate), T1070.003 Clear Bash history (ln dev/null) | alerted on 3 of 3, on `~/.zsh_history`, `~/.histfile` and `~/.history` | accepted |
 | [Program Named Like A System Daemon Run From A Temporary Folder](rules/linux/process_creation/proc_creation_lnx_daemon_name_from_temp_folder.yml) | T1036.003 Masquerading as FreeBSD or Linux crond process | none: the test has no input arguments to change | not accepted |
 
 Three of the accepted rules alert on two published procedures each, and one
-covers a single procedure. In the same run the baseline left 156 events and the
-runner's own work outside the tests 2,070. None of the lab's rules matched any
-of them, while nine pinned rules of level medium or lower did, for example
-"User Has Been Deleted Via Userdel" on the baseline's `userdel`.
+covers a single procedure. In the same run the baseline left 226 events and the
+runner's own work outside the tests 2,269. None of the lab's rules matched any
+of them, while ten pinned rules did. One of those is of level high: the
+canary's own rule, "History File Deletion", matched the baseline's removal of a
+copy of a history file (`rm ~/.bash_history.bak`, record 1090). The others are
+medium or lower, for example "User Has Been Deleted Via Userdel" on the
+baseline's `userdel`.
 
 The baseline is a short script, not days of real administration, so a rule that
 stays quiet on it can still be noisy elsewhere. One such case is known: the
