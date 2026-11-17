@@ -8,80 +8,112 @@ technique take effect, and what did the defense see.
 ## What it shows today
 
 Everything in this section comes from one run of the `lab` workflow:
-[run 44019934793](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44019934793),
+[run 44035796630](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44035796630),
 17 November 2026. Its run page shows the same answers in a longer table, and
-its artifact `lab-run` holds the sensor's raw output (`sysmon.txt`), the
-answers with what each rests on (`results.json`) and the full report
-(`report.html`). GitHub keeps both for 90 days. An earlier run of the same tests,
-[run 43808649201](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43808649201)
-on 16 November, gave the same answers before the controls were tightened.
+its artifact `lab-run` holds the sensors' raw output (`sysmon.txt` and
+`audit.txt`), the answers with what each rests on (`results.json`) and the full
+report (`report.html`). GitHub keeps both for 90 days.
 
 - **Target:** a GitHub-hosted `ubuntu-24.04` runner (Ubuntu 24.04.5, kernel
-  7.0.0-1014-aws, runner image 20261111.127.1).
-- **Tests:** 17 Linux tests from Atomic Red Team at commit `a0e3f9bc`, run
-  unchanged by its executor, Invoke-AtomicRedTeam, at commit `8af478bb`.
-- **Sensor:** Sysmon for Linux 1.6.0 with the configuration in
-  [`sensors/sysmon.xml`](sensors/sysmon.xml).
-- **Rules:** the 135 Linux rules of SigmaHQ release r2026-07-01 that match what
-  this sensor records (122 for process creation, 8 for file events, 5 for
-  network connections), evaluated by Zircolite 4.7.1.
+  7.0.0-1017-azure, runner image 20261111.370.1).
+- **Tests:** 49 Linux tests from Atomic Red Team at commit `a0e3f9bc`, run
+  unchanged by its executor, Invoke-AtomicRedTeam, at commit `8af478bb`. Two
+  run with one input argument changed; [`pinned-tests.yaml`](pinned-tests.yaml)
+  says which and why.
+- **Sensors:** Sysmon for Linux 1.6.0 with the configuration in
+  [`sensors/sysmon.xml`](sensors/sysmon.xml), and auditd 3.1.2 with the file
+  watches in [`sensors/audit.rules`](sensors/audit.rules).
+- **Rules:** the 188 Linux rules of SigmaHQ release r2026-07-01 that match what
+  these sensors record (122 for process creation, 8 for file events, 5 for
+  network connections, 53 for auditd), evaluated by Zircolite 4.7.1.
 
-All 17 tests took effect. One of them raised an alert, meaning a match of a rule
-of level high or critical on an event of the test:
+All 49 tests took effect. One of them raised an alert, meaning a match of a
+rule of level high or critical on an event of the test. The last column counts
+the lab's own rules too, those the run accepted: see
+[Detection rules of the lab's own](#detection-rules-of-the-labs-own).
 
-| Test | Visibility | Highest level among the rules that matched an event of the test |
+| Test | Visibility with the pinned rules (highest level that matched) | With the lab's rules too |
 | --- | --- | --- |
-| T1059.004 Shell Creation using awk command | alert | high |
-| T1053.003 Cron - Replace crontab with referenced file | telemetry only | medium |
-| T1222.002 chmod - Change file or folder mode (numeric mode) | telemetry only | medium |
-| T1548.001 Set a SetUID flag on file | telemetry only | medium |
-| T1036.003 Masquerading as FreeBSD or Linux crond process | telemetry only | medium |
-| T1027 Decode base64 Data into Script | telemetry only | medium |
-| T1069.001 Permission Groups Discovery (Local) | telemetry only | low |
-| T1518.001 Security Software Discovery - ps (Linux) | telemetry only | low |
-| T1140 Linux Base64 Encoded Shebang in CLI | telemetry only | low |
-| T1059.004 Obfuscated command line scripts | telemetry only | low |
-| T1082 List OS Information | telemetry only | informational |
-| T1053.006 Create Systemd Service and Timer | telemetry only | none matched |
-| T1543.002 Create Systemd Service | telemetry only | none matched |
-| T1136.001 Create a user account on a Linux system | telemetry only | none matched |
-| T1098.004 Modify SSH Authorized Keys | telemetry only | none matched |
-| T1070.003 Clear Bash history (truncate) | telemetry only | none matched |
-| T1546.004 Add command to .bashrc | no telemetry | none matched |
+| T1082 List OS Information | telemetry only (informational) | telemetry only |
+| T1069.001 Permission Groups Discovery (Local) | telemetry only (low) | telemetry only |
+| T1518.001 Security Software Discovery - ps (Linux) | telemetry only (low) | telemetry only |
+| T1057 Process Discovery - ps | telemetry only (none matched) | telemetry only |
+| T1049 System Network Connections Discovery via ss or lsof (Linux/MacOS) | telemetry only (informational) | telemetry only |
+| T1083 Nix File and Directory Discovery 2 | telemetry only (informational) | telemetry only |
+| T1087.001 View accounts with UID 0 | telemetry only (none matched) | telemetry only |
+| T1201 Examine password expiration policy - All Linux | telemetry only (none matched) | telemetry only |
+| T1053.003 Cron - Replace crontab with referenced file | telemetry only (medium) | telemetry only |
+| T1053.006 Create Systemd Service and Timer | telemetry only (none matched) | alert |
+| T1543.002 Create Systemd Service | telemetry only (none matched) | alert |
+| T1136.001 Create a user account on a Linux system | telemetry only (medium) | alert |
+| T1098.004 Modify SSH Authorized Keys | telemetry only (none matched) | telemetry only |
+| T1546.004 Add command to .bashrc | telemetry only (medium) | telemetry only |
+| T1037.004 rc.local | telemetry only (medium) | telemetry only |
+| T1546.005 Trap EXIT | telemetry only (medium) | telemetry only |
+| T1546.018 Python Startup Hook - usercustomize.py (Linux / MacOS) | telemetry only (medium) | telemetry only |
+| T1569.003 Enable systemd Service for Persistence with Auto-Restart | telemetry only (none matched) | alert |
+| T1556.003 Malicious PAM rule | telemetry only (none matched) | telemetry only |
+| T1078.003 Reactivate a locked/expired account (Linux) | telemetry only (medium) | telemetry only |
+| T1552.003 Search Through Bash History | telemetry only (medium) | telemetry only |
+| T1552.004 Discover Private SSH Keys | telemetry only (medium) | telemetry only |
+| T1222.002 chmod - Change file or folder mode (numeric mode) | telemetry only (medium) | telemetry only |
+| T1548.001 Set a SetUID flag on file | telemetry only (medium) | alert |
+| T1548.001 Set a SetGID flag on file | telemetry only (medium) | alert |
+| T1036.003 Masquerading as FreeBSD or Linux crond process | telemetry only (medium) | telemetry only |
+| T1036.005 Execute a process from a directory masquerading as the current parent directory | telemetry only (none matched) | telemetry only |
+| T1564.001 Create a hidden file in a hidden directory | telemetry only (none matched) | telemetry only |
+| T1070.006 Set a file's modification timestamp | telemetry only (none matched) | telemetry only |
+| T1070.003 Clear Bash history (truncate) | telemetry only (none matched) | alert |
+| T1070.003 Clear Bash history (ln dev/null) | telemetry only (none matched) | alert |
+| T1685.006 rm -rf | telemetry only (medium) | telemetry only |
+| T1027 Decode base64 Data into Script | telemetry only (medium) | telemetry only |
+| T1140 Linux Base64 Encoded Shebang in CLI | telemetry only (low) | telemetry only |
+| T1059.004 Obfuscated command line scripts | telemetry only (low) | telemetry only |
+| T1059.004 Shell Creation using awk command | alert (high) | alert |
+| T1027.002 Binary simply packed by UPX (linux) | telemetry only (medium) | telemetry only |
+| T1027.004 C compile | telemetry only (medium) | telemetry only |
+| T1027.013 Password-Protected ZIP Payload Extraction and Execution | telemetry only (informational) | telemetry only |
+| T1574.006 Shared Library Injection via LD_PRELOAD | telemetry only (none matched) | telemetry only |
+| T1055.009 Inplace Instruction Overwrite | telemetry only (none matched) | telemetry only |
+| T1560.001 Encrypts collected data with AES-256 and Base64 | telemetry only (none matched) | telemetry only |
+| T1560.002 Compressing data using tarfile in Python (FreeBSD/Linux) | telemetry only (none matched) | telemetry only |
+| T1030 Data Transfer Size Limits | telemetry only (none matched) | telemetry only |
+| T1486 Encrypt files using openssl (FreeBSD/Linux) | telemetry only (none matched) | telemetry only |
+| T1489 Linux - Stop service using systemctl | telemetry only (medium) | telemetry only |
+| T1685 Disable ASLR Via sysctl parameters - Linux | telemetry only (none matched) | telemetry only |
+| T1553.004 Install root CA on Debian/Ubuntu | telemetry only (medium) | telemetry only |
+| T1548.003 Unlimited sudo cache timeout | telemetry only (medium) | telemetry only |
 
-What that means for a defender, under this sensor configuration and these
-rules:
+What that means for a defender, under these sensors and these rules:
 
-- Fifteen tests did what they do and the sensor recorded it, but no rule of an
-  alert level fired. These are gaps that a rule could close. Whether one closes
-  them without false alarms is not shown by this run.
-- Appending a command to `~/.bashrc` left nothing besides the start of the one
-  shell process whose command line holds the whole append. The shell's own
-  `echo` starts no process, and Sysmon for Linux reports a file only as created,
-  and only while it is less than 100 ms old
-  ([its source](https://github.com/microsoft/Sysmon-Linux/blob/962934f7e710a8e860ed5020f2068c6eba6aff64/ebpfKern/sysmonFileOpen.c)).
-  This gap needs a sensor change before any rule can see the write itself: see
+- 48 tests did what they do and the sensors recorded it, but no pinned rule of
+  an alert level fired. These are gaps that a rule could close. The lab's own
+  rules close 8 of them; 40 stay open.
+- No test left no telemetry. Before auditd recorded beside Sysmon, appending a
+  command to `~/.bashrc` left none: see
   [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
-- On nine of the tests, rules of level medium matched only that shell process,
-  which carries a test's whole command line: three of them on T1140, for base64
-  piped into a shell. The report shows them, and does not count them as
-  detections.
+- On 25 of the tests, rules of level medium or lower matched only the one shell
+  process whose command line holds the whole test. The report shows them, and
+  does not count them as detections.
 
 The canary, a test the pinned rules are known to catch (T1070.003, history
 removal with `rm`), raised its alert at the start and at the end of the run. A
 harmless command (T1082, `hostname`) ran through the same executor and raised
-none.
+none. The first run of these 49 tests,
+[run 44033742721](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44033742721)
+on kernel 7.0.0-1014-aws, gave the same answers but one: the in-place
+instruction overwrite (T1055.009) had not taken effect, because the lab ended
+the process the test writes into before that process ran what was written. The
+test now waits five seconds before its check.
 
 ## Hardening that blocks a technique
 
-In [run 44020766356](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44020766356)
-(17 November 2026, same runner image and kernel, the same 17 tests with the same
-answers), four tests ran once more after all the other tests, before the
-closing canary, each with one hardening change in place. All four changes
-blocked their technique: the test
-ran with its prerequisites met and did not take effect, while it had taken
-effect without the change earlier in the same run. What each test printed
-shows why:
+In [run 44035796630](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44035796630),
+nine tests ran once more after all the other tests, before the closing canary,
+each with one hardening change in place. Eight of the changes blocked their
+technique: the test ran with its prerequisites met and did not take effect,
+while it had taken effect without the change earlier in the same run. What each
+test printed shows why:
 
 | Test | Hardening change | What the test printed |
 | --- | --- | --- |
@@ -89,14 +121,24 @@ shows why:
 | T1098.004 Modify SSH Authorized Keys | the account's `~/.ssh` and `authorized_keys` owned by root | `cannot create /home/bluefire-lab/.ssh/authorized_keys: Permission denied` |
 | T1546.004 Add command to .bashrc | the account's `~/.bashrc` made immutable | `cannot create /home/bluefire-lab/.bashrc: Operation not permitted` |
 | T1036.003 Masquerading as FreeBSD or Linux crond process | `/tmp` mounted with `noexec`, `nosuid` and `nodev` | `/tmp/crond: Permission denied` |
+| T1027.002 Binary simply packed by UPX (linux) | the same `/tmp` | `/tmp/packed_bin: Permission denied` |
+| T1027.004 C compile | the same `/tmp`, where the test compiles | `./a.out: Permission denied` |
+| T1574.006 Shared Library Injection via LD_PRELOAD | the same `/tmp` | `object '/tmp/T1574006.so' from LD_PRELOAD cannot be preloaded (failed to map segment from shared object): ignored.` |
+| T1569.003 Enable systemd Service for Persistence with Auto-Restart | the same `/tmp`, where its service's program is | `ExecStart=/tmp/atomic_payload.sh (code=exited, status=203/EXEC)` |
 
-Each change was tried against one published test. What it leaves open was not
-tried: jobs that root adds under `/etc/cron.d`; keys that root adds for the
-account, and moving the root-owned `~/.ssh` aside, which the account can do
-because it owns its home folder; the account's other shell start files such as
-`~/.profile`; and programs run from `/dev/shm` or the account's home folder, or
-a script in `/tmp` run through an interpreter. The changes are defined in
-[`pinned-tests.yaml`](pinned-tests.yaml) under `defenses`.
+The ninth change did not block its technique. With `/tmp` mounted `noexec`, the
+password-protected ZIP payload (T1027.013) still printed `T1027.013: Payload
+extracted from encrypted ZIP`: it runs its script through `bash`, which the
+mount does not stop. The first four rows were first shown in
+[run 44020766356](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44020766356).
+
+Each change was tried against the published tests in the table. What it leaves
+open beyond the script run through an interpreter was not tried: jobs that root
+adds under `/etc/cron.d`; keys that root adds for the account, and moving the
+root-owned `~/.ssh` aside, which the account can do because it owns its home
+folder; the account's other shell start files such as `~/.profile`; and
+programs run from `/dev/shm` or the account's home folder. The changes are
+defined in [`pinned-tests.yaml`](pinned-tests.yaml) under `defenses`.
 
 ## Detection rules of the lab's own
 
@@ -132,27 +174,29 @@ seen in a run.
 The visibility answer stays the pinned rules' alone. A second column in the
 report gives the answer with the accepted rules counted too, and a rule that is
 not accepted changes no answer. In
-[run 44022042190](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44022042190)
-(17 November 2026, kernel 7.0.0-1014-aws), with two more published procedures
-in the list, all 19 tests took effect. One raised an alert with the pinned
-rules, and 8 with the accepted rules as well:
+[run 44035796630](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44035796630),
+one of the 49 tests raised an alert with the pinned rules, and 9 with the
+accepted rules as well:
 
 | Rule | Alerts on | Runs with changed input arguments | Verdict |
 | --- | --- | --- | --- |
-| [Systemd Unit File Written By A Shell](rules/linux/file_event/file_event_lnx_systemd_unit_written_by_shell.yml) | T1053.006 Create Systemd Service and Timer, T1543.002 Create Systemd Service | alerted on 2 of 2 | accepted |
+| [Systemd Unit File Written By A Shell](rules/linux/file_event/file_event_lnx_systemd_unit_written_by_shell.yml) | T1053.006 Create Systemd Service and Timer, T1543.002 Create Systemd Service, T1569.003 Enable systemd Service for Persistence with Auto-Restart | alerted on 3 of 3 | accepted |
 | [System Account Created With A Login Shell](rules/linux/process_creation/proc_creation_lnx_system_account_with_login_shell.yml) | T1136.001 Create a user account on a Linux system | alerted on 1 of 1 | accepted |
 | [Setuid Or Setgid Bit Set With Chmod](rules/linux/process_creation/proc_creation_lnx_chmod_setuid_setgid.yml) | T1548.001 Set a SetUID flag on file, T1548.001 Set a SetGID flag on file | alerted on 2 of 2, one for each | accepted |
 | [Shell History File Emptied](rules/linux/process_creation/proc_creation_lnx_history_file_emptied.yml) | T1070.003 Clear Bash history (truncate), T1070.003 Clear Bash history (ln dev/null) | alerted on 3 of 3, on `~/.zsh_history`, `~/.histfile` and `~/.history` | accepted |
 | [Program Named Like A System Daemon Run From A Temporary Folder](rules/linux/process_creation/proc_creation_lnx_daemon_name_from_temp_folder.yml) | T1036.003 Masquerading as FreeBSD or Linux crond process | none: the test has no input arguments to change | not accepted |
 
-Three of the accepted rules alert on two published procedures each, and one
-covers a single procedure. In the same run the baseline left 226 events and the
-runner's own work outside the tests 2,269. None of the lab's rules matched any
-of them, while ten pinned rules did. One of those is of level high: the
-canary's own rule, "History File Deletion", matched the baseline's removal of a
-copy of a history file (`rm ~/.bash_history.bak`, record 1090). The others are
-medium or lower, for example "User Has Been Deleted Via Userdel" on the
-baseline's `userdel`.
+The rule for a unit file written by a shell was written for the first two of
+its procedures. It also alerts on the third, T1569.003, added to the list
+later, and on that procedure's run with changed input arguments. Two other
+accepted rules alert on two published procedures each, and one covers a single
+procedure. In the same run the baseline left 251 events and the runner's own
+work outside the tests 6,303. None of the lab's rules matched any of them,
+while 11 pinned rules did. One of those is of level high: the canary's own
+rule, "History File Deletion", matched the baseline's removal of a copy of a
+history file (`rm ~/.bash_history.bak`, record 1101). The others are medium or
+lower, for example "User Has Been Deleted Via Userdel" on the baseline's
+`userdel`.
 
 The baseline is a short script, not days of real administration, so a rule that
 stays quiet on it can still be noisy elsewhere. One such case is known: the
@@ -160,11 +204,26 @@ rule for a unit file written by a shell also alerts when an administrator
 writes a new unit by hand. A draft that could not fire with this sensor is kept
 in [`rules/rejected`](rules/rejected) with the reason.
 
+## What the target has
+
+Each run starts with an inventory of the target, and chooses the tests by it.
+In [run 44028032549](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44028032549)
+(17 November 2026) the hosted runner had 5 accounts that can log in (among them
+`packer` and `postgres`, which come with the runner image), 26 running services
+before the lab started its sensors, and 9 listening TCP and UDP addresses,
+among them TCP port 22, the port SSH uses, on every address. Sysmon for Linux
+and auditd were both active once started. Every program the tests name (`awk`,
+`crontab`, `systemctl`, `useradd`) was there, so no test was left out. That a
+missing program leaves its tests out is shown by the unit tests only, not yet
+by a run.
+
 ## A sensor change that makes a gap visible
 
 Sysmon for Linux reports a write to a file only when it leaves the file looking
-newly created (see [Limits](#limits)), so in every run above appending a command
-to `~/.bashrc` (T1546.004) left no telemetry. With auditd
+newly created (see [Limits](#limits)), so with Sysmon alone appending a command
+to `~/.bashrc` (T1546.004) left no telemetry, for example in
+[run 44019934793](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44019934793).
+With auditd
 recording beside Sysmon, watching the shell start files listed in
 [`sensors/audit.rules`](sensors/audit.rules), it did in
 [run 44029759448](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44029759448)
@@ -196,8 +255,16 @@ before the first test and its own count of lost records at 0 before and after.
    repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). The
    sensors are Sysmon for Linux, with [`sensors/sysmon.xml`](sensors/sysmon.xml),
    and auditd, with the file watches in [`sensors/audit.rules`](sensors/audit.rules).
-2. `bluefire-lab run` waits until Sysmon reports a probe command and auditd a
-   probe write to a file it watches. It then
+2. `bluefire-lab run` stops at once, with the reason, if the target lacks
+   `systemctl` or `ss`, which the lab itself needs. Before it starts the
+   sensors, it takes an inventory of the target: the accounts that can log
+   in, the running services, the listening addresses, and where each program
+   the tests need is (`needs` in [`pinned-tests.yaml`](pinned-tests.yaml)).
+   A test whose program is missing is left out, with its hardened runs and
+   variants, and the report and the run page list it with the reason. After
+   starting the sensors it records which of them are active, and waits until
+   Sysmon reports a probe command and auditd a probe write to a file it
+   watches. It then
    runs the tests on [`pinned-tests.yaml`](pinned-tests.yaml) one at a time,
    with the canary first and last, the harmless command second and the
    baseline of ordinary administration third. After the tests and before the
@@ -278,10 +345,11 @@ Seven controls must pass, or the run fails as a whole:
   having run. The security software discovery (T1518.001) is checked by a text
   that `ps` also prints for the test's own `grep`, so the check shows only that
   `ps` ran.
-- One runner runs the whole list in sequence, and GitHub hands out runners with
-  different kernels under the same label: kernels 7.0.0-1014-aws (the run
-  above) and 7.0.0-1017-azure (run B of the sensor spike below) have both been
-  seen.
+- One runner runs the whole list in sequence (the job takes about twelve
+  minutes), and GitHub hands out runners with different kernels under the same
+  label:
+  kernels 7.0.0-1017-azure (the run above) and 7.0.0-1014-aws (run
+  44033742721, the first run of the same 49 tests) have both been seen.
 
 ## Not yet shown
 

@@ -274,3 +274,39 @@ def test_a_rule_that_is_not_accepted_says_why() -> None:
     assert "It matched 1 event of ordinary activity." in page
     assert "not accepted: it matched 1 event of ordinary activity" in summary
     assert "| telemetry only (high: Shell History File Emptied, not accepted) |" in summary
+
+
+def test_the_report_shows_the_inventory_of_the_target() -> None:
+    document = results()
+    document["run"]["inventory"] = {
+        "accounts": ["bluefire-lab", "root"],
+        "services": ["cron.service", "ssh.service"],
+        "listening": ["tcp 0.0.0.0:22"],
+        "sensors": {"sysmon": "active", "auditd": "active"},
+        "programs": {"crontab": "/usr/bin/crontab", "systemctl": ""},
+    }
+
+    page = report.html_report(document)
+
+    assert "2 accounts that can log in, 2 running services, 1 listening address." in page
+    section = page[page.index('id="inventory"') :]
+    rows = [
+        ("Accounts that can log in", "bluefire-lab, root"),
+        ("Running services", "cron.service, ssh.service"),
+        ("Listening addresses", "tcp 0.0.0.0:22"),
+        ("Sensors", "sysmon active, auditd active"),
+        ("Programs the tests need", "crontab at /usr/bin/crontab, systemctl at none"),
+    ]
+    for label, value in rows:
+        assert f'<tr><td>{label}</td><td class="mono wide">{value}</td></tr>' in section
+    assert 'under <a href="#left-out">Tests left out</a>' in section
+    assert '<h2 id="left-out">Tests left out</h2>' in page
+    assert "Inventory of the target" not in report.html_report(results())
+    document["run"]["inventory"]["listening"].append("udp 127.0.0.53%lo:53")
+    assert "2 listening addresses." in report.html_report(document)
+
+
+def test_the_run_page_lists_each_test_left_out_with_the_reason() -> None:
+    summary = report.markdown_summary(results())
+
+    assert "| T1003 | A dropped test | reads other processes' memory |" in summary

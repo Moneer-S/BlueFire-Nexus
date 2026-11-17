@@ -205,6 +205,82 @@ def fill(command: str, context: dict) -> str:
     return command.replace("{home}", context["home"]).replace("{account}", context["account"])
 
 
+def login_accounts(passwd: str, shells: str) -> list[str]:
+    """The accounts in /etc/passwd whose shell is one of the login shells /etc/shells lists.
+    An empty shell field means /bin/sh."""
+
+    login = {line.strip() for line in shells.splitlines() if line.strip() and not line.startswith("#")}
+    entries = [line.split(":") for line in passwd.splitlines() if line.count(":") >= 6]
+    return sorted(fields[0] for fields in entries if (fields[6] or "/bin/sh") in login)
+
+
+def listening(ss: str) -> list[str]:
+    """The protocol and local address of each socket in what "ss -H -tuln" printed."""
+
+    return sorted(
+        {f"{line.split()[0]} {line.split()[4]}" for line in ss.splitlines() if len(line.split()) > 4}
+    )
+
+
+def running_services(units: str) -> list[str]:
+    """The service names in what "systemctl list-units --type=service --state=running" printed."""
+
+    return sorted(line.split()[0] for line in units.splitlines() if line.strip())
+
+
+def requirements() -> None:
+    """Stop with the reason when the target lacks a program the lab itself needs: systemctl
+    and ss for the inventory and the sensors. A test that needs one of them is therefore
+    never left out on a target the lab runs on."""
+
+    missing = [program for program in ("systemctl", "ss") if not shutil.which(program)]
+    if missing:
+        raise SystemExit(f"the lab needs {', '.join(missing)} on the target")
+
+
+def inventory(programs: set[str]) -> dict:
+    """What the target is, read before the sensors start: the accounts that can log in, the
+    running services, the listening addresses, and where each program the tests need is."""
+
+    units = output_of(
+        "systemctl", "list-units", "--type=service", "--state=running", "--no-legend", "--plain"
+    )
+    return {
+        "accounts": login_accounts(
+            Path("/etc/passwd").read_text(encoding="utf-8"), Path("/etc/shells").read_text(encoding="utf-8")
+        ),
+        "services": running_services(units),
+        "listening": listening(output_of("ss", "-H", "-tuln")),
+        "programs": {name: shutil.which(name) or "" for name in sorted(programs)},
+    }
+
+
+def select(document: dict, found: dict) -> tuple[dict, list[dict]]:
+    """The tests the target can run, by the programs each needs and the inventory found,
+    and those it cannot, with the reason, for the report's list of dropped tests."""
+
+    kept, dropped = [], []
+    for spec in document["tests"]:
+        if not isinstance(spec.get("needs", []), list):
+            raise SystemExit(f"{spec['name']}: needs is a list of programs, as in needs: [crontab]")
+        missing = [program for program in spec.get("needs", []) if not found["programs"].get(program)]
+        if missing:
+            reason = f"the target has no {', '.join(missing)}, which the test needs"
+            dropped.append({"technique": spec["technique"], "name": spec["name"], "reason": reason})
+        else:
+            kept.append(spec)
+    return {**document, "tests": kept}, dropped
+
+
+def runs_for(document: dict, found: dict) -> tuple[list[dict], list[dict]]:
+    """The runs the target can take, and every test left out with the reason: those the list
+    leaves out by hand, then those whose program the target lacks, with their hardened runs
+    and variants."""
+
+    kept, unfit = select(document, found)
+    return plan(kept), (document.get("dropped") or []) + unfit
+
+
 def run_baseline(item: dict, context: dict) -> dict:
     """Run the ordinary activity the lab's own rules must stay quiet on, as root and as the
     test account, each in an audit session of its own, between two markers."""
@@ -409,7 +485,16 @@ def main(
         "executor": executor.resolve(),
         "probes": [],
     }
+    requirements()
+    # Stop before anything runs if the list names a test that is not the one upstream, a test
+    # the target cannot run included.
+    for item in plan(document):
+        if item["role"] != "baseline":
+            upstream_definition(item["spec"], context["atomics"])
     target, tools = facts(context)
+    # What the target has decides which tests can run on it.
+    found = inventory({program for spec in document["tests"] for program in spec.get("needs", [])})
+    sequence, left_out = runs_for(document, found)
     record: dict = {
         "schema": "bluefire-lab/run/1",
         "id": context["id"],
@@ -417,16 +502,12 @@ def main(
         "account": account,
         "target": target,
         "tools": tools,
+        "inventory": found,
         "sensor": {"name": "Sysmon for Linux", "configuration": "sensor-config.xml"},
         "tests": [],
-        "dropped": document.get("dropped") or [],
+        "dropped": left_out,
     }
     shutil.copyfile(sensor_config, out / "sensor-config.xml")
-    sequence = plan(document)
-    # Stop before anything runs if the list names a test that is not the one upstream.
-    for item in sequence:
-        if item["role"] != "baseline":
-            upstream_definition(item["spec"], context["atomics"])
     since = time.time() - 1
     subprocess.run(
         ["sudo", "sysmon", "-accepteula", "-i", str(sensor_config)], check=True, capture_output=True
@@ -439,6 +520,9 @@ def main(
         )
         record["audit"] = context["audit"] = {"rules": "audit-rules.txt", "probe": AUDIT_PROBE}
         record["audit"].update(version=tools["auditd"], before=audit_status())
+    record["inventory"]["sensors"] = {
+        name: output_of("systemctl", "is-active", name) for name in ("sysmon", "auditd")
+    }
     try:
         ready = wait_until_ready(context, since)
         record["sensor"]["ready_after_seconds"] = ready
