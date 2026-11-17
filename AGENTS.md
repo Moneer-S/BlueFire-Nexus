@@ -4,12 +4,13 @@ These notes apply to everyone who works here.
 
 ## Where work happens
 
-New work goes in `lab/`. It is a test bench for defenders: it runs published
+Work goes in `lab/`. It is a test bench for defenders: it runs published
 attack tests against a disposable lab target, records what the defenses on that
 target saw, and shows what changes when a defense is changed.
 
-The rest of the tree (`bluefire/`, `runner/`, `frontend/`, `tests_platform/`,
-`tools/`) is the earlier product. It is being reduced. Do not add to it.
+The earlier product (`bluefire/`, `runner/`, `frontend/`, `tests_platform/`,
+`tools/` and its documents) was removed. It stays in the git history, for
+example at the tag `v3.0.0-rc2`. Do not bring it back.
 
 ## Rules
 
@@ -66,12 +67,8 @@ The rest of the tree (`bluefire/`, `runner/`, `frontend/`, `tests_platform/`,
   `python3 .github/scripts/privacy_scan.py --commits origin/main..HEAD` for
   every commit of your branch. A path that reached a pushed commit stays in the
   history even after a later commit removes it.
-- The earlier product's workflows (`tests.yml`, `analysis.yml`) start by hand
-  only. They go when that code goes.
 - Do not skip, disable or loosen a check to make a failing change pass. Removing
   a check together with the code it guarded is a different thing, and fine.
-  Checks for code that is being removed may be switched off ahead of the
-  removal.
 - When the same mistake happens twice, make it impossible: by design first, then
   a type, then a lint or CI check whose error names the fix, then a test. A rule
   in this file comes last, for judgment calls only. Add a check only for a

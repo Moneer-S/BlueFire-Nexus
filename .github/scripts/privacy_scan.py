@@ -52,28 +52,6 @@ FORBIDDEN_SUFFIXES = (
 )  # fmt: skip
 FORBIDDEN_FOLDERS = {"node_modules", "__pycache__", ".pytest_cache", "runs", "build"}
 
-# The earlier product names the home directory of its own lab account in four
-# files, and four of its tests feed made-up paths to redaction and layout
-# checks. These exact strings are accepted in these files only. The entries go
-# when the files go.
-LAB_HOME = b"/home" b"/bluefire"
-EARLIER_PRODUCT_PATHS = {
-    "bluefire/prepared_lab.py": (LAB_HOME,),
-    "bluefire/prepared_lab_install.py": (LAB_HOME,),
-    "bluefire/prepared_lab_runtime.py": (LAB_HOME,),
-    "docs/PREPARED_LINUX_LAB.md": (LAB_HOME + b"/lab-isolation.json",),
-    "tests_platform/test_architecture_gate.py": (b"pytest-of" b"-fixture",),
-    "tests_platform/test_defense_frontier_validation.py": (
-        b"C:\\Users" b"\\Example",
-        b"/home" b"/example-user/private",
-    ),
-    "tests_platform/test_product_acceptance.py": (
-        b"\\\\Users" b"\\\\private-user\\\\artifact.json",
-        b"\\Users" b"\\private-user\\artifact.json",
-    ),
-    "tests_platform/test_runner_bootstrap.py": (b"\\Users" b"\\private-user\\runner.exe",),
-}
-
 ADVICE = {
     "user home path": "write the path relative to the repository or with a placeholder such as "
     "<home>; only the accounts of hosted runners and lab targets are accepted. A path that "
@@ -132,8 +110,6 @@ def findings_in(relative: str, data: bytes) -> set[tuple[str, int, str]]:
     for text in readings(data):
         if any(marker in text for marker in MARKERS):
             found.add((relative, 0, "private marker"))
-        for literal in EARLIER_PRODUCT_PATHS.get(relative, ()):
-            text = re.sub(re.escape(literal) + rb"(?=$|[\s\"'`])", b"<accepted>", text)
         line, counted = 1, 0
         for offset in home_paths(text):
             line += text.count(b"\n", counted, offset)
