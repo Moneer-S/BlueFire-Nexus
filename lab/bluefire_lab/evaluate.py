@@ -282,6 +282,11 @@ def execution(test: dict, without_change: dict | None = None) -> dict:
             answer="took effect" if took else "attempted without effect",
             basis=f"the test has no separate effect check; its command exited with status {test.get('exit_code')}",
         )
+    if change is not None and answer["timed_out"] and answer["answer"] != "inconclusive":
+        answer.update(
+            answer="inconclusive",
+            basis="the test ran out of time with the change in place, so what stopped it is not known",
+        )
     if change is not None and answer["answer"] == "attempted without effect" and without_change is not None:
         if without_change["answer"] == "took effect":
             answer.update(
@@ -384,17 +389,35 @@ def check_controls(
     checks = [control("readiness", ready is not None and in_time, detail)]
 
     attempted = [test for test in tests if test["execution"]["answer"] != "not attempted"]
-    unmeasured = [test for test in attempted if test["visibility"]["answer"] == "inconclusive"]
+    unmeasured = [
+        (test, answer)
+        for test in attempted
+        for answer in (test["execution"], test["visibility"])
+        if answer["answer"] == "inconclusive"
+    ]
     checks.append(
         control(
             "markers",
             bool(attempted) and not unmeasured,
             f"both marker commands and the launcher of all {len(attempted)} tests are in the telemetry"
             if attempted and not unmeasured
-            else f"{len(unmeasured)} of {len(attempted)} tests could not be measured: "
-            + "; ".join(
-                f"{test.get('name', '')}: {test['visibility'].get('basis', '')}" for test in unmeasured
-            ),
+            else f"{len(unmeasured)} answers could not be given: "
+            + "; ".join(f"{test.get('name', '')}: {answer.get('basis', '')}" for test, answer in unmeasured),
+        )
+    )
+
+    hardened = [test for test in tests if test.get("defense")]
+    left = [
+        test for test in hardened if test["defense"].get("applied") and not test["defense"].get("reverted")
+    ]
+    checks.append(
+        control(
+            "changes",
+            not left,
+            f"each of the {len(hardened)} hardening changes was removed again after its test"
+            if not left
+            else "a hardening change stayed in place after its test, so the runs after it cannot be trusted: "
+            + "; ".join(f"{test['defense']['title']} ({test.get('name', '')})" for test in left),
         )
     )
 
