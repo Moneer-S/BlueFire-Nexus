@@ -6,13 +6,22 @@ pinned detection rules over those records, and reports two answers for every
 test: did the technique take effect, and what did the defense see. Then it
 changes a defense and runs the tests again, to show what the change did.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/report-dark.png">
+  <img src="docs/report-light.png" width="1280" alt="The top of the report of run 44042181011: 49 published attack tests, all took effect; 1 raised an alert, 48 left telemetry but no alert, 0 left no telemetry; with the lab's own rules 9 raised an alert; 8 of 9 hardening changes blocked the technique. Below it the run's facts and the first rows of the results table.">
+</picture>
+
+The top of the report of
+[run 44042181011](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44042181011),
+as that run's job pictured it. The whole report is in the run's artifact.
+
 ## What it shows today
 
 Everything below comes from runs of the `lab` workflow on GitHub-hosted
 runners, each linked. [`lab/README.md`](lab/README.md) gives the details, the
 limits, and how each answer is computed.
 
-In [run 44040235251](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44040235251),
+In [run 44042181011](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44042181011),
 the workflow's run on `main` of 17 November 2026, on an `ubuntu-24.04` runner
 with kernel 7.0.0-1017-azure:
 
@@ -41,7 +50,8 @@ with kernel 7.0.0-1017-azure:
   that can log in, running services, listening addresses, the programs the
   tests need) and chooses the tests by it.
 - **Before and after:** every run is compared with the latest run on `main`.
-  [This run's comparison](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44040235251/job/133897072590)
+  When 30 tests were added,
+  [the comparison](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44040235251/job/133897072590)
   found the 34 runs of the earlier list with the same answers, and 36 new ones.
 - **Seven controls** on the measurement passed: the sensors were ready before
   the first test, every test's markers were recorded, every hardening change
