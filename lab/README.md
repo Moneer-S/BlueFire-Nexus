@@ -14,7 +14,7 @@ its artifact `lab-run` holds the sensor's raw output (`sysmon.txt`), the
 answers with what each rests on (`results.json`) and the full report
 (`report.html`). GitHub keeps both for 90 days. An earlier run of the same tests,
 [run 43808649201](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43808649201)
-on 16 November, gave the same answers with five of the six controls below.
+on 16 November, gave the same answers before the controls were tightened.
 
 - **Target:** a GitHub-hosted `ubuntu-24.04` runner (Ubuntu 24.04.5, kernel
   7.0.0-1014-aws, runner image 20261111.127.1).
