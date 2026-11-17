@@ -441,12 +441,6 @@ def html_report(results: dict) -> str:
                 f"{e(rules['source'].partition('@')[0])} at commit "
                 f'<span class="mono">{e(rules["source"].partition("@")[2][:12])}</span>: '
                 + ", ".join(f"{number} {e(category)}" for category, number in rules["evaluated"].items())
-                + "".join(
-                    f" ({counts['unmatchable']} of the {counts['category']} rules need "
-                    f"{e(', '.join(counts['needed_types']))} records, which this configuration does not produce)"
-                    for counts in results["engine"].get("counts", [])
-                    if counts.get("unmatchable")
-                )
                 + f". Alert levels: {e(' and '.join(rules['alert_levels']))}.",
             ),
             fact("Rule engine", f"{e(results['engine']['name'])} {e(results['engine']['version'])}"),
