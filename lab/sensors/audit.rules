@@ -12,7 +12,9 @@
 ## Process starts are recorded too, with their arguments (EXECVE records), as
 ## the pinned SigmaHQ auditd rules that look at commands need. Only processes
 ## with a login uid are recorded: the lab sets one at the start of every step,
-## and the runner's own processes have none.
+## and cron and logins set one too, so the machine's own cron jobs and what
+## cron or a login starts for a test are recorded as well. The runner's agent
+## and what systemd starts have none.
 
 ## Start from no rules, and keep a backlog large enough for a burst.
 -D

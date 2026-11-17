@@ -23,7 +23,8 @@ report (`report.html`). GitHub keeps both for 90 days.
 - **Sensors:** Sysmon for Linux 1.6.0 with the configuration in
   [`sensors/sysmon.xml`](sensors/sysmon.xml), and auditd 3.1.2 with the rules
   in [`sensors/audit.rules`](sensors/audit.rules): watches on the shell start
-  files, and the process starts of the lab's own steps.
+  files, and the process starts of the lab's own steps and of what cron or a
+  login starts.
 - **Rules:** the 188 Linux rules of SigmaHQ release r2026-07-01 for the kinds
   of event these sensors record (122 for process creation, 8 for file events,
   5 for network connections, 53 for auditd), evaluated by Zircolite 4.7.1.
@@ -102,8 +103,9 @@ What that means for a defender, under these sensors and these rules:
   `truncate -s`: it matched the baseline's three ordinary uses of `truncate`
   in the same run. The other two, the awk shell escape and turning ASLR off
   with `sysctl` (T1685), matched nothing ordinary.
-- No test left no telemetry. Two changes to the sensors made that so, and the
-  second raised two of the alerts: see
+- No test left no telemetry: auditd's watch on the shell start files records
+  the append to `~/.bashrc` that Sysmon cannot see. Recording process starts as
+  well raised two of the alerts: see
   [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
 - On 25 of the tests, rules of level medium or lower matched only the one shell
   process whose command line holds the whole test. The report shows them, and
@@ -113,11 +115,12 @@ The canary, a test the pinned rules are known to catch (T1070.003, history
 removal with `rm`), raised its alert at the start and at the end of the run. A
 harmless command (T1082, `hostname`) ran through the same executor and raised
 none. The first run of these 49 tests,
-[run 44033742721](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44033742721)
-on kernel 7.0.0-1014-aws, gave the same answers but one: the in-place
-instruction overwrite (T1055.009) had not taken effect, because the lab ended
-the process the test writes into before that process ran what was written. The
-test now waits five seconds before its check.
+[run 44033742721](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44033742721),
+before auditd recorded process starts, gave the same answers apart from the two
+tests that change made alerts and one more: the in-place instruction overwrite
+(T1055.009) had not taken effect, because the lab ended the process the test
+writes into before that process ran what was written. The test now waits five
+seconds before its check.
 
 ## Hardening that blocks a technique
 
@@ -278,11 +281,12 @@ before the first test and its own count of lost records at 0 before and after.
 
 ### Process starts recorded by auditd too
 
-With file watches alone, 3 of the 53 pinned auditd rules matched anything: most
+With file watches alone, 3 of the 53 pinned auditd rules matched anything: many
 of them look for a program's start and its arguments (EXECVE records). auditd
-now records the process starts of the lab's own steps as well: those of
-processes with a login uid, which the lab sets at the start of every step and
-the runner's own processes do not have. In
+now records process starts as well: those of processes with a login uid. The
+lab sets one at the start of every step, and cron and logins set one too, so
+the machine's own cron jobs and what cron or a login starts for a test are
+recorded as well; the runner's agent and what systemd starts have none. In
 [run 44055611236](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44055611236)
 18 auditd rules matched something, and two tests went from telemetry only to
 an alert by a pinned rule:
@@ -378,7 +382,8 @@ Seven controls must pass, or the run fails as a whole:
 - **loss:** Sysmon reported its counts of lost and bad events once each, both
   zero, and none of its numbered records is missing from what was read or
   appears twice; and auditd's own count of lost records did not move during the
-  run;
+  run, nor did auditd rotate its log, which would leave records out of the
+  export;
 - **engine:** the rule engine loaded every rule and read every event it was
   given, and every category of rules had events to evaluate. That does not
   mean every rule could match: see the auditd limit below;
@@ -401,13 +406,19 @@ Seven controls must pass, or the run fails as a whole:
 - auditd watches only the shell start files in
   [`sensors/audit.rules`](sensors/audit.rules), for writes and for changes of
   permissions, owner and extended attributes; `chattr`'s file flags, such as
-  immutable, are not among them. It records the process starts of the lab's
-  own steps, not those of processes without a login uid, such as what systemd
-  or cron starts for a test. So many pinned auditd rules cannot match under
-  it: those about other system calls, other files, or audit keys it does not
-  set. Besides the watches it records what programs report about themselves,
-  such as `useradd` adding an account or `sudo` running a command, and those
-  records count for the test whose process wrote them.
+  immutable, are not among them. It records the process starts of processes
+  with a login uid, not those without one, such as what systemd starts for a
+  test that runs as root. A start the kernel refused because no such file
+  existed, as when a shell tries each folder of its search path, is not
+  counted; one refused for another reason, such as `noexec`, is. So many pinned
+  auditd rules cannot match under it: those about other system calls, other
+  files, or audit keys it does not set. Besides the watches it records what
+  programs report about themselves, such as `useradd` adding an account or
+  `sudo` running a command, and those records count for the test whose process
+  wrote them. auditd's record of a process's command line (PROCTITLE) keeps
+  the shell's, the whole test, after the shell has become the one command it
+  was given; no pinned rule reads that record, and the report names a program
+  start by its own arguments.
 - A process that systemd starts for a test that runs as root is tied to the
   test by time, inside the test's window, and not by process ancestry. The
   runner's own timers are stopped before the tests, so that their units do not
@@ -429,8 +440,8 @@ Seven controls must pass, or the run fails as a whole:
 - One runner runs the whole list in sequence (the job takes about twelve
   minutes), and GitHub hands out runners with different kernels under the same
   label:
-  kernels 7.0.0-1017-azure (the run above) and 7.0.0-1014-aws (run
-  44033742721, the first run of the same 49 tests) have both been seen.
+  kernels 7.0.0-1014-aws (the run above) and 7.0.0-1017-azure (run
+  44035796630, the same 49 tests) have both been seen.
 
 ## Not yet shown
 

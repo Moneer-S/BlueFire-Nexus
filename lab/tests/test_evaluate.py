@@ -284,6 +284,46 @@ def test_auditds_record_of_the_launchers_start_is_the_launcher_line_not_telemetr
     assert [event["record"] for event in same_process] == ["audit 1794893574.919:186"]
 
 
+def test_the_launchers_start_is_its_own_first_and_compared_by_number() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+    with_child = [*events, start(7, 5.01, 121, 120, "id", 11, parent_known=True)]
+    execve = ["SYSCALL", "EXECVE", "CWD", "PATH"]
+    launched = {**written(184, 11, second=5.0), "types": execve}
+    # The child's start, recorded a moment before the launcher's: still not the launcher's.
+    earlier = {**written(187, 11, second=4.999, pid="121"), "types": execve}
+    # The same millisecond, where the serials cross a power of ten.
+    first = {**written(9999, 11, second=5.0), "types": execve}
+    became = {**written(10000, 11, second=5.0), "types": execve}
+
+    _, mine = see(a_test(), with_child, audit=[earlier, launched])
+    _, tie = see(a_test(), events, audit=[became, first])
+
+    assert [event["record"] for event in mine if str(event["record"]).startswith("audit")] == [
+        "audit 1794893574.919:187"
+    ]
+    assert [event["record"] for event in tie] == ["audit 1794893574.919:10000"]
+
+
+def test_a_start_the_kernel_refused_for_a_missing_file_is_a_lookup_not_telemetry() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+    launched = {**written(184, 11, second=5.0), "types": ["SYSCALL", "EXECVE", "CWD", "PATH"]}
+
+    def refused(serial: int, error: str) -> dict:
+        event = {**written(serial, 11, second=5.002), "types": ["SYSCALL", "CWD", "PATH"]}
+        event["call"] = {**event["call"], "syscall": "59", "success": "no", "exit": error}
+        event["names"] = {**event["names"], "SYSCALL": "execve"}
+        return event
+
+    # A shell trying a folder of its search path (ENOENT), and /tmp mounted noexec (EACCES).
+    _, mine = see(a_test(), events, audit=[launched, refused(188, "-2"), refused(189, "-13")])
+
+    assert [event["record"] for event in mine] == ["audit 1794893574.919:189"]
+
+
 def test_sudos_record_of_a_command_the_test_ran_shows_the_command() -> None:
     events = [
         event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
@@ -617,6 +657,15 @@ def test_auditd_must_record_its_probe_in_time_and_lose_no_record() -> None:
     assert failed({**sound, "lost_before": None}) == ["loss"]
     # auditd rotated its log during the run, as in run 44050159740: the export holds only the last part.
     assert failed({**sound, "rotated": ["/var/log/audit/audit.log.1"]}) == ["loss"]
+    # And what the driver recorded about the run reaches the control.
+    recorded = {"probe": "/var/tmp/p", "before": {"lost": "0"}, "after": {"lost": "0"}, "rotated": ["x.1"]}
+    probe = {**written(190, 11, second=0.6), "paths": ["/var/tmp/p"]}
+    assert evaluate.audit_facts(recorded, [probe]) == {
+        "probe_time": "2026-11-16 04:00:00.600",
+        "lost_before": 0,
+        "lost_after": 0,
+        "rotated": ["x.1"],
+    }
 
 
 def test_a_rule_the_engine_did_not_load_or_an_event_it_did_not_read_fails_the_run() -> None:

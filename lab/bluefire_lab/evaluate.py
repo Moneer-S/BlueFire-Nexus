@@ -193,6 +193,36 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
     return matched, counts
 
 
+def audit_facts(audit: dict, audit_events: list[dict]) -> dict:
+    """What the controls need from auditd's side of a run: when it recorded the probe write,
+    its own count of lost records before and after the tests, and any files it rotated its
+    log into."""
+
+    def number(value: object) -> int | None:
+        return int(value) if str(value).isdigit() else None
+
+    probes = [event["time"] for event in audit_events if audit.get("probe") in event["paths"]]
+    return {
+        "probe_time": min(probes, default=None),
+        "lost_before": number(audit.get("before", {}).get("lost")),
+        "lost_after": number(audit.get("after", {}).get("lost")),
+        "rotated": audit.get("rotated", []),
+    }
+
+
+def missed_lookup(event: dict) -> bool:
+    """A program start the kernel refused because no such file existed, as when a shell tries
+    each folder of its search path in turn: a lookup, not an action of the test. A start that
+    was refused for another reason, such as a folder mounted noexec, counts."""
+
+    call = event["call"]
+    return (
+        event["names"].get("SYSCALL") in ("execve", "execveat")
+        and call.get("success") == "no"
+        and call.get("exit") == "-2"
+    )
+
+
 def describe_audit(event: dict, why: str) -> dict:
     """An auditd event in the shape of the Sysmon events the report shows."""
 
@@ -427,15 +457,16 @@ def visibility(
             (attack and attack["session"] and event["call"].get("ses") == attack["session"])
             or start <= event["time"] <= end
         )
+        and not missed_lookup(event)
     ]
     launcher_exec = min(
         (
-            (event["time"], event["event"])
+            (event["time"], int(event["serial"]), event["event"])
             for event in audit_events
             if event["call"].get("pid") == launcher["ProcessId"] and "EXECVE" in event["types"]
         ),
-        default=(None, None),
-    )[1]
+        default=(None, None, None),
+    )[2]
     launched = [launcher["EventRecordID"]]
     for event in audit_events:
         if event["event"] == launcher_exec:
@@ -728,8 +759,8 @@ def check_controls(
         )
         if audit.get("rotated"):
             detail += (
-                f", but it rotated its log during the run into {len(audit['rotated'])} more files, so "
-                "records may be missing from the export"
+                f", but it rotated its log during the run into {len(audit['rotated'])} more "
+                f"file{'' if len(audit['rotated']) == 1 else 's'}, so records may be missing from the export"
             )
     checks.append(control("loss", clean and whole and audit_whole and lost["sensor_starts"] == 1, detail))
 
@@ -878,19 +909,7 @@ def main(run_dir: Path, engine: Path) -> int:
     ordinary = ordinary_activity(run, events, starts, matched, rules, test_windows, audit_events)
     verdicts = judge_lab_rules(lab_rules, tests, ordinary)
     second_answers(tests, verdicts)
-
-    def number(value: object) -> int | None:
-        return int(value) if str(value).isdigit() else None
-
-    audit_control = None
-    if audit:
-        probes = [event["time"] for event in audit_events if audit.get("probe") in event["paths"]]
-        audit_control = {
-            "probe_time": min(probes, default=None),
-            "lost_before": number(audit.get("before", {}).get("lost")),
-            "lost_after": number(audit.get("after", {}).get("lost")),
-            "rotated": audit.get("rotated", []),
-        }
+    audit_control = audit_facts(audit, audit_events) if audit else None
     results = {
         "schema": "bluefire-lab/results/1",
         "run": {
