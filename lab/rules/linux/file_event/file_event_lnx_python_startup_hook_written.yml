@@ -1,0 +1,36 @@
+title: Python Startup Hook File Written
+id: c7018a04-69c7-439d-b706-2affd0ca0192
+status: experimental
+description: >-
+  A file named usercustomize.py or sitecustomize.py was written. Python imports
+  these from its site folders every time it starts, so code put in one runs in
+  every later Python program of that account, or of every account for a
+  system-wide site folder. Packages rarely ship either file, and installs write
+  them through the package manager, so a write outside one is worth a look.
+  Code in a .pth file, which Python also runs at start, is not covered.
+references:
+  - https://attack.mitre.org/techniques/T1546/018/
+  - https://docs.python.org/3/library/site.html
+author: BlueFire lab
+date: 2026-11-17
+tags:
+  - attack.persistence
+  - attack.privilege-escalation
+  - attack.t1546.018
+logsource:
+  product: linux
+  category: file_event
+detection:
+  selection:
+    TargetFilename|endswith:
+      - /usercustomize.py
+      - /sitecustomize.py
+  filter_package_manager:
+    Image|endswith:
+      - /dpkg
+      - /apt
+      - /apt-get
+  condition: selection and not filter_package_manager
+falsepositives:
+  - A developer who writes a usercustomize.py or sitecustomize.py on purpose
+level: high
