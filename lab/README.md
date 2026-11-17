@@ -221,12 +221,14 @@ The rule for a unit file written by a shell was written for the first two of
 its procedures. It also alerts on the third, T1569.003, added to the list
 later, and on that procedure's run with changed input arguments. Two other
 accepted rules alert on two published procedures each, and five cover a single
-procedure each so far. In the same run the baseline left 385 events and the
-runner's and the lab's own work outside the tests 6,445, much of it the lab's
+procedure each so far. In
+[run 44081536125](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44081536125),
+which gave the same answers and verdicts, the baseline left 340 events and the
+runner's and the lab's own work outside the tests 6,476, much of it the lab's
 own driver switching accounts and sessions. None of the lab's rules matched any
 of them, while 20 pinned rules did. Two of those are of level high: the
 canary's own rule, "History File Deletion", matched the baseline's removal of a
-copy of a history file (`rm ~/.bash_history.bak`, record 1112), and "Binary
+copy of a history file (`rm ~/.bash_history.bak`, record 1096), and "Binary
 Padding - Linux" its three uses of `truncate`. The others are medium or lower,
 for example "User Has Been Deleted Via Userdel" on the baseline's `userdel`.
 
