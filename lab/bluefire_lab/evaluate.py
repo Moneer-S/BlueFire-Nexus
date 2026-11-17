@@ -104,6 +104,8 @@ def run_engine(
         lines = [line for event, line in zip(events, raw, strict=True) if event["EventID"] == event_id]
         output = work / f"{category}.json"
         output.unlink(missing_ok=True)
+        # The engine adds to an existing log, and its counts are read from the log.
+        (work / f"{category}-engine.txt").unlink(missing_ok=True)
         counts[category] = {"given": len(lines), "loaded": 0, "read": 0}
         if not lines or not rules.is_dir():
             continue
