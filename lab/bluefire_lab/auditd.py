@@ -17,7 +17,10 @@ from pathlib import Path
 NO_SESSION = "4294967295"
 
 _RECORD = re.compile(r"type=(\S+) msg=audit\((\d+)\.(\d+):(\d+)\): ?")
-_FIELD = re.compile(r'([\w-]+)=("[^"]*"|\S*)')
+# A value is quoted, or runs to the next field: useradd writes "op=adding user id=999".
+_FIELD = re.compile(r'([\w-]+)=("[^"]*"|\S*(?: [^\s="]+(?=\s|$))*)')
+# A record a program writes itself (useradd's ADD_USER, sudo's USER_CMD) holds its own fields in msg='...'.
+_OWN = re.compile(r"msg='(.*)'$")
 
 
 def utc(seconds: str, fraction: str) -> str:
@@ -28,6 +31,7 @@ def utc(seconds: str, fraction: str) -> str:
 
 
 def fields(text: str) -> dict[str, str]:
+    text = _OWN.sub(r"\1", text.rstrip())
     return {name: value[1:-1] if value.startswith('"') else value for name, value in _FIELD.findall(text)}
 
 
