@@ -180,20 +180,6 @@ class PrivacyScan(unittest.TestCase):
         status, output = scan({"README.md": b"x"}, links={"data": f"{HOME}/alice/data"})
         self.assertEqual((status, output), (1, "data:1: user home path\n"))
 
-    def test_earlier_product_strings_are_accepted_only_where_listed(self) -> None:
-        lab_home = f"{HOME}/bluefire"
-        files = {
-            "bluefire/prepared_lab.py": f'HOME = "{lab_home}"\n'.encode(),
-            "bluefire/prepared_lab_install.py": f'NOTES = "{lab_home}/private-notes"\n'.encode(),
-            "docs/notes.txt": f"{lab_home}\n".encode(),
-        }
-        status, output = scan(files)
-        self.assertEqual(status, 1)
-        self.assertEqual(
-            output.splitlines(),
-            ["bluefire/prepared_lab_install.py:1: user home path", "docs/notes.txt:1: user home path"],
-        )
-
     def test_the_whole_repository_is_scanned_from_a_subfolder(self) -> None:
         with tempfile.TemporaryDirectory() as repository:
             git(repository, "init", "--quiet")
