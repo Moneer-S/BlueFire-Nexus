@@ -159,6 +159,26 @@ rule for a unit file written by a shell also alerts when an administrator
 writes a new unit by hand. A draft that could not fire with this sensor is kept
 in [`rules/rejected`](rules/rejected) with the reason.
 
+## A sensor change that makes a gap visible
+
+Sysmon for Linux reports a file only when it is created, so in every run above
+appending a command to `~/.bashrc` (T1546.004) left no telemetry. With auditd
+recording beside Sysmon, watching the shell start files listed in
+[`sensors/audit.rules`](sensors/audit.rules), it did in
+[run 44025501112](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44025501112)
+(17 November 2026, kernel 7.0.0-1014-aws). auditd recorded the shell opening
+`/home/bluefire-lab/.bashrc` for writing, in the audit session of the test's
+attack step. Two pinned SigmaHQ auditd rules matched that record, "Unix Shell
+Configuration Modification" (medium) and "Use Of Hidden Paths Or Files" (low),
+so the test went from no telemetry to telemetry only. No test in the run is
+left without telemetry.
+
+The same test run with the account's `~/.bashrc` made immutable was still
+blocked, and auditd recorded its write attempt too, refused by the kernel. No
+other test wrote to a watched file, so auditd added nothing to any other test.
+All seven controls passed, with auditd's probe recorded before the first test
+and its own count of lost records at 0 before and after.
+
 ## How a run works
 
 1. The `lab` workflow ([`.github/workflows/lab.yml`](../.github/workflows/lab.yml))
@@ -248,7 +268,6 @@ Seven controls must pass, or the run fails as a whole:
 
 ## Not yet shown
 
-- A sensor change, and its effect on a fresh run.
 - Tests on Windows, attack chains of several steps, and a lab on a local
   machine.
 
