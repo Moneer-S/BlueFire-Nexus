@@ -264,8 +264,13 @@ def test_auditds_record_of_the_launchers_start_is_the_launcher_line_not_telemetr
     with_child = [*events, start(7, 5.01, 121, 120, "id", 11, parent_known=True)]
     matched = {"audit 1794893574.919:184": ["high-rule"]}
 
+    # bash -c "sysctl ...": the shell becomes the one command it was given, in the same process.
+    became = {**written(186, 11, second=5.002), "types": ["SYSCALL", "EXECVE", "CWD", "PATH", "PATH"]}
+
     alone, nothing = see(a_test(), events, matched, audit=[launched])
     answer, mine = see(a_test(), with_child, matched, audit=[launched, child])
+    _, same_process = see(a_test(), events, {**matched, "audit 1794893574.919:186": ["high-rule"]},
+                          audit=[became, launched])  # fmt: skip
 
     assert (alone["answer"], nothing) == ("no telemetry", [])
     assert [(rule["id"], rule["records"]) for rule in alone["launcher_only_rules"]] == [
@@ -274,6 +279,7 @@ def test_auditds_record_of_the_launchers_start_is_the_launcher_line_not_telemetr
     assert answer["answer"] == "telemetry only"
     assert "audit 1794893574.919:185" in [event["record"] for event in mine]
     assert "audit 1794893574.919:184" not in [event["record"] for event in mine]
+    assert [event["record"] for event in same_process] == ["audit 1794893574.919:186"]
 
 
 def test_sudos_record_of_a_command_the_test_ran_shows_the_command() -> None:

@@ -502,15 +502,32 @@ def visibility(
     attack = step_of(test, "attack")
     pids = {launcher["ProcessId"]} | {event["ProcessId"] for event in starts if event["ProcessGuid"] in owned}
     # The launcher's start, as each sensor recorded it. Its command line is the whole test, so a
-    # rule that matches only these is reported as that, not as a detection.
+    # rule that matches only these is reported as that, not as a detection. For auditd it is the
+    # first program start of the launcher's process: a shell given one command can become that
+    # command in the same process (bash -c "sysctl ..."), and that later start is the test's.
+    audit_events = [
+        event
+        for event in context.get("audit_events", [])
+        if event["call"].get("pid") in pids
+        and (
+            (attack and attack["session"] and event["call"].get("ses") == attack["session"])
+            or start <= event["time"] <= end
+        )
+    ]
+    launcher_exec = min(
+        (
+            (event["time"], event["event"])
+            for event in audit_events
+            if event["call"].get("pid") == launcher["ProcessId"] and "EXECVE" in event["types"]
+        ),
+        default=(None, None),
+    )[1]
     launched = [launcher["EventRecordID"]]
-    for event in context.get("audit_events", []):
-        in_step = attack and attack["session"] and event["call"].get("ses") == attack["session"]
-        if event["call"].get("pid") not in pids or not (in_step or start <= event["time"] <= end):
-            continue
-        if event["call"].get("pid") == launcher["ProcessId"] and "EXECVE" in event["types"]:
+    for event in audit_events:
+        if event["event"] == launcher_exec:
             launched.append(f"audit {event['event']}")
             continue
+        in_step = attack and attack["session"] and event["call"].get("ses") == attack["session"]
         mine.append(describe_audit(event, "session" if in_step else "window"))
     mine.sort(key=lambda event: (event["time"], str(event["record"])))
 
