@@ -1,0 +1,25 @@
+title: Program Run From A Folder Named Like Dots
+id: b9fd7bfc-1c35-4aaa-97d0-2f72d4ab961b
+status: experimental
+description: >-
+  A program ran from a folder whose name is only dots, three or more, or two
+  dots followed by spaces. In a listing such a folder passes for the current
+  or the parent folder, so whatever is in it is easy to miss. No package puts
+  programs in such a folder.
+references:
+  - https://attack.mitre.org/techniques/T1036/005/
+author: BlueFire lab
+date: 2026-11-17
+tags:
+  - attack.defense-evasion
+  - attack.t1036.005
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection:
+    Image|re: '/(\.{3,}|\.\. +)/'
+  condition: selection
+falsepositives:
+  - Unknown
+level: high

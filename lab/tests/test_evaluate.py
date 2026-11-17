@@ -115,6 +115,7 @@ def see(test, events, matched=None, system=(), audit=()):
         "windows": {test["order"]: tuple(edges)},
         "system_commands": set(system),
         "audit_events": list(audit),
+        "lookups": evaluate.lookups(list(audit)),
     }
     return evaluate.visibility(test, events, starts, matched or {}, RULES, context)
 
@@ -177,12 +178,16 @@ def test_what_systemd_also_runs_outside_every_window_is_the_systems_own_work() -
     assert records(mine) == [6, 7, 8]
 
 
-def test_systemds_own_helper_is_not_part_of_a_test() -> None:
+def test_systemds_own_steps_are_not_part_of_a_test() -> None:
     helper = start(15, 5.9, 301, 1, "systemd-executor --deserialize 72", sysmon.NO_SESSION, user="root")
+    # logind removing the runtime folder of an account an earlier test logged in as, 10 s later.
+    removal = start(16, 5.95, 302, 1, "systemd-user-runtime-dir stop 1003", sysmon.NO_SESSION, user="root")
+    # Setting one up, when the test itself logs in as an account, is the test's.
+    setup = start(17, 5.96, 303, 1, "systemd-user-runtime-dir start 1004", sysmon.NO_SESSION, user="root")
 
-    _, mine = see(a_test(user="root"), [*telemetry(), helper])
+    _, mine = see(a_test(user="root"), [*telemetry(), helper, removal, setup])
 
-    assert records(mine) == [6, 7, 8, 12]
+    assert records(mine) == [6, 7, 8, 12, 17]
 
 
 def test_system_commands_are_what_systemd_started_outside_every_window() -> None:
@@ -250,6 +255,93 @@ def test_an_auditd_event_counts_when_its_process_is_the_tests_and_not_the_driver
     assert [event["detail"] for event in mine if str(event["record"]).endswith(":181")] == [
         "op=adding user res=success"
     ]
+
+
+def test_auditds_record_of_the_launchers_start_is_the_launcher_line_not_telemetry() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+    # execve of the launcher (process 120), whose arguments are the whole test, and of its child id.
+    launched = {**written(184, 11, second=5.0), "types": ["SYSCALL", "EXECVE", "CWD", "PATH", "PATH"]}
+    child = {**written(185, 11, second=5.01, pid="121"), "types": ["SYSCALL", "EXECVE", "CWD", "PATH"]}
+    with_child = [*events, start(7, 5.01, 121, 120, "id", 11, parent_known=True)]
+    matched = {"audit 1794893574.919:184": ["high-rule"]}
+
+    # bash -c "sysctl ...": the shell becomes the one command it was given, in the same process.
+    became = {**written(186, 11, second=5.002), "types": ["SYSCALL", "EXECVE", "CWD", "PATH", "PATH"]}
+
+    alone, nothing = see(a_test(), events, matched, audit=[launched])
+    answer, mine = see(a_test(), with_child, matched, audit=[launched, child])
+    _, same_process = see(a_test(), events, {**matched, "audit 1794893574.919:186": ["high-rule"]},
+                          audit=[became, launched])  # fmt: skip
+
+    assert (alone["answer"], nothing) == ("no telemetry", [])
+    assert [(rule["id"], rule["records"]) for rule in alone["launcher_only_rules"]] == [
+        ("high-rule", ["audit 1794893574.919:184"])
+    ]
+    assert answer["answer"] == "telemetry only"
+    assert "audit 1794893574.919:185" in [event["record"] for event in mine]
+    assert "audit 1794893574.919:184" not in [event["record"] for event in mine]
+    assert [event["record"] for event in same_process] == ["audit 1794893574.919:186"]
+
+
+def test_the_launchers_start_is_its_own_first_and_compared_by_number() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+    with_child = [*events, start(7, 5.01, 121, 120, "id", 11, parent_known=True)]
+    execve = ["SYSCALL", "EXECVE", "CWD", "PATH"]
+    launched = {**written(184, 11, second=5.0), "types": execve}
+    # The child's start, recorded a moment before the launcher's: still not the launcher's.
+    earlier = {**written(187, 11, second=4.999, pid="121"), "types": execve}
+    # The same millisecond, where the serials cross a power of ten.
+    first = {**written(9999, 11, second=5.0), "types": execve}
+    became = {**written(10000, 11, second=5.0), "types": execve}
+
+    _, mine = see(a_test(), with_child, audit=[earlier, launched])
+    _, tie = see(a_test(), events, audit=[became, first])
+
+    assert [event["record"] for event in mine if str(event["record"]).startswith("audit")] == [
+        "audit 1794893574.919:187"
+    ]
+    assert [event["record"] for event in tie] == ["audit 1794893574.919:10000"]
+
+
+def test_a_search_of_the_path_is_not_telemetry_but_a_start_the_kernel_refused_is() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+    launched = {**written(184, 11, second=5.0), "types": ["SYSCALL", "EXECVE", "CWD", "PATH"]}
+
+    def refused(serial: int, error: str, path: str, pid: str = "125", parent: str = "120") -> dict:
+        # In a fork that never started a program, so Sysmon saw no start of it, as with
+        # /tmp/crond under noexec in run 44063265542 (process 11981, forked by the launcher).
+        event = {
+            **written(serial, 11, second=5.002, pid=pid),
+            "types": ["SYSCALL", "CWD", "PATH", "PROCTITLE"],
+        }
+        event["call"] = {**event["call"], "ppid": parent, "syscall": "59", "success": "no", "exit": error}
+        event["names"] = {**event["names"], "SYSCALL": "execve"}
+        event["paths"] = [path]
+        return event
+
+    audit = [
+        launched,
+        # A shell trying each folder of its search path for id (ENOENT): a lookup.
+        refused(186, "-2", "/usr/local/sbin/id"),
+        refused(187, "-2", "/usr/local/bin/id"),
+        # One start of a file that does not exist, as a planted job's missing payload: an action.
+        refused(188, "-2", "/tmp/evil.sh", pid="126"),
+        # /tmp mounted noexec (EACCES), and the same in a fork of the executor, not the test's.
+        refused(189, "-13", "/tmp/crond", pid="127"),
+        refused(190, "-13", "/tmp/crond", pid="128", parent="101"),
+    ]
+    _, mine = see(a_test(), events, audit=audit)
+
+    assert [event["record"] for event in mine] == ["audit 1794893574.919:188", "audit 1794893574.919:189"]
+    # Named by the file it tried to start, not by the shell's command line the fork still holds.
+    assert mine[1]["detail"] == "the kernel refused to start /tmp/crond (exit -13)"
+    assert mine[1]["fields"]["command"] == ""
 
 
 def test_sudos_record_of_a_command_the_test_ran_shows_the_command() -> None:
@@ -490,6 +582,32 @@ def test_ordinary_activity_is_the_baseline_and_what_ran_in_no_session_outside_th
     assert [(rule["id"], rule["events"]) for rule in ordinary["pinned_rules"]] == [("medium-rule", 1)]
 
 
+def test_ordinary_activity_leaves_out_a_failed_lookup_as_a_tests_events_do() -> None:
+    run_record = {"tests": [{"role": "baseline", "steps": [step("baseline-root", 30)]}]}
+
+    def start_of(serial: int, error: str, path: str, pid: str = "120") -> dict:
+        event = {**written(serial, 30, second=0.5, pid=pid), "types": ["SYSCALL", "CWD", "PATH", "PROCTITLE"]}
+        event["call"] = {**event["call"], "syscall": "59", "success": "no", "exit": error}
+        event["names"] = {**event["names"], "SYSCALL": "execve"}
+        event["paths"] = [path]
+        return event
+
+    # A baseline shell trying two folders of its search path (ENOENT), a start refused (EACCES),
+    # and one start of a file that does not exist (ENOENT, no search), which is an action.
+    audit = [
+        start_of(299, "-2", "/usr/local/sbin/truncate"),
+        start_of(300, "-2", "/usr/local/bin/truncate"),
+        start_of(301, "-13", "/tmp/ordinary"),
+        start_of(302, "-2", "/tmp/missing", pid="121"),
+    ]
+    matched = {f"audit {event['event']}": ["lab-rule"] for event in audit}
+
+    ordinary = evaluate.ordinary_activity(run_record, [], [], matched, RULES, [], audit)
+
+    assert ordinary["baseline_events"] == 2
+    assert ordinary["rules"] == {"lab-rule": ["audit 1794893574.919:301", "audit 1794893574.919:302"]}
+
+
 def judged(
     test_rules=("lab-rule",), variant_rules=("lab-rule",), variant_took=True, noise=None, sibling=False
 ) -> dict:
@@ -583,6 +701,17 @@ def test_auditd_must_record_its_probe_in_time_and_lose_no_record() -> None:
     assert failed({**sound, "probe_time": "2026-11-16 04:00:02.000"}) == ["readiness"]
     assert failed({**sound, "lost_after": 3}) == ["loss"]
     assert failed({**sound, "lost_before": None}) == ["loss"]
+    # auditd rotated its log during the run, as in run 44050159740: the export holds only the last part.
+    assert failed({**sound, "rotated": ["/var/log/audit/audit.log.1"]}) == ["loss"]
+    # And what the driver recorded about the run reaches the control.
+    recorded = {"probe": "/var/tmp/p", "before": {"lost": "0"}, "after": {"lost": "0"}, "rotated": ["x.1"]}
+    probe = {**written(190, 11, second=0.6), "paths": ["/var/tmp/p"]}
+    assert evaluate.audit_facts(recorded, [probe]) == {
+        "probe_time": "2026-11-16 04:00:00.600",
+        "lost_before": 0,
+        "lost_after": 0,
+        "rotated": ["x.1"],
+    }
 
 
 def test_a_rule_the_engine_did_not_load_or_an_event_it_did_not_read_fails_the_run() -> None:

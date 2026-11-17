@@ -91,6 +91,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq "sysmonforlinux=$SYSMON_VERSION" "sysinternalsebpf=$SYSINTERNALS_EBPF_VERSION" \
             "auditd=$AUDITD_VERSION"
+          # The run exports auditd's current log file, so the log must not rotate during the run
+          # (by default it does at 8 MB). auditd reads its configuration again on SIGHUP.
+          sudo sed -i -e 's/^max_log_file = .*/max_log_file = 1024/' \
+            -e 's/^max_log_file_action = .*/max_log_file_action = ignore/' /etc/audit/auditd.conf
+          sudo grep -qx 'max_log_file_action = ignore' /etc/audit/auditd.conf
+          sudo pkill -HUP -x auditd
           sudo pwsh -NoLogo -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module powershell-yaml -RequiredVersion $POWERSHELL_YAML_VERSION -Scope AllUsers -Force"
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
@@ -142,6 +148,16 @@ jobs:
           fi
           if sudo -u bluefire-lab getent hosts github.com; then
             echo "the test account can still look up names"
+            exit 1
+          fi
+          # The check above stops at the name, so this one gives the account the address itself.
+          address=$(getent ahostsv4 github.com | head -n 1 | cut -d' ' -f1)
+          test -n "$address"
+          # The same request from the runner's own account must work, or the check shows nothing.
+          curl -sS --max-time 10 -o /dev/null --resolve "github.com:443:$address" https://github.com
+          if sudo -u bluefire-lab curl -sS --max-time 5 -o /dev/null --resolve "github.com:443:$address" \
+            https://github.com; then
+            echo "the test account still reaches $address"
             exit 1
           fi
 

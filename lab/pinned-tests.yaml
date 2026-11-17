@@ -29,9 +29,12 @@
 # folder and the name of the account the tests run as.
 #
 # A test belongs here when it acts only on the machine it runs on. Left out are
-# tests that read other processes' memory or environment, search the file
-# system for secrets, contact other hosts, send data out, reboot, change the
-# firewall or the network, or would stop the sensor or the job.
+# tests that read or write the memory or environment of a process they did not
+# start, search the file system for secrets, contact other hosts, send data
+# out, reboot, change the firewall or the network, or would stop the sensor or
+# the job. A search for secrets stays when its input arguments limit it to the
+# test account's home, where the lab plants what it looks for ("args" and
+# "prepare" below).
 #
 # Do not swap a test out to change the table. A test that was tried and then
 # left out goes under "dropped" with the reason, and the report lists it.
@@ -100,6 +103,20 @@ baseline:
     cp /bin/true /tmp/bluefire-lab-build-step
     /tmp/bluefire-lab-build-step
     rm /tmp/bluefire-lab-build-step
+    mkdir -p ~/.local/bin
+    cp /bin/true ~/.local/bin/bluefire-lab-tool
+    ~/.local/bin/bluefire-lab-tool
+    rm ~/.local/bin/bluefire-lab-tool
+    find ~ -name '*.txt' -type f
+    find /etc -maxdepth 1 -name 'host*'
+    echo notes > /tmp/bluefire-lab-notes.txt
+    zip -q -j /tmp/bluefire-lab-notes.zip /tmp/bluefire-lab-notes.txt
+    unzip -o -q /tmp/bluefire-lab-notes.zip -d /tmp/bluefire-lab-unzipped
+    rm -r /tmp/bluefire-lab-notes.txt /tmp/bluefire-lab-notes.zip /tmp/bluefire-lab-unzipped
+    site=$(python3 -c 'import site; print(site.getusersitepackages())')
+    mkdir -p "$site"
+    echo 'value = 1' > "$site/bluefire_lab_module.py"
+    rm "$site/bluefire_lab_module.py"
 
 tests:
   # Discovery
@@ -151,6 +168,17 @@ tests:
     effect: grep -qF '/tmp/evil.sh' /var/spool/cron/crontabs/{account}
     dwell: 65 # long enough for cron to run the planted line once
     defenses: [cron-allow]
+  # Root's own cron folder, which /etc/cron.allow does not cover. Upstream's default
+  # command begins with echo, so the line the test writes there is not a cron entry and
+  # cron schedules nothing from it: the test runs with a command that is one, and the
+  # check reads a schedule and an account at the start of the line.
+  - technique: T1053.003
+    guid: 078e69eb-d9fb-450e-b9d0-2e118217c846
+    name: Cron - Add script to /etc/cron.d folder
+    args: {command: "*/5 * * * * root echo bluefire-lab-cron-d"}
+    effect: >-
+      grep -qE '^[*0-9/,-]+( [*0-9/,-]+){4} root ' /etc/cron.d/persistevil
+    defenses: [cron-allow]
   - technique: T1053.006
     guid: f4983098-bb13-44fb-9b2c-46149961807b
     name: Create Systemd Service and Timer
@@ -199,6 +227,19 @@ tests:
     name: Add command to .bashrc
     effect: grep -q 'T1546.004' {home}/.bashrc
     defenses: [profile-immutable]
+  # The account's other start files, which the immutable ~/.bashrc does not cover.
+  # Upstream's cleanup keeps all but the last two lines of the file, one more than the
+  # test adds, so each run also takes away the last line the account's file had before.
+  - technique: T1546.004
+    guid: 94500ae1-7e31-47e3-886b-c328da46872f
+    name: Add command to .bash_profile
+    effect: grep -q 'T1546.004' {home}/.bash_profile
+    defenses: [profile-immutable]
+  - technique: T1546.004
+    guid: bbdb06bc-bab6-4f5b-8232-ba3fbed51d77
+    name: Append commands user shell profile
+    effect: grep -qF 'Atomic Red Team was here... T1546.004' {home}/.profile
+    defenses: [profile-immutable]
   - technique: T1037.004
     guid: 126f71af-e1c9-405c-94ef-26a47b16c102
     name: rc.local
@@ -212,6 +253,8 @@ tests:
     name: Python Startup Hook - usercustomize.py (Linux / MacOS)
     needs: [python3]
     effect: test -s /tmp/poc.txt && ls {home}/.local/lib/python3*/site-packages/usercustomize.py
+    variants:
+      - args: {python_exe: python3.12}
   # It writes the unit with a shell, so the lab's rule for that alerts on it too.
   - technique: T1569.003
     guid: 2fc6c0ab-4f88-4eb8-ab1b-f739fc22bba7
@@ -226,6 +269,44 @@ tests:
         effect: >-
           systemctl is-enabled --quiet bluefire-lab-variant-persist.service
           && grep -q persistent /tmp/atomic_persist_output.txt
+  # More services written with a shell, which the lab's rule for that should catch too.
+  # Upstream writes each unit's line with echo "ExecStart=#{command_to_run}", and the
+  # argument's own double quotes end that string early: the unit runs bash -c echo (or id)
+  # without the redirect, which applies to the echo and leaves the output file empty. So
+  # the checks read systemd's own line in the journal that the unit's command ran and ended
+  # without error.
+  - technique: T1569.003
+    guid: e58c8723-5503-4533-b642-535cd20ec648
+    name: Create and Enable a Malicious systemd Service Unit
+    needs: [systemctl, journalctl]
+    effect: >-
+      systemctl is-enabled --quiet atomic-test.service
+      && journalctl -q --no-pager -o cat -u atomic-test.service | grep -q 'Deactivated successfully'
+    variants:
+      - args: {service_name: bluefire-lab-variant-unit}
+        effect: >-
+          systemctl is-enabled --quiet bluefire-lab-variant-unit.service
+          && journalctl -q --no-pager -o cat -u bluefire-lab-variant-unit.service
+          | grep -q 'Deactivated successfully'
+  - technique: T1569.003
+    guid: 6fec8560-ff64-4bbf-bc79-734fea48f7ca
+    name: Masquerade Malicious Service as Legitimate System Service
+    needs: [systemctl, journalctl]
+    effect: >-
+      test -f /etc/systemd/system/systemd-network-helper.service
+      && journalctl -q --no-pager -o cat -u systemd-network-helper.service | grep -q 'Deactivated successfully'
+    variants:
+      - args: {masquerade_name: systemd-bluefire-variant-helper}
+        effect: >-
+          test -f /etc/systemd/system/systemd-bluefire-variant-helper.service
+          && journalctl -q --no-pager -o cat -u systemd-bluefire-variant-helper.service
+          | grep -q 'Deactivated successfully'
+  # A unit written outside systemd's folders and linked in: the lab's rule does not look there.
+  - technique: T1569.003
+    guid: a1fa406e-2354-4a24-b6d6-94157e7564d4
+    name: Create systemd Service Unit from /tmp (Unusual Location)
+    needs: [systemctl, journalctl]
+    effect: journalctl -q --no-pager -o cat -u atomic_tmp.service | grep -q 'Deactivated successfully'
   - technique: T1556.003
     guid: 4b9dde80-ae22-44b1-a82a-644bf009eb9c
     name: Malicious PAM rule
@@ -255,6 +336,35 @@ tests:
       && echo 'bluefire-lab-planted, not a key' > ~/.ssh/id_rsa
       && chmod 600 ~/.ssh/id_rsa
     effect: grep -qF 'bluefire-lab-planted' /tmp/creds.txt
+    variants:
+      # Another kind of key, under its own name.
+      - args: {search_path: "~", filename: id_ed25519}
+        prepare: >-
+          install -d -m 700 ~/.ssh
+          && echo 'bluefire-lab-planted-variant, not a key' > ~/.ssh/id_ed25519
+          && chmod 600 ~/.ssh/id_ed25519
+        effect: grep -qF 'bluefire-lab-planted-variant' /tmp/creds.txt
+  # Upstream searches from /, as above; the key is copied out instead of printed.
+  - technique: T1552.004
+    guid: 7c247dc7-5128-4643-907b-73a76d9135c3
+    name: Copy Private SSH Keys with CP
+    args: {search_path: "~"}
+    prepare: >-
+      install -d -m 700 ~/.ssh
+      && echo 'bluefire-lab-planted, not a key' > ~/.ssh/id_rsa
+      && chmod 600 ~/.ssh/id_rsa
+    effect: grep -qF 'bluefire-lab-planted' /tmp/art-staging{home}/.ssh/id_rsa
+    variants:
+      - args: {search_path: "~", output_folder: /tmp/bluefire-lab-variant-staging}
+        effect: grep -qF 'bluefire-lab-planted' /tmp/bluefire-lab-variant-staging{home}/.ssh/id_rsa
+  # Upstream searches from /; here the account's home, where the lab plants a file named
+  # like a TLS key, which is not a key.
+  - technique: T1552.004
+    guid: 5e417277-0ae7-4ad5-a3e8-0fa27c122b29
+    name: Find TLS private key files
+    args: {file_path: "~"}
+    prepare: echo 'bluefire-lab-planted-tls, not a key' > ~/bluefire-lab-server.key
+    effect: grep -qF 'bluefire-lab-planted-tls' /tmp/creds.txt
 
   # Permissions and masquerading
   - technique: T1222.002
@@ -276,6 +386,12 @@ tests:
     variants:
       - args: {file_to_setuid: /var/tmp/bluefire-lab-variant-setgid}
         effect: test -g /var/tmp/bluefire-lab-variant-setgid
+  # The same privilege by a file capability instead of the setuid bit.
+  - technique: T1548.001
+    guid: db53959c-207d-4000-9e7a-cd8eb417e072
+    name: Make and modify capabilities of a binary
+    needs: [make, gcc, setcap, getcap]
+    effect: getcap /tmp/cap | grep -q cap_setuid
   - technique: T1036.003
     guid: a315bfff-7a98-403b-b442-2ea1b255e556
     name: Masquerading as FreeBSD or Linux crond process.
@@ -286,6 +402,9 @@ tests:
     guid: 812c3ab8-94b0-4698-a9bf-9420af23ce24
     name: Execute a process from a directory masquerading as the current parent directory
     output: Hello from the Atomic Red Team test T1036.005
+    variants:
+      - args: {test_message: Hello from a variant run of the lab}
+        output: Hello from a variant run of the lab
   - technique: T1564.001
     guid: 61a782e5-9a19-40b5-8ba4-69a4b9f3d7be
     name: Create a hidden file in a hidden directory
@@ -309,6 +428,17 @@ tests:
       - args: {history_path: ~/.histfile}
         prepare: echo "ls -la" >> ~/.histfile
         effect: test -e {home}/.histfile && test ! -s {home}/.histfile
+  # The same through the shell's own redirection, which starts no program named for the file.
+  - technique: T1070.003
+    guid: cbf506a5-dd78-43e5-be7e-a46b7c7a0a11
+    name: Clear Bash history (echo)
+    prepare: echo "ls -la" >> ~/.bash_history
+    effect: test -e {home}/.bash_history && ! grep -q . {home}/.bash_history
+  - technique: T1070.003
+    guid: b1251c35-dcd3-4ea1-86da-36d27b54f31f
+    name: Clear Bash history (cat dev/null)
+    prepare: echo "ls -la" >> ~/.bash_history
+    effect: test -e {home}/.bash_history && test ! -s {home}/.bash_history
   # Leaves ~/.bash_history as a link to /dev/null; the closing canary removes it.
   - technique: T1070.003
     guid: 23d348f3-cc5c-4ba9-bd0a-ae09069f0914
@@ -363,6 +493,9 @@ tests:
     needs: [zip, unzip]
     output: "T1027.013: Payload extracted from encrypted ZIP"
     defenses: [tmp-noexec]
+    variants:
+      # The test's own input argument, made up for this run, not a secret.
+      - args: {zip_password: bluefire-lab-variant}  # pragma: allowlist secret
   - technique: T1574.006
     guid: bc219ff7-789f-4d51-9142-ecae3397deae
     name: Shared Library Injection via LD_PRELOAD
@@ -404,7 +537,14 @@ tests:
     args: {input_file_path: /tmp/bluefire-lab-ransom.txt}
     prepare: echo 'bluefire lab data to encrypt' > /tmp/bluefire-lab-ransom.txt
     effect: test -s /tmp/passwd.zip
-  # After the cron test, which needs cron running; the cleanup starts it again.
+  # It encrypts a copy of /etc/passwd it makes in /tmp. The runner may lack ccencrypt;
+  # then the inventory leaves the test out, and the report says why.
+  - technique: T1486
+    guid: 08cbf59f-85da-4369-a5f4-049cffd7709f
+    name: Encrypt files using ccrypt (FreeBSD/Linux)
+    needs: [ccencrypt]
+    effect: test -s /tmp/passwd.cpt
+  # After the cron tests, which need cron running; the cleanup starts it again.
   - technique: T1489
     guid: 42e3a5bd-1e45-427f-aa08-2a65fa29a820
     name: Linux - Stop service using systemctl

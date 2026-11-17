@@ -69,12 +69,33 @@ def command_line(value: str) -> str:
         return value  # auditd writes it as plain text when it has no unusual characters
 
 
+_ARGUMENT = re.compile(r'\ba(\d+)=(?:"([^"]*)"|([0-9A-Fa-f]+))')
+
+
+def arguments(line: str) -> list[str]:
+    """An EXECVE record's arguments in order: quoted text, or hex when an argument holds a
+    space or another unusual character."""
+
+    found = []
+    for index, quoted, hexed in _ARGUMENT.findall(line.partition("\x1d")[0]):
+        text = quoted
+        if hexed:
+            try:
+                text = bytes.fromhex(hexed).decode("utf-8", "replace")
+            except ValueError:
+                text = hexed
+        found.append((int(index), text))
+    return [text for _, text in sorted(found)]
+
+
 def events(records: list[dict]) -> list[dict]:
     """The events of the log: the records that share a time and a serial, joined.
 
     An event's process, session and account come from its system call record, or,
     for a record a program writes itself (useradd's ADD_USER, sudo's USER_CMD),
-    from that record.
+    from that record. Its command is the program's arguments when it started one
+    (EXECVE), and otherwise the process's command line (PROCTITLE), which after a
+    shell has become the one command it was given is still the shell's.
     """
 
     joined: dict[str, dict] = {}
@@ -89,7 +110,9 @@ def events(records: list[dict]) -> list[dict]:
             event["call"], event["names"] = record["fields"], record["interpreted"]
         if record["type"] == "PATH" and record["fields"].get("nametype") != "PARENT":
             event["paths"].append(record["fields"].get("name", ""))
-        elif record["type"] == "PROCTITLE":
+        elif record["type"] == "EXECVE":
+            event["command"] = " ".join(arguments(record["line"]))
+        elif record["type"] == "PROCTITLE" and "EXECVE" not in event["types"]:
             event["command"] = command_line(record["fields"].get("proctitle", ""))
     return list(joined.values())
 

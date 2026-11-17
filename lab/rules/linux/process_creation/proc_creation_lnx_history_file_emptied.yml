@@ -5,8 +5,9 @@ description: >-
   A shell history file was truncated to nothing, replaced by a link to
   /dev/null, or overwritten with /dev/null. Each keeps the file in place and
   removes what it recorded, as covering tracks does. History files are named
-  after the shell, as in .bash_history, .zsh_history, fish_history, .history
-  and .histfile.
+  after the shell or the program, and the name ends in history, as in
+  .bash_history, .zsh_history, .zhistory, fish_history, .history and
+  .python_history, or is .histfile.
 references:
   - https://attack.mitre.org/techniques/T1070/003/
 author: BlueFire lab
@@ -29,7 +30,7 @@ detection:
     Image|endswith: /cp
     CommandLine|contains: /dev/null
   selection_history:
-    CommandLine|re: '(_history|\.history|histfile)(\s|$)'
+    CommandLine|re: '(history|histfile)(\s|$)'
   condition: (selection_truncate or selection_link or selection_copy) and selection_history
 falsepositives:
   - Someone clearing their own history on purpose
