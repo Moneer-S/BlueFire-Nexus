@@ -100,3 +100,63 @@ def test_an_input_argument_the_test_does_not_declare_stops_the_run(tmp_path: Pat
     assert run.upstream_definition({**spec, "args": {"history_path": "~/.zsh_history"}}, tmp_path) == upstream
     with pytest.raises(SystemExit, match="no input argument histroy_path"):
         run.upstream_definition({**spec, "args": {"histroy_path": "~/.zsh_history"}}, tmp_path)
+
+
+def test_the_inventory_reads_accounts_sockets_and_services() -> None:
+    passwd = (
+        "root:x:0:0:root:/root:/bin/bash\n"
+        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+        "sync:x:4:65534:sync:/bin:/bin/sync\n"
+        "bluefire-lab:x:1002:1002::/home/bluefire-lab:/bin/bash\n"
+        "plain:x:1003:1003::/var/lib/plain:\n"  # an empty shell field means /bin/sh
+    )
+    ss = (
+        "udp   UNCONN 0      0      127.0.0.53%lo:53        0.0.0.0:*\n"
+        "tcp   LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*\n"
+        "tcp   LISTEN 0      128          0.0.0.0:22        0.0.0.0:*\n"
+    )
+    units = "cron.service loaded active running Regular background program processing daemon\n"
+    shells = "# /etc/shells: valid login shells\n/bin/sh\n/bin/bash\n/usr/bin/bash\n"
+
+    assert run.login_accounts(passwd, shells) == ["bluefire-lab", "plain", "root"]  # /bin/sync is no shell
+    assert run.listening(ss) == ["tcp 0.0.0.0:22", "tcp 127.0.0.53%lo:53", "udp 127.0.0.53%lo:53"]
+    assert run.running_services(units) == ["cron.service"]
+
+
+def test_a_test_whose_program_the_target_lacks_is_left_out_with_its_runs_and_the_reason() -> None:
+    document = a_plan()
+    document["dropped"] = [{"technique": "T9", "name": "by hand", "reason": "reads other processes' memory"}]
+    document["tests"][0]["needs"] = ["crontab"]
+    document["tests"][2]["needs"] = ["systemctl", "useradd"]
+    document["tests"][2]["variants"] = [{"args": {"name": "other"}}]
+    found = {"programs": {"crontab": "/usr/bin/crontab", "systemctl": "", "useradd": "/usr/sbin/useradd"}}
+
+    runs, left_out = run.runs_for(document, found)
+
+    assert [(item["role"], item["spec"]["name"]) for item in runs] == [
+        ("canary", "canary"),
+        ("control", "control"),
+        ("test", "first"),
+        ("test", "second"),
+        ("hardened", "first"),
+        ("canary", "canary"),
+    ]
+    assert left_out == [
+        {"technique": "T9", "name": "by hand", "reason": "reads other processes' memory"},
+        {"technique": "T3", "name": "third", "reason": "the target has no systemctl, which the test needs"},
+    ]
+
+
+def test_needs_written_as_one_name_stops_the_run_with_the_fix() -> None:
+    document = a_plan()
+    document["tests"][0]["needs"] = "crontab"
+
+    with pytest.raises(SystemExit, match=r"needs is a list of programs, as in needs: \[crontab\]"):
+        run.runs_for(document, {"programs": {}})
+
+
+def test_the_lab_stops_with_the_reason_when_the_target_lacks_a_program_it_needs_itself(monkeypatch) -> None:
+    monkeypatch.setattr(run.shutil, "which", lambda name: None if name == "systemctl" else f"/usr/bin/{name}")
+
+    with pytest.raises(SystemExit, match="the lab needs systemctl on the target"):
+        run.requirements()

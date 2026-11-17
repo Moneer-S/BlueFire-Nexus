@@ -160,6 +160,19 @@ rule for a unit file written by a shell also alerts when an administrator
 writes a new unit by hand. A draft that could not fire with this sensor is kept
 in [`rules/rejected`](rules/rejected) with the reason.
 
+## What the target has
+
+Each run starts with an inventory of the target, and chooses the tests by it.
+In [run 44028032549](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44028032549)
+(17 November 2026) the hosted runner had 5 accounts that can log in (among them
+`packer` and `postgres`, which come with the runner image), 26 running services
+before the lab started its sensors, and 9 listening TCP and UDP addresses,
+among them TCP port 22, the port SSH uses, on every address. Sysmon for Linux
+and auditd were both active once started. Every program the tests name (`awk`,
+`crontab`, `systemctl`, `useradd`) was there, so no test was left out. That a
+missing program leaves its tests out is shown by the unit tests only, not yet
+by a run.
+
 ## A sensor change that makes a gap visible
 
 Sysmon for Linux reports a write to a file only when it leaves the file looking
@@ -196,8 +209,16 @@ before the first test and its own count of lost records at 0 before and after.
    repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). The
    sensors are Sysmon for Linux, with [`sensors/sysmon.xml`](sensors/sysmon.xml),
    and auditd, with the file watches in [`sensors/audit.rules`](sensors/audit.rules).
-2. `bluefire-lab run` waits until Sysmon reports a probe command and auditd a
-   probe write to a file it watches. It then
+2. `bluefire-lab run` stops at once, with the reason, if the target lacks
+   `systemctl` or `ss`, which the lab itself needs. Before it starts the
+   sensors, it takes an inventory of the target: the accounts that can log
+   in, the running services, the listening addresses, and where each program
+   the tests need is (`needs` in [`pinned-tests.yaml`](pinned-tests.yaml)).
+   A test whose program is missing is left out, with its hardened runs and
+   variants, and the report and the run page list it with the reason. After
+   starting the sensors it records which of them are active, and waits until
+   Sysmon reports a probe command and auditd a probe write to a file it
+   watches. It then
    runs the tests on [`pinned-tests.yaml`](pinned-tests.yaml) one at a time,
    with the canary first and last, the harmless command second and the
    baseline of ordinary administration third. After the tests and before the
