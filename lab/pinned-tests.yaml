@@ -263,32 +263,43 @@ tests:
           systemctl is-enabled --quiet bluefire-lab-variant-persist.service
           && grep -q persistent /tmp/atomic_persist_output.txt
   # More services written with a shell, which the lab's rule for that should catch too.
+  # Upstream writes each unit's line with echo "ExecStart=#{command_to_run}", and the
+  # argument's own double quotes end that string early: the unit runs bash -c echo (or id)
+  # without the redirect, which applies to the echo and leaves the output file empty. So
+  # the checks read systemd's own line in the journal that the unit's command ran and ended
+  # without error.
   - technique: T1569.003
     guid: e58c8723-5503-4533-b642-535cd20ec648
     name: Create and Enable a Malicious systemd Service Unit
-    needs: [systemctl]
-    effect: systemctl is-enabled --quiet atomic-test.service && test -s /tmp/atomic_service_output.txt
+    needs: [systemctl, journalctl]
+    effect: >-
+      systemctl is-enabled --quiet atomic-test.service
+      && journalctl -q --no-pager -o cat -u atomic-test.service | grep -q 'Deactivated successfully'
     variants:
       - args: {service_name: bluefire-lab-variant-unit}
         effect: >-
           systemctl is-enabled --quiet bluefire-lab-variant-unit.service
-          && test -s /tmp/atomic_service_output.txt
+          && journalctl -q --no-pager -o cat -u bluefire-lab-variant-unit.service
+          | grep -q 'Deactivated successfully'
   - technique: T1569.003
     guid: 6fec8560-ff64-4bbf-bc79-734fea48f7ca
     name: Masquerade Malicious Service as Legitimate System Service
-    needs: [systemctl]
-    effect: test -f /etc/systemd/system/systemd-network-helper.service && test -s /tmp/atomic_masquerade_output.txt
+    needs: [systemctl, journalctl]
+    effect: >-
+      test -f /etc/systemd/system/systemd-network-helper.service
+      && journalctl -q --no-pager -o cat -u systemd-network-helper.service | grep -q 'Deactivated successfully'
     variants:
       - args: {masquerade_name: systemd-bluefire-variant-helper}
         effect: >-
           test -f /etc/systemd/system/systemd-bluefire-variant-helper.service
-          && test -s /tmp/atomic_masquerade_output.txt
+          && journalctl -q --no-pager -o cat -u systemd-bluefire-variant-helper.service
+          | grep -q 'Deactivated successfully'
   # A unit written outside systemd's folders and linked in: the lab's rule does not look there.
   - technique: T1569.003
     guid: a1fa406e-2354-4a24-b6d6-94157e7564d4
     name: Create systemd Service Unit from /tmp (Unusual Location)
-    needs: [systemctl]
-    effect: test -s /tmp/atomic_tmp_output.txt
+    needs: [systemctl, journalctl]
+    effect: journalctl -q --no-pager -o cat -u atomic_tmp.service | grep -q 'Deactivated successfully'
   - technique: T1556.003
     guid: 4b9dde80-ae22-44b1-a82a-644bf009eb9c
     name: Malicious PAM rule
