@@ -8,38 +8,37 @@ technique take effect, and what did the defense see.
 ## What it shows today
 
 Everything in this section comes from one run of the `lab` workflow:
-[run 44044525643](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44044525643),
+[run 44055611236](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44055611236),
 17 November 2026. Its run page shows the same answers in a longer table, and
 its artifact `lab-run` holds the sensors' raw output (`sysmon.txt` and
 `audit.txt`), the answers with what each rests on (`results.json`) and the full
 report (`report.html`). GitHub keeps both for 90 days.
 
 - **Target:** a GitHub-hosted `ubuntu-24.04` runner (Ubuntu 24.04.5, kernel
-  7.0.0-1017-azure, runner image 20261111.370.1).
+  7.0.0-1014-aws, runner image 20261111.127.1).
 - **Tests:** 49 Linux tests from Atomic Red Team at commit `a0e3f9bc`, run
   unchanged by its executor, Invoke-AtomicRedTeam, at commit `8af478bb`. Two
   run with one input argument changed; [`pinned-tests.yaml`](pinned-tests.yaml)
   says which and why.
 - **Sensors:** Sysmon for Linux 1.6.0 with the configuration in
-  [`sensors/sysmon.xml`](sensors/sysmon.xml), and auditd 3.1.2 with the file
-  watches in [`sensors/audit.rules`](sensors/audit.rules).
+  [`sensors/sysmon.xml`](sensors/sysmon.xml), and auditd 3.1.2 with the rules
+  in [`sensors/audit.rules`](sensors/audit.rules): watches on the shell start
+  files, and the process starts of the lab's own steps.
 - **Rules:** the 188 Linux rules of SigmaHQ release r2026-07-01 for the kinds
   of event these sensors record (122 for process creation, 8 for file events,
   5 for network connections, 53 for auditd), evaluated by Zircolite 4.7.1.
-  Most of the 53 auditd rules look at records this auditd configuration does
-  not produce: process starts, system calls it does not audit, files it does
-  not watch, audit keys it does not set. In this run 3 of them matched
-  anything. One that could not is a high rule for turning ASLR off with
-  `sysctl`, as T1685 below does: it looks for the process start.
+  Many of the 53 auditd rules look at records this auditd configuration does
+  not produce: system calls it does not audit, files it does not watch, audit
+  keys it does not set. In this run 18 of them matched anything.
 
-All 49 tests took effect. One of them raised an alert, meaning a match of a
+All 49 tests took effect. Three of them raised an alert, meaning a match of a
 rule of level high or critical on an event of the test. The last column counts
 the lab's own rules too, those the run accepted: see
 [Detection rules of the lab's own](#detection-rules-of-the-labs-own).
 
 | Test | Visibility with the pinned rules (highest level that matched) | With the lab's rules too |
 | --- | --- | --- |
-| T1082 List OS Information | telemetry only (informational) | telemetry only |
+| T1082 List OS Information | telemetry only (low) | telemetry only |
 | T1069.001 Permission Groups Discovery (Local) | telemetry only (low) | telemetry only |
 | T1518.001 Security Software Discovery - ps (Linux) | telemetry only (low) | telemetry only |
 | T1057 Process Discovery - ps | telemetry only (none matched) | telemetry only |
@@ -48,15 +47,15 @@ the lab's own rules too, those the run accepted: see
 | T1087.001 View accounts with UID 0 | telemetry only (none matched) | telemetry only |
 | T1201 Examine password expiration policy - All Linux | telemetry only (none matched) | telemetry only |
 | T1053.003 Cron - Replace crontab with referenced file | telemetry only (medium) | telemetry only |
-| T1053.006 Create Systemd Service and Timer | telemetry only (none matched) | alert |
-| T1543.002 Create Systemd Service | telemetry only (none matched) | alert |
+| T1053.006 Create Systemd Service and Timer | telemetry only (low) | alert |
+| T1543.002 Create Systemd Service | telemetry only (low) | alert |
 | T1136.001 Create a user account on a Linux system | telemetry only (medium) | alert |
 | T1098.004 Modify SSH Authorized Keys | telemetry only (none matched) | telemetry only |
 | T1546.004 Add command to .bashrc | telemetry only (medium) | telemetry only |
 | T1037.004 rc.local | telemetry only (medium) | telemetry only |
 | T1546.005 Trap EXIT | telemetry only (medium) | telemetry only |
 | T1546.018 Python Startup Hook - usercustomize.py (Linux / MacOS) | telemetry only (medium) | alert |
-| T1569.003 Enable systemd Service for Persistence with Auto-Restart | telemetry only (none matched) | alert |
+| T1569.003 Enable systemd Service for Persistence with Auto-Restart | telemetry only (low) | alert |
 | T1556.003 Malicious PAM rule | telemetry only (none matched) | telemetry only |
 | T1078.003 Reactivate a locked/expired account (Linux) | telemetry only (medium) | telemetry only |
 | T1552.003 Search Through Bash History | telemetry only (medium) | telemetry only |
@@ -65,11 +64,11 @@ the lab's own rules too, those the run accepted: see
 | T1548.001 Set a SetUID flag on file | telemetry only (medium) | alert |
 | T1548.001 Set a SetGID flag on file | telemetry only (medium) | alert |
 | T1036.003 Masquerading as FreeBSD or Linux crond process | telemetry only (medium) | telemetry only |
-| T1036.005 Execute a process from a directory masquerading as the current parent directory | telemetry only (none matched) | alert |
-| T1564.001 Create a hidden file in a hidden directory | telemetry only (none matched) | telemetry only |
-| T1070.006 Set a file's modification timestamp | telemetry only (none matched) | telemetry only |
-| T1070.003 Clear Bash history (truncate) | telemetry only (none matched) | alert |
-| T1070.003 Clear Bash history (ln dev/null) | telemetry only (none matched) | alert |
+| T1036.005 Execute a process from a directory masquerading as the current parent directory | telemetry only (low) | alert |
+| T1564.001 Create a hidden file in a hidden directory | telemetry only (low) | telemetry only |
+| T1070.006 Set a file's modification timestamp | telemetry only (medium) | telemetry only |
+| T1070.003 Clear Bash history (truncate) | alert (high) | alert |
+| T1070.003 Clear Bash history (ln dev/null) | telemetry only (medium) | alert |
 | T1685.006 rm -rf | telemetry only (medium) | telemetry only |
 | T1027 Decode base64 Data into Script | telemetry only (medium) | telemetry only |
 | T1140 Linux Base64 Encoded Shebang in CLI | telemetry only (low) | telemetry only |
@@ -77,30 +76,34 @@ the lab's own rules too, those the run accepted: see
 | T1059.004 Shell Creation using awk command | alert (high) | alert |
 | T1027.002 Binary simply packed by UPX (linux) | telemetry only (medium) | telemetry only |
 | T1027.004 C compile | telemetry only (medium) | telemetry only |
-| T1027.013 Password-Protected ZIP Payload Extraction and Execution | telemetry only (informational) | alert |
+| T1027.013 Password-Protected ZIP Payload Extraction and Execution | telemetry only (low) | alert |
 | T1574.006 Shared Library Injection via LD_PRELOAD | telemetry only (none matched) | telemetry only |
 | T1055.009 Inplace Instruction Overwrite | telemetry only (none matched) | telemetry only |
-| T1560.001 Encrypts collected data with AES-256 and Base64 | telemetry only (none matched) | telemetry only |
+| T1560.001 Encrypts collected data with AES-256 and Base64 | telemetry only (low) | telemetry only |
 | T1560.002 Compressing data using tarfile in Python (FreeBSD/Linux) | telemetry only (none matched) | telemetry only |
-| T1030 Data Transfer Size Limits | telemetry only (none matched) | telemetry only |
+| T1030 Data Transfer Size Limits | telemetry only (low) | telemetry only |
 | T1486 Encrypt files using openssl (FreeBSD/Linux) | telemetry only (none matched) | telemetry only |
 | T1489 Linux - Stop service using systemctl | telemetry only (medium) | telemetry only |
-| T1685 Disable ASLR Via sysctl parameters - Linux | telemetry only (none matched) | telemetry only |
+| T1685 Disable ASLR Via sysctl parameters - Linux | alert (high) | alert |
 | T1553.004 Install root CA on Debian/Ubuntu | telemetry only (medium) | telemetry only |
 | T1548.003 Unlimited sudo cache timeout | telemetry only (medium) | telemetry only |
 
 What that means for a defender, under these sensors and these rules:
 
-- 48 tests took effect and left telemetry besides their launcher's start, but
-  no pinned rule of an alert level fired. The lab's own rules close 12 of these
-  gaps; 36 stay open. How much of a technique its telemetry shows differs: for
+- 46 tests took effect and left telemetry besides their launcher's start, but
+  no pinned rule of an alert level fired. The lab's own rules close 11 of these
+  gaps; 35 stay open. How much of a technique its telemetry shows differs: for
   the preloaded library (T1574.006) it is only the `ls` that ran, because
   Sysmon does not record the environment variable that carries the technique,
-  so no rule over that telemetry could close the gap; and a pinned high rule
-  describes the ASLR change (T1685) but looks for its process start, which
-  this auditd configuration does not record.
-- No test left no telemetry. Before auditd recorded beside Sysmon, appending a
-  command to `~/.bashrc` left none: see
+  so no rule over that telemetry could close the gap.
+- Of the three pinned alerts, one would also fire on ordinary work. The alert
+  on emptying the history with `truncate` (T1070.003) comes from "Binary
+  Padding - Linux", a rule for another technique that matches any
+  `truncate -s`: it matched the baseline's three ordinary uses of `truncate`
+  in the same run. The other two, the awk shell escape and turning ASLR off
+  with `sysctl` (T1685), matched nothing ordinary.
+- No test left no telemetry. Two changes to the sensors made that so, and the
+  second raised two of the alerts: see
   [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
 - On 25 of the tests, rules of level medium or lower matched only the one shell
   process whose command line holds the whole test. The report shows them, and
@@ -194,8 +197,8 @@ tests use have been seen in a run.
 The visibility answer stays the pinned rules' alone. A second column in the
 report gives the answer with the accepted rules counted too, and a rule that is
 not accepted changes no answer. In
-[run 44044525643](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44044525643),
-one of the 49 tests raised an alert with the pinned rules, and 13 with the
+[run 44055611236](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44055611236),
+three of the 49 tests raised an alert with the pinned rules, and 14 with the
 accepted rules as well:
 
 | Rule | Alerts on | Runs with changed input arguments | Verdict |
@@ -214,14 +217,14 @@ The rule for a unit file written by a shell was written for the first two of
 its procedures. It also alerts on the third, T1569.003, added to the list
 later, and on that procedure's run with changed input arguments. Two other
 accepted rules alert on two published procedures each, and five cover a single
-procedure each so far. In the same run the baseline left 286 events and the
-runner's and the lab's own work outside the tests 6,604, close to half of it
-the lab's own driver switching accounts and sessions. None of the lab's rules matched any
-of them, while 12 pinned rules did. One of those is of level high: the canary's
-own rule, "History File Deletion", matched the baseline's removal of a copy of
-a history file (`rm ~/.bash_history.bak`, record 1118). The others are medium
-or lower, for example "User Has Been Deleted Via Userdel" on the baseline's
-`userdel`.
+procedure each so far. In the same run the baseline left 385 events and the
+runner's and the lab's own work outside the tests 6,445, much of it the lab's
+own driver switching accounts and sessions. None of the lab's rules matched any
+of them, while 20 pinned rules did. Two of those are of level high: the
+canary's own rule, "History File Deletion", matched the baseline's removal of a
+copy of a history file (`rm ~/.bash_history.bak`, record 1112), and "Binary
+Padding - Linux" its three uses of `truncate`. The others are medium or lower,
+for example "User Has Been Deleted Via Userdel" on the baseline's `userdel`.
 
 The baseline is a short script, not days of real administration, so a rule that
 stays quiet on it can still be noisy elsewhere. One such case is known: the
@@ -272,6 +275,37 @@ User Account" (medium) matched; `sudo` running each command of the setuid and
 setgid tests; and cron starting the job the crontab test planted. None of these
 changed an answer. All seven controls passed, with auditd's probe recorded
 before the first test and its own count of lost records at 0 before and after.
+
+### Process starts recorded by auditd too
+
+With file watches alone, 3 of the 53 pinned auditd rules matched anything: most
+of them look for a program's start and its arguments (EXECVE records). auditd
+now records the process starts of the lab's own steps as well: those of
+processes with a login uid, which the lab sets at the start of every step and
+the runner's own processes do not have. In
+[run 44055611236](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44055611236)
+18 auditd rules matched something, and two tests went from telemetry only to
+an alert by a pinned rule:
+
+| Test | Rule that alerts now |
+| --- | --- |
+| T1685 Disable ASLR Via sysctl parameters - Linux | ASLR Disabled Via Sysctl or Direct Syscall - Linux (high), on `sysctl -w kernel.randomize_va_space=0` |
+| T1070.003 Clear Bash history (truncate) | Binary Padding - Linux (high), on `truncate -s0 ~/.bash_history` |
+
+The second rule is for another technique and matches any `truncate -s`: it
+matched the baseline's three ordinary uses of `truncate` in the same run, so a
+defender would see it on ordinary work too. Compared with
+[run 44055556881](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44055556881),
+the same tests without this change, only these two tests and the history
+test's two runs with changed input arguments changed their answers, of 74.
+
+Two things had to change with it. A shell given one command can become that
+command in the same process (`bash -c "sysctl ..."`), so only the first program
+start of the launcher's process is the launcher's, which, holding the whole
+test, is never counted as a detection; the ASLR test's `sysctl` start, in the
+same process, is the test's. And auditd rotates its log at 8 MB by default,
+which it did during the first run with this change: the lab now sets it not to
+rotate, and the loss control fails a run in which it did.
 
 ## How a run works
 
@@ -367,12 +401,13 @@ Seven controls must pass, or the run fails as a whole:
 - auditd watches only the shell start files in
   [`sensors/audit.rules`](sensors/audit.rules), for writes and for changes of
   permissions, owner and extended attributes; `chattr`'s file flags, such as
-  immutable, are not among them. So most pinned auditd rules cannot match
-  under it: those about process starts (EXECVE records), other system calls,
-  other files, or audit keys it does not set. Besides the
-  watches it records what programs report about themselves, such as `useradd`
-  adding an account or `sudo` running a command, and those records count for
-  the test whose process wrote them.
+  immutable, are not among them. It records the process starts of the lab's
+  own steps, not those of processes without a login uid, such as what systemd
+  or cron starts for a test. So many pinned auditd rules cannot match under
+  it: those about other system calls, other files, or audit keys it does not
+  set. Besides the watches it records what programs report about themselves,
+  such as `useradd` adding an account or `sudo` running a command, and those
+  records count for the test whose process wrote them.
 - A process that systemd starts for a test that runs as root is tied to the
   test by time, inside the test's window, and not by process ancestry. The
   runner's own timers are stopped before the tests, so that their units do not
