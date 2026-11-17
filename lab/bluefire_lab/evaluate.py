@@ -210,17 +210,30 @@ def audit_facts(audit: dict, audit_events: list[dict]) -> dict:
     }
 
 
-def missed_lookup(event: dict) -> bool:
-    """A program start the kernel refused because no such file existed, as when a shell tries
-    each folder of its search path in turn: a lookup, not an action of the test. A start that
-    was refused for another reason, such as a folder mounted noexec, counts."""
+def lookups(audit_events: list[dict]) -> set[str]:
+    """The program starts the kernel refused because no such file existed and that were part
+    of a search: the same process also tried a file of that name in another folder, as a shell
+    does with each folder of its search path. Those are lookups, not actions. A single start of
+    a missing file, such as a scheduled job's missing payload, is an action and counts, and so
+    does a start refused for another reason, such as a folder mounted noexec."""
 
-    call = event["call"]
-    return (
-        event["names"].get("SYSCALL") in ("execve", "execveat")
-        and call.get("success") == "no"
-        and call.get("exit") == "-2"
-    )
+    def program(event: dict) -> tuple[str, str] | None:
+        if event["names"].get("SYSCALL") not in ("execve", "execveat") or not event["paths"]:
+            return None
+        return event["call"].get("pid", ""), event["paths"][0].rsplit("/", 1)[-1]
+
+    tried: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
+    for event in audit_events:
+        if key := program(event):
+            tried[key].add(event["paths"][0])
+    return {
+        event["event"]
+        for event in audit_events
+        if (key := program(event))
+        and event["call"].get("success") == "no"
+        and event["call"].get("exit") == "-2"
+        and len(tried[key]) > 1
+    }
 
 
 def describe_audit(event: dict, why: str) -> dict:
@@ -477,7 +490,7 @@ def visibility(
             (attack and attack["session"] and event["call"].get("ses") == attack["session"])
             or start <= event["time"] <= end
         )
-        and not missed_lookup(event)
+        and event["event"] not in context.get("lookups", ())
     ]
     launcher_exec = min(
         (
@@ -573,8 +586,9 @@ def ordinary_activity(
         counts[kind] += 1
         for rule_id in matched.get(event["EventRecordID"], []):
             hits[rule_id].append(int(event["EventRecordID"]))
+    searched = lookups(list(audit_events))
     for event in audit_events:
-        if "LOGIN" in event["types"] or missed_lookup(event):
+        if "LOGIN" in event["types"] or event["event"] in searched:
             continue  # the driver's change of login uid that starts a step's session; a lookup
         session = event["call"].get("ses")
         if session in baseline_sessions:
@@ -891,6 +905,7 @@ def main(run_dir: Path, engine: Path) -> int:
         "windows": windows,
         "system_commands": system_commands(starts, complete),
         "audit_events": audit_events,
+        "lookups": lookups(audit_events),
     }
     tests, by_order = [], {}
     for test in run["tests"]:

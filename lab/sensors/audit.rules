@@ -14,8 +14,8 @@
 ## with a login uid are recorded: the lab sets one at the start of every step,
 ## and cron and logins set one too, so the machine's own cron jobs and what
 ## cron or a login starts for a test are recorded as well, among them the user
-## manager systemd starts for a login. The runner's agent and the services
-## systemd starts have none.
+## manager systemd starts for a login and what that starts. The runner's agent
+## and the system's services have none.
 
 ## Start from no rules, and keep a backlog large enough for a burst.
 -D

@@ -289,8 +289,8 @@ of them look for a program's start and its arguments (EXECVE records). auditd
 now records process starts as well: those of processes with a login uid. The
 lab sets one at the start of every step, and cron and logins set one too, so
 the machine's own cron jobs and what cron or a login starts for a test are
-recorded as well, among them the user manager systemd starts for a login. The
-runner's agent and the services systemd starts have none. In
+recorded as well, among them the user manager systemd starts for a login and
+what that starts. The runner's agent and the system's services have none. In
 [run 44055611236](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44055611236)
 18 auditd rules matched something, and two tests went from telemetry only to
 an alert by a pinned rule:
@@ -413,11 +413,16 @@ Seven controls must pass, or the run fails as a whole:
   [`sensors/audit.rules`](sensors/audit.rules), for writes and for changes of
   permissions, owner and extended attributes; `chattr`'s file flags, such as
   immutable, are not among them. It records the process starts of processes
-  with a login uid, not those without one, such as the services systemd starts
-  for a test that runs as root. A start the kernel refused because no such file
-  existed, as when a shell tries each folder of its search path, is not
-  counted; one refused for another reason, such as `noexec`, is, and is named
-  by the file the kernel refused to start. So many pinned
+  with a login uid, not those without one, such as the system services systemd
+  starts for a test that runs as root. A start the kernel refused for a missing
+  file is not counted when it was part of a search, the same process trying
+  the same name in another folder, as a shell does along its search path. A
+  single start of a missing file counts, such as the missing payload of the job
+  T1053.003 plants, or `useradd` trying to start `nscd`, and so does a start
+  refused for another reason, such as `noexec`; each is named by the file the
+  kernel refused. Such a start is tied to a test only through its process: one
+  of the test's, or a fork of one that left a record; a fork of a subshell that
+  left none, or of a process that had already ended, is not. So many pinned
   auditd rules cannot match under it: those about other system calls, other
   files, or audit keys it does not set. Besides the watches it records what
   programs report about themselves, such as `useradd` adding an account or
@@ -435,7 +440,10 @@ Seven controls must pass, or the run fails as a whole:
   window: in run 44040235251 logind's removal of the runtime folder of the
   account T1078.003 logs in as, 10 s after that test, was tied to T1548.001,
   which changed none of its answers. That removal is left out now; setting the
-  folder up, when a test logs in, stays the test's.
+  folder up, when a test logs in, stays the test's. The user manager systemd
+  starts for such a login gets a session of its own from it, so the time rule,
+  which takes only what systemd started outside every session, ties it neither
+  to that test nor to the ordinary activity.
 - Outbound traffic, name lookups included, is rejected for the test account
   only, not for tests that run as root. The job checks a name lookup and a
   connection to an address it looked up itself before the tests.
