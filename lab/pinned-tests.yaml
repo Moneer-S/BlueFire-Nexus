@@ -29,9 +29,12 @@
 # folder and the name of the account the tests run as.
 #
 # A test belongs here when it acts only on the machine it runs on. Left out are
-# tests that read other processes' memory or environment, search the file
-# system for secrets, contact other hosts, send data out, reboot, change the
-# firewall or the network, or would stop the sensor or the job.
+# tests that read or write the memory or environment of a process they did not
+# start, search the file system for secrets, contact other hosts, send data
+# out, reboot, change the firewall or the network, or would stop the sensor or
+# the job. A search for secrets stays when its input arguments limit it to the
+# test account's home, where the lab plants what it looks for ("args" and
+# "prepare" below).
 #
 # Do not swap a test out to change the table. A test that was tried and then
 # left out goes under "dropped" with the reason, and the report lists it.

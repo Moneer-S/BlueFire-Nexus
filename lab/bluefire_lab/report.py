@@ -536,9 +536,13 @@ control fails as a whole.</p>
 upstream executor on the target, as an unprivileged account unless the test declares that it needs root.
 A marker command runs before and after each test. Each step runs in a kernel audit session of its own,
 and an event is tied to a test when its process is in the session of the test's attack step; an auditd
-record, when the process that wrote it is one of the test's. What the executor and the lab's own driver run
-for themselves, and the test's cleanup, are left out, and so is a hardening change, which root puts in place
-and removes in sessions of its own. The sensors' own timestamps are used throughout.</p>
+record, when the process that wrote it is one of the test's. What a test schedules runs outside its session,
+so two rules go by time, between the test's markers: what cron starts for the test account belongs to a test
+run as that account, and what systemd starts belongs to a test run as root, unless the same command also ran
+outside every test's window. A late step of systemd for an earlier test can still land in such a window.
+What the executor and the lab's own driver run for themselves, systemd's own steps, and the test's cleanup
+are left out, and so is a hardening change, which root puts in place and removes in sessions of its own.
+The sensors' own timestamps are used throughout.</p>
 <p class="note">The answers can be computed again from the files of the run's artifact:</p>
 <pre class="box">{e(RECOMPUTE)}</pre>
 <h3 id="sensor">Sensor configuration</h3>

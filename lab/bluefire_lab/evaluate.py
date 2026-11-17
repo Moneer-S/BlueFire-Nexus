@@ -38,9 +38,18 @@ from . import auditd, sysmon
 # and a "critical" one indicates an incident. Lower levels are for review.
 ALERT_LEVELS = ("high", "critical")
 
-# systemd 255 starts a unit's command through this helper, which then becomes
-# the command. Its start is systemd's own step, not part of what a test did.
-SYSTEMD_HELPER = "/systemd-executor"
+
+def systemds_own(event: dict) -> bool:
+    """systemd's own steps, not part of what a test did: systemd 255 starts a unit's command
+    through systemd-executor, which then becomes the command; and logind removes an account's
+    runtime folder 10 s after the account's last session ends, which can fall in a later
+    test's window. Setting the folder up, when a test logs in, stays the test's."""
+
+    image, command = event["Image"], f" {event.get('CommandLine', '')} "
+    return image.endswith("/systemd-executor") or (
+        image.endswith("/systemd-user-runtime-dir") and " stop " in command
+    )
+
 
 # The programs a launcher can be, by the executor a test declares. On Ubuntu sh is dash.
 SHELLS = {"sh": ("/sh", "/dash"), "bash": ("/bash",)}
@@ -257,8 +266,8 @@ def attribute(
     - a test run as the test account owns what that account started outside
       every session of the driver: what cron starts on the account's behalf;
     - a test run as root owns what systemd started, unless the same command
-      also ran outside every test's window. systemd's own helper, which then
-      becomes the unit's command, is left out.
+      also ran outside every test's window. systemd's own steps (systemds_own)
+      are left out.
 
     Returns the launcher's start event and, for each process, why it belongs.
     """
@@ -296,7 +305,7 @@ def attribute(
                 owned.setdefault(event["ProcessGuid"], "account")
         elif test["user"] == "root" and started_by_systemd(event):
             system = (event["Image"], event["CommandLine"]) in context["system_commands"]
-            if not system and not event["Image"].endswith(SYSTEMD_HELPER):
+            if not system and not systemds_own(event):
                 owned.setdefault(event["ProcessGuid"], "systemd")
     return launcher, owned
 
@@ -704,13 +713,15 @@ def check_controls(
             problems.append(f"for the {what} the engine read {counts['read']} of {counts['given']} events")
     rules = sum(counts["rules"] for counts in engine)
     given = sum(counts["given"] for counts in engine if counts["origin"] == "pinned")
+    # That a category had events does not mean every rule in it could match: an auditd rule
+    # needs records of the system calls, files or keys it names, which the configuration decides.
     checks.append(
         control(
             "engine",
             not problems,
             "; ".join(problems)
             or f"the rule engine loaded all {rules} rules and read all {given} events it was given, "
-            "and the sensor recorded every kind of event the rules describe",
+            "and every category of rules had events to evaluate",
         )
     )
 

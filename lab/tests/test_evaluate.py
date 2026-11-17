@@ -177,12 +177,16 @@ def test_what_systemd_also_runs_outside_every_window_is_the_systems_own_work() -
     assert records(mine) == [6, 7, 8]
 
 
-def test_systemds_own_helper_is_not_part_of_a_test() -> None:
+def test_systemds_own_steps_are_not_part_of_a_test() -> None:
     helper = start(15, 5.9, 301, 1, "systemd-executor --deserialize 72", sysmon.NO_SESSION, user="root")
+    # logind removing the runtime folder of an account an earlier test logged in as, 10 s later.
+    removal = start(16, 5.95, 302, 1, "systemd-user-runtime-dir stop 1003", sysmon.NO_SESSION, user="root")
+    # Setting one up, when the test itself logs in as an account, is the test's.
+    setup = start(17, 5.96, 303, 1, "systemd-user-runtime-dir start 1004", sysmon.NO_SESSION, user="root")
 
-    _, mine = see(a_test(user="root"), [*telemetry(), helper])
+    _, mine = see(a_test(user="root"), [*telemetry(), helper, removal, setup])
 
-    assert records(mine) == [6, 7, 8, 12]
+    assert records(mine) == [6, 7, 8, 12, 17]
 
 
 def test_system_commands_are_what_systemd_started_outside_every_window() -> None:
