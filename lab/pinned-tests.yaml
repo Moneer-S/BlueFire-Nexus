@@ -67,9 +67,17 @@ baseline:
     ln -sf /dev/null /etc/systemd/system/bluefire-lab-masked.service
     rm /etc/systemd/system/bluefire-lab-masked.service
     systemctl daemon-reload
+    cp /usr/lib/systemd/system/cron.service /etc/systemd/system/bluefire-lab-copy.service
+    systemctl daemon-reload
+    rm /etc/systemd/system/bluefire-lab-copy.service
+    systemctl daemon-reload
+    useradd -rM -s /usr/sbin/nologin bluefire-lab-system
+    userdel bluefire-lab-system
     install -m 755 /bin/true /usr/local/bin/bluefire-lab-tool
     chmod 750 /usr/local/bin/bluefire-lab-tool
     chmod u+x /usr/local/bin/bluefire-lab-tool
+    chmod u+rwx,g+rx,o-rwx /usr/local/bin/bluefire-lab-tool
+    chmod 0755 /usr/local/bin/bluefire-lab-tool
     rm /usr/local/bin/bluefire-lab-tool
     truncate -s 0 /var/log/bluefire-lab-baseline.log
     rm /var/log/bluefire-lab-baseline.log
@@ -78,8 +86,12 @@ baseline:
     crontab -l || true
     echo ls >> ~/.bash_history
     chmod 600 ~/.bash_history
+    cp ~/.bash_history ~/.bash_history.bak
+    rm ~/.bash_history.bak
     truncate -s 0 ~/notes.txt
     rm ~/notes.txt
+    truncate -s 1M ~/scratch.img
+    rm ~/scratch.img
     cp /bin/true /tmp/bluefire-lab-build-step
     /tmp/bluefire-lab-build-step
     rm /tmp/bluefire-lab-build-step
@@ -173,6 +185,9 @@ tests:
     guid: db55f666-7cba-46c6-9fe6-205a05c3242c
     name: Set a SetGID flag on file
     effect: test -g /tmp/evilBinary
+    variants:
+      - args: {file_to_setuid: /var/tmp/bluefire-lab-variant-setgid}
+        effect: test -g /var/tmp/bluefire-lab-variant-setgid
   - technique: T1036.003
     guid: a315bfff-7a98-403b-b442-2ea1b255e556
     name: Masquerading as FreeBSD or Linux crond process.
@@ -190,12 +205,21 @@ tests:
       - args: {history_path: ~/.zsh_history}
         prepare: echo "ls -la" >> ~/.zsh_history
         effect: test -e {home}/.zsh_history && test ! -s {home}/.zsh_history
+      # A history file name without "_history", as zsh's own setup offers it.
+      - args: {history_path: ~/.histfile}
+        prepare: echo "ls -la" >> ~/.histfile
+        effect: test -e {home}/.histfile && test ! -s {home}/.histfile
   # Leaves ~/.bash_history as a link to /dev/null; the closing canary removes it.
   - technique: T1070.003
     guid: 23d348f3-cc5c-4ba9-bd0a-ae09069f0914
     name: Clear Bash history (ln dev/null)
     prepare: echo "ls -la" >> ~/.bash_history
     effect: test -L {home}/.bash_history && test "$(readlink {home}/.bash_history)" = /dev/null
+    variants:
+      # The history file of csh and tcsh.
+      - args: {history_path: ~/.history}
+        prepare: echo "ls -la" >> ~/.history
+        effect: test -L {home}/.history && test "$(readlink {home}/.history)" = /dev/null
 
   # Encoded and indirect execution
   - technique: T1027

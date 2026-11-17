@@ -2,13 +2,16 @@ title: Shell History File Emptied
 id: 57b696b5-781a-469b-afff-4ed7a9cef80e
 status: experimental
 description: >-
-  A shell history file was truncated to nothing or replaced by a link to
-  /dev/null. Both keep the file in place and remove what it recorded, as
-  covering tracks does.
+  A shell history file was truncated to nothing, replaced by a link to
+  /dev/null, or overwritten with /dev/null. Each keeps the file in place and
+  removes what it recorded, as covering tracks does. History files are named
+  after the shell, as in .bash_history, .zsh_history, fish_history, .history
+  and .histfile.
 references:
   - https://attack.mitre.org/techniques/T1070/003/
 author: BlueFire lab
 date: 2026-11-16
+modified: 2026-11-17
 tags:
   - attack.defense-evasion
   - attack.t1070.003
@@ -18,19 +21,16 @@ logsource:
 detection:
   selection_truncate:
     Image|endswith: /truncate
-    CommandLine|contains:
-      - '-s0'
-      - '-s 0'
-      - '--size=0'
-      - '--size 0'
+    CommandLine|re: '\s(-s\s*|--size[=\s]\s*)0+(\s|$)'
   selection_link:
     Image|endswith: /ln
     CommandLine|contains: /dev/null
+  selection_copy:
+    Image|endswith: /cp
+    CommandLine|contains: /dev/null
   selection_history:
-    CommandLine|contains:
-      - _history
-      - .history
-  condition: (selection_truncate or selection_link) and selection_history
+    CommandLine|re: '(_history|\.history|histfile)(\s|$)'
+  condition: (selection_truncate or selection_link or selection_copy) and selection_history
 falsepositives:
   - Someone clearing their own history on purpose
 level: high

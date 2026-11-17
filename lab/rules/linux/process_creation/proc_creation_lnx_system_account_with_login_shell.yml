@@ -2,13 +2,16 @@ title: System Account Created With A Login Shell
 id: b42cb9c9-c69d-49c0-8f6d-476f13f458ea
 status: experimental
 description: >-
-  useradd created a system account that has an interactive shell. Packages
+  useradd created a system account and gave it an interactive shell. Packages
   create system accounts with nologin or false as their shell, so a system
-  account that can log in is one that someone means to use.
+  account that can log in is one that someone means to use. The system option
+  is matched on its own (-r, --system) and among other one-letter options
+  (-rM, -Nr).
 references:
   - https://attack.mitre.org/techniques/T1136/001/
 author: BlueFire lab
 date: 2026-11-16
+modified: 2026-11-17
 tags:
   - attack.persistence
   - attack.t1136.001
@@ -19,19 +22,19 @@ detection:
   selection_tool:
     Image|endswith: /useradd
   selection_system:
-    - CommandLine|contains:
-        - ' -r '
-        - ' --system '
-    - CommandLine|endswith:
-        - ' -r'
-        - ' --system'
+    CommandLine|re: '\s(-[A-Za-z]*r[A-Za-z]*|--system)(\s|$)'
   selection_shell:
     CommandLine|contains:
       - /bin/bash
+      - /bin/rbash
       - /bin/sh
       - /bin/dash
       - /bin/zsh
       - /bin/ksh
+      - /bin/mksh
+      - /bin/csh
+      - /bin/tcsh
+      - /bin/fish
   condition: all of selection_*
 falsepositives:
   - A service account that is meant to log in

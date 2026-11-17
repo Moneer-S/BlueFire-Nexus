@@ -408,7 +408,9 @@ def test_ordinary_activity_is_the_baseline_and_what_ran_in_no_session_outside_th
     assert [(rule["id"], rule["events"]) for rule in ordinary["pinned_rules"]] == [("medium-rule", 1)]
 
 
-def judged(test_rules=("lab-rule",), variant_rules=("lab-rule",), variant_took=True, noise=None) -> dict:
+def judged(
+    test_rules=("lab-rule",), variant_rules=("lab-rule",), variant_took=True, noise=None, sibling=False
+) -> dict:
     def result(order, role, rules, answer="took effect", **extra) -> dict:
         lab = [{**RULES[rule_id], "alert": True} for rule_id in rules]
         seen = {
@@ -419,6 +421,8 @@ def judged(test_rules=("lab-rule",), variant_rules=("lab-rule",), variant_took=T
                 "execution": {"answer": answer}, "visibility": seen, **extra}  # fmt: skip
 
     tests = [result(3, "test", test_rules)]
+    if sibling:  # a second published procedure the rule alerts on, which ran with its defaults only
+        tests.append(result(4, "test", test_rules, guid="g2", name="a sibling."))
     if variant_rules is not None:
         answer = "took effect" if variant_took else "attempted without effect"
         tests.append(result(9, "variant", variant_rules, answer, compared_with=3, args={"name": "other"}))
@@ -438,6 +442,16 @@ def test_a_lab_rule_is_accepted_only_when_it_holds_on_a_variant_and_stays_quiet_
     assert judged(variant_rules=())["reason"] == "it missed 1 of 1 runs with changed input arguments"
     assert judged(variant_rules=None)["accepted"] is False
     assert judged(variant_took=False)["accepted"] is False
+
+
+def test_every_procedure_a_lab_rule_alerts_on_needs_a_run_with_changed_input_arguments() -> None:
+    verdict = judged(sibling=True)
+
+    assert verdict["accepted"] is False
+    assert verdict["procedures"] == 2
+    assert verdict["reason"] == (
+        "not every procedure it alerts on ran again with changed input arguments and took effect: T1 a sibling"
+    )
 
 
 def test_a_repeated_record_or_a_missing_count_of_bad_events_fails_the_run() -> None:

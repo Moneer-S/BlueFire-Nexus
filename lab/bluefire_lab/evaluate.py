@@ -415,8 +415,12 @@ def ordinary_activity(
 
 
 def judge_lab_rules(lab_rules: dict, tests: list[dict], ordinary: dict) -> list[dict]:
-    """Whether each of the lab's rules is accepted: it alerts on a test, still alerts when
-    that test runs again with changed input arguments, and stays quiet on ordinary activity."""
+    """Whether each of the lab's rules is accepted: it alerts on a test, every published
+    procedure it alerts on ran again with changed input arguments and it alerted on each
+    of those runs, and it stays quiet on ordinary activity.
+
+    Changed input arguments show that a rule does not depend on the values they set. They
+    cannot show that it does not depend on what a test fixes in its command."""
 
     def alerted(test: dict, rule_id: str) -> bool:
         return any(
@@ -433,13 +437,17 @@ def judge_lab_rules(lab_rules: dict, tests: list[dict], ordinary: dict) -> list[
         ]
         took = [variant for variant in variants if variant["execution"]["answer"] == "took effect"]
         missed = [variant for variant in took if not alerted(variant, rule["id"])]
+        untried = [test for test in fires if not any(v["compared_with"] == test["order"] for v in took)]
         noise = ordinary["rules"].get(rule["id"], [])
         if not fires:
             reason = "it matched no event of a test"
         elif noise:
             reason = f"it matched {len(noise)} event{'' if len(noise) == 1 else 's'} of ordinary activity"
-        elif not took:
-            reason = "no test it alerts on ran again with changed input arguments and took effect"
+        elif untried:
+            reason = (
+                "not every procedure it alerts on ran again with changed input arguments and took effect: "
+                + ("; ".join(f"{test['technique']} {test['name'].rstrip('.')}" for test in untried))
+            )
         elif missed:
             reason = f"it missed {len(missed)} of {len(took)} runs with changed input arguments"
         else:

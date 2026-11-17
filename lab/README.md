@@ -99,17 +99,32 @@ a script in `/tmp` run through an interpreter. The changes are defined in
 
 [`rules/linux`](rules/linux) holds Sigma rules this repository adds for tests
 that took effect and left telemetry, but raised no alert from the pinned rules.
-A rule describes what the technique does, not one test's file names or values.
-It is accepted only when all three of these hold in the same run:
+A rule describes what the technique does: for example any `chmod` mode that
+sets the setuid or setgid bit, symbolic or numeric, and not only the mode a test
+uses. It is accepted only when all three of these hold in the same run:
 
 - it alerts on the test it was written for;
-- it still alerts when that test runs again with changed input arguments (the
-  `variants` in [`pinned-tests.yaml`](pinned-tests.yaml));
+- every published procedure it alerts on ran again with changed input arguments
+  (the `variants` in [`pinned-tests.yaml`](pinned-tests.yaml)), and it alerted
+  on each of those runs;
 - it matches nothing in the ordinary activity: a baseline of ordinary
-  administration with the same tools and files (adding and deleting accounts, a
-  systemd drop-in and a masked unit, `chmod`, `truncate` on a log file, a
-  program run from `/tmp`), run as root and as the test account, and the
-  runner's own work outside the tests.
+  administration with the same tools and files, run as root and as the test
+  account, and the runner's own work outside the tests. The baseline adds and
+  deletes accounts, among them a system account without a login shell; writes
+  a systemd drop-in with a shell, copies a whole unit file into place with `cp`
+  and masks a unit; changes file modes without the setuid or setgid bit;
+  truncates and copies files that are not history files, and truncates one to
+  a size other than zero; and runs a program from `/tmp`.
+
+This has a limit. Changed input arguments show that a rule does not depend on
+the values they set, such as an account name or a file path. They cannot show
+that a rule does not depend on what a test fixes in its command, such as the
+options it passes to `useradd` or the mode it gives `chmod`: a rule written for
+exactly those would be accepted as well. Where a test lets a run change what a
+rule looks at, a variant does: the history tests run again on `~/.histfile` and
+`~/.history`, whose names lack `_history`. Beyond that, each rule's description
+says which spellings it covers, and only the spellings the tests use have been
+seen in a run.
 
 The visibility answer stays the pinned rules' alone. A second column in the
 report gives the answer with the accepted rules counted too, and a rule that is
