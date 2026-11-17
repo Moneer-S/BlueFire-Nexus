@@ -254,6 +254,28 @@ def test_an_auditd_event_counts_when_its_process_is_the_tests_and_not_the_driver
     ]
 
 
+def test_auditds_record_of_the_launchers_start_is_the_launcher_line_not_telemetry() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+    # execve of the launcher (process 120), whose arguments are the whole test, and of its child id.
+    launched = {**written(184, 11, second=5.0), "types": ["SYSCALL", "EXECVE", "CWD", "PATH", "PATH"]}
+    child = {**written(185, 11, second=5.01, pid="121"), "types": ["SYSCALL", "EXECVE", "CWD", "PATH"]}
+    with_child = [*events, start(7, 5.01, 121, 120, "id", 11, parent_known=True)]
+    matched = {"audit 1794893574.919:184": ["high-rule"]}
+
+    alone, nothing = see(a_test(), events, matched, audit=[launched])
+    answer, mine = see(a_test(), with_child, matched, audit=[launched, child])
+
+    assert (alone["answer"], nothing) == ("no telemetry", [])
+    assert [(rule["id"], rule["records"]) for rule in alone["launcher_only_rules"]] == [
+        ("high-rule", ["audit 1794893574.919:184"])
+    ]
+    assert answer["answer"] == "telemetry only"
+    assert "audit 1794893574.919:185" in [event["record"] for event in mine]
+    assert "audit 1794893574.919:184" not in [event["record"] for event in mine]
+
+
 def test_sudos_record_of_a_command_the_test_ran_shows_the_command() -> None:
     events = [
         event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")

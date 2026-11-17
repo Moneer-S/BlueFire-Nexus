@@ -501,19 +501,28 @@ def visibility(
     # session (the change of login uid that starts it, sudo's records) as the executor's are.
     attack = step_of(test, "attack")
     pids = {launcher["ProcessId"]} | {event["ProcessId"] for event in starts if event["ProcessGuid"] in owned}
+    # The launcher's start, as each sensor recorded it. Its command line is the whole test, so a
+    # rule that matches only these is reported as that, not as a detection.
+    launched = [launcher["EventRecordID"]]
     for event in context.get("audit_events", []):
         in_step = attack and attack["session"] and event["call"].get("ses") == attack["session"]
-        if event["call"].get("pid") in pids and (in_step or start <= event["time"] <= end):
-            mine.append(describe_audit(event, "session" if in_step else "window"))
+        if event["call"].get("pid") not in pids or not (in_step or start <= event["time"] <= end):
+            continue
+        if event["call"].get("pid") == launcher["ProcessId"] and "EXECVE" in event["types"]:
+            launched.append(f"audit {event['event']}")
+            continue
+        mine.append(describe_audit(event, "session" if in_step else "window"))
     mine.sort(key=lambda event: (event["time"], str(event["record"])))
 
     fired: dict[str, list[int]] = collections.defaultdict(list)
     for event in mine:
         for rule_id in matched.get(str(event["record"]), []):
             fired[rule_id].append(event["record"])
-    launcher_only = [
-        rule_id for rule_id in matched.get(launcher["EventRecordID"], []) if rule_id not in fired
-    ]
+    launcher_only: dict[str, list] = collections.defaultdict(list)
+    for record in launched:
+        for rule_id in matched.get(record, []):
+            if rule_id not in fired:
+                launcher_only[rule_id].append(int(record) if record.isdigit() else record)
 
     def cite(rule_id: str, records: list[int]) -> dict:
         rule = rules[rule_id]
@@ -538,7 +547,7 @@ def visibility(
         "rules": pinned,
         "launcher": describe(launcher, "launcher"),
         "launcher_only_rules": sorted(
-            (cite(rule_id, [int(launcher["EventRecordID"])]) for rule_id in launcher_only), key=rule_order
+            (cite(rule_id, records) for rule_id, records in launcher_only.items()), key=rule_order
         ),
         # Until the lab's rules are judged, the second answer is the first; see second_answers.
         "with_lab_rules": {"answer": answer, "rules": ours},

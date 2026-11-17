@@ -3,16 +3,20 @@
 ##
 ## Sysmon for Linux reports a write to a file only when it leaves the file
 ## looking newly created, so an append to a file that already exists, such as a
-## command added to ~/.bashrc, leaves nothing in its output. These watches
+## command added to ~/.bashrc, leaves nothing in its output. The watches below
 ## record writes, and changes of permissions, owner and extended attributes
 ## (not chattr's file flags), to the files that run code when an account logs
-## in or starts a shell. Nothing else is watched, so auditd adds no process
-## events of its own; programs still report some actions themselves, such as
+## in or starts a shell. Programs also report some actions themselves, such as
 ## useradd adding an account or sudo running a command.
+##
+## Process starts are recorded too, with their arguments (EXECVE records), as
+## the pinned SigmaHQ auditd rules that look at commands need. Only processes
+## with a login uid are recorded: the lab sets one at the start of every step,
+## and the runner's own processes have none.
 
 ## Start from no rules, and keep a backlog large enough for a burst.
 -D
--b 8192
+-b 32768
 
 ## The file the lab writes until auditd has recorded the write.
 -w /var/tmp/bluefire-lab-audit-probe -p wa -k bluefire-lab-probe
@@ -29,3 +33,7 @@
 -w {home}/.bash_profile -p wa -k shell-start
 -w {home}/.bash_login -p wa -k shell-start
 -w {home}/.bash_logout -p wa -k shell-start
+
+## Process starts in the lab's steps.
+-a always,exit -F arch=b64 -S execve -F auid!=unset -k process-start
+-a always,exit -F arch=b32 -S execve -F auid!=unset -k process-start
