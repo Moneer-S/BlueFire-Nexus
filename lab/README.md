@@ -8,7 +8,7 @@ technique take effect, and what did the defense see.
 ## What it shows today
 
 Everything in this section comes from one run of the `lab` workflow:
-[run 44035796630](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44035796630),
+[run 44044525643](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44044525643),
 17 November 2026. Its run page shows the same answers in a longer table, and
 its artifact `lab-run` holds the sensors' raw output (`sysmon.txt` and
 `audit.txt`), the answers with what each rests on (`results.json`) and the full
@@ -50,17 +50,17 @@ the lab's own rules too, those the run accepted: see
 | T1546.004 Add command to .bashrc | telemetry only (medium) | telemetry only |
 | T1037.004 rc.local | telemetry only (medium) | telemetry only |
 | T1546.005 Trap EXIT | telemetry only (medium) | telemetry only |
-| T1546.018 Python Startup Hook - usercustomize.py (Linux / MacOS) | telemetry only (medium) | telemetry only |
+| T1546.018 Python Startup Hook - usercustomize.py (Linux / MacOS) | telemetry only (medium) | alert |
 | T1569.003 Enable systemd Service for Persistence with Auto-Restart | telemetry only (none matched) | alert |
 | T1556.003 Malicious PAM rule | telemetry only (none matched) | telemetry only |
 | T1078.003 Reactivate a locked/expired account (Linux) | telemetry only (medium) | telemetry only |
 | T1552.003 Search Through Bash History | telemetry only (medium) | telemetry only |
-| T1552.004 Discover Private SSH Keys | telemetry only (medium) | telemetry only |
+| T1552.004 Discover Private SSH Keys | telemetry only (medium) | alert |
 | T1222.002 chmod - Change file or folder mode (numeric mode) | telemetry only (medium) | telemetry only |
 | T1548.001 Set a SetUID flag on file | telemetry only (medium) | alert |
 | T1548.001 Set a SetGID flag on file | telemetry only (medium) | alert |
 | T1036.003 Masquerading as FreeBSD or Linux crond process | telemetry only (medium) | telemetry only |
-| T1036.005 Execute a process from a directory masquerading as the current parent directory | telemetry only (none matched) | telemetry only |
+| T1036.005 Execute a process from a directory masquerading as the current parent directory | telemetry only (none matched) | alert |
 | T1564.001 Create a hidden file in a hidden directory | telemetry only (none matched) | telemetry only |
 | T1070.006 Set a file's modification timestamp | telemetry only (none matched) | telemetry only |
 | T1070.003 Clear Bash history (truncate) | telemetry only (none matched) | alert |
@@ -72,7 +72,7 @@ the lab's own rules too, those the run accepted: see
 | T1059.004 Shell Creation using awk command | alert (high) | alert |
 | T1027.002 Binary simply packed by UPX (linux) | telemetry only (medium) | telemetry only |
 | T1027.004 C compile | telemetry only (medium) | telemetry only |
-| T1027.013 Password-Protected ZIP Payload Extraction and Execution | telemetry only (informational) | telemetry only |
+| T1027.013 Password-Protected ZIP Payload Extraction and Execution | telemetry only (informational) | alert |
 | T1574.006 Shared Library Injection via LD_PRELOAD | telemetry only (none matched) | telemetry only |
 | T1055.009 Inplace Instruction Overwrite | telemetry only (none matched) | telemetry only |
 | T1560.001 Encrypts collected data with AES-256 and Base64 | telemetry only (none matched) | telemetry only |
@@ -88,7 +88,7 @@ What that means for a defender, under these sensors and these rules:
 
 - 48 tests did what they do and the sensors recorded it, but no pinned rule of
   an alert level fired. These are gaps that a rule could close. The lab's own
-  rules close 8 of them; 40 stay open.
+  rules close 12 of them; 36 stay open.
 - No test left no telemetry. Before auditd recorded beside Sysmon, appending a
   command to `~/.bashrc` left none: see
   [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
@@ -159,7 +159,10 @@ uses. It is accepted only when all three of these hold in the same run:
   a systemd drop-in with a shell, copies a whole unit file into place with `cp`
   and masks a unit; changes file modes without the setuid or setgid bit;
   truncates and copies files that are not history files, and truncates one to
-  a size other than zero; and runs a program from `/tmp`.
+  a size other than zero; runs a program from `/tmp` and one from
+  `~/.local/bin`; searches with `find` for files by other names; zips and
+  unzips a file without a password; and writes an ordinary module into the
+  account's own Python site folder.
 
 This has a limit. Changed input arguments show that a rule does not depend on
 the values they set, such as an account name or a file path. They cannot show
@@ -174,8 +177,8 @@ seen in a run.
 The visibility answer stays the pinned rules' alone. A second column in the
 report gives the answer with the accepted rules counted too, and a rule that is
 not accepted changes no answer. In
-[run 44035796630](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44035796630),
-one of the 49 tests raised an alert with the pinned rules, and 9 with the
+[run 44044525643](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44044525643),
+one of the 49 tests raised an alert with the pinned rules, and 13 with the
 accepted rules as well:
 
 | Rule | Alerts on | Runs with changed input arguments | Verdict |
@@ -184,18 +187,22 @@ accepted rules as well:
 | [System Account Created With A Login Shell](rules/linux/process_creation/proc_creation_lnx_system_account_with_login_shell.yml) | T1136.001 Create a user account on a Linux system | alerted on 1 of 1 | accepted |
 | [Setuid Or Setgid Bit Set With Chmod](rules/linux/process_creation/proc_creation_lnx_chmod_setuid_setgid.yml) | T1548.001 Set a SetUID flag on file, T1548.001 Set a SetGID flag on file | alerted on 2 of 2, one for each | accepted |
 | [Shell History File Emptied](rules/linux/process_creation/proc_creation_lnx_history_file_emptied.yml) | T1070.003 Clear Bash history (truncate), T1070.003 Clear Bash history (ln dev/null) | alerted on 3 of 3, on `~/.zsh_history`, `~/.histfile` and `~/.history` | accepted |
+| [Python Startup Hook File Written](rules/linux/file_event/file_event_lnx_python_startup_hook_written.yml) | T1546.018 Python Startup Hook - usercustomize.py (Linux / MacOS) | alerted on 1 of 1, with `python3.12` | accepted |
+| [Private Key Files Searched With Find](rules/linux/process_creation/proc_creation_lnx_find_private_keys.yml) | T1552.004 Discover Private SSH Keys | alerted on 1 of 1, for `id_ed25519` | accepted |
+| [Program Run From A Folder Named Like Dots](rules/linux/process_creation/proc_creation_lnx_program_in_dots_folder.yml) | T1036.005 Execute a process from a directory masquerading as the current parent directory | alerted on 1 of 1 | accepted |
+| [Archive Extracted With A Password On The Command Line](rules/linux/process_creation/proc_creation_lnx_archive_extracted_with_password.yml) | T1027.013 Password-Protected ZIP Payload Extraction and Execution | alerted on 1 of 1, with another password | accepted |
 | [Program Named Like A System Daemon Run From A Temporary Folder](rules/linux/process_creation/proc_creation_lnx_daemon_name_from_temp_folder.yml) | T1036.003 Masquerading as FreeBSD or Linux crond process | none: the test has no input arguments to change | not accepted |
 
 The rule for a unit file written by a shell was written for the first two of
 its procedures. It also alerts on the third, T1569.003, added to the list
 later, and on that procedure's run with changed input arguments. Two other
-accepted rules alert on two published procedures each, and one covers a single
-procedure. In the same run the baseline left 251 events and the runner's own
-work outside the tests 6,303. None of the lab's rules matched any of them,
-while 11 pinned rules did. One of those is of level high: the canary's own
-rule, "History File Deletion", matched the baseline's removal of a copy of a
-history file (`rm ~/.bash_history.bak`, record 1101). The others are medium or
-lower, for example "User Has Been Deleted Via Userdel" on the baseline's
+accepted rules alert on two published procedures each, and five cover a single
+procedure each so far. In the same run the baseline left 286 events and the
+runner's own work outside the tests 6,604. None of the lab's rules matched any
+of them, while 12 pinned rules did. One of those is of level high: the canary's
+own rule, "History File Deletion", matched the baseline's removal of a copy of
+a history file (`rm ~/.bash_history.bak`, record 1118). The others are medium
+or lower, for example "User Has Been Deleted Via Userdel" on the baseline's
 `userdel`.
 
 The baseline is a short script, not days of real administration, so a rule that
