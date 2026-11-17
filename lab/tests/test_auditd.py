@@ -89,6 +89,32 @@ def test_a_record_a_program_writes_itself_gives_its_event_process_and_session(tm
     assert (call["op"], call["id"], call["res"]) == ("adding user", "999", "success")
 
 
+def test_a_program_start_is_named_by_its_arguments_not_by_the_shell_it_was(tmp_path: Path) -> None:
+    # As auditd wrote sysctl's start in workflow run 44052714425 (audit.txt lines 20306 to 20311), where
+    # bash -c "sysctl ..." had become sysctl in the same process: the command line is still the shell's.
+    stamp = "msg=audit(1794906998.745:7424):"
+    shells = b"bash\0-c\0sysctl -w kernel.randomize_va_space=0".hex().upper()
+    lines = [
+        f"type=SYSCALL {stamp} arch=c000003e syscall=59 success=yes exit=0 items=2 ppid=10053 pid=10081 "
+        'auid=0 uid=0 ses=278 comm="sysctl" exe="/usr/sbin/sysctl" key="process-start"',
+        f'type=EXECVE {stamp} argc=3 a0="sysctl" a1="-w" a2="kernel.randomize_va_space=0"',
+        f"type=PROCTITLE {stamp} proctitle={shells}",
+    ]
+    path = tmp_path / "audit.txt"
+    path.write_bytes("\n".join(lines).encode())
+
+    event = auditd.events(auditd.read(path))[0]
+
+    assert event["command"] == "sysctl -w kernel.randomize_va_space=0"
+    # An argument with a space in it comes in hex.
+    spaced = b"echo hi".hex().upper()
+    assert auditd.arguments(f'type=EXECVE {stamp} argc=3 a0="sh" a1="-c" a2={spaced}') == [
+        "sh",
+        "-c",
+        "echo hi",
+    ]
+
+
 def test_the_status_auditctl_prints_is_read_by_name() -> None:
     text = "enabled 1\nfailure 1\npid 2831\nlost 0\nbacklog 0\nloginuid_immutable 0 unlocked\n"
 

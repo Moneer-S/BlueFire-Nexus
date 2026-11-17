@@ -193,6 +193,49 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
     return matched, counts
 
 
+def audit_facts(audit: dict, audit_events: list[dict]) -> dict:
+    """What the controls need from auditd's side of a run: when it recorded the probe write,
+    its own count of lost records before and after the tests, and any files it rotated its
+    log into."""
+
+    def number(value: object) -> int | None:
+        return int(value) if str(value).isdigit() else None
+
+    probes = [event["time"] for event in audit_events if audit.get("probe") in event["paths"]]
+    return {
+        "probe_time": min(probes, default=None),
+        "lost_before": number(audit.get("before", {}).get("lost")),
+        "lost_after": number(audit.get("after", {}).get("lost")),
+        "rotated": audit.get("rotated", []),
+    }
+
+
+def lookups(audit_events: list[dict]) -> set[str]:
+    """The program starts the kernel refused because no such file existed and that were part
+    of a search: the same process also tried a file of that name in another folder, as a shell
+    does with each folder of its search path. Those are lookups, not actions. A single start of
+    a missing file, such as a scheduled job's missing payload, is an action and counts, and so
+    does a start refused for another reason, such as a folder mounted noexec."""
+
+    def program(event: dict) -> tuple[str, str] | None:
+        if event["names"].get("SYSCALL") not in ("execve", "execveat") or not event["paths"]:
+            return None
+        return event["call"].get("pid", ""), event["paths"][0].rsplit("/", 1)[-1]
+
+    tried: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
+    for event in audit_events:
+        if key := program(event):
+            tried[key].add(event["paths"][0])
+    return {
+        event["event"]
+        for event in audit_events
+        if (key := program(event))
+        and event["call"].get("success") == "no"
+        and event["call"].get("exit") == "-2"
+        and len(tried[key]) > 1
+    }
+
+
 def describe_audit(event: dict, why: str) -> dict:
     """An auditd event in the shape of the Sysmon events the report shows."""
 
@@ -200,7 +243,13 @@ def describe_audit(event: dict, why: str) -> dict:
     action = names.get("SYSCALL") or event["types"][0]  # a record a program wrote itself has no call
     told = {**call, "cmd": auditd.command_line(call["cmd"])} if call.get("cmd") else call  # sudo's is hex
     said = " ".join(f"{name}={told[name]}" for name in ("op", "cmd", "acct", "res") if told.get(name))
-    detail = ", ".join(event["paths"]) + (f" by {event['command']}" if event["command"] else "")
+    command = event["command"]
+    detail = ", ".join(event["paths"]) + (f" by {command}" if command else "")
+    if action in ("execve", "execveat") and call.get("success") == "no":
+        # No program started, so the process's command line is still that of the shell that
+        # forked it, the test's own text: name the start by the file the kernel refused.
+        command = ""
+        detail = f"the kernel refused to start {', '.join(event['paths'])} (exit {call.get('exit')})"
     return {
         "record": f"audit {event['event']}",
         "time": event["time"],
@@ -214,7 +263,7 @@ def describe_audit(event: dict, why: str) -> dict:
             "records": " ".join(event["types"]),
             **{name: value for name, value in call.items() if value not in ("", "(none)")},
             "paths": ", ".join(event["paths"]),
-            "command": event["command"],
+            "command": command,
         },
     }
 
@@ -415,19 +464,60 @@ def visibility(
     # session (the change of login uid that starts it, sudo's records) as the executor's are.
     attack = step_of(test, "attack")
     pids = {launcher["ProcessId"]} | {event["ProcessId"] for event in starts if event["ProcessGuid"] in owned}
+    # So is a process forked from one of those that never started a program Sysmon saw: a
+    # subshell, or a fork whose program the kernel refused to start (noexec). auditd names its
+    # parent.
+    started = {event["ProcessId"] for event in starts}
+    forks: dict[str, set[str]] = collections.defaultdict(set)
     for event in context.get("audit_events", []):
+        pid, parent = event["call"].get("pid"), event["call"].get("ppid")
+        if pid and parent and pid not in started:
+            forks[parent].add(pid)
+    unseen = list(pids)
+    while unseen:
+        for pid in forks.pop(unseen.pop(), set()) - pids:
+            pids.add(pid)
+            unseen.append(pid)
+    # The launcher's start, as each sensor recorded it. Its command line is the whole test, so a
+    # rule that matches only these is reported as that, not as a detection. For auditd it is the
+    # first program start of the launcher's process: a shell given one command can become that
+    # command in the same process (bash -c "sysctl ..."), and that later start is the test's.
+    audit_events = [
+        event
+        for event in context.get("audit_events", [])
+        if event["call"].get("pid") in pids
+        and (
+            (attack and attack["session"] and event["call"].get("ses") == attack["session"])
+            or start <= event["time"] <= end
+        )
+        and event["event"] not in context.get("lookups", ())
+    ]
+    launcher_exec = min(
+        (
+            (event["time"], int(event["serial"]), event["event"])
+            for event in audit_events
+            if event["call"].get("pid") == launcher["ProcessId"] and "EXECVE" in event["types"]
+        ),
+        default=(None, None, None),
+    )[2]
+    launched = [launcher["EventRecordID"]]
+    for event in audit_events:
+        if event["event"] == launcher_exec:
+            launched.append(f"audit {event['event']}")
+            continue
         in_step = attack and attack["session"] and event["call"].get("ses") == attack["session"]
-        if event["call"].get("pid") in pids and (in_step or start <= event["time"] <= end):
-            mine.append(describe_audit(event, "session" if in_step else "window"))
+        mine.append(describe_audit(event, "session" if in_step else "window"))
     mine.sort(key=lambda event: (event["time"], str(event["record"])))
 
     fired: dict[str, list[int]] = collections.defaultdict(list)
     for event in mine:
         for rule_id in matched.get(str(event["record"]), []):
             fired[rule_id].append(event["record"])
-    launcher_only = [
-        rule_id for rule_id in matched.get(launcher["EventRecordID"], []) if rule_id not in fired
-    ]
+    launcher_only: dict[str, list] = collections.defaultdict(list)
+    for record in launched:
+        for rule_id in matched.get(record, []):
+            if rule_id not in fired:
+                launcher_only[rule_id].append(int(record) if record.isdigit() else record)
 
     def cite(rule_id: str, records: list[int]) -> dict:
         rule = rules[rule_id]
@@ -452,7 +542,7 @@ def visibility(
         "rules": pinned,
         "launcher": describe(launcher, "launcher"),
         "launcher_only_rules": sorted(
-            (cite(rule_id, [int(launcher["EventRecordID"])]) for rule_id in launcher_only), key=rule_order
+            (cite(rule_id, records) for rule_id, records in launcher_only.items()), key=rule_order
         ),
         # Until the lab's rules are judged, the second answer is the first; see second_answers.
         "with_lab_rules": {"answer": answer, "rules": ours},
@@ -496,9 +586,10 @@ def ordinary_activity(
         counts[kind] += 1
         for rule_id in matched.get(event["EventRecordID"], []):
             hits[rule_id].append(int(event["EventRecordID"]))
+    searched = lookups(list(audit_events))
     for event in audit_events:
-        if "LOGIN" in event["types"]:
-            continue  # the driver's change of login uid that starts a step's session
+        if "LOGIN" in event["types"] or event["event"] in searched:
+            continue  # the driver's change of login uid that starts a step's session; a lookup
         session = event["call"].get("ses")
         if session in baseline_sessions:
             kind = "baseline_events"
@@ -691,13 +782,20 @@ def check_controls(
             f"from the export, and {lost['repeated_records']} appear more than once"
         )
     audit_whole = audit is None or (
-        audit["lost_before"] is not None and audit["lost_before"] == audit["lost_after"]
+        audit["lost_before"] is not None
+        and audit["lost_before"] == audit["lost_after"]
+        and not audit.get("rotated")
     )
     if audit is not None:
         detail += (
             f"; auditd counted {audit['lost_before']} lost records before the tests and "
             f"{audit['lost_after']} after"
         )
+        if audit.get("rotated"):
+            detail += (
+                f", but it rotated its log during the run into {len(audit['rotated'])} more "
+                f"file{'' if len(audit['rotated']) == 1 else 's'}, so records may be missing from the export"
+            )
     checks.append(control("loss", clean and whole and audit_whole and lost["sensor_starts"] == 1, detail))
 
     problems = []
@@ -807,6 +905,7 @@ def main(run_dir: Path, engine: Path) -> int:
         "windows": windows,
         "system_commands": system_commands(starts, complete),
         "audit_events": audit_events,
+        "lookups": lookups(audit_events),
     }
     tests, by_order = [], {}
     for test in run["tests"]:
@@ -845,18 +944,7 @@ def main(run_dir: Path, engine: Path) -> int:
     ordinary = ordinary_activity(run, events, starts, matched, rules, test_windows, audit_events)
     verdicts = judge_lab_rules(lab_rules, tests, ordinary)
     second_answers(tests, verdicts)
-
-    def number(value: object) -> int | None:
-        return int(value) if str(value).isdigit() else None
-
-    audit_control = None
-    if audit:
-        probes = [event["time"] for event in audit_events if audit.get("probe") in event["paths"]]
-        audit_control = {
-            "probe_time": min(probes, default=None),
-            "lost_before": number(audit.get("before", {}).get("lost")),
-            "lost_after": number(audit.get("after", {}).get("lost")),
-        }
+    audit_control = audit_facts(audit, audit_events) if audit else None
     results = {
         "schema": "bluefire-lab/results/1",
         "run": {
