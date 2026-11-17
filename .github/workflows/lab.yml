@@ -178,9 +178,11 @@ jobs:
       - name: Take pictures of the report
         if: always()
         run: |
-          google-chrome --headless=new --no-sandbox --hide-scrollbars --window-size=1440,2600 \
+          # The top of the report, in each theme, at a size that fits a README: the summary, the
+          # run's facts and the first rows of the table. The whole report is report.html.
+          google-chrome --headless=new --no-sandbox --hide-scrollbars --window-size=1280,1000 \
             --screenshot="$RUN/report-light.png" "file://$RUN/report.html"
-          google-chrome --headless=new --no-sandbox --hide-scrollbars --window-size=1440,2600 --force-dark-mode \
+          google-chrome --headless=new --no-sandbox --hide-scrollbars --window-size=1280,1000 --force-dark-mode \
             --screenshot="$RUN/report-dark.png" "file://$RUN/report.html"
 
       - name: Refuse to publish telemetry that contains the job token
