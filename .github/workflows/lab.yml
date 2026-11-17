@@ -95,7 +95,7 @@ jobs:
           # (by default it does at 8 MB). auditd reads its configuration again on SIGHUP.
           sudo sed -i -e 's/^max_log_file = .*/max_log_file = 1024/' \
             -e 's/^max_log_file_action = .*/max_log_file_action = ignore/' /etc/audit/auditd.conf
-          grep -qx 'max_log_file_action = ignore' /etc/audit/auditd.conf
+          sudo grep -qx 'max_log_file_action = ignore' /etc/audit/auditd.conf
           sudo pkill -HUP -x auditd
           sudo pwsh -NoLogo -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module powershell-yaml -RequiredVersion $POWERSHELL_YAML_VERSION -Scope AllUsers -Force"
           python3 -m venv "$RUNNER_TEMP/venv"
