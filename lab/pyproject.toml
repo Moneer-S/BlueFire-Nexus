@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bluefire-lab"
+version = "0.1.0"
+description = "A test bench for defenders: run published attack tests on a lab target and report what its defenses saw"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["PyYAML>=6,<7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1"]
+
+[project.scripts]
+bluefire-lab = "bluefire_lab.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["bluefire_lab*"]
+
+[tool.setuptools.package-data]
+bluefire_lab = ["report.css", "report.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "UP"]
+# The formatter keeps code within the line length. It leaves long strings whole.
+ignore = ["E501"]

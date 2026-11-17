@@ -1,58 +1,184 @@
 # BlueFire lab
 
 A test bench for defenders. It runs published attack tests on a disposable lab
-target, records what the sensors on that target saw and which detection rules
-fired, and reports both plainly.
+target, records what a sensor on that target saw, evaluates pinned detection
+rules over those records, and reports two answers for every test: did the
+technique take effect, and what did the defense see.
 
-## What is shown today
+## What it shows today
 
-No report exists yet: the bench has not taken a set of tests through the whole
-loop.
+Everything in this section comes from one run of the `lab` workflow:
+[run 44019934793](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44019934793),
+17 November 2026. Its run page shows the same answers in a longer table, and
+its artifact `lab-run` holds the sensor's raw output (`sysmon.txt`), the
+answers with what each rests on (`results.json`) and the full report
+(`report.html`). GitHub keeps both for 90 days. An earlier run of the same tests,
+[run 43808649201](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43808649201)
+on 16 November, gave the same answers with five of the six controls below.
 
-A spike on GitHub-hosted `ubuntu-24.04` runners has shown what the bench can
-build on. It used harmless probe commands and one discovery test. Each finding
-names the run that shows it. Both runs are from 16 November 2026. GitHub keeps
-their logs for 90 days and their artifacts for 14.
+- **Target:** a GitHub-hosted `ubuntu-24.04` runner (Ubuntu 24.04.5, kernel
+  7.0.0-1014-aws, runner image 20261111.127.1).
+- **Tests:** 17 Linux tests from Atomic Red Team at commit `a0e3f9bc`, run
+  unchanged by its executor, Invoke-AtomicRedTeam, at commit `8af478bb`.
+- **Sensor:** Sysmon for Linux 1.6.0 with the configuration in
+  [`sensors/sysmon.xml`](sensors/sysmon.xml).
+- **Rules:** the 135 Linux rules of SigmaHQ release r2026-07-01 that match what
+  this sensor records (122 for process creation, 8 for file events, 5 for
+  network connections), evaluated by Zircolite 4.7.1.
 
-- Run A: [43802339233](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43802339233)
-- Run B: [43803220104](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43803220104)
+All 17 tests took effect. One of them raised an alert, meaning a match of a rule
+of level high or critical on an event of the test:
 
-### Sensors
+| Test | Visibility | Highest level among the rules that matched an event of the test |
+| --- | --- | --- |
+| T1059.004 Shell Creation using awk command | alert | high |
+| T1053.003 Cron - Replace crontab with referenced file | telemetry only | medium |
+| T1222.002 chmod - Change file or folder mode (numeric mode) | telemetry only | medium |
+| T1548.001 Set a SetUID flag on file | telemetry only | medium |
+| T1036.003 Masquerading as FreeBSD or Linux crond process | telemetry only | medium |
+| T1027 Decode base64 Data into Script | telemetry only | medium |
+| T1069.001 Permission Groups Discovery (Local) | telemetry only | low |
+| T1518.001 Security Software Discovery - ps (Linux) | telemetry only | low |
+| T1140 Linux Base64 Encoded Shebang in CLI | telemetry only | low |
+| T1059.004 Obfuscated command line scripts | telemetry only | low |
+| T1082 List OS Information | telemetry only | informational |
+| T1053.006 Create Systemd Service and Timer | telemetry only | none matched |
+| T1543.002 Create Systemd Service | telemetry only | none matched |
+| T1136.001 Create a user account on a Linux system | telemetry only | none matched |
+| T1098.004 Modify SSH Authorized Keys | telemetry only | none matched |
+| T1070.003 Clear Bash history (truncate) | telemetry only | none matched |
+| T1546.004 Add command to .bashrc | no telemetry | none matched |
 
-| Finding | Shown by |
-| --- | --- |
-| Sysmon for Linux 1.6.0 installs from the Microsoft package repository that the image already has, and loads on kernel 7.0.0-1014-aws and on kernel 7.0.0-1017-azure. The `ubuntu-24.04` label handed out both. | Run A, job "sensor spike (Sysmon for Linux)"; run B, job "loop spike" |
-| It records process starts and ends, file creation and deletion, and network connections. A 6,051-character command line arrives whole in the journal and in `/var/log/syslog`. | Run A, same job |
-| When it stops, Sysmon logs how many events it lost (`Lost events: 0, in 0 notifications`). | Run A, same job, step "Export and summarise the events" |
-| For the processes that PowerShell started, Sysmon reported a parent id (4032) that is not PowerShell's process id (4013), and no parent GUID or parent image. Its `ParentCommandLine` field held only the parent's first argument. | Run B, job "loop spike", session 5 in the step "Export and summarise the events"; the GUID and image fields are in the artifact `spike-loop`, file `sysmon.txt` |
-| auditd 3.1.2 starts on the runner. With an `execve` rule loaded it records a 6,000-character argument whole, and `auditctl -s` shows its `lost` counter. | Run B, job "sensor spike (auditd)" |
-| Tetragon 1.8.0 runs as a container on the runner and reported the first probe within two seconds, with whole arguments and with counters of lost events. With its default configuration it reported process starts and exits only. | Run A, job "sensor spike (Tetragon)" |
+What that means for a defender, under this sensor configuration and these
+rules:
 
-### Tying events to a test
+- Fifteen tests did what they do and the sensor recorded it, but no rule of an
+  alert level fired. These are gaps that a rule could close. Whether one closes
+  them without false alarms is not shown by this run.
+- Appending a command to `~/.bashrc` left nothing besides the start of the one
+  shell process whose command line holds the whole append. The shell's own
+  `echo` starts no process, and Sysmon for Linux reports a file only as created,
+  and only while it is less than 100 ms old
+  ([its source](https://github.com/microsoft/Sysmon-Linux/blob/962934f7e710a8e860ed5020f2068c6eba6aff64/ebpfKern/sysmonFileOpen.c)).
+  This gap needs a sensor change before any rule can see the write itself.
+- On nine of the tests, rules of level medium matched only that shell process,
+  which carries a test's whole command line: three of them on T1140, for base64
+  piped into a shell. The report shows them, and does not count them as
+  detections.
 
-| Finding | Shown by |
-| --- | --- |
-| A child that detaches from its parent (a double fork, or `setsid` from a subshell) is reported with parent 1 by Sysmon, auditd and Tetragon. Process ancestry alone loses it. | Run A, Sysmon and Tetragon jobs; run B, auditd job |
-| Writing the login uid before a step starts a new kernel audit session. Every process of the step keeps that session id, detached ones included. Sysmon reports it as `TerminalSessionId` and auditd as `ses`. | Run B, job "loop spike", step "Export and summarise the events"; run B, auditd job |
+The canary, a test the pinned rules are known to catch (T1070.003, history
+removal with `rm`), raised its alert at the start and at the end of the run. A
+harmless command (T1082, `hostname`) ran through the same executor and raised
+none.
 
-### Running a test and evaluating rules
+## How a run works
 
-| Finding | Shown by |
-| --- | --- |
-| Invoke-AtomicRedTeam 2.1.0 on PowerShell 7.6.10 runs a Linux test for an unprivileged account as a single `sh -c` line. Its execution log names that process's id and exit code. | Run B, job "loop spike", step "Run probes and one real test" |
-| Around the test the executor runs commands of its own (`hostname`, `whoami`, `id`, `ip`). They land in the same telemetry and match discovery rules, so they have to be told apart from the test. | Run B, same job, session 5 in the step "Export and summarise the events" |
-| An `iptables` owner rule rejects the test account's outbound traffic while the runner's own account keeps its network. | Run B, same job, step "Block outbound traffic for the test account" |
-| Zircolite 4.7.1 converts the 122 Linux process rules of SigmaHQ release r2026-07-01 and evaluates them over the Sysmon output in under a second. | Run B, same job, step "Evaluate the pinned Sigma rules with Zircolite" |
-| Process rules also match events that are not process starts, unless the events are split by type first. | Run B, artifact `spike-loop`, file `detected.json` |
+1. The `lab` workflow ([`.github/workflows/lab.yml`](../.github/workflows/lab.yml))
+   installs the sensor, and fetches the tests, the executor, the rules and the
+   rule engine at pinned versions. Nothing of theirs is copied into this
+   repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
+2. `bluefire-lab run` waits until the sensor reports a probe command. It then
+   runs the tests on [`pinned-tests.yaml`](pinned-tests.yaml) one at a time,
+   with the canary first and last and the harmless command second. Each runs
+   as an unprivileged account whose outbound traffic is rejected, or as root
+   when the test declares that it needs it. Every step (preparation, a marker
+   before and after the test, the test, an effect check, the cleanup) runs in a
+   kernel audit session of its own.
+3. `bluefire-lab evaluate` computes `results.json` from the files the run
+   leaves. An event belongs to a test when its process is in the audit session
+   of the test's attack step. Two more rules apply inside the test's window,
+   between its markers. What cron starts for the test account belongs to a
+   test run as that account. What systemd starts belongs to a test run as root,
+   unless the same command also ran outside every test's window. The executor's
+   own commands and the test's preparation and cleanup are left out. So are the
+   start and end of the shell process that carries the whole command line
+   (`sh -c` or `bash -c`, as the test declares); files it writes count as the
+   test's.
+4. `bluefire-lab report` writes `report.html`, one file that loads nothing from
+   elsewhere when it opens (it refuses to write one that would), and the same
+   table for the run page.
+
+Six controls must pass, or the run fails as a whole:
+
+- **readiness:** the sensor reported a probe before the first test began;
+- **markers:** both markers and the launcher of every test are in the
+  telemetry, so that no test is left inconclusive;
+- **loss:** the sensor reported its counts of lost and bad events once each,
+  both zero, and none of its numbered records is missing from what was read or
+  appears twice;
+- **engine:** the rule engine loaded every rule and read every event it was
+  given, and the sensor recorded every kind of event the rules describe;
+- **canary:** the known-detected test took effect and alerted, first and last;
+- **control:** the harmless command took effect and raised no alert.
+
+## Limits
+
+- "No telemetry" means none under the pinned sensor configuration. Sysmon for
+  Linux records process starts and ends, network connections, file deletions,
+  and file creations. A file counts as created when it is opened for creation
+  and its three timestamps are equal and less than 100 ms old. So a write to an
+  existing file shows up as a creation when it leaves those timestamps fresh,
+  as a read followed by an overwrite does (T1098.004 in the run above). An
+  append that leaves the access time old, like the one to `~/.bashrc`, is not
+  recorded, and neither are reads and permission changes.
+- A process that systemd starts for a test that runs as root is tied to the
+  test by time, inside the test's window, and not by process ancestry. The
+  runner's own timers are stopped before the tests, so that their units do not
+  start inside such a window.
+- Outbound traffic, name lookups included, is rejected for the test account
+  only, not for tests that run as root.
+- Two tests are checked more weakly than the rest. The awk shell escape
+  (T1059.004) has no check of its own that could fail: awk exits with status 0
+  whether or not the shell starts, so its "took effect" rests on the command
+  having run. The security software discovery (T1518.001) is checked by a text
+  that `ps` also prints for the test's own `grep`, so the check shows only that
+  `ps` ran.
+- One runner runs the whole list in sequence, and GitHub hands out runners with
+  different kernels under the same label: kernels 7.0.0-1014-aws (the run
+  above) and 7.0.0-1017-azure (run B of the sensor spike below) have both been
+  seen.
 
 ## Not yet shown
 
-- A set of tests taken through the whole loop, with a report.
-- Any change to a defense, and its effect.
+- A change to a defense (a new rule, a hardening change, or a sensor change)
+  and its effect on a fresh run.
+- Tests on Windows, attack chains of several steps, and a lab on a local
+  machine.
 
 ## How to run it
 
-The spike is the `lab` workflow, [`.github/workflows/lab.yml`](../.github/workflows/lab.yml).
-It runs on pull requests that change `lab/`, and it can be started by hand from
-the Actions tab. Attack tests run on hosted runners only, never on a developer
-machine.
+The workflow runs on pull requests that change `lab/`, on a weekly schedule,
+and by hand from the Actions tab. Attack tests run on GitHub-hosted runners
+only: `bluefire-lab run` refuses to start unless `RUNNER_ENVIRONMENT` is
+`github-hosted`, which GitHub sets on its own runners. That guards against
+starting it by mistake anywhere else; it cannot stop someone who sets the
+variable on purpose.
+
+The answers can be computed again from a run's artifact, on any machine:
+
+```bash
+pip install ./lab
+bluefire-lab evaluate <folder of the unpacked artifact> --engine <path to Zircolite 4.7.1>
+bluefire-lab report <folder of the unpacked artifact>
+```
+
+## Before the loop: the sensor spike
+
+Two runs on hosted runners tried sensors with harmless probe commands. Both are
+from 16 November 2026, their logs are kept for 90 days and their artifacts
+until 30 November 2026: [run A](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43802339233)
+and [run B](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43803220104).
+Run A ended as failed, in a step that only printed a summary of auditd's
+records after auditd had loaded and recorded. Which kernel each sensor job had
+is in the artifacts only.
+
+- Sysmon for Linux 1.6.0, auditd 3.1.2 and Tetragon 1.8.0 all load on the
+  runners' 7.0 kernels (runs A and B). Sysmon delivered a 6,051-character
+  command line whole (run A).
+- A child that detaches from its parent is reported with parent 1 by all three
+  sensors, so process ancestry alone loses it (runs A and B). A kernel audit
+  session, started by writing the login uid before a step, stays with every
+  process of the step, detached ones included (run B). That is why the lab ties
+  events to tests by session.
+- Sysmon gives no parent identity to processes that PowerShell starts (run B),
+  a known issue upstream (microsoft/Sysmon-Linux issue 253).
