@@ -607,6 +607,8 @@ def test_auditd_must_record_its_probe_in_time_and_lose_no_record() -> None:
     assert failed({**sound, "probe_time": "2026-11-16 04:00:02.000"}) == ["readiness"]
     assert failed({**sound, "lost_after": 3}) == ["loss"]
     assert failed({**sound, "lost_before": None}) == ["loss"]
+    # auditd rotated its log during the run, as in run 44050159740: the export holds only the last part.
+    assert failed({**sound, "rotated": ["/var/log/audit/audit.log.1"]}) == ["loss"]
 
 
 def test_a_rule_the_engine_did_not_load_or_an_event_it_did_not_read_fails_the_run() -> None:

@@ -786,13 +786,20 @@ def check_controls(
             f"from the export, and {lost['repeated_records']} appear more than once"
         )
     audit_whole = audit is None or (
-        audit["lost_before"] is not None and audit["lost_before"] == audit["lost_after"]
+        audit["lost_before"] is not None
+        and audit["lost_before"] == audit["lost_after"]
+        and not audit.get("rotated")
     )
     if audit is not None:
         detail += (
             f"; auditd counted {audit['lost_before']} lost records before the tests and "
             f"{audit['lost_after']} after"
         )
+        if audit.get("rotated"):
+            detail += (
+                f", but it rotated its log during the run into {len(audit['rotated'])} more files, so "
+                "records may be missing from the export"
+            )
     checks.append(control("loss", clean and whole and audit_whole and lost["sensor_starts"] == 1, detail))
 
     problems = []
@@ -957,6 +964,7 @@ def main(run_dir: Path, engine: Path) -> int:
             "probe_time": min(probes, default=None),
             "lost_before": number(audit.get("before", {}).get("lost")),
             "lost_after": number(audit.get("after", {}).get("lost")),
+            "rotated": audit.get("rotated", []),
         }
     results = {
         "schema": "bluefire-lab/results/1",

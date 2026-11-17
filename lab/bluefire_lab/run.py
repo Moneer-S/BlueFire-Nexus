@@ -403,6 +403,16 @@ def audit_log() -> bytes:
     return subprocess.run(["sudo", "cat", AUDIT_LOG], capture_output=True, check=True).stdout
 
 
+def audit_rotated() -> list[str]:
+    """The files auditd rotated its log into. The export reads only the current log, so any
+    of them means that records may be missing from it."""
+
+    found = subprocess.run(
+        ["sudo", "find", str(Path(AUDIT_LOG).parent), "-name", "audit.log.*"], capture_output=True, text=True
+    ).stdout
+    return sorted(line for line in found.splitlines() if line.strip())
+
+
 def audit_status() -> dict[str, str]:
     return auditd.status(subprocess.run(["sudo", "auditctl", "-s"], capture_output=True, text=True).stdout)
 
@@ -562,6 +572,7 @@ def main(
         if "audit" in record:
             record["audit"]["after"] = audit_status()
             (out / "audit.txt").write_bytes(audit_log())
+            record["audit"]["rotated"] = audit_rotated()
         record["finished"] = now()
         (out / "run.json").write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
     return 1 if "aborted" in record else 0
