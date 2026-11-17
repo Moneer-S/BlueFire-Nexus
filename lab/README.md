@@ -8,14 +8,14 @@ technique take effect, and what did the defense see.
 ## What it shows today
 
 Everything in this section comes from one run of the `lab` workflow:
-[run 44096893965](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44096893965),
+[run 44126989299](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44126989299),
 17 November 2026. Its run page shows the same answers in a longer table, and
 its artifact `lab-run` holds the sensors' raw output (`sysmon.txt` and
 `audit.txt`), the answers with what each rests on (`results.json`) and the full
 report (`report.html`). GitHub keeps both for 90 days.
 
 - **Target:** a GitHub-hosted `ubuntu-24.04` runner (Ubuntu 24.04.5, kernel
-  7.0.0-1014-aws, runner image 20261111.127.1).
+  7.0.0-1017-azure, runner image 20261111.370.1).
 - **Tests:** 61 Linux tests from Atomic Red Team at commit `a0e3f9bc`, run
   unchanged by its executor, Invoke-AtomicRedTeam, at commit `8af478bb`. 60 of
   them ran: the runner has no `ccencrypt`, which the ccrypt test (T1486)
@@ -125,7 +125,7 @@ What that means for a defender, under these sensors and these rules:
   watch on the shell start files records the append to `~/.bashrc` that Sysmon
   cannot see, and recording process starts as well raised two of the alerts:
   see [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
-- On 32 of the tests, rules of level medium or lower matched only the one shell
+- On 31 of the tests, rules of level medium or lower matched only the one shell
   process whose command line holds the whole test. The report shows them, and
   does not count them as detections.
 
@@ -148,7 +148,7 @@ systemd's own record that the unit ran and ended without error.
 
 ## Hardening that blocks a technique
 
-In [run 44096893965](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44096893965),
+In [run 44126989299](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44126989299),
 twelve tests ran once more after all the other tests, before the closing
 canary, each with one of four hardening changes in place: `/tmp` mounted
 `noexec` was tried on six tests, the account's `~/.bashrc` made immutable on
@@ -229,7 +229,7 @@ tests use have been seen in a run.
 The visibility answer stays the pinned rules' alone. A second column in the
 report gives the answer with the accepted rules counted too, and a rule that is
 not accepted changes no answer. In
-[run 44096893965](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44096893965),
+[run 44126989299](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44126989299),
 three of the 60 tests raised an alert with the pinned rules, and 17 with the
 accepted rules as well:
 
@@ -268,12 +268,12 @@ the redirection is the shell's, so no program start names the history file,
 and Sysmon reported no write to it: it reports one to a file that exists
 already only when the file looks newly created afterwards (see the Limits).
 
-In the same run the baseline left 379 events and the runner's and the lab's own
-work outside the tests 8,331, much of it the lab's own driver switching
+In the same run the baseline left 377 events and the runner's and the lab's own
+work outside the tests 8,520, much of it the lab's own driver switching
 accounts and sessions. None of the lab's rules matched any of them, while 20
 pinned rules did. Two of those are of level high: the canary's own rule,
 "History File Deletion", matched the baseline's removal of a copy of a history
-file (`rm ~/.bash_history.bak`, record 1129), and "Binary Padding - Linux" its
+file (`rm ~/.bash_history.bak`, record 1094), and "Binary Padding - Linux" its
 three uses of `truncate`. The others are medium or lower, for example "User Has
 Been Deleted Via Userdel" on the baseline's `userdel`.
 
@@ -294,7 +294,7 @@ with the runner image), 26 running services before the lab started its sensors
 among them TCP port 22, the port SSH uses, on every address. Sysmon for Linux
 and auditd were both active once started. Every program the tests then named
 (`awk`, `crontab`, `systemctl`, `useradd`) was there, so no test was left out.
-In [run 44096893965](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44096893965)
+In [run 44126989299](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44126989299)
 the list names more programs, among them `ccencrypt` for the ccrypt test
 (T1486), and the runner has no `ccencrypt`: the run left that test out, and its
 report and run page list it with that reason.
@@ -506,11 +506,11 @@ Seven controls must pass, or the run fails as a whole:
   having run. The security software discovery (T1518.001) is checked by a text
   that `ps` also prints for the test's own `grep`, so the check shows only that
   `ps` ran.
-- One runner runs the whole list in sequence (the job takes about thirteen
-  minutes), and GitHub hands out runners with different kernels under the same
-  label:
-  kernels 7.0.0-1014-aws (the run above) and 7.0.0-1017-azure (run
-  44035796630, with the first 49 of these tests) have both been seen.
+- One runner runs the whole list in sequence (the job took 13 to 16 minutes
+  in the runs above), and GitHub hands out runners with different kernels
+  under the same label: kernels 7.0.0-1017-azure (the run above) and
+  7.0.0-1014-aws (run 44096893965, the same tests before the cron.d test's
+  change) have both been seen.
 
 ## Not yet shown
 
