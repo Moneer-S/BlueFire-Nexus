@@ -238,5 +238,6 @@ jobs:
           echo "comparing with run $earlier"
           gh run download "$earlier" --repo "$GITHUB_REPOSITORY" --name lab-run --dir "$RUNNER_TEMP/before"
 
+      # On the run page and in the job's log, which is kept as long as the run's artifact.
       - name: Compare
-        run: '"$RUNNER_TEMP/venv/bin/bluefire-lab" compare "$RUNNER_TEMP/before" "$RUNNER_TEMP/now" >> "$GITHUB_STEP_SUMMARY"'
+        run: '"$RUNNER_TEMP/venv/bin/bluefire-lab" compare "$RUNNER_TEMP/before" "$RUNNER_TEMP/now" | tee -a "$GITHUB_STEP_SUMMARY"'
