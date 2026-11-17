@@ -16,6 +16,10 @@
 #            test schedules to run later.
 #   defenses Hardening changes, named under "defenses" below. After all tests
 #            have run, the test runs again once with each change in place.
+#   variants Runs of the same test with changed input arguments, after the
+#            hardened runs. Each gives "args" and, where the change moves what
+#            the test leaves behind, its own "effect" and "prepare". A rule of
+#            the lab's own is accepted only when it alerts on these as well.
 # In effect and defense commands, {home} and {account} stand for the home
 # folder and the name of the account the tests run as.
 #
@@ -43,6 +47,54 @@ control:
   technique: T1082
   guid: 486e88ea-4f56-470f-9b57-3f4d73f39133
   name: Hostname Discovery
+
+# Ordinary administration, not an attack test, run after the control: once as
+# root and once as the test account. It uses the tools and files the lab's own
+# rules look at, the way ordinary work does. A rule of the lab's own that
+# matches any of it is not accepted.
+baseline:
+  name: Ordinary administration with the tools the lab's rules look at
+  root: |
+    useradd --system --no-create-home --shell /usr/sbin/nologin bluefire-lab-service
+    userdel bluefire-lab-service
+    useradd --no-create-home --shell /bin/bash bluefire-lab-person
+    userdel bluefire-lab-person
+    mkdir -p /etc/systemd/system/cron.service.d
+    printf '[Service]\nNice=5\n' > /etc/systemd/system/cron.service.d/bluefire-lab.conf
+    systemctl daemon-reload
+    rm /etc/systemd/system/cron.service.d/bluefire-lab.conf
+    rmdir --ignore-fail-on-non-empty /etc/systemd/system/cron.service.d
+    ln -sf /dev/null /etc/systemd/system/bluefire-lab-masked.service
+    rm /etc/systemd/system/bluefire-lab-masked.service
+    systemctl daemon-reload
+    cp /usr/lib/systemd/system/cron.service /etc/systemd/system/bluefire-lab-copy.service
+    systemctl daemon-reload
+    rm /etc/systemd/system/bluefire-lab-copy.service
+    systemctl daemon-reload
+    useradd -rM -s /usr/sbin/nologin bluefire-lab-system
+    userdel bluefire-lab-system
+    install -m 755 /bin/true /usr/local/bin/bluefire-lab-tool
+    chmod 750 /usr/local/bin/bluefire-lab-tool
+    chmod u+x /usr/local/bin/bluefire-lab-tool
+    chmod u+rwx,g+rx,o-rwx /usr/local/bin/bluefire-lab-tool
+    chmod 0755 /usr/local/bin/bluefire-lab-tool
+    rm /usr/local/bin/bluefire-lab-tool
+    truncate -s 0 /var/log/bluefire-lab-baseline.log
+    rm /var/log/bluefire-lab-baseline.log
+    crontab -l || true
+  account: |
+    crontab -l || true
+    echo ls >> ~/.bash_history
+    chmod 600 ~/.bash_history
+    cp ~/.bash_history ~/.bash_history.bak
+    rm ~/.bash_history.bak
+    truncate -s 0 ~/notes.txt
+    rm ~/notes.txt
+    truncate -s 1M ~/scratch.img
+    rm ~/scratch.img
+    cp /bin/true /tmp/bluefire-lab-build-step
+    /tmp/bluefire-lab-build-step
+    rm /tmp/bluefire-lab-build-step
 
 tests:
   # Discovery
@@ -74,14 +126,31 @@ tests:
     guid: f4983098-bb13-44fb-9b2c-46149961807b
     name: Create Systemd Service and Timer
     effect: systemctl is-active --quiet art-timer.timer
+    variants:
+      - args:
+          path_to_systemd_service: /etc/systemd/system/bluefire-lab-variant.service
+          path_to_systemd_timer: /etc/systemd/system/bluefire-lab-variant.timer
+          systemd_service_name: bluefire-lab-variant.service
+          systemd_timer_name: bluefire-lab-variant.timer
+        effect: systemctl is-active --quiet bluefire-lab-variant.timer
   - technique: T1543.002
     guid: d9e4f24f-aa67-4c6e-bcbf-85622b697a7c
     name: Create Systemd Service
     effect: systemctl is-enabled --quiet art-systemd-service.service && test -e /tmp/art-systemd-execstart-marker
+    variants:
+      - args:
+          systemd_service_file: bluefire-lab-variant-service.service
+          execstart_action: /bin/touch /var/tmp/bluefire-lab-variant-marker
+        effect: >-
+          systemctl is-enabled --quiet bluefire-lab-variant-service.service
+          && test -e /var/tmp/bluefire-lab-variant-marker
   - technique: T1136.001
     guid: 40d8eabd-e394-46f6-8785-b9bfa1d011d2
     name: Create a user account on a Linux system
     effect: getent passwd evil_user
+    variants:
+      - args: {username: bluefire_variant_user}
+        effect: getent passwd bluefire_variant_user
   - technique: T1098.004
     guid: 342cc723-127c-4d3a-8292-9c0c6b4ecadc
     name: Modify SSH Authorized Keys
@@ -109,6 +178,16 @@ tests:
     guid: 759055b3-3885-4582-a8ec-c00c9d64dd79
     name: Set a SetUID flag on file
     effect: test -u /tmp/evilBinary
+    variants:
+      - args: {file_to_setuid: /var/tmp/bluefire-lab-variant-binary}
+        effect: test -u /var/tmp/bluefire-lab-variant-binary
+  - technique: T1548.001
+    guid: db55f666-7cba-46c6-9fe6-205a05c3242c
+    name: Set a SetGID flag on file
+    effect: test -g /tmp/evilBinary
+    variants:
+      - args: {file_to_setuid: /var/tmp/bluefire-lab-variant-setgid}
+        effect: test -g /var/tmp/bluefire-lab-variant-setgid
   - technique: T1036.003
     guid: a315bfff-7a98-403b-b442-2ea1b255e556
     name: Masquerading as FreeBSD or Linux crond process.
@@ -122,6 +201,25 @@ tests:
     name: Clear Bash history (truncate)
     prepare: echo "ls -la" >> ~/.bash_history
     effect: test -e {home}/.bash_history && test ! -s {home}/.bash_history
+    variants:
+      - args: {history_path: ~/.zsh_history}
+        prepare: echo "ls -la" >> ~/.zsh_history
+        effect: test -e {home}/.zsh_history && test ! -s {home}/.zsh_history
+      # A history file name without "_history", as zsh's own setup offers it.
+      - args: {history_path: ~/.histfile}
+        prepare: echo "ls -la" >> ~/.histfile
+        effect: test -e {home}/.histfile && test ! -s {home}/.histfile
+  # Leaves ~/.bash_history as a link to /dev/null; the closing canary removes it.
+  - technique: T1070.003
+    guid: 23d348f3-cc5c-4ba9-bd0a-ae09069f0914
+    name: Clear Bash history (ln dev/null)
+    prepare: echo "ls -la" >> ~/.bash_history
+    effect: test -L {home}/.bash_history && test "$(readlink {home}/.bash_history)" = /dev/null
+    variants:
+      # The history file of csh and tcsh.
+      - args: {history_path: ~/.history}
+        prepare: echo "ls -la" >> ~/.history
+        effect: test -L {home}/.history && test "$(readlink {home}/.history)" = /dev/null
 
   # Encoded and indirect execution
   - technique: T1027

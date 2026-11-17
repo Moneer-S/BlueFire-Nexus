@@ -97,6 +97,68 @@ because it owns its home folder; the account's other shell start files such as
 a script in `/tmp` run through an interpreter. The changes are defined in
 [`pinned-tests.yaml`](pinned-tests.yaml) under `defenses`.
 
+## Detection rules of the lab's own
+
+[`rules/linux`](rules/linux) holds Sigma rules this repository adds for tests
+that took effect and left telemetry, but raised no alert from the pinned rules.
+A rule describes what the technique does: for example any `chmod` mode that
+sets the setuid or setgid bit, symbolic or numeric, and not only the mode a test
+uses. It is accepted only when all three of these hold in the same run:
+
+- it alerts on the test it was written for;
+- every published procedure it alerts on ran again with changed input arguments
+  (the `variants` in [`pinned-tests.yaml`](pinned-tests.yaml)), and it alerted
+  on each of those runs;
+- it matches nothing in the ordinary activity: a baseline of ordinary
+  administration with the same tools and files, run as root and as the test
+  account, and the runner's own work outside the tests. The baseline adds and
+  deletes accounts, among them a system account without a login shell; writes
+  a systemd drop-in with a shell, copies a whole unit file into place with `cp`
+  and masks a unit; changes file modes without the setuid or setgid bit;
+  truncates and copies files that are not history files, and truncates one to
+  a size other than zero; and runs a program from `/tmp`.
+
+This has a limit. Changed input arguments show that a rule does not depend on
+the values they set, such as an account name or a file path. They cannot show
+that a rule does not depend on what a test fixes in its command, such as the
+options it passes to `useradd` or the mode it gives `chmod`: a rule written for
+exactly those would be accepted as well. Where a test lets a run change what a
+rule looks at, a variant does: the history tests run again on `~/.histfile` and
+`~/.history`, whose names lack `_history`. Beyond that, each rule's description
+says which spellings it covers, and only the spellings the tests use have been
+seen in a run.
+
+The visibility answer stays the pinned rules' alone. A second column in the
+report gives the answer with the accepted rules counted too, and a rule that is
+not accepted changes no answer. In
+[run 44022042190](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44022042190)
+(17 November 2026, kernel 7.0.0-1014-aws), with two more published procedures
+in the list, all 19 tests took effect. One raised an alert with the pinned
+rules, and 8 with the accepted rules as well:
+
+| Rule | Alerts on | Runs with changed input arguments | Verdict |
+| --- | --- | --- | --- |
+| [Systemd Unit File Written By A Shell](rules/linux/file_event/file_event_lnx_systemd_unit_written_by_shell.yml) | T1053.006 Create Systemd Service and Timer, T1543.002 Create Systemd Service | alerted on 2 of 2 | accepted |
+| [System Account Created With A Login Shell](rules/linux/process_creation/proc_creation_lnx_system_account_with_login_shell.yml) | T1136.001 Create a user account on a Linux system | alerted on 1 of 1 | accepted |
+| [Setuid Or Setgid Bit Set With Chmod](rules/linux/process_creation/proc_creation_lnx_chmod_setuid_setgid.yml) | T1548.001 Set a SetUID flag on file, T1548.001 Set a SetGID flag on file | alerted on 2 of 2, one for each | accepted |
+| [Shell History File Emptied](rules/linux/process_creation/proc_creation_lnx_history_file_emptied.yml) | T1070.003 Clear Bash history (truncate), T1070.003 Clear Bash history (ln dev/null) | alerted on 3 of 3, on `~/.zsh_history`, `~/.histfile` and `~/.history` | accepted |
+| [Program Named Like A System Daemon Run From A Temporary Folder](rules/linux/process_creation/proc_creation_lnx_daemon_name_from_temp_folder.yml) | T1036.003 Masquerading as FreeBSD or Linux crond process | none: the test has no input arguments to change | not accepted |
+
+Three of the accepted rules alert on two published procedures each, and one
+covers a single procedure. In the same run the baseline left 226 events and the
+runner's own work outside the tests 2,269. None of the lab's rules matched any
+of them, while ten pinned rules did. One of those is of level high: the
+canary's own rule, "History File Deletion", matched the baseline's removal of a
+copy of a history file (`rm ~/.bash_history.bak`, record 1090). The others are
+medium or lower, for example "User Has Been Deleted Via Userdel" on the
+baseline's `userdel`.
+
+The baseline is a short script, not days of real administration, so a rule that
+stays quiet on it can still be noisy elsewhere. One such case is known: the
+rule for a unit file written by a shell also alerts when an administrator
+writes a new unit by hand. A draft that could not fire with this sensor is kept
+in [`rules/rejected`](rules/rejected) with the reason.
+
 ## How a run works
 
 1. The `lab` workflow ([`.github/workflows/lab.yml`](../.github/workflows/lab.yml))
@@ -105,10 +167,12 @@ a script in `/tmp` run through an interpreter. The changes are defined in
    repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 2. `bluefire-lab run` waits until the sensor reports a probe command. It then
    runs the tests on [`pinned-tests.yaml`](pinned-tests.yaml) one at a time,
-   with the canary first and last and the harmless command second. Before the
+   with the canary first and last, the harmless command second and the
+   baseline of ordinary administration third. After the tests and before the
    closing canary, it runs once more each test that names a hardening change,
-   with the change in place. Root puts the change in place after the test's
-   preparation and removes it after its cleanup. Each test runs
+   with the change in place, and each test that names variants, with their
+   input arguments. Root puts a change in place after the test's preparation
+   and removes it after its cleanup. Each test runs
    as an unprivileged account whose outbound traffic is rejected, or as root
    when the test declares that it needs it. Every step (preparation, a marker
    before and after the test, the test, an effect check, the cleanup) runs in a
@@ -122,7 +186,8 @@ a script in `/tmp` run through an interpreter. The changes are defined in
    own commands and the test's preparation and cleanup are left out. So are the
    start and end of the shell process that carries the whole command line
    (`sh -c` or `bash -c`, as the test declares); files it writes count as the
-   test's.
+   test's. It then judges each of the lab's own rules on the tests, their
+   variants and the ordinary activity.
 4. `bluefire-lab report` writes `report.html`, one file that loads nothing from
    elsewhere when it opens (it refuses to write one that would), and the same
    table for the run page.
@@ -173,7 +238,7 @@ Seven controls must pass, or the run fails as a whole:
 
 ## Not yet shown
 
-- A new detection rule, or a sensor change, and its effect on a fresh run.
+- A sensor change, and its effect on a fresh run.
 - Tests on Windows, attack chains of several steps, and a lab on a local
   machine.
 

@@ -135,6 +135,10 @@ def upstream_definition(spec: dict, atomics: Path) -> dict:
         raise SystemExit(f"{guid} {test['name']!r} is not a Linux test")
     if test["executor"]["name"] not in ("sh", "bash"):
         raise SystemExit(f"{guid} {test['name']!r} needs the executor {test['executor']['name']!r}")
+    # An input argument the test does not declare changes nothing: the run would use the defaults.
+    unknown = sorted(set(spec.get("args") or {}) - set(test.get("input_arguments") or {}))
+    if unknown:
+        raise SystemExit(f"{guid} {test['name']!r} has no input argument {', '.join(unknown)}")
     return test
 
 
@@ -157,35 +161,59 @@ def read_execution_log(path: str) -> dict:
 
 
 def plan(document: dict) -> list[dict]:
-    """The runs in order: the canary, the control, the tests, each test again with each
-    of its hardening changes in place, and the canary again."""
+    """The runs in order: the canary, the control, the baseline of ordinary activity, the
+    tests, each test again with each of its hardening changes in place, each test again
+    with each of its variants' input arguments, and the canary again."""
 
-    defenses, tests = document.get("defenses") or {}, document["tests"]
+    defenses = document.get("defenses") or {}
     runs = [{"role": "canary", "spec": document["canary"]}, {"role": "control", "spec": document["control"]}]
-    runs += [{"role": "test", "spec": spec} for spec in tests]
-    for index, spec in enumerate(tests):
-        for name in spec.get("defenses", []):
+    if "baseline" in document:
+        runs.append({"role": "baseline", "spec": document["baseline"]})
+    tests = [{"role": "test", "spec": spec} for spec in document["tests"]]
+    runs += tests
+    for test in tests:
+        for name in test["spec"].get("defenses", []):
             if name not in defenses:
                 raise SystemExit(
-                    f"{spec['name']!r} names the hardening change {name!r}, which is not defined"
+                    f"{test['spec']['name']!r} names the hardening change {name!r}, which is not defined"
                 )
-            # The test itself ran as run number 3 + index: after the canary and the control.
             runs.append(
                 {
                     "role": "hardened",
-                    "spec": spec,
+                    "spec": test["spec"],
                     "defense": {"name": name, **defenses[name]},
-                    "compared_with": 3 + index,
+                    "of": test,
                 }
             )
+    for test in tests:
+        for variant in test["spec"].get("variants", []):
+            spec = {key: value for key, value in test["spec"].items() if key not in ("variants", "defenses")}
+            runs.append({"role": "variant", "spec": {**spec, **variant}, "of": test})
     runs.append({"role": "canary", "spec": document["canary"]})
     for order, run in enumerate(runs, start=1):
         run["order"] = order
+    for run in runs:
+        if "of" in run:
+            run["compared_with"] = run.pop("of")["order"]
     return runs
 
 
 def fill(command: str, context: dict) -> str:
     return command.replace("{home}", context["home"]).replace("{account}", context["account"])
+
+
+def run_baseline(item: dict, context: dict) -> dict:
+    """Run the ordinary activity the lab's own rules must stay quiet on, as root and as the
+    test account, each in an audit session of its own, between two markers."""
+
+    spec, run_id, account = item["spec"], context["id"], context["account"]
+    record = {"order": item["order"], "role": "baseline", "name": spec["name"], "steps": []}
+    record["steps"].append(step("marker-start", account, marker(run_id, item["order"], "start")))
+    for label, user in (("root", "root"), ("account", account)):
+        record["steps"].append(step(f"baseline-{label}", user, ["sh", "-c", fill(spec[label], context)], 300))
+    record["steps"].append(step("marker-end", account, marker(run_id, item["order"], "end")))
+    kill_sessions({done["session"] for done in record["steps"]})
+    return record
 
 
 def run_test(item: dict, context: dict) -> dict:
@@ -218,6 +246,7 @@ def run_test(item: dict, context: dict) -> dict:
         record["defense"] = dict(item["defense"])
         for key in ("apply", "revert"):
             record["defense"][key] = fill(record["defense"][key], context)
+    if "compared_with" in item:
         record["compared_with"] = item["compared_with"]
 
     def do(label: str, command: list[str], as_user: str = user, timeout: float = 60) -> dict:
@@ -332,6 +361,8 @@ def facts(context: dict) -> tuple[dict, dict]:
         ),
         "sysmonforlinux": output_of("dpkg-query", "-W", "-f", "${Version}", "sysmonforlinux"),
         "sysinternalsebpf": output_of("dpkg-query", "-W", "-f", "${Version}", "sysinternalsebpf"),
+        # Where the lab's own rules come from: this repository at the commit that ran.
+        "lab": f"{os.environ.get('GITHUB_REPOSITORY', '')}@{os.environ.get('GITHUB_SHA', '')}",
     }
     return target, tools
 
@@ -361,8 +392,10 @@ def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: P
     }
     shutil.copyfile(sensor_config, out / "sensor-config.xml")
     sequence = plan(document)
+    # Stop before anything runs if the list names a test that is not the one upstream.
     for item in sequence:
-        upstream_definition(item["spec"], context["atomics"])  # stop before anything runs if the list is off
+        if item["role"] != "baseline":
+            upstream_definition(item["spec"], context["atomics"])
     since = time.time() - 1
     subprocess.run(
         ["sudo", "sysmon", "-accepteula", "-i", str(sensor_config)], check=True, capture_output=True
@@ -380,10 +413,16 @@ def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: P
             for item in sequence:
                 spec, change = item["spec"], item.get("defense", {}).get("name")
                 print(
-                    f"[{item['order']}/{len(sequence)}] {item['role']}: {spec['technique']} {spec['name']}"
-                    + (f", with {change}" if change else ""),
+                    f"[{item['order']}/{len(sequence)}] {item['role']}: {spec.get('technique', '')} {spec['name']}"
+                    + (f", with {change}" if change else "")
+                    + (f", with the input arguments {spec['args']}" if item["role"] == "variant" else ""),
                     flush=True,
                 )
+                if item["role"] == "baseline":
+                    done = run_baseline(item, context)
+                    record["tests"].append(done)
+                    print(f"    exit status: {[s['exit_status'] for s in done['steps']]}", flush=True)
+                    continue
                 done = run_test(item, context)
                 record["tests"].append(done)
                 effect = next((s["exit_status"] for s in done["steps"] if s["label"] == "effect"), "none")

@@ -19,8 +19,14 @@ RULES = {
         "author": "someone",
         "file": f"linux/{name}.yml",
         "text": "",
+        "origin": origin,
     }
-    for name, level in (("high-rule", "high"), ("medium-rule", "medium"), ("critical-rule", "critical"))
+    for name, level, origin in (
+        ("high-rule", "high", "pinned"),
+        ("medium-rule", "medium", "pinned"),
+        ("critical-rule", "critical", "pinned"),
+        ("lab-rule", "high", "lab"),
+    )
 }
 
 
@@ -312,10 +318,17 @@ CLEAN = {
     "repeated_records": 0,
     "sensor_starts": 1,
 }
-ENGINE = {
-    "process_creation": {"rules": 122, "loaded": 122, "given": 900, "read": 900},
-    "file_event": {"rules": 8, "loaded": 8, "given": 300, "read": 300},
-}
+ENGINE = [
+    {"category": "process_creation", "origin": "pinned", "kind": "process start",
+     "rules": 122, "loaded": 122, "given": 900, "read": 900},
+    {"category": "file_event", "origin": "pinned", "kind": "file created",
+     "rules": 8, "loaded": 8, "given": 300, "read": 300},
+    {"category": "process_creation", "origin": "lab", "kind": "process start",
+     "rules": 4, "loaded": 4, "given": 900, "read": 900},
+    # The lab has no rule for network connections, so the engine had nothing to evaluate there.
+    {"category": "network_connection", "origin": "lab", "kind": "network connection",
+     "rules": 0, "loaded": 0, "given": 50, "read": 0},
+]  # fmt: skip
 PROBE = [{"CommandLine": "/usr/bin/true bluefire-lab-probe r1", "UtcTime": "2026-11-16 04:00:00.500"}]
 CAUGHT = measured("canary", visibility="alert", rules=[{"id": "high-rule", "alert": True}], rule="high-rule")
 
@@ -359,6 +372,88 @@ def test_lost_events_a_missing_marker_or_an_unseen_probe_fail_the_run() -> None:
     assert failed_controls(tests, starts=[]) == ["readiness"]
 
 
+def test_the_labs_rules_give_a_second_answer_and_never_change_the_first() -> None:
+    answer, _ = see(a_test(), telemetry(), {"7": ["medium-rule", "lab-rule"]})
+    test = {"visibility": answer}
+
+    assert answer["answer"] == "telemetry only"
+    assert [rule["id"] for rule in answer["rules"]] == ["medium-rule"]
+    assert [rule["id"] for rule in answer["with_lab_rules"]["rules"]] == ["lab-rule"]
+    evaluate.second_answers([test], [{"id": "lab-rule", "accepted": True}])
+    assert answer["with_lab_rules"]["answer"] == "alert"
+    evaluate.second_answers([test], [{"id": "lab-rule", "accepted": False}])
+    assert answer["with_lab_rules"]["answer"] == "telemetry only"
+    assert answer["with_lab_rules"]["rules"][0]["accepted"] is False
+    assert answer["answer"] == "telemetry only"
+
+
+def test_ordinary_activity_is_the_baseline_and_what_ran_in_no_session_outside_the_tests() -> None:
+    run_record = {
+        "tests": [{"role": "baseline", "steps": [step("baseline-root", 30), step("marker-end", 31)]}]
+    }
+    events = [
+        start(1, 0.5, 400, 1, "useradd --system bluefire-lab-service", 30, user="root"),  # baseline
+        start(2, 0.6, 401, 1, "true marker", 31, user="root"),  # a marker step: the lab's own
+        start(3, 0.7, 402, 1, "apt-get update", sysmon.NO_SESSION, user="root"),  # the system, outside
+        start(4, 3.0, 403, 1, "touch /tmp/marker", sysmon.NO_SESSION, user="root"),  # the system, inside
+        start(5, 3.1, 404, 120, "id", 11),  # a test's
+    ]
+    window = [("2026-11-16 04:00:01.000", "2026-11-16 04:00:06.000")]
+    matched = {"1": ["lab-rule"], "3": ["medium-rule"], "4": ["lab-rule"], "5": ["lab-rule"]}
+
+    ordinary = evaluate.ordinary_activity(run_record, events, events, matched, RULES, window)
+
+    assert (ordinary["baseline_events"], ordinary["system_events"]) == (1, 1)
+    assert ordinary["rules"] == {"lab-rule": [1], "medium-rule": [3]}
+    assert [(rule["id"], rule["events"]) for rule in ordinary["pinned_rules"]] == [("medium-rule", 1)]
+
+
+def judged(
+    test_rules=("lab-rule",), variant_rules=("lab-rule",), variant_took=True, noise=None, sibling=False
+) -> dict:
+    def result(order, role, rules, answer="took effect", **extra) -> dict:
+        lab = [{**RULES[rule_id], "alert": True} for rule_id in rules]
+        seen = {
+            "answer": "telemetry only",
+            "with_lab_rules": {"answer": "alert" if lab else "telemetry only", "rules": lab},
+        }
+        return {"order": order, "role": role, "technique": "T1", "guid": "g", "name": "a test",
+                "execution": {"answer": answer}, "visibility": seen, **extra}  # fmt: skip
+
+    tests = [result(3, "test", test_rules)]
+    if sibling:  # a second published procedure the rule alerts on, which ran with its defaults only
+        tests.append(result(4, "test", test_rules, guid="g2", name="a sibling."))
+    if variant_rules is not None:
+        answer = "took effect" if variant_took else "attempted without effect"
+        tests.append(result(9, "variant", variant_rules, answer, compared_with=3, args={"name": "other"}))
+    return evaluate.judge_lab_rules({"lab-rule": RULES["lab-rule"]}, tests, {"rules": noise or {}})[0]
+
+
+def test_a_lab_rule_is_accepted_only_when_it_holds_on_a_variant_and_stays_quiet_on_ordinary_work() -> None:
+    accepted = judged()
+
+    assert accepted["accepted"] is True
+    assert accepted["variants"] == [
+        {"order": 9, "technique": "T1", "name": "a test", "compared_with": 3, "args": {"name": "other"},
+         "took_effect": True, "alerted": True}
+    ]  # fmt: skip
+    assert judged(test_rules=())["reason"] == "it matched no event of a test"
+    assert judged(noise={"lab-rule": [40, 41]})["reason"] == "it matched 2 events of ordinary activity"
+    assert judged(variant_rules=())["reason"] == "it missed 1 of 1 runs with changed input arguments"
+    assert judged(variant_rules=None)["accepted"] is False
+    assert judged(variant_took=False)["accepted"] is False
+
+
+def test_every_procedure_a_lab_rule_alerts_on_needs_a_run_with_changed_input_arguments() -> None:
+    verdict = judged(sibling=True)
+
+    assert verdict["accepted"] is False
+    assert verdict["procedures"] == 2
+    assert verdict["reason"] == (
+        "not every procedure it alerts on ran again with changed input arguments and took effect: T1 a sibling"
+    )
+
+
 def test_a_repeated_record_or_a_missing_count_of_bad_events_fails_the_run() -> None:
     tests = [CAUGHT, measured("control"), CAUGHT]
 
@@ -395,11 +490,16 @@ def test_the_probe_must_be_seen_before_the_first_test() -> None:
 
 def test_a_rule_the_engine_did_not_load_or_an_event_it_did_not_read_fails_the_run() -> None:
     tests = [CAUGHT, measured("control"), CAUGHT]
-    skipped_rule = {**ENGINE, "file_event": {**ENGINE["file_event"], "loaded": 7}}
-    unread = {**ENGINE, "file_event": {**ENGINE["file_event"], "read": 299}}
-    no_events = {**ENGINE, "file_event": {**ENGINE["file_event"], "given": 0, "loaded": 0, "read": 0}}
 
-    for engine in (skipped_rule, unread, no_events):
+    def changed(index: int, **values) -> list[dict]:
+        return [{**counts, **values} if place == index else counts for place, counts in enumerate(ENGINE)]
+
+    skipped_rule = changed(1, loaded=7)
+    unread = changed(1, read=299)
+    no_events = changed(1, given=0, loaded=0, read=0)
+    skipped_lab_rule = changed(2, loaded=3)
+
+    for engine in (skipped_rule, unread, no_events, skipped_lab_rule):
         assert failed_controls(tests, engine=engine) == ["engine"]
 
 

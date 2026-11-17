@@ -120,6 +120,9 @@ jobs:
           cp -r /opt/bluefire-lab/sigma/rules/linux "$RUN/rules/linux"
           cp /opt/bluefire-lab/sigma/LICENSE "$RUN/rules/LICENSE"
           echo "${SIGMA%@*}@$(git -C /opt/bluefire-lab/sigma rev-parse HEAD)" > "$RUN/rules/SOURCE"
+          # The lab's own rules travel beside them, apart, so that the report can tell them apart.
+          mkdir -p "$RUN/lab-rules"
+          cp -r lab/rules/linux "$RUN/lab-rules/linux"
 
       - name: Create the test account and reject its outbound traffic
         run: |

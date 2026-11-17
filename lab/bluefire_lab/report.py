@@ -74,12 +74,72 @@ def lede(results: dict) -> str:
     )
     if summary["inconclusive"]:
         text += f" {summary['inconclusive']} could not be measured."
+    if results.get("lab_rules"):
+        text += (
+            f" With the lab's own rules as well, {summary['alert_with_lab_rules']} of the "
+            f"{summary['took_effect']} raised an alert."
+        )
     if summary.get("hardened"):
         text += (
             f" {count(summary['hardened'], 'test')} ran again with a hardening change in place, and "
             f"{summary['blocked']} of those changes blocked the technique."
         )
     return text
+
+
+def lab_rule_names(test: dict) -> list[str]:
+    """The lab's rules that matched the test. One that is not accepted is said to be so, and
+    changes no answer."""
+
+    return [
+        f"{rule['level']}: {rule['title']}" + ("" if rule.get("accepted") else ", not accepted")
+        for rule in test["visibility"].get("with_lab_rules", {}).get("rules", [])
+    ]
+
+
+def lab_rules_table(results: dict) -> str:
+    rows = []
+    for rule in results["lab_rules"]:
+        fires = (
+            "<br>".join(f"{e(test['technique'])} {e(test['name'])}" for test in rule["fires_on"]) or "none"
+        )
+        took = [variant for variant in rule["variants"] if variant["took_effect"]]
+        variants = (
+            f"alerted on {sum(variant['alerted'] for variant in took)} of {len(took)}" if took else "none ran"
+        )
+        ordinary = (
+            f"matched {count(len(rule['ordinary_matches']), 'event')}"
+            if rule["ordinary_matches"]
+            else "quiet"
+        )
+        verdict = "accepted" if rule["accepted"] else "not accepted"
+        rows.append(
+            f'<tr><td class="wide">{e(rule["title"])}<span class="sub">{e(sentence(rule["reason"]))}</span>'
+            f'<details class="inner"><summary>Rule text</summary><pre class="box">{e(rule["text"])}</pre></details></td>'
+            f'<td>{e(rule["level"])}</td><td class="wide">{fires}'
+            f'<span class="sub">{count(rule["procedures"], "published procedure")}</span></td>'
+            f"<td>{e(variants)}</td><td>{e(ordinary)}</td>"
+            f'<td><span class="pill {"good" if rule["accepted"] else "warn"}">{verdict}</span></td></tr>'
+        )
+    head = (
+        "<tr><th>Rule</th><th>Level</th><th>Alerts on</th><th>Runs with changed input arguments</th>"
+        "<th>Ordinary activity</th><th>Verdict</th></tr>"
+    )
+    return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
+
+
+def ordinary_note(results: dict) -> str:
+    ordinary = results.get("ordinary_activity")
+    if not ordinary:
+        return ""
+    noisy = ", ".join(
+        f"{rule['title']} ({rule['level']}, {rule['events']})" for rule in ordinary["pinned_rules"]
+    )
+    return (
+        f"The baseline of ordinary activity left {count(ordinary['baseline_events'], 'event')}, and the runner's "
+        f"own work outside the tests left {count(ordinary['system_events'], 'event')}. Pinned rules that matched "
+        f"them: {noisy or 'none'}."
+    )
 
 
 def hardened_runs(results: dict) -> list[dict]:
@@ -128,14 +188,25 @@ LEVELS = ["critical", "high", "medium", "low", "informational"]
 
 
 def rule_link(rule: dict, results: dict) -> str:
+    if rule.get("origin") == "lab":
+        repository, _, commit = results["run"]["tools"].get("lab", "@").partition("@")
+        return f"https://github.com/{repository}/blob/{commit}/lab/rules/{rule['file']}" if commit else "#"
     repository, _, commit = results["rules"]["source"].partition("@")
     return f"https://github.com/{repository}/blob/{commit}/rules/{rule['file']}"
 
 
-def results_table(tests: list[dict]) -> str:
+def results_table(tests: list[dict], with_lab_rules: bool = False) -> str:
     rows = []
     for test in tests:
         seen = test["visibility"]
+        lab = seen.get("with_lab_rules", {})
+        lab_cell = (
+            f"<td>{pill(test, lab.get('answer', seen['answer']))}"
+            + "".join(f'<span class="sub">{e(name)}</span>' for name in lab_rule_names(test))
+            + "</td>"
+            if with_lab_rules
+            else ""
+        )
         rows.append(
             f'<tr><td class="mono">{e(test["technique"])}</td>'
             f'<td><a href="#t{test["order"]}">{e(test["name"])}</a>'
@@ -145,11 +216,13 @@ def results_table(tests: list[dict]) -> str:
             f'<td class="wide">{"<br>".join(map(e, rule_names(test))) or "none"}'
             + (f'<span class="sub">{e(launcher_note(test))}</span>' if launcher_note(test) else "")
             + "</td>"
-            f'<td class="num">{seen.get("events", 0)}</td></tr>'
+            + lab_cell
+            + f'<td class="num">{seen.get("events", 0)}</td></tr>'
         )
     head = (
-        "<tr><th>Technique</th><th>Test</th><th>Execution</th><th>Visibility</th>"
-        '<th>Rules that matched</th><th class="num">Events</th></tr>'
+        "<tr><th>Technique</th><th>Test</th><th>Execution</th><th>Visibility</th><th>Rules that matched</th>"
+        + ("<th>With the lab's rules too</th>" if with_lab_rules else "")
+        + '<th class="num">Events</th></tr>'
     )
     return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
 
@@ -224,6 +297,11 @@ def evidence(test: dict, results: dict) -> str:
     parts.append("</section></div>")
     if seen.get("rules"):
         parts.append(f"<h3>Rules that matched an event of the test</h3>{rules_table(seen['rules'], results)}")
+    if seen.get("with_lab_rules", {}).get("rules"):
+        parts.append(
+            "<h3>The lab's own rules that matched an event of the test</h3>"
+            + rules_table(seen["with_lab_rules"]["rules"], results)
+        )
     if "launcher" in seen:
         parts.append(
             '<h3>Launcher</h3><p class="note">The executor starts the test as one shell process (sh -c or '
@@ -253,6 +331,8 @@ def evidence(test: dict, results: dict) -> str:
         "canary": "known-detected test",
         "control": "harmless command",
         "hardened": "with a hardening change",
+        "variant": "input arguments "
+        + ", ".join(f"{key}={value}" for key, value in test.get("args", {}).items()),
     }.get(test["role"], "")
     return (
         f'<details class="test" id="t{test["order"]}"><summary>'
@@ -274,7 +354,19 @@ def html_report(results: dict) -> str:
     run, sensor, rules, tools = results["run"], results["sensor"], results["rules"], results["run"]["tools"]
     tests = [test for test in results["tests"] if test["role"] == "test"]
     hardened = hardened_runs(results)
+    variants = [test for test in results["tests"] if test["role"] == "variant"]
     others = [test for test in results["tests"] if test["role"] in ("canary", "control")]
+    lab_rules = (
+        "<h2>The lab's own rules</h2>"
+        + lab_rules_table(results)
+        + '<p class="note">Rules this repository adds for gaps the pinned rules leave. A rule is accepted when it '
+        "alerts on a test, still alerts when that test runs again with changed input arguments, and matches "
+        "nothing in a baseline of ordinary use of the same tools or in the runner's own work. "
+        + e(ordinary_note(results))
+        + "</p>"
+        if results.get("lab_rules")
+        else ""
+    )
     failed = [check for check in results["controls"] if not check["passed"]]
     hardening = (
         "<h2>With a hardening change</h2>"
@@ -367,12 +459,13 @@ def html_report(results: dict) -> str:
 <dl class="facts">{facts}</dl>
 
 <h2>Results</h2>
-{results_table(tests)}
+{results_table(tests, bool(results.get("lab_rules")))}
 <p class="note">Execution says whether the technique took effect on the target. Visibility says what the
 defense saw: an alert, telemetry without an alert, or nothing. An alert is a match of a Sigma rule whose
 level is {e(" or ".join(rules["alert_levels"]))} on an event of the test. A test that took effect and left
 telemetry but no alert is a gap that a rule could close; one that left no telemetry needs the sensor to
 record more first. Select a test to see its events and rules.</p>
+{lab_rules}
 {hardening}
 
 <h2>Controls</h2>
@@ -383,6 +476,7 @@ control fails as a whole.</p>
 <h2>Evidence</h2>
 {"".join(evidence(test, results) for test in tests)}
 {"<h3>Runs with a hardening change</h3>" + "".join(evidence(test, results) for test in hardened) if hardened else ""}
+{"<h3>Runs with changed input arguments</h3>" + "".join(evidence(test, results) for test in variants) if variants else ""}
 <h3>Control runs</h3>
 {"".join(evidence(test, results) for test in others)}
 
@@ -426,17 +520,40 @@ def markdown_summary(results: dict) -> str:
             "",
         ]
     lines += [
-        "| Technique | Test | Execution | Visibility | Rules that matched | Events |",
-        "|---|---|---|---|---|---:|",
+        "| Technique | Test | Execution | Visibility | Rules that matched | "
+        + ("With the lab's rules too | " if results.get("lab_rules") else "")
+        + "Events |",
+        "|---|---|---|---|---|" + ("---|" if results.get("lab_rules") else "") + "---:|",
     ]
     for test in results["tests"]:
         if test["role"] == "test":
             seen = test["visibility"]
+            lab = seen.get("with_lab_rules", {})
+            lab_cell = (
+                f" {cell(lab.get('answer', seen['answer']))}"
+                + (f" ({cell('; '.join(lab_rule_names(test)))})" if lab_rule_names(test) else "")
+                + " |"
+                if results.get("lab_rules")
+                else ""
+            )
             lines.append(
                 f"| {cell(test['technique'])} | {cell(test['name'])} | {cell(test['execution']['answer'])} | "
                 f"{cell(seen['answer'])} | {cell('; '.join(rule_names(test)) or 'none')}"
                 + (f" ({cell(launcher_note(test))})" if launcher_note(test) else "")
-                + f" | {seen.get('events', 0)} |"
+                + " |"
+                + lab_cell
+                + f" {seen.get('events', 0)} |"
+            )
+    if results.get("lab_rules"):
+        lines += ["", "| The lab's rule | Level | Alerts on | Runs with changed input arguments | Verdict |"]
+        lines.append("|---|---|---|---|---|")
+        for rule in results["lab_rules"]:
+            took = [variant for variant in rule["variants"] if variant["took_effect"]]
+            alerted = f"{sum(variant['alerted'] for variant in took)} of {len(took)}" if took else "none ran"
+            fires = "; ".join(f"{test['technique']} {test['name']}" for test in rule["fires_on"]) or "none"
+            verdict = ("accepted: " if rule["accepted"] else "not accepted: ") + rule["reason"]
+            lines.append(
+                f"| {cell(rule['title'])} | {cell(rule['level'])} | {cell(fires)} | {alerted} | {cell(verdict)} |"
             )
     by_order = {test["order"]: test for test in results["tests"]}
     if hardened_runs(results):

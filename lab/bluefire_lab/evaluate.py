@@ -57,8 +57,9 @@ _LOADED = re.compile(r"(\d[\d,]*) rules loaded")
 _READ = re.compile(r"Total events processed: (?:\[\w+\])?(\d[\d,]*)")
 
 
-def rule_index(rules: Path) -> dict[str, dict]:
-    """The pinned rules by id, with what a report has to say about a rule that matched."""
+def rule_index(rules: Path, origin: str = "pinned") -> dict[str, dict]:
+    """The rules under a folder by id, with what a report has to say about a rule that
+    matched. The pinned rules are SigmaHQ's; the lab's own rules have the origin "lab"."""
 
     index = {}
     for path in sorted(rules.rglob("*.yml")):
@@ -72,6 +73,7 @@ def rule_index(rules: Path) -> dict[str, dict]:
                     "author": rule.get("author", ""),
                     "file": path.relative_to(rules.parent).as_posix(),
                     "text": text,
+                    "origin": origin,
                 }
     return index
 
@@ -86,28 +88,30 @@ def engine_counts(log: str) -> tuple[int | None, int | None]:
 
 
 def run_engine(
-    engine: Path, run_dir: Path, events: list[dict], raw: list[str]
+    engine: Path, run_dir: Path, events: list[dict], raw: list[str], root: str = "rules"
 ) -> tuple[dict[str, list[str]], dict[str, dict]]:
-    """Have the rule engine evaluate each folder of rules over the events it describes.
+    """Have the rule engine evaluate each folder of rules under root over the events it describes.
 
     Returns, for each event record, the ids of the rules that matched it, and for
     each category what the engine said it loaded and read, beside what it was given.
     The engine skips a rule it cannot convert and still succeeds, so its own
-    counts are the ones that say what was evaluated.
+    counts are the ones that say what was evaluated. The pinned rules and the
+    lab's own run apart, so that each count says what it is about.
     """
 
     matched: dict[str, list[str]] = collections.defaultdict(list)
     counts: dict[str, dict] = {}
     work = run_dir / "engine"
     work.mkdir(exist_ok=True)
+    prefix = "" if root == "rules" else f"{root}-"
     for category, event_id in CATEGORIES.items():
-        rules = run_dir / "rules" / "linux" / category
+        rules = run_dir / root / "linux" / category
         lines = [line for event, line in zip(events, raw, strict=True) if event["EventID"] == event_id]
-        output = work / f"{category}.json"
+        output = work / f"{prefix}{category}.json"
         output.unlink(missing_ok=True)
         # The engine adds to an existing log, and its counts are read from the log.
-        (work / f"{category}-engine.txt").unlink(missing_ok=True)
-        counts[category] = {"given": len(lines), "loaded": 0, "read": 0}
+        (work / f"{prefix}{category}-engine.txt").unlink(missing_ok=True)
+        counts[category] = {"kind": sysmon.KINDS[event_id], "given": len(lines), "loaded": 0, "read": 0}
         if not lines or not rules.is_dir():
             continue
         text = "".join(sysmon.one_line(line) + "\n" for line in lines)
@@ -120,14 +124,14 @@ def run_engine(
                 "--logs-encoding", "utf-8",
                 "--ruleset", str(rules.resolve()),
                 "--outfile", output.name,
-                "--logfile", f"{category}-engine.txt",
+                "--logfile", f"{prefix}{category}-engine.txt",
             ],
             cwd=work,
             check=True,
             capture_output=True,
             timeout=900,
         )  # fmt: skip
-        log = (work / f"{category}-engine.txt").read_text(encoding="utf-8", errors="replace")
+        log = (work / f"{prefix}{category}-engine.txt").read_text(encoding="utf-8", errors="replace")
         counts[category]["loaded"], counts[category]["read"] = engine_counts(log)
         for rule in json.loads(output.read_text(encoding="utf-8")) if output.exists() else []:
             for match in rule["matches"]:
@@ -340,8 +344,11 @@ def visibility(
         rule = rules[rule_id]
         return {**rule, "records": records, "alert": rule["level"] in ALERT_LEVELS}
 
+    # The answer comes from the pinned rules alone; the lab's own rules give a second one.
     cited = sorted((cite(rule_id, records) for rule_id, records in fired.items()), key=rule_order)
-    if any(rule["alert"] for rule in cited):
+    pinned = [rule for rule in cited if rule["origin"] == "pinned"]
+    ours = [rule for rule in cited if rule["origin"] == "lab"]
+    if any(rule["alert"] for rule in pinned):
         answer, basis = "alert", "a rule of an alert level matched an event of the test"
     elif mine:
         answer, basis = "telemetry only", "the test left events, and no rule of an alert level matched one"
@@ -353,13 +360,136 @@ def visibility(
         "window": [start, end],
         "events": len(mine),
         "events_by_kind": dict(collections.Counter(event["kind"] for event in mine)),
-        "rules": cited,
+        "rules": pinned,
         "launcher": describe(launcher, "launcher"),
         "launcher_only_rules": sorted(
             (cite(rule_id, [int(launcher["EventRecordID"])]) for rule_id in launcher_only), key=rule_order
         ),
+        # Until the lab's rules are judged, the second answer is the first; see second_answers.
+        "with_lab_rules": {"answer": answer, "rules": ours},
     }
     return result, mine
+
+
+def ordinary_activity(
+    run: dict, events: list[dict], starts: list[dict], matched: dict, rules: dict, windows: list
+) -> dict:
+    """What the lab's own rules must stay quiet on: the events of the baseline steps, and
+    the events outside every test's window of processes in no audit session (the runner,
+    the system's own services and the driver)."""
+
+    baseline_sessions = {
+        step["session"]
+        for test in run["tests"]
+        if test["role"] == "baseline"
+        for step in test["steps"]
+        if step["label"].startswith("baseline-")
+    }
+    session_of = {event["ProcessGuid"]: event["TerminalSessionId"] for event in starts}
+    counts: collections.Counter[str] = collections.Counter()
+    hits: dict[str, list[int]] = collections.defaultdict(list)
+    for event in events:
+        session = session_of.get(event.get("ProcessGuid", ""))
+        if session in baseline_sessions:
+            kind = "baseline_events"
+        elif session in (None, sysmon.NO_SESSION) and not any(
+            start <= event.get("UtcTime", "") <= end for start, end in windows
+        ):
+            kind = "system_events"
+        else:
+            continue
+        counts[kind] += 1
+        for rule_id in matched.get(event["EventRecordID"], []):
+            hits[rule_id].append(int(event["EventRecordID"]))
+    pinned = [
+        {**{key: rules[rule_id][key] for key in ("id", "title", "level")}, "events": len(records)}
+        for rule_id, records in hits.items()
+        if rules[rule_id]["origin"] == "pinned"
+    ]
+    return {
+        "baseline_events": counts["baseline_events"],
+        "system_events": counts["system_events"],
+        "rules": dict(hits),
+        "pinned_rules": sorted(pinned, key=rule_order),
+    }
+
+
+def judge_lab_rules(lab_rules: dict, tests: list[dict], ordinary: dict) -> list[dict]:
+    """Whether each of the lab's rules is accepted: it alerts on a test, every published
+    procedure it alerts on ran again with changed input arguments and it alerted on each
+    of those runs, and it stays quiet on ordinary activity.
+
+    Changed input arguments show that a rule does not depend on the values they set. They
+    cannot show that it does not depend on what a test fixes in its command."""
+
+    def alerted(test: dict, rule_id: str) -> bool:
+        return any(
+            rule["id"] == rule_id and rule["alert"]
+            for rule in test["visibility"].get("with_lab_rules", {}).get("rules", [])
+        )
+
+    verdicts = []
+    for rule in sorted(lab_rules.values(), key=lambda rule: rule["title"]):
+        fires = [test for test in tests if test["role"] == "test" and alerted(test, rule["id"])]
+        orders = {test["order"] for test in fires}
+        variants = [
+            test for test in tests if test["role"] == "variant" and test.get("compared_with") in orders
+        ]
+        took = [variant for variant in variants if variant["execution"]["answer"] == "took effect"]
+        missed = [variant for variant in took if not alerted(variant, rule["id"])]
+        untried = [test for test in fires if not any(v["compared_with"] == test["order"] for v in took)]
+        noise = ordinary["rules"].get(rule["id"], [])
+        if not fires:
+            reason = "it matched no event of a test"
+        elif noise:
+            reason = f"it matched {len(noise)} event{'' if len(noise) == 1 else 's'} of ordinary activity"
+        elif untried:
+            reason = (
+                "not every procedure it alerts on ran again with changed input arguments and took effect: "
+                + ("; ".join(f"{test['technique']} {test['name'].rstrip('.')}" for test in untried))
+            )
+        elif missed:
+            reason = f"it missed {len(missed)} of {len(took)} runs with changed input arguments"
+        else:
+            reason = None
+        verdicts.append(
+            {
+                **{key: rule[key] for key in ("id", "title", "level", "file", "author", "text")},
+                "accepted": reason is None,
+                "reason": reason
+                or "it alerted on every run with changed input arguments and on no ordinary activity",
+                "fires_on": [
+                    {key: test[key] for key in ("order", "technique", "guid", "name")} for test in fires
+                ],
+                "variants": [
+                    {
+                        **{key: variant[key] for key in ("order", "technique", "name", "compared_with")},
+                        "args": variant.get("args", {}),
+                        "took_effect": variant["execution"]["answer"] == "took effect",
+                        "alerted": alerted(variant, rule["id"]),
+                    }
+                    for variant in variants
+                ],
+                "ordinary_matches": noise,
+                "procedures": len({test["guid"] for test in fires}),
+            }
+        )
+    return verdicts
+
+
+def second_answers(tests: list[dict], verdicts: list[dict]) -> None:
+    """The visibility answer with the lab's accepted rules as well. A rule that is not
+    accepted is still listed where it matched, and changes no answer."""
+
+    accepted = {verdict["id"] for verdict in verdicts if verdict["accepted"]}
+    for test in tests:
+        lab = test["visibility"].get("with_lab_rules")
+        if lab is None:
+            continue
+        for rule in lab["rules"]:
+            rule["accepted"] = rule["id"] in accepted
+        closed = any(rule["alert"] and rule["accepted"] for rule in lab["rules"])
+        lab["answer"] = "alert" if closed else test["visibility"]["answer"]
 
 
 def rule_order(rule: dict) -> tuple[int, str]:
@@ -368,7 +498,7 @@ def rule_order(rule: dict) -> tuple[int, str]:
 
 
 def check_controls(
-    run: dict, tests: list[dict], starts: list[dict], lost: dict, engine: dict[str, dict]
+    run: dict, tests: list[dict], starts: list[dict], lost: dict, engine: list[dict]
 ) -> list[dict]:
     """The checks that keep a broken measurement from looking like a finding."""
 
@@ -438,17 +568,18 @@ def check_controls(
     checks.append(control("loss", clean and whole and lost["sensor_starts"] == 1, detail))
 
     problems = []
-    for category, counts in engine.items():
-        kind = sysmon.KINDS[CATEGORIES[category]]
+    for counts in engine:
+        what = f"{counts['category']} rules" + (" of the lab's own" if counts["origin"] == "lab" else "")
         if counts["rules"] and not counts["given"]:
             problems.append(
-                f"the sensor recorded no {kind} event, so the {category} rules were not evaluated"
+                f"the sensor recorded no {counts['kind']} event, so the {what} were not evaluated"
             )
         elif counts["loaded"] != counts["rules"]:
-            problems.append(f"the engine loaded {counts['loaded']} of the {counts['rules']} {category} rules")
-        elif counts["read"] != counts["given"]:
-            problems.append(f"the engine read {counts['read']} of the {counts['given']} {kind} events")
-    rules, given = (sum(counts[key] for counts in engine.values()) for key in ("rules", "given"))
+            problems.append(f"the engine loaded {counts['loaded']} of the {counts['rules']} {what}")
+        elif counts["rules"] and counts["read"] != counts["given"]:
+            problems.append(f"for the {what} the engine read {counts['read']} of {counts['given']} events")
+    rules = sum(counts["rules"] for counts in engine)
+    given = sum(counts["given"] for counts in engine if counts["origin"] == "pinned")
     checks.append(
         control(
             "engine",
@@ -498,11 +629,22 @@ def main(run_dir: Path, engine: Path) -> int:
     events, raw, other = sysmon.read(run_dir / "sysmon.txt")
     starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
     rules = rule_index(run_dir / "rules" / "linux")
+    lab_rules = rule_index(run_dir / "lab-rules" / "linux", "lab")
     matched, counts = run_engine(engine, run_dir, events, raw)
-    for category in counts:
-        counts[category]["rules"] = sum(
-            1 for rule in rules.values() if rule["file"].startswith(f"linux/{category}/")
-        )
+    lab_matched, lab_counts = run_engine(engine, run_dir, events, raw, "lab-rules")
+    for record, ids in lab_matched.items():
+        matched[record].extend(ids)
+    for index, by_category in ((rules, counts), (lab_rules, lab_counts)):
+        for category in by_category:
+            by_category[category]["rules"] = sum(
+                1 for rule in index.values() if rule["file"].startswith(f"linux/{category}/")
+            )
+    tally = [
+        {"category": category, "origin": origin, **entry}
+        for origin, by_category in (("pinned", counts), ("lab", lab_counts))
+        for category, entry in by_category.items()
+    ]
+    rules.update(lab_rules)
 
     known_sessions = {step["session"] for test in run["tests"] for step in test["steps"]}
     known_sessions |= {step["session"] for step in run.get("probes", [])}
@@ -522,6 +664,8 @@ def main(run_dir: Path, engine: Path) -> int:
     }
     tests, by_order = [], {}
     for test in run["tests"]:
+        if test["role"] == "baseline":
+            continue
         result = {
             key: test[key]
             for key in ("order", "role", "technique", "guid", "name", "executor", "elevated", "user")
@@ -547,6 +691,14 @@ def main(run_dir: Path, engine: Path) -> int:
     measured = [test for test in tests if test["role"] == "test"]
     took = [test for test in measured if test["execution"]["answer"] == "took effect"]
     hardened = [test for test in tests if test["role"] == "hardened"]
+    # What systemd ran during the baseline is ordinary work too: only the tests' windows are left out.
+    baseline = {test["order"] for test in run["tests"] if test["role"] == "baseline"}
+    test_windows = [
+        window for order, window in windows.items() if order not in baseline and None not in window
+    ]
+    ordinary = ordinary_activity(run, events, starts, matched, rules, test_windows)
+    verdicts = judge_lab_rules(lab_rules, tests, ordinary)
+    second_answers(tests, verdicts)
     results = {
         "schema": "bluefire-lab/results/1",
         "run": {
@@ -566,9 +718,14 @@ def main(run_dir: Path, engine: Path) -> int:
             # What the engine says it loaded: a rule it could not convert was not evaluated.
             "evaluated": {category: counts[category]["loaded"] for category in CATEGORIES},
             "alert_levels": list(ALERT_LEVELS),
+            "lab": sum(lab_counts[category]["loaded"] or 0 for category in CATEGORIES),
         },
-        "engine": {"name": "Zircolite", "version": found.group(1) if found else None, "counts": counts},
-        "controls": check_controls(run, tests, starts, sysmon.loss(events, other), counts),
+        "lab_rules": verdicts,
+        "ordinary_activity": {
+            key: ordinary[key] for key in ("baseline_events", "system_events", "pinned_rules")
+        },
+        "engine": {"name": "Zircolite", "version": found.group(1) if found else None, "counts": tally},
+        "controls": check_controls(run, tests, starts, sysmon.loss(events, other), tally),
         "summary": {
             "tests": len(measured),
             "took_effect": len(took),
@@ -583,6 +740,9 @@ def main(run_dir: Path, engine: Path) -> int:
             },
             "hardened": len(hardened),
             "blocked": sum(1 for test in hardened if test["execution"]["answer"] == "blocked"),
+            "alert_with_lab_rules": sum(
+                1 for test in took if test["visibility"].get("with_lab_rules", {}).get("answer") == "alert"
+            ),
         },
         "tests": tests,
         "dropped": run.get("dropped", []),
