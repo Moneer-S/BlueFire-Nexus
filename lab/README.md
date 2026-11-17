@@ -66,6 +66,29 @@ removal with `rm`), raised its alert at the start and at the end of the run. A
 harmless command (T1082, `hostname`) ran through the same executor and raised
 none.
 
+## Hardening that blocks a technique
+
+In [run 44014254015](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44014254015)
+(17 November 2026, same runner image and kernel, the same 17 tests with the same
+answers), four tests ran once more after all the others, each with one
+hardening change in place. All four changes blocked their technique: the test
+ran with its prerequisites met and did not take effect, while it had taken
+effect without the change earlier in the same run. What each test printed
+shows why:
+
+| Test | Hardening change | What the test printed |
+| --- | --- | --- |
+| T1053.003 Cron - Replace crontab with referenced file | crontab limited to root with `/etc/cron.allow` | `You (bluefire-lab) are not allowed to use this program (crontab)` |
+| T1098.004 Modify SSH Authorized Keys | the account's `~/.ssh` and `authorized_keys` owned by root | `cannot create /home/bluefire-lab/.ssh/authorized_keys: Permission denied` |
+| T1546.004 Add command to .bashrc | the account's `~/.bashrc` made immutable | `cannot create /home/bluefire-lab/.bashrc: Operation not permitted` |
+| T1036.003 Masquerading as FreeBSD or Linux crond process | `/tmp` mounted with `noexec`, `nosuid` and `nodev` | `/tmp/crond: Permission denied` |
+
+Each change was tried against one published test. What it leaves open was not
+tried: jobs that root adds under `/etc/cron.d`, keys that root adds for the
+account, the account's other shell start files such as `~/.profile`, and
+programs run from `/dev/shm` or the account's home folder. The changes are
+defined in [`pinned-tests.yaml`](pinned-tests.yaml) under `defenses`.
+
 ## How a run works
 
 1. The `lab` workflow ([`.github/workflows/lab.yml`](../.github/workflows/lab.yml))
@@ -74,7 +97,10 @@ none.
    repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 2. `bluefire-lab run` waits until the sensor reports a probe command. It then
    runs the tests on [`pinned-tests.yaml`](pinned-tests.yaml) one at a time,
-   with the canary first and last and the harmless command second. Each runs
+   with the canary first and last and the harmless command second, and then
+   once more each test that names a hardening change, with the change in place.
+   Root puts the change in place after the test's preparation and removes it
+   after its cleanup. Each runs
    as an unprivileged account whose outbound traffic is rejected, or as root
    when the test declares that it needs it. Every step (preparation, a marker
    before and after the test, the test, an effect check, the cleanup) runs in a
@@ -117,8 +143,7 @@ Five controls must pass, or the run fails as a whole:
 
 ## Not yet shown
 
-- A change to a defense (a new rule, a hardening change, or a sensor change)
-  and its effect on a fresh run.
+- A new detection rule, or a sensor change, and its effect on a fresh run.
 - Tests on Windows, attack chains of several steps, and a lab on a local
   machine.
 

@@ -212,8 +212,12 @@ def run_test(item: dict, context: dict) -> dict:
     for key in ("rule", "effect", "output", "prepare", "args", "dwell"):
         if key in spec:
             record[key] = spec[key]
+    if "effect" in spec:
+        record["effect"] = fill(spec["effect"], context)  # as it ran, so that the report shows it so
     if "defense" in item:
         record["defense"] = dict(item["defense"])
+        for key in ("apply", "revert"):
+            record["defense"][key] = fill(record["defense"][key], context)
         record["compared_with"] = item["compared_with"]
 
     def do(label: str, command: list[str], as_user: str = user, timeout: float = 60) -> dict:
@@ -243,9 +247,7 @@ def run_test(item: dict, context: dict) -> dict:
     ready = record["prerequisites"] != "not met"
     defense = record.get("defense")
     if defense is not None and ready:
-        defense["applied"] = (
-            do("defense", ["sh", "-c", fill(defense["apply"], context)], "root")["exit_status"] == 0
-        )
+        defense["applied"] = do("defense", ["sh", "-c", defense["apply"]], "root")["exit_status"] == 0
         ready = defense["applied"]
 
     if ready:
@@ -265,12 +267,10 @@ def run_test(item: dict, context: dict) -> dict:
         record.update(read_execution_log(log))
         if "effect" in spec:
             # As root, so that neither the account's rights nor a hardening change decide the check.
-            do("effect", ["sh", "-c", fill(spec["effect"], context)], "root")
+            do("effect", ["sh", "-c", record["effect"]], "root")
         do("cleanup", invoke(spec, executor, atomics, "-Cleanup", *arguments), timeout=limit + 60)
     if defense is not None and "applied" in defense:
-        defense["reverted"] = (
-            do("revert", ["sh", "-c", fill(defense["revert"], context)], "root")["exit_status"] == 0
-        )
+        defense["reverted"] = do("revert", ["sh", "-c", defense["revert"]], "root")["exit_status"] == 0
     kill_sessions({done["session"] for done in record["steps"]} - {""})
     return record
 
