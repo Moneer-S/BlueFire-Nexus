@@ -71,7 +71,7 @@ none.
 
 ## Hardening that blocks a technique
 
-In [run 44014254015](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44014254015)
+In [run 44020766356](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44020766356)
 (17 November 2026, same runner image and kernel, the same 17 tests with the same
 answers), four tests ran once more after all the other tests, before the
 closing canary, each with one hardening change in place. All four changes
