@@ -184,6 +184,14 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
     return matched, counts
 
 
+def watched(event: dict) -> bool:
+    """Whether one of the lab's audit rules recorded the event. The kernel also records each
+    change of login uid, which the driver makes to start every step's session: such an event
+    is the lab's own, and carries no rule's key."""
+
+    return event["call"].get("key", "(null)") not in ("", "(null)")
+
+
 def describe_audit(event: dict, why: str) -> dict:
     """An auditd event in the shape of the Sysmon events the report shows."""
 
@@ -398,10 +406,10 @@ def visibility(
             sysmon.PROCESS_END,
         ):
             mine.append(describe(event, "launcher"))
-    # auditd's records name their audit session, so an event of the attack step's session is the test's.
+    # auditd's records name their audit session, so a watched event of the attack step's session is the test's.
     attack = step_of(test, "attack")
     for event in context.get("audit_events", []):
-        if attack and attack["session"] and event["call"].get("ses") == attack["session"]:
+        if attack and attack["session"] and event["call"].get("ses") == attack["session"] and watched(event):
             mine.append(describe_audit(event, "session"))
     mine.sort(key=lambda event: (event["time"], str(event["record"])))
 
@@ -481,8 +489,8 @@ def ordinary_activity(
         for rule_id in matched.get(event["EventRecordID"], []):
             hits[rule_id].append(int(event["EventRecordID"]))
     for event in audit_events:
-        if not event["call"]:
-            continue  # auditd's own records, such as its start and its rule changes, are no activity
+        if not watched(event):
+            continue  # auditd's own records, and the driver's changes of login uid, are no activity
         session = event["call"].get("ses")
         if session in baseline_sessions:
             kind = "baseline_events"

@@ -221,6 +221,19 @@ def test_a_write_auditd_recorded_in_the_attack_session_is_the_tests_telemetry() 
     assert [(rule["id"], rule["records"]) for rule in answer["rules"]] == [("medium-rule", ["audit 178"])]
 
 
+def test_the_drivers_own_change_of_login_uid_is_not_the_tests_telemetry() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+    # What the kernel records when the driver starts the attack step's session: no rule asked for it.
+    shim = {**written(177, 11), "types": ["LOGIN", "SYSCALL", "PROCTITLE"], "paths": []}
+    shim["call"] = {**shim["call"], "syscall": "1", "key": "(null)"}
+
+    answer, mine = see(a_test(), events, audit=[shim])
+
+    assert (answer["answer"], mine) == ("no telemetry", [])
+
+
 def test_an_alert_needs_a_rule_of_an_alert_level_on_an_event_of_the_test() -> None:
     quiet, _ = see(a_test(), telemetry(), {"7": ["medium-rule"]})
     loud, _ = see(a_test(), telemetry(), {"7": ["medium-rule"], "8": ["high-rule"]})
