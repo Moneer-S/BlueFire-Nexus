@@ -206,7 +206,10 @@ before the first test and its own count of lost records at 0 before and after.
    input arguments. Root puts a change in place after the test's preparation
    and removes it after its cleanup. Each test runs
    as an unprivileged account whose outbound traffic is rejected, or as root
-   when the test declares that it needs it. Every step (preparation, a marker
+   when the test declares that it needs it. The account cannot change the
+   lab's own files: the tests, the executor, the rules, the rule engine, the
+   lab and the run's folder. The job checks that before the first test, and
+   fails if it can. Every step (preparation, a marker
    before and after the test, the test, an effect check, the cleanup) runs in a
    kernel audit session of its own.
 3. `bluefire-lab evaluate` computes `results.json` from the files the run

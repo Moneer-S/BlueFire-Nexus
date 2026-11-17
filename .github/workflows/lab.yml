@@ -145,10 +145,12 @@ jobs:
             exit 1
           fi
 
-      - name: Check that the test account cannot change the lab's own files
+      - name: Keep the lab's own files out of the test account's reach
         run: |
           # The tests, the executor, the rules and the rule engine, the lab and the run's folder.
           # A test run as the account must not change what a later test runs, or the evaluation.
+          # What the steps before this one fetched comes out writable by every account.
+          sudo chmod -R go-w /opt/bluefire-lab "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
           writable=$(sudo -u bluefire-lab find /opt/bluefire-lab "$RUNNER_TEMP" "$GITHUB_WORKSPACE" \
             -writable 2>/dev/null | head -n 20 || true)
           if [ -n "$writable" ]; then
@@ -166,6 +168,8 @@ jobs:
 
       - name: Run the tests
         run: |
+          # So that what the run writes while the tests run is not theirs to change.
+          umask 022
           "$RUNNER_TEMP/venv/bin/bluefire-lab" run \
             --tests lab/pinned-tests.yaml \
             --atomics /opt/bluefire-lab/atomic-red-team/atomics \
