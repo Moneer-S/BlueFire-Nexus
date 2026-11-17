@@ -106,7 +106,7 @@ def telemetry() -> list[dict]:
     ]
 
 
-def see(test, events, matched=None, system=()):
+def see(test, events, matched=None, system=(), audit=()):
     starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
     edges = [evaluate.marker_time(starts, "r1", test["order"], edge) for edge in ("start", "end")]
     context = {
@@ -114,8 +114,30 @@ def see(test, events, matched=None, system=()):
         "known_sessions": {step["session"] for step in test["steps"]},
         "windows": {test["order"]: tuple(edges)},
         "system_commands": set(system),
+        "audit_events": list(audit),
     }
     return evaluate.visibility(test, events, starts, matched or {}, RULES, context)
+
+
+def written(serial, session, second=5.1, pid="120") -> dict:
+    """An auditd event: a write to a watched file, as auditd.events joins its records."""
+
+    return {
+        "event": f"1794893574.919:{serial}",
+        "serial": str(serial),
+        "time": f"2026-11-16 04:00:{second:06.3f}",
+        "types": ["SYSCALL", "CWD", "PATH", "PATH", "PROCTITLE"],
+        "call": {
+            "syscall": "257",
+            "ses": str(session),
+            "pid": pid,
+            "exe": "/usr/bin/dash",
+            "key": "shell-start",
+        },
+        "names": {"SYSCALL": "openat", "UID": ACCOUNT},
+        "paths": ["/home/bluefire-lab/.bashrc"],
+        "command": "sh -c echo hi >> ~/.bashrc",
+    }
 
 
 def records(events) -> list[int]:
@@ -182,6 +204,66 @@ def test_only_the_launcher_recorded_is_no_telemetry() -> None:
     answer, mine = see(a_test(), events)
 
     assert (answer["answer"], mine) == ("no telemetry", [])
+
+
+def test_a_write_auditd_recorded_in_the_attack_session_is_the_tests_telemetry() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+
+    key = "audit 1794893574.919:178"
+    others = [written(179, 55, pid="4242")]  # another step's write
+
+    answer, mine = see(a_test(), events, {key: ["medium-rule"]}, audit=[written(178, 11), *others])
+
+    assert answer["answer"] == "telemetry only"
+    assert [(event["record"], event["kind"], event["detail"]) for event in mine] == [
+        (key, "openat (auditd)", "/home/bluefire-lab/.bashrc by sh -c echo hi >> ~/.bashrc")
+    ]
+    assert [(rule["id"], rule["records"]) for rule in answer["rules"]] == [("medium-rule", [key])]
+
+
+def test_an_auditd_event_counts_when_its_process_is_the_tests_and_not_the_drivers() -> None:
+    events = [
+        event
+        for event in telemetry()
+        if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "11", "13")
+    ]
+    # The kernel's record when the driver starts the step's session, and sudo's own record: process 100.
+    shim = {**written(177, 11, pid="100"), "types": ["LOGIN", "SYSCALL", "PROCTITLE"], "paths": []}
+    sudo = {**written(180, 11, pid="100"), "types": ["USER_CMD"], "paths": [], "command": ""}
+    # A record the test's own process wrote itself, with no system call and no rule's key.
+    added = {**written(181, 11), "types": ["ADD_USER"], "paths": [], "command": ""}
+    added["call"] = {"pid": "120", "ses": "11", "op": "adding user", "id": "999", "res": "success"}
+    added["names"] = {}
+    # A write by what cron started for the test account, in a session of its own, inside the window.
+    cron = written(182, 77, second=5.75, pid="200")
+
+    answer, mine = see(a_test(), events, audit=[shim, sudo, added, cron])
+
+    assert [
+        (event["record"], event["kind"], event["why"]) for event in mine if event["kind"].endswith("(auditd)")
+    ] == [
+        ("audit 1794893574.919:181", "ADD_USER (auditd)", "session"),
+        ("audit 1794893574.919:182", "openat (auditd)", "window"),
+    ]
+    assert [event["detail"] for event in mine if str(event["record"]).endswith(":181")] == [
+        "op=adding user res=success"
+    ]
+
+
+def test_sudos_record_of_a_command_the_test_ran_shows_the_command() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+    ran = {**written(183, 11), "types": ["USER_CMD"], "paths": [], "command": ""}
+    command = b"chmod u+xs /tmp/x".hex().upper()  # as sudo writes it
+    ran["call"] = {"pid": "120", "ses": "11", "cmd": command, "res": "success"}
+    ran["names"] = {}
+
+    _, mine = see(a_test(), events, audit=[ran])
+
+    assert [event["detail"] for event in mine] == ["cmd=chmod u+xs /tmp/x res=success"]
 
 
 def test_an_alert_needs_a_rule_of_an_alert_level_on_an_event_of_the_test() -> None:
@@ -486,6 +568,21 @@ def test_the_probe_must_be_seen_before_the_first_test() -> None:
     late = [{**PROBE[0], "UtcTime": "2026-11-16 04:00:02.000"}]
 
     assert failed_controls([CAUGHT, measured("control"), CAUGHT], starts=late) == ["readiness"]
+
+
+def test_auditd_must_record_its_probe_in_time_and_lose_no_record() -> None:
+    tests = [CAUGHT, measured("control"), CAUGHT]
+    sound = {"probe_time": "2026-11-16 04:00:00.600", "lost_before": 0, "lost_after": 0}
+
+    def failed(audit: dict) -> list[str]:
+        checks = evaluate.check_controls(RUN, tests, PROBE, CLEAN, ENGINE, audit)
+        return [check["name"] for check in checks if not check["passed"]]
+
+    assert failed(sound) == []
+    assert failed({**sound, "probe_time": None}) == ["readiness"]
+    assert failed({**sound, "probe_time": "2026-11-16 04:00:02.000"}) == ["readiness"]
+    assert failed({**sound, "lost_after": 3}) == ["loss"]
+    assert failed({**sound, "lost_before": None}) == ["loss"]
 
 
 def test_a_rule_the_engine_did_not_load_or_an_event_it_did_not_read_fails_the_run() -> None:

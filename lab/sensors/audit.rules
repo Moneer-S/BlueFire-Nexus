@@ -1,0 +1,31 @@
+## auditd rules for the lab target, loaded by "bluefire-lab run --audit-rules",
+## which fills in the home folder of the account the tests run as.
+##
+## Sysmon for Linux reports a write to a file only when it leaves the file
+## looking newly created, so an append to a file that already exists, such as a
+## command added to ~/.bashrc, leaves nothing in its output. These watches
+## record writes, and changes of permissions, owner and extended attributes
+## (not chattr's file flags), to the files that run code when an account logs
+## in or starts a shell. Nothing else is watched, so auditd adds no process
+## events of its own; programs still report some actions themselves, such as
+## useradd adding an account or sudo running a command.
+
+## Start from no rules, and keep a backlog large enough for a burst.
+-D
+-b 8192
+
+## The file the lab writes until auditd has recorded the write.
+-w /var/tmp/bluefire-lab-audit-probe -p wa -k bluefire-lab-probe
+
+## Shell start files of every account, and of root and of the test account.
+-w /etc/profile -p wa -k shell-start
+-w /etc/profile.d -p wa -k shell-start
+-w /etc/bash.bashrc -p wa -k shell-start
+-w /etc/environment -p wa -k shell-start
+-w /root/.bashrc -p wa -k shell-start
+-w /root/.profile -p wa -k shell-start
+-w {home}/.bashrc -p wa -k shell-start
+-w {home}/.profile -p wa -k shell-start
+-w {home}/.bash_profile -p wa -k shell-start
+-w {home}/.bash_login -p wa -k shell-start
+-w {home}/.bash_logout -p wa -k shell-start

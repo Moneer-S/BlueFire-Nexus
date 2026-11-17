@@ -352,6 +352,13 @@ def html_report(results: dict) -> str:
     css = package.joinpath("report.css").read_text(encoding="utf-8")
     script = package.joinpath("report.js").read_text(encoding="utf-8")
     run, sensor, rules, tools = results["run"], results["sensor"], results["rules"], results["run"]["tools"]
+    audit = results.get("audit")
+    audit_configuration = (
+        f'<p class="note">auditd, rules SHA-256 <span class="mono">{e(audit["rules_sha256"])}</span>:</p>'
+        f'<pre class="box">{e(audit["rules_text"])}</pre>'
+        if audit
+        else ""
+    )
     tests = [test for test in results["tests"] if test["role"] == "test"]
     hardened = hardened_runs(results)
     variants = [test for test in results["tests"] if test["role"] == "variant"]
@@ -392,9 +399,14 @@ def html_report(results: dict) -> str:
                 ),
             ),
             fact(
-                "Sensor",
-                f"{e(sensor['name'])} {e(sensor['version'])}, {sensor['events']} events recorded. "
-                'Its <a href="#sensor">configuration</a> is below.',
+                "Sensors" if audit else "Sensor",
+                f"{e(sensor['name'])} {e(sensor['version'])}, {sensor['events']} events recorded"
+                + (
+                    f"; auditd {e(audit['version'])}, {audit['records']} records of {audit['events']} events"
+                    if audit
+                    else ""
+                )
+                + '. The <a href="#sensor">configuration</a> is below.',
             ),
             fact(
                 "Tests",
@@ -487,15 +499,17 @@ control fails as a whole.</p>
 <p class="note">Each test is a published Atomic Red Team test, pinned by its GUID and run unchanged by the
 upstream executor on the target, as an unprivileged account unless the test declares that it needs root.
 A marker command runs before and after each test. Each step runs in a kernel audit session of its own,
-and an event is tied to a test when its process is in the session of the test's attack step. What the
-executor runs for itself, and the test's cleanup, are left out, and so is a hardening change, which root
-puts in place and removes in sessions of its own. The sensor's own timestamps are used throughout.</p>
+and an event is tied to a test when its process is in the session of the test's attack step; an auditd
+record, when the process that wrote it is one of the test's. What the executor and the lab's own driver run
+for themselves, and the test's cleanup, are left out, and so is a hardening change, which root puts in place
+and removes in sessions of its own. The sensors' own timestamps are used throughout.</p>
 <p class="note">The answers can be computed again from the files of the run's artifact:</p>
 <pre class="box">{e(RECOMPUTE)}</pre>
 <h3 id="sensor">Sensor configuration</h3>
-<p class="note">"No telemetry" means none under this configuration. SHA-256
-<span class="mono">{e(sensor["configuration_sha256"])}</span>.</p>
+<p class="note">"No telemetry" means none under this configuration. Sysmon for Linux, SHA-256
+<span class="mono">{e(sensor["configuration_sha256"])}</span>:</p>
 <pre class="box">{e(sensor["configuration_text"])}</pre>
+{audit_configuration}
 <h3>Pinned versions</h3>
 <div class="table-wrap"><table><tbody>{versions}</tbody></table></div>
 <p class="note">Sigma rules are the work of their authors, named with each rule above, and are used under

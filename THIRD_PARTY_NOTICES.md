@@ -225,9 +225,9 @@ history, while continuing to apply the separate MITRE terms to the pinned declar
 
 The lab (`lab/`, `.github/workflows/lab.yml`) copies none of the following into this repository.
 Each is fetched at the pinned version during a CI job and runs as a separate program on the
-hosted runner. The pins are the `env` values at the top of the workflow, except for the two
-sensors that only the sensor spike tried (runs 43802339233 and 43803220104), whose versions are
-the ones those runs installed.
+hosted runner. The pins are the `env` values at the top of the workflow, except for Tetragon,
+which only the sensor spike tried (runs 43802339233 and 43803220104), whose version is the one
+those runs installed.
 
 | Project | Pin | Licence | Use |
 |---|---|---|---|
@@ -238,5 +238,5 @@ the ones those runs installed.
 | [SysinternalsEBPF](https://github.com/microsoft/SysinternalsEBPF) | 2.3.0 | LGPL-2.1 | Library the sensor depends on |
 | [SigmaHQ rules](https://github.com/SigmaHQ/sigma) | release `r2026-07-01`, commit `552f3fee` | [Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License) | Detection rules. Output that names a matched rule keeps the rule's author |
 | [Zircolite](https://github.com/wagga40/Zircolite) | 4.7.1 | LGPL-3.0-or-later | Rule engine, run as a separate program |
-| [Linux audit daemon](https://github.com/linux-audit/audit-userspace) | 3.1.2, Ubuntu 24.04 package `auditd` | GPL-2.0 | Sensor tried in the spike |
+| [Linux audit daemon](https://github.com/linux-audit/audit-userspace) | Ubuntu 24.04 package `auditd` `1:3.1.2-2.1ubuntu0.1` | GPL-2.0 | Second sensor on the lab target, with the rules in `lab/sensors/audit.rules` |
 | [Tetragon](https://github.com/cilium/tetragon) | 1.8.0 | Apache-2.0 | Sensor tried in the spike |

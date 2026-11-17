@@ -1,7 +1,7 @@
 # BlueFire lab
 
 A test bench for defenders. It runs published attack tests on a disposable lab
-target, records what a sensor on that target saw, evaluates pinned detection
+target, records what the sensors on that target saw, evaluates pinned detection
 rules over those records, and reports two answers for every test: did the
 technique take effect, and what did the defense see.
 
@@ -60,7 +60,8 @@ rules:
   `echo` starts no process, and Sysmon for Linux reports a file only as created,
   and only while it is less than 100 ms old
   ([its source](https://github.com/microsoft/Sysmon-Linux/blob/962934f7e710a8e860ed5020f2068c6eba6aff64/ebpfKern/sysmonFileOpen.c)).
-  This gap needs a sensor change before any rule can see the write itself.
+  This gap needs a sensor change before any rule can see the write itself: see
+  [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
 - On nine of the tests, rules of level medium matched only that shell process,
   which carries a test's whole command line: three of them on T1140, for base64
   piped into a shell. The report shows them, and does not count them as
@@ -159,13 +160,44 @@ rule for a unit file written by a shell also alerts when an administrator
 writes a new unit by hand. A draft that could not fire with this sensor is kept
 in [`rules/rejected`](rules/rejected) with the reason.
 
+## A sensor change that makes a gap visible
+
+Sysmon for Linux reports a write to a file only when it leaves the file looking
+newly created (see [Limits](#limits)), so in every run above appending a command
+to `~/.bashrc` (T1546.004) left no telemetry. With auditd
+recording beside Sysmon, watching the shell start files listed in
+[`sensors/audit.rules`](sensors/audit.rules), it did in
+[run 44029759448](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44029759448)
+(17 November 2026, kernel 7.0.0-1014-aws). auditd recorded the shell opening
+`/home/bluefire-lab/.bashrc` for writing, in the audit session of the test's
+attack step. Two pinned SigmaHQ auditd rules matched that record, "Unix Shell
+Configuration Modification" (medium) and "Use Of Hidden Paths Or Files" (low),
+so the test went from no telemetry to telemetry only. No test in the run is
+left without telemetry.
+
+The same test run with the account's `~/.bashrc` made immutable was still
+blocked, and auditd recorded its write attempt too, refused by the kernel. Only
+these two runs wrote to a watched file. The run's comparison with the latest
+run on `main` finds them the only two of its 34 runs of a test whose answers
+changed.
+
+auditd also recorded what some of the tests' own programs report: `useradd`
+adding the account of T1136.001, which the pinned auditd rule "Creation Of An
+User Account" (medium) matched; `sudo` running each command of the setuid and
+setgid tests; and cron starting the job the crontab test planted. None of these
+changed an answer. All seven controls passed, with auditd's probe recorded
+before the first test and its own count of lost records at 0 before and after.
+
 ## How a run works
 
 1. The `lab` workflow ([`.github/workflows/lab.yml`](../.github/workflows/lab.yml))
-   installs the sensor, and fetches the tests, the executor, the rules and the
-   rule engine at pinned versions. Nothing of theirs is copied into this
-   repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
-2. `bluefire-lab run` waits until the sensor reports a probe command. It then
+   installs the two sensors, and fetches the tests, the executor, the rules and
+   the rule engine at pinned versions. Nothing of theirs is copied into this
+   repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). The
+   sensors are Sysmon for Linux, with [`sensors/sysmon.xml`](sensors/sysmon.xml),
+   and auditd, with the file watches in [`sensors/audit.rules`](sensors/audit.rules).
+2. `bluefire-lab run` waits until Sysmon reports a probe command and auditd a
+   probe write to a file it watches. It then
    runs the tests on [`pinned-tests.yaml`](pinned-tests.yaml) one at a time,
    with the canary first and last, the harmless command second and the
    baseline of ordinary administration third. After the tests and before the
@@ -178,16 +210,18 @@ in [`rules/rejected`](rules/rejected) with the reason.
    before and after the test, the test, an effect check, the cleanup) runs in a
    kernel audit session of its own.
 3. `bluefire-lab evaluate` computes `results.json` from the files the run
-   leaves. An event belongs to a test when its process is in the audit session
-   of the test's attack step. Two more rules apply inside the test's window,
-   between its markers. What cron starts for the test account belongs to a
-   test run as that account. What systemd starts belongs to a test run as root,
-   unless the same command also ran outside every test's window. The executor's
-   own commands and the test's preparation and cleanup are left out. So are the
-   start and end of the shell process that carries the whole command line
-   (`sh -c` or `bash -c`, as the test declares); files it writes count as the
-   test's. It then judges each of the lab's own rules on the tests, their
-   variants and the ordinary activity.
+   leaves. A Sysmon event belongs to a test when its process is in the audit
+   session of the test's attack step. Two more rules apply inside the test's
+   window, between its markers. What cron starts for the test account belongs
+   to a test run as that account. What systemd starts belongs to a test run as
+   root, unless the same command also ran outside every test's window. The
+   executor's own commands and the test's preparation and cleanup are left out.
+   So are the start and end of the shell process that carries the whole command
+   line (`sh -c` or `bash -c`, as the test declares); files it writes count as
+   the test's. An auditd record belongs to a test when its process is one that
+   belongs to the test by those rules, which leaves out the driver's own
+   records in the same session. It then judges each of the lab's own rules on
+   the tests, their variants and the ordinary activity.
 4. `bluefire-lab report` writes `report.html`, one file that loads nothing from
    elsewhere when it opens (it refuses to write one that would), and the same
    table for the run page.
@@ -199,16 +233,17 @@ in [`rules/rejected`](rules/rejected) with the reason.
 
 Seven controls must pass, or the run fails as a whole:
 
-- **readiness:** the sensor reported a probe before the first test began;
+- **readiness:** both sensors recorded their probe before the first test began;
 - **markers:** both markers and the launcher of every test are in the
   telemetry, and no answer is left inconclusive, for example because a
   hardening change could not be put in place or a test ran out of time with
   one;
 - **changes:** every hardening change that was put in place was removed again
   after its test;
-- **loss:** the sensor reported its counts of lost and bad events once each,
-  both zero, and none of its numbered records is missing from what was read or
-  appears twice;
+- **loss:** Sysmon reported its counts of lost and bad events once each, both
+  zero, and none of its numbered records is missing from what was read or
+  appears twice; and auditd's own count of lost records did not move during the
+  run;
 - **engine:** the rule engine loaded every rule and read every event it was
   given, and the sensor recorded every kind of event the rules describe;
 - **canary:** the known-detected test took effect and alerted, first and last;
@@ -223,7 +258,14 @@ Seven controls must pass, or the run fails as a whole:
   existing file shows up as a creation when it leaves those timestamps fresh,
   as a read followed by an overwrite does (T1098.004 in the run above). An
   append that leaves the access time old, like the one to `~/.bashrc`, is not
-  recorded, and neither are reads and permission changes.
+  recorded by Sysmon, and neither are reads and permission changes.
+- auditd watches only the shell start files in
+  [`sensors/audit.rules`](sensors/audit.rules), for writes and for changes of
+  permissions, owner and extended attributes; `chattr`'s file flags, such as
+  immutable, are not among them. It adds no process events. Besides the
+  watches it records what programs report about themselves, such as `useradd`
+  adding an account or `sudo` running a command, and those records count for
+  the test whose process wrote them.
 - A process that systemd starts for a test that runs as root is tied to the
   test by time, inside the test's window, and not by process ancestry. The
   runner's own timers are stopped before the tests, so that their units do not
@@ -243,7 +285,6 @@ Seven controls must pass, or the run fails as a whole:
 
 ## Not yet shown
 
-- A sensor change, and its effect on a fresh run.
 - Tests on Windows, attack chains of several steps, and a lab on a local
   machine.
 
