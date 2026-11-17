@@ -20,9 +20,11 @@
 #            hardened runs. Each gives "args" and, where the change moves what
 #            the test leaves behind, its own "effect" and "prepare". A rule of
 #            the lab's own is accepted only when it alerts on these as well.
-#   needs    Programs the test needs on the target. The run takes an
-#            inventory of the target first, and a test whose program is not
-#            there is dropped, with the reason in the report.
+#   needs    Programs the test needs on the target, as a list. The run takes
+#            an inventory of the target first, and a test whose program is
+#            not there is left out, with the reason in the report. The lab
+#            itself needs systemctl and ss, and the job uses useradd and awk
+#            before the run, so those never leave a test out where it runs.
 # In effect and defense commands, {home} and {account} stand for the home
 # folder and the name of the account the tests run as.
 #

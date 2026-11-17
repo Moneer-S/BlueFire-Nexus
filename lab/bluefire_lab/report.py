@@ -39,8 +39,8 @@ def e(value: object) -> str:
     return html.escape(str(value))
 
 
-def count(number: int, noun: str) -> str:
-    return f"{number} {noun}" + ("" if number == 1 else "s")
+def count(number: int, noun: str, plural: str = "") -> str:
+    return f"{number} {noun if number == 1 else plural or noun + 's'}"
 
 
 def sentence(text: str) -> str:
@@ -355,15 +355,16 @@ def html_report(results: dict) -> str:
     audit = results.get("audit")
     found = run.get("inventory")
     inventory_section = (
-        '<h3 id="inventory">Inventory of the target</h3><p class="note">Read before the first test. A test that '
-        "needs a program the target does not have is dropped, and listed below with the reason.</p>"
+        '<h3 id="inventory">Inventory of the target</h3><p class="note">Read before the lab started its '
+        "sensors, and the sensors' state after it did. A test that needs a program the target does not "
+        'have is left out, with the reason, under <a href="#left-out">Tests left out</a>.</p>'
         '<div class="table-wrap"><table><tbody>'
         + "".join(
             f'<tr><td>{e(label)}</td><td class="mono wide">{e(value)}</td></tr>'
             for label, value in (
                 ("Accounts that can log in", ", ".join(found["accounts"])),
                 ("Running services", ", ".join(found["services"])),
-                ("Listening sockets", ", ".join(found["listening"])),
+                ("Listening addresses", ", ".join(found["listening"])),
                 ("Sensors", ", ".join(f"{name} {state}" for name, state in found.get("sensors", {}).items())),
                 (
                     "Programs the tests need",
@@ -449,7 +450,7 @@ def html_report(results: dict) -> str:
                         "Inventory",
                         f"{count(len(found['accounts']), 'account')} that can log in, "
                         f"{count(len(found['services']), 'running service')}, "
-                        f"{count(len(found['listening']), 'listening socket')}. "
+                        f"{count(len(found['listening']), 'listening address', 'listening addresses')}. "
                         'The <a href="#inventory">inventory</a> is below.',
                     )
                 ]
@@ -469,10 +470,10 @@ def html_report(results: dict) -> str:
         for item in results["dropped"]
     )
     dropped = (
-        '<div class="table-wrap"><table><thead><tr><th>Technique</th><th>Test</th><th>Why it was dropped</th></tr>'
-        f"</thead><tbody>{dropped}</tbody></table></div>"
+        '<div class="table-wrap"><table><thead><tr><th>Technique</th><th>Test</th><th>Why it was left out</th>'
+        f"</tr></thead><tbody>{dropped}</tbody></table></div>"
         if dropped
-        else '<p class="note">No test was tried and then dropped.</p>'
+        else '<p class="note">No test was left out.</p>'
     )
     warning = (
         f'<p class="failed-run">{count(len(failed), "control")} failed, so this run does not support its '
@@ -527,7 +528,7 @@ control fails as a whole.</p>
 <h3>Control runs</h3>
 {"".join(evidence(test, results) for test in others)}
 
-<h2>Tests tried and dropped</h2>
+<h2 id="left-out">Tests left out</h2>
 {dropped}
 
 <h2>How this was measured</h2>
@@ -619,6 +620,10 @@ def markdown_summary(results: dict) -> str:
                 f"{cell(without['execution']['answer']) if without else 'not run'} | "
                 f"{cell(test['execution']['answer'])} | {cell(test['visibility']['answer'])} |"
             )
+    if results["dropped"]:
+        lines += ["", "| Technique | Test left out | Why |", "|---|---|---|"]
+        for item in results["dropped"]:
+            lines.append(f"| {cell(item['technique'])} | {cell(item['name'])} | {cell(item['reason'])} |")
     lines += ["", "| Control | Result | Detail |", "|---|---|---|"]
     for check in results["controls"]:
         lines.append(
