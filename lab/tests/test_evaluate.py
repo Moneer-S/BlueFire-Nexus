@@ -237,6 +237,42 @@ def test_execution_follows_the_prerequisites_and_the_effect_check() -> None:
     assert evaluate.execution(silent)["answer"] == "attempted without effect"
 
 
+def hardened(applied=True, effect_status=1, **changes) -> dict:
+    change = {"name": "lock", "title": "a change", "applied": applied}
+    steps = [
+        step("defense", 9),
+        step("attack", 11),
+        step("effect", 13, status=effect_status),
+        step("revert", 14),
+    ]
+    return a_test(**{"role": "hardened", "defense": change, "compared_with": 3, "steps": steps, **changes})
+
+
+def test_a_hardening_change_blocks_only_what_took_effect_without_it() -> None:
+    took, failed = {"answer": "took effect"}, {"answer": "attempted without effect"}
+
+    blocked = evaluate.execution(hardened(), took)
+    never_worked = evaluate.execution(hardened(), failed)
+    not_stopped = evaluate.execution(hardened(effect_status=0), took)
+
+    assert blocked["answer"] == "blocked"
+    assert blocked["basis"].startswith("with the change in place the effect check exited with status 1")
+    assert never_worked["answer"] == "attempted without effect"
+    assert not_stopped["answer"] == "took effect"
+
+
+def test_a_change_that_was_not_put_in_place_proves_nothing() -> None:
+    took = {"answer": "took effect"}
+    unapplied = hardened(applied=False, steps=[step("defense", 9, status=1), step("revert", 14)])
+    del unapplied["launcher_pid"]
+    unprepared = hardened(prerequisites="not met", steps=[])
+    del unprepared["defense"]["applied"]
+
+    assert evaluate.execution(unapplied, took)["answer"] == "inconclusive"
+    assert evaluate.execution(unapplied, took)["basis"] == "the hardening change could not be put in place"
+    assert evaluate.execution(unprepared, took)["answer"] == "not attempted"
+
+
 def measured(
     role, execution="took effect", visibility="telemetry only", rules=(), launcher_only=(), rule=None
 ) -> dict:

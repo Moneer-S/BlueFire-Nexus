@@ -160,6 +160,42 @@ def test_a_rule_that_matched_only_the_launcher_is_shown_and_not_counted() -> Non
     )
 
 
+def with_a_hardened_run() -> dict:
+    document = results()
+    change = {"name": "lock", "title": "the history file made immutable", "why": "A reason.",
+              "apply": "chattr +i <script>", "revert": "chattr -i", "applied": True, "reverted": True}  # fmt: skip
+    run = a_test(4, "hardened", "Clear Bash history (rm)", "blocked", "telemetry only")
+    run.update(defense=change, compared_with=2, output="rm: cannot remove: Operation not permitted")
+    document["tests"].insert(3, run)
+    document["summary"].update(hardened=1, blocked=1)
+    return document
+
+
+def test_a_hardened_run_is_shown_beside_the_same_test_without_the_change() -> None:
+    page = report.html_report(with_a_hardened_run())
+
+    section = page[page.index("<h2>With a hardening change</h2>") : page.index("<h2>Controls</h2>")]
+    assert '<a href="#t4">Clear Bash history (rm)</a>' in section
+    assert "the history file made immutable" in section
+    assert section.index(">took effect<") < section.index(">blocked<")
+    evidence = page[page.index('id="t4"') :]
+    assert "Operation not permitted" in evidence
+    assert "chattr +i &lt;script&gt;" in evidence
+    assert "1 test ran again with a hardening change in place, and 1 of those changes blocked" in page
+
+
+def test_a_run_without_hardening_has_no_hardening_section() -> None:
+    assert "With a hardening change" not in report.html_report(results())
+    assert "Hardening change" not in report.markdown_summary(results())
+
+
+def test_the_summary_shows_the_hardened_runs() -> None:
+    summary = report.markdown_summary(with_a_hardened_run())
+
+    row = "| T1070.003 | Clear Bash history (rm) | the history file made immutable | took effect | blocked | telemetry only |"
+    assert row in summary
+
+
 def test_the_summary_is_the_same_table_in_markdown() -> None:
     summary = report.markdown_summary(results())
 

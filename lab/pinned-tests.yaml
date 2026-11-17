@@ -3,16 +3,21 @@
 # The lab checks every name against upstream before it starts.
 #
 # How the lab learns whether the technique took effect, in order of preference:
-#   effect   One command, run as the account the test ran as, after the test
-#            and before its cleanup. Exit status 0 means it took effect.
+#   effect   One command, run as root after the test and before its cleanup.
+#            Exit status 0 means it took effect.
 #   output   A text that the test prints only when it took effect.
 #   Without either, the test's own exit status decides.
 # Other keys:
-#   prepare  One command that puts in place what the test acts on. When it
-#            fails, the test is not attempted.
+#   prepare  One command, run as the account the test runs as, that puts in
+#            place what the test acts on. When it fails, the test is not
+#            attempted.
 #   args     Input arguments of the test to override.
 #   dwell    Seconds to wait before the test's window closes, for what the
 #            test schedules to run later.
+#   defenses Hardening changes, named under "defenses" below. After all tests
+#            have run, the test runs again once with each change in place.
+# In effect and defense commands, {home} and {account} stand for the home
+# folder and the name of the account the tests run as.
 #
 # A test belongs here when it acts only on the machine it runs on. Left out are
 # tests that read other processes' memory or environment, search the file
@@ -29,7 +34,7 @@ canary:
   guid: a934276e-2be5-4a36-93fd-98adbb5bd4fc
   name: Clear Bash history (rm)
   prepare: echo "ls -la" >> ~/.bash_history
-  effect: test ! -e ~/.bash_history
+  effect: test ! -e {home}/.bash_history
   rule: 1182f3b3-e716-4efa-99ab-d2685d04360f # History File Deletion, level high
 
 # A harmless command through the same executor. A run in which it raises an
@@ -58,8 +63,9 @@ tests:
   - technique: T1053.003
     guid: 435057fb-74b1-410e-9403-d81baf194f75
     name: Cron - Replace crontab with referenced file
-    effect: crontab -l | grep -qF '/tmp/evil.sh'
+    effect: crontab -u {account} -l | grep -qF '/tmp/evil.sh'
     dwell: 65 # long enough for cron to run the planted line once
+    defenses: [cron-allow]
   - technique: T1053.006
     guid: f4983098-bb13-44fb-9b2c-46149961807b
     name: Create Systemd Service and Timer
@@ -81,11 +87,13 @@ tests:
       && echo "# planted by the lab, not a key" > ~/.ssh/authorized_keys
       && chmod 600 ~/.ssh/authorized_keys
       && touch -d "1 hour ago" ~/.ssh/authorized_keys
-    effect: test -n "$(find ~/.ssh/authorized_keys -newermt '30 minutes ago')"
+    effect: test -n "$(find {home}/.ssh/authorized_keys -newermt '30 minutes ago')"
+    defenses: [ssh-keys-root-owned]
   - technique: T1546.004
     guid: 0a898315-4cfa-4007-bafe-33a4646d115f
     name: Add command to .bashrc
-    effect: grep -q 'T1546.004' ~/.bashrc
+    effect: grep -q 'T1546.004' {home}/.bashrc
+    defenses: [profile-immutable]
 
   # Permissions and masquerading
   - technique: T1222.002
@@ -100,14 +108,16 @@ tests:
   - technique: T1036.003
     guid: a315bfff-7a98-403b-b442-2ea1b255e556
     name: Masquerading as FreeBSD or Linux crond process.
-    effect: cmp -s /bin/sh /tmp/crond
+    # The test's last command is the renamed copy running "sleep 5", so its exit
+    # status shows whether the copy ran. The copy itself is only preparation.
+    defenses: [tmp-noexec]
 
   # Covering tracks: the canary's technique by another procedure
   - technique: T1070.003
     guid: 47966a1d-df4f-4078-af65-db6d9aa20739
     name: Clear Bash history (truncate)
     prepare: echo "ls -la" >> ~/.bash_history
-    effect: test -e ~/.bash_history && test ! -s ~/.bash_history
+    effect: test -e {home}/.bash_history && test ! -s {home}/.bash_history
 
   # Encoded and indirect execution
   - technique: T1027
@@ -125,5 +135,45 @@ tests:
   - technique: T1059.004
     guid: ee72b37d-b8f5-46a5-a9e7-0ff50035ffd5
     name: Shell Creation using awk command
+
+# Hardening changes a defender would deploy. The lab applies one as root after
+# the test's preparation, runs the test, and removes the change after the
+# test's cleanup. "apply" must fail when the change is not in place.
+defenses:
+  tmp-noexec:
+    title: /tmp mounted with noexec, nosuid and nodev
+    why: >-
+      The CIS benchmarks for Ubuntu mount /tmp with these options, so that a
+      file written to /tmp cannot be run from there.
+    apply: >-
+      mount --bind /tmp /tmp
+      && mount -o remount,bind,noexec,nosuid,nodev /tmp
+      && findmnt -no OPTIONS /tmp | grep -qw noexec
+    revert: umount -l /tmp
+  cron-allow:
+    title: crontab limited to root with /etc/cron.allow
+    why: >-
+      When /etc/cron.allow exists, only the accounts it names may use crontab.
+      The CIS benchmarks for Ubuntu restrict crontab this way.
+    apply: echo root > /etc/cron.allow && chmod 640 /etc/cron.allow
+    revert: rm -f /etc/cron.allow
+  profile-immutable:
+    title: the account's ~/.bashrc made immutable
+    why: >-
+      An immutable shell profile cannot be changed by its owner, so nothing can
+      be planted in it to run at the account's next login.
+    apply: chattr +i {home}/.bashrc && lsattr {home}/.bashrc | grep -q '^....i'
+    revert: chattr -i {home}/.bashrc
+  ssh-keys-root-owned:
+    title: the account's ~/.ssh and authorized_keys owned by root
+    why: >-
+      With the folder and the keys file owned by root, the account cannot add a
+      key of its own, and sshd still reads the file.
+    apply: >-
+      chown root:root {home}/.ssh {home}/.ssh/authorized_keys
+      && chmod 755 {home}/.ssh && chmod 644 {home}/.ssh/authorized_keys
+    revert: >-
+      chown -R {account}:{account} {home}/.ssh
+      && chmod 700 {home}/.ssh && chmod 600 {home}/.ssh/authorized_keys
 
 dropped: []

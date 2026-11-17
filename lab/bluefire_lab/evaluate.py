@@ -9,7 +9,8 @@ Every test gets two answers.
 Execution: "not attempted" when a prerequisite was missing, "took effect" or
 "attempted without effect" by the test's effect check: a command run after the
 test, a text only the effect prints, or failing both the test's exit status.
-"blocked" is reserved for a run that compares against a baseline.
+"blocked" when the test ran again with a hardening change in place and did
+not take effect, while it took effect without the change.
 
 Visibility: "alert" when a rule of an alert level matched an event of the test,
 "telemetry only" when the test left events but no such match, "no telemetry"
@@ -208,14 +209,22 @@ def describe(event: dict, why: str) -> dict:
     }
 
 
-def execution(test: dict) -> dict:
-    """Did the technique take effect?"""
+def execution(test: dict, without_change: dict | None = None) -> dict:
+    """Did the technique take effect?
+
+    A test run again with a hardening change in place is "blocked" when it ran
+    with its prerequisites met and did not take effect, while the same test
+    took effect without the change, earlier in the same run.
+    """
 
     answer = {"prerequisites": test["prerequisites"], "exit_code": test.get("exit_code")}
     attack, effect = step_of(test, "attack"), step_of(test, "effect")
     answer["timed_out"] = bool(attack and attack["timed_out"])
+    change = test.get("defense")
     if test["prerequisites"] == "not met":
         answer.update(answer="not attempted", basis="a prerequisite of the test was not met")
+    elif change is not None and not change.get("applied"):
+        answer.update(answer="inconclusive", basis="the hardening change could not be put in place")
     elif "launcher_pid" not in test:
         answer.update(answer="inconclusive", basis="the executor left no record of starting the test")
     elif effect:
@@ -239,6 +248,12 @@ def execution(test: dict) -> dict:
             answer="took effect" if took else "attempted without effect",
             basis=f"the test has no separate effect check; its command exited with status {test.get('exit_code')}",
         )
+    if change is not None and answer["answer"] == "attempted without effect" and without_change is not None:
+        if without_change["answer"] == "took effect":
+            answer.update(
+                answer="blocked",
+                basis=f"with the change in place {answer['basis']}, and without it the same test took effect",
+            )
     return answer
 
 
@@ -415,14 +430,19 @@ def main(run_dir: Path, engine: Path) -> int:
         "windows": windows,
         "system_commands": system_commands(starts, complete),
     }
-    tests = []
+    tests, by_order = [], {}
     for test in run["tests"]:
         result = {
             key: test[key]
             for key in ("order", "role", "technique", "guid", "name", "executor", "elevated", "user")
         }
-        result.update({key: test[key] for key in ("rule", "args") if key in test})
-        result["execution"] = execution(test)
+        result.update({key: test[key] for key in ("rule", "args", "defense", "compared_with") if key in test})
+        if "defense" in test:
+            attack = step_of(test, "attack")
+            result["output"] = ((attack["output"] + attack["error"]).strip() if attack else "")[-2000:]
+        without_change = by_order.get(test.get("compared_with"), {}).get("execution")
+        result["execution"] = execution(test, without_change)
+        by_order[test["order"]] = result
         if result["execution"]["answer"] == "not attempted":
             seen, mine = {"answer": "not applicable", "basis": "the test did not run"}, []
         else:
@@ -436,6 +456,7 @@ def main(run_dir: Path, engine: Path) -> int:
     found = re.search(r"v(\d+\.\d+\.\d+)", version.stdout + version.stderr)
     measured = [test for test in tests if test["role"] == "test"]
     took = [test for test in measured if test["execution"]["answer"] == "took effect"]
+    hardened = [test for test in tests if test["role"] == "hardened"]
     results = {
         "schema": "bluefire-lab/results/1",
         "run": {
@@ -472,6 +493,8 @@ def main(run_dir: Path, engine: Path) -> int:
                     ("inconclusive", "inconclusive"),
                 )
             },
+            "hardened": len(hardened),
+            "blocked": sum(1 for test in hardened if test["execution"]["answer"] == "blocked"),
         },
         "tests": tests,
         "dropped": run.get("dropped", []),
