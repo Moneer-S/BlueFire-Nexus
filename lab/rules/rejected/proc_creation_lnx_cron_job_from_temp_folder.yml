@@ -1,0 +1,36 @@
+# Rejected before it ran. Drafted for T1053.003, where cron runs a job planted
+# in a user's crontab from /tmp, it needs the job's parent to be cron. In the
+# telemetry of run 43808649201 (record 834) Sysmon for Linux 1.6.0 gives that
+# parent as "-": cron starts the job from a forked copy of itself that never runs
+# a program of its own, so the sensor has no record of it, and this rule could
+# not fire. Kept as a draft that did not hold.
+title: Cron Job Runs A Script From A Temporary Folder
+id: f71293af-5286-4223-a893-e83bfd04e495
+status: unsupported
+description: >-
+  cron started a job that runs a script from a temporary folder, where a planted
+  job's payload usually waits.
+references:
+  - https://attack.mitre.org/techniques/T1053/003/
+author: BlueFire lab
+date: 2026-11-16
+tags:
+  - attack.persistence
+  - attack.t1053.003
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_parent:
+    ParentImage|endswith:
+      - /cron
+      - /crond
+  selection_script:
+    CommandLine|contains:
+      - /tmp/
+      - /var/tmp/
+      - /dev/shm/
+  condition: all of selection_*
+falsepositives:
+  - A job that builds or tests software in a temporary folder
+level: high

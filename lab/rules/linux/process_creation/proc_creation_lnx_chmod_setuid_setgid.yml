@@ -1,0 +1,43 @@
+title: Setuid Or Setgid Bit Set With Chmod
+id: da9308a5-985a-4094-b3f2-fe6f5437e1bb
+status: experimental
+description: >-
+  chmod set the setuid or setgid bit on a file. A program with that bit runs
+  with its owner's or group's rights, so setting it on a file one controls is a
+  way to keep or raise rights. Packages set these bits when they install, not
+  through chmod.
+references:
+  - https://attack.mitre.org/techniques/T1548/001/
+author: BlueFire lab
+date: 2026-11-16
+tags:
+  - attack.privilege-escalation
+  - attack.t1548.001
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_tool:
+    Image|endswith: /chmod
+  selection_mode:
+    CommandLine|contains:
+      - 'u+s'
+      - 'g+s'
+      - 'a+s'
+      - 'u+xs'
+      - 'g+xs'
+      - 'u+sx'
+      - 'g+sx'
+      - ' +s '
+      - ' 2755 '
+      - ' 2775 '
+      - ' 4711 '
+      - ' 4750 '
+      - ' 4755 '
+      - ' 4775 '
+      - ' 4777 '
+      - ' 6755 '
+  condition: all of selection_*
+falsepositives:
+  - An administrator installing a setuid program by hand
+level: high

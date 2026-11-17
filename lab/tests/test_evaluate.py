@@ -19,8 +19,14 @@ RULES = {
         "author": "someone",
         "file": f"linux/{name}.yml",
         "text": "",
+        "origin": origin,
     }
-    for name, level in (("high-rule", "high"), ("medium-rule", "medium"), ("critical-rule", "critical"))
+    for name, level, origin in (
+        ("high-rule", "high", "pinned"),
+        ("medium-rule", "medium", "pinned"),
+        ("critical-rule", "critical", "pinned"),
+        ("lab-rule", "high", "lab"),
+    )
 }
 
 
@@ -335,3 +341,71 @@ def test_lost_events_a_missing_marker_or_an_unseen_probe_fail_the_run() -> None:
     assert failed_controls(tests, lost={**CLEAN, "sensor_reported": False, "lost_events": None}) == ["loss"]
     assert failed_controls([*tests, unmarked]) == ["markers"]
     assert failed_controls(tests, starts=[]) == ["readiness"]
+
+
+def test_the_labs_rules_give_a_second_answer_and_never_change_the_first() -> None:
+    answer, _ = see(a_test(), telemetry(), {"7": ["medium-rule", "lab-rule"]})
+    test = {"visibility": answer}
+
+    assert answer["answer"] == "telemetry only"
+    assert [rule["id"] for rule in answer["rules"]] == ["medium-rule"]
+    assert [rule["id"] for rule in answer["with_lab_rules"]["rules"]] == ["lab-rule"]
+    evaluate.second_answers([test], [{"id": "lab-rule", "accepted": True}])
+    assert answer["with_lab_rules"]["answer"] == "alert"
+    evaluate.second_answers([test], [{"id": "lab-rule", "accepted": False}])
+    assert answer["with_lab_rules"]["answer"] == "telemetry only"
+    assert answer["with_lab_rules"]["rules"][0]["accepted"] is False
+    assert answer["answer"] == "telemetry only"
+
+
+def test_ordinary_activity_is_the_baseline_and_what_ran_in_no_session_outside_the_tests() -> None:
+    run_record = {
+        "tests": [{"role": "baseline", "steps": [step("baseline-root", 30), step("marker-end", 31)]}]
+    }
+    events = [
+        start(1, 0.5, 400, 1, "useradd --system bluefire-lab-service", 30, user="root"),  # baseline
+        start(2, 0.6, 401, 1, "true marker", 31, user="root"),  # a marker step: the lab's own
+        start(3, 0.7, 402, 1, "apt-get update", sysmon.NO_SESSION, user="root"),  # the system, outside
+        start(4, 3.0, 403, 1, "touch /tmp/marker", sysmon.NO_SESSION, user="root"),  # the system, inside
+        start(5, 3.1, 404, 120, "id", 11),  # a test's
+    ]
+    window = [("2026-11-16 04:00:01.000", "2026-11-16 04:00:06.000")]
+    matched = {"1": ["lab-rule"], "3": ["medium-rule"], "4": ["lab-rule"], "5": ["lab-rule"]}
+
+    ordinary = evaluate.ordinary_activity(run_record, events, events, matched, RULES, window)
+
+    assert (ordinary["baseline_events"], ordinary["system_events"]) == (1, 1)
+    assert ordinary["rules"] == {"lab-rule": [1], "medium-rule": [3]}
+    assert [(rule["id"], rule["events"]) for rule in ordinary["pinned_rules"]] == [("medium-rule", 1)]
+
+
+def judged(test_rules=("lab-rule",), variant_rules=("lab-rule",), variant_took=True, noise=None) -> dict:
+    def result(order, role, rules, answer="took effect", **extra) -> dict:
+        lab = [{**RULES[rule_id], "alert": True} for rule_id in rules]
+        seen = {
+            "answer": "telemetry only",
+            "with_lab_rules": {"answer": "alert" if lab else "telemetry only", "rules": lab},
+        }
+        return {"order": order, "role": role, "technique": "T1", "guid": "g", "name": "a test",
+                "execution": {"answer": answer}, "visibility": seen, **extra}  # fmt: skip
+
+    tests = [result(3, "test", test_rules)]
+    if variant_rules is not None:
+        answer = "took effect" if variant_took else "attempted without effect"
+        tests.append(result(9, "variant", variant_rules, answer, compared_with=3, args={"name": "other"}))
+    return evaluate.judge_lab_rules({"lab-rule": RULES["lab-rule"]}, tests, {"rules": noise or {}})[0]
+
+
+def test_a_lab_rule_is_accepted_only_when_it_holds_on_a_variant_and_stays_quiet_on_ordinary_work() -> None:
+    accepted = judged()
+
+    assert accepted["accepted"] is True
+    assert accepted["variants"] == [
+        {"order": 9, "technique": "T1", "name": "a test", "compared_with": 3, "args": {"name": "other"},
+         "took_effect": True, "alerted": True}
+    ]  # fmt: skip
+    assert judged(test_rules=())["reason"] == "it matched no event of a test"
+    assert judged(noise={"lab-rule": [40, 41]})["reason"] == "it matched 2 events of ordinary activity"
+    assert judged(variant_rules=())["reason"] == "it missed 1 of 1 runs with changed input arguments"
+    assert judged(variant_rules=None)["accepted"] is False
+    assert judged(variant_took=False)["accepted"] is False

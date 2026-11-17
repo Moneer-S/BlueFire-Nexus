@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from bluefire_lab import run
@@ -65,3 +68,35 @@ def test_commands_name_the_test_account_through_placeholders() -> None:
     filled = run.fill("chown -R {account}:{account} {home}/.ssh", context)
 
     assert filled == "chown -R bluefire-lab:bluefire-lab /home/bluefire-lab/.ssh"
+
+
+def test_the_baseline_runs_after_the_control_and_variants_after_the_hardened_runs() -> None:
+    document = a_plan(baseline={"name": "ordinary work", "root": "true", "account": "true"})
+    document["tests"][1]["variants"] = [{"args": {"path": "/var/tmp/x"}, "effect": "test -e /var/tmp/x"}]
+
+    runs = run.plan(document)
+
+    assert [item["role"] for item in runs] == [
+        "canary", "control", "baseline", "test", "test", "test",
+        "hardened", "hardened", "hardened", "variant", "canary",
+    ]  # fmt: skip
+    variant = runs[9]
+    assert variant["compared_with"] == 5
+    assert variant["spec"]["args"] == {"path": "/var/tmp/x"}
+    assert variant["spec"]["effect"] == "test -e /var/tmp/x"
+    assert "variants" not in variant["spec"]
+    assert [item["compared_with"] for item in runs if item["role"] == "hardened"] == [4, 6, 6]
+
+
+def test_an_input_argument_the_test_does_not_declare_stops_the_run(tmp_path: Path) -> None:
+    guid = "23d348f3-cc5c-4ba9-bd0a-ae09069f0914"
+    upstream = {"name": "a test", "auto_generated_guid": guid, "supported_platforms": ["linux"],
+                "input_arguments": {"history_path": {"default": "~/.bash_history"}},
+                "executor": {"name": "sh", "command": "true"}}  # fmt: skip
+    (tmp_path / "T1070.003").mkdir()
+    (tmp_path / "T1070.003" / "T1070.003.yaml").write_text(json.dumps({"atomic_tests": [upstream]}))
+    spec = {"technique": "T1070.003", "guid": guid, "name": "a test"}
+
+    assert run.upstream_definition({**spec, "args": {"history_path": "~/.zsh_history"}}, tmp_path) == upstream
+    with pytest.raises(SystemExit, match="no input argument histroy_path"):
+        run.upstream_definition({**spec, "args": {"histroy_path": "~/.zsh_history"}}, tmp_path)

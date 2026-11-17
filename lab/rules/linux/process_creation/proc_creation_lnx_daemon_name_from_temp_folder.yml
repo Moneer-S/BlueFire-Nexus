@@ -1,0 +1,41 @@
+title: Program Named Like A System Daemon Run From A Temporary Folder
+id: 8cd18ea7-928c-46c1-9fca-d2305c02213d
+status: experimental
+description: >-
+  A program in a temporary folder ran under the name of a system daemon.
+  System daemons run from /usr, so the name is there to blend in among them in
+  a process list.
+references:
+  - https://attack.mitre.org/techniques/T1036/003/
+author: BlueFire lab
+date: 2026-11-16
+tags:
+  - attack.defense-evasion
+  - attack.t1036.003
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_folder:
+    Image|startswith:
+      - /tmp/
+      - /var/tmp/
+      - /dev/shm/
+  selection_name:
+    Image|endswith:
+      - /atd
+      - /cron
+      - /crond
+      - /dbus-daemon
+      - /init
+      - /kthreadd
+      - /kworker
+      - /rsyslogd
+      - /sshd
+      - /systemd
+      - /systemd-journald
+      - /udevd
+  condition: all of selection_*
+falsepositives:
+  - A daemon's own build or test run from a temporary folder
+level: high

@@ -50,8 +50,9 @@ CATEGORIES = {
 }
 
 
-def rule_index(rules: Path) -> dict[str, dict]:
-    """The pinned rules by id, with what a report has to say about a rule that matched."""
+def rule_index(rules: Path, origin: str = "pinned") -> dict[str, dict]:
+    """The rules under a folder by id, with what a report has to say about a rule that
+    matched. The pinned rules are SigmaHQ's; the lab's own rules have the origin "lab"."""
 
     index = {}
     for path in sorted(rules.rglob("*.yml")):
@@ -65,6 +66,7 @@ def rule_index(rules: Path) -> dict[str, dict]:
                     "author": rule.get("author", ""),
                     "file": path.relative_to(rules.parent).as_posix(),
                     "text": text,
+                    "origin": origin,
                 }
     return index
 
@@ -79,11 +81,14 @@ def run_engine(engine: Path, run_dir: Path, events: list[dict], raw: list[str]) 
     work = run_dir / "engine"
     work.mkdir(exist_ok=True)
     for category, event_id in CATEGORIES.items():
-        rules = run_dir / "rules" / "linux" / category
+        folders = [run_dir / root / "linux" / category for root in ("rules", "lab-rules")]
+        rulesets = [
+            part for folder in folders if folder.is_dir() for part in ("--ruleset", str(folder.resolve()))
+        ]
         lines = [line for event, line in zip(events, raw, strict=True) if event["EventID"] == event_id]
         output = work / f"{category}.json"
         output.unlink(missing_ok=True)
-        if not lines or not rules.is_dir():
+        if not lines or not rulesets:
             continue
         text = "".join(sysmon.one_line(line) + "\n" for line in lines)
         (work / f"{category}.txt").write_text(text, encoding="utf-8")
@@ -93,7 +98,7 @@ def run_engine(engine: Path, run_dir: Path, events: list[dict], raw: list[str]) 
                 "--events", f"{category}.txt",
                 "--sysmon-linux-input",
                 "--logs-encoding", "utf-8",
-                "--ruleset", str(rules.resolve()),
+                *rulesets,
                 "--outfile", output.name,
                 "--logfile", f"{category}-engine.txt",
             ],
@@ -299,8 +304,11 @@ def visibility(
         rule = rules[rule_id]
         return {**rule, "records": records, "alert": rule["level"] in ALERT_LEVELS}
 
+    # The answer comes from the pinned rules alone; the lab's own rules give a second one.
     cited = sorted((cite(rule_id, records) for rule_id, records in fired.items()), key=rule_order)
-    if any(rule["alert"] for rule in cited):
+    pinned = [rule for rule in cited if rule["origin"] == "pinned"]
+    ours = [rule for rule in cited if rule["origin"] == "lab"]
+    if any(rule["alert"] for rule in pinned):
         answer, basis = "alert", "a rule of an alert level matched an event of the test"
     elif mine:
         answer, basis = "telemetry only", "the test left events, and no rule of an alert level matched one"
@@ -312,13 +320,128 @@ def visibility(
         "window": [start, end],
         "events": len(mine),
         "events_by_kind": dict(collections.Counter(event["kind"] for event in mine)),
-        "rules": cited,
+        "rules": pinned,
         "launcher": describe(launcher, "launcher"),
         "launcher_only_rules": sorted(
             (cite(rule_id, [int(launcher["EventRecordID"])]) for rule_id in launcher_only), key=rule_order
         ),
+        # Until the lab's rules are judged, the second answer is the first; see second_answers.
+        "with_lab_rules": {"answer": answer, "rules": ours},
     }
     return result, mine
+
+
+def ordinary_activity(
+    run: dict, events: list[dict], starts: list[dict], matched: dict, rules: dict, windows: list
+) -> dict:
+    """What the lab's own rules must stay quiet on: the events of the baseline steps, and
+    the events outside every test's window of processes in no audit session (the runner,
+    the system's own services and the driver)."""
+
+    baseline_sessions = {
+        step["session"]
+        for test in run["tests"]
+        if test["role"] == "baseline"
+        for step in test["steps"]
+        if step["label"].startswith("baseline-")
+    }
+    session_of = {event["ProcessGuid"]: event["TerminalSessionId"] for event in starts}
+    counts: collections.Counter[str] = collections.Counter()
+    hits: dict[str, list[int]] = collections.defaultdict(list)
+    for event in events:
+        session = session_of.get(event.get("ProcessGuid", ""))
+        if session in baseline_sessions:
+            kind = "baseline_events"
+        elif session in (None, sysmon.NO_SESSION) and not any(
+            start <= event.get("UtcTime", "") <= end for start, end in windows
+        ):
+            kind = "system_events"
+        else:
+            continue
+        counts[kind] += 1
+        for rule_id in matched.get(event["EventRecordID"], []):
+            hits[rule_id].append(int(event["EventRecordID"]))
+    pinned = [
+        {**{key: rules[rule_id][key] for key in ("id", "title", "level")}, "events": len(records)}
+        for rule_id, records in hits.items()
+        if rules[rule_id]["origin"] == "pinned"
+    ]
+    return {
+        "baseline_events": counts["baseline_events"],
+        "system_events": counts["system_events"],
+        "rules": dict(hits),
+        "pinned_rules": sorted(pinned, key=rule_order),
+    }
+
+
+def judge_lab_rules(lab_rules: dict, tests: list[dict], ordinary: dict) -> list[dict]:
+    """Whether each of the lab's rules is accepted: it alerts on a test, still alerts when
+    that test runs again with changed input arguments, and stays quiet on ordinary activity."""
+
+    def alerted(test: dict, rule_id: str) -> bool:
+        return any(
+            rule["id"] == rule_id and rule["alert"]
+            for rule in test["visibility"].get("with_lab_rules", {}).get("rules", [])
+        )
+
+    verdicts = []
+    for rule in sorted(lab_rules.values(), key=lambda rule: rule["title"]):
+        fires = [test for test in tests if test["role"] == "test" and alerted(test, rule["id"])]
+        orders = {test["order"] for test in fires}
+        variants = [
+            test for test in tests if test["role"] == "variant" and test.get("compared_with") in orders
+        ]
+        took = [variant for variant in variants if variant["execution"]["answer"] == "took effect"]
+        missed = [variant for variant in took if not alerted(variant, rule["id"])]
+        noise = ordinary["rules"].get(rule["id"], [])
+        if not fires:
+            reason = "it matched no event of a test"
+        elif noise:
+            reason = f"it matched {len(noise)} event{'' if len(noise) == 1 else 's'} of ordinary activity"
+        elif not took:
+            reason = "no test it alerts on ran again with changed input arguments and took effect"
+        elif missed:
+            reason = f"it missed {len(missed)} of {len(took)} runs with changed input arguments"
+        else:
+            reason = None
+        verdicts.append(
+            {
+                **{key: rule[key] for key in ("id", "title", "level", "file", "author", "text")},
+                "accepted": reason is None,
+                "reason": reason
+                or "it alerted on every run with changed input arguments and on no ordinary activity",
+                "fires_on": [
+                    {key: test[key] for key in ("order", "technique", "guid", "name")} for test in fires
+                ],
+                "variants": [
+                    {
+                        **{key: variant[key] for key in ("order", "technique", "name", "compared_with")},
+                        "args": variant.get("args", {}),
+                        "took_effect": variant["execution"]["answer"] == "took effect",
+                        "alerted": alerted(variant, rule["id"]),
+                    }
+                    for variant in variants
+                ],
+                "ordinary_matches": noise,
+                "procedures": len({test["guid"] for test in fires}),
+            }
+        )
+    return verdicts
+
+
+def second_answers(tests: list[dict], verdicts: list[dict]) -> None:
+    """The visibility answer with the lab's accepted rules as well. A rule that is not
+    accepted is still listed where it matched, and changes no answer."""
+
+    accepted = {verdict["id"] for verdict in verdicts if verdict["accepted"]}
+    for test in tests:
+        lab = test["visibility"].get("with_lab_rules")
+        if lab is None:
+            continue
+        for rule in lab["rules"]:
+            rule["accepted"] = rule["id"] in accepted
+        closed = any(rule["alert"] and rule["accepted"] for rule in lab["rules"])
+        lab["answer"] = "alert" if closed else test["visibility"]["answer"]
 
 
 def rule_order(rule: dict) -> tuple[int, str]:
@@ -412,6 +535,8 @@ def main(run_dir: Path, engine: Path) -> int:
     events, raw, other = sysmon.read(run_dir / "sysmon.txt")
     starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
     rules = rule_index(run_dir / "rules" / "linux")
+    lab_rules = rule_index(run_dir / "lab-rules" / "linux", "lab")
+    rules.update(lab_rules)
     matched = run_engine(engine, run_dir, events, raw)
 
     known_sessions = {step["session"] for test in run["tests"] for step in test["steps"]}
@@ -432,6 +557,8 @@ def main(run_dir: Path, engine: Path) -> int:
     }
     tests, by_order = [], {}
     for test in run["tests"]:
+        if test["role"] == "baseline":
+            continue
         result = {
             key: test[key]
             for key in ("order", "role", "technique", "guid", "name", "executor", "elevated", "user")
@@ -457,6 +584,14 @@ def main(run_dir: Path, engine: Path) -> int:
     measured = [test for test in tests if test["role"] == "test"]
     took = [test for test in measured if test["execution"]["answer"] == "took effect"]
     hardened = [test for test in tests if test["role"] == "hardened"]
+    # What systemd ran during the baseline is ordinary work too: only the tests' windows are left out.
+    baseline = {test["order"] for test in run["tests"] if test["role"] == "baseline"}
+    test_windows = [
+        window for order, window in windows.items() if order not in baseline and None not in window
+    ]
+    ordinary = ordinary_activity(run, events, starts, matched, rules, test_windows)
+    verdicts = judge_lab_rules(lab_rules, tests, ordinary)
+    second_answers(tests, verdicts)
     results = {
         "schema": "bluefire-lab/results/1",
         "run": {
@@ -474,10 +609,19 @@ def main(run_dir: Path, engine: Path) -> int:
             "source": (run_dir / "rules" / "SOURCE").read_text(encoding="utf-8").strip(),
             "license": "Detection Rule License 1.1, https://github.com/SigmaHQ/Detection-Rule-License",
             "evaluated": {
-                category: sum(1 for rule in rules.values() if rule["file"].startswith(f"linux/{category}/"))
+                category: sum(
+                    1
+                    for rule in rules.values()
+                    if rule["origin"] == "pinned" and rule["file"].startswith(f"linux/{category}/")
+                )
                 for category in CATEGORIES
             },
             "alert_levels": list(ALERT_LEVELS),
+            "lab": len(lab_rules),
+        },
+        "lab_rules": verdicts,
+        "ordinary_activity": {
+            key: ordinary[key] for key in ("baseline_events", "system_events", "pinned_rules")
         },
         "engine": {"name": "Zircolite", "version": found.group(1) if found else None},
         "controls": check_controls(run, tests, starts, sysmon.loss(events, other)),
@@ -495,6 +639,9 @@ def main(run_dir: Path, engine: Path) -> int:
             },
             "hardened": len(hardened),
             "blocked": sum(1 for test in hardened if test["execution"]["answer"] == "blocked"),
+            "alert_with_lab_rules": sum(
+                1 for test in took if test["visibility"].get("with_lab_rules", {}).get("answer") == "alert"
+            ),
         },
         "tests": tests,
         "dropped": run.get("dropped", []),

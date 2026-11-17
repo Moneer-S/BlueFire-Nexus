@@ -1,0 +1,42 @@
+title: Systemd Unit File Written By A Shell
+id: ca91cd29-b168-44f8-a4a1-c882bb3e92e2
+status: experimental
+description: >-
+  A shell or tee created a systemd service or timer unit in a folder where
+  administrators and users keep their own units. Packages install their units
+  under /usr/lib, and systemctl writes overrides itself, so a unit written from
+  a shell is a service or timer someone made by hand, as persistence does.
+references:
+  - https://attack.mitre.org/techniques/T1543/002/
+  - https://attack.mitre.org/techniques/T1053/006/
+author: BlueFire lab
+date: 2026-11-16
+tags:
+  - attack.persistence
+  - attack.t1543.002
+  - attack.t1053.006
+logsource:
+  product: linux
+  category: file_event
+detection:
+  selection_folder:
+    - TargetFilename|startswith:
+        - /etc/systemd/system/
+        - /run/systemd/system/
+    - TargetFilename|contains: /.config/systemd/user/
+  selection_unit:
+    TargetFilename|endswith:
+      - .service
+      - .timer
+  selection_writer:
+    Image|endswith:
+      - /bash
+      - /dash
+      - /sh
+      - /zsh
+      - /ksh
+      - /tee
+  condition: all of selection_*
+falsepositives:
+  - An administrator who writes a unit file by hand
+level: high

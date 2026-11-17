@@ -207,3 +207,59 @@ def test_the_summary_is_the_same_table_in_markdown() -> None:
     assert "| T1070.003 | Some \\| discovery | took effect | telemetry only | none | 1 |" in summary
     assert "Canary run" not in summary.split("| Control |")[0]
     assert "| loss | passed |" in summary
+
+
+def with_a_lab_rule(accepted=True) -> dict:
+    document = results()
+    rule = {
+        **RULE,
+        "id": "lab-1",
+        "title": "Shell History File Emptied",
+        "origin": "lab",
+        "file": "linux/x.yml",
+    }
+    document["tests"][2]["visibility"]["with_lab_rules"] = {
+        "answer": "alert" if accepted else "telemetry only",
+        "rules": [{**rule, "accepted": accepted}],
+    }
+    document["summary"]["alert_with_lab_rules"] = 2
+    reason = (
+        "it alerted on every run with changed input arguments and on no ordinary activity"
+        if accepted
+        else "it matched 1 event of ordinary activity"
+    )
+    document["lab_rules"] = [
+        {**rule, "accepted": accepted, "reason": reason, "procedures": 1, "ordinary_matches": [] if accepted else [7],
+         "fires_on": [{"order": 3, "technique": "T1070.003", "guid": "g", "name": "Some | discovery"}],
+         "variants": [{"order": 9, "technique": "T1070.003", "name": "x", "compared_with": 3, "args": {},
+                       "took_effect": True, "alerted": True}]}
+    ]  # fmt: skip
+    document["ordinary_activity"] = {"baseline_events": 40, "system_events": 900, "pinned_rules": []}
+    return document
+
+
+def test_the_labs_rules_have_their_own_column_and_section() -> None:
+    page = report.html_report(with_a_lab_rule())
+
+    assert "<th>With the lab's rules too</th>" in page
+    section = page[page.index("<h2>The lab's own rules</h2>") : page.index("<h2>Controls</h2>")]
+    assert "Shell History File Emptied" in section
+    assert "alerted on 1 of 1" in section
+    assert ">accepted<" in section
+    assert "The baseline of ordinary activity left 40 events" in section
+    assert "outside the tests left 900 events" in section
+    assert "With the lab's own rules as well, 2 of the 2 raised an alert." in report.markdown_summary(
+        with_a_lab_rule()
+    )
+
+
+def test_a_rule_that_is_not_accepted_says_why() -> None:
+    page, summary = (
+        report.html_report(with_a_lab_rule(False)),
+        report.markdown_summary(with_a_lab_rule(False)),
+    )
+
+    assert ">not accepted<" in page
+    assert "It matched 1 event of ordinary activity." in page
+    assert "not accepted: it matched 1 event of ordinary activity" in summary
+    assert "| telemetry only (high: Shell History File Emptied, not accepted) |" in summary
