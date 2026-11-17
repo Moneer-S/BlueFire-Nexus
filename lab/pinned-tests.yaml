@@ -168,11 +168,16 @@ tests:
     effect: grep -qF '/tmp/evil.sh' /var/spool/cron/crontabs/{account}
     dwell: 65 # long enough for cron to run the planted line once
     defenses: [cron-allow]
-  # Root's own cron folder, which /etc/cron.allow does not cover.
+  # Root's own cron folder, which /etc/cron.allow does not cover. Upstream's default
+  # command begins with echo, so the line the test writes there is not a cron entry and
+  # cron schedules nothing from it: the test runs with a command that is one, and the
+  # check reads a schedule and an account at the start of the line.
   - technique: T1053.003
     guid: 078e69eb-d9fb-450e-b9d0-2e118217c846
     name: Cron - Add script to /etc/cron.d folder
-    effect: test -s /etc/cron.d/persistevil
+    args: {command: "*/5 * * * * root echo bluefire-lab-cron-d"}
+    effect: >-
+      grep -qE '^[*0-9/,-]+( [*0-9/,-]+){4} root ' /etc/cron.d/persistevil
     defenses: [cron-allow]
   - technique: T1053.006
     guid: f4983098-bb13-44fb-9b2c-46149961807b
@@ -223,6 +228,8 @@ tests:
     effect: grep -q 'T1546.004' {home}/.bashrc
     defenses: [profile-immutable]
   # The account's other start files, which the immutable ~/.bashrc does not cover.
+  # Upstream's cleanup keeps all but the last two lines of the file, one more than the
+  # test adds, so each run also takes away the last line the account's file had before.
   - technique: T1546.004
     guid: 94500ae1-7e31-47e3-886b-c328da46872f
     name: Add command to .bash_profile

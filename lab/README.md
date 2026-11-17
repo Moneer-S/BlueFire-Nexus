@@ -19,7 +19,7 @@ report (`report.html`). GitHub keeps both for 90 days.
 - **Tests:** 61 Linux tests from Atomic Red Team at commit `a0e3f9bc`, run
   unchanged by its executor, Invoke-AtomicRedTeam, at commit `8af478bb`. 60 of
   them ran: the runner has no `ccencrypt`, which the ccrypt test (T1486)
-  needs, so the run left that test out and its report says so. Four run with
+  needs, so the run left that test out and its report says so. Five run with
   one input argument changed; [`pinned-tests.yaml`](pinned-tests.yaml) says
   which and why.
 - **Sensors:** Sysmon for Linux 1.6.0 with the configuration in
@@ -118,8 +118,10 @@ What that means for a defender, under these sensors and these rules:
   in the same run. The other two, the awk shell escape and turning ASLR off
   with `sysctl` (T1685), matched nothing ordinary.
 - One test left no telemetry: emptying the history with the shell's own
-  `echo` (T1070.003 Clear Bash history (echo)) starts no program, and neither
-  sensor records a write to a history file that already exists. auditd's
+  `echo` (T1070.003 Clear Bash history (echo)) starts no program, auditd does
+  not watch history files, and Sysmon reports a write to a file that exists
+  already only when the file looks newly created afterwards, which this one,
+  written by the test's preparation, did not. auditd's
   watch on the shell start files records the append to `~/.bashrc` that Sysmon
   cannot see, and recording process starts as well raised two of the alerts:
   see [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
@@ -172,9 +174,9 @@ printed `T1027.013: Payload extracted from encrypted ZIP`: it runs its script
 through `bash`, which the mount does not stop. With `/etc/cron.allow` in place,
 root still wrote a job into `/etc/cron.d` (T1053.003 Cron - Add script to
 /etc/cron.d folder): the file governs only the `crontab` command. With
-`~/.bashrc` immutable, commands were still added to the account's
-`~/.bash_profile` and `~/.profile` (T1546.004), which the change does not
-cover. So `/tmp` mounted `noexec` blocked five of the six published procedures
+`~/.bashrc` immutable, lines were still added to the account's other start
+files (T1546.004), which the change does not cover: a command to
+`~/.bash_profile`, and to `~/.profile` the comment that test appends. So `/tmp` mounted `noexec` blocked five of the six published procedures
 it was tried on, `/etc/cron.allow` one of two, the immutable `~/.bashrc` one of
 three and the root-owned `~/.ssh` one of one, and the comparison of runs says
 the same for each change. The first four rows were first shown in
@@ -263,7 +265,8 @@ which the pinned rule "Linux Setuid Capability Set on a Binary via Setcap
 Utility" is of level low. And the history rule does not alert on
 `cat /dev/null > ~/.bash_history` (T1070.003 Clear Bash history (cat dev/null)):
 the redirection is the shell's, so no program start names the history file,
-and Sysmon does not report a write to a file that exists already.
+and Sysmon reported no write to it: it reports one to a file that exists
+already only when the file looks newly created afterwards (see the Limits).
 
 In the same run the baseline left 379 events and the runner's and the lab's own
 work outside the tests 8,331, much of it the lab's own driver switching
@@ -292,9 +295,9 @@ among them TCP port 22, the port SSH uses, on every address. Sysmon for Linux
 and auditd were both active once started. Every program the tests then named
 (`awk`, `crontab`, `systemctl`, `useradd`) was there, so no test was left out.
 In [run 44096893965](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44096893965)
-the list names `ccencrypt` too, for the ccrypt test (T1486), and the runner has
-none: the run left that test out, and its report and run page list it with
-that reason.
+the list names more programs, among them `ccencrypt` for the ccrypt test
+(T1486), and the runner has no `ccencrypt`: the run left that test out, and its
+report and run page list it with that reason.
 
 ## A sensor change that makes a gap visible
 
