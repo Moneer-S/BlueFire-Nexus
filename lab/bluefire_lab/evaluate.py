@@ -230,7 +230,13 @@ def describe_audit(event: dict, why: str) -> dict:
     action = names.get("SYSCALL") or event["types"][0]  # a record a program wrote itself has no call
     told = {**call, "cmd": auditd.command_line(call["cmd"])} if call.get("cmd") else call  # sudo's is hex
     said = " ".join(f"{name}={told[name]}" for name in ("op", "cmd", "acct", "res") if told.get(name))
-    detail = ", ".join(event["paths"]) + (f" by {event['command']}" if event["command"] else "")
+    command = event["command"]
+    detail = ", ".join(event["paths"]) + (f" by {command}" if command else "")
+    if action in ("execve", "execveat") and call.get("success") == "no":
+        # No program started, so the process's command line is still that of the shell that
+        # forked it, the test's own text: name the start by the file the kernel refused.
+        command = ""
+        detail = f"the kernel refused to start {', '.join(event['paths'])} (exit {call.get('exit')})"
     return {
         "record": f"audit {event['event']}",
         "time": event["time"],
@@ -244,7 +250,7 @@ def describe_audit(event: dict, why: str) -> dict:
             "records": " ".join(event["types"]),
             **{name: value for name, value in call.items() if value not in ("", "(none)")},
             "paths": ", ".join(event["paths"]),
-            "command": event["command"],
+            "command": command,
         },
     }
 
@@ -445,6 +451,20 @@ def visibility(
     # session (the change of login uid that starts it, sudo's records) as the executor's are.
     attack = step_of(test, "attack")
     pids = {launcher["ProcessId"]} | {event["ProcessId"] for event in starts if event["ProcessGuid"] in owned}
+    # So is a process forked from one of those that never started a program Sysmon saw: a
+    # subshell, or a fork whose program the kernel refused to start (noexec). auditd names its
+    # parent.
+    started = {event["ProcessId"] for event in starts}
+    forks: dict[str, set[str]] = collections.defaultdict(set)
+    for event in context.get("audit_events", []):
+        pid, parent = event["call"].get("pid"), event["call"].get("ppid")
+        if pid and parent and pid not in started:
+            forks[parent].add(pid)
+    unseen = list(pids)
+    while unseen:
+        for pid in forks.pop(unseen.pop(), set()) - pids:
+            pids.add(pid)
+            unseen.append(pid)
     # The launcher's start, as each sensor recorded it. Its command line is the whole test, so a
     # rule that matches only these is reported as that, not as a detection. For auditd it is the
     # first program start of the launcher's process: a shell given one command can become that
@@ -554,8 +574,8 @@ def ordinary_activity(
         for rule_id in matched.get(event["EventRecordID"], []):
             hits[rule_id].append(int(event["EventRecordID"]))
     for event in audit_events:
-        if "LOGIN" in event["types"]:
-            continue  # the driver's change of login uid that starts a step's session
+        if "LOGIN" in event["types"] or missed_lookup(event):
+            continue  # the driver's change of login uid that starts a step's session; a lookup
         session = event["call"].get("ses")
         if session in baseline_sessions:
             kind = "baseline_events"

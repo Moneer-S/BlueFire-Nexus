@@ -95,8 +95,9 @@ What that means for a defender, under these sensors and these rules:
   no pinned rule of an alert level fired. The lab's own rules close 11 of these
   gaps; 35 stay open. How much of a technique its telemetry shows differs: for
   the preloaded library (T1574.006) it is only the `ls` that ran, because
-  Sysmon does not record the environment variable that carries the technique,
-  so no rule over that telemetry could close the gap.
+  neither sensor records the environment variable that carries the technique,
+  except as part of the test's own command line, so no rule could close the
+  gap without matching the test's text.
 - Of the three pinned alerts, one would also fire on ordinary work. The alert
   on emptying the history with `truncate` (T1070.003) comes from "Binary
   Padding - Linux", a rule for another technique that matches any
@@ -286,7 +287,8 @@ of them look for a program's start and its arguments (EXECVE records). auditd
 now records process starts as well: those of processes with a login uid. The
 lab sets one at the start of every step, and cron and logins set one too, so
 the machine's own cron jobs and what cron or a login starts for a test are
-recorded as well; the runner's agent and what systemd starts have none. In
+recorded as well, among them the user manager systemd starts for a login. The
+runner's agent and the services systemd starts have none. In
 [run 44055611236](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44055611236)
 18 auditd rules matched something, and two tests went from telemetry only to
 an alert by a pinned rule:
@@ -309,7 +311,7 @@ start of the launcher's process is the launcher's, which, holding the whole
 test, is never counted as a detection; the ASLR test's `sysctl` start, in the
 same process, is the test's. And auditd rotates its log at 8 MB by default,
 which it did during the first run with this change: the lab now sets it not to
-rotate, and the loss control fails a run in which it did.
+rotate, and the loss control would fail a run in which it did; none has since.
 
 ## How a run works
 
@@ -358,8 +360,10 @@ rotate, and the loss control fails a run in which it did.
    So are the start and end of the shell process that carries the whole command
    line (`sh -c` or `bash -c`, as the test declares); files it writes count as
    the test's. An auditd record belongs to a test when its process is one that
-   belongs to the test by those rules, which leaves out the driver's own
-   records in the same session. It then judges each of the lab's own rules on
+   belongs to the test by those rules, or was forked by one and never started a
+   program Sysmon saw (a subshell, or a start the kernel refused), which leaves
+   out the driver's own records in the same session. It then judges each of
+   the lab's own rules on
    the tests, their variants and the ordinary activity.
 4. `bluefire-lab report` writes `report.html`, one file that loads nothing from
    elsewhere when it opens (it refuses to write one that would), and the same
@@ -407,18 +411,20 @@ Seven controls must pass, or the run fails as a whole:
   [`sensors/audit.rules`](sensors/audit.rules), for writes and for changes of
   permissions, owner and extended attributes; `chattr`'s file flags, such as
   immutable, are not among them. It records the process starts of processes
-  with a login uid, not those without one, such as what systemd starts for a
-  test that runs as root. A start the kernel refused because no such file
+  with a login uid, not those without one, such as the services systemd starts
+  for a test that runs as root. A start the kernel refused because no such file
   existed, as when a shell tries each folder of its search path, is not
-  counted; one refused for another reason, such as `noexec`, is. So many pinned
+  counted; one refused for another reason, such as `noexec`, is, and is named
+  by the file the kernel refused to start. So many pinned
   auditd rules cannot match under it: those about other system calls, other
   files, or audit keys it does not set. Besides the watches it records what
   programs report about themselves, such as `useradd` adding an account or
   `sudo` running a command, and those records count for the test whose process
   wrote them. auditd's record of a process's command line (PROCTITLE) keeps
-  the shell's, the whole test, after the shell has become the one command it
-  was given; no pinned rule reads that record, and the report names a program
-  start by its own arguments.
+  the shell's, the start of the test's own text (the kernel keeps at most 128
+  bytes), after the shell has become the one command it was given, and in a
+  fork of the shell whose program the kernel refused; no pinned rule reads
+  that record, and the report names a program start by its own arguments.
 - A process that systemd starts for a test that runs as root is tied to the
   test by time, inside the test's window, and not by process ancestry. The
   runner's own timers are stopped before the tests, so that their units do not

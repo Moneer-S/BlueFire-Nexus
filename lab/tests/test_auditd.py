@@ -90,7 +90,7 @@ def test_a_record_a_program_writes_itself_gives_its_event_process_and_session(tm
 
 
 def test_a_program_start_is_named_by_its_arguments_not_by_the_shell_it_was(tmp_path: Path) -> None:
-    # As auditd wrote sysctl's start in workflow run 44055611236 (audit.txt lines 20306 to 20311), where
+    # As auditd wrote sysctl's start in workflow run 44052714425 (audit.txt lines 20306 to 20311), where
     # bash -c "sysctl ..." had become sysctl in the same process: the command line is still the shell's.
     stamp = "msg=audit(1794906998.745:7424):"
     shells = b"bash\0-c\0sysctl -w kernel.randomize_va_space=0".hex().upper()

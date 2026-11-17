@@ -312,16 +312,27 @@ def test_a_start_the_kernel_refused_for_a_missing_file_is_a_lookup_not_telemetry
     ]
     launched = {**written(184, 11, second=5.0), "types": ["SYSCALL", "EXECVE", "CWD", "PATH"]}
 
-    def refused(serial: int, error: str) -> dict:
-        event = {**written(serial, 11, second=5.002), "types": ["SYSCALL", "CWD", "PATH"]}
-        event["call"] = {**event["call"], "syscall": "59", "success": "no", "exit": error}
+    def refused(serial: int, error: str, pid: str = "125", parent: str = "120") -> dict:
+        # In a fork that never started a program, so Sysmon saw no start of it, as with
+        # /tmp/crond under noexec in run 44063265542 (process 11981, forked by the launcher).
+        event = {
+            **written(serial, 11, second=5.002, pid=pid),
+            "types": ["SYSCALL", "CWD", "PATH", "PROCTITLE"],
+        }
+        event["call"] = {**event["call"], "ppid": parent, "syscall": "59", "success": "no", "exit": error}
         event["names"] = {**event["names"], "SYSCALL": "execve"}
+        event["paths"] = ["/tmp/crond"]
         return event
 
-    # A shell trying a folder of its search path (ENOENT), and /tmp mounted noexec (EACCES).
-    _, mine = see(a_test(), events, audit=[launched, refused(188, "-2"), refused(189, "-13")])
+    # A shell trying a folder of its search path (ENOENT), /tmp mounted noexec (EACCES), and a
+    # fork of the executor itself, which is not the test's.
+    audit = [launched, refused(188, "-2"), refused(189, "-13"), refused(190, "-13", pid="126", parent="101")]
+    _, mine = see(a_test(), events, audit=audit)
 
     assert [event["record"] for event in mine] == ["audit 1794893574.919:189"]
+    # Named by the file it tried to start, not by the shell's command line the fork still holds.
+    assert mine[0]["detail"] == "the kernel refused to start /tmp/crond (exit -13)"
+    assert mine[0]["fields"]["command"] == ""
 
 
 def test_sudos_record_of_a_command_the_test_ran_shows_the_command() -> None:
@@ -560,6 +571,25 @@ def test_ordinary_activity_is_the_baseline_and_what_ran_in_no_session_outside_th
     assert (ordinary["baseline_events"], ordinary["system_events"]) == (1, 1)
     assert ordinary["rules"] == {"lab-rule": [1], "medium-rule": [3]}
     assert [(rule["id"], rule["events"]) for rule in ordinary["pinned_rules"]] == [("medium-rule", 1)]
+
+
+def test_ordinary_activity_leaves_out_a_failed_lookup_as_a_tests_events_do() -> None:
+    run_record = {"tests": [{"role": "baseline", "steps": [step("baseline-root", 30)]}]}
+
+    def start_of(serial: int, error: str) -> dict:
+        event = {**written(serial, 30, second=0.5), "types": ["SYSCALL", "CWD", "PATH", "PROCTITLE"]}
+        event["call"] = {**event["call"], "syscall": "59", "success": "no", "exit": error}
+        event["names"] = {**event["names"], "SYSCALL": "execve"}
+        return event
+
+    # A baseline shell trying a folder of its search path (ENOENT), and a start refused (EACCES).
+    audit = [start_of(300, "-2"), start_of(301, "-13")]
+    matched = {f"audit {event['event']}": ["lab-rule"] for event in audit}
+
+    ordinary = evaluate.ordinary_activity(run_record, [], [], matched, RULES, [], audit)
+
+    assert ordinary["baseline_events"] == 1
+    assert ordinary["rules"] == {"lab-rule": ["audit 1794893574.919:301"]}
 
 
 def judged(
