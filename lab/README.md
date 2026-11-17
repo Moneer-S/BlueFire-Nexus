@@ -8,11 +8,13 @@ technique take effect, and what did the defense see.
 ## What it shows today
 
 Everything in this section comes from one run of the `lab` workflow:
-[run 43808649201](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43808649201),
-16 November 2026. Its run page shows the table below, and its artifact
-`lab-run` holds the sensor's raw output (`sysmon.txt`), the answers with what
-each rests on (`results.json`) and the full report (`report.html`). GitHub keeps
-both for 90 days.
+[run 44019934793](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44019934793),
+17 November 2026. Its run page shows the same answers in a longer table, and
+its artifact `lab-run` holds the sensor's raw output (`sysmon.txt`), the
+answers with what each rests on (`results.json`) and the full report
+(`report.html`). GitHub keeps both for 90 days. An earlier run of the same tests,
+[run 43808649201](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43808649201)
+on 16 November, gave the same answers before the controls were tightened.
 
 - **Target:** a GitHub-hosted `ubuntu-24.04` runner (Ubuntu 24.04.5, kernel
   7.0.0-1014-aws, runner image 20261111.127.1).
@@ -59,10 +61,10 @@ rules:
   and only while it is less than 100 ms old
   ([its source](https://github.com/microsoft/Sysmon-Linux/blob/962934f7e710a8e860ed5020f2068c6eba6aff64/ebpfKern/sysmonFileOpen.c)).
   This gap needs a sensor change before any rule can see the write itself.
-- Some rules matched only that shell process, which carries a test's whole
-  command line: a medium rule on T1082, T1053.006, T1543.002 and T1546.004, and
-  three medium rules for base64 piped into a shell on T1140. The report shows
-  them, and does not count them as detections.
+- On nine of the tests, rules of level medium matched only that shell process,
+  which carries a test's whole command line: three of them on T1140, for base64
+  piped into a shell. The report shows them, and does not count them as
+  detections.
 
 The canary, a test the pinned rules are known to catch (T1070.003, history
 removal with `rm`), raised its alert at the start and at the end of the run. A
@@ -71,7 +73,7 @@ none.
 
 ## Hardening that blocks a technique
 
-In [run 44014254015](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44014254015)
+In [run 44020766356](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44020766356)
 (17 November 2026, same runner image and kernel, the same 17 tests with the same
 answers), four tests ran once more after all the other tests, before the
 closing canary, each with one hardening change in place. All four changes
