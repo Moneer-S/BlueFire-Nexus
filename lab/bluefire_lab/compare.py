@@ -7,8 +7,9 @@ each whose answers differ, the comparison gives both answers and what changed
 under them: the events that appeared or went when the telemetry did, the rules
 that matched, a rule of the lab's own that is accepted now, and the basis of a
 changed execution answer. For a rule of the lab's own it says how many
-published procedures the rule covers, because a fix that covers one procedure
-has not shown that it covers the technique.
+published procedures the rule covers, and for each hardening change how many
+of the procedures it was tried on it blocked, because a fix that covers one
+procedure has not shown that it covers the technique.
 """
 
 from __future__ import annotations
@@ -101,12 +102,42 @@ def compare(before: dict, after: dict) -> dict:
 
 
 def named(tests: list[dict]) -> str:
-    """The runs of tests, with runs of the same test with changed input arguments counted."""
+    """The runs of tests: a hardened run with its change and what it showed, the runs of a test
+    with changed input arguments counted, and any other run with the arguments the list sets."""
 
-    plain = [f"{test['technique']} {test['name']}" for test in tests if not test.get("args")]
-    varied = collections.Counter(f"{test['technique']} {test['name']}" for test in tests if test.get("args"))
-    parts = plain + [f"{name} with changed input arguments ({count}x)" for name, count in varied.items()]
+    parts, varied = [], collections.Counter()
+    for test in tests:
+        title = f"{test['technique']} {test['name']}"
+        change = (test.get("defense") or {}).get("title")
+        if change:
+            parts.append(f"{title}, with {change}: {test['execution']['answer']}")
+        elif test["role"] == "variant":
+            varied[title] += 1
+        else:
+            args = ", ".join(f"{key}={value}" for key, value in (test.get("args") or {}).items())
+            parts.append(title + (f", with {args}" if args else ""))
+    parts += [f"{title} with changed input arguments ({count}x)" for title, count in varied.items()]
     return "; ".join(parts)
+
+
+def coverage(results: dict) -> list[str]:
+    """For each hardening change in a run, the published procedures it was tried on and
+    blocked, because a change that blocks one procedure has not shown it covers the technique."""
+
+    runs: dict[str, list[dict]] = collections.defaultdict(list)
+    for test in results["tests"]:
+        if test.get("defense"):
+            runs[test["defense"]["title"]].append(test)
+    lines = []
+    for title, tried in runs.items():
+        open_ = [f"{test['technique']} {test['name']} ({test['execution']['answer']})" for test in tried
+                 if test["execution"]["answer"] != "blocked"]  # fmt: skip
+        blocked = len(tried) - len(open_)
+        lines.append(
+            f"- {title}: blocked {blocked} of the {plural(len(tried), 'published procedure')} it was tried on"
+            + (f"; not {'; '.join(open_)}" if open_ else "")
+        )
+    return lines
 
 
 def markdown(before: dict, after: dict) -> str:
@@ -142,6 +173,8 @@ def markdown(before: dict, after: dict) -> str:
     for label, tests in (("New", result["new"]), ("Gone", result["gone"])):
         if tests:
             lines += [f"{label}: {cell(named(tests))}.", ""]
+    if coverage(after):
+        lines += ["Hardening changes in this run:", "", *coverage(after), ""]
     return "\n".join(lines)
 
 

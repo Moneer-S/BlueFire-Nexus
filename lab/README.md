@@ -23,9 +23,12 @@ report (`report.html`). GitHub keeps both for 90 days.
 - **Sensors:** Sysmon for Linux 1.6.0 with the configuration in
   [`sensors/sysmon.xml`](sensors/sysmon.xml), and auditd 3.1.2 with the file
   watches in [`sensors/audit.rules`](sensors/audit.rules).
-- **Rules:** the 188 Linux rules of SigmaHQ release r2026-07-01 that match what
-  these sensors record (122 for process creation, 8 for file events, 5 for
-  network connections, 53 for auditd), evaluated by Zircolite 4.7.1.
+- **Rules:** the 188 Linux rules of SigmaHQ release r2026-07-01 for the kinds
+  of event these sensors record (122 for process creation, 8 for file events,
+  5 for network connections, 53 for auditd), evaluated by Zircolite 4.7.1. 27
+  of the 53 auditd rules look for process starts (EXECVE records), which this
+  auditd configuration does not record, so they could not match. Among them is
+  a high rule for turning ASLR off with `sysctl`, as T1685 below does.
 
 All 49 tests took effect. One of them raised an alert, meaning a match of a
 rule of level high or critical on an event of the test. The last column counts
@@ -86,9 +89,14 @@ the lab's own rules too, those the run accepted: see
 
 What that means for a defender, under these sensors and these rules:
 
-- 48 tests did what they do and the sensors recorded it, but no pinned rule of
-  an alert level fired. These are gaps that a rule could close. The lab's own
-  rules close 12 of them; 36 stay open.
+- 48 tests took effect and left telemetry besides their launcher, but no
+  pinned rule of an alert level fired. The lab's own rules close 12 of these
+  gaps; 36 stay open. How much of a technique its telemetry shows differs: for
+  the preloaded library (T1574.006) it is only the `ls` that ran, because
+  Sysmon does not record the environment variable that carries the technique,
+  so no rule over that telemetry could close the gap; and the ASLR change
+  (T1685) is matched by a pinned high rule that needs records this auditd
+  configuration does not produce.
 - No test left no telemetry. Before auditd recorded beside Sysmon, appending a
   command to `~/.bashrc` left none: see
   [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
@@ -110,10 +118,11 @@ test now waits five seconds before its check.
 
 In [run 44035796630](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44035796630),
 nine tests ran once more after all the other tests, before the closing canary,
-each with one hardening change in place. Eight of the changes blocked their
-technique: the test ran with its prerequisites met and did not take effect,
-while it had taken effect without the change earlier in the same run. What each
-test printed shows why:
+each with one of four hardening changes in place; one change, `/tmp` mounted
+`noexec`, was tried on six tests. Eight of the nine runs were blocked: the test
+ran with its prerequisites met and did not take effect, while it had taken
+effect without the change earlier in the same run. What each test printed
+shows why:
 
 | Test | Hardening change | What the test printed |
 | --- | --- | --- |
@@ -126,10 +135,12 @@ test printed shows why:
 | T1574.006 Shared Library Injection via LD_PRELOAD | the same `/tmp` | `object '/tmp/T1574006.so' from LD_PRELOAD cannot be preloaded (failed to map segment from shared object): ignored.` |
 | T1569.003 Enable systemd Service for Persistence with Auto-Restart | the same `/tmp`, where its service's program is | `ExecStart=/tmp/atomic_payload.sh (code=exited, status=203/EXEC)` |
 
-The ninth change did not block its technique. With `/tmp` mounted `noexec`, the
+The ninth run was not blocked. With `/tmp` mounted `noexec`, the
 password-protected ZIP payload (T1027.013) still printed `T1027.013: Payload
 extracted from encrypted ZIP`: it runs its script through `bash`, which the
-mount does not stop. The first four rows were first shown in
+mount does not stop. So that change blocked five of the six published
+procedures it was tried on, and the comparison of runs says the same for each
+change. The first four rows were first shown in
 [run 44020766356](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44020766356).
 
 Each change was tried against the published tests in the table. What it leaves
@@ -148,13 +159,14 @@ A rule describes what the technique does: for example any `chmod` mode that
 sets the setuid or setgid bit, symbolic or numeric, and not only the mode a test
 uses. It is accepted only when all three of these hold in the same run:
 
-- it alerts on the test it was written for;
+- it alerts on at least one published test;
 - every published procedure it alerts on ran again with changed input arguments
-  (the `variants` in [`pinned-tests.yaml`](pinned-tests.yaml)), and it alerted
-  on each of those runs;
+  (the `variants` in [`pinned-tests.yaml`](pinned-tests.yaml)) and took effect,
+  and it alerted on each of those runs;
 - it matches nothing in the ordinary activity: a baseline of ordinary
   administration with the same tools and files, run as root and as the test
-  account, and the runner's own work outside the tests. The baseline adds and
+  account, and the runner's and the lab's own work outside the tests. The
+  baseline adds and
   deletes accounts, among them a system account without a login shell; writes
   a systemd drop-in with a shell, copies a whole unit file into place with `cp`
   and masks a unit; changes file modes without the setuid or setgid bit;
@@ -169,10 +181,12 @@ the values they set, such as an account name or a file path. They cannot show
 that a rule does not depend on what a test fixes in its command, such as the
 options it passes to `useradd` or the mode it gives `chmod`: a rule written for
 exactly those would be accepted as well. Where a test lets a run change what a
-rule looks at, a variant does: the history tests run again on `~/.histfile` and
-`~/.history`, whose names lack `_history`. Beyond that, each rule's description
-says which spellings it covers, and only the spellings the tests use have been
-seen in a run.
+rule looks at, a variant does so for some rules and not yet for others: the
+history tests run again on `~/.histfile` and `~/.history`, and the key search on
+`id_ed25519`, but the systemd tests' variants change a unit's name and not the
+folder it is written to, though the tests allow that too. Beyond that, each
+rule's description says which spellings it covers, and only the spellings the
+tests use have been seen in a run.
 
 The visibility answer stays the pinned rules' alone. A second column in the
 report gives the answer with the accepted rules counted too, and a rule that is
@@ -198,7 +212,8 @@ its procedures. It also alerts on the third, T1569.003, added to the list
 later, and on that procedure's run with changed input arguments. Two other
 accepted rules alert on two published procedures each, and five cover a single
 procedure each so far. In the same run the baseline left 286 events and the
-runner's own work outside the tests 6,604. None of the lab's rules matched any
+runner's and the lab's own work outside the tests 6,604, most of it the lab's
+own driver switching accounts and sessions. None of the lab's rules matched any
 of them, while 12 pinned rules did. One of those is of level high: the canary's
 own rule, "History File Deletion", matched the baseline's removal of a copy of
 a history file (`rm ~/.bash_history.bak`, record 1118). The others are medium
@@ -215,9 +230,10 @@ in [`rules/rejected`](rules/rejected) with the reason.
 
 Each run starts with an inventory of the target, and chooses the tests by it.
 In [run 44028032549](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44028032549)
-(17 November 2026) the hosted runner had 5 accounts that can log in (among them
-`packer` and `postgres`, which come with the runner image), 26 running services
-before the lab started its sensors, and 9 listening TCP and UDP addresses,
+(17 November 2026) the hosted runner had 5 accounts that can log in (`root`,
+`runner`, the lab's own test account, and `packer` and `postgres`, which come
+with the runner image), 26 running services before the lab started its sensors
+(auditd among them, which the job installs), and 9 listening TCP and UDP addresses,
 among them TCP port 22, the port SSH uses, on every address. Sysmon for Linux
 and auditd were both active once started. Every program the tests name (`awk`,
 `crontab`, `systemctl`, `useradd`) was there, so no test was left out. That a
@@ -283,7 +299,12 @@ before the first test and its own count of lost records at 0 before and after.
    when the test declares that it needs it. The account cannot change the
    lab's own files: the tests, the executor, the rules, the rule engine, the
    lab and the run's folder. The job checks that before the first test, and
-   fails if it can. Every step (preparation, a marker
+   fails if it can, as it did in
+   [run 44036033449](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44036033449)
+   before those files were made read-only for it; in the runs before that
+   change, among them 44035796630, the account wrote the six files of the
+   in-place instruction overwrite's prerequisite into the pinned tests'
+   folder. Every step (preparation, a marker
    before and after the test, the test, an effect check, the cleanup) runs in a
    kernel audit session of its own.
 3. `bluefire-lab evaluate` computes `results.json` from the files the run
@@ -322,7 +343,9 @@ Seven controls must pass, or the run fails as a whole:
   appears twice; and auditd's own count of lost records did not move during the
   run;
 - **engine:** the rule engine loaded every rule and read every event it was
-  given, and the sensor recorded every kind of event the rules describe;
+  given, and every category of rules had events to evaluate. Its detail says
+  how many rules need records this configuration does not produce, which is a
+  limit of the configuration, not a failure of the run;
 - **canary:** the known-detected test took effect and alerted, first and last;
 - **control:** the harmless command took effect and raised no alert.
 
@@ -332,23 +355,32 @@ Seven controls must pass, or the run fails as a whole:
   Linux records process starts and ends, network connections, file deletions,
   and file creations. A file counts as created when it is opened for creation
   and its three timestamps are equal and less than 100 ms old. So a write to an
-  existing file shows up as a creation when it leaves those timestamps fresh,
-  as a read followed by an overwrite does (T1098.004 in the run above). An
+  existing file can show up as a creation when it leaves those timestamps
+  fresh, as a read followed by an overwrite did for T1098.004 in run
+  44035796630, though not in every run: whether it does depends on timing. An
   append that leaves the access time old, like the one to `~/.bashrc`, is not
-  recorded by Sysmon, and neither are reads and permission changes.
+  recorded by Sysmon, and neither are reads, permission changes and process
+  environments. While `/tmp` is bind-mounted for the `noexec` change, Sysmon
+  names files under it with the folder twice (`/tmp/tmp/crond`).
 - auditd watches only the shell start files in
   [`sensors/audit.rules`](sensors/audit.rules), for writes and for changes of
   permissions, owner and extended attributes; `chattr`'s file flags, such as
-  immutable, are not among them. It adds no process events. Besides the
+  immutable, are not among them. It records no process starts, so the pinned
+  auditd rules that look for them (EXECVE records) cannot match. Besides the
   watches it records what programs report about themselves, such as `useradd`
   adding an account or `sudo` running a command, and those records count for
   the test whose process wrote them.
 - A process that systemd starts for a test that runs as root is tied to the
   test by time, inside the test's window, and not by process ancestry. The
   runner's own timers are stopped before the tests, so that their units do not
-  start inside such a window.
+  start inside such a window, and systemd's own steps are left out. A late
+  step of systemd for an earlier test can still land in a later root test's
+  window: in run 44040235251 logind's removal of the runtime folder of the
+  account T1078.003 logs in as, 10 s after that test, was tied to T1548.001,
+  which changed none of its answers. That step is left out now.
 - Outbound traffic, name lookups included, is rejected for the test account
-  only, not for tests that run as root.
+  only, not for tests that run as root. The job checks a name lookup and a
+  connection to an address it looked up itself before the tests.
 - Two tests are checked more weakly than the rest. The awk shell escape
   (T1059.004) has no check of its own that could fail: awk exits with status 0
   whether or not the shell starts, so its "took effect" rests on the command

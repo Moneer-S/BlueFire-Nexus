@@ -177,10 +177,12 @@ def test_what_systemd_also_runs_outside_every_window_is_the_systems_own_work() -
     assert records(mine) == [6, 7, 8]
 
 
-def test_systemds_own_helper_is_not_part_of_a_test() -> None:
+def test_systemds_own_steps_are_not_part_of_a_test() -> None:
     helper = start(15, 5.9, 301, 1, "systemd-executor --deserialize 72", sysmon.NO_SESSION, user="root")
+    # logind removing the runtime folder of an account an earlier test logged in as, 10 s later.
+    runtime = start(16, 5.95, 302, 1, "systemd-user-runtime-dir stop 1003", sysmon.NO_SESSION, user="root")
 
-    _, mine = see(a_test(user="root"), [*telemetry(), helper])
+    _, mine = see(a_test(user="root"), [*telemetry(), helper, runtime])
 
     assert records(mine) == [6, 7, 8, 12]
 
@@ -598,6 +600,57 @@ def test_a_rule_the_engine_did_not_load_or_an_event_it_did_not_read_fails_the_ru
 
     for engine in (skipped_rule, unread, no_events, skipped_lab_rule):
         assert failed_controls(tests, engine=engine) == ["engine"]
+
+
+def test_an_auditd_rule_that_needs_a_record_type_never_produced_could_not_match() -> None:
+    # The shapes of pinned SigmaHQ auditd rules; the run's records had no EXECVE.
+    produced = {"SYSCALL", "PATH", "CWD", "PROCTITLE", "ADD_USER"}
+    sysctl = {
+        "selection": {"type": "execve", "a0": "sysctl"},
+        "condition": "selection",
+    }  # case does not count
+    either = {
+        "selection_execve": {"type": "EXECVE", "a0": "chattr"},
+        "selection_path": [{"type": "PATH", "name|endswith": "/.bashrc"}],
+        "condition": "1 of selection_*",
+    }
+    both = {"execve": {"type": "EXECVE"}, "history": ["history"], "condition": "execve and history"}
+    unless = {
+        "selection": {"type": "SYSCALL"},
+        "filter": {"type": "EXECVE"},
+        "condition": "selection and not filter",
+    }
+    nested = {
+        "selection_execve": {"type": "EXECVE"},
+        "keywords_truncate": ["truncate"],
+        "keywords_dd": ["dd"],
+        "keywords_filter": ["/dev/null"],
+        "condition": "selection_execve and (keywords_truncate or (keywords_dd and not keywords_filter))",
+    }
+
+    assert [evaluate.could_match(rule, produced) for rule in (sysctl, either, both, unless, nested)] == [
+        False,
+        True,
+        False,
+        True,
+        False,
+    ]
+    assert evaluate.record_types(either) == ["EXECVE", "PATH"]
+
+
+def test_the_engine_control_says_which_rules_could_not_match_and_still_holds() -> None:
+    tests = [CAUGHT, measured("control"), CAUGHT]
+    audit = {"category": "auditd", "origin": "pinned", "kind": "auditd", "rules": 53, "loaded": 53,
+             "given": 4000, "read": 4000, "unmatchable": 27, "needed_types": ["EXECVE"]}  # fmt: skip
+
+    checks = evaluate.check_controls(RUN, tests, PROBE, CLEAN, [*ENGINE, audit])
+    engine = next(check for check in checks if check["name"] == "engine")
+
+    assert engine["passed"]
+    assert engine["detail"].endswith(
+        "; 27 of the 53 auditd rules could not match, because they need records this configuration does "
+        "not produce (EXECVE)"
+    )
 
 
 def test_the_engines_own_log_says_what_it_loaded_and_read() -> None:

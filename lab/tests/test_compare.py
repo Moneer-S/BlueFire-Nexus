@@ -65,13 +65,35 @@ def test_each_change_says_what_changed_underneath() -> None:
 
 def test_runs_that_only_one_side_has_are_new_or_gone() -> None:
     before = results(a_run("test", "a"), a_run("test", "old"))
-    after = results(a_run("test", "a"), a_run("variant", "a", args={"path": "/var/tmp/x"}))
+    after = results(
+        a_run("test", "a"),
+        a_run("variant", "a", args={"path": "/var/tmp/x"}),
+        a_run("test", "narrowed", args={"search_path": "~"}),  # the list's own argument, not a variant
+        a_run("hardened", "a", execution="blocked", defense={"name": "lock", "title": "a lock"}),
+    )
 
     result = compare.compare(before, after)
     summary = compare.markdown(before, after)
 
     assert [test["guid"] for test in result["gone"]] == ["old"]
-    assert [test["role"] for test in result["new"]] == ["variant"]
-    assert "New: T1 test a with changed input arguments (1x)." in summary
+    assert [test["role"] for test in result["new"]] == ["variant", "test", "hardened"]
+    assert (
+        "New: T1 test narrowed, with search_path=~; T1 test a, with a lock: blocked; "
+        "T1 test a with changed input arguments (1x)."
+    ) in summary
     assert "Gone: T1 test old." in summary
-    assert "1 run of a test gave the same answers, 0 changed, 1 are new and 1 are gone." in summary
+    assert "1 run of a test gave the same answers, 0 changed, 3 are new and 1 are gone." in summary
+
+
+def test_each_hardening_change_says_which_procedures_it_blocked() -> None:
+    lock = {"name": "lock", "title": "a lock"}
+    after = results(
+        a_run("hardened", "a", execution="blocked", defense=lock),
+        a_run("hardened", "b", execution="took effect", defense=lock),
+        a_run("hardened", "c", execution="blocked", defense={"name": "wall", "title": "a wall"}),
+    )
+
+    assert compare.coverage(after) == [
+        "- a lock: blocked 1 of the 2 published procedures it was tried on; not T1 test b (took effect)",
+        "- a wall: blocked 1 of the 1 published procedure it was tried on",
+    ]

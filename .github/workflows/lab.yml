@@ -144,6 +144,14 @@ jobs:
             echo "the test account can still look up names"
             exit 1
           fi
+          # The check above stops at the name, so this one gives the account the address itself.
+          address=$(getent ahostsv4 github.com | head -n 1 | cut -d' ' -f1)
+          test -n "$address"
+          if sudo -u bluefire-lab curl -sS --max-time 5 -o /dev/null --resolve "github.com:443:$address" \
+            https://github.com; then
+            echo "the test account still reaches $address"
+            exit 1
+          fi
 
       - name: Keep the lab's own files out of the test account's reach
         run: |
