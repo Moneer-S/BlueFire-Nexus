@@ -89,6 +89,50 @@ account, the account's other shell start files such as `~/.profile`, and
 programs run from `/dev/shm` or the account's home folder. The changes are
 defined in [`pinned-tests.yaml`](pinned-tests.yaml) under `defenses`.
 
+## Detection rules of the lab's own
+
+[`rules/linux`](rules/linux) holds Sigma rules this repository adds for tests
+that took effect and left telemetry, but raised no alert from the pinned rules.
+A rule describes what the technique does, not one test's file names or values.
+It is accepted only when all three of these hold in the same run:
+
+- it alerts on the test it was written for;
+- it still alerts when that test runs again with changed input arguments (the
+  `variants` in [`pinned-tests.yaml`](pinned-tests.yaml));
+- it matches nothing in the ordinary activity: a baseline of ordinary
+  administration with the same tools and files (adding and deleting accounts, a
+  systemd drop-in and a masked unit, `chmod`, `truncate` on a log file, a
+  program run from `/tmp`), run as root and as the test account, and the
+  runner's own work outside the tests.
+
+The visibility answer stays the pinned rules' alone. A second column in the
+report gives the answer with the accepted rules counted too, and a rule that is
+not accepted changes no answer. In
+[run 44017281584](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44017281584)
+(17 November 2026, kernel 7.0.0-1017-azure), with two more published procedures
+in the list, all 19 tests took effect. One raised an alert with the pinned
+rules, and 8 with the accepted rules as well:
+
+| Rule | Alerts on | Runs with changed input arguments | Verdict |
+| --- | --- | --- | --- |
+| [Systemd Unit File Written By A Shell](rules/linux/file_event/file_event_lnx_systemd_unit_written_by_shell.yml) | T1053.006 Create Systemd Service and Timer, T1543.002 Create Systemd Service | alerted on 2 of 2 | accepted |
+| [System Account Created With A Login Shell](rules/linux/process_creation/proc_creation_lnx_system_account_with_login_shell.yml) | T1136.001 Create a user account on a Linux system | alerted on 1 of 1 | accepted |
+| [Setuid Or Setgid Bit Set With Chmod](rules/linux/process_creation/proc_creation_lnx_chmod_setuid_setgid.yml) | T1548.001 Set a SetUID flag on file, T1548.001 Set a SetGID flag on file | alerted on 1 of 1 | accepted |
+| [Shell History File Emptied](rules/linux/process_creation/proc_creation_lnx_history_file_emptied.yml) | T1070.003 Clear Bash history (truncate), T1070.003 Clear Bash history (ln dev/null) | alerted on 1 of 1 | accepted |
+| [Program Named Like A System Daemon Run From A Temporary Folder](rules/linux/process_creation/proc_creation_lnx_daemon_name_from_temp_folder.yml) | T1036.003 Masquerading as FreeBSD or Linux crond process | none: the test has no input arguments to change | not accepted |
+
+Three of the accepted rules alert on two published procedures each, and one
+covers a single procedure. In the same run the baseline left 156 events and the
+runner's own work outside the tests 2,070. None of the lab's rules matched any
+of them, while nine pinned rules of level medium or lower did, for example
+"User Has Been Deleted Via Userdel" on the baseline's `userdel`.
+
+The baseline is a short script, not days of real administration, so a rule that
+stays quiet on it can still be noisy elsewhere. One such case is known: the
+rule for a unit file written by a shell also alerts when an administrator
+writes a new unit by hand. A draft that could not fire with this sensor is kept
+in [`rules/rejected`](rules/rejected) with the reason.
+
 ## How a run works
 
 1. The `lab` workflow ([`.github/workflows/lab.yml`](../.github/workflows/lab.yml))
@@ -97,10 +141,12 @@ defined in [`pinned-tests.yaml`](pinned-tests.yaml) under `defenses`.
    repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 2. `bluefire-lab run` waits until the sensor reports a probe command. It then
    runs the tests on [`pinned-tests.yaml`](pinned-tests.yaml) one at a time,
-   with the canary first and last and the harmless command second, and then
-   once more each test that names a hardening change, with the change in place.
-   Root puts the change in place after the test's preparation and removes it
-   after its cleanup. Each runs
+   with the canary first and last, the harmless command second and the
+   baseline of ordinary administration third. After the tests, it runs once
+   more each test that names a hardening change, with the change in place, and
+   each test that names variants, with their input arguments. Root puts a
+   change in place after the test's preparation and removes it after its
+   cleanup. Each test runs
    as an unprivileged account whose outbound traffic is rejected, or as root
    when the test declares that it needs it. Every step (preparation, a marker
    before and after the test, the test, an effect check, the cleanup) runs in a
@@ -112,7 +158,8 @@ defined in [`pinned-tests.yaml`](pinned-tests.yaml) under `defenses`.
    test run as that account. What systemd starts belongs to a test run as root,
    unless the same command also ran outside every test's window. The executor's
    own commands, the test's preparation and cleanup, and the shell process that
-   carries the whole command line are left out.
+   carries the whole command line are left out. It then judges each of the
+   lab's own rules on the tests, their variants and the ordinary activity.
 4. `bluefire-lab report` writes `report.html`, one file that opens offline, and
    the same table for the run page.
 
@@ -143,7 +190,7 @@ Five controls must pass, or the run fails as a whole:
 
 ## Not yet shown
 
-- A new detection rule, or a sensor change, and its effect on a fresh run.
+- A sensor change, and its effect on a fresh run.
 - Tests on Windows, attack chains of several steps, and a lab on a local
   machine.
 
