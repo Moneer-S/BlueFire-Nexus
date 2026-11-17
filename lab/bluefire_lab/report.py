@@ -39,8 +39,8 @@ def e(value: object) -> str:
     return html.escape(str(value))
 
 
-def count(number: int, noun: str) -> str:
-    return f"{number} {noun}" + ("" if number == 1 else "s")
+def count(number: int, noun: str, plural: str = "") -> str:
+    return f"{number} {noun if number == 1 else plural or noun + 's'}"
 
 
 def sentence(text: str) -> str:
@@ -353,6 +353,29 @@ def html_report(results: dict) -> str:
     script = package.joinpath("report.js").read_text(encoding="utf-8")
     run, sensor, rules, tools = results["run"], results["sensor"], results["rules"], results["run"]["tools"]
     audit = results.get("audit")
+    found = run.get("inventory")
+    inventory_section = (
+        '<h3 id="inventory">Inventory of the target</h3><p class="note">Read before the lab started its '
+        "sensors, and the sensors' state after it did. A test that needs a program the target does not "
+        'have is left out, with the reason, under <a href="#left-out">Tests left out</a>.</p>'
+        '<div class="table-wrap"><table><tbody>'
+        + "".join(
+            f'<tr><td>{e(label)}</td><td class="mono wide">{e(value)}</td></tr>'
+            for label, value in (
+                ("Accounts that can log in", ", ".join(found["accounts"])),
+                ("Running services", ", ".join(found["services"])),
+                ("Listening addresses", ", ".join(found["listening"])),
+                ("Sensors", ", ".join(f"{name} {state}" for name, state in found.get("sensors", {}).items())),
+                (
+                    "Programs the tests need",
+                    ", ".join(f"{name} at {path or 'none'}" for name, path in found["programs"].items()),
+                ),
+            )
+        )
+        + "</tbody></table></div>"
+        if found
+        else ""
+    )
     audit_configuration = (
         f'<p class="note">auditd, rules SHA-256 <span class="mono">{e(audit["rules_sha256"])}</span>:</p>'
         f'<pre class="box">{e(audit["rules_text"])}</pre>'
@@ -421,6 +444,19 @@ def html_report(results: dict) -> str:
                 + f". Alert levels: {e(' and '.join(rules['alert_levels']))}.",
             ),
             fact("Rule engine", f"{e(results['engine']['name'])} {e(results['engine']['version'])}"),
+            *(
+                [
+                    fact(
+                        "Inventory",
+                        f"{count(len(found['accounts']), 'account')} that can log in, "
+                        f"{count(len(found['services']), 'running service')}, "
+                        f"{count(len(found['listening']), 'listening address', 'listening addresses')}. "
+                        'The <a href="#inventory">inventory</a> is below.',
+                    )
+                ]
+                if found
+                else []
+            ),
         ]
     )
     controls = "".join(
@@ -434,10 +470,10 @@ def html_report(results: dict) -> str:
         for item in results["dropped"]
     )
     dropped = (
-        '<div class="table-wrap"><table><thead><tr><th>Technique</th><th>Test</th><th>Why it was dropped</th></tr>'
-        f"</thead><tbody>{dropped}</tbody></table></div>"
+        '<div class="table-wrap"><table><thead><tr><th>Technique</th><th>Test</th><th>Why it was left out</th>'
+        f"</tr></thead><tbody>{dropped}</tbody></table></div>"
         if dropped
-        else '<p class="note">No test was tried and then dropped.</p>'
+        else '<p class="note">No test was left out.</p>'
     )
     warning = (
         f'<p class="failed-run">{count(len(failed), "control")} failed, so this run does not support its '
@@ -492,7 +528,7 @@ control fails as a whole.</p>
 <h3>Control runs</h3>
 {"".join(evidence(test, results) for test in others)}
 
-<h2>Tests tried and dropped</h2>
+<h2 id="left-out">Tests left out</h2>
 {dropped}
 
 <h2>How this was measured</h2>
@@ -510,6 +546,7 @@ and removes in sessions of its own. The sensors' own timestamps are used through
 <span class="mono">{e(sensor["configuration_sha256"])}</span>:</p>
 <pre class="box">{e(sensor["configuration_text"])}</pre>
 {audit_configuration}
+{inventory_section}
 <h3>Pinned versions</h3>
 <div class="table-wrap"><table><tbody>{versions}</tbody></table></div>
 <p class="note">Sigma rules are the work of their authors, named with each rule above, and are used under
@@ -583,6 +620,10 @@ def markdown_summary(results: dict) -> str:
                 f"{cell(without['execution']['answer']) if without else 'not run'} | "
                 f"{cell(test['execution']['answer'])} | {cell(test['visibility']['answer'])} |"
             )
+    if results["dropped"]:
+        lines += ["", "| Technique | Test left out | Why |", "|---|---|---|"]
+        for item in results["dropped"]:
+            lines.append(f"| {cell(item['technique'])} | {cell(item['name'])} | {cell(item['reason'])} |")
     lines += ["", "| Control | Result | Detail |", "|---|---|---|"]
     for check in results["controls"]:
         lines.append(

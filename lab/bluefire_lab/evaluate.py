@@ -850,7 +850,7 @@ def main(run_dir: Path, engine: Path) -> int:
         "schema": "bluefire-lab/results/1",
         "run": {
             key: run.get(key)
-            for key in ("id", "started", "finished", "account", "target", "tools", "aborted")
+            for key in ("id", "started", "finished", "account", "target", "tools", "inventory", "aborted")
         },
         "sensor": {
             **run["sensor"],
