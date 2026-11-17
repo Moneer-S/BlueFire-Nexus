@@ -75,6 +75,7 @@ def a_test(**changes) -> dict:
         "order": 1,
         "role": "test",
         "user": ACCOUNT,
+        "executor": "sh",
         "prerequisites": "none declared",
         "launcher_pid": 120,
         "exit_code": 0,
@@ -220,6 +221,14 @@ def test_a_missing_launcher_is_inconclusive() -> None:
     assert (answer["answer"], mine) == ("inconclusive", [])
 
 
+def test_a_launcher_that_is_not_the_tests_shell_is_inconclusive() -> None:
+    not_a_shell, _ = see(a_test(launcher_pid=121), telemetry(), {"8": ["high-rule"]})  # the test's own id
+    other_shell, _ = see(a_test(executor="bash"), telemetry(), {"8": ["high-rule"]})
+
+    assert not_a_shell["answer"] == "inconclusive"
+    assert other_shell["answer"] == "inconclusive"
+
+
 def test_execution_follows_the_prerequisites_and_the_effect_check() -> None:
     took = evaluate.execution(a_test())
     failed = evaluate.execution(a_test(steps=[step("attack", 11), step("effect", 13, status=1)]))
@@ -279,16 +288,25 @@ def test_a_change_that_was_not_put_in_place_proves_nothing() -> None:
     assert evaluate.execution(unprepared, took)["answer"] == "not attempted"
 
 
+def test_a_test_that_ran_out_of_time_with_the_change_in_place_is_not_blocked() -> None:
+    late = hardened()
+    late["steps"][1]["timed_out"] = True
+
+    assert evaluate.execution(late, {"answer": "took effect"})["answer"] == "inconclusive"
+
+
 def measured(
     role, execution="took effect", visibility="telemetry only", rules=(), launcher_only=(), rule=None
 ) -> dict:
     seen = {
         "answer": visibility,
-        "window": ["a", "b"],
+        "basis": "a reason",
+        "window": ["2026-11-16 04:00:01.000", "2026-11-16 04:00:06.000"],
         "rules": list(rules),
         "launcher_only_rules": list(launcher_only),
     }
-    return {"role": role, "rule": rule, "execution": {"answer": execution}, "visibility": seen}
+    done = {"answer": execution, "basis": "the effect check exited with status 1"}
+    return {"role": role, "name": role, "rule": rule, "execution": done, "visibility": seen}
 
 
 CLEAN = {
@@ -297,16 +315,27 @@ CLEAN = {
     "bad_events": 0,
     "records": 5,
     "missing_records": 0,
+    "repeated_records": 0,
     "sensor_starts": 1,
 }
-PROBE = [{"CommandLine": "/usr/bin/true bluefire-lab-probe r1"}]
+ENGINE = [
+    {"category": "process_creation", "origin": "pinned", "kind": "process start",
+     "rules": 122, "loaded": 122, "given": 900, "read": 900},
+    {"category": "file_event", "origin": "pinned", "kind": "file created",
+     "rules": 8, "loaded": 8, "given": 300, "read": 300},
+    {"category": "process_creation", "origin": "lab", "kind": "process start",
+     "rules": 4, "loaded": 4, "given": 900, "read": 900},
+    # The lab has no rule for network connections, so the engine had nothing to evaluate there.
+    {"category": "network_connection", "origin": "lab", "kind": "network connection",
+     "rules": 0, "loaded": 0, "given": 50, "read": 0},
+]  # fmt: skip
+PROBE = [{"CommandLine": "/usr/bin/true bluefire-lab-probe r1", "UtcTime": "2026-11-16 04:00:00.500"}]
 CAUGHT = measured("canary", visibility="alert", rules=[{"id": "high-rule", "alert": True}], rule="high-rule")
 
 
-def failed_controls(tests, lost=CLEAN, starts=PROBE) -> list[str]:
-    return [
-        check["name"] for check in evaluate.check_controls(RUN, tests, starts, lost) if not check["passed"]
-    ]
+def failed_controls(tests, lost=CLEAN, starts=PROBE, engine=ENGINE) -> list[str]:
+    checks = evaluate.check_controls(RUN, tests, starts, lost, engine)
+    return [check["name"] for check in checks if not check["passed"]]
 
 
 def test_controls_pass_on_a_sound_run() -> None:
@@ -409,3 +438,74 @@ def test_a_lab_rule_is_accepted_only_when_it_holds_on_a_variant_and_stays_quiet_
     assert judged(variant_rules=())["reason"] == "it missed 1 of 1 runs with changed input arguments"
     assert judged(variant_rules=None)["accepted"] is False
     assert judged(variant_took=False)["accepted"] is False
+
+
+def test_a_repeated_record_or_a_missing_count_of_bad_events_fails_the_run() -> None:
+    tests = [CAUGHT, measured("control"), CAUGHT]
+
+    assert failed_controls(tests, lost={**CLEAN, "repeated_records": 1}) == ["loss"]
+    assert failed_controls(tests, lost={**CLEAN, "bad_events": None}) == ["loss"]
+
+
+def test_any_test_that_could_not_be_measured_fails_the_run() -> None:
+    no_launcher = measured("test", visibility="inconclusive")  # its markers are there, its launcher not
+    undecided = measured("hardened", execution="inconclusive")  # e.g. its change could not be put in place
+
+    assert failed_controls([CAUGHT, measured("control"), no_launcher, CAUGHT]) == ["markers"]
+    assert failed_controls([CAUGHT, measured("control"), undecided, CAUGHT]) == ["markers"]
+
+
+def test_a_hardening_change_left_in_place_fails_the_run() -> None:
+    removed = {
+        **measured("hardened", execution="blocked"),
+        "defense": {"title": "a", "applied": True, "reverted": True},
+    }
+    left = {**removed, "defense": {"title": "a", "applied": True, "reverted": False}}
+    never_applied = {**removed, "defense": {"title": "a", "applied": False}}
+
+    assert failed_controls([CAUGHT, measured("control"), removed, CAUGHT]) == []
+    assert failed_controls([CAUGHT, measured("control"), left, CAUGHT]) == ["changes"]
+    assert failed_controls([CAUGHT, measured("control"), never_applied, CAUGHT]) == []
+
+
+def test_the_probe_must_be_seen_before_the_first_test() -> None:
+    late = [{**PROBE[0], "UtcTime": "2026-11-16 04:00:02.000"}]
+
+    assert failed_controls([CAUGHT, measured("control"), CAUGHT], starts=late) == ["readiness"]
+
+
+def test_a_rule_the_engine_did_not_load_or_an_event_it_did_not_read_fails_the_run() -> None:
+    tests = [CAUGHT, measured("control"), CAUGHT]
+
+    def changed(index: int, **values) -> list[dict]:
+        return [{**counts, **values} if place == index else counts for place, counts in enumerate(ENGINE)]
+
+    skipped_rule = changed(1, loaded=7)
+    unread = changed(1, read=299)
+    no_events = changed(1, given=0, loaded=0, read=0)
+    skipped_lab_rule = changed(2, loaded=3)
+
+    for engine in (skipped_rule, unread, no_events, skipped_lab_rule):
+        assert failed_controls(tests, engine=engine) == ["engine"]
+
+
+def test_the_engines_own_log_says_what_it_loaded_and_read() -> None:
+    # The lines as Zircolite 4.7.1 wrote them in run 44015299571, with its markup.
+    log = (
+        "2026-11-17 04:15:10 INFO     [green]\\[✓][/] Converted [cyan]122[/] rules\n"
+        "2026-11-17 04:15:10 INFO     [+] 122 rules loaded\n"
+        "2026-11-17 04:15:10 INFO     [+] Total events processed: [magenta]1,295[/]\n"
+    )
+
+    assert evaluate.engine_counts(log) == (122, 1295)
+    assert evaluate.engine_counts("") == (None, None)
+
+
+def test_the_control_says_when_the_harmless_command_did_not_take_effect() -> None:
+    idle = measured("control", execution="attempted without effect")
+
+    checks = evaluate.check_controls(RUN, [CAUGHT, idle, CAUGHT], PROBE, CLEAN, ENGINE)
+
+    assert [check["detail"] for check in checks if check["name"] == "control"] == [
+        "the harmless command did not take effect: the effect check exited with status 1"
+    ]

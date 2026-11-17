@@ -304,20 +304,20 @@ def run_test(item: dict, context: dict) -> dict:
     return record
 
 
-def journal(since: float) -> str:
+def journal(since: float, pid: str) -> bytes:
+    """What the sensor's own process wrote to the journal since the run began, byte for byte.
+
+    The journal takes a sender's process id from the kernel, not from the
+    message, so no other process can write lines that pass for the sensor's.
+    """
+
     subprocess.run(["sudo", "journalctl", "--sync"], check=False)
-    command = [
-        "sudo",
-        "journalctl",
-        "-t",
-        "sysmon",
-        "--no-pager",
-        "-o",
-        "cat",
-        "--all",
-        f"--since=@{int(since)}",
-    ]
-    return subprocess.run(command, capture_output=True, text=True, errors="replace", check=True).stdout
+    command = ["sudo", "journalctl", f"_PID={pid}", "-t", "sysmon", "--no-pager", "-o", "cat", "--all"]
+    return subprocess.run([*command, f"--since=@{int(since)}"], capture_output=True, check=True).stdout
+
+
+def sensor_pid() -> str:
+    return output_of("systemctl", "show", "--property=MainPID", "--value", "sysmon")
 
 
 def wait_until_ready(context: dict, since: float) -> int | None:
@@ -327,7 +327,10 @@ def wait_until_ready(context: dict, since: float) -> int | None:
         probe = ["/usr/bin/true", "bluefire-lab-probe", context["id"]]
         context["probes"].append(step("probe", context["account"], probe))
         time.sleep(1)
-        for line in journal(since).splitlines():
+        context["sensor_pid"] = sensor_pid()
+        if context["sensor_pid"] in ("", "0"):
+            continue
+        for line in journal(since, context["sensor_pid"]).decode("utf-8", "replace").split("\n"):
             event = sysmon.parse_line(line)
             if event and event["EventID"] == sysmon.PROCESS_START and event["CommandLine"] == " ".join(probe):
                 return second
@@ -349,6 +352,13 @@ def facts(context: dict) -> tuple[dict, dict]:
         "atomic-red-team": output_of("git", "-C", str(context["atomics"]), "rev-parse", "HEAD"),
         "invoke-atomicredteam": output_of("git", "-C", str(context["executor"]), "rev-parse", "HEAD"),
         "powershell": output_of("pwsh", "--version").removeprefix("PowerShell "),
+        "powershell-yaml": output_of(
+            "pwsh",
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            "(Get-Module -ListAvailable powershell-yaml).Version -join ' '",
+        ),
         "sysmonforlinux": output_of("dpkg-query", "-W", "-f", "${Version}", "sysmonforlinux"),
         "sysinternalsebpf": output_of("dpkg-query", "-W", "-f", "${Version}", "sysinternalsebpf"),
         # Where the lab's own rules come from: this repository at the commit that ran.
@@ -393,6 +403,7 @@ def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: P
     try:
         ready = wait_until_ready(context, since)
         record["sensor"]["ready_after_seconds"] = ready
+        record["sensor"]["process_id"] = context.get("sensor_pid")
         record["probes"] = context["probes"]
         if ready is None:
             record["aborted"] = "the sensor did not report a probe command within 30 seconds"
@@ -422,8 +433,9 @@ def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: P
                     flush=True,
                 )
     finally:
+        pid = context.get("sensor_pid") or sensor_pid()
         subprocess.run(["sudo", "systemctl", "stop", "sysmon"], check=False)
-        (out / "sysmon.txt").write_text(journal(since), encoding="utf-8")
+        (out / "sysmon.txt").write_bytes(journal(since, pid))
         record["finished"] = now()
         (out / "run.json").write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
     return 1 if "aborted" in record else 0

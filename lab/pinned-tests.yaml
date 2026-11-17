@@ -94,16 +94,20 @@ tests:
     guid: 952931a4-af0b-4335-bbbe-73c8c5b327ae
     name: Permission Groups Discovery (Local)
     output: "root:x:0:"
+  # ps prints this text also in its row for the test's own grep, so the check
+  # shows that ps ran, not that other processes were visible to it.
   - technique: T1518.001
     guid: 23b91cd2-c99c-4002-9e41-317c63e024a2
     name: Security Software Discovery - ps (Linux)
     output: "falcond|nessusd"
 
   # Persistence
+  # The effect is read from cron's spool: with /etc/cron.allow in place, crontab
+  # refuses an account the file does not name even when root asks for it.
   - technique: T1053.003
     guid: 435057fb-74b1-410e-9403-d81baf194f75
     name: Cron - Replace crontab with referenced file
-    effect: crontab -u {account} -l | grep -qF '/tmp/evil.sh'
+    effect: grep -qF '/tmp/evil.sh' /var/spool/cron/crontabs/{account}
     dwell: 65 # long enough for cron to run the planted line once
     defenses: [cron-allow]
   - technique: T1053.006
@@ -206,6 +210,8 @@ tests:
     guid: 5bec4cc8-f41e-437b-b417-33ff60acf9af
     name: Obfuscated command line scripts
     output: uid=
+  # No check that could fail: awk exits with status 0 whether or not the shell it
+  # starts in the background runs. Do not use it to show a change that blocks.
   - technique: T1059.004
     guid: ee72b37d-b8f5-46a5-a9e7-0ff50035ffd5
     name: Shell Creation using awk command
@@ -218,18 +224,22 @@ defenses:
     title: /tmp mounted with noexec, nosuid and nodev
     why: >-
       The CIS benchmarks for Ubuntu mount /tmp with these options, so that a
-      file written to /tmp cannot be run from there.
+      program placed in /tmp cannot be started from there. A script in /tmp
+      can still be run through an interpreter, as in sh /tmp/script.
     apply: >-
       mount --bind /tmp /tmp
       && mount -o remount,bind,noexec,nosuid,nodev /tmp
-      && findmnt -no OPTIONS /tmp | grep -qw noexec
+      && for option in noexec nosuid nodev; do findmnt -no OPTIONS /tmp | grep -qw "$option" || exit 1; done
     revert: umount -l /tmp
   cron-allow:
     title: crontab limited to root with /etc/cron.allow
     why: >-
       When /etc/cron.allow exists, only the accounts it names may use crontab.
-      The CIS benchmarks for Ubuntu restrict crontab this way.
-    apply: echo root > /etc/cron.allow && chmod 640 /etc/cron.allow
+      The CIS benchmarks for Ubuntu restrict crontab this way, with the file
+      readable by crontab's group so that crontab can check it.
+    apply: >-
+      echo root > /etc/cron.allow
+      && chown root:crontab /etc/cron.allow && chmod 640 /etc/cron.allow
     revert: rm -f /etc/cron.allow
   profile-immutable:
     title: the account's ~/.bashrc made immutable
@@ -241,8 +251,10 @@ defenses:
   ssh-keys-root-owned:
     title: the account's ~/.ssh and authorized_keys owned by root
     why: >-
-      With the folder and the keys file owned by root, the account cannot add a
-      key of its own, and sshd still reads the file.
+      With the folder and the keys file owned by root, the account cannot
+      change the keys file in place, and sshd still accepts both. The account
+      owns its home folder, so it could still move the folder aside and make a
+      new one.
     apply: >-
       chown root:root {home}/.ssh {home}/.ssh/authorized_keys
       && chmod 755 {home}/.ssh && chmod 644 {home}/.ssh/authorized_keys
