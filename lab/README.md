@@ -1,7 +1,7 @@
 # BlueFire lab
 
 A test bench for defenders. It runs published attack tests on a disposable lab
-target, records what a sensor on that target saw, evaluates pinned detection
+target, records what the sensors on that target saw, evaluates pinned detection
 rules over those records, and reports two answers for every test: did the
 technique take effect, and what did the defense see.
 
@@ -60,7 +60,8 @@ rules:
   `echo` starts no process, and Sysmon for Linux reports a file only as created,
   and only while it is less than 100 ms old
   ([its source](https://github.com/microsoft/Sysmon-Linux/blob/962934f7e710a8e860ed5020f2068c6eba6aff64/ebpfKern/sysmonFileOpen.c)).
-  This gap needs a sensor change before any rule can see the write itself.
+  This gap needs a sensor change before any rule can see the write itself: see
+  [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
 - On nine of the tests, rules of level medium matched only that shell process,
   which carries a test's whole command line: three of them on T1140, for base64
   piped into a shell. The report shows them, and does not count them as
@@ -216,6 +217,11 @@ and its own count of lost records at 0 before and after.
 4. `bluefire-lab report` writes `report.html`, one file that loads nothing from
    elsewhere when it opens (it refuses to write one that would), and the same
    table for the run page.
+5. A separate job, which runs no test, compares the run with the latest
+   successful run on `main` (`bluefire-lab compare`) and writes to the run page
+   which answers changed and what changed under them: events, rules that
+   match, a rule of the lab's own accepted now and how many published
+   procedures it covers, or a hardening change that blocks now.
 
 Seven controls must pass, or the run fails as a whole:
 
@@ -286,6 +292,12 @@ The answers can be computed again from a run's artifact, on any machine:
 pip install ./lab
 bluefire-lab evaluate <folder of the unpacked artifact> --engine <path to Zircolite 4.7.1>
 bluefire-lab report <folder of the unpacked artifact>
+```
+
+Two runs' artifacts can be compared the same way:
+
+```bash
+bluefire-lab compare <folder of the earlier run> <folder of the later run>
 ```
 
 ## Before the loop: the sensor spike
