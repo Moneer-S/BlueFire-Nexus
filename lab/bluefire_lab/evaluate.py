@@ -32,7 +32,7 @@ from pathlib import Path
 
 import yaml
 
-from . import sysmon
+from . import auditd, sysmon
 
 # The Sigma specification says a match of a "high" rule should trigger an alert
 # and a "critical" one indicates an incident. Lower levels are for review.
@@ -137,6 +137,74 @@ def run_engine(
             for match in rule["matches"]:
                 matched[str(match["EventRecordID"])].append(str(rule["id"]))
     return matched, counts
+
+
+def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[dict[str, list[str]], dict]:
+    """Have the rule engine evaluate the pinned auditd rules over auditd's records.
+
+    The engine gets one record per line and names a match by its line, so a match is
+    tied back to its record, and through the record's serial to the event. Returns,
+    for each event ("audit <serial>"), the ids of the rules that matched one of its
+    records, and what the engine said it loaded and read.
+    """
+
+    matched: dict[str, list[str]] = collections.defaultdict(list)
+    counts = {"category": "auditd", "origin": "pinned", "kind": "auditd", "given": len(records)}
+    counts.update(loaded=0, read=0)
+    rules, work = run_dir / "rules" / "linux" / "auditd", run_dir / "engine"
+    work.mkdir(exist_ok=True)
+    output = work / "auditd.json"
+    output.unlink(missing_ok=True)
+    (work / "auditd-engine.txt").unlink(missing_ok=True)
+    if not records or not rules.is_dir():
+        return matched, counts
+    (work / "auditd.txt").write_text("".join(record["line"] + "\n" for record in records), encoding="utf-8")
+    subprocess.run(
+        [
+            str(engine.resolve()),
+            "--events", "auditd.txt",
+            "--auditd-input",
+            "--logs-encoding", "utf-8",
+            "--ruleset", str(rules.resolve()),
+            "--outfile", output.name,
+            "--logfile", "auditd-engine.txt",
+        ],
+        cwd=work,
+        check=True,
+        capture_output=True,
+        timeout=900,
+    )  # fmt: skip
+    counts["loaded"], counts["read"] = engine_counts((work / "auditd-engine.txt").read_text(errors="replace"))
+    for rule in json.loads(output.read_text(encoding="utf-8")) if output.exists() else []:
+        for match in rule["matches"]:
+            record = records[int(match["row_id"]) - 1]
+            if match.get("type") != record["type"]:
+                raise SystemExit(f"the engine's line {match['row_id']} is not the record it was given there")
+            matched[f"audit {record['serial']}"].append(str(rule["id"]))
+    return matched, counts
+
+
+def describe_audit(event: dict, why: str) -> dict:
+    """An auditd event in the shape of the Sysmon events the report shows."""
+
+    call, names = event["call"], event["names"]
+    action = names.get("SYSCALL", call.get("syscall", "call"))
+    return {
+        "record": f"audit {event['serial']}",
+        "time": event["time"],
+        "kind": f"{action} (auditd)",
+        "process_id": call.get("pid", ""),
+        "user": names.get("UID", call.get("uid", "")),
+        "image": call.get("exe", ""),
+        "detail": ", ".join(event["paths"]) + (f" by {event['command']}" if event["command"] else ""),
+        "why": why,
+        "fields": {
+            "records": " ".join(event["types"]),
+            **{name: value for name, value in call.items() if value not in ("", "(none)")},
+            "paths": ", ".join(event["paths"]),
+            "command": event["command"],
+        },
+    }
 
 
 def when(event: dict) -> tuple[str, int]:
@@ -330,7 +398,12 @@ def visibility(
             sysmon.PROCESS_END,
         ):
             mine.append(describe(event, "launcher"))
-    mine.sort(key=lambda event: (event["time"], event["record"]))
+    # auditd's records name their audit session, so an event of the attack step's session is the test's.
+    attack = step_of(test, "attack")
+    for event in context.get("audit_events", []):
+        if attack and attack["session"] and event["call"].get("ses") == attack["session"]:
+            mine.append(describe_audit(event, "session"))
+    mine.sort(key=lambda event: (event["time"], str(event["record"])))
 
     fired: dict[str, list[int]] = collections.defaultdict(list)
     for event in mine:
@@ -353,7 +426,7 @@ def visibility(
     elif mine:
         answer, basis = "telemetry only", "the test left events, and no rule of an alert level matched one"
     else:
-        answer, basis = "no telemetry", "the sensor recorded nothing of the test besides its launcher"
+        answer, basis = "no telemetry", "nothing of the test was recorded besides its launcher's start"
     result = {
         "answer": answer,
         "basis": basis,
@@ -372,11 +445,17 @@ def visibility(
 
 
 def ordinary_activity(
-    run: dict, events: list[dict], starts: list[dict], matched: dict, rules: dict, windows: list
+    run: dict,
+    events: list[dict],
+    starts: list[dict],
+    matched: dict,
+    rules: dict,
+    windows: list,
+    audit_events: list[dict] = (),
 ) -> dict:
     """What the lab's own rules must stay quiet on: the events of the baseline steps, and
     the events outside every test's window of processes in no audit session (the runner,
-    the system's own services and the driver)."""
+    the system's own services and the driver), from both sensors."""
 
     baseline_sessions = {
         step["session"]
@@ -401,6 +480,21 @@ def ordinary_activity(
         counts[kind] += 1
         for rule_id in matched.get(event["EventRecordID"], []):
             hits[rule_id].append(int(event["EventRecordID"]))
+    for event in audit_events:
+        if not event["call"]:
+            continue  # auditd's own records, such as its start and its rule changes, are no activity
+        session = event["call"].get("ses")
+        if session in baseline_sessions:
+            kind = "baseline_events"
+        elif session in (None, sysmon.NO_SESSION) and not any(
+            start <= event["time"] <= end for start, end in windows
+        ):
+            kind = "system_events"
+        else:
+            continue
+        counts[kind] += 1
+        for rule_id in matched.get(f"audit {event['serial']}", []):
+            hits[rule_id].append(f"audit {event['serial']}")
     pinned = [
         {**{key: rules[rule_id][key] for key in ("id", "title", "level")}, "events": len(records)}
         for rule_id, records in hits.items()
@@ -498,9 +592,18 @@ def rule_order(rule: dict) -> tuple[int, str]:
 
 
 def check_controls(
-    run: dict, tests: list[dict], starts: list[dict], lost: dict, engine: list[dict]
+    run: dict,
+    tests: list[dict],
+    starts: list[dict],
+    lost: dict,
+    engine: list[dict],
+    audit: dict | None = None,
 ) -> list[dict]:
-    """The checks that keep a broken measurement from looking like a finding."""
+    """The checks that keep a broken measurement from looking like a finding.
+
+    audit, when the run had auditd record too, says when auditd recorded the driver's
+    probe write and how many records auditd counted as lost before and after the tests.
+    """
 
     def control(name: str, passed: bool, detail: str) -> dict:
         return {"name": name, "passed": bool(passed), "detail": detail}
@@ -512,13 +615,19 @@ def check_controls(
         (test["visibility"]["window"][0] for test in tests if test["visibility"].get("window")), default=None
     )
     in_time = bool(seen) and (first is None or min(seen) < first)
+    audit_in_time = audit is None or (
+        audit["probe_time"] is not None and (first is None or audit["probe_time"] < first)
+    )
     if ready is None or not seen:
         detail = "the sensor did not report the probe command"
     elif not in_time:
         detail = "the sensor reported the probe command only after the first test began"
+    elif not audit_in_time:
+        detail = "auditd did not record the probe write before the first test began"
     else:
         detail = f"the sensor reported a probe command {ready} s after it was started, before the first test"
-    checks = [control("readiness", ready is not None and in_time, detail)]
+        detail += ", and auditd recorded the probe write before it too" if audit else ""
+    checks = [control("readiness", ready is not None and in_time and audit_in_time, detail)]
 
     attempted = [test for test in tests if test["execution"]["answer"] != "not attempted"]
     unmeasured = [
@@ -565,7 +674,15 @@ def check_controls(
             f"{lost['missing_records']} of its {lost['records'] + lost['missing_records']} records are missing "
             f"from the export, and {lost['repeated_records']} appear more than once"
         )
-    checks.append(control("loss", clean and whole and lost["sensor_starts"] == 1, detail))
+    audit_whole = audit is None or (
+        audit["lost_before"] is not None and audit["lost_before"] == audit["lost_after"]
+    )
+    if audit is not None:
+        detail += (
+            f"; auditd counted {audit['lost_before']} lost records before the tests and "
+            f"{audit['lost_after']} after"
+        )
+    checks.append(control("loss", clean and whole and audit_whole and lost["sensor_starts"] == 1, detail))
 
     problems = []
     for counts in engine:
@@ -634,6 +751,13 @@ def main(run_dir: Path, engine: Path) -> int:
     lab_matched, lab_counts = run_engine(engine, run_dir, events, raw, "lab-rules")
     for record, ids in lab_matched.items():
         matched[record].extend(ids)
+    # When the run had auditd record beside Sysmon: its records, its events, and the rules that matched.
+    audit = run.get("audit")
+    records = auditd.read(run_dir / "audit.txt") if audit else []
+    audit_events = auditd.events(records)
+    audit_matched, audit_counts = run_audit_engine(engine, run_dir, records) if audit else ({}, None)
+    for record, ids in audit_matched.items():
+        matched[record].extend(ids)
     for index, by_category in ((rules, counts), (lab_rules, lab_counts)):
         for category in by_category:
             by_category[category]["rules"] = sum(
@@ -644,6 +768,9 @@ def main(run_dir: Path, engine: Path) -> int:
         for origin, by_category in (("pinned", counts), ("lab", lab_counts))
         for category, entry in by_category.items()
     ]
+    if audit_counts is not None:
+        audit_counts["rules"] = sum(1 for rule in rules.values() if rule["file"].startswith("linux/auditd/"))
+        tally.append(audit_counts)
     rules.update(lab_rules)
 
     known_sessions = {step["session"] for test in run["tests"] for step in test["steps"]}
@@ -661,6 +788,7 @@ def main(run_dir: Path, engine: Path) -> int:
         "known_sessions": known_sessions,
         "windows": windows,
         "system_commands": system_commands(starts, complete),
+        "audit_events": audit_events,
     }
     tests, by_order = [], {}
     for test in run["tests"]:
@@ -696,9 +824,21 @@ def main(run_dir: Path, engine: Path) -> int:
     test_windows = [
         window for order, window in windows.items() if order not in baseline and None not in window
     ]
-    ordinary = ordinary_activity(run, events, starts, matched, rules, test_windows)
+    ordinary = ordinary_activity(run, events, starts, matched, rules, test_windows, audit_events)
     verdicts = judge_lab_rules(lab_rules, tests, ordinary)
     second_answers(tests, verdicts)
+
+    def number(value: object) -> int | None:
+        return int(value) if str(value).isdigit() else None
+
+    audit_control = None
+    if audit:
+        probes = [event["time"] for event in audit_events if audit.get("probe") in event["paths"]]
+        audit_control = {
+            "probe_time": min(probes, default=None),
+            "lost_before": number(audit.get("before", {}).get("lost")),
+            "lost_after": number(audit.get("after", {}).get("lost")),
+        }
     results = {
         "schema": "bluefire-lab/results/1",
         "run": {
@@ -712,11 +852,24 @@ def main(run_dir: Path, engine: Path) -> int:
             "configuration_text": (run_dir / "sensor-config.xml").read_text(encoding="utf-8"),
             "events": len(events),
         },
+        "audit": {
+            "name": "auditd",
+            "version": audit.get("version"),
+            "rules_sha256": hashlib.sha256((run_dir / audit["rules"]).read_bytes()).hexdigest(),
+            "rules_text": (run_dir / audit["rules"]).read_text(encoding="utf-8"),
+            "records": len(records),
+            "events": len(audit_events),
+        }
+        if audit
+        else None,
         "rules": {
             "source": (run_dir / "rules" / "SOURCE").read_text(encoding="utf-8").strip(),
             "license": "Detection Rule License 1.1, https://github.com/SigmaHQ/Detection-Rule-License",
             # What the engine says it loaded: a rule it could not convert was not evaluated.
-            "evaluated": {category: counts[category]["loaded"] for category in CATEGORIES},
+            "evaluated": {
+                **{category: counts[category]["loaded"] for category in CATEGORIES},
+                **({"auditd": audit_counts["loaded"]} if audit_counts else {}),
+            },
             "alert_levels": list(ALERT_LEVELS),
             "lab": sum(lab_counts[category]["loaded"] or 0 for category in CATEGORIES),
         },
@@ -725,7 +878,7 @@ def main(run_dir: Path, engine: Path) -> int:
             key: ordinary[key] for key in ("baseline_events", "system_events", "pinned_rules")
         },
         "engine": {"name": "Zircolite", "version": found.group(1) if found else None, "counts": tally},
-        "controls": check_controls(run, tests, starts, sysmon.loss(events, other), tally),
+        "controls": check_controls(run, tests, starts, sysmon.loss(events, other), tally, audit_control),
         "summary": {
             "tests": len(measured),
             "took_effect": len(took),

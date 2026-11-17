@@ -23,7 +23,7 @@ from pathlib import Path
 
 import yaml
 
-from . import sysmon
+from . import auditd, sysmon
 
 # Run as root by sh: write the login uid, which makes the kernel start a new
 # audit session, print that session's id on a line of its own, then become the
@@ -33,6 +33,9 @@ SESSION_SHIM = (
     'read -r session < /proc/self/sessionid; echo "$session"; shift; exec "$@"'
 )
 KEPT_OUTPUT = 20000
+# auditd's log, and the file the driver writes until auditd has recorded the write.
+AUDIT_LOG = "/var/log/audit/audit.log"
+AUDIT_PROBE = "/var/tmp/bluefire-lab-audit-probe"
 TECHNIQUE = re.compile(r"T\d{4}(\.\d{3})?")
 GUID = re.compile(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 
@@ -320,20 +323,39 @@ def sensor_pid() -> str:
     return output_of("systemctl", "show", "--property=MainPID", "--value", "sysmon")
 
 
-def wait_until_ready(context: dict, since: float) -> int | None:
-    """Run a probe command until the sensor reports it. Return the seconds it took."""
+def audit_log() -> bytes:
+    return subprocess.run(["sudo", "cat", AUDIT_LOG], capture_output=True, check=True).stdout
 
+
+def audit_status() -> dict[str, str]:
+    return auditd.status(subprocess.run(["sudo", "auditctl", "-s"], capture_output=True, text=True).stdout)
+
+
+def wait_until_ready(context: dict, since: float) -> int | None:
+    """Run a probe command until the sensor reports it, and, when auditd records too, write
+    a file auditd watches until it records the write. Return the seconds it took."""
+
+    sysmon_seen, audit_seen = False, "audit" not in context
     for second in range(1, 31):
         probe = ["/usr/bin/true", "bluefire-lab-probe", context["id"]]
         context["probes"].append(step("probe", context["account"], probe))
+        if not audit_seen:
+            write = ["sh", "-c", f"echo {context['id']} >> {AUDIT_PROBE}"]
+            context["probes"].append(step("probe-audit", context["account"], write))
         time.sleep(1)
         context["sensor_pid"] = sensor_pid()
-        if context["sensor_pid"] in ("", "0"):
-            continue
-        for line in journal(since, context["sensor_pid"]).decode("utf-8", "replace").split("\n"):
-            event = sysmon.parse_line(line)
-            if event and event["EventID"] == sysmon.PROCESS_START and event["CommandLine"] == " ".join(probe):
-                return second
+        if not sysmon_seen and context["sensor_pid"] not in ("", "0"):
+            for line in journal(since, context["sensor_pid"]).decode("utf-8", "replace").split("\n"):
+                event = sysmon.parse_line(line)
+                if (
+                    event
+                    and event["EventID"] == sysmon.PROCESS_START
+                    and event["CommandLine"] == " ".join(probe)
+                ):
+                    sysmon_seen = True
+        audit_seen = audit_seen or f'name="{AUDIT_PROBE}"'.encode() in audit_log()
+        if sysmon_seen and audit_seen:
+            return second
     return None
 
 
@@ -361,13 +383,22 @@ def facts(context: dict) -> tuple[dict, dict]:
         ),
         "sysmonforlinux": output_of("dpkg-query", "-W", "-f", "${Version}", "sysmonforlinux"),
         "sysinternalsebpf": output_of("dpkg-query", "-W", "-f", "${Version}", "sysinternalsebpf"),
+        "auditd": output_of("dpkg-query", "-W", "-f", "${Version}", "auditd"),
         # Where the lab's own rules come from: this repository at the commit that ran.
         "lab": f"{os.environ.get('GITHUB_REPOSITORY', '')}@{os.environ.get('GITHUB_SHA', '')}",
     }
     return target, tools
 
 
-def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: Path, account: str) -> int:
+def main(
+    tests: Path,
+    atomics: Path,
+    executor: Path,
+    sensor_config: Path,
+    out: Path,
+    account: str,
+    audit_rules: Path | None = None,
+) -> int:
     document = yaml.safe_load(tests.read_text(encoding="utf-8"))
     out.mkdir(parents=True, exist_ok=True)
     context = {
@@ -400,6 +431,14 @@ def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: P
     subprocess.run(
         ["sudo", "sysmon", "-accepteula", "-i", str(sensor_config)], check=True, capture_output=True
     )
+    if audit_rules is not None:
+        # auditd's rules name the account's start files, so its home is filled in first.
+        (out / "audit-rules.txt").write_text(fill(audit_rules.read_text(encoding="utf-8"), context))
+        subprocess.run(
+            ["sudo", "auditctl", "-R", str(out / "audit-rules.txt")], check=True, capture_output=True
+        )
+        record["audit"] = context["audit"] = {"rules": "audit-rules.txt", "probe": AUDIT_PROBE}
+        record["audit"].update(version=tools["auditd"], before=audit_status())
     try:
         ready = wait_until_ready(context, since)
         record["sensor"]["ready_after_seconds"] = ready
@@ -436,6 +475,9 @@ def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: P
         pid = context.get("sensor_pid") or sensor_pid()
         subprocess.run(["sudo", "systemctl", "stop", "sysmon"], check=False)
         (out / "sysmon.txt").write_bytes(journal(since, pid))
+        if "audit" in record:
+            record["audit"]["after"] = audit_status()
+            (out / "audit.txt").write_bytes(audit_log())
         record["finished"] = now()
         (out / "run.json").write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
     return 1 if "aborted" in record else 0

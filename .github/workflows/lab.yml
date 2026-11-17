@@ -34,6 +34,7 @@ defaults:
 env:
   SYSMON_VERSION: 1.6.0
   SYSINTERNALS_EBPF_VERSION: 2.3.0
+  AUDITD_VERSION: 1:3.1.2-2.1ubuntu0.1
   POWERSHELL_YAML_VERSION: 0.4.12
   INVOKE_ATOMICREDTEAM: redcanaryco/invoke-atomicredteam@8af478bb9e4637df568ac1e596553b025b16cd1b
   ATOMIC_RED_TEAM: redcanaryco/atomic-red-team@a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6
@@ -88,7 +89,8 @@ jobs:
           # needrestart would restart the sensor when a test's prerequisite installs a package.
           sudo apt-get remove -y -qq needrestart
           sudo apt-get update -qq
-          sudo apt-get install -y -qq "sysmonforlinux=$SYSMON_VERSION" "sysinternalsebpf=$SYSINTERNALS_EBPF_VERSION"
+          sudo apt-get install -y -qq "sysmonforlinux=$SYSMON_VERSION" "sysinternalsebpf=$SYSINTERNALS_EBPF_VERSION" \
+            "auditd=$AUDITD_VERSION"
           sudo pwsh -NoLogo -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module powershell-yaml -RequiredVersion $POWERSHELL_YAML_VERSION -Scope AllUsers -Force"
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
@@ -157,6 +159,7 @@ jobs:
             --atomics /opt/bluefire-lab/atomic-red-team/atomics \
             --executor /opt/bluefire-lab/invoke-atomicredteam \
             --sensor-config lab/sensors/sysmon.xml \
+            --audit-rules lab/sensors/audit.rules \
             --out "$RUN"
 
       - name: Evaluate the rules and compute the answers

@@ -19,6 +19,7 @@ def main(arguments: list[str] | None = None) -> int:
     running.add_argument("--atomics", type=Path, required=True, help="atomics folder of Atomic Red Team")
     running.add_argument("--executor", type=Path, required=True, help="checkout of Invoke-AtomicRedTeam")
     running.add_argument("--sensor-config", type=Path, required=True, help="Sysmon configuration file")
+    running.add_argument("--audit-rules", type=Path, help="auditd rules to load, so that auditd records too")
     running.add_argument("--account", default="bluefire-lab", help="unprivileged account the tests run as")
     running.add_argument("--out", type=Path, required=True, help="folder for run.json and sysmon.txt")
 
@@ -44,6 +45,7 @@ def main(arguments: list[str] | None = None) -> int:
             options.sensor_config,
             options.out,
             options.account,
+            options.audit_rules,
         )
     if options.command == "evaluate":
         return evaluate.main(options.folder, options.engine)

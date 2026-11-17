@@ -162,10 +162,13 @@ in [`rules/rejected`](rules/rejected) with the reason.
 ## How a run works
 
 1. The `lab` workflow ([`.github/workflows/lab.yml`](../.github/workflows/lab.yml))
-   installs the sensor, and fetches the tests, the executor, the rules and the
-   rule engine at pinned versions. Nothing of theirs is copied into this
-   repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
-2. `bluefire-lab run` waits until the sensor reports a probe command. It then
+   installs the two sensors, and fetches the tests, the executor, the rules and
+   the rule engine at pinned versions. Nothing of theirs is copied into this
+   repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). The
+   sensors are Sysmon for Linux, with [`sensors/sysmon.xml`](sensors/sysmon.xml),
+   and auditd, with the file watches in [`sensors/audit.rules`](sensors/audit.rules).
+2. `bluefire-lab run` waits until Sysmon reports a probe command and auditd a
+   probe write to a file it watches. It then
    runs the tests on [`pinned-tests.yaml`](pinned-tests.yaml) one at a time,
    with the canary first and last, the harmless command second and the
    baseline of ordinary administration third. After the tests and before the
@@ -179,7 +182,9 @@ in [`rules/rejected`](rules/rejected) with the reason.
    kernel audit session of its own.
 3. `bluefire-lab evaluate` computes `results.json` from the files the run
    leaves. An event belongs to a test when its process is in the audit session
-   of the test's attack step. Two more rules apply inside the test's window,
+   of the test's attack step; auditd names that session in its records, Sysmon
+   for the process that started. Two more rules apply to Sysmon's events inside
+   the test's window,
    between its markers. What cron starts for the test account belongs to a
    test run as that account. What systemd starts belongs to a test run as root,
    unless the same command also ran outside every test's window. The executor's
@@ -194,16 +199,17 @@ in [`rules/rejected`](rules/rejected) with the reason.
 
 Seven controls must pass, or the run fails as a whole:
 
-- **readiness:** the sensor reported a probe before the first test began;
+- **readiness:** both sensors recorded their probe before the first test began;
 - **markers:** both markers and the launcher of every test are in the
   telemetry, and no answer is left inconclusive, for example because a
   hardening change could not be put in place or a test ran out of time with
   one;
 - **changes:** every hardening change that was put in place was removed again
   after its test;
-- **loss:** the sensor reported its counts of lost and bad events once each,
-  both zero, and none of its numbered records is missing from what was read or
-  appears twice;
+- **loss:** Sysmon reported its counts of lost and bad events once each, both
+  zero, and none of its numbered records is missing from what was read or
+  appears twice; and auditd's own count of lost records did not move during the
+  run;
 - **engine:** the rule engine loaded every rule and read every event it was
   given, and the sensor recorded every kind of event the rules describe;
 - **canary:** the known-detected test took effect and alerted, first and last;
@@ -218,7 +224,11 @@ Seven controls must pass, or the run fails as a whole:
   existing file shows up as a creation when it leaves those timestamps fresh,
   as a read followed by an overwrite does (T1098.004 in the run above). An
   append that leaves the access time old, like the one to `~/.bashrc`, is not
-  recorded, and neither are reads and permission changes.
+  recorded by Sysmon, and neither are reads and permission changes.
+- auditd watches only the shell start files in
+  [`sensors/audit.rules`](sensors/audit.rules), for writes and changes of
+  attributes, so it adds nothing for any other file and no process events. Its
+  records are tied to a test by the attack step's audit session alone.
 - A process that systemd starts for a test that runs as root is tied to the
   test by time, inside the test's window, and not by process ancestry. The
   runner's own timers are stopped before the tests, so that their units do not
