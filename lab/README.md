@@ -160,6 +160,16 @@ rule for a unit file written by a shell also alerts when an administrator
 writes a new unit by hand. A draft that could not fire with this sensor is kept
 in [`rules/rejected`](rules/rejected) with the reason.
 
+## What the target has
+
+Each run starts with an inventory of the target, and chooses the tests by it.
+In [run 44028032549](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44028032549)
+(17 November 2026) the hosted runner had 5 accounts that can log in (among them
+`packer` and `postgres`, which come with the runner image), 26 running services
+and 9 listening sockets, SSH on port 22 among them, with Sysmon for Linux and
+auditd both active. Every program the tests name (`awk`, `crontab`,
+`systemctl`, `useradd`) was there, so no test was dropped.
+
 ## A sensor change that makes a gap visible
 
 Sysmon for Linux reports a write to a file only when it leaves the file looking
@@ -189,8 +199,12 @@ at 0 before and after.
    repository: see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). The
    sensors are Sysmon for Linux, with [`sensors/sysmon.xml`](sensors/sysmon.xml),
    and auditd, with the file watches in [`sensors/audit.rules`](sensors/audit.rules).
-2. `bluefire-lab run` waits until Sysmon reports a probe command and auditd a
-   probe write to a file it watches. It then
+2. `bluefire-lab run` first takes an inventory of the target: the accounts that
+   can log in, the running services, the listening sockets, and where each
+   program the tests need is (`needs` in [`pinned-tests.yaml`](pinned-tests.yaml)).
+   A test whose program is missing is dropped, and the report lists it with
+   the reason. It waits until Sysmon reports a probe command and auditd a
+   probe write to a file it watches, and records which sensors run. It then
    runs the tests on [`pinned-tests.yaml`](pinned-tests.yaml) one at a time,
    with the canary first and last, the harmless command second and the
    baseline of ordinary administration third. After the tests and before the
