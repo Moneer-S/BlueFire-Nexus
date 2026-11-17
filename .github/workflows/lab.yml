@@ -147,6 +147,8 @@ jobs:
           # The check above stops at the name, so this one gives the account the address itself.
           address=$(getent ahostsv4 github.com | head -n 1 | cut -d' ' -f1)
           test -n "$address"
+          # The same request from the runner's own account must work, or the check shows nothing.
+          curl -sS --max-time 10 -o /dev/null --resolve "github.com:443:$address" https://github.com
           if sudo -u bluefire-lab curl -sS --max-time 5 -o /dev/null --resolve "github.com:443:$address" \
             https://github.com; then
             echo "the test account still reaches $address"

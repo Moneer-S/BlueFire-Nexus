@@ -38,11 +38,18 @@ from . import auditd, sysmon
 # and a "critical" one indicates an incident. Lower levels are for review.
 ALERT_LEVELS = ("high", "critical")
 
-# systemd's own steps, not part of what a test did: systemd 255 starts a unit's
-# command through systemd-executor, which then becomes the command; and logind
-# sets up and removes an account's runtime folder through systemd-user-runtime-dir,
-# the removal 10 s after the account's last session ends, so in a later test's window.
-SYSTEMD_HELPERS = ("/systemd-executor", "/systemd-user-runtime-dir")
+
+def systemds_own(event: dict) -> bool:
+    """systemd's own steps, not part of what a test did: systemd 255 starts a unit's command
+    through systemd-executor, which then becomes the command; and logind removes an account's
+    runtime folder 10 s after the account's last session ends, which can fall in a later
+    test's window. Setting the folder up, when a test logs in, stays the test's."""
+
+    image, command = event["Image"], f" {event.get('CommandLine', '')} "
+    return image.endswith("/systemd-executor") or (
+        image.endswith("/systemd-user-runtime-dir") and " stop " in command
+    )
+
 
 # The programs a launcher can be, by the executor a test declares. On Ubuntu sh is dash.
 SHELLS = {"sh": ("/sh", "/dash"), "bash": ("/bash",)}
@@ -141,91 +148,6 @@ def run_engine(
     return matched, counts
 
 
-_CONDITION = re.compile(r"\(|\)|(?:1|all) of [\w*]+|\w+")
-
-
-def record_types(detection: dict) -> list:
-    """The auditd record types a rule's selections name in their field "type"."""
-
-    found: list = []
-    for name, selection in detection.items():
-        for item in selection if name != "condition" and isinstance(selection, list) else [selection]:
-            if isinstance(item, dict) and "type" in item:
-                found += item["type"] if isinstance(item["type"], list) else [item["type"]]
-    return found
-
-
-def could_match(detection: dict, types: set[str]) -> bool:
-    """Whether a Sigma rule's condition could hold on auditd records of these types.
-
-    Only a selection that names record types, in its field "type", can rule a record
-    out, and a negated part never does. So False means that every way to meet the
-    condition needs a record of a type that is not among them. Sigma compares values
-    without regard to case, and so does this.
-    """
-
-    types = {kind.upper() for kind in types}
-
-    def fits(selection: object) -> bool:
-        if isinstance(selection, list) and selection and all(isinstance(item, dict) for item in selection):
-            return any(fits(item) for item in selection)
-        if isinstance(selection, dict) and "type" in selection:
-            wanted = selection["type"] if isinstance(selection["type"], list) else [selection["type"]]
-            return any(str(value).upper() in types for value in wanted)
-        return True
-
-    names = {name: fits(value) for name, value in detection.items() if name != "condition"}
-    conditions = (
-        detection["condition"] if isinstance(detection["condition"], list) else [detection["condition"]]
-    )
-
-    def holds(condition: str) -> bool:
-        tokens, at = _CONDITION.findall(condition), 0
-
-        def take() -> str:
-            nonlocal at
-            at += 1
-            return tokens[at - 1]
-
-        def any_of() -> bool:
-            value = every_of()
-            while at < len(tokens) and tokens[at] == "or":
-                take()
-                value = every_of() or value
-            return value
-
-        def every_of() -> bool:
-            value = negated()
-            while at < len(tokens) and tokens[at] == "and":
-                take()
-                value = negated() and value
-            return value
-
-        def negated() -> bool:
-            if tokens[at] == "not":
-                take()
-                negated()
-                return True  # a part that must be absent rules no record type out
-            return atom()
-
-        def atom() -> bool:
-            token = take()
-            if token == "(":
-                value = any_of()
-                take()
-                return value
-            if " of " in token:
-                quantity, pattern = token.split(" of ")
-                pattern = "*" if pattern == "them" else pattern
-                chosen = [names[name] for name in names if re.fullmatch(pattern.replace("*", ".*"), name)]
-                return any(chosen) if quantity == "1" else all(chosen)
-            return names[token]
-
-        return any_of()
-
-    return any(holds(condition) for condition in conditions)
-
-
 def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[dict[str, list[str]], dict]:
     """Have the rule engine evaluate the pinned auditd rules over auditd's records.
 
@@ -237,7 +159,7 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
 
     matched: dict[str, list[str]] = collections.defaultdict(list)
     counts = {"category": "auditd", "origin": "pinned", "kind": "auditd", "given": len(records)}
-    counts.update(loaded=0, read=0, unmatchable=0, needed_types=[])
+    counts.update(loaded=0, read=0)
     rules, work = run_dir / "rules" / "linux" / "auditd", run_dir / "engine"
     work.mkdir(exist_ok=True)
     output = work / "auditd.json"
@@ -245,14 +167,6 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
     (work / "auditd-engine.txt").unlink(missing_ok=True)
     if not records or not rules.is_dir():
         return matched, counts
-    # A rule that needs a record type this configuration never produced cannot match.
-    produced, needed = {record["type"] for record in records}, set()
-    for path in sorted(rules.rglob("*.yml")):
-        detection = yaml.safe_load(path.read_text(encoding="utf-8"))["detection"]
-        if not could_match(detection, produced):
-            counts["unmatchable"] += 1
-            needed |= {str(value).upper() for value in record_types(detection)} - produced
-    counts["needed_types"] = sorted(needed)
     (work / "auditd.txt").write_text("".join(record["line"] + "\n" for record in records), encoding="utf-8")
     subprocess.run(
         [
@@ -352,7 +266,7 @@ def attribute(
     - a test run as the test account owns what that account started outside
       every session of the driver: what cron starts on the account's behalf;
     - a test run as root owns what systemd started, unless the same command
-      also ran outside every test's window. systemd's own steps (SYSTEMD_HELPERS)
+      also ran outside every test's window. systemd's own steps (systemds_own)
       are left out.
 
     Returns the launcher's start event and, for each process, why it belongs.
@@ -391,7 +305,7 @@ def attribute(
                 owned.setdefault(event["ProcessGuid"], "account")
         elif test["user"] == "root" and started_by_systemd(event):
             system = (event["Image"], event["CommandLine"]) in context["system_commands"]
-            if not system and not event["Image"].endswith(SYSTEMD_HELPERS):
+            if not system and not systemds_own(event):
                 owned.setdefault(event["ProcessGuid"], "systemd")
     return launcher, owned
 
@@ -799,21 +713,15 @@ def check_controls(
             problems.append(f"for the {what} the engine read {counts['read']} of {counts['given']} events")
     rules = sum(counts["rules"] for counts in engine)
     given = sum(counts["given"] for counts in engine if counts["origin"] == "pinned")
-    # A configuration limit, not a broken measurement: said, and the control still holds.
-    blind = "".join(
-        f"; {counts['unmatchable']} of the {counts['rules']} {counts['category']} rules could not match, "
-        f"because they need records this configuration does not produce ({', '.join(counts['needed_types'])})"
-        for counts in engine
-        if counts.get("unmatchable")
-    )
+    # That a category had events does not mean every rule in it could match: an auditd rule
+    # needs records of the system calls, files or keys it names, which the configuration decides.
     checks.append(
         control(
             "engine",
             not problems,
             "; ".join(problems)
             or f"the rule engine loaded all {rules} rules and read all {given} events it was given, "
-            "and every category of rules had events to evaluate"
-            + blind,
+            "and every category of rules had events to evaluate",
         )
     )
 

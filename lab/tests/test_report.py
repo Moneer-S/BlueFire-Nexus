@@ -306,17 +306,6 @@ def test_the_report_shows_the_inventory_of_the_target() -> None:
     assert "2 listening addresses." in report.html_report(document)
 
 
-def test_the_report_says_how_many_rules_could_not_match_under_this_configuration() -> None:
-    document = results()
-    document["engine"]["counts"] = [
-        {"category": "auditd", "origin": "pinned", "unmatchable": 27, "needed_types": ["EXECVE"]}
-    ]
-
-    page = report.html_report(document)
-
-    assert "(27 of the auditd rules need EXECVE records, which this configuration does not produce)" in page
-
-
 def test_the_run_page_lists_each_test_left_out_with_the_reason() -> None:
     summary = report.markdown_summary(results())
 

@@ -25,10 +25,12 @@ report (`report.html`). GitHub keeps both for 90 days.
   watches in [`sensors/audit.rules`](sensors/audit.rules).
 - **Rules:** the 188 Linux rules of SigmaHQ release r2026-07-01 for the kinds
   of event these sensors record (122 for process creation, 8 for file events,
-  5 for network connections, 53 for auditd), evaluated by Zircolite 4.7.1. 27
-  of the 53 auditd rules look for process starts (EXECVE records), which this
-  auditd configuration does not record, so they could not match. Among them is
-  a high rule for turning ASLR off with `sysctl`, as T1685 below does.
+  5 for network connections, 53 for auditd), evaluated by Zircolite 4.7.1.
+  Most of the 53 auditd rules look at records this auditd configuration does
+  not produce: process starts, system calls it does not audit, files it does
+  not watch, audit keys it does not set. In this run 3 of them matched
+  anything. One that could not is a high rule for turning ASLR off with
+  `sysctl`, as T1685 below does: it looks for the process start.
 
 All 49 tests took effect. One of them raised an alert, meaning a match of a
 rule of level high or critical on an event of the test. The last column counts
@@ -89,14 +91,14 @@ the lab's own rules too, those the run accepted: see
 
 What that means for a defender, under these sensors and these rules:
 
-- 48 tests took effect and left telemetry besides their launcher, but no
-  pinned rule of an alert level fired. The lab's own rules close 12 of these
+- 48 tests took effect and left telemetry besides their launcher's start, but
+  no pinned rule of an alert level fired. The lab's own rules close 12 of these
   gaps; 36 stay open. How much of a technique its telemetry shows differs: for
   the preloaded library (T1574.006) it is only the `ls` that ran, because
   Sysmon does not record the environment variable that carries the technique,
-  so no rule over that telemetry could close the gap; and the ASLR change
-  (T1685) is matched by a pinned high rule that needs records this auditd
-  configuration does not produce.
+  so no rule over that telemetry could close the gap; and a pinned high rule
+  describes the ASLR change (T1685) but looks for its process start, which
+  this auditd configuration does not record.
 - No test left no telemetry. Before auditd recorded beside Sysmon, appending a
   command to `~/.bashrc` left none: see
   [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
@@ -184,7 +186,8 @@ exactly those would be accepted as well. Where a test lets a run change what a
 rule looks at, a variant does so for some rules and not yet for others: the
 history tests run again on `~/.histfile` and `~/.history`, and the key search on
 `id_ed25519`, but the systemd tests' variants change a unit's name and not the
-folder it is written to, though the tests allow that too. Beyond that, each
+folder it is written to, though two of those tests, T1053.006 and T1543.002,
+allow that too. Beyond that, each
 rule's description says which spellings it covers, and only the spellings the
 tests use have been seen in a run.
 
@@ -212,8 +215,8 @@ its procedures. It also alerts on the third, T1569.003, added to the list
 later, and on that procedure's run with changed input arguments. Two other
 accepted rules alert on two published procedures each, and five cover a single
 procedure each so far. In the same run the baseline left 286 events and the
-runner's and the lab's own work outside the tests 6,604, most of it the lab's
-own driver switching accounts and sessions. None of the lab's rules matched any
+runner's and the lab's own work outside the tests 6,604, close to half of it
+the lab's own driver switching accounts and sessions. None of the lab's rules matched any
 of them, while 12 pinned rules did. One of those is of level high: the canary's
 own rule, "History File Deletion", matched the baseline's removal of a copy of
 a history file (`rm ~/.bash_history.bak`, record 1118). The others are medium
@@ -343,9 +346,8 @@ Seven controls must pass, or the run fails as a whole:
   appears twice; and auditd's own count of lost records did not move during the
   run;
 - **engine:** the rule engine loaded every rule and read every event it was
-  given, and every category of rules had events to evaluate. Its detail says
-  how many rules need records this configuration does not produce, which is a
-  limit of the configuration, not a failure of the run;
+  given, and every category of rules had events to evaluate. That does not
+  mean every rule could match: see the auditd limit below;
 - **canary:** the known-detected test took effect and alerted, first and last;
 - **control:** the harmless command took effect and raised no alert.
 
@@ -365,8 +367,9 @@ Seven controls must pass, or the run fails as a whole:
 - auditd watches only the shell start files in
   [`sensors/audit.rules`](sensors/audit.rules), for writes and for changes of
   permissions, owner and extended attributes; `chattr`'s file flags, such as
-  immutable, are not among them. It records no process starts, so the pinned
-  auditd rules that look for them (EXECVE records) cannot match. Besides the
+  immutable, are not among them. So most pinned auditd rules cannot match
+  under it: those about process starts (EXECVE records), other system calls,
+  other files, or audit keys it does not set. Besides the
   watches it records what programs report about themselves, such as `useradd`
   adding an account or `sudo` running a command, and those records count for
   the test whose process wrote them.
@@ -377,7 +380,8 @@ Seven controls must pass, or the run fails as a whole:
   step of systemd for an earlier test can still land in a later root test's
   window: in run 44040235251 logind's removal of the runtime folder of the
   account T1078.003 logs in as, 10 s after that test, was tied to T1548.001,
-  which changed none of its answers. That step is left out now.
+  which changed none of its answers. That removal is left out now; setting the
+  folder up, when a test logs in, stays the test's.
 - Outbound traffic, name lookups included, is rejected for the test account
   only, not for tests that run as root. The job checks a name lookup and a
   connection to an address it looked up itself before the tests.
