@@ -234,7 +234,7 @@ def test_an_auditd_event_counts_when_its_process_is_the_tests_and_not_the_driver
     sudo = {**written(180, 11, pid="100"), "types": ["USER_CMD"], "paths": [], "command": ""}
     # A record the test's own process wrote itself, with no system call and no rule's key.
     added = {**written(181, 11), "types": ["ADD_USER"], "paths": [], "command": ""}
-    added["call"] = {"pid": "120", "ses": "11", "op": "add-user", "acct": "evil_user", "res": "success"}
+    added["call"] = {"pid": "120", "ses": "11", "op": "adding user", "id": "999", "res": "success"}
     added["names"] = {}
     # A write by what cron started for the test account, in a session of its own, inside the window.
     cron = written(182, 77, second=5.75, pid="200")
@@ -248,8 +248,22 @@ def test_an_auditd_event_counts_when_its_process_is_the_tests_and_not_the_driver
         ("audit 1794893574.919:182", "openat (auditd)", "window"),
     ]
     assert [event["detail"] for event in mine if str(event["record"]).endswith(":181")] == [
-        "op=add-user acct=evil_user res=success"
+        "op=adding user res=success"
     ]
+
+
+def test_sudos_record_of_a_command_the_test_ran_shows_the_command() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+    ran = {**written(183, 11), "types": ["USER_CMD"], "paths": [], "command": ""}
+    command = b"chmod u+xs /tmp/x".hex().upper()  # as sudo writes it
+    ran["call"] = {"pid": "120", "ses": "11", "cmd": command, "res": "success"}
+    ran["names"] = {}
+
+    _, mine = see(a_test(), events, audit=[ran])
+
+    assert [event["detail"] for event in mine] == ["cmd=chmod u+xs /tmp/x res=success"]
 
 
 def test_an_alert_needs_a_rule_of_an_alert_level_on_an_event_of_the_test() -> None:

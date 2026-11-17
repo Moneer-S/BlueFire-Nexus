@@ -189,7 +189,8 @@ def describe_audit(event: dict, why: str) -> dict:
 
     call, names = event["call"], event["names"]
     action = names.get("SYSCALL") or event["types"][0]  # a record a program wrote itself has no call
-    said = " ".join(f"{name}={call[name]}" for name in ("op", "acct", "res") if call.get(name))
+    told = {**call, "cmd": auditd.command_line(call["cmd"])} if call.get("cmd") else call  # sudo's is hex
+    said = " ".join(f"{name}={told[name]}" for name in ("op", "cmd", "acct", "res") if told.get(name))
     detail = ", ".join(event["paths"]) + (f" by {event['command']}" if event["command"] else "")
     return {
         "record": f"audit {event['event']}",

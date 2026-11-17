@@ -167,7 +167,7 @@ newly created (see [Limits](#limits)), so in every run above appending a command
 to `~/.bashrc` (T1546.004) left no telemetry. With auditd
 recording beside Sysmon, watching the shell start files listed in
 [`sensors/audit.rules`](sensors/audit.rules), it did in
-[run 44025501112](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44025501112)
+[run 44029759448](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44029759448)
 (17 November 2026, kernel 7.0.0-1014-aws). auditd recorded the shell opening
 `/home/bluefire-lab/.bashrc` for writing, in the audit session of the test's
 attack step. Two pinned SigmaHQ auditd rules matched that record, "Unix Shell
@@ -177,9 +177,16 @@ left without telemetry.
 
 The same test run with the account's `~/.bashrc` made immutable was still
 blocked, and auditd recorded its write attempt too, refused by the kernel. Only
-these two runs wrote to a watched file. All seven controls passed, with
-auditd's probe recorded before the first test and its own count of lost records
-at 0 before and after.
+these two runs wrote to a watched file. The run's comparison with the latest
+run on `main` finds them the only two of its 34 runs of a test whose answers
+changed.
+
+auditd also recorded what some of the tests' own programs report: `useradd`
+adding the account of T1136.001, which the pinned auditd rule "Creation Of An
+User Account" (medium) matched; `sudo` running each command of the setuid and
+setgid tests; and cron starting the job the crontab test planted. None of these
+changed an answer. All seven controls passed, with auditd's probe recorded
+before the first test and its own count of lost records at 0 before and after.
 
 ## How a run works
 

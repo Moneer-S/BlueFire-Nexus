@@ -73,16 +73,20 @@ def test_records_of_different_times_are_different_events_even_with_one_serial(tm
 
 
 def test_a_record_a_program_writes_itself_gives_its_event_process_and_session(tmp_path: Path) -> None:
+    # As useradd wrote it in workflow run 44029759448, line 1450 of audit.txt.
     line = (
-        "type=ADD_USER msg=audit(1794893574.919:1477): pid=5218 uid=0 auid=1002 ses=49 subj=unconfined "
-        'msg=\'op=add-user acct="evil_user" exe="/usr/sbin/useradd" hostname=? addr=? terminal=? res=success\''
+        "type=ADD_USER msg=audit(1794896298.363:1340): pid=5154 uid=0 auid=0 ses=50 subj=unconfined "
+        "msg='op=adding user id=999 exe=\"/usr/sbin/useradd\" hostname=? addr=? terminal=? res=success'"
+        f'{GS}UID="root" AUID="root" ID="unknown(999)"'
     )
     path = tmp_path / "audit.txt"
     path.write_bytes(line.encode())
 
-    event = auditd.events(auditd.read(path))[0]
+    call = auditd.events(auditd.read(path))[0]["call"]
 
-    assert (event["call"]["pid"], event["call"]["ses"], event["call"]["acct"]) == ("5218", "49", "evil_user")
+    assert (call["pid"], call["ses"], call["exe"]) == ("5154", "50", "/usr/sbin/useradd")
+    # Its own fields are read from inside msg='...', the first and the last of them whole.
+    assert (call["op"], call["id"], call["res"]) == ("adding user", "999", "success")
 
 
 def test_the_status_auditctl_prints_is_read_by_name() -> None:
