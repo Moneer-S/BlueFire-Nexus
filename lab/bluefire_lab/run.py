@@ -156,9 +156,43 @@ def read_execution_log(path: str) -> dict:
     return {"launcher_pid": int(last["ProcessId"]), "exit_code": int(last["ExitCode"])}
 
 
-def run_test(order: int, role: str, spec: dict, context: dict) -> dict:
-    """Take one test through preparation, the attack step, the effect check and cleanup."""
+def plan(document: dict) -> list[dict]:
+    """The runs in order: the canary, the control, the tests, each test again with each
+    of its hardening changes in place, and the canary again."""
 
+    defenses, tests = document.get("defenses") or {}, document["tests"]
+    runs = [{"role": "canary", "spec": document["canary"]}, {"role": "control", "spec": document["control"]}]
+    runs += [{"role": "test", "spec": spec} for spec in tests]
+    for index, spec in enumerate(tests):
+        for name in spec.get("defenses", []):
+            if name not in defenses:
+                raise SystemExit(
+                    f"{spec['name']!r} names the hardening change {name!r}, which is not defined"
+                )
+            # The test itself ran as run number 3 + index: after the canary and the control.
+            runs.append(
+                {
+                    "role": "hardened",
+                    "spec": spec,
+                    "defense": {"name": name, **defenses[name]},
+                    "compared_with": 3 + index,
+                }
+            )
+    runs.append({"role": "canary", "spec": document["canary"]})
+    for order, run in enumerate(runs, start=1):
+        run["order"] = order
+    return runs
+
+
+def fill(command: str, context: dict) -> str:
+    return command.replace("{home}", context["home"]).replace("{account}", context["account"])
+
+
+def run_test(item: dict, context: dict) -> dict:
+    """Take one test through preparation, an optional hardening change, the attack step,
+    the effect check and cleanup, and remove the change again."""
+
+    order, role, spec = item["order"], item["role"], item["spec"]
     executor, atomics, account, run_id = (context[key] for key in ("executor", "atomics", "account", "id"))
     upstream = upstream_definition(spec, atomics)
     elevated = bool(upstream["executor"].get("elevation_required"))
@@ -178,6 +212,13 @@ def run_test(order: int, role: str, spec: dict, context: dict) -> dict:
     for key in ("rule", "effect", "output", "prepare", "args", "dwell"):
         if key in spec:
             record[key] = spec[key]
+    if "effect" in spec:
+        record["effect"] = fill(spec["effect"], context)  # as it ran, so that the report shows it so
+    if "defense" in item:
+        record["defense"] = dict(item["defense"])
+        for key in ("apply", "revert"):
+            record["defense"][key] = fill(record["defense"][key], context)
+        record["compared_with"] = item["compared_with"]
 
     def do(label: str, command: list[str], as_user: str = user, timeout: float = 60) -> dict:
         result = step(label, as_user, command, timeout)
@@ -203,7 +244,13 @@ def run_test(order: int, role: str, spec: dict, context: dict) -> dict:
                 met = "Prerequisites met" in do("prerequisites", check, timeout=300)["output"]
         record["prerequisites"] = "met" if met else "not met"
 
-    if record["prerequisites"] != "not met":
+    ready = record["prerequisites"] != "not met"
+    defense = record.get("defense")
+    if defense is not None and ready:
+        defense["applied"] = do("defense", ["sh", "-c", defense["apply"]], "root")["exit_status"] == 0
+        ready = defense["applied"]
+
+    if ready:
         log = f"/tmp/bluefire-lab-{run_id}-{order}.csv"
         do("marker-start", marker(run_id, order, "start"), account)
         attack = invoke(
@@ -219,8 +266,11 @@ def run_test(order: int, role: str, spec: dict, context: dict) -> dict:
         do("marker-end", marker(run_id, order, "end"), account)
         record.update(read_execution_log(log))
         if "effect" in spec:
-            do("effect", ["sh", "-c", spec["effect"]])
+            # As root, so that neither the account's rights nor a hardening change decide the check.
+            do("effect", ["sh", "-c", record["effect"]], "root")
         do("cleanup", invoke(spec, executor, atomics, "-Cleanup", *arguments), timeout=limit + 60)
+    if defense is not None and "applied" in defense:
+        defense["reverted"] = do("revert", ["sh", "-c", defense["revert"]], "root")["exit_status"] == 0
     kill_sessions({done["session"] for done in record["steps"]} - {""})
     return record
 
@@ -287,11 +337,12 @@ def facts(context: dict) -> tuple[dict, dict]:
 
 
 def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: Path, account: str) -> int:
-    plan = yaml.safe_load(tests.read_text(encoding="utf-8"))
+    document = yaml.safe_load(tests.read_text(encoding="utf-8"))
     out.mkdir(parents=True, exist_ok=True)
     context = {
         "id": secrets.token_hex(4),
         "account": account,
+        "home": pwd.getpwnam(account).pw_dir,
         "atomics": atomics.resolve(),
         "executor": executor.resolve(),
         "probes": [],
@@ -306,17 +357,12 @@ def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: P
         "tools": tools,
         "sensor": {"name": "Sysmon for Linux", "configuration": "sensor-config.xml"},
         "tests": [],
-        "dropped": plan.get("dropped") or [],
+        "dropped": document.get("dropped") or [],
     }
     shutil.copyfile(sensor_config, out / "sensor-config.xml")
-    sequence = [
-        ("canary", plan["canary"]),
-        ("control", plan["control"]),
-        *(("test", spec) for spec in plan["tests"]),
-        ("canary", plan["canary"]),
-    ]
-    for _, spec in sequence:
-        upstream_definition(spec, context["atomics"])  # stop before anything runs if the list is off
+    sequence = plan(document)
+    for item in sequence:
+        upstream_definition(item["spec"], context["atomics"])  # stop before anything runs if the list is off
     since = time.time() - 1
     subprocess.run(
         ["sudo", "sysmon", "-accepteula", "-i", str(sensor_config)], check=True, capture_output=True
@@ -331,13 +377,19 @@ def main(tests: Path, atomics: Path, executor: Path, sensor_config: Path, out: P
             print(record["aborted"], flush=True)
         else:
             print(f"the sensor reported a probe command after {ready} s", flush=True)
-            for order, (role, spec) in enumerate(sequence, start=1):
-                print(f"[{order}/{len(sequence)}] {role}: {spec['technique']} {spec['name']}", flush=True)
-                done = run_test(order, role, spec, context)
+            for item in sequence:
+                spec, change = item["spec"], item.get("defense", {}).get("name")
+                print(
+                    f"[{item['order']}/{len(sequence)}] {item['role']}: {spec['technique']} {spec['name']}"
+                    + (f", with {change}" if change else ""),
+                    flush=True,
+                )
+                done = run_test(item, context)
                 record["tests"].append(done)
                 effect = next((s["exit_status"] for s in done["steps"] if s["label"] == "effect"), "none")
+                applied = f", change applied: {done['defense'].get('applied')}" if change else ""
                 print(
-                    f"    prerequisites: {done['prerequisites']}, exit code: {done.get('exit_code')}, "
+                    f"    prerequisites: {done['prerequisites']}{applied}, exit code: {done.get('exit_code')}, "
                     f"effect check: {effect}",
                     flush=True,
                 )

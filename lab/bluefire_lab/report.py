@@ -74,7 +74,36 @@ def lede(results: dict) -> str:
     )
     if summary["inconclusive"]:
         text += f" {summary['inconclusive']} could not be measured."
+    if summary.get("hardened"):
+        text += (
+            f" {count(summary['hardened'], 'test')} ran again with a hardening change in place, and "
+            f"{summary['blocked']} of those changes blocked the technique."
+        )
     return text
+
+
+def hardened_runs(results: dict) -> list[dict]:
+    return [test for test in results["tests"] if test["role"] == "hardened"]
+
+
+def hardening_table(results: dict) -> str:
+    by_order = {test["order"]: test for test in results["tests"]}
+    rows = []
+    for test in hardened_runs(results):
+        without = by_order.get(test.get("compared_with"))
+        rows.append(
+            f'<tr><td class="mono">{e(test["technique"])}</td>'
+            f'<td><a href="#t{test["order"]}">{e(test["name"])}</a></td>'
+            f'<td class="wide">{e(test["defense"]["title"])}</td>'
+            f"<td>{pill(without, without['execution']['answer']) if without else 'not run'}</td>"
+            f"<td>{pill(test, test['execution']['answer'])}</td>"
+            f"<td>{pill(test, test['visibility']['answer'])}</td></tr>"
+        )
+    head = (
+        "<tr><th>Technique</th><th>Test</th><th>Hardening change</th><th>Without it</th>"
+        "<th>With it</th><th>Visibility with it</th></tr>"
+    )
+    return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
 
 
 def rule_names(test: dict, limit: int = 3) -> list[str]:
@@ -207,9 +236,24 @@ def evidence(test: dict, results: dict) -> str:
             '<h3>Rules that matched only the launcher</h3><p class="note">Reported, and not counted as a '
             f"detection.</p>{rules_table(seen['launcher_only_rules'], results)}"
         )
+    if "defense" in test:
+        change = test["defense"]
+        state = "Put in place: " + ("yes" if change.get("applied") else "no")
+        if "reverted" in change:
+            state += ". Removed after the test: " + ("yes" if change["reverted"] else "no")
+        parts.append(
+            f"<h3>Hardening change</h3><p>{e(sentence(change['title']))} {e(change['why'])}</p>"
+            f'<p>{e(state)}.</p><pre class="box">{e(change["apply"])}</pre>'
+            f'<p class="note">Removed with:</p><pre class="box">{e(change["revert"])}</pre>'
+            f'<h3>What the test printed</h3><pre class="box">{e(test.get("output") or "nothing")}</pre>'
+        )
     if test["events"]:
         parts.append(f"<h3>Events of the test ({len(test['events'])})</h3>{events_table(test['events'])}")
-    role = {"canary": "known-detected test", "control": "harmless command"}.get(test["role"], "")
+    role = {
+        "canary": "known-detected test",
+        "control": "harmless command",
+        "hardened": "with a hardening change",
+    }.get(test["role"], "")
     return (
         f'<details class="test" id="t{test["order"]}"><summary>'
         f'<span class="mono">{e(test["technique"])}</span><span class="name">{e(test["name"])}'
@@ -229,8 +273,19 @@ def html_report(results: dict) -> str:
     script = package.joinpath("report.js").read_text(encoding="utf-8")
     run, sensor, rules, tools = results["run"], results["sensor"], results["rules"], results["run"]["tools"]
     tests = [test for test in results["tests"] if test["role"] == "test"]
-    others = [test for test in results["tests"] if test["role"] != "test"]
+    hardened = hardened_runs(results)
+    others = [test for test in results["tests"] if test["role"] in ("canary", "control")]
     failed = [check for check in results["controls"] if not check["passed"]]
+    hardening = (
+        "<h2>With a hardening change</h2>"
+        + hardening_table(results)
+        + '<p class="note">Each of these tests ran again later in the same run, with one change in place '
+        "that a defender could deploy. Blocked means the test ran with its prerequisites met and did not "
+        "take effect, while it took effect without the change. Select a test to see the change and what "
+        "the test printed.</p>"
+        if hardened
+        else ""
+    )
 
     facts = "".join(
         [
@@ -318,6 +373,7 @@ defense saw: an alert, telemetry without an alert, or nothing. An alert is a mat
 level is {e(" or ".join(rules["alert_levels"]))} on an event of the test. A test that took effect and left
 telemetry but no alert is a gap that a rule could close; one that left no telemetry needs the sensor to
 record more first. Select a test to see its events and rules.</p>
+{hardening}
 
 <h2>Controls</h2>
 <p class="note">These checks keep a broken measurement from looking like a finding. A run with a failed
@@ -326,6 +382,7 @@ control fails as a whole.</p>
 
 <h2>Evidence</h2>
 {"".join(evidence(test, results) for test in tests)}
+{"<h3>Runs with a hardening change</h3>" + "".join(evidence(test, results) for test in hardened) if hardened else ""}
 <h3>Control runs</h3>
 {"".join(evidence(test, results) for test in others)}
 
@@ -337,8 +394,8 @@ control fails as a whole.</p>
 upstream executor on the target, as an unprivileged account unless the test declares that it needs root.
 A marker command runs before and after each test. Each step runs in a kernel audit session of its own,
 and an event is tied to a test when its process is in the session of the test's attack step. What the
-executor runs for itself, and the test's cleanup, are left out. The sensor's own timestamps are used
-throughout.</p>
+executor runs for itself, and the test's cleanup, are left out, and so is a hardening change, which root
+puts in place and removes in sessions of its own. The sensor's own timestamps are used throughout.</p>
 <p class="note">The answers can be computed again from the files of the run's artifact:</p>
 <pre class="box">{e(RECOMPUTE)}</pre>
 <h3 id="sensor">Sensor configuration</h3>
@@ -380,6 +437,20 @@ def markdown_summary(results: dict) -> str:
                 f"{cell(seen['answer'])} | {cell('; '.join(rule_names(test)) or 'none')}"
                 + (f" ({cell(launcher_note(test))})" if launcher_note(test) else "")
                 + f" | {seen.get('events', 0)} |"
+            )
+    by_order = {test["order"]: test for test in results["tests"]}
+    if hardened_runs(results):
+        lines += [
+            "",
+            "| Technique | Test | Hardening change | Without it | With it | Visibility with it |",
+            "|---|---|---|---|---|---|",
+        ]
+        for test in hardened_runs(results):
+            without = by_order.get(test.get("compared_with"))
+            lines.append(
+                f"| {cell(test['technique'])} | {cell(test['name'])} | {cell(test['defense']['title'])} | "
+                f"{cell(without['execution']['answer']) if without else 'not run'} | "
+                f"{cell(test['execution']['answer'])} | {cell(test['visibility']['answer'])} |"
             )
     lines += ["", "| Control | Result | Detail |", "|---|---|---|"]
     for check in results["controls"]:
