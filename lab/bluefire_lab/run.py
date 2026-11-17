@@ -205,6 +205,60 @@ def fill(command: str, context: dict) -> str:
     return command.replace("{home}", context["home"]).replace("{account}", context["account"])
 
 
+def login_accounts(passwd: str, shells: str) -> list[str]:
+    """The accounts in /etc/passwd whose shell is one of the login shells /etc/shells lists."""
+
+    login = {line.strip() for line in shells.splitlines() if line.strip() and not line.startswith("#")}
+    entries = [line.split(":") for line in passwd.splitlines() if line.count(":") >= 6]
+    return sorted(fields[0] for fields in entries if fields[6] in login)
+
+
+def listening(ss: str) -> list[str]:
+    """The protocol and local address of each socket in what "ss -H -tuln" printed."""
+
+    return sorted(
+        {f"{line.split()[0]} {line.split()[4]}" for line in ss.splitlines() if len(line.split()) > 4}
+    )
+
+
+def running_services(units: str) -> list[str]:
+    """The service names in what "systemctl list-units --type=service --state=running" printed."""
+
+    return sorted(line.split()[0] for line in units.splitlines() if line.strip())
+
+
+def inventory(programs: set[str]) -> dict:
+    """What the target is, read before any test runs: the accounts that can log in, the
+    running services, the listening sockets, and where each program the tests need is."""
+
+    units = output_of(
+        "systemctl", "list-units", "--type=service", "--state=running", "--no-legend", "--plain"
+    )
+    return {
+        "accounts": login_accounts(
+            Path("/etc/passwd").read_text(encoding="utf-8"), Path("/etc/shells").read_text(encoding="utf-8")
+        ),
+        "services": running_services(units),
+        "listening": listening(output_of("ss", "-H", "-tuln")),
+        "programs": {name: shutil.which(name) or "" for name in sorted(programs)},
+    }
+
+
+def select(document: dict, found: dict) -> tuple[dict, list[dict]]:
+    """The tests the target can run, by the programs each needs and the inventory found,
+    and those it cannot, with the reason, for the report's list of dropped tests."""
+
+    kept, dropped = [], []
+    for spec in document["tests"]:
+        missing = [program for program in spec.get("needs", []) if not found["programs"].get(program)]
+        if missing:
+            reason = f"the target has no {', '.join(missing)}, which the test needs"
+            dropped.append({"technique": spec["technique"], "name": spec["name"], "reason": reason})
+        else:
+            kept.append(spec)
+    return {**document, "tests": kept}, dropped
+
+
 def run_baseline(item: dict, context: dict) -> dict:
     """Run the ordinary activity the lab's own rules must stay quiet on, as root and as the
     test account, each in an audit session of its own, between two markers."""
@@ -410,6 +464,9 @@ def main(
         "probes": [],
     }
     target, tools = facts(context)
+    # What the target has decides which tests can run on it.
+    found = inventory({program for spec in document["tests"] for program in spec.get("needs", [])})
+    document, unfit = select(document, found)
     record: dict = {
         "schema": "bluefire-lab/run/1",
         "id": context["id"],
@@ -417,9 +474,10 @@ def main(
         "account": account,
         "target": target,
         "tools": tools,
+        "inventory": found,
         "sensor": {"name": "Sysmon for Linux", "configuration": "sensor-config.xml"},
         "tests": [],
-        "dropped": document.get("dropped") or [],
+        "dropped": (document.get("dropped") or []) + unfit,
     }
     shutil.copyfile(sensor_config, out / "sensor-config.xml")
     sequence = plan(document)
@@ -439,6 +497,9 @@ def main(
         )
         record["audit"] = context["audit"] = {"rules": "audit-rules.txt", "probe": AUDIT_PROBE}
         record["audit"].update(version=tools["auditd"], before=audit_status())
+    record["inventory"]["sensors"] = {
+        name: output_of("systemctl", "is-active", name) for name in ("sysmon", "auditd")
+    }
     try:
         ready = wait_until_ready(context, since)
         record["sensor"]["ready_after_seconds"] = ready

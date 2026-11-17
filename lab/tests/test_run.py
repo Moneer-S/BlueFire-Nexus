@@ -100,3 +100,45 @@ def test_an_input_argument_the_test_does_not_declare_stops_the_run(tmp_path: Pat
     assert run.upstream_definition({**spec, "args": {"history_path": "~/.zsh_history"}}, tmp_path) == upstream
     with pytest.raises(SystemExit, match="no input argument histroy_path"):
         run.upstream_definition({**spec, "args": {"histroy_path": "~/.zsh_history"}}, tmp_path)
+
+
+def test_the_inventory_reads_accounts_sockets_and_services() -> None:
+    passwd = (
+        "root:x:0:0:root:/root:/bin/bash\n"
+        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+        "sync:x:4:65534:sync:/bin:/bin/sync\n"
+        "bluefire-lab:x:1002:1002::/home/bluefire-lab:/bin/bash\n"
+    )
+    ss = (
+        "udp   UNCONN 0      0      127.0.0.53%lo:53        0.0.0.0:*\n"
+        "tcp   LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*\n"
+        "tcp   LISTEN 0      128          0.0.0.0:22        0.0.0.0:*\n"
+    )
+    units = "cron.service loaded active running Regular background program processing daemon\n"
+    shells = "# /etc/shells: valid login shells\n/bin/sh\n/bin/bash\n/usr/bin/bash\n"
+
+    assert run.login_accounts(passwd, shells) == ["bluefire-lab", "root"]  # sync's /bin/sync is no shell
+    assert run.listening(ss) == ["tcp 0.0.0.0:22", "tcp 127.0.0.53%lo:53", "udp 127.0.0.53%lo:53"]
+    assert run.running_services(units) == ["cron.service"]
+
+
+def test_a_test_whose_program_the_target_lacks_is_dropped_with_the_reason() -> None:
+    document = a_plan()
+    document["tests"][0]["needs"] = ["crontab"]
+    document["tests"][2]["needs"] = ["systemctl", "useradd"]
+    found = {"programs": {"crontab": "/usr/bin/crontab", "systemctl": "", "useradd": "/usr/sbin/useradd"}}
+
+    kept, dropped = run.select(document, found)
+
+    assert [spec["name"] for spec in kept["tests"]] == ["first", "second"]
+    assert dropped == [
+        {"technique": "T3", "name": "third", "reason": "the target has no systemctl, which the test needs"}
+    ]
+    assert [item["role"] for item in run.plan(kept)] == [
+        "canary",
+        "control",
+        "test",
+        "test",
+        "hardened",
+        "canary",
+    ]

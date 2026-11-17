@@ -274,3 +274,22 @@ def test_a_rule_that_is_not_accepted_says_why() -> None:
     assert "It matched 1 event of ordinary activity." in page
     assert "not accepted: it matched 1 event of ordinary activity" in summary
     assert "| telemetry only (high: Shell History File Emptied, not accepted) |" in summary
+
+
+def test_the_report_shows_the_inventory_of_the_target() -> None:
+    document = results()
+    document["run"]["inventory"] = {
+        "accounts": ["bluefire-lab", "root"],
+        "services": ["cron.service", "ssh.service"],
+        "listening": ["tcp 0.0.0.0:22"],
+        "sensors": {"sysmon": "active", "auditd": "active"},
+        "programs": {"crontab": "/usr/bin/crontab", "systemctl": ""},
+    }
+
+    page = report.html_report(document)
+
+    assert "2 accounts that can log in, 2 running services, 1 listening socket" in page
+    section = page[page.index('id="inventory"') :]
+    assert "cron.service, ssh.service" in section
+    assert "crontab at /usr/bin/crontab, systemctl at none" in section
+    assert "Inventory of the target" not in report.html_report(results())

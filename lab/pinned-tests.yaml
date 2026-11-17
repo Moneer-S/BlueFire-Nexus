@@ -20,6 +20,9 @@
 #            hardened runs. Each gives "args" and, where the change moves what
 #            the test leaves behind, its own "effect" and "prepare". A rule of
 #            the lab's own is accepted only when it alerts on these as well.
+#   needs    Programs the test needs on the target. The run takes an
+#            inventory of the target first, and a test whose program is not
+#            there is dropped, with the reason in the report.
 # In effect and defense commands, {home} and {account} stand for the home
 # folder and the name of the account the tests run as.
 #
@@ -119,12 +122,14 @@ tests:
   - technique: T1053.003
     guid: 435057fb-74b1-410e-9403-d81baf194f75
     name: Cron - Replace crontab with referenced file
+    needs: [crontab]
     effect: grep -qF '/tmp/evil.sh' /var/spool/cron/crontabs/{account}
     dwell: 65 # long enough for cron to run the planted line once
     defenses: [cron-allow]
   - technique: T1053.006
     guid: f4983098-bb13-44fb-9b2c-46149961807b
     name: Create Systemd Service and Timer
+    needs: [systemctl]
     effect: systemctl is-active --quiet art-timer.timer
     variants:
       - args:
@@ -136,6 +141,7 @@ tests:
   - technique: T1543.002
     guid: d9e4f24f-aa67-4c6e-bcbf-85622b697a7c
     name: Create Systemd Service
+    needs: [systemctl]
     effect: systemctl is-enabled --quiet art-systemd-service.service && test -e /tmp/art-systemd-execstart-marker
     variants:
       - args:
@@ -147,6 +153,7 @@ tests:
   - technique: T1136.001
     guid: 40d8eabd-e394-46f6-8785-b9bfa1d011d2
     name: Create a user account on a Linux system
+    needs: [useradd]
     effect: getent passwd evil_user
     variants:
       - args: {username: bluefire_variant_user}
@@ -239,6 +246,7 @@ tests:
   - technique: T1059.004
     guid: ee72b37d-b8f5-46a5-a9e7-0ff50035ffd5
     name: Shell Creation using awk command
+    needs: [awk]
 
 # Hardening changes a defender would deploy. The lab applies one as root after
 # the test's preparation, runs the test, and removes the change after the

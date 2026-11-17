@@ -353,6 +353,28 @@ def html_report(results: dict) -> str:
     script = package.joinpath("report.js").read_text(encoding="utf-8")
     run, sensor, rules, tools = results["run"], results["sensor"], results["rules"], results["run"]["tools"]
     audit = results.get("audit")
+    found = run.get("inventory")
+    inventory_section = (
+        '<h3 id="inventory">Inventory of the target</h3><p class="note">Read before the first test. A test that '
+        "needs a program the target does not have is dropped, and listed below with the reason.</p>"
+        '<div class="table-wrap"><table><tbody>'
+        + "".join(
+            f'<tr><td>{e(label)}</td><td class="mono wide">{e(value)}</td></tr>'
+            for label, value in (
+                ("Accounts that can log in", ", ".join(found["accounts"])),
+                ("Running services", ", ".join(found["services"])),
+                ("Listening sockets", ", ".join(found["listening"])),
+                ("Sensors", ", ".join(f"{name} {state}" for name, state in found.get("sensors", {}).items())),
+                (
+                    "Programs the tests need",
+                    ", ".join(f"{name} at {path or 'none'}" for name, path in found["programs"].items()),
+                ),
+            )
+        )
+        + "</tbody></table></div>"
+        if found
+        else ""
+    )
     audit_configuration = (
         f'<p class="note">auditd, rules SHA-256 <span class="mono">{e(audit["rules_sha256"])}</span>:</p>'
         f'<pre class="box">{e(audit["rules_text"])}</pre>'
@@ -421,6 +443,19 @@ def html_report(results: dict) -> str:
                 + f". Alert levels: {e(' and '.join(rules['alert_levels']))}.",
             ),
             fact("Rule engine", f"{e(results['engine']['name'])} {e(results['engine']['version'])}"),
+            *(
+                [
+                    fact(
+                        "Inventory",
+                        f"{count(len(found['accounts']), 'account')} that can log in, "
+                        f"{count(len(found['services']), 'running service')}, "
+                        f"{count(len(found['listening']), 'listening socket')}. "
+                        'The <a href="#inventory">inventory</a> is below.',
+                    )
+                ]
+                if found
+                else []
+            ),
         ]
     )
     controls = "".join(
@@ -509,6 +544,7 @@ puts in place and removes in sessions of its own. The sensor's own timestamps ar
 <span class="mono">{e(sensor["configuration_sha256"])}</span>:</p>
 <pre class="box">{e(sensor["configuration_text"])}</pre>
 {audit_configuration}
+{inventory_section}
 <h3>Pinned versions</h3>
 <div class="table-wrap"><table><tbody>{versions}</tbody></table></div>
 <p class="note">Sigma rules are the work of their authors, named with each rule above, and are used under
