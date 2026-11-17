@@ -145,6 +145,18 @@ jobs:
             exit 1
           fi
 
+      - name: Check that the test account cannot change the lab's own files
+        run: |
+          # The tests, the executor, the rules and the rule engine, the lab and the run's folder.
+          # A test run as the account must not change what a later test runs, or the evaluation.
+          writable=$(sudo -u bluefire-lab find /opt/bluefire-lab "$RUNNER_TEMP" "$GITHUB_WORKSPACE" \
+            -writable 2>/dev/null | head -n 20 || true)
+          if [ -n "$writable" ]; then
+            echo "the test account can write to these files of the lab's own, among others:"
+            echo "$writable"
+            exit 1
+          fi
+
       - name: Stop the runner's own timers
         run: |
           # A unit that a timer starts inside the window of a test run as root would count as the test's.
