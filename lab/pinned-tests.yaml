@@ -115,6 +115,29 @@ tests:
     guid: 23b91cd2-c99c-4002-9e41-317c63e024a2
     name: Security Software Discovery - ps (Linux)
     output: "falcond|nessusd"
+  # The listing stays in a file until the cleanup. The check passes only when the
+  # account could see root's process 1.
+  - technique: T1057
+    guid: 4ff64f0b-aaf2-4866-b39d-38d9791407cc
+    name: Process Discovery - ps
+    effect: grep -qE '^root +1 ' /tmp/loot.txt
+  - technique: T1049
+    guid: bcf05343-ef1d-4052-8a27-b00c9be42b9f
+    name: System Network Connections Discovery via ss or lsof (Linux/MacOS)
+    needs: [ss]
+    output: "Local Address:Port"
+  - technique: T1083
+    guid: 13c5e1ae-605b-46c4-a79f-db28c77ff24e
+    name: Nix File and Directory Discovery 2
+    output: "./.bashrc"
+  - technique: T1087.001
+    guid: c955a599-3653-4fe5-b631-f11c00eb0397
+    name: View accounts with UID 0
+    output: "root:x:0:0:"
+  - technique: T1201
+    guid: 7c86c55c-70fa-4a05-83c9-3aa19b145d1a
+    name: Examine password expiration policy - All Linux
+    output: PASS_MAX_DAYS
 
   # Persistence
   # The effect is read from cron's spool: with /etc/cron.allow in place, crontab
@@ -174,6 +197,62 @@ tests:
     name: Add command to .bashrc
     effect: grep -q 'T1546.004' {home}/.bashrc
     defenses: [profile-immutable]
+  - technique: T1037.004
+    guid: 126f71af-e1c9-405c-94ef-26a47b16c102
+    name: rc.local
+    effect: test -x /etc/rc.local && grep -q aW1wb3J0IG9z /etc/rc.local
+  - technique: T1546.005
+    guid: a74b2e07-5952-4c03-8b56-56274b076b61
+    name: Trap EXIT
+    effect: grep -qF 'thanks for all the fish' /tmp/art-fish.txt
+  - technique: T1546.018
+    guid: 6e78084a-a433-4702-a838-cc7b765d87e8
+    name: Python Startup Hook - usercustomize.py (Linux / MacOS)
+    needs: [python3]
+    effect: test -s /tmp/poc.txt && ls {home}/.local/lib/python3*/site-packages/usercustomize.py
+  # It writes the unit with a shell, so the lab's rule for that alerts on it too.
+  - technique: T1569.003
+    guid: 2fc6c0ab-4f88-4eb8-ab1b-f739fc22bba7
+    name: Enable systemd Service for Persistence with Auto-Restart
+    needs: [systemctl]
+    effect: systemctl is-enabled --quiet atomic-persist.service && grep -q persistent /tmp/atomic_persist_output.txt
+    defenses: [tmp-noexec]
+    variants:
+      - args:
+          service_name: bluefire-lab-variant-persist
+          payload_path: /var/tmp/bluefire-lab-variant-payload.sh
+        effect: >-
+          systemctl is-enabled --quiet bluefire-lab-variant-persist.service
+          && grep -q persistent /tmp/atomic_persist_output.txt
+  - technique: T1556.003
+    guid: 4b9dde80-ae22-44b1-a82a-644bf009eb9c
+    name: Malicious PAM rule
+    effect: head -n 1 /etc/pam.d/su-l | grep -qF 'pam_succeed_if.so uid >= 0'
+  - technique: T1078.003
+    guid: d2b95631-62d7-45a3-aaef-0972cea97931
+    name: Reactivate a locked/expired account (Linux)
+    needs: [useradd, usermod, openssl]
+    # The account's password is unlocked and it no longer expires.
+    effect: >-
+      getent shadow art | awk -F: '$2 !~ /^!/ && $8 == 99999 { ok = 1 } END { exit !ok }'
+
+  # Credential access, on files the lab plants in the test account's home only.
+  # Before the history tests below, which leave ~/.bash_history a link to /dev/null.
+  - technique: T1552.003
+    guid: 3cfde62b-7c33-4b26-a61e-755d6131c8ce
+    name: Search Through Bash History
+    prepare: echo 'sshpass -p bluefire-lab-planted ssh lab@bluefire-lab.invalid' >> ~/.bash_history
+    effect: grep -qF 'bluefire-lab-planted' /tmp/loot.txt
+  # Upstream searches from /; the search is limited to the account's home.
+  - technique: T1552.004
+    guid: 46959285-906d-40fa-9437-5a439accd878
+    name: Discover Private SSH Keys
+    args: {search_path: "~"}
+    prepare: >-
+      install -d -m 700 ~/.ssh
+      && echo 'bluefire-lab-planted, not a key' > ~/.ssh/id_rsa
+      && chmod 600 ~/.ssh/id_rsa
+    effect: grep -qF 'bluefire-lab-planted' /tmp/creds.txt
 
   # Permissions and masquerading
   - technique: T1222.002
@@ -201,6 +280,18 @@ tests:
     # The test's last command is the renamed copy running "sleep 5", so its exit
     # status shows whether the copy ran. The copy itself is only preparation.
     defenses: [tmp-noexec]
+  - technique: T1036.005
+    guid: 812c3ab8-94b0-4698-a9bf-9420af23ce24
+    name: Execute a process from a directory masquerading as the current parent directory
+    output: Hello from the Atomic Red Team test T1036.005
+  - technique: T1564.001
+    guid: 61a782e5-9a19-40b5-8ba4-69a4b9f3d7be
+    name: Create a hidden file in a hidden directory
+    effect: grep -qx T1564.001 /var/tmp/.hidden-directory/.hidden-file
+  - technique: T1070.006
+    guid: 20ef1523-8758-4898-b5a2-d026cc3d2c52
+    name: Set a file's modification timestamp
+    effect: test "$(stat -c %Y /tmp/T1070.006-modification.txt)" -lt 86400
 
   # Covering tracks: the canary's technique by another procedure
   - technique: T1070.003
@@ -227,6 +318,11 @@ tests:
       - args: {history_path: ~/.history}
         prepare: echo "ls -la" >> ~/.history
         effect: test -L {home}/.history && test "$(readlink {home}/.history)" = /dev/null
+  # On Linux the file exists only because the test's prerequisite creates it.
+  - technique: T1685.006
+    guid: 989cc1b1-3642-4260-a809-54f9dd559683
+    name: rm -rf
+    effect: test ! -e /var/log/system.log
 
   # Encoded and indirect execution
   - technique: T1027
@@ -247,6 +343,86 @@ tests:
     guid: ee72b37d-b8f5-46a5-a9e7-0ff50035ffd5
     name: Shell Creation using awk command
     needs: [awk]
+  - technique: T1027.002
+    guid: 11c46cd8-e471-450e-acb8-52a1216ae6a4
+    name: Binary simply packed by UPX (linux)
+    output: the cake is a lie
+    defenses: [tmp-noexec]
+  - technique: T1027.004
+    guid: d0377aa6-850a-42b2-95f0-de558d80be57
+    name: C compile
+    needs: [gcc]
+    output: T1027-004-test.c has compiled and executed
+    defenses: [tmp-noexec]
+  # The payload runs through bash, which /tmp mounted noexec does not stop.
+  - technique: T1027.013
+    guid: c2ca068a-eb1e-498f-9f93-3d554c455916
+    name: Password-Protected ZIP Payload Extraction and Execution
+    needs: [zip, unzip]
+    output: "T1027.013: Payload extracted from encrypted ZIP"
+    defenses: [tmp-noexec]
+  - technique: T1574.006
+    guid: bc219ff7-789f-4d51-9142-ecae3397deae
+    name: Shared Library Injection via LD_PRELOAD
+    needs: [gcc]
+    output: Loaded Atomic Red Team Library successfully!
+    defenses: [tmp-noexec]
+  # The test starts the process it writes into itself.
+  - technique: T1055.009
+    guid: 50859b3b-b088-4c7b-973d-03a0365a9bf9
+    name: Inplace Instruction Overwrite
+    needs: [gcc, make]
+    effect: test -f /tmp/pwned
+
+  # Collection, kept on the target
+  - technique: T1560.001
+    guid: a743e3a6-e8b2-4a30-abe7-ca85d201b5d3
+    name: Encrypts collected data with AES-256 and Base64
+    needs: [zip, openssl]
+    effect: test -s /tmp/t1560/t1560_data.enc
+  - technique: T1560.002
+    guid: e86f1b4b-fcc1-4a2a-ae10-b49da01458db
+    name: Compressing data using tarfile in Python (FreeBSD/Linux)
+    needs: [python3]
+    effect: tar -tf /tmp/passwd.tar.gz | grep -q 'etc/passwd'
+  - technique: T1030
+    guid: ab936c51-10f4-46ce-9144-e02137b2016a
+    name: Data Transfer Size Limits
+    effect: test -s /tmp/T1030/xaa && test -s /tmp/T1030/xae
+
+  # Impact and weakened defenses, last: some are not undone by their cleanup.
+  # Upstream encrypts /etc/passwd, which is longer than one RSA block can hold, so
+  # the encryption always fails; a short file the lab plants is encrypted instead.
+  - technique: T1486
+    guid: 142752dc-ca71-443b-9359-cf6f497315f1
+    name: Encrypt files using openssl (FreeBSD/Linux)
+    needs: [openssl]
+    args: {input_file_path: /tmp/bluefire-lab-ransom.txt}
+    prepare: echo 'bluefire lab data to encrypt' > /tmp/bluefire-lab-ransom.txt
+    effect: test -s /tmp/passwd.zip
+  # After the cron test, which needs cron running; the cleanup starts it again.
+  - technique: T1489
+    guid: 42e3a5bd-1e45-427f-aa08-2a65fa29a820
+    name: Linux - Stop service using systemctl
+    needs: [systemctl]
+    prepare: systemctl start cron
+    effect: "! systemctl is-active --quiet cron"
+  - technique: T1685
+    guid: ac333fe1-ce2b-400b-a117-538634427439
+    name: Disable ASLR Via sysctl parameters - Linux
+    needs: [sysctl]
+    effect: test "$(cat /proc/sys/kernel/randomize_va_space)" = 0
+  # No cleanup upstream: the certificate stays trusted until the runner is gone.
+  - technique: T1553.004
+    guid: 53bcf8a0-1549-4b85-b919-010c56d724ff
+    name: Install root CA on Debian/Ubuntu
+    needs: [openssl, update-ca-certificates]
+    effect: test -f /usr/local/share/ca-certificates/rootCA.crt && test -L /etc/ssl/certs/rootCA.pem
+  # No cleanup upstream: the setting stays in /etc/sudoers until the runner is gone.
+  - technique: T1548.003
+    guid: a7b17659-dd5e-46f7-b7d1-e6792c91d0bc
+    name: Unlimited sudo cache timeout
+    effect: grep -q 'timestamp_timeout=-1' /etc/sudoers
 
 # Hardening changes a defender would deploy. The lab applies one as root after
 # the test's preparation, runs the test, and removes the change after the
