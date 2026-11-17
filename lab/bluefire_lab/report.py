@@ -9,10 +9,30 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from importlib import resources
 from pathlib import Path
 
 RECOMPUTE = "bluefire-lab evaluate <folder of the unpacked artifact> --engine <path to Zircolite>"
+
+# What would make the page fetch something when it opens: an element with a source,
+# style that imports or points at a file, a script that makes a request. A link that
+# needs a click is fine. Text from telemetry is escaped, so it cannot match.
+_FETCHING_ELEMENT = re.compile(
+    r"<(?:script|img|link|iframe|frame|source|object|embed|video|audio|track|base|input|image|use)\b"
+    r"[^>]*\b(?:src|href|data|srcset|poster)\s*=",
+    re.IGNORECASE,
+)
+_FETCHING_STYLE = re.compile(r"url\s*\(|@import", re.IGNORECASE)
+_FETCHING_SCRIPT = re.compile(r"\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon|\bimport\s*\(")
+
+
+def loads_anything(page: str) -> list[str]:
+    """What in the page would fetch something from elsewhere when it opens."""
+
+    style = "".join(re.findall(r"<style>(.*?)</style>", page, re.DOTALL))
+    script = "".join(re.findall(r"<script>(.*?)</script>", page, re.DOTALL))
+    return _FETCHING_ELEMENT.findall(page) + _FETCHING_STYLE.findall(style) + _FETCHING_SCRIPT.findall(script)
 
 
 def e(value: object) -> str:
@@ -206,8 +226,9 @@ def evidence(test: dict, results: dict) -> str:
         parts.append(f"<h3>Rules that matched an event of the test</h3>{rules_table(seen['rules'], results)}")
     if "launcher" in seen:
         parts.append(
-            '<h3>Launcher</h3><p class="note">The executor starts the test as one shell process whose command '
-            "line is the whole test. This process start is not counted as telemetry of the test.</p>"
+            '<h3>Launcher</h3><p class="note">The executor starts the test as one shell process (sh -c or '
+            "bash -c) whose command line is the whole test. Its own start and end are not counted as telemetry "
+            "of the test; files it writes are.</p>"
             f'<pre class="box">{e(seen["launcher"]["detail"])}</pre>'
         )
     if seen.get("launcher_only_rules"):
@@ -350,8 +371,8 @@ def html_report(results: dict) -> str:
 <p class="note">Execution says whether the technique took effect on the target. Visibility says what the
 defense saw: an alert, telemetry without an alert, or nothing. An alert is a match of a Sigma rule whose
 level is {e(" or ".join(rules["alert_levels"]))} on an event of the test. A test that took effect and left
-telemetry but no alert is a gap a new rule can close; one that left no telemetry needs the sensor to record
-more first. Select a test to see its events and rules.</p>
+telemetry but no alert is a gap that a rule could close; one that left no telemetry needs the sensor to
+record more first. Select a test to see its events and rules.</p>
 {hardening}
 
 <h2>Controls</h2>
@@ -448,6 +469,9 @@ def markdown_summary(results: dict) -> str:
 
 def main(run_dir: Path) -> int:
     results = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
-    (run_dir / "report.html").write_text(html_report(results), encoding="utf-8")
+    page = html_report(results)
+    if loads_anything(page):
+        raise SystemExit(f"the report would fetch {loads_anything(page)} when opened: put it in the page")
+    (run_dir / "report.html").write_text(page, encoding="utf-8")
     (run_dir / "summary.md").write_text(markdown_summary(results), encoding="utf-8")
     return 0

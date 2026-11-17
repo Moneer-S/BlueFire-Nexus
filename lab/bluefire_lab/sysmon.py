@@ -88,22 +88,27 @@ def one_line(text: str) -> str:
 def loss(events: list[dict[str, str]], other: list[str]) -> dict[str, object]:
     """Say whether events were lost between the kernel and the exported file.
 
-    Three things are checked. Sysmon prints how many events it failed to read
-    from the kernel when it stops. It numbers the records it writes, so a
-    record that the journal dropped leaves a hole in the numbers. And it
-    records its own start, so a restart in the middle of a run shows.
+    Three things are checked. When it stops, Sysmon prints once how many events
+    it failed to read from the kernel and how many it could not parse: both
+    counts must be there, once each. It numbers the records it writes, so a
+    record that the journal dropped leaves a hole in the numbers, and a record
+    written twice repeats a number. And it records its own start, so a restart
+    in the middle of a run shows.
     """
 
     text = "\n".join(other)
-    lost, bad = _LOST.search(text), _BAD.search(text)
-    numbers = sorted({int(event["EventRecordID"]) for event in events if event["EventRecordID"]})
-    missing = (numbers[-1] - numbers[0] + 1 - len(numbers)) if numbers else 0
+    lost, bad = _LOST.findall(text), _BAD.findall(text)
+    numbers = [int(event["EventRecordID"]) for event in events if event["EventRecordID"]]
+    unique = sorted(set(numbers))
+    missing = (unique[-1] - unique[0] + 1 - len(unique)) if unique else 0
+    reported = len(lost) == 1 and len(bad) == 1
     return {
-        "sensor_reported": lost is not None,
-        "lost_events": int(lost.group(1)) if lost else None,
-        "bad_events": int(bad.group(2)) if bad else None,
-        "records": len(numbers),
+        "sensor_reported": reported,
+        "lost_events": int(lost[0][0]) if reported else None,
+        "bad_events": int(bad[0][1]) if reported else None,
+        "records": len(unique),
         "missing_records": missing,
+        "repeated_records": len(numbers) - len(unique),
         "sensor_starts": sum(
             1 for event in events if event["EventID"] == "4" and event.get("State") == "Started"
         ),

@@ -25,9 +25,9 @@ both for 90 days.
   network connections), evaluated by Zircolite 4.7.1.
 
 All 17 tests took effect. One of them raised an alert, meaning a match of a rule
-of level high or critical:
+of level high or critical on an event of the test:
 
-| Test | Visibility | Highest level among the rules that matched |
+| Test | Visibility | Highest level among the rules that matched an event of the test |
 | --- | --- | --- |
 | T1059.004 Shell Creation using awk command | alert | high |
 | T1053.003 Cron - Replace crontab with referenced file | telemetry only | medium |
@@ -51,15 +51,18 @@ What that means for a defender, under this sensor configuration and these
 rules:
 
 - Fifteen tests did what they do and the sensor recorded it, but no rule of an
-  alert level fired. These are the gaps a new rule can close.
-- Appending a command to `~/.bashrc` left nothing. The shell's own `echo` starts
-  no process, and Sysmon for Linux reports a file only as created, and only
-  while it is less than 100 ms old
+  alert level fired. These are gaps that a rule could close. Whether one closes
+  them without false alarms is not shown by this run.
+- Appending a command to `~/.bashrc` left nothing besides the start of the one
+  shell process whose command line holds the whole append. The shell's own
+  `echo` starts no process, and Sysmon for Linux reports a file only as created,
+  and only while it is less than 100 ms old
   ([its source](https://github.com/microsoft/Sysmon-Linux/blob/962934f7e710a8e860ed5020f2068c6eba6aff64/ebpfKern/sysmonFileOpen.c)).
-  This gap needs a sensor change before any rule can see it.
-- Some rules matched only the one shell process that carries a test's whole
-  command line, such as the medium rules for base64 piped into a shell on
-  T1140. The report shows them, and does not count them as detections.
+  This gap needs a sensor change before any rule can see the write itself.
+- Some rules matched only that shell process, which carries a test's whole
+  command line: a medium rule on T1082, T1053.006, T1543.002 and T1546.004, and
+  three medium rules for base64 piped into a shell on T1140. The report shows
+  them, and does not count them as detections.
 
 The canary, a test the pinned rules are known to catch (T1070.003, history
 removal with `rm`), raised its alert at the start and at the end of the run. A
@@ -111,35 +114,53 @@ defined in [`pinned-tests.yaml`](pinned-tests.yaml) under `defenses`.
    between its markers. What cron starts for the test account belongs to a
    test run as that account. What systemd starts belongs to a test run as root,
    unless the same command also ran outside every test's window. The executor's
-   own commands, the test's preparation and cleanup, and the shell process that
-   carries the whole command line are left out.
-4. `bluefire-lab report` writes `report.html`, one file that opens offline, and
-   the same table for the run page.
+   own commands and the test's preparation and cleanup are left out. So are the
+   start and end of the shell process that carries the whole command line
+   (`sh -c` or `bash -c`, as the test declares); files it writes count as the
+   test's.
+4. `bluefire-lab report` writes `report.html`, one file that loads nothing from
+   elsewhere when it opens (it refuses to write one that would), and the same
+   table for the run page.
 
-Five controls must pass, or the run fails as a whole:
+Six controls must pass, or the run fails as a whole:
 
-- **readiness:** the sensor reported a probe before the first test;
-- **markers:** both markers of every test are in the telemetry;
-- **loss:** the sensor reported no lost events, and none of its numbered
-  records is missing from what was read;
+- **readiness:** the sensor reported a probe before the first test began;
+- **markers:** both markers and the launcher of every test are in the
+  telemetry, so that no test is left inconclusive;
+- **loss:** the sensor reported its counts of lost and bad events once each,
+  both zero, and none of its numbered records is missing from what was read or
+  appears twice;
+- **engine:** the rule engine loaded every rule and read every event it was
+  given, and the sensor recorded every kind of event the rules describe;
 - **canary:** the known-detected test took effect and alerted, first and last;
-- **control:** the harmless command raised no alert.
+- **control:** the harmless command took effect and raised no alert.
 
 ## Limits
 
 - "No telemetry" means none under the pinned sensor configuration. Sysmon for
   Linux records process starts and ends, network connections, file deletions,
   and file creations. A file counts as created when it is opened for creation
-  and its three timestamps are equal and less than 100 ms old, so an append
-  right after a file was created can show up as a creation too. Writes to
-  older files, reads, and permission changes are not recorded.
+  and its three timestamps are equal and less than 100 ms old. So a write to an
+  existing file shows up as a creation when it leaves those timestamps fresh,
+  as a read followed by an overwrite does (T1098.004 in the run above). An
+  append that leaves the access time old, like the one to `~/.bashrc`, is not
+  recorded, and neither are reads and permission changes.
 - A process that systemd starts for a test that runs as root is tied to the
-  test by time, inside the test's window, and not by process ancestry.
-- Outbound traffic is rejected for the test account only, not for tests that
-  run as root.
+  test by time, inside the test's window, and not by process ancestry. The
+  runner's own timers are stopped before the tests, so that their units do not
+  start inside such a window.
+- Outbound traffic, name lookups included, is rejected for the test account
+  only, not for tests that run as root.
+- Two tests are checked more weakly than the rest. The awk shell escape
+  (T1059.004) has no check of its own that could fail: awk exits with status 0
+  whether or not the shell starts, so its "took effect" rests on the command
+  having run. The security software discovery (T1518.001) is checked by a text
+  that `ps` also prints for the test's own `grep`, so the check shows only that
+  `ps` ran.
 - One runner runs the whole list in sequence, and GitHub hands out runners with
-  different kernels under the same label: kernels 7.0.0-1014-aws and
-  7.0.0-1017-azure have both been seen.
+  different kernels under the same label: kernels 7.0.0-1014-aws (the run
+  above) and 7.0.0-1017-azure (run B of the sensor spike below) have both been
+  seen.
 
 ## Not yet shown
 
@@ -151,7 +172,10 @@ Five controls must pass, or the run fails as a whole:
 
 The workflow runs on pull requests that change `lab/`, on a weekly schedule,
 and by hand from the Actions tab. Attack tests run on GitHub-hosted runners
-only: `bluefire-lab run` refuses to start anywhere else.
+only: `bluefire-lab run` refuses to start unless `RUNNER_ENVIRONMENT` is
+`github-hosted`, which GitHub sets on its own runners. That guards against
+starting it by mistake anywhere else; it cannot stop someone who sets the
+variable on purpose.
 
 The answers can be computed again from a run's artifact, on any machine:
 
@@ -165,8 +189,11 @@ bluefire-lab report <folder of the unpacked artifact>
 
 Two runs on hosted runners tried sensors with harmless probe commands. Both are
 from 16 November 2026, their logs are kept for 90 days and their artifacts
-for 14: [run A](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43802339233)
+until 30 November 2026: [run A](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43802339233)
 and [run B](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43803220104).
+Run A ended as failed, in a step that only printed a summary of auditd's
+records after auditd had loaded and recorded. Which kernel each sensor job had
+is in the artifacts only.
 
 - Sysmon for Linux 1.6.0, auditd 3.1.2 and Tetragon 1.8.0 all load on the
   runners' 7.0 kernels (runs A and B). Sysmon delivered a 6,051-character

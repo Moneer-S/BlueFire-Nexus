@@ -124,12 +124,28 @@ jobs:
       - name: Create the test account and reject its outbound traffic
         run: |
           sudo useradd --create-home --shell /bin/bash bluefire-lab
-          sudo iptables -I OUTPUT ! -o lo -m owner --uid-owner bluefire-lab -j REJECT
-          sudo ip6tables -I OUTPUT ! -o lo -m owner --uid-owner bluefire-lab -j REJECT
+          for tables in iptables ip6tables; do
+            sudo "$tables" -I OUTPUT ! -o lo -m owner --uid-owner bluefire-lab -j REJECT
+            # The local resolver would otherwise look names up for the account.
+            for protocol in udp tcp; do
+              sudo "$tables" -I OUTPUT -o lo -p "$protocol" --dport 53 -m owner --uid-owner bluefire-lab -j REJECT
+            done
+          done
           if sudo -u bluefire-lab curl -sS --max-time 5 -o /dev/null https://github.com; then
             echo "the test account still reaches the network"
             exit 1
           fi
+          if sudo -u bluefire-lab getent hosts github.com; then
+            echo "the test account can still look up names"
+            exit 1
+          fi
+
+      - name: Stop the runner's own timers
+        run: |
+          # A unit that a timer starts inside the window of a test run as root would count as the test's.
+          timers=$(systemctl list-units --type=timer --state=active --no-legend --plain | awk '{ print $1 }')
+          if [ -n "$timers" ]; then sudo systemctl stop $timers; fi
+          echo "stopped:" $timers
 
       - name: Run the tests
         run: |
@@ -151,10 +167,6 @@ jobs:
         run: |
           "$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUN"
           cat "$RUN/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          if grep -E -o '<(script|img|link|iframe)[^>]*(src|href)=[^>]*>' "$RUN/report.html"; then
-            echo "the report must open offline: put this inline"
-            exit 1
-          fi
           if grep -n $'\xe2\x80\x94' "$RUN/report.html" "$RUN/summary.md"; then echo "the report must not use the em dash"; exit 1; fi
 
       - name: Take pictures of the report
