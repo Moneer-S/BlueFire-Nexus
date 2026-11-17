@@ -1,0 +1,39 @@
+title: Private Key Files Searched With Find
+id: b824c02a-b564-4ab8-b568-015cd064748f
+status: experimental
+description: >-
+  find was asked for files named like SSH private keys: id_rsa, id_dsa,
+  id_ecdsa, id_ed25519 or their security key variants, by -name, -iname,
+  -path or -regex. Someone who uses a key knows where it is; a search for
+  every file with such a name looks for keys to take.
+references:
+  - https://attack.mitre.org/techniques/T1552/004/
+author: BlueFire lab
+date: 2026-11-17
+tags:
+  - attack.credential-access
+  - attack.t1552.004
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_tool:
+    Image|endswith: /find
+  selection_test:
+    CommandLine|contains:
+      - ' -name '
+      - ' -iname '
+      - ' -path '
+      - ' -ipath '
+      - ' -regex '
+      - ' -iregex '
+  selection_key:
+    CommandLine|contains:
+      - id_rsa
+      - id_dsa
+      - id_ecdsa
+      - id_ed25519
+  condition: all of selection_*
+falsepositives:
+  - An administrator taking stock of the keys on a host
+level: high

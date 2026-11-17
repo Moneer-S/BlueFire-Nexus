@@ -100,6 +100,20 @@ baseline:
     cp /bin/true /tmp/bluefire-lab-build-step
     /tmp/bluefire-lab-build-step
     rm /tmp/bluefire-lab-build-step
+    mkdir -p ~/.local/bin
+    cp /bin/true ~/.local/bin/bluefire-lab-tool
+    ~/.local/bin/bluefire-lab-tool
+    rm ~/.local/bin/bluefire-lab-tool
+    find ~ -name '*.txt' -type f
+    find /etc -maxdepth 1 -name 'host*'
+    echo notes > /tmp/bluefire-lab-notes.txt
+    zip -q -j /tmp/bluefire-lab-notes.zip /tmp/bluefire-lab-notes.txt
+    unzip -o -q /tmp/bluefire-lab-notes.zip -d /tmp/bluefire-lab-unzipped
+    rm -r /tmp/bluefire-lab-notes.txt /tmp/bluefire-lab-notes.zip /tmp/bluefire-lab-unzipped
+    site=$(python3 -c 'import site; print(site.getusersitepackages())')
+    mkdir -p "$site"
+    echo 'value = 1' > "$site/bluefire_lab_module.py"
+    rm "$site/bluefire_lab_module.py"
 
 tests:
   # Discovery
@@ -212,6 +226,8 @@ tests:
     name: Python Startup Hook - usercustomize.py (Linux / MacOS)
     needs: [python3]
     effect: test -s /tmp/poc.txt && ls {home}/.local/lib/python3*/site-packages/usercustomize.py
+    variants:
+      - args: {python_exe: python3.12}
   # It writes the unit with a shell, so the lab's rule for that alerts on it too.
   - technique: T1569.003
     guid: 2fc6c0ab-4f88-4eb8-ab1b-f739fc22bba7
@@ -255,6 +271,14 @@ tests:
       && echo 'bluefire-lab-planted, not a key' > ~/.ssh/id_rsa
       && chmod 600 ~/.ssh/id_rsa
     effect: grep -qF 'bluefire-lab-planted' /tmp/creds.txt
+    variants:
+      # Another kind of key, under its own name.
+      - args: {search_path: "~", filename: id_ed25519}
+        prepare: >-
+          install -d -m 700 ~/.ssh
+          && echo 'bluefire-lab-planted-variant, not a key' > ~/.ssh/id_ed25519
+          && chmod 600 ~/.ssh/id_ed25519
+        effect: grep -qF 'bluefire-lab-planted-variant' /tmp/creds.txt
 
   # Permissions and masquerading
   - technique: T1222.002
@@ -286,6 +310,9 @@ tests:
     guid: 812c3ab8-94b0-4698-a9bf-9420af23ce24
     name: Execute a process from a directory masquerading as the current parent directory
     output: Hello from the Atomic Red Team test T1036.005
+    variants:
+      - args: {test_message: Hello from a variant run of the lab}
+        output: Hello from a variant run of the lab
   - technique: T1564.001
     guid: 61a782e5-9a19-40b5-8ba4-69a4b9f3d7be
     name: Create a hidden file in a hidden directory
@@ -363,6 +390,9 @@ tests:
     needs: [zip, unzip]
     output: "T1027.013: Payload extracted from encrypted ZIP"
     defenses: [tmp-noexec]
+    variants:
+      # The test's own input argument, made up for this run, not a secret.
+      - args: {zip_password: bluefire-lab-variant}  # pragma: allowlist secret
   - technique: T1574.006
     guid: bc219ff7-789f-4d51-9142-ecae3397deae
     name: Shared Library Injection via LD_PRELOAD
