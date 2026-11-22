@@ -128,3 +128,74 @@ jobs:
             }
           }
           if ($failed.Count -gt 0) { throw 'One or more measurements failed. See the job summary.' }
+
+  builtin-sysmon:
+    name: Built-in Sysmon on Windows Server 2025
+    runs-on: windows-2025
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Enable the in-box feature and check one process start
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Report($name, $value) {
+            Write-Host "$name = $value"
+            "- $name = $value" | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+          function InBoxCandidates {
+            Get-Command Sysmon.exe -CommandType Application -All -ErrorAction Ignore |
+              Where-Object { $_.Path.StartsWith("$env:SystemRoot\", [StringComparison]::OrdinalIgnoreCase) } |
+              Select-Object -ExpandProperty Path -Unique
+          }
+          Report 'Runner image' $env:ImageVersion
+          $feature = Get-WindowsOptionalFeature -Online | Where-Object FeatureName -eq Sysmon
+          if (!$feature) { Report 'Outcome' 'Feature absent'; return }
+          Report 'Feature before enable' $feature.State
+          if ($feature.State -notin 'Disabled', 'DisabledWithPayloadRemoved') { Report 'Outcome' 'Expected the feature to start disabled'; return }
+          if (Get-Service 'Sysmon*') { Report 'Outcome' 'Existing Sysmon service'; return }
+          $before = @(InBoxCandidates)
+          try {
+            $result = Enable-WindowsOptionalFeature -Online -FeatureName Sysmon -NoRestart
+          } catch {
+            $code = '0x{0:X8}' -f $_.Exception.GetBaseException().HResult
+            if ($code -in '0x800F081F', '0x800F0906') { Report 'Outcome' "Feature payload unavailable ($code)"; return }
+            Report 'DISM error' $code
+            throw 'Could not enable the feature'
+          }
+          $after = (Get-WindowsOptionalFeature -Online -FeatureName Sysmon).State
+          Report 'RestartNeeded' $result.RestartNeeded
+          Report 'Feature after enable' $after
+          if ($result.RestartNeeded -or "$after" -match 'Pending') { Report 'Outcome' 'Restart required'; return }
+          if ($null -eq $result.RestartNeeded -or $after -ne 'Enabled') { throw 'Enable result inconclusive' }
+
+          # Invoke only a Windows-directory command newly exposed by feature enablement.
+          $cli = @(InBoxCandidates | Where-Object { $_ -notin $before })
+          if ($cli.Count -ne 1) { Report 'Outcome' 'Could not identify one new in-box Sysmon executable'; return }
+          $setup = Start-Process -FilePath $cli[0] -ArgumentList '-i' -WindowStyle Hidden -Wait -PassThru
+          Report 'Sysmon setup exit code' $setup.ExitCode
+          if ($setup.ExitCode -ne 0) { throw 'Default Sysmon setup failed' }
+          $services = @(Get-Service 'Sysmon*' | ForEach-Object { "$($_.Name) $($_.Status)" })
+          Report 'Sysmon service' ($services -join ', ')
+          $channel = 'Microsoft-Windows-Sysmon/Operational'
+          $enabled = (Get-WinEvent -ListLog $channel).IsEnabled
+          Report 'Operational channel enabled' $enabled
+          if (!$enabled) { Report 'Outcome' 'Channel disabled'; return }
+
+          $stamp = [datetime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", [cultureinfo]::InvariantCulture)
+          $marker = 'bluefire-inbox-' + [guid]::NewGuid().ToString('N')
+          $info = [Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\cmd.exe", "/d /c rem $marker")
+          $info.UseShellExecute = $false
+          $child = [Diagnostics.Process]::Start($info)
+          $child.WaitForExit()
+          if ($child.ExitCode -ne 0) { throw 'Marker failed' }
+          $filter = "*[System[Provider[@Name='Microsoft-Windows-Sysmon'] and EventID=1 and TimeCreated[@SystemTime >= '$stamp']] and EventData[Data[@Name='ProcessId']='$($child.Id)' and Data[@Name='ParentProcessId']='$PID']]"
+          Start-Sleep -Seconds 15
+          $query = [System.Diagnostics.Eventing.Reader.EventLogQuery]::new($channel, 'LogName', $filter)
+          $reader = [System.Diagnostics.Eventing.Reader.EventLogReader]::new($query)
+          try {
+            $reader.BatchSize = 1
+            $entry = $reader.ReadEvent()
+            if ($entry) { $entry.Dispose(); Report 'Event 1 for marker' 'Observed' }
+            else { Report 'Event 1 for marker' 'No match at the 15-second check' }
+          } finally { $reader.Dispose(); $child.Dispose() }
