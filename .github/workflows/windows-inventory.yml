@@ -134,8 +134,11 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 10
     permissions: {}
+    outputs:
+      has-event: ${{ steps.probe.outputs.exported }}
     steps:
       - name: Enable the in-box feature and check one process start
+        id: probe
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -196,9 +199,35 @@ jobs:
           try {
             $reader.BatchSize = 1
             $entry = $reader.ReadEvent()
-            if ($entry) { $entry.Dispose(); Report 'Event 1 for marker' 'Observed' }
-            else { Report 'Event 1 for marker' 'No match at the 15-second check' }
+            if ($entry) {
+              try {
+                $xml = [xml]$entry.ToXml()
+                $cmd = ($xml.Event.EventData.Data | Where-Object Name -eq 'CommandLine').'#text'
+                if (!$cmd -or !$cmd.EndsWith("/d /c rem $marker", [StringComparison]::Ordinal)) {
+                  throw 'Matched process does not contain the expected marker'
+                }
+                $file = Join-Path $env:RUNNER_TEMP 'probe.evtx'
+                $selector = "*[System[EventRecordID=$($entry.RecordId)]]"
+                wevtutil epl $channel $file "/q:$selector"
+                if ($LASTEXITCODE -ne 0) { throw 'Event export failed' }
+                $saved = @(Get-WinEvent -Path $file)
+                if ($saved.Count -ne 1 -or $saved[0].RecordId -ne $entry.RecordId -or $saved[0].Id -ne 1) {
+                  throw 'Export does not contain the single observed record'
+                }
+                Report 'Event 1 for marker' 'Observed'
+                Report 'Exported record ID' $entry.RecordId
+                'exported=true' | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+              } finally { $entry.Dispose() }
+            } else { Report 'Event 1 for marker' 'No match at the 15-second check' }
           } finally { $reader.Dispose(); $child.Dispose() }
+
+      - name: Upload the single observed event
+        if: steps.probe.outputs.exported == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-probe
+          path: ${{ runner.temp }}/probe.evtx
+          if-no-files-found: error
 
   defender-readiness:
     name: Defender protection on Windows Server 2025
@@ -268,3 +297,56 @@ jobs:
             Report 'Blocked or failed during' $stage
             throw 'Defender readiness measurement incomplete. See the job summary.'
           }
+
+  evaluate-probe:
+    name: Evaluate the Windows process event on Linux
+    needs: builtin-sysmon
+    if: needs.builtin-sysmon.outputs.has-event == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download the single process event
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-probe
+          path: input
+
+      - name: Fetch pinned Windows rules and the Linux rule engine
+        shell: bash
+        env:
+          SIGMA: SigmaHQ/sigma@552f3fee420ef232a8e5790c4fae591847e32347
+          ZIRCOLITE_URL: https://github.com/wagga40/Zircolite/releases/download/v4.7.1/Zircolite-4.7.1-linux-x64.zip
+          ZIRCOLITE_DIGEST: sha256:f09d3ba377ef0bf4899bba71b63ffca38d714f71765a716e46ad3549da5e316a
+        run: |
+          git init -q sigma
+          git -C sigma remote add origin "https://github.com/${SIGMA%@*}"
+          git -C sigma fetch -q --depth 1 --filter=blob:none origin "${SIGMA#*@}"
+          git -C sigma sparse-checkout set rules/windows/process_creation
+          git -C sigma checkout -q FETCH_HEAD
+          curl -fsSL --retry 3 -o engine.zip "$ZIRCOLITE_URL"
+          echo "${ZIRCOLITE_DIGEST#sha256:}  engine.zip" | sha256sum --check
+          unzip -q engine.zip
+
+      - name: Evaluate the event and report the measured counts
+        shell: bash
+        run: |
+          mkdir output
+          engine=Zircolite-4.7.1-linux-x64
+          "$engine/Zircolite" --events input/probe.evtx --ruleset sigma/rules/windows/process_creation \
+            -p sysmon -p windows-logsources -c "$engine/config/config.yaml" --strict --no-event-filter \
+            --outfile output/detected.json --logfile output/engine.log --performance-json output/perf.json
+          jq -e '.schema_version == 1 and .status == "complete" and .events == 1 and
+            .filtered_events == 0 and .time_filtered_events == 0 and (.files | length) == 1 and
+            .files[0].status == "complete" and (.files[0].rule_errors | length) == 0' output/perf.json
+          loaded=$(sed -nE 's/.* ([0-9][0-9,]*) rules loaded.*/\1/p' output/engine.log | tail -1 | tr -d ',')
+          [[ "$loaded" =~ ^[1-9][0-9]*$ ]]
+          matches=$(jq -er 'if type == "array" then length else error("expected detection list") end' output/detected.json)
+          echo "Zircolite evaluated one exported Sysmon process event with $loaded loaded rules. Matching rules: $matches." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the rule evaluation
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-probe-evaluation
+          path: output/
+          if-no-files-found: warn
