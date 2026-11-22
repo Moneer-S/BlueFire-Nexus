@@ -115,7 +115,8 @@ engine=./zircolite
 
 Until November 2026 this repository held an earlier product, which the lab
 replaces. It stays in the git history, for example at the tag `v3.0.0-rc2` and
-its release.
+its release, which is marked as superseded
+([its notes](docs/releases/v3.0.0-rc2.md)).
 
 ## License
 
