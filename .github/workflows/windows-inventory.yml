@@ -199,3 +199,72 @@ jobs:
             if ($entry) { $entry.Dispose(); Report 'Event 1 for marker' 'Observed' }
             else { Report 'Event 1 for marker' 'No match at the 15-second check' }
           } finally { $reader.Dispose(); $child.Dispose() }
+
+  defender-readiness:
+    name: Defender protection on Windows Server 2025
+    runs-on: windows-2025
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Enable protection and read it back
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Report($name, $value) {
+            if ($null -eq $value) { $value = 'Unknown' }
+            Write-Host "$name = $value"
+            "- $name = $value" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+          function Read-SafePreference {
+            try { $p = Get-MpPreference } catch { throw 'Defender preferences unreadable' }
+            $offline = "$($p.MAPSReporting)" -in '0', 'Disabled'
+            $neverSend = "$($p.SubmitSamplesConsent)" -in '2', 'NeverSend'
+            if (!$offline -or !$neverSend) {
+              Report 'MAPS disabled confirmed' $offline
+              Report 'Never send samples confirmed' $neverSend
+              throw 'Cloud and sample-submission guard blocked the test'
+            }
+            if (!$p.PSObject.Properties['ExclusionPath']) { throw 'Exclusion preference unavailable' }
+            return $p
+          }
+          function VisibleRoots($p) {
+            $p.ExclusionPath | Where-Object { $_ -match '^[a-z]:[\\/]$' }
+          }
+          $stage = 'Read privacy settings and exclusions'
+          try {
+            $p = Read-SafePreference
+            Report 'MAPS disabled and sample submission set to never' $true
+            $roots = @(VisibleRoots $p)
+            Report 'Visible drive-root exclusions before' $roots.Count
+            # The hosted image configures two literal roots. Remove only entries present.
+            $targets = @($roots | Where-Object { $_.Replace('/', '\') -in 'C:\', 'D:\' })
+            if ($targets.Count) {
+              $stage = 'Remove image drive-root exclusions'
+              Remove-MpPreference -ExclusionPath $targets
+            }
+            $stage = 'Recheck privacy settings before enabling protection'
+            $p = Read-SafePreference
+            $stage = 'Set Defender protection preferences'
+            Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false -DisableScriptScanning $false
+            $stage = 'Verify protection and privacy settings'
+            $deadline = [datetime]::UtcNow.AddSeconds(30)
+            do {
+              $p = Read-SafePreference
+              $status = Get-MpComputerStatus
+              $remaining = @(VisibleRoots $p).Count
+              $scriptOn = $null
+              if ($p.DisableScriptScanning -is [bool]) { $scriptOn = !$p.DisableScriptScanning }
+              $ready = ($status.RealTimeProtectionEnabled -eq $true -and $status.BehaviorMonitorEnabled -eq $true -and $scriptOn -eq $true -and $remaining -eq 0)
+              if ($ready -or [datetime]::UtcNow -ge $deadline) { break }
+              Start-Sleep -Seconds 2
+            } while ($true)
+            Report 'Real-time protection active' $status.RealTimeProtectionEnabled
+            Report 'Behavior monitoring active' $status.BehaviorMonitorEnabled
+            Report 'Script scanning enabled in preferences' $scriptOn
+            Report 'Visible drive-root exclusions remaining' $remaining
+            Report 'Cloud and sample settings still confirmed' $true
+            Report 'All readback conditions met' $ready
+          } catch {
+            Report 'Blocked or failed during' $stage
+            throw 'Defender readiness measurement incomplete. See the job summary.'
+          }
