@@ -61,17 +61,42 @@ def pill(test: dict, answer: str) -> str:
     return f'<span class="pill {tone(test, answer)}">{e(answer)}</span>'
 
 
+# The name of the second visibility answer in what each runner answered (combine.ANSWERS).
+LAB = "with the lab's rules"
+
+
+def runners_note(test: dict, name: str) -> str:
+    """What each runner answered, for an answer the runners did not agree on."""
+
+    if name not in test.get("unstable", []):
+        return ""
+    return "runners: " + ", ".join(runner[name] for runner in test["runners"])
+
+
 def lede(results: dict) -> str:
     summary, target = results["summary"], results["run"]["target"]
+    runners = results.get("runners")
     where = f"{target['os']}, kernel {target['kernel']}"
     if target.get("runner_image"):
         where = f"a GitHub-hosted runner ({where}, image {target['runner_image']})"
+    if runners:
+        kernels = sorted({runner["run"]["target"]["kernel"] for runner in runners})
+        where = (
+            f"each of {len(runners)} GitHub-hosted runners ({target['os']}, "
+            f"{'kernel' if len(kernels) == 1 else 'kernels'} {' and '.join(kernels)})"
+        )
     text = (
         f"{count(summary['tests'], 'published attack test')} ran on {where} on "
-        f"{results['run']['started'][:10]}. {summary['took_effect']} took effect. Of those, "
+        f"{results['run']['started'][:10]}. {summary['took_effect']} took effect"
+        f"{' on every runner' if runners else ''}. Of those, "
         f"{summary['alert']} raised an alert, {summary['telemetry_only']} left telemetry but no alert, "
         f"and {summary['no_telemetry']} left no telemetry."
     )
+    if summary.get("unstable"):
+        text += (
+            f" {count(summary['unstable'], 'test')} got different answers on different runners: such an "
+            "answer is marked unstable and is in none of these counts."
+        )
     if summary["inconclusive"]:
         text += f" {summary['inconclusive']} could not be measured."
     if results.get("lab_rules"):
@@ -200,8 +225,14 @@ def results_table(tests: list[dict], with_lab_rules: bool = False) -> str:
     for test in tests:
         seen = test["visibility"]
         lab = seen.get("with_lab_rules", {})
+        notes = {
+            name: f'<span class="sub">{e(runners_note(test, name))}</span>'
+            if runners_note(test, name)
+            else ""
+            for name in ("execution", "visibility", LAB)
+        }
         lab_cell = (
-            f"<td>{pill(test, lab.get('answer', seen['answer']))}"
+            f"<td>{pill(test, lab.get('answer', seen['answer']))}{notes[LAB]}"
             + "".join(f'<span class="sub">{e(name)}</span>' for name in lab_rule_names(test))
             + "</td>"
             if with_lab_rules
@@ -211,8 +242,8 @@ def results_table(tests: list[dict], with_lab_rules: bool = False) -> str:
             f'<tr><td class="mono">{e(test["technique"])}</td>'
             f'<td><a href="#t{test["order"]}">{e(test["name"])}</a>'
             f'<span class="sub">ran as {e(test["user"])}</span></td>'
-            f"<td>{pill(test, test['execution']['answer'])}</td>"
-            f"<td>{pill(test, seen['answer'])}</td>"
+            f"<td>{pill(test, test['execution']['answer'])}{notes['execution']}</td>"
+            f"<td>{pill(test, seen['answer'])}{notes['visibility']}</td>"
             f'<td class="wide">{"<br>".join(map(e, rule_names(test))) or "none"}'
             + (f'<span class="sub">{e(launcher_note(test))}</span>' if launcher_note(test) else "")
             + "</td>"
@@ -398,6 +429,12 @@ def html_report(results: dict) -> str:
         else ""
     )
     failed = [check for check in results["controls"] if not check["passed"]]
+    unstable_note = (
+        "An answer is unstable when the runners, which ran the same list at the same time, did not all give "
+        "the same one: it is shown with each runner's answer and counted in no total. "
+        if results.get("runners")
+        else ""
+    )
     hardening = (
         "<h2>With a hardening change</h2>"
         + hardening_table(results)
@@ -413,11 +450,20 @@ def html_report(results: dict) -> str:
         [
             fact("Run", f"{e(run['started'].replace('T', ' ').replace('Z', ' UTC'))}, id {e(run['id'])}"),
             fact(
-                "Target",
-                f"{e(run['target']['os'])}, kernel {e(run['target']['kernel'])}"
+                "Targets" if results.get("runners") else "Target",
+                "; ".join(
+                    f"{e(target['os'])}, kernel {e(target['kernel'])}"
+                    + (f", runner image {e(target['runner_image'])}" if target.get("runner_image") else "")
+                    for target in (
+                        [runner["run"]["target"] for runner in results["runners"]]
+                        if results.get("runners")
+                        else [run["target"]]
+                    )
+                )
                 + (
-                    f", runner image {e(run['target']['runner_image'])}"
-                    if run["target"].get("runner_image")
+                    ". The events and rule matches shown below are the first runner's; the artifact holds each "
+                    "runner's own files and report in a folder of its own."
+                    if results.get("runners")
                     else ""
                 ),
             ),
@@ -512,7 +558,7 @@ def html_report(results: dict) -> str:
 defense saw: an alert, telemetry without an alert, or nothing. An alert is a match of a Sigma rule whose
 level is {e(" or ".join(rules["alert_levels"]))} on an event of the test. A test that took effect and left
 telemetry but no alert is a gap that a rule could close; one that left no telemetry needs the sensor to
-record more first. Select a test to see its events and rules.</p>
+record more first. {e(unstable_note)}Select a test to see its events and rules.</p>
 {lab_rules}
 {hardening}
 
@@ -580,20 +626,25 @@ def markdown_summary(results: dict) -> str:
         + "Events |",
         "|---|---|---|---|---|" + ("---|" if results.get("lab_rules") else "") + "---:|",
     ]
+
+    def said(test: dict, name: str, answer: str) -> str:
+        return cell(answer + (f" ({runners_note(test, name)})" if runners_note(test, name) else ""))
+
     for test in results["tests"]:
         if test["role"] == "test":
             seen = test["visibility"]
             lab = seen.get("with_lab_rules", {})
             lab_cell = (
-                f" {cell(lab.get('answer', seen['answer']))}"
+                f" {said(test, LAB, lab.get('answer', seen['answer']))}"
                 + (f" ({cell('; '.join(lab_rule_names(test)))})" if lab_rule_names(test) else "")
                 + " |"
                 if results.get("lab_rules")
                 else ""
             )
             lines.append(
-                f"| {cell(test['technique'])} | {cell(test['name'])} | {cell(test['execution']['answer'])} | "
-                f"{cell(seen['answer'])} | {cell('; '.join(rule_names(test)) or 'none')}"
+                f"| {cell(test['technique'])} | {cell(test['name'])} | "
+                f"{said(test, 'execution', test['execution']['answer'])} | "
+                f"{said(test, 'visibility', seen['answer'])} | {cell('; '.join(rule_names(test)) or 'none')}"
                 + (f" ({cell(launcher_note(test))})" if launcher_note(test) else "")
                 + " |"
                 + lab_cell

@@ -1,4 +1,4 @@
-"""Command line of the lab: run, evaluate, report."""
+"""Command line of the lab: run, evaluate, combine, report, compare."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import compare, evaluate, report, run
+from . import combine, compare, evaluate, report, run
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -24,8 +24,19 @@ def main(arguments: list[str] | None = None) -> int:
     running.add_argument("--out", type=Path, required=True, help="folder for run.json and sysmon.txt")
 
     evaluating = commands.add_parser("evaluate", help="compute results.json from the files of a run")
-    evaluating.add_argument("folder", type=Path, help="folder with run.json, sysmon.txt and rules/")
+    evaluating.add_argument(
+        "folder",
+        type=Path,
+        help="folder with run.json, sysmon.txt and rules/, or a folder that holds one such folder for each runner",
+    )
     evaluating.add_argument("--engine", type=Path, required=True, help="the Zircolite program")
+
+    combining = commands.add_parser(
+        "combine", help="give one answer for every test from the results of several runners"
+    )
+    combining.add_argument(
+        "folder", type=Path, help="folder that holds one folder with results.json for each runner"
+    )
 
     reporting = commands.add_parser("report", help="write report.html and summary.md from results.json")
     reporting.add_argument("folder", type=Path, help="folder with results.json")
@@ -54,7 +65,14 @@ def main(arguments: list[str] | None = None) -> int:
             options.audit_rules,
         )
     if options.command == "evaluate":
-        return evaluate.main(options.folder, options.engine)
+        if (options.folder / "run.json").is_file():
+            return evaluate.main(options.folder, options.engine)
+        # The runs of several runners: evaluate each, then combine their answers.
+        runs = sorted(path for path in options.folder.iterdir() if (path / "run.json").is_file())
+        failed = [evaluate.main(path, options.engine) for path in runs]
+        return max([combine.main(options.folder), *failed])
+    if options.command == "combine":
+        return combine.main(options.folder)
     if options.command == "compare":
         return compare.main(options.before, options.after)
     return report.main(options.folder)
