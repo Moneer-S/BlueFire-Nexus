@@ -396,6 +396,9 @@ def execution(test: dict, without_change: dict | None = None) -> dict:
         answer.update(answer="inconclusive", basis="the hardening change could not be put in place")
     elif "launcher_pid" not in test:
         answer.update(answer="inconclusive", basis="the executor left no record of starting the test")
+    elif (before := step_of(test, "effect-before")) and before["exit_status"] == 0:
+        basis = "the effect check found the effect before the test ran, so the test did not cause it"
+        answer.update(answer="inconclusive", basis=basis)
     elif effect:
         took = effect["exit_status"] == 0
         answer.update(
@@ -429,6 +432,36 @@ def execution(test: dict, without_change: dict | None = None) -> dict:
                 basis=f"with the change in place {answer['basis']}, and without it the same test took effect",
             )
     return answer
+
+
+def cleanup(test: dict) -> dict | None:
+    """Did the test's cleanup undo what the test did? None for a test that did not run, and
+    for the record of a run from before the lab looked.
+
+    After the cleanup one command runs as root: the one the list names for what the test
+    leaves, or else the test's effect check. "held" when it no longer finds anything, "left
+    behind" when it still does. A test for which the list names neither has "nothing to
+    check". "not checked" when the cleanup did not finish or the command did not run.
+    """
+
+    done, check = step_of(test, "cleanup"), step_of(test, "leftover")
+    if done is None or "upstream_cleanup" not in test:
+        return None
+    upstream = "" if test["upstream_cleanup"] else "; the test has no cleanup command upstream"
+    if done["timed_out"]:
+        return {"answer": "not checked", "basis": "the cleanup ran out of time"}
+    if "leftover" not in test:
+        basis = "the list names nothing this test leaves on the target"
+        return {"answer": "nothing to check", "basis": basis + upstream}
+    if check is None or check["exit_status"] is None:
+        return {"answer": "not checked", "basis": "the check after the cleanup did not run to its end"}
+    left = check["exit_status"] == 0
+    return {
+        "answer": "left behind" if left else "held",
+        "basis": f"after the cleanup the check exited with status {check['exit_status']}" + upstream,
+        "check": {"command": test["leftover"], "exit_status": check["exit_status"],
+                  "output": (check["output"] + check["error"]).strip()},
+    }  # fmt: skip
 
 
 def visibility(
@@ -769,6 +802,26 @@ def check_controls(
         )
     )
 
+    cleaned = [test["cleanup"]["answer"] for test in tests if "cleanup" in test]
+    behind = [
+        f"{test['technique']} {test['name']}"
+        for test in tests
+        if test.get("cleanup", {}).get("answer") == "left behind"
+    ]
+    checks.append(
+        control(
+            "cleanup",
+            bool(cleaned) and "not checked" not in cleaned,
+            "the run recorded no check of any test's cleanup"
+            if not cleaned
+            else f"the cleanup of {cleaned.count('not checked')} of {len(cleaned)} runs of a test could not be checked"
+            if "not checked" in cleaned
+            else f"the cleanup of all {len(cleaned)} runs of a test ran and was checked: {cleaned.count('held')} "
+            f"held, {cleaned.count('nothing to check')} leave nothing the list names, and {len(behind)} left "
+            "what they did behind" + (": " + "; ".join(sorted(set(behind))) if behind else ""),
+        )
+    )
+
     clean = lost["sensor_reported"] and lost["lost_events"] == 0 and lost["bad_events"] == 0
     whole = not lost["missing_records"] and not lost["repeated_records"]
     if lost["sensor_starts"] != 1:
@@ -949,6 +1002,8 @@ def main(run_dir: Path, engine: Path) -> int:
             result["output"] = ((attack["output"] + attack["error"]).strip() if attack else "")[-2000:]
         without_change = by_order.get(test.get("compared_with"), {}).get("execution")
         result["execution"] = execution(test, without_change)
+        if (undone := cleanup(test)) is not None:
+            result["cleanup"] = undone
         by_order[test["order"]] = result
         if result["execution"]["answer"] == "not attempted":
             seen, mine = {"answer": "not applicable", "basis": "the test did not run"}, []

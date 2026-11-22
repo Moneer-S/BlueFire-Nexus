@@ -167,6 +167,24 @@ def ordinary_note(results: dict) -> str:
     )
 
 
+def left_behind(results: dict) -> list[dict]:
+    """The runs of a test whose cleanup did not undo what the test did."""
+
+    return [test for test in results["tests"] if test.get("cleanup", {}).get("answer") == "left behind"]
+
+
+def left_behind_table(results: dict) -> str:
+    rows = "".join(
+        f'<tr><td class="mono">{e(test["technique"])}</td>'
+        f'<td><a href="#t{test["order"]}">{e(test["name"])}</a></td>'
+        f'<td class="mono wide">{e(test["cleanup"]["check"]["command"])}</td>'
+        f"<td>{'yes' if 'no cleanup command upstream' not in test['cleanup']['basis'] else 'no'}</td></tr>"
+        for test in left_behind(results)
+    )
+    head = "<tr><th>Technique</th><th>Test</th><th>Still found after the cleanup</th><th>Cleanup upstream</th></tr>"
+    return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>'
+
+
 def hardened_runs(results: dict) -> list[dict]:
     return [test for test in results["tests"] if test["role"] == "hardened"]
 
@@ -312,6 +330,11 @@ def evidence(test: dict, results: dict) -> str:
             + (f"\n\n{e(effect['output'])}" if effect["output"] else "")
             + "</pre>"
         )
+    undone = test.get("cleanup")
+    if undone:
+        check += f"<p>Cleanup: {e(undone['answer'])}. {e(sentence(undone['basis']))}</p>"
+        if "check" in undone:
+            check += f'<pre class="box">{e(undone["check"]["command"])}</pre>'
     parts = [
         '<div class="answers"><section>'
         f"<h3>Execution</h3><p>{pill(test, done['answer'])} {e(sentence(done['basis']))}</p>"
@@ -446,6 +469,17 @@ def html_report(results: dict) -> str:
         else ""
     )
 
+    behind = (
+        '<h2 id="left-behind">Left behind after the cleanup</h2>'
+        + left_behind_table(results)
+        + '<p class="note">After each test\'s cleanup the lab looks again for what the test did: with the '
+        "command the list names for it, or else with the test's effect check. These runs still had it. Some "
+        "tests have no cleanup command upstream. A target that is thrown away, as a hosted runner is, takes no "
+        "harm from that; the effect check also runs before every test, so a test that starts with its effect "
+        "already in place is reported as not measured.</p>"
+        if left_behind(results)
+        else ""
+    )
     facts = "".join(
         [
             fact("Run", f"{e(run['started'].replace('T', ' ').replace('Z', ' UTC'))}, id {e(run['id'])}"),
@@ -561,6 +595,7 @@ telemetry but no alert is a gap that a rule could close; one that left no teleme
 record more first. {e(unstable_note)}Select a test to see its events and rules.</p>
 {lab_rules}
 {hardening}
+{behind}
 
 <h2>Controls</h2>
 <p class="note">These checks keep a broken measurement from looking like a finding. A run with a failed
@@ -674,6 +709,14 @@ def markdown_summary(results: dict) -> str:
                 f"| {cell(test['technique'])} | {cell(test['name'])} | {cell(test['defense']['title'])} | "
                 f"{cell(without['execution']['answer']) if without else 'not run'} | "
                 f"{cell(test['execution']['answer'])} | {cell(test['visibility']['answer'])} |"
+            )
+    if left_behind(results):
+        lines += ["", "| Technique | Test | Still found after the cleanup |", "|---|---|---|"]
+        for test in left_behind(results):
+            role = "" if test["role"] == "test" else f" ({test['role']})"
+            lines.append(
+                f"| {cell(test['technique'])} | {cell(test['name'] + role)} | "
+                f"`{cell(test['cleanup']['check']['command'])}` |"
             )
     if results["dropped"]:
         lines += ["", "| Technique | Test left out | Why |", "|---|---|---|"]

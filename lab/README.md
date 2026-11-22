@@ -403,7 +403,13 @@ is one runner's answer.
    in-place instruction overwrite's prerequisite into the pinned tests'
    folder. Every step (preparation, a marker
    before and after the test, the test, an effect check, the cleanup) runs in a
-   kernel audit session of its own.
+   kernel audit session of its own. The effect check also runs before the
+   test: an effect that is already there is not the test's doing, and the
+   answer is then inconclusive. After the test's cleanup the lab looks once
+   more for what the test did, with the command the list names for it
+   (`leftover`) or else with the effect check, and records the cleanup as
+   held, or the test as left behind. The report lists the tests left behind.
+   Several have no cleanup command upstream.
 3. `bluefire-lab evaluate` computes `results.json` from the files the run
    leaves. A Sysmon event belongs to a test when its process is in the audit
    session of the test's attack step. Two more rules apply inside the test's
@@ -439,15 +445,21 @@ is one runner's answer.
    match, a rule of the lab's own accepted now and how many published
    procedures it covers, or a hardening change that blocks now.
 
-Seven controls must pass, or the run fails as a whole:
+Eight controls must pass, or the run fails as a whole. The runs described
+above had the first seven: the cleanup control is newer than they are.
 
 - **readiness:** both sensors recorded their probe before the first test began;
 - **markers:** both markers and the launcher of every test are in the
   telemetry, and no answer is left inconclusive, for example because a
-  hardening change could not be put in place or a test ran out of time with
-  one;
+  hardening change could not be put in place, a test ran out of time with
+  one, or a test's effect was already there before the test ran;
 - **changes:** every hardening change that was put in place was removed again
   after its test;
+- **cleanup:** the cleanup of every test that ran was itself run to its end,
+  and what the test did was looked for again after it. The control's line
+  names the tests left behind. A test left behind does not fail the run: the
+  runner is thrown away, and a test that would start with an earlier test's
+  effect in place is caught by the markers control;
 - **loss:** Sysmon reported its counts of lost and bad events once each, both
   zero, and none of its numbered records is missing from what was read or
   appears twice; and auditd's own count of lost records did not move during the

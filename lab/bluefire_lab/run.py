@@ -23,7 +23,7 @@ from pathlib import Path
 
 import yaml
 
-from . import auditd, sysmon
+from . import auditd, evaluate, sysmon
 
 # Run as root by sh: write the login uid, which makes the kernel start a new
 # audit session, print that session's id on a line of its own, then become the
@@ -297,7 +297,9 @@ def run_baseline(item: dict, context: dict) -> dict:
 
 def run_test(item: dict, context: dict) -> dict:
     """Take one test through preparation, an optional hardening change, the attack step,
-    the effect check and cleanup, and remove the change again."""
+    the effect check and cleanup, and remove the change again. The effect check also runs
+    before the test, where it must find nothing, and what the test leaves is looked for
+    again after its cleanup."""
 
     order, role, spec = item["order"], item["role"], item["spec"]
     executor, atomics, account, run_id = (context[key] for key in ("executor", "atomics", "account", "id"))
@@ -314,6 +316,7 @@ def run_test(item: dict, context: dict) -> dict:
         "executor": upstream["executor"]["name"],
         "elevated": elevated,
         "user": user,
+        "upstream_cleanup": bool(upstream["executor"].get("cleanup_command")),
         "steps": [],
     }
     for key in ("rule", "effect", "output", "prepare", "args", "dwell"):
@@ -321,6 +324,9 @@ def run_test(item: dict, context: dict) -> dict:
             record[key] = spec[key]
     if "effect" in spec:
         record["effect"] = fill(spec["effect"], context)  # as it ran, so that the report shows it so
+    # What is looked for again after the cleanup: what the list names, or else the effect.
+    if "leftover" in spec or "effect" in spec:
+        record["leftover"] = fill(spec.get("leftover", spec.get("effect")), context)
     if "defense" in item:
         record["defense"] = dict(item["defense"])
         for key in ("apply", "revert"):
@@ -360,6 +366,9 @@ def run_test(item: dict, context: dict) -> dict:
 
     if ready:
         log = f"/tmp/bluefire-lab-{run_id}-{order}.csv"
+        if "effect" in spec:
+            # An effect that is there before the test ran is not the test's doing.
+            do("effect-before", ["sh", "-c", record["effect"]], "root")
         do("marker-start", marker(run_id, order, "start"), account)
         attack = invoke(
             spec,
@@ -377,6 +386,9 @@ def run_test(item: dict, context: dict) -> dict:
             # As root, so that neither the account's rights nor a hardening change decide the check.
             do("effect", ["sh", "-c", record["effect"]], "root")
         do("cleanup", invoke(spec, executor, atomics, "-Cleanup", *arguments), timeout=limit + 60)
+        if "leftover" in record:
+            do("leftover", ["sh", "-c", record["leftover"]], "root")
+        record["cleanup"] = evaluate.cleanup(record)["answer"]
     if defense is not None and "applied" in defense:
         defense["reverted"] = do("revert", ["sh", "-c", defense["revert"]], "root")["exit_status"] == 0
     kill_sessions({done["session"] for done in record["steps"]} - {""})
