@@ -71,7 +71,8 @@ def test_commands_name_the_test_account_through_placeholders() -> None:
 
 
 def test_the_baseline_runs_after_the_control_and_variants_after_the_hardened_runs() -> None:
-    document = a_plan(baseline={"name": "ordinary work", "root": "true", "account": "true"})
+    part = {"name": "root", "as": "root", "author": "the lab", "what": "ordinary work", "run": "true"}
+    document = a_plan(baseline={"name": "ordinary work", "parts": [part]})
     document["tests"][1]["variants"] = [{"args": {"path": "/var/tmp/x"}, "effect": "test -e /var/tmp/x"}]
 
     runs = run.plan(document)
@@ -86,6 +87,15 @@ def test_the_baseline_runs_after_the_control_and_variants_after_the_hardened_run
     assert variant["spec"]["effect"] == "test -e /var/tmp/x"
     assert "variants" not in variant["spec"]
     assert [item["compared_with"] for item in runs if item["role"] == "hardened"] == [4, 6, 6]
+
+
+def test_a_part_of_the_baseline_that_does_not_say_who_wrote_it_stops_the_run() -> None:
+    part = {"name": "packages", "as": "root", "what": "installs packages", "run": "true"}
+
+    with pytest.raises(SystemExit, match="'packages' needs name, as .* author is missing"):
+        run.plan(a_plan(baseline={"name": "ordinary work", "parts": [part]}))
+    with pytest.raises(SystemExit, match="as is missing or wrong"):
+        run.plan(a_plan(baseline={"name": "ordinary work", "parts": [{**part, "author": "x", "as": "nobody"}]}))
 
 
 def test_an_input_argument_the_test_does_not_declare_stops_the_run(tmp_path: Path) -> None:

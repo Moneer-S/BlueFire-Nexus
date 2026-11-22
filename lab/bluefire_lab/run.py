@@ -175,6 +175,13 @@ def plan(document: dict) -> list[dict]:
     defenses = document.get("defenses") or {}
     runs = [{"role": "canary", "spec": document["canary"]}, {"role": "control", "spec": document["control"]}]
     if "baseline" in document:
+        for part in document["baseline"].get("parts") or [{}]:
+            missing = [key for key in ("name", "as", "author", "what", "run") if key not in part]
+            if missing or part["as"] not in ("root", "account"):
+                raise SystemExit(
+                    f"the baseline's part {part.get('name', '')!r} needs name, as (root or account), author, "
+                    f"what and run: {', '.join(missing) or 'as'} is missing or wrong"
+                )
         runs.append({"role": "baseline", "spec": document["baseline"]})
     tests = [{"role": "test", "spec": spec} for spec in document["tests"]]
     runs += tests
@@ -286,14 +293,20 @@ def runs_for(document: dict, found: dict) -> tuple[list[dict], list[dict]]:
 
 
 def run_baseline(item: dict, context: dict) -> dict:
-    """Run the ordinary activity the lab's own rules must stay quiet on, as root and as the
-    test account, each in an audit session of its own, between two markers."""
+    """Run the ordinary activity the lab's own rules must stay quiet on: each part as root or
+    as the test account, in an audit session of its own, between two markers. The record says
+    for each part who wrote what it runs, and whether it ran to its end."""
 
     spec, run_id, account = item["spec"], context["id"], context["account"]
-    record = {"order": item["order"], "role": "baseline", "name": spec["name"], "steps": []}
+    record = {"order": item["order"], "role": "baseline", "name": spec["name"], "parts": [], "steps": []}
     record["steps"].append(step("marker-start", account, marker(run_id, item["order"], "start")))
-    for label, user in (("root", "root"), ("account", account)):
-        record["steps"].append(step(f"baseline-{label}", user, ["sh", "-c", fill(spec[label], context)], 300))
+    for part in spec["parts"]:
+        user = account if part["as"] == "account" else "root"
+        command = ["sh", "-c", fill(part["run"], context)]
+        done = step(f"baseline-{part['name']}", user, command, float(part.get("timeout", 300)))
+        record["steps"].append(done)
+        described = {key: part[key] for key in ("name", "what", "author")}
+        record["parts"].append({**described, "session": done["session"], "exit_status": done["exit_status"]})
     record["steps"].append(step("marker-end", account, marker(run_id, item["order"], "end")))
     kill_sessions({done["session"] for done in record["steps"]})
     return record

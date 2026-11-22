@@ -619,7 +619,14 @@ def test_the_labs_rules_give_a_second_answer_and_never_change_the_first() -> Non
 
 def test_ordinary_activity_is_the_baseline_and_what_ran_in_no_session_outside_the_tests() -> None:
     run_record = {
-        "tests": [{"role": "baseline", "steps": [step("baseline-root", 30), step("marker-end", 31)]}]
+        "tests": [
+            {
+                "role": "baseline",
+                "steps": [step("baseline-root", 30), step("marker-end", 31)],
+                "parts": [{"name": "root", "what": "ordinary work", "author": "the lab", "session": "30",
+                           "exit_status": 0}],
+            }
+        ]
     }
     events = [
         start(1, 0.5, 400, 1, "useradd --system bluefire-lab-service", 30, user="root"),  # baseline
@@ -634,6 +641,9 @@ def test_ordinary_activity_is_the_baseline_and_what_ran_in_no_session_outside_th
     ordinary = evaluate.ordinary_activity(run_record, events, events, matched, RULES, window)
 
     assert (ordinary["baseline_events"], ordinary["system_events"]) == (1, 1)
+    assert ordinary["parts"] == [
+        {"name": "root", "what": "ordinary work", "author": "the lab", "exit_status": 0, "events": 1}
+    ]
     assert ordinary["rules"] == {"lab-rule": [1], "medium-rule": [3]}
     assert [(rule["id"], rule["events"]) for rule in ordinary["pinned_rules"]] == [("medium-rule", 1)]
 
@@ -665,7 +675,7 @@ def test_ordinary_activity_leaves_out_a_failed_lookup_as_a_tests_events_do() -> 
 
 
 def judged(
-    test_rules=("lab-rule",), variant_rules=("lab-rule",), variant_took=True, noise=None, sibling=False
+    test_rules=("lab-rule",), variant_rules=("lab-rule",), variant_took=True, noise=None, sibling=False, parts=()
 ) -> dict:
     def result(order, role, rules, answer="took effect", **extra) -> dict:
         lab = [{**RULES[rule_id], "alert": True} for rule_id in rules]
@@ -682,7 +692,8 @@ def judged(
     if variant_rules is not None:
         answer = "took effect" if variant_took else "attempted without effect"
         tests.append(result(9, "variant", variant_rules, answer, compared_with=3, args={"name": "other"}))
-    return evaluate.judge_lab_rules({"lab-rule": RULES["lab-rule"]}, tests, {"rules": noise or {}})[0]
+    ordinary = {"rules": noise or {}, "parts": list(parts)}
+    return evaluate.judge_lab_rules({"lab-rule": RULES["lab-rule"]}, tests, ordinary)[0]
 
 
 def test_a_lab_rule_is_accepted_only_when_it_holds_on_a_variant_and_stays_quiet_on_ordinary_work() -> None:
@@ -697,6 +708,11 @@ def test_a_lab_rule_is_accepted_only_when_it_holds_on_a_variant_and_stays_quiet_
     assert judged(noise={"lab-rule": [40, 41]})["reason"] == "it matched 2 events of ordinary activity"
     assert judged(variant_rules=())["reason"] == "it missed 1 of 1 runs with changed input arguments"
     assert judged(variant_rules=None)["accepted"] is False
+    # A rule is not judged quiet on ordinary activity that did not happen.
+    ran = {"name": "role", "exit_status": 0}
+    broke = {"name": "packages", "exit_status": 100}
+    assert judged(parts=[ran])["accepted"] is True
+    assert judged(parts=[ran, broke])["reason"].endswith("not judged on it: packages (exit status 100)")
     assert judged(variant_took=False)["accepted"] is False
 
 

@@ -604,6 +604,8 @@ def ordinary_activity(
         if step["label"].startswith("baseline-")
     }
     session_of = {event["ProcessGuid"]: event["TerminalSessionId"] for event in starts}
+    parts = [dict(part, events=0) for test in run["tests"] for part in test.get("parts", [])]
+    part_of = {part["session"]: part for part in parts}
     counts: collections.Counter[str] = collections.Counter()
     hits: dict[str, list[int]] = collections.defaultdict(list)
     for event in events:
@@ -617,6 +619,8 @@ def ordinary_activity(
         else:
             continue
         counts[kind] += 1
+        if session in part_of:
+            part_of[session]["events"] += 1
         for rule_id in matched.get(event["EventRecordID"], []):
             hits[rule_id].append(int(event["EventRecordID"]))
     searched = lookups(list(audit_events))
@@ -633,6 +637,8 @@ def ordinary_activity(
         else:
             continue
         counts[kind] += 1
+        if session in part_of:
+            part_of[session]["events"] += 1
         for rule_id in matched.get(f"audit {event['event']}", []):
             hits[rule_id].append(f"audit {event['event']}")
     pinned = [
@@ -645,13 +651,16 @@ def ordinary_activity(
         "system_events": counts["system_events"],
         "rules": dict(hits),
         "pinned_rules": sorted(pinned, key=rule_order),
+        # Each part of the baseline: who wrote what it ran, whether it ran to its end, its events.
+        "parts": [{key: value for key, value in part.items() if key != "session"} for part in parts],
     }
 
 
 def judge_lab_rules(lab_rules: dict, tests: list[dict], ordinary: dict) -> list[dict]:
     """Whether each of the lab's rules is accepted: it alerts on a test, every published
     procedure it alerts on ran again with changed input arguments and it alerted on each
-    of those runs, and it stays quiet on ordinary activity.
+    of those runs, and it stays quiet on ordinary activity, every part of which ran to its
+    end: a rule is not judged quiet on activity that did not happen.
 
     Changed input arguments show that a rule does not depend on the values they set. They
     cannot show that it does not depend on what a test fixes in its command."""
@@ -673,8 +682,13 @@ def judge_lab_rules(lab_rules: dict, tests: list[dict], ordinary: dict) -> list[
         missed = [variant for variant in took if not alerted(variant, rule["id"])]
         untried = [test for test in fires if not any(v["compared_with"] == test["order"] for v in took)]
         noise = ordinary["rules"].get(rule["id"], [])
+        unfinished = [part for part in ordinary.get("parts", []) if part["exit_status"] != 0]
         if not fires:
             reason = "it matched no event of a test"
+        elif unfinished:
+            reason = "a part of the ordinary activity did not run to its end, so the rule was not judged on it: " + (
+                "; ".join(f"{part['name']} (exit status {part['exit_status']})" for part in unfinished)
+            )
         elif noise:
             reason = f"it matched {len(noise)} event{'' if len(noise) == 1 else 's'} of ordinary activity"
         elif untried:
@@ -1068,7 +1082,7 @@ def main(run_dir: Path, engine: Path) -> int:
         },
         "lab_rules": verdicts,
         "ordinary_activity": {
-            key: ordinary[key] for key in ("baseline_events", "system_events", "pinned_rules")
+            key: ordinary[key] for key in ("baseline_events", "system_events", "pinned_rules", "parts")
         },
         "engine": {"name": "Zircolite", "version": found.group(1) if found else None, "counts": tally},
         "controls": check_controls(run, tests, starts, sysmon.loss(events, other), tally, audit_control),
