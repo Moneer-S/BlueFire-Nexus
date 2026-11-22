@@ -7,7 +7,8 @@ repository are in [AGENTS.md](AGENTS.md).
 
 ## Set up and check a change
 
-Python 3.10 or newer. These are the commands the `lab package` job runs:
+Use Linux with Python 3.10 or newer and the `venv` module. The `lab package`
+job runs these checks on Ubuntu 24.04.
 
 ```bash
 python3 -m venv .venv
@@ -26,8 +27,9 @@ python3 .github/scripts/privacy_scan.py --commits origin/main..HEAD
 ```
 
 Attack tests run only in the `lab` workflow, on GitHub-hosted runners. A pull
-request that changes `lab/` runs it, and its run page shows the answers and how
-they differ from the latest run on `main`.
+request that changes `lab/` runs it. The run page shows the results. When a
+previous successful run on `main` has an available artifact, the comparison
+shows which answers changed.
 
 ## Adding a test, a hardening change or a rule
 

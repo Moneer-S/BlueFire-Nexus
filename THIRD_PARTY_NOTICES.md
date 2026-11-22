@@ -1,10 +1,10 @@
 # Third-party notices
 
-The lab (`lab/`, `.github/workflows/lab.yml`) copies none of the following into this repository.
-Each is fetched at the pinned version during a CI job and runs as a separate program on the
-hosted runner. The pins are the `env` values at the top of the workflow, except for Tetragon,
-which only the sensor spike tried (runs 43802339233 and 43803220104), whose version is the one
-those runs installed.
+The [lab workflow](.github/workflows/lab.yml) pins the programs, libraries, test definitions
+and detection rules it fetches. Each `lab-run` artifact includes the SigmaHQ rules used and
+their license. Tetragon was used only in the earlier sensor trials,
+[run 43802339233](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43802339233) and
+[run 43803220104](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/43803220104).
 
 | Project | Pin | Licence | Use |
 |---|---|---|---|

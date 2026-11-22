@@ -3,12 +3,12 @@
 A test bench for defenders. It runs published attack tests on a disposable lab
 target, records what the sensors on that target saw, has a rule engine evaluate
 pinned detection rules over those records, and reports two answers for every
-test: did the technique take effect, and what did the defense see. Then it
-changes a defense and runs the tests again, to show what the change did.
+test. Did the technique take effect? What did the defense see? For selected
+tests it changes a defense and repeats the test to measure the difference.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/report-dark.png">
-  <img src="docs/report-light.png" width="1280" alt="The top of the report of run 44133154347: 60 published attack tests, all took effect; 3 raised an alert, 56 left telemetry but no alert, 1 left no telemetry; with the lab's own rules 17 raised an alert; 12 tests ran again with a hardening change, and 8 of those changes blocked the technique. Below it the run's facts and the first rows of the results table.">
+  <img src="docs/report-light.png" width="1280" alt="Report for run 44133154347 showing the outcome totals, runner details and first rows of the results table. The totals are described below.">
 </picture>
 
 The top of the report of
@@ -30,14 +30,16 @@ with kernel 7.0.0-1017-azure:
   with Sysmon for Linux and auditd recording; five of them with one input
   argument changed, for example to search only the test account's home
   instead of the whole disk. The runner has no `ccencrypt`, so the ccrypt test
-  was left out, and the report says why. All 60 took effect.
+  was left out. The evaluator classified all 60 as taking effect. Evidence
+  varies by test. For example, awk can return success even if its child
+  shell never starts, and the process search can find its own search command.
 - **What the defense saw:** with 188 pinned [SigmaHQ](https://github.com/SigmaHQ/sigma)
   rules, 3 tests raised an alert (a rule of level high or critical matched one
   of its events), 56 left telemetry that no rule of an alert level matched,
   and 1 left none: emptying the shell history with the shell's own `echo`.
   One of the 3 alerts comes from a rule for another technique that also
   matched ordinary work in the same run.
-- **Detection rules of the lab's own:** 8 of its 9 rules are accepted: each
+- **Detection rules of the lab's own:** the run accepted 8 of its 9 rules: each
   still alerted when its tests ran again with changed input arguments, and
   none matched a baseline of ordinary administration or the runner's own work.
   With them, 17 of the 60 tests raise an alert. The rule for a systemd unit
@@ -54,14 +56,16 @@ with kernel 7.0.0-1017-azure:
 - **Sensor changes:** with Sysmon alone, appending a command to `~/.bashrc`
   left no telemetry; with auditd watching the shell start files, it leaves a
   record that two pinned rules match
-  ([run 44029759448](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44029759448)).
-  With auditd recording process starts too, 18 of the 53 pinned auditd rules
-  match something and two tests became alerts, among them turning ASLR off.
+  ([comparison job](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44029759448/job/133861287645)).
+  After auditd began recording process starts, two primary results changed
+  from telemetry only to an alert. One was the test for turning off ASLR.
+  [See the before-and-after comparison](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44055611236/job/133950661736).
 - **The target:** each run starts with an inventory of the runner (accounts
   that can log in, running services, listening addresses, the programs the
   tests need) and chooses the tests by it: here it left out the one test whose
   program the runner lacks.
-- **Before and after:** every run is compared with the latest run on `main`.
+- **Before and after.** The comparison looks up the latest successful lab run on
+  `main` and downloads its artifact.
   When 12 tests were added,
   [the comparison](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44133154347/job/134224713568)
   found the 74 runs of the earlier list with the same answers, and 17 new ones.
@@ -77,19 +81,25 @@ with kernel 7.0.0-1017-azure:
 The attack tests run only on GitHub-hosted runners, which GitHub throws away
 after each job. The `lab` workflow runs on pull requests and pushes to `main`
 that change `lab/`, once a week, and by hand from the Actions tab of this
-repository or of a fork. Its run page shows the table of answers and how they differ from the
-latest run on `main`, and its artifact `lab-run` holds the sensors' raw output,
-the results and the report.
+repository or of a fork. The run page shows the table of answers. The
+`lab-run` artifact holds the raw sensor output, the results and the offline
+report. The comparison job needs a prior successful run on `main`. On a
+new fork that job can fail after the report has been uploaded.
 
-The answers can be computed again from a run's artifact, on any machine with
-Python 3.10 or newer and [Zircolite](https://github.com/wagga40/Zircolite)
-4.7.1:
+To recompute the answers on Linux, use the checkout that produced the report,
+Python 3.10 or newer, and the Linux build of
+[Zircolite 4.7.1](https://github.com/wagga40/Zircolite/releases/tag/v4.7.1).
+Set the three paths below to your unpacked artifacts and executable.
 
 ```bash
-pip install ./lab
-bluefire-lab evaluate <folder of the unpacked artifact> --engine <path to Zircolite>
-bluefire-lab report <folder of the unpacked artifact>
-bluefire-lab compare <folder of an earlier run> <folder of a later run>
+python3 -m venv .venv
+.venv/bin/pip install ./lab
+run_dir=./lab-run
+earlier_dir=./earlier-lab-run
+engine=./zircolite
+.venv/bin/bluefire-lab evaluate "$run_dir" --engine "$engine"
+.venv/bin/bluefire-lab report "$run_dir"
+.venv/bin/bluefire-lab compare "$earlier_dir" "$run_dir"
 ```
 
 ## Not yet shown
