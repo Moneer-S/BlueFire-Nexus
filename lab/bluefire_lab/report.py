@@ -61,8 +61,10 @@ def pill(test: dict, answer: str) -> str:
     return f'<span class="pill {tone(test, answer)}">{e(answer)}</span>'
 
 
-# The name of the second visibility answer in what each runner answered (combine.ANSWERS).
+# The names of the second visibility answer, and of the answer with a rule set given as an input,
+# in what each runner answered (combine.ANSWERS and combine.OTHER).
 LAB = "with the lab's rules"
+OTHER = "with the other rule set"
 
 
 def runners_note(test: dict, name: str) -> str:
@@ -125,12 +127,71 @@ def lede(results: dict) -> str:
             f" With the lab's own rules as well, {summary['alert_with_lab_rules']} of the "
             f"{summary['took_effect']} raised an alert."
         )
+    if results.get("rule_set"):
+        text += (
+            f" With the rules of {rule_set_name(results)} alone, {summary['alert_with_rule_set']} of the "
+            f"{summary['took_effect']} raised an alert."
+        )
     if summary.get("hardened"):
         text += (
             f" {count(summary['hardened'], 'test')} ran again with a hardening change in place, and "
             f"{summary['blocked']} of those changes blocked the technique."
         )
     return text
+
+
+def rule_set_name(results: dict) -> str:
+    """The repository of the rule set given as an input."""
+
+    return results["rule_set"]["source"].partition("@")[0]
+
+
+def rule_set_section(results: dict) -> str:
+    """What the rule set given as an input is, and what of it was and was not evaluated."""
+
+    found = results.get("rule_set")
+    if not found:
+        return ""
+    repository, _, rest = found["source"].partition("@")
+    commit, _, folder = rest.partition(":")
+    kinds = ", ".join(
+        f"{found['evaluated'].get(kind, 0)} of {number} for {e(kind)}"
+        for kind, number in found["sorted_by_kind"].items()
+        if number
+    )
+    left_out = "".join(
+        f"<li>{count(item['rules'], 'file')}: {e(item['reason'])}</li>" for item in found["left_out"]
+    )
+    levels = (
+        f" {count(found['no_level'], 'of these rules gives', 'of these rules give')} no level: a match of such a "
+        "rule counts as an alert in this column, because nothing says it should not."
+        if found["no_level"]
+        else ""
+    )
+    return (
+        '<h2 id="rule-set">Another rule set</h2>'
+        f'<p class="note">The rules of <a href="https://github.com/{e(repository)}/tree/{e(commit)}/{e(folder)}">'
+        f'{e(repository)}</a> at commit <span class="mono">{e(commit[:12])}</span>'
+        + (f", folder {e(folder)}" if folder else "")
+        + f", given to this run as an input, are evaluated apart and have a column of their own in the table "
+        f"above. They change no other answer. Of {count(found['files'], 'YAML file')}, "
+        f"{count(found['sorted'], 'is a rule', 'are rules')} for Linux and for a kind of event the lab's sensors "
+        f"record. The rule engine loaded {kinds or 'none of them'}.{levels} An alert in this column is a match "
+        "of a rule of level high or critical, as everywhere in this report. Licence files that came with the "
+        f"rules, kept beside them in the artifact: {e(', '.join(found['license_files']) or 'none')}.</p>"
+        + (f'<p class="note">Left out:</p><ul class="controls">{left_out}</ul>' if left_out else "")
+    )
+
+
+def other_rule_names(test: dict) -> list[str]:
+    seen = test["visibility"].get("other_rules", {})
+    names = [f"{rule['level']}: {rule['title']}" for rule in seen.get("rules", [])[:3]]
+    if len(seen.get("rules", [])) > 3:
+        names.append(f"and {len(seen['rules']) - 3} more")
+    only = seen.get("launcher_only_rules", [])
+    if only:
+        names.append(f"{count(len(only), 'rule')} matched only the launcher line, not counted")
+    return names
 
 
 def lab_rule_names(test: dict) -> list[str]:
@@ -259,6 +320,10 @@ LEVELS = ["critical", "high", "medium", "low", "informational"]
 
 
 def rule_link(rule: dict, results: dict) -> str:
+    if rule.get("origin") == "other":
+        repository, _, rest = results["rule_set"]["source"].partition("@")
+        commit, _, folder = rest.partition(":")
+        return f"https://github.com/{repository}/blob/{commit}/{folder + '/' if folder else ''}{rule['file']}"
     if rule.get("origin") == "lab":
         repository, _, commit = results["run"]["tools"].get("lab", "@").partition("@")
         return f"https://github.com/{repository}/blob/{commit}/lab/rules/{rule['file']}" if commit else "#"
@@ -266,7 +331,7 @@ def rule_link(rule: dict, results: dict) -> str:
     return f"https://github.com/{repository}/blob/{commit}/rules/{rule['file']}"
 
 
-def results_table(tests: list[dict], with_lab_rules: bool = False) -> str:
+def results_table(tests: list[dict], with_lab_rules: bool = False, rule_set: str = "") -> str:
     rows = []
     for test in tests:
         seen = test["visibility"]
@@ -275,8 +340,15 @@ def results_table(tests: list[dict], with_lab_rules: bool = False) -> str:
             name: f'<span class="sub">{e(runners_note(test, name))}</span>'
             if runners_note(test, name)
             else ""
-            for name in ("execution", "visibility", LAB)
+            for name in ("execution", "visibility", LAB, OTHER)
         }
+        other_cell = (
+            f"<td>{pill(test, seen.get('other_rules', {}).get('answer', 'not evaluated'))}{notes[OTHER]}"
+            + "".join(f'<span class="sub">{e(name)}</span>' for name in other_rule_names(test))
+            + "</td>"
+            if rule_set
+            else ""
+        )
         lab_cell = (
             f"<td>{pill(test, lab.get('answer', seen['answer']))}{notes[LAB]}"
             + "".join(f'<span class="sub">{e(name)}</span>' for name in lab_rule_names(test))
@@ -296,11 +368,13 @@ def results_table(tests: list[dict], with_lab_rules: bool = False) -> str:
             + (f'<span class="sub">{e(launcher_note(test))}</span>' if launcher_note(test) else "")
             + "</td>"
             + lab_cell
+            + other_cell
             + f'<td class="num">{seen.get("events", 0)}</td></tr>'
         )
     head = (
         "<tr><th>Technique</th><th>Test</th><th>Execution</th><th>Visibility</th><th>Rules that matched</th>"
         + ("<th>With the lab's rules too</th>" if with_lab_rules else "")
+        + (f"<th>With the rules of {e(rule_set)} alone</th>" if rule_set else "")
         + '<th class="num">Events</th></tr>'
     )
     return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
@@ -381,6 +455,11 @@ def evidence(test: dict, results: dict) -> str:
     parts.append("</section></div>")
     if seen.get("rules"):
         parts.append(f"<h3>Rules that matched an event of the test</h3>{rules_table(seen['rules'], results)}")
+    if seen.get("other_rules", {}).get("rules"):
+        parts.append(
+            f"<h3>Rules of {e(rule_set_name(results))} that matched an event of the test</h3>"
+            + rules_table(seen["other_rules"]["rules"], results)
+        )
     if seen.get("with_lab_rules", {}).get("rules"):
         parts.append(
             "<h3>The lab's own rules that matched an event of the test</h3>"
@@ -476,9 +555,7 @@ def html_report(results: dict) -> str:
         + '<p class="note">Rules this repository adds for gaps the pinned rules leave. A rule is accepted when it '
         "alerts on a test, still alerts when that test runs again with changed input arguments, and matches "
         "nothing in a baseline of ordinary activity or in the runner's own work. Most of the baseline was not "
-        "written by the rules' author. "
-        + e(ordinary_note(results))
-        + "</p>"
+        "written by the rules' author. " + e(ordinary_note(results)) + "</p>"
         if results.get("lab_rules")
         else ""
     )
@@ -618,7 +695,7 @@ def html_report(results: dict) -> str:
 <dl class="facts">{facts}</dl>
 
 <h2>Results</h2>
-{results_table(tests, bool(results.get("lab_rules")))}
+{results_table(tests, bool(results.get("lab_rules")), rule_set_name(results) if results.get("rule_set") else "")}
 <p class="note">Execution says whether the technique took effect on the target. Visibility says what the
 defense saw: an alert, telemetry without an alert, or nothing. An alert is a match of a Sigma rule whose
 level is {e(" or ".join(rules["alert_levels"]))} on an event of the test. A test that took effect and left
@@ -627,6 +704,7 @@ The list of tests says that for each test, by hand, from the events a run record
 telemetry shows only what happened beside the technique, or there is none, the sensor has to record more
 first. {e(unstable_note)}Select a test to see its events and rules.</p>
 {lab_rules}
+{rule_set_section(results)}
 {hardening}
 {behind}
 
@@ -688,11 +766,16 @@ def markdown_summary(results: dict) -> str:
             f"**{count(len(failed), 'control')} failed, so this run does not support its results.**",
             "",
         ]
+    other = f"With the rules of {rule_set_name(results)} alone | " if results.get("rule_set") else ""
     lines += [
         "| Technique | Test | Execution | Visibility | Rules that matched | "
         + ("With the lab's rules too | " if results.get("lab_rules") else "")
+        + other
         + "Events |",
-        "|---|---|---|---|---|" + ("---|" if results.get("lab_rules") else "") + "---:|",
+        "|---|---|---|---|---|"
+        + ("---|" if results.get("lab_rules") else "")
+        + ("---|" if other else "")
+        + "---:|",
     ]
 
     def said(test: dict, name: str, answer: str) -> str:
@@ -718,6 +801,13 @@ def markdown_summary(results: dict) -> str:
                 + (f" ({cell(launcher_note(test))})" if launcher_note(test) else "")
                 + " |"
                 + lab_cell
+                + (
+                    f" {said(test, OTHER, seen.get('other_rules', {}).get('answer', 'not evaluated'))}"
+                    + (f" ({cell('; '.join(other_rule_names(test)))})" if other_rule_names(test) else "")
+                    + " |"
+                    if other
+                    else ""
+                )
                 + f" {seen.get('events', 0)} |"
             )
     if results.get("lab_rules"):

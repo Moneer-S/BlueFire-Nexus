@@ -95,7 +95,9 @@ def test_a_part_of_the_baseline_that_does_not_say_who_wrote_it_stops_the_run() -
     with pytest.raises(SystemExit, match="'packages' needs name, as .* author is missing"):
         run.plan(a_plan(baseline={"name": "ordinary work", "parts": [part]}))
     with pytest.raises(SystemExit, match="as is missing or wrong"):
-        run.plan(a_plan(baseline={"name": "ordinary work", "parts": [{**part, "author": "x", "as": "nobody"}]}))
+        run.plan(
+            a_plan(baseline={"name": "ordinary work", "parts": [{**part, "author": "x", "as": "nobody"}]})
+        )
 
 
 def test_an_input_argument_the_test_does_not_declare_stops_the_run(tmp_path: Path) -> None:

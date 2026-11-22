@@ -357,3 +357,38 @@ def test_a_test_whose_cleanup_left_its_effect_behind_is_listed() -> None:
     assert "Cleanup: left behind." in page and "Cleanup: held." in page
     assert "| T1070.003 | Clear Bash history (rm) | `test ! -e ~/.bash_history` |" in summary
     assert 'id="left-behind"' not in report.html_report(results())
+
+
+def test_a_rule_set_given_as_an_input_has_its_own_column_and_section() -> None:
+    document = results()
+    document["rule_set"] = {
+        "source": "someone/rules@" + "e" * 40 + ":rules/linux",
+        "license_files": ["LICENSE"],
+        "files": 40,
+        "sorted": 12,
+        "no_level": 3,
+        "left_out": [{"reason": "for the product windows", "rules": 28}],
+        "evaluated": {"process_creation": 9, "auditd": 2},
+        "sorted_by_kind": {"process_creation": 10, "auditd": 2, "file_event": 0},
+    }
+    document["summary"]["alert_with_rule_set"] = 1
+    theirs = {**RULE, "id": "their-rule", "title": "Their Rule", "level": "no level", "origin": "other",
+              "file": "process/their_rule.yml"}  # fmt: skip
+    document["tests"][2]["visibility"]["other_rules"] = {"answer": "alert", "rules": [theirs]}
+    document["tests"][1]["visibility"]["other_rules"] = {"answer": "telemetry only", "rules": []}
+
+    page, summary = report.html_report(document), report.markdown_summary(document)
+
+    assert "<th>With the rules of someone/rules alone</th>" in page
+    assert "With the rules of someone/rules alone, 1 of the 2 raised an alert." in summary
+    section = page[page.index('id="rule-set"') :]
+    assert "Of 40 YAML files, 12 are rules for Linux" in section
+    assert "9 of 10 for process_creation, 2 of 2 for auditd" in section
+    assert (
+        "3 of these rules give no level: a match of such a rule counts as an alert in this column" in section
+    )
+    assert "<li>28 files: for the product windows</li>" in section
+    link = "https://github.com/someone/rules/blob/" + "e" * 40 + "/rules/linux/process/their_rule.yml"
+    assert link in page
+    assert "| alert (no level: Their Rule) | 1 |" in summary
+    assert "With the rules of" not in report.markdown_summary(results())

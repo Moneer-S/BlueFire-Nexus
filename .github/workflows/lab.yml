@@ -20,6 +20,13 @@ on:
     # Weekly, so that a recent run always exists.
     - cron: "23 4 * * 1"
   workflow_dispatch:
+    inputs:
+      rules:
+        description: >-
+          Another Sigma rule set, evaluated as a column of its own: owner/repository@commit
+          (the full 40-character commit), optionally followed by :folder
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -139,6 +146,39 @@ jobs:
           mkdir -p "$RUN/lab-rules"
           cp -r lab/rules/linux "$RUN/lab-rules/linux"
 
+      # Only when the run was started by hand with the input "rules". The rule set is a public
+      # repository's, at a commit: its YAML files travel with the run, with the licence files
+      # found beside them, and the evaluation gives them a column of their own.
+      - name: Fetch the rule set given as an input
+        if: ${{ inputs.rules != '' }}
+        env:
+          RULE_SET: ${{ inputs.rules }}
+        run: |
+          if ! printf '%s\n' "$RULE_SET" | grep -Eqx '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}(:[A-Za-z0-9_./-]+)?'; then
+            echo "the input rules is owner/repository@commit, with the full 40-character commit, optionally followed by :folder"
+            exit 1
+          fi
+          case "$RULE_SET" in *..*) echo "the folder must not contain .."; exit 1 ;; esac
+          repository=${RULE_SET%%@*}
+          rest=${RULE_SET#*@}
+          commit=${rest%%:*}
+          folder=""
+          case "$rest" in *:*) folder=${rest#*:} ;; esac
+          git init -q /opt/bluefire-lab/rule-set
+          git -C /opt/bluefire-lab/rule-set remote add origin "https://github.com/$repository"
+          git -C /opt/bluefire-lab/rule-set fetch -q --depth 1 --filter=blob:none origin "$commit"
+          if [ -n "$folder" ]; then git -C /opt/bluefire-lab/rule-set sparse-checkout set "$folder"; fi
+          git -C /opt/bluefire-lab/rule-set checkout -q FETCH_HEAD
+          test -d "/opt/bluefire-lab/rule-set/$folder" || { echo "the repository has no folder $folder at that commit"; exit 1; }
+          mkdir -p "$RUN/rule-set/files"
+          # The YAML files only, as files: a link in the repository is not followed.
+          (cd "/opt/bluefire-lab/rule-set/$folder" && find . -path ./.git -prune -o -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 \
+            | xargs -0 -r cp --parents -P -t "$RUN/rule-set/files")
+          find /opt/bluefire-lab/rule-set -maxdepth 1 -type f \( -iname 'LICEN[CS]E*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
+            -exec cp -P {} "$RUN/rule-set/" \;
+          echo "$RULE_SET" > "$RUN/rule-set/SOURCE"
+          echo "rule files: $(find "$RUN/rule-set/files" -type f | wc -l)"
+
       - name: Create the test account and reject its outbound traffic
         run: |
           sudo useradd --create-home --shell /bin/bash bluefire-lab
@@ -210,9 +250,7 @@ jobs:
       # This runner's own report. The run page gets the report of all three, from the job "answers".
       - name: Write the report
         if: always()
-        run: |
-          "$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUN"
-          if grep -n $'\xe2\x80\x94' "$RUN/report.html" "$RUN/summary.md"; then echo "the report must not use the em dash"; exit 1; fi
+        run: '"$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUN"'
 
       - name: Refuse to publish telemetry that contains the job token
         if: always()
@@ -270,10 +308,16 @@ jobs:
 
       - name: Write the report
         if: always()
+        env:
+          RULE_SET: ${{ inputs.rules }}
         run: |
           "$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUNNER_TEMP/lab-run"
           cat "$RUNNER_TEMP/lab-run/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          if grep -n $'\xe2\x80\x94' "$RUNNER_TEMP/lab-run/report.html" "$RUNNER_TEMP/lab-run/summary.md"; then echo "the report must not use the em dash"; exit 1; fi
+          # The lab's own text uses no em dash. The text of a rule set given as an input is not the lab's.
+          if [ -z "$RULE_SET" ] && grep -n $'\xe2\x80\x94' "$RUNNER_TEMP/lab-run/report.html" "$RUNNER_TEMP/lab-run/summary.md"; then
+            echo "the report must not use the em dash"
+            exit 1
+          fi
 
       - name: Take pictures of the report
         if: always()

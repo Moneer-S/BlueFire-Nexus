@@ -21,7 +21,18 @@ from .compare import answers, identity
 from .evaluate import summarize
 
 ANSWERS = ("execution", "visibility", "with the lab's rules")
+# A fourth answer, when the run evaluated a rule set given as an input.
+OTHER = "with the other rule set"
 UNSTABLE = "unstable"
+
+
+def given(test: dict) -> dict[str, str]:
+    """The answers one runner gave for a run of a test, by name."""
+
+    said = dict(zip(ANSWERS, answers(test), strict=True))
+    if "other_rules" in test["visibility"]:
+        said[OTHER] = test["visibility"]["other_rules"]["answer"]
+    return said
 
 
 def by_identity(results: dict) -> dict[tuple, dict]:
@@ -51,21 +62,23 @@ def combine(runs: list[dict]) -> dict:
                 tests[key] = added = copy.deepcopy(test)
                 combined["tests"].append(added)
     for key, test in tests.items():
-        given = [answers(found[key]) if key in found else ("not run",) * 3 for found in keyed]
-        test["runners"] = [dict(zip(ANSWERS, answer, strict=True)) for answer in given]
-        differing = [
-            name for index, name in enumerate(ANSWERS) if len({answer[index] for answer in given}) > 1
+        names = list(given(test))
+        test["runners"] = [
+            given(found[key]) if key in found else dict.fromkeys(names, "not run") for found in keyed
         ]
+        differing = [name for name in names if len({runner.get(name) for runner in test["runners"]}) > 1]
         if not differing:
             continue
         test["unstable"] = differing
         for name in differing:
-            said = ", ".join(runner[name] for runner in test["runners"])
+            said = ", ".join(str(runner.get(name)) for runner in test["runners"])
             basis = f"the runners gave different answers: {said}"
             if name == "execution":
                 test["execution"].update(answer=UNSTABLE, basis=basis)
             elif name == "visibility":
                 test["visibility"].update(answer=UNSTABLE, basis=basis)
+            elif name == OTHER:
+                test["visibility"]["other_rules"]["answer"] = UNSTABLE
             else:
                 test["visibility"].setdefault("with_lab_rules", {"rules": []})["answer"] = UNSTABLE
 

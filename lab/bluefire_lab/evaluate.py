@@ -27,6 +27,7 @@ import collections
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -37,6 +38,9 @@ from . import auditd, sysmon
 # The Sigma specification says a match of a "high" rule should trigger an alert
 # and a "critical" one indicates an incident. Lower levels are for review.
 ALERT_LEVELS = ("high", "critical")
+# A rule of another rule set that gives no level: a match of it counts as an alert in that
+# rule set's column, and the report says so.
+NO_LEVEL = "no level"
 
 
 def systemds_own(event: dict) -> bool:
@@ -68,23 +72,85 @@ _READ = re.compile(r"Total events processed: (?:\[\w+\])?(\d[\d,]*)")
 
 def rule_index(rules: Path, origin: str = "pinned") -> dict[str, dict]:
     """The rules under a folder by id, with what a report has to say about a rule that
-    matched. The pinned rules are SigmaHQ's; the lab's own rules have the origin "lab"."""
+    matched. The pinned rules are SigmaHQ's; the lab's own rules have the origin "lab"; the
+    rules of a rule set given as an input have the origin "other", and are kept under names
+    of their own, because such a set may hold a rule with an id the pinned rules use too."""
 
     index = {}
     for path in sorted(rules.rglob("*.yml")):
         text = path.read_text(encoding="utf-8")
         for rule in yaml.safe_load_all(text):
             if isinstance(rule, dict) and "id" in rule and "detection" in rule:
-                index[str(rule["id"])] = {
+                name = f"other:{rule['id']}" if origin == "other" else str(rule["id"])
+                index[name] = {
                     "id": str(rule["id"]),
                     "title": rule.get("title", ""),
-                    "level": rule.get("level", "informational"),
+                    "level": rule.get("level") or ("informational" if origin != "other" else NO_LEVEL),
                     "author": rule.get("author", ""),
                     "file": path.relative_to(rules.parent).as_posix(),
                     "text": text,
                     "origin": origin,
                 }
     return index
+
+
+def sort_rule_set(run_dir: Path) -> dict:
+    """Sort the Sigma rules of a rule set given as an input by the kind of event each describes,
+    into folders the rule engine takes one at a time, and say which rules are left out and why.
+
+    A rule is evaluated when it is one Sigma rule with an id, for Linux, and for a kind of
+    event the lab's sensors record: a process start, a file creation or a network connection
+    (the Sigma categories process_creation, file_event and network_connection), or auditd's
+    records (the service auditd). Returns what the report says about the set.
+    """
+
+    source = run_dir / "rule-set"
+    target = run_dir / "engine" / "rule-set" / "linux"
+    shutil.rmtree(target.parent, ignore_errors=True)
+    left_out: collections.Counter[str] = collections.Counter()
+    paths, no_level = {}, 0
+    files = sorted(path for path in (source / "files").rglob("*") if path.suffix in (".yml", ".yaml"))
+    for path in files:
+        try:
+            documents = [found for found in yaml.safe_load_all(path.read_text(encoding="utf-8")) if found]
+        except (yaml.YAMLError, UnicodeDecodeError):
+            left_out["not readable as YAML"] += 1
+            continue
+        rule = documents[0] if len(documents) == 1 else None
+        if (
+            not isinstance(rule, dict)
+            or "detection" not in rule
+            or not isinstance(rule.get("logsource"), dict)
+        ):
+            left_out["not one Sigma rule with a log source and a detection"] += 1
+            continue
+        logsource = {key: str(value).lower() for key, value in rule["logsource"].items()}
+        category = logsource.get("category") if logsource.get("category") in CATEGORIES else None
+        category = category or ("auditd" if logsource.get("service") == "auditd" else None)
+        if "id" not in rule:
+            left_out["no id, by which the rule engine names a rule that matched"] += 1
+        elif logsource.get("product") != "linux":
+            left_out[f"for the product {logsource.get('product', 'that the rule does not name')}"] += 1
+        elif category is None:
+            named = logsource.get("category") or logsource.get("service") or "that the rule does not name"
+            left_out[f"for a Linux log source the lab's sensors do not provide: {named}"] += 1
+        else:
+            copy = target / category / f"{len(paths) + 1:04d}.yml"
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, copy)
+            paths[copy.relative_to(target.parent).as_posix()] = path.relative_to(source / "files").as_posix()
+            no_level += "level" not in rule
+    return {
+        "source": (source / "SOURCE").read_text(encoding="utf-8").strip(),
+        "license_files": sorted(
+            path.name for path in source.iterdir() if path.is_file() and path.name != "SOURCE"
+        ),
+        "files": len(files),
+        "sorted": len(paths),
+        "no_level": no_level,
+        "left_out": [{"reason": reason, "rules": number} for reason, number in left_out.most_common()],
+        "paths": paths,
+    }
 
 
 def engine_counts(log: str) -> tuple[int | None, int | None]:
@@ -112,7 +178,7 @@ def run_engine(
     counts: dict[str, dict] = {}
     work = run_dir / "engine"
     work.mkdir(exist_ok=True)
-    prefix = "" if root == "rules" else f"{root}-"
+    prefix = "" if root == "rules" else f"{Path(root).name}-"
     for category, event_id in CATEGORIES.items():
         rules = run_dir / root / "linux" / category
         lines = [line for event, line in zip(events, raw, strict=True) if event["EventID"] == event_id]
@@ -148,8 +214,10 @@ def run_engine(
     return matched, counts
 
 
-def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[dict[str, list[str]], dict]:
-    """Have the rule engine evaluate the pinned auditd rules over auditd's records.
+def run_audit_engine(
+    engine: Path, run_dir: Path, records: list[dict], root: str = "rules"
+) -> tuple[dict[str, list[str]], dict]:
+    """Have the rule engine evaluate the auditd rules under root over auditd's records.
 
     The engine gets one record per line and names a match by its line, so a match is
     tied back to its record, and through the record's serial to the event. Returns,
@@ -160,11 +228,12 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
     matched: dict[str, list[str]] = collections.defaultdict(list)
     counts = {"category": "auditd", "origin": "pinned", "kind": "auditd", "given": len(records)}
     counts.update(loaded=0, read=0)
-    rules, work = run_dir / "rules" / "linux" / "auditd", run_dir / "engine"
+    rules, work = run_dir / root / "linux" / "auditd", run_dir / "engine"
     work.mkdir(exist_ok=True)
-    output = work / "auditd.json"
+    prefix = "" if root == "rules" else f"{Path(root).name}-"
+    output, log = work / f"{prefix}auditd.json", work / f"{prefix}auditd-engine.txt"
     output.unlink(missing_ok=True)
-    (work / "auditd-engine.txt").unlink(missing_ok=True)
+    log.unlink(missing_ok=True)
     if not records or not rules.is_dir():
         return matched, counts
     (work / "auditd.txt").write_text("".join(record["line"] + "\n" for record in records), encoding="utf-8")
@@ -176,14 +245,14 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
             "--logs-encoding", "utf-8",
             "--ruleset", str(rules.resolve()),
             "--outfile", output.name,
-            "--logfile", "auditd-engine.txt",
+            "--logfile", log.name,
         ],
         cwd=work,
         check=True,
         capture_output=True,
         timeout=900,
     )  # fmt: skip
-    counts["loaded"], counts["read"] = engine_counts((work / "auditd-engine.txt").read_text(errors="replace"))
+    counts["loaded"], counts["read"] = engine_counts(log.read_text(errors="replace"))
     for rule in json.loads(output.read_text(encoding="utf-8")) if output.exists() else []:
         for match in rule["matches"]:
             record = records[int(match["row_id"]) - 1]
@@ -554,12 +623,17 @@ def visibility(
 
     def cite(rule_id: str, records: list[int]) -> dict:
         rule = rules[rule_id]
-        return {**rule, "records": records, "alert": rule["level"] in ALERT_LEVELS}
+        return {**rule, "records": records, "alert": rule["level"] in (*ALERT_LEVELS, NO_LEVEL)}
 
-    # The answer comes from the pinned rules alone; the lab's own rules give a second one.
+    # The answer comes from the pinned rules alone; the lab's own rules give a second one, and
+    # a rule set given as an input a column of its own.
     cited = sorted((cite(rule_id, records) for rule_id, records in fired.items()), key=rule_order)
+    only_launcher = sorted(
+        (cite(rule_id, records) for rule_id, records in launcher_only.items()), key=rule_order
+    )
     pinned = [rule for rule in cited if rule["origin"] == "pinned"]
     ours = [rule for rule in cited if rule["origin"] == "lab"]
+    others = [rule for rule in cited if rule["origin"] == "other"]
     if any(rule["alert"] for rule in pinned):
         answer, basis = "alert", "a rule of an alert level matched an event of the test"
     elif mine:
@@ -574,12 +648,17 @@ def visibility(
         "events_by_kind": dict(collections.Counter(event["kind"] for event in mine)),
         "rules": pinned,
         "launcher": describe(launcher, "launcher"),
-        "launcher_only_rules": sorted(
-            (cite(rule_id, records) for rule_id, records in launcher_only.items()), key=rule_order
-        ),
+        "launcher_only_rules": [rule for rule in only_launcher if rule["origin"] != "other"],
         # Until the lab's rules are judged, the second answer is the first; see second_answers.
         "with_lab_rules": {"answer": answer, "rules": ours},
     }
+    if context.get("rule_set"):
+        without = "telemetry only" if mine else "no telemetry"
+        result["other_rules"] = {
+            "answer": "alert" if any(rule["alert"] for rule in others) else without,
+            "rules": others,
+            "launcher_only_rules": [rule for rule in only_launcher if rule["origin"] == "other"],
+        }
     return result, mine
 
 
@@ -686,8 +765,9 @@ def judge_lab_rules(lab_rules: dict, tests: list[dict], ordinary: dict) -> list[
         if not fires:
             reason = "it matched no event of a test"
         elif unfinished:
-            reason = "a part of the ordinary activity did not run to its end, so the rule was not judged on it: " + (
-                "; ".join(f"{part['name']} (exit status {part['exit_status']})" for part in unfinished)
+            reason = (
+                "a part of the ordinary activity did not run to its end, so the rule was not judged on it: "
+                + ("; ".join(f"{part['name']} (exit status {part['exit_status']})" for part in unfinished))
             )
         elif noise:
             reason = f"it matched {len(noise)} event{'' if len(noise) == 1 else 's'} of ordinary activity"
@@ -865,6 +945,9 @@ def check_controls(
             )
     checks.append(control("loss", clean and whole and audit_whole and lost["sensor_starts"] == 1, detail))
 
+    # A rule set given as an input is not the lab's: what the engine made of it is reported with
+    # it, and does not fail the run.
+    engine = [counts for counts in engine if counts["origin"] != "other"]
     problems = []
     for counts in engine:
         what = f"{counts['category']} rules" + (" of the lab's own" if counts["origin"] == "lab" else "")
@@ -954,6 +1037,9 @@ def summarize(tests: list[dict]) -> dict:
         "alert_with_lab_rules": sum(
             1 for test in took if test["visibility"].get("with_lab_rules", {}).get("answer") == "alert"
         ),
+        "alert_with_rule_set": sum(
+            1 for test in took if test["visibility"].get("other_rules", {}).get("answer") == "alert"
+        ),
         "unstable": sum(1 for test in measured if test.get("unstable")),
     }
 
@@ -989,6 +1075,25 @@ def main(run_dir: Path, engine: Path) -> int:
         audit_counts["rules"] = sum(1 for rule in rules.values() if rule["file"].startswith("linux/auditd/"))
         tally.append(audit_counts)
     rules.update(lab_rules)
+    # A rule set given as an input, evaluated apart, as a column of its own.
+    rule_set = sort_rule_set(run_dir) if (run_dir / "rule-set" / "SOURCE").is_file() else None
+    if rule_set:
+        other_rules = rule_index(run_dir / "engine" / "rule-set" / "linux", "other")
+        for rule in other_rules.values():
+            rule["file"] = rule_set["paths"][rule["file"]]
+        other_matched, other_counts = run_engine(engine, run_dir, events, raw, "engine/rule-set")
+        audit_other, audit_other_counts = run_audit_engine(engine, run_dir, records, "engine/rule-set")
+        for found in (other_matched, audit_other):
+            for record, ids in found.items():
+                matched[record].extend(f"other:{rule_id}" for rule_id in ids)
+        other_counts["auditd"] = audit_other_counts
+        for category, entry in other_counts.items():
+            entry["rules"] = sum(1 for path in rule_set["paths"] if path.startswith(f"linux/{category}/"))
+            tally.append({**entry, "category": category, "origin": "other"})
+        rule_set["evaluated"] = {category: entry["loaded"] or 0 for category, entry in other_counts.items()}
+        rule_set["sorted_by_kind"] = {category: entry["rules"] for category, entry in other_counts.items()}
+        del rule_set["paths"]
+        rules.update(other_rules)
 
     known_sessions = {step["session"] for test in run["tests"] for step in test["steps"]}
     known_sessions |= {step["session"] for step in run.get("probes", [])}
@@ -1007,6 +1112,7 @@ def main(run_dir: Path, engine: Path) -> int:
         "system_commands": system_commands(starts, complete),
         "audit_events": audit_events,
         "lookups": lookups(audit_events),
+        "rule_set": rule_set,
     }
     tests, by_order = [], {}
     for test in run["tests"]:
@@ -1081,6 +1187,7 @@ def main(run_dir: Path, engine: Path) -> int:
             "lab": sum(lab_counts[category]["loaded"] or 0 for category in CATEGORIES),
         },
         "lab_rules": verdicts,
+        "rule_set": rule_set,
         "ordinary_activity": {
             key: ordinary[key] for key in ("baseline_events", "system_events", "pinned_rules", "parts")
         },
