@@ -1,0 +1,130 @@
+name: Windows sensor inventory
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows-inventory.yml
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  inventory:
+    name: Sensor inventory on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    steps:
+      - name: Read sensor state and check one process start
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Row($name, $value) {
+            if ($null -eq $value -or "$value" -eq '') { $value = 'Unknown' }
+            Write-Host "$name = $value"
+            "| $name | $value |" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+          $failed = [Collections.Generic.List[string]]::new()
+          function Observe($name, [scriptblock]$read) {
+            try { & $read }
+            catch {
+              $failed.Add($name)
+              Row $name "Query failed ($($_.Exception.GetBaseException().GetType().Name))"
+            }
+          }
+          @('## Windows sensor inventory', '', '| Measurement | Result |', '|---|---|') |
+            Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Row 'Runner image version' $env:ImageVersion
+          Observe 'Windows build' {
+            $os = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name CurrentBuildNumber, UBR
+            Row 'Windows build' "$($os.CurrentBuildNumber).$($os.UBR)"
+          }
+          Observe 'Sensor services' {
+            $filter = "Name='WinDefend' OR Name='Sysmon' OR Name='Sysmon64'"
+            $services = Get-CimInstance Win32_Service -Filter $filter -Property Name, State
+            foreach ($name in 'WinDefend', 'Sysmon', 'Sysmon64') {
+              $service = $services | Where-Object Name -eq $name
+              if ($service) { Row "$name service" $service.State } else { Row "$name service" 'Absent' }
+            }
+          }
+          Observe 'Defender status' {
+            if (!(Get-Module -ListAvailable -Name Defender)) { Row 'Defender status' 'Module absent'; return }
+            $status = Get-MpComputerStatus
+            foreach ($field in 'AMRunningMode', 'AMServiceEnabled', 'AntivirusEnabled', 'RealTimeProtectionEnabled') {
+              Row "Defender $field" $status.$field
+            }
+          }
+          Observe 'Built-in Sysmon feature' {
+            $feature = Get-WindowsOptionalFeature -Online | Where-Object FeatureName -eq 'Sysmon'
+            if ($feature) { Row 'Built-in Sysmon feature' $feature.State }
+            else { Row 'Built-in Sysmon feature' 'Not listed in this image' }
+          }
+          Observe 'Process creation system audit policy' {
+            $policy = & "$env:SystemRoot\System32\auditpol.exe" /get '/subcategory:{0CCE922B-69AE-11D9-BED3-505054503030}' /r
+            if ($LASTEXITCODE -ne 0) { throw 'auditpol failed' }
+            $setting = ($policy | ConvertFrom-Csv).'Inclusion Setting'
+            if ($setting -notin 'No Auditing', 'Success', 'Failure', 'Success and Failure') { $setting = 'Unknown (policy format)' }
+            Row 'Process creation system audit policy' $setting
+          }
+
+          $channels = @('Security', 'Microsoft-Windows-Sysmon/Operational', 'Microsoft-Windows-Windows Defender/Operational')
+          $state = @{}
+          foreach ($channel in $channels) {
+            Observe "$channel channel" {
+              try {
+                $config = [System.Diagnostics.Eventing.Reader.EventLogConfiguration]::new($channel)
+                try { $state[$channel] = if ($config.IsEnabled) { 'Enabled' } else { 'Disabled' } }
+                finally { $config.Dispose() }
+              } catch [System.Diagnostics.Eventing.Reader.EventLogNotFoundException] { $state[$channel] = 'Absent' }
+              Row "$channel channel" $state[$channel]
+            }
+          }
+
+          # Match the child's PID, its creator PID and time on the event-log service.
+          # Security renders process IDs in hex; Sysmon uses decimal process IDs.
+          Observe 'Process observation' {
+            $start = [datetime]::UtcNow
+            $stamp = $start.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", [cultureinfo]::InvariantCulture)
+            $marker = 'bluefire-inventory-' + [guid]::NewGuid().ToString('N')
+            $info = [Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\cmd.exe", "/d /c rem $marker")
+            $info.UseShellExecute = $false
+            $process = [Diagnostics.Process]::Start($info)
+            try {
+              $child = $process.Id
+              $process.WaitForExit()
+              if ($process.ExitCode -ne 0) { throw 'Probe exited unsuccessfully' }
+            } finally { $process.Dispose() }
+            Row 'Marked process' 'Exited successfully'
+            Start-Sleep -Seconds 10
+            $checks = @(
+              @{ Log = $channels[0]; Id = 4688; Provider = 'Microsoft-Windows-Security-Auditing'
+                 ChildField = 'NewProcessId'; Child = ('0x{0:x}' -f $child); ParentField = 'ProcessId'; Parent = ('0x{0:x}' -f $PID) }
+              @{ Log = $channels[1]; Id = 1; Provider = 'Microsoft-Windows-Sysmon'
+                 ChildField = 'ProcessId'; Child = $child; ParentField = 'ParentProcessId'; Parent = $PID }
+            )
+            foreach ($check in $checks) {
+              $label = "$($check.Log) event $($check.Id)"
+              Observe $label {
+                if ($state[$check.Log] -ne 'Enabled') {
+                  $reason = $state[$check.Log]
+                  if (!$reason) { $reason = 'state unknown' }
+                  Row $label "Skipped (channel $reason)"
+                  return
+                }
+                $system = "Provider[@Name='$($check.Provider)'] and EventID=$($check.Id) and TimeCreated[@SystemTime >= '$stamp']"
+                $data = "Data[@Name='$($check.ChildField)']='$($check.Child)' and Data[@Name='$($check.ParentField)']='$($check.Parent)'"
+                $query = [System.Diagnostics.Eventing.Reader.EventLogQuery]::new($check.Log, 'LogName', "*[System[$system] and EventData[$data]]")
+                $reader = [System.Diagnostics.Eventing.Reader.EventLogReader]::new($query)
+                try {
+                  $reader.BatchSize = 1
+                  $event = $reader.ReadEvent()
+                  if ($null -ne $event) { $event.Dispose(); Row $label 'Observed' }
+                  else { Row $label 'No match at the 10-second check' }
+                } finally { $reader.Dispose() }
+              }
+            }
+          }
+          if ($failed.Count -gt 0) { throw 'One or more measurements failed. See the job summary.' }
