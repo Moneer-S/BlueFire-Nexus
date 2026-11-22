@@ -92,7 +92,10 @@ def results(controls_pass=True) -> dict:
         "tests": [
             a_test(1, "canary", "Canary run", "took effect", "alert", [RULE]),
             a_test(2, "test", "Clear Bash history (rm)", "took effect", "alert", [RULE]),
-            a_test(3, "test", "Some | discovery", "took effect", "telemetry only"),
+            {
+                **a_test(3, "test", "Some | discovery", "took effect", "telemetry only"),
+                "shows_technique": True,
+            },
         ],
         "dropped": [
             {"technique": "T1003", "name": "A dropped test", "reason": "reads other processes' memory"}
@@ -166,8 +169,8 @@ def test_a_rule_that_matched_only_the_launcher_is_shown_and_not_counted() -> Non
 
     assert "2 rules (high, medium) matched only the launcher line, not counted" in page
     assert (
-        "| telemetry only | none (2 rules (high, medium) matched only the launcher line, not counted) | 1 |"
-        in summary
+        "| telemetry only (shows the technique: a gap a rule could close) | none (2 rules (high, medium) "
+        "matched only the launcher line, not counted) | 1 |" in summary
     )
 
 
@@ -215,7 +218,10 @@ def test_the_summary_is_the_same_table_in_markdown() -> None:
         "| T1070.003 | Clear Bash history (rm) | took effect | alert | high: History File Deletion | 1 |"
         in summary
     )
-    assert "| T1070.003 | Some \\| discovery | took effect | telemetry only | none | 1 |" in summary
+    assert (
+        "| T1070.003 | Some \\| discovery | took effect | telemetry only (shows the technique: a gap a rule "
+        "could close) | none | 1 |" in summary
+    )
     assert "Canary run" not in summary.split("| Control |")[0]
     assert "| loss | passed |" in summary
 
@@ -310,6 +316,25 @@ def test_the_run_page_lists_each_test_left_out_with_the_reason() -> None:
     summary = report.markdown_summary(results())
 
     assert "| T1003 | A dropped test | reads other processes' memory |" in summary
+
+
+def test_only_telemetry_that_shows_the_technique_is_called_a_gap_a_rule_could_close() -> None:
+    document = results()
+    document["tests"][2]["shows_technique"] = False
+    document["summary"].update(
+        gaps_a_rule_could_close=0, telemetry_beside_the_technique=1, telemetry_not_judged=0
+    )
+
+    page, summary = report.html_report(document), report.markdown_summary(document)
+
+    assert '<span class="sub">does not show the technique itself</span>' in page
+    assert "telemetry only (does not show the technique itself)" in summary
+    assert "For 0 of the 1 with telemetry and no alert, the telemetry shows the technique itself" in summary
+    assert "for 1 it shows only what happened beside the technique." in summary
+    document["tests"][2]["shows_technique"] = True
+    assert "shows the technique: a gap a rule could close" in report.html_report(document)
+    del document["tests"][2]["shows_technique"]
+    assert "not judged whether it shows the technique" in report.html_report(document)
 
 
 def test_a_test_whose_cleanup_left_its_effect_behind_is_listed() -> None:

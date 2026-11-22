@@ -142,6 +142,10 @@ def upstream_definition(spec: dict, atomics: Path) -> dict:
     unknown = sorted(set(spec.get("args") or {}) - set(test.get("input_arguments") or {}))
     if unknown:
         raise SystemExit(f"{guid} {test['name']!r} has no input argument {', '.join(unknown)}")
+    if not isinstance(spec.get("shows_technique", True), bool):
+        raise SystemExit(
+            f"{guid} {test['name']!r}: shows_technique is true or false, with the reason in a comment"
+        )
     return test
 
 
@@ -319,7 +323,7 @@ def run_test(item: dict, context: dict) -> dict:
         "upstream_cleanup": bool(upstream["executor"].get("cleanup_command")),
         "steps": [],
     }
-    for key in ("rule", "effect", "output", "prepare", "args", "dwell"):
+    for key in ("rule", "effect", "output", "prepare", "args", "dwell", "shows_technique"):
         if key in spec:
             record[key] = spec[key]
     if "effect" in spec:

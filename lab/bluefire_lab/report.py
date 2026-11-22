@@ -73,6 +73,18 @@ def runners_note(test: dict, name: str) -> str:
     return "runners: " + ", ".join(runner[name] for runner in test["runners"])
 
 
+def telemetry_note(test: dict) -> str:
+    """For a test that left telemetry and raised no alert: whether the list says its telemetry
+    shows the technique itself. Only then is it a gap that a rule could close."""
+
+    if test["execution"]["answer"] != "took effect" or test["visibility"]["answer"] != "telemetry only":
+        return ""
+    shows = test.get("shows_technique")
+    if shows is None:
+        return "not judged whether it shows the technique"
+    return "shows the technique: a gap a rule could close" if shows else "does not show the technique itself"
+
+
 def lede(results: dict) -> str:
     summary, target = results["summary"], results["run"]["target"]
     runners = results.get("runners")
@@ -92,6 +104,15 @@ def lede(results: dict) -> str:
         f"{summary['alert']} raised an alert, {summary['telemetry_only']} left telemetry but no alert, "
         f"and {summary['no_telemetry']} left no telemetry."
     )
+    if summary.get("telemetry_only") and "gaps_a_rule_could_close" in summary:
+        beside, unjudged = summary["telemetry_beside_the_technique"], summary["telemetry_not_judged"]
+        text += (
+            f" For {summary['gaps_a_rule_could_close']} of the {summary['telemetry_only']} with telemetry and no "
+            "alert, the telemetry shows the technique itself, so a rule could close the gap"
+            + (f"; for {beside} it shows only what happened beside the technique" if beside else "")
+            + (f"; {unjudged} have not been judged" if unjudged else "")
+            + "."
+        )
     if summary.get("unstable"):
         text += (
             f" {count(summary['unstable'], 'test')} got different answers on different runners: such an "
@@ -261,7 +282,9 @@ def results_table(tests: list[dict], with_lab_rules: bool = False) -> str:
             f'<td><a href="#t{test["order"]}">{e(test["name"])}</a>'
             f'<span class="sub">ran as {e(test["user"])}</span></td>'
             f"<td>{pill(test, test['execution']['answer'])}{notes['execution']}</td>"
-            f"<td>{pill(test, seen['answer'])}{notes['visibility']}</td>"
+            f"<td>{pill(test, seen['answer'])}{notes['visibility']}"
+            + (f'<span class="sub">{e(telemetry_note(test))}</span>' if telemetry_note(test) else "")
+            + "</td>"
             f'<td class="wide">{"<br>".join(map(e, rule_names(test))) or "none"}'
             + (f'<span class="sub">{e(launcher_note(test))}</span>' if launcher_note(test) else "")
             + "</td>"
@@ -591,8 +614,10 @@ def html_report(results: dict) -> str:
 <p class="note">Execution says whether the technique took effect on the target. Visibility says what the
 defense saw: an alert, telemetry without an alert, or nothing. An alert is a match of a Sigma rule whose
 level is {e(" or ".join(rules["alert_levels"]))} on an event of the test. A test that took effect and left
-telemetry but no alert is a gap that a rule could close; one that left no telemetry needs the sensor to
-record more first. {e(unstable_note)}Select a test to see its events and rules.</p>
+telemetry but no alert is a gap that a rule could close only when its telemetry shows the technique itself.
+The list of tests says that for each test, by hand, from the events a run recorded for it. Where the
+telemetry shows only what happened beside the technique, or there is none, the sensor has to record more
+first. {e(unstable_note)}Select a test to see its events and rules.</p>
 {lab_rules}
 {hardening}
 {behind}
@@ -679,7 +704,9 @@ def markdown_summary(results: dict) -> str:
             lines.append(
                 f"| {cell(test['technique'])} | {cell(test['name'])} | "
                 f"{said(test, 'execution', test['execution']['answer'])} | "
-                f"{said(test, 'visibility', seen['answer'])} | {cell('; '.join(rule_names(test)) or 'none')}"
+                f"{said(test, 'visibility', seen['answer'])}"
+                + (f" ({cell(telemetry_note(test))})" if telemetry_note(test) else "")
+                + f" | {cell('; '.join(rule_names(test)) or 'none')}"
                 + (f" ({cell(launcher_note(test))})" if launcher_note(test) else "")
                 + " |"
                 + lab_cell
