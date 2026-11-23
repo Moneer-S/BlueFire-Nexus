@@ -60,7 +60,7 @@ export const fileAccessAssistanceLimitations = [
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const exact = (value: unknown, keys: string[]): value is Record<string, unknown> => object(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const digest = (value: unknown): value is string => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
-const operationStates = ["queued", "planning", "running", "awaiting_approval", "cancelling", "completed", "failed", "cancelled", "interrupted"] as const;
+const operationStates = ["queued", "planning", "running", "paused", "awaiting_approval", "cancelling", "completed", "failed", "cancelled", "interrupted"] as const;
 
 export function validFileAccessAssistanceSelection(value: unknown): value is FileAccessAssistanceSelection {
   return exact(value, ["kind", "control_owner_id", "control_revision", "control_digest"])

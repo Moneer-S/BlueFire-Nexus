@@ -602,20 +602,6 @@ def _executions(owner, child):
     return executions
 
 
-def settled_evidence(store, identifier):
-    with store._connection() as connection:
-        owner, child = _active_at(store, connection, identifier)
-        executions = _executions(owner, child)
-        return (
-            owner,
-            child,
-            executions,
-            result.outcome(
-                child["request"]["ad_smb"]["phase"], executions, owner["progress"]["operations"]
-            ),
-        )
-
-
 def finish(store, identifier, publish):
     with store._connection(write=True) as connection:
         owner, child = _active_at(store, connection, identifier)

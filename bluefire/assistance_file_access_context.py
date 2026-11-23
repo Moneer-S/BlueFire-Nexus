@@ -33,6 +33,7 @@ _JOB_STATES = {
     "queued",
     "planning",
     "running",
+    "paused",
     "awaiting_approval",
     "cancelling",
     "completed",
