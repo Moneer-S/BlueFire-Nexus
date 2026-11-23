@@ -514,7 +514,10 @@ replaces the stored file in one step (`replaced: true`). Once stored with its
 end time, or when shipped, a recording is frozen, and a different one under its
 id is `409 recording_id_taken`. A recording that does not follow the format, or
 whose parts disagree, is `422 recording_invalid`; `details.problems` lists up to
-20 problems in plain words, and the message starts with the first.
+20 problems in plain words, and the message starts with the first. Imports into
+one runs directory, from the server or the command line, take one lock in turn;
+when it cannot be had within five seconds the import is
+`503 recordings_busy` and nothing is stored.
 
 ### Run event pages
 

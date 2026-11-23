@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -295,6 +296,77 @@ def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -
         "score.goal_seconds is 999999, but no step ends that long after the first step started.",
     ]
     assert accepted["created"] is True
+
+
+def test_a_null_in_place_of_a_left_out_value_is_refused(service: BlueFireService) -> None:
+    race = small_recording("rec-path")
+    race["kind"] = "attack path"
+    race["score"].update(first_alert_seconds=None, goal_seconds=1.5)
+    live = small_recording("rec-live")
+    live["network"]["detectors"][0]["when"] = "live"
+    live["alerts"][0]["raised"] = None
+    live["steps"][0]["started"] = None
+    live["source"]["finished"] = None
+
+    _, race_problems = refusal(service, race)
+    _, live_problems = refusal(service, live)
+
+    assert race_problems == [
+        "score.first_alert_seconds is null; a value that is not known is left out."
+    ]
+    assert live_problems == [
+        "source.finished is null; a value that is not known is left out.",
+        "steps[0].started is null; a value that is not known is left out.",
+        "alerts[0].raised is null; a value that is not known is left out.",
+    ]
+
+
+def test_a_finished_recording_is_not_overwritten_by_an_older_import_from_another_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two libraries on one store, as the server and the command line are, import in turn."""
+
+    root = tmp_path / "recordings"
+    server, command_line = recordings.RecordingLibrary(root), recordings.RecordingLibrary(root)
+    running = small_recording("rec-live")
+    del running["source"]["finished"]
+    server.import_recording({"recording": running})
+    older = copy.deepcopy(running)
+    older["notes"] = ["One step has run."]
+    finished = small_recording("rec-live")
+
+    write = recordings._write_atomically
+    checked, go_on = threading.Event(), threading.Event()
+
+    def slow_write(*args: Any, **kwargs: Any) -> None:
+        if threading.current_thread().name == "older":
+            checked.set()
+            go_on.wait(5)
+        write(*args, **kwargs)
+
+    monkeypatch.setattr(recordings, "_write_atomically", slow_write)
+    results: dict[str, Any] = {}
+
+    def send(name: str, library: recordings.RecordingLibrary, recording: dict[str, Any]) -> None:
+        try:
+            results[name] = library.import_recording({"recording": recording})
+        except APIError as exc:
+            results[name] = exc.code
+
+    first = threading.Thread(target=send, args=("older", server, older), name="older")
+    first.start()
+    assert checked.wait(5)
+    second = threading.Thread(target=send, args=("finished", command_line, finished))
+    second.start()
+    second.join(0.5)
+    go_on.set()
+    first.join(10)
+    second.join(10)
+
+    assert results["older"]["replaced"] is True
+    assert results["finished"]["replaced"] is True
+    assert server.get("rec-live")[0] == finished
+    assert [path.name for path in root.glob("*.json")] == ["rec-live.json"]
 
 
 def test_a_recording_id_cannot_reach_outside_the_store(

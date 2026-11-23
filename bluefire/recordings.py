@@ -25,14 +25,21 @@ import math
 import os
 import re
 import threading
+import time
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime
 from http import HTTPStatus
 from importlib import resources
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from .application_errors import APIError
+from .local_lock import (
+    LocalLockError,
+    owner_private_database_lock,
+    prepare_owner_private_database_file,
+)
 from .util import canonical_json_bytes, content_hash
 
 RECORDING_SCHEMA = "bluefire.recording/1"
@@ -73,6 +80,9 @@ _MAX_FIELDS = 64
 _MAX_COUNT = 1_000_000_000
 _MAX_DEPTH = 8
 _MAX_PROBLEMS = 20
+# Every import takes this file's lock; it is not a recording, so the list skips it.
+_IMPORT_LOCK = ".import.lock"
+_LOCK_SECONDS = 5
 # The only texts that may hold control characters (other than NUL): what a step ran
 # and printed, and sentences.
 _FREE_TEXT = re.compile(
@@ -147,6 +157,24 @@ class _Checker:
             return []
         return [self.obj(item, f"{where}[{index}]") for index, item in enumerate(value)]
 
+    def present(
+        self, parent: Mapping[str, Any], key: str, where: str, *, required: bool, null: bool = False
+    ) -> bool:
+        """Whether ``key`` holds a value to check.
+
+        A value that is not known is left out, so an optional key given as null is
+        refused rather than read as absent: the agreement checks test which keys
+        are there.
+        """
+
+        if parent.get(key) is not None:
+            return True
+        if required:
+            self.fail(f"{where}.{key}", "is missing.")
+        elif key in parent and not null:
+            self.fail(f"{where}.{key}", "is null; a value that is not known is left out.")
+        return False
+
     def text(
         self,
         parent: Mapping[str, Any],
@@ -157,14 +185,13 @@ class _Checker:
         limit: int = _MAX_NAME,
         choices: tuple[str, ...] | None = None,
         empty: bool = False,
+        null: bool = False,
     ) -> str | None:
         """Check one text value; ``_walk`` checks the characters of every text."""
 
-        value = parent.get(key)
-        if value is None:
-            if required:
-                self.fail(f"{where}.{key}", "is missing.")
+        if not self.present(parent, key, where, required=required, null=null):
             return None
+        value = parent[key]
         if not isinstance(value, str) or (not empty and not value.strip()):
             self.fail(f"{where}.{key}", "must be text." if empty else "must be non-empty text.")
             return None
@@ -179,11 +206,9 @@ class _Checker:
     def time(
         self, parent: Mapping[str, Any], key: str, where: str, *, required: bool
     ) -> datetime | None:
-        value = parent.get(key)
-        if value is None:
-            if required:
-                self.fail(f"{where}.{key}", "is missing.")
+        if not self.present(parent, key, where, required=required):
             return None
+        value = parent[key]
         try:
             if isinstance(value, str) and _TIME.fullmatch(value):
                 return _time(value)
@@ -193,16 +218,28 @@ class _Checker:
         return None
 
     def count(self, parent: Mapping[str, Any], key: str, where: str, *, required: bool) -> None:
-        value = parent.get(key)
-        if value is None:
-            if required:
-                self.fail(f"{where}.{key}", "is missing.")
-        elif isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= _MAX_COUNT:
+        if not self.present(parent, key, where, required=required):
+            return
+        value = parent[key]
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= _MAX_COUNT:
             self.fail(f"{where}.{key}", f"must be a whole number from 0 to {_MAX_COUNT}.")
 
+    def seconds(self, parent: Mapping[str, Any], key: str, where: str) -> None:
+        if not self.present(parent, key, where, required=False):
+            return
+        value = parent[key]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 <= value <= _MAX_COUNT
+        ):
+            self.fail(f"{where}.{key}", "must be a number of seconds, zero or more.")
+
     def flag(self, parent: Mapping[str, Any], key: str, where: str, *, required: bool) -> None:
-        value = parent.get(key)
-        if (value is not None or required) and not isinstance(value, bool):
+        if self.present(parent, key, where, required=required) and not isinstance(
+            parent[key], bool
+        ):
             self.fail(f"{where}.{key}", "must be true or false.")
 
     def ref(self, value: Any, known: set[str], where: str, what: str) -> None:
@@ -280,7 +317,7 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
     attacker = check.obj(value.get("attacker"), "attacker")
     check.text(attacker, "kind", "attacker", choices=("scripted", "agent"))
     check.text(attacker, "description", "attacker", limit=_MAX_LINE)
-    check.text(attacker, "goal", "attacker", required=False, limit=_MAX_LINE)
+    check.text(attacker, "goal", "attacker", required=False, limit=_MAX_LINE, null=True)
 
     steps = check.items(value.get("steps"), "steps", MAX_STEPS)
     step_ids = check.unique_ids(steps, "steps")
@@ -371,14 +408,7 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
     for key in ("alerted_with_lab_rules", "false_alerts"):
         check.count(score, key, "score", required=False)
     for key in ("first_alert_seconds", "goal_seconds"):
-        number = score.get(key)
-        if number is not None and (
-            isinstance(number, bool)
-            or not isinstance(number, (int, float))
-            or not math.isfinite(number)
-            or not 0 <= number <= _MAX_COUNT
-        ):
-            check.fail(f"score.{key}", "must be a number of seconds, zero or more.")
+        check.seconds(score, key, "score")
 
     notes = value.get("notes")
     if not isinstance(notes, list) or any(
@@ -724,7 +754,6 @@ class RecordingLibrary:
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        self._lock = threading.Lock()
         self._summaries: dict[Path, tuple[tuple[int, int, int], dict[str, Any] | None]] = {}
         self._shipped_entries: dict[str, tuple[Mapping[str, Any], dict[str, Any]]] | None = None
 
@@ -826,6 +855,30 @@ class RecordingLibrary:
             "recording": recording,
         }
 
+    @contextmanager
+    def _import_lock(self) -> Iterator[None]:
+        """Hold the store's import lock, which every process and thread that imports shares.
+
+        An import reads the stored file, decides, and writes; the server and the
+        command line can share one store, so the whole step runs under a lock
+        between processes. Without it an older running copy could overwrite a
+        finished one that another process stored in between.
+        """
+
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            path, identity = prepare_owner_private_database_file(self.root / _IMPORT_LOCK)
+            with owner_private_database_lock(
+                path, expected=identity, deadline=time.monotonic() + _LOCK_SECONDS
+            ):
+                yield
+        except LocalLockError as exc:
+            raise APIError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "recordings_busy",
+                "The recording store could not be locked for the import. Send it again.",
+            ) from exc
+
     def import_recording(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Store a new recording, or the grown version of one that is still running."""
 
@@ -849,7 +902,7 @@ class RecordingLibrary:
             raise invalid_recording(exc) from None
         recording_id = recording["id"]
         replaced = False
-        with self._lock:
+        with self._import_lock():
             target = self._path(recording_id)
             if target.exists() or recording_id in self._shipped_recordings():
                 existing, summary = self.get(recording_id)
@@ -866,11 +919,10 @@ class RecordingLibrary:
                 ):
                     raise _id_taken(recording_id)
                 replaced = True
-            self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
             try:
                 _write_atomically(self.root, target, payload, replace=replaced)
             except FileExistsError:
-                # Another process (the command line, or a second server) created it first.
+                # A writer that does not take the import lock created it first.
                 raise _id_taken(recording_id) from None
         return {
             "created": not replaced,

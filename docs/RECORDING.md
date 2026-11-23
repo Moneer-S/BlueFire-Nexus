@@ -208,8 +208,10 @@ follows this format and its parts agree with each other:
 
 - The top-level keys are those of the table above. The keys the app reads are
   there with their types, every word is one the tables allow, and every time is
-  a UTC time. The events, the alerts with their `raised`, and each step's
-  `started` and `ended` fall inside the run's `started` and `finished`. Steps
+  a UTC time. An optional key the app reads is left out when it is not known,
+  never null; only `attacker.goal` and the values of an event's `fields` may be
+  null. The events, the alerts with their `raised`, and each step's `started`
+  and `ended` fall inside the run's `started` and `finished`. Steps
   are sorted by `order`, and events and alerts by `time`.
 - Every id that a step, an event, an alert or a link names exists, and ids are
   unique. An event is on the host of its sensor. An alert's events belong to the

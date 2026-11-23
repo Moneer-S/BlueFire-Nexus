@@ -99,7 +99,9 @@ runs directory, in the shape of `GET /api/v1/recordings` (see [API.md](API.md)).
 `import` reads one recording file of at most 8 MiB in the format of
 [RECORDING.md](RECORDING.md), checks it as the import route does, and stores it
 under `<runs-dir>/recordings/`. A refused file exits with status 2 and prints
-`recording_invalid` with each problem, or `recording_id_taken`.
+`recording_invalid` with each problem, `recording_id_taken`, or
+`recordings_busy` when a server importing into the same runs directory holds the
+import lock for more than five seconds.
 
 ## Durable jobs and proposal review
 
