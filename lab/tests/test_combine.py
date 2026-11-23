@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from test_report import results as a_report
 
-from bluefire_lab import combine, report
+from bluefire_lab import combine, evaluate, report
 
 
 def a_run(role, guid, execution="took effect", visibility="telemetry only", lab=None, **extra) -> dict:
@@ -22,6 +22,23 @@ def a_runner(*tests, controls_pass=True, lab_rules=()) -> dict:
     return {"run": {"id": "r", "started": "2026-11-22T04:00:00Z", "target": {"kernel": "7.0.0-1017-azure"}},
             "controls": [{"name": "loss", "passed": controls_pass, "detail": "the sensor lost 0 events"}],
             "summary": {}, "tests": list(tests), "lab_rules": list(lab_rules)}  # fmt: skip
+
+
+def test_telemetry_without_an_alert_is_a_gap_a_rule_could_close_only_where_it_shows_the_technique() -> None:
+    tests = [
+        a_run("test", "a", shows_technique=True),
+        a_run("test", "b", shows_technique=False),
+        a_run("test", "c"),  # not judged
+        a_run("test", "d", visibility="alert", shows_technique=True),
+        a_run("test", "e", execution="attempted without effect", shows_technique=True),
+    ]
+
+    summary = evaluate.summarize(tests)
+
+    assert summary["telemetry_only"] == 3
+    assert summary["gaps_a_rule_could_close"] == 1
+    assert summary["telemetry_beside_the_technique"] == 1
+    assert summary["telemetry_not_judged"] == 1
 
 
 def test_an_answer_every_runner_gave_is_the_answer() -> None:

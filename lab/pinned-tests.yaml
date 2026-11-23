@@ -14,6 +14,16 @@
 #            that something of the test is still there. Without it the effect
 #            command is used. A test with neither only prints, and has nothing
 #            to look for. A test that is left behind is listed in the report.
+# What a test's telemetry is worth, written by hand for each test from the
+# events a run on a hosted runner recorded for it:
+#   shows_technique  true when the events of the test, its launcher line aside,
+#            show the technique itself: the command with the arguments that
+#            make it the technique, or the file it writes. Then a test that
+#            raises no alert is a gap a rule could close. false when the events
+#            show only what happened beside the technique, with the reason in
+#            a comment: then no rule could close the gap without matching the
+#            test's own text, and the sensor has to record more first. The
+#            judgment holds for the lab's own sensor settings.
 # Other keys:
 #   prepare  One command, run as the account the test runs as, that puts in
 #            place what the test acts on. When it fails, the test is not
@@ -130,41 +140,49 @@ tests:
   - technique: T1082
     guid: cccb070c-df86-4216-a5bc-9fb60c74e27c
     name: List OS Information
+    shows_technique: true
     effect: grep -q '^Linux ' /tmp/T1082.txt
   - technique: T1069.001
     guid: 952931a4-af0b-4335-bbbe-73c8c5b327ae
     name: Permission Groups Discovery (Local)
+    shows_technique: true
     output: "root:x:0:"
   # ps prints this text also in its row for the test's own grep, so the check
   # shows that ps ran, not that other processes were visible to it.
   - technique: T1518.001
     guid: 23b91cd2-c99c-4002-9e41-317c63e024a2
     name: Security Software Discovery - ps (Linux)
+    shows_technique: true
     output: "falcond|nessusd"
   # The listing stays in a file until the cleanup. The check passes only when the
   # account could see root's process 1.
   - technique: T1057
     guid: 4ff64f0b-aaf2-4866-b39d-38d9791407cc
     name: Process Discovery - ps
+    shows_technique: true
     effect: grep -qE '^root +1 ' /tmp/loot.txt
   - technique: T1049
     guid: bcf05343-ef1d-4052-8a27-b00c9be42b9f
     name: System Network Connections Discovery via ss or lsof (Linux/MacOS)
+    shows_technique: true
     needs: [ss]
     output: "Local Address:Port"
   - technique: T1083
     guid: 13c5e1ae-605b-46c4-a79f-db28c77ff24e
     name: Nix File and Directory Discovery 2
+    shows_technique: true
     output: "./.bashrc"
     leftover: test -e /tmp/T1083.txt
   - technique: T1087.001
     guid: c955a599-3653-4fe5-b631-f11c00eb0397
     name: View accounts with UID 0
+    shows_technique: true
     output: "root:x:0:0:"
     leftover: test -e /tmp/T1087.001.txt
   - technique: T1201
     guid: 7c86c55c-70fa-4a05-83c9-3aa19b145d1a
     name: Examine password expiration policy - All Linux
+    shows_technique: true
     output: PASS_MAX_DAYS
 
   # Persistence
@@ -173,6 +191,7 @@ tests:
   - technique: T1053.003
     guid: 435057fb-74b1-410e-9403-d81baf194f75
     name: Cron - Replace crontab with referenced file
+    shows_technique: true
     needs: [crontab]
     effect: grep -qF '/tmp/evil.sh' /var/spool/cron/crontabs/{account}
     dwell: 65 # long enough for cron to run the planted line once
@@ -184,6 +203,7 @@ tests:
   - technique: T1053.003
     guid: 078e69eb-d9fb-450e-b9d0-2e118217c846
     name: Cron - Add script to /etc/cron.d folder
+    shows_technique: true
     args: {command: "*/5 * * * * root echo bluefire-lab-cron-d"}
     effect: >-
       grep -qE '^[*0-9/,-]+( [*0-9/,-]+){4} root ' /etc/cron.d/persistevil
@@ -191,6 +211,7 @@ tests:
   - technique: T1053.006
     guid: f4983098-bb13-44fb-9b2c-46149961807b
     name: Create Systemd Service and Timer
+    shows_technique: true
     needs: [systemctl]
     effect: systemctl is-active --quiet art-timer.timer
     variants:
@@ -203,6 +224,7 @@ tests:
   - technique: T1543.002
     guid: d9e4f24f-aa67-4c6e-bcbf-85622b697a7c
     name: Create Systemd Service
+    shows_technique: true
     needs: [systemctl]
     effect: systemctl is-enabled --quiet art-systemd-service.service && test -e /tmp/art-systemd-execstart-marker
     variants:
@@ -215,6 +237,7 @@ tests:
   - technique: T1136.001
     guid: 40d8eabd-e394-46f6-8785-b9bfa1d011d2
     name: Create a user account on a Linux system
+    shows_technique: true
     needs: [useradd]
     effect: getent passwd evil_user
     variants:
@@ -223,6 +246,9 @@ tests:
   - technique: T1098.004
     guid: 342cc723-127c-4d3a-8292-9c0c6b4ecadc
     name: Modify SSH Authorized Keys
+    # The rewrite of the keys file is the technique. Sysmon reports it only when the file looks
+    # newly created afterwards, which it did in most runs and not in all.
+    shows_technique: true
     # The test rewrites the file with the same content, so only its age shows that it did.
     prepare: >-
       install -d -m 700 ~/.ssh
@@ -236,6 +262,7 @@ tests:
   - technique: T1546.004
     guid: 0a898315-4cfa-4007-bafe-33a4646d115f
     name: Add command to .bashrc
+    shows_technique: true
     effect: grep -q 'T1546.004' {home}/.bashrc
     defenses: [profile-immutable]
   # The account's other start files, which the immutable ~/.bashrc does not cover.
@@ -244,24 +271,30 @@ tests:
   - technique: T1546.004
     guid: 94500ae1-7e31-47e3-886b-c328da46872f
     name: Add command to .bash_profile
+    shows_technique: true
     effect: grep -q 'T1546.004' {home}/.bash_profile
     defenses: [profile-immutable]
   - technique: T1546.004
     guid: bbdb06bc-bab6-4f5b-8232-ba3fbed51d77
     name: Append commands user shell profile
+    shows_technique: true
     effect: grep -qF 'Atomic Red Team was here... T1546.004' {home}/.profile
     defenses: [profile-immutable]
   - technique: T1037.004
     guid: 126f71af-e1c9-405c-94ef-26a47b16c102
     name: rc.local
+    shows_technique: true
     effect: test -x /etc/rc.local && grep -q aW1wb3J0IG9z /etc/rc.local
   - technique: T1546.005
     guid: a74b2e07-5952-4c03-8b56-56274b076b61
     name: Trap EXIT
+    shows_technique: true
     effect: grep -qF 'thanks for all the fish' /tmp/art-fish.txt
   - technique: T1546.018
     guid: 6e78084a-a433-4702-a838-cc7b765d87e8
     name: Python Startup Hook - usercustomize.py (Linux / MacOS)
+    # The hook file's creation is the technique. Sysmon reported it in all runs but one.
+    shows_technique: true
     needs: [python3]
     effect: test -s /tmp/poc.txt && ls {home}/.local/lib/python3*/site-packages/usercustomize.py
     variants:
@@ -270,6 +303,7 @@ tests:
   - technique: T1569.003
     guid: 2fc6c0ab-4f88-4eb8-ab1b-f739fc22bba7
     name: Enable systemd Service for Persistence with Auto-Restart
+    shows_technique: true
     needs: [systemctl]
     effect: systemctl is-enabled --quiet atomic-persist.service && grep -q persistent /tmp/atomic_persist_output.txt
     defenses: [tmp-noexec]
@@ -289,6 +323,7 @@ tests:
   - technique: T1569.003
     guid: e58c8723-5503-4533-b642-535cd20ec648
     name: Create and Enable a Malicious systemd Service Unit
+    shows_technique: true
     needs: [systemctl, journalctl]
     effect: >-
       systemctl is-enabled --quiet atomic-test.service
@@ -302,6 +337,7 @@ tests:
   - technique: T1569.003
     guid: 6fec8560-ff64-4bbf-bc79-734fea48f7ca
     name: Masquerade Malicious Service as Legitimate System Service
+    shows_technique: true
     needs: [systemctl, journalctl]
     effect: >-
       test -f /etc/systemd/system/systemd-network-helper.service
@@ -318,16 +354,19 @@ tests:
   - technique: T1569.003
     guid: a1fa406e-2354-4a24-b6d6-94157e7564d4
     name: Create systemd Service Unit from /tmp (Unusual Location)
+    shows_technique: true
     needs: [systemctl, journalctl]
     effect: journalctl -q --no-pager -o cat -u atomic_tmp.service | grep -q 'Deactivated successfully'
     leftover: test -e /tmp/atomic_tmp.service || test -L /etc/systemd/system/atomic_tmp.service
   - technique: T1556.003
     guid: 4b9dde80-ae22-44b1-a82a-644bf009eb9c
     name: Malicious PAM rule
+    shows_technique: true
     effect: head -n 1 /etc/pam.d/su-l | grep -qF 'pam_succeed_if.so uid >= 0'
   - technique: T1078.003
     guid: d2b95631-62d7-45a3-aaef-0972cea97931
     name: Reactivate a locked/expired account (Linux)
+    shows_technique: true
     needs: [useradd, usermod, openssl]
     # The account's password is unlocked and it no longer expires.
     effect: >-
@@ -338,12 +377,14 @@ tests:
   - technique: T1552.003
     guid: 3cfde62b-7c33-4b26-a61e-755d6131c8ce
     name: Search Through Bash History
+    shows_technique: true
     prepare: echo 'sshpass -p bluefire-lab-planted ssh lab@bluefire-lab.invalid' >> ~/.bash_history
     effect: grep -qF 'bluefire-lab-planted' /tmp/loot.txt
   # Upstream searches from /; the search is limited to the account's home.
   - technique: T1552.004
     guid: 46959285-906d-40fa-9437-5a439accd878
     name: Discover Private SSH Keys
+    shows_technique: true
     args: {search_path: "~"}
     prepare: >-
       install -d -m 700 ~/.ssh
@@ -362,6 +403,7 @@ tests:
   - technique: T1552.004
     guid: 7c247dc7-5128-4643-907b-73a76d9135c3
     name: Copy Private SSH Keys with CP
+    shows_technique: true
     args: {search_path: "~"}
     prepare: >-
       install -d -m 700 ~/.ssh
@@ -376,6 +418,7 @@ tests:
   - technique: T1552.004
     guid: 5e417277-0ae7-4ad5-a3e8-0fa27c122b29
     name: Find TLS private key files
+    shows_technique: true
     args: {file_path: "~"}
     prepare: echo 'bluefire-lab-planted-tls, not a key' > ~/bluefire-lab-server.key
     effect: grep -qF 'bluefire-lab-planted-tls' /tmp/creds.txt
@@ -384,11 +427,13 @@ tests:
   - technique: T1222.002
     guid: 34ca1464-de9d-40c6-8c77-690adf36a135
     name: chmod - Change file or folder mode (numeric mode)
+    shows_technique: true
     prepare: mkdir -p /tmp/AtomicRedTeam/atomics/T1222.002 && chmod 700 /tmp/AtomicRedTeam/atomics/T1222.002
     effect: test "$(stat -c %a /tmp/AtomicRedTeam/atomics/T1222.002)" = 755
   - technique: T1548.001
     guid: 759055b3-3885-4582-a8ec-c00c9d64dd79
     name: Set a SetUID flag on file
+    shows_technique: true
     effect: test -u /tmp/evilBinary
     variants:
       - args: {file_to_setuid: /var/tmp/bluefire-lab-variant-binary}
@@ -396,6 +441,7 @@ tests:
   - technique: T1548.001
     guid: db55f666-7cba-46c6-9fe6-205a05c3242c
     name: Set a SetGID flag on file
+    shows_technique: true
     effect: test -g /tmp/evilBinary
     variants:
       - args: {file_to_setuid: /var/tmp/bluefire-lab-variant-setgid}
@@ -404,11 +450,13 @@ tests:
   - technique: T1548.001
     guid: db53959c-207d-4000-9e7a-cd8eb417e072
     name: Make and modify capabilities of a binary
+    shows_technique: true
     needs: [make, gcc, setcap, getcap]
     effect: getcap /tmp/cap | grep -q cap_setuid
   - technique: T1036.003
     guid: a315bfff-7a98-403b-b442-2ea1b255e556
     name: Masquerading as FreeBSD or Linux crond process.
+    shows_technique: true
     # The test's last command is the renamed copy running "sleep 5", so its exit
     # status shows whether the copy ran. The copy itself is only preparation.
     leftover: test -e /tmp/crond
@@ -416,6 +464,7 @@ tests:
   - technique: T1036.005
     guid: 812c3ab8-94b0-4698-a9bf-9420af23ce24
     name: Execute a process from a directory masquerading as the current parent directory
+    shows_technique: true
     output: Hello from the Atomic Red Team test T1036.005
     leftover: test -e {home}/...
     variants:
@@ -424,16 +473,19 @@ tests:
   - technique: T1564.001
     guid: 61a782e5-9a19-40b5-8ba4-69a4b9f3d7be
     name: Create a hidden file in a hidden directory
+    shows_technique: true
     effect: grep -qx T1564.001 /var/tmp/.hidden-directory/.hidden-file
   - technique: T1070.006
     guid: 20ef1523-8758-4898-b5a2-d026cc3d2c52
     name: Set a file's modification timestamp
+    shows_technique: true
     effect: test "$(stat -c %Y /tmp/T1070.006-modification.txt)" -lt 86400
 
   # Covering tracks: the canary's technique by another procedure
   - technique: T1070.003
     guid: 47966a1d-df4f-4078-af65-db6d9aa20739
     name: Clear Bash history (truncate)
+    shows_technique: true
     prepare: echo "ls -la" >> ~/.bash_history
     effect: test -e {home}/.bash_history && test ! -s {home}/.bash_history
     variants:
@@ -448,17 +500,23 @@ tests:
   - technique: T1070.003
     guid: cbf506a5-dd78-43e5-be7e-a46b7c7a0a11
     name: Clear Bash history (echo)
+    # Not shown: nothing of the test is recorded at all.
+    shows_technique: false
     prepare: echo "ls -la" >> ~/.bash_history
     effect: test -e {home}/.bash_history && ! grep -q . {home}/.bash_history
   - technique: T1070.003
     guid: b1251c35-dcd3-4ea1-86da-36d27b54f31f
     name: Clear Bash history (cat dev/null)
+    # Not shown: only the start of cat /dev/null is recorded. The history file the shell redirects it
+    # into is named in no event.
+    shows_technique: false
     prepare: echo "ls -la" >> ~/.bash_history
     effect: test -e {home}/.bash_history && test ! -s {home}/.bash_history
   # Leaves ~/.bash_history as a link to /dev/null; the closing canary removes it.
   - technique: T1070.003
     guid: 23d348f3-cc5c-4ba9-bd0a-ae09069f0914
     name: Clear Bash history (ln dev/null)
+    shows_technique: true
     prepare: echo "ls -la" >> ~/.bash_history
     effect: test -L {home}/.bash_history && test "$(readlink {home}/.bash_history)" = /dev/null
     variants:
@@ -470,36 +528,49 @@ tests:
   - technique: T1685.006
     guid: 989cc1b1-3642-4260-a809-54f9dd559683
     name: rm -rf
+    shows_technique: true
     effect: test ! -e /var/log/system.log
 
   # Encoded and indirect execution
   - technique: T1027
     guid: f45df6be-2e1e-4136-a384-8f18ab3826fb
     name: Decode base64 Data into Script
+    shows_technique: true
     effect: test -x /tmp/art.sh && grep -q 'Hello from the Atomic Red Team' /tmp/art.sh
   - technique: T1140
     guid: 3a15c372-67c1-4430-ac8e-ec06d641ce4d
     name: Linux Base64 Encoded Shebang in CLI
+    # Not shown: the encoded text is in the launcher line only. The events are starts of base64 -d and
+    # of bash without arguments, in records of their own, as ordinary use leaves them too.
+    shows_technique: false
     output: atomicsonafriday FTW
   - technique: T1059.004
     guid: 5bec4cc8-f41e-437b-b417-33ff60acf9af
     name: Obfuscated command line scripts
+    # Not shown: the encoded command is in the launcher line only. The events are starts of base64, of
+    # bash without arguments and of the id that bash ran, in records of their own.
+    shows_technique: false
     output: uid=
   # No check that could fail: awk exits with status 0 whether or not the shell it
   # starts in the background runs. Do not use it to show a change that blocks.
   - technique: T1059.004
     guid: ee72b37d-b8f5-46a5-a9e7-0ff50035ffd5
     name: Shell Creation using awk command
+    shows_technique: true
     needs: [awk]
   - technique: T1027.002
     guid: 11c46cd8-e471-450e-acb8-52a1216ae6a4
     name: Binary simply packed by UPX (linux)
+    # Not shown: the events show a program copied into /tmp and run from there. That the program is
+    # packed, which is the technique, shows in no event.
+    shows_technique: false
     output: the cake is a lie
     leftover: test -e /tmp/packed_bin
     defenses: [tmp-noexec]
   - technique: T1027.004
     guid: d0377aa6-850a-42b2-95f0-de558d80be57
     name: C compile
+    shows_technique: true
     needs: [gcc]
     output: T1027-004-test.c has compiled and executed
     # The executor runs a test in /tmp, and upstream has no cleanup for the program it builds.
@@ -509,6 +580,7 @@ tests:
   - technique: T1027.013
     guid: c2ca068a-eb1e-498f-9f93-3d554c455916
     name: Password-Protected ZIP Payload Extraction and Execution
+    shows_technique: true
     needs: [zip, unzip]
     output: "T1027.013: Payload extracted from encrypted ZIP"
     leftover: test -e /tmp/art_payload.sh || test -e /tmp/art_encrypted.zip
@@ -519,6 +591,9 @@ tests:
   - technique: T1574.006
     guid: bc219ff7-789f-4d51-9142-ecae3397deae
     name: Shared Library Injection via LD_PRELOAD
+    # Not shown: only the start of ls is recorded. The environment variable that carries the technique
+    # is in the launcher line only: neither sensor records a process's environment.
+    shows_technique: false
     needs: [gcc]
     output: Loaded Atomic Red Team Library successfully!
     defenses: [tmp-noexec]
@@ -527,6 +602,9 @@ tests:
   - technique: T1055.009
     guid: 50859b3b-b088-4c7b-973d-03a0365a9bf9
     name: Inplace Instruction Overwrite
+    # Not shown: only the start of the test's own program is recorded. Its write into the memory of the
+    # process it started is in no event.
+    shows_technique: false
     needs: [gcc, make]
     effect: test -f /tmp/pwned
     dwell: 5
@@ -535,16 +613,19 @@ tests:
   - technique: T1560.001
     guid: a743e3a6-e8b2-4a30-abe7-ca85d201b5d3
     name: Encrypts collected data with AES-256 and Base64
+    shows_technique: true
     needs: [zip, openssl]
     effect: test -s /tmp/t1560/t1560_data.enc
   - technique: T1560.002
     guid: e86f1b4b-fcc1-4a2a-ae10-b49da01458db
     name: Compressing data using tarfile in Python (FreeBSD/Linux)
+    shows_technique: true
     needs: [python3]
     effect: tar -tf /tmp/passwd.tar.gz | grep -q 'etc/passwd'
   - technique: T1030
     guid: ab936c51-10f4-46ce-9144-e02137b2016a
     name: Data Transfer Size Limits
+    shows_technique: true
     effect: test -s /tmp/T1030/xaa && test -s /tmp/T1030/xae
 
   # Impact and weakened defenses, last: some are not undone by their cleanup.
@@ -553,6 +634,7 @@ tests:
   - technique: T1486
     guid: 142752dc-ca71-443b-9359-cf6f497315f1
     name: Encrypt files using openssl (FreeBSD/Linux)
+    shows_technique: true
     needs: [openssl]
     args: {input_file_path: /tmp/bluefire-lab-ransom.txt}
     prepare: echo 'bluefire lab data to encrypt' > /tmp/bluefire-lab-ransom.txt
@@ -562,30 +644,35 @@ tests:
   - technique: T1486
     guid: 08cbf59f-85da-4369-a5f4-049cffd7709f
     name: Encrypt files using ccrypt (FreeBSD/Linux)
+    # No shows_technique: the test has not run on a hosted runner, so there is no telemetry to judge.
     needs: [ccencrypt]
     effect: test -s /tmp/passwd.cpt
   # After the cron tests, which need cron running; the cleanup starts it again.
   - technique: T1489
     guid: 42e3a5bd-1e45-427f-aa08-2a65fa29a820
     name: Linux - Stop service using systemctl
+    shows_technique: true
     needs: [systemctl]
     prepare: systemctl start cron
     effect: "! systemctl is-active --quiet cron"
   - technique: T1685
     guid: ac333fe1-ce2b-400b-a117-538634427439
     name: Disable ASLR Via sysctl parameters - Linux
+    shows_technique: true
     needs: [sysctl]
     effect: test "$(cat /proc/sys/kernel/randomize_va_space)" = 0
   # No cleanup upstream: the certificate stays trusted until the runner is gone.
   - technique: T1553.004
     guid: 53bcf8a0-1549-4b85-b919-010c56d724ff
     name: Install root CA on Debian/Ubuntu
+    shows_technique: true
     needs: [openssl, update-ca-certificates]
     effect: test -f /usr/local/share/ca-certificates/rootCA.crt && test -L /etc/ssl/certs/rootCA.pem
   # No cleanup upstream: the setting stays in /etc/sudoers until the runner is gone.
   - technique: T1548.003
     guid: a7b17659-dd5e-46f7-b7d1-e6792c91d0bc
     name: Unlimited sudo cache timeout
+    shows_technique: true
     effect: grep -q 'timestamp_timeout=-1' /etc/sudoers
 
 # Hardening changes a defender would deploy. The lab applies one as root after

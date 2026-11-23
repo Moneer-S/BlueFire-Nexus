@@ -922,11 +922,17 @@ def summarize(tests: list[dict]) -> dict:
     def seen(answer: str) -> int:
         return sum(1 for test in took if test["visibility"]["answer"] == answer)
 
+    # Telemetry without an alert is a gap a rule could close only where the list says, by hand,
+    # that the test's telemetry shows the technique itself.
+    quiet = [test.get("shows_technique") for test in took if test["visibility"]["answer"] == "telemetry only"]
     return {
         "tests": len(measured),
         "took_effect": len(took),
         "alert": seen("alert"),
         "telemetry_only": seen("telemetry only"),
+        "gaps_a_rule_could_close": quiet.count(True),
+        "telemetry_beside_the_technique": quiet.count(False),
+        "telemetry_not_judged": quiet.count(None),
         "no_telemetry": seen("no telemetry"),
         "inconclusive": seen("inconclusive"),
         "hardened": len(hardened),
@@ -999,7 +1005,8 @@ def main(run_dir: Path, engine: Path) -> int:
             key: test[key]
             for key in ("order", "role", "technique", "guid", "name", "executor", "elevated", "user")
         }
-        result.update({key: test[key] for key in ("rule", "args", "defense", "compared_with") if key in test})
+        kept = ("rule", "args", "defense", "compared_with", "shows_technique")
+        result.update({key: test[key] for key in kept if key in test})
         if "defense" in test:
             attack = step_of(test, "attack")
             result["output"] = ((attack["output"] + attack["error"]).strip() if attack else "")[-2000:]

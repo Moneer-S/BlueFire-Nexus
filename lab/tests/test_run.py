@@ -100,6 +100,8 @@ def test_an_input_argument_the_test_does_not_declare_stops_the_run(tmp_path: Pat
     assert run.upstream_definition({**spec, "args": {"history_path": "~/.zsh_history"}}, tmp_path) == upstream
     with pytest.raises(SystemExit, match="no input argument histroy_path"):
         run.upstream_definition({**spec, "args": {"histroy_path": "~/.zsh_history"}}, tmp_path)
+    with pytest.raises(SystemExit, match="shows_technique is true or false"):
+        run.upstream_definition({**spec, "shows_technique": "partly"}, tmp_path)
 
 
 def test_the_inventory_reads_accounts_sockets_and_services() -> None:

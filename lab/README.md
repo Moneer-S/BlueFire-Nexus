@@ -424,7 +424,17 @@ is one runner's answer.
    program Sysmon saw (a subshell, or a start the kernel refused), which leaves
    out the driver's own records in the same session. It then judges each of
    the lab's own rules on
-   the tests, their variants and the ordinary activity.
+   the tests, their variants and the ordinary activity. "Telemetry only"
+   counts any event of the test, whether or not it shows the technique. So
+   each test on the list carries one field written by hand,
+   `shows_technique`, from the events a run on a hosted runner recorded for
+   it: true when those events, the launcher line aside, show the technique
+   itself, and false, with the reason in a comment, when they show only what
+   happened beside it, as the `ls` does for the preloaded library. The report
+   calls a test with telemetry and no alert a gap that a rule could close
+   only where the field is true. The judgment was made under the lab's own
+   sensor settings and is one reader's: the list gives the reason for each
+   "false", and the events are in every run's report to check it against.
 4. `bluefire-lab report` writes `report.html`, one file that loads nothing from
    elsewhere when it opens (it refuses to write one that would), and the same
    table for the run page.
