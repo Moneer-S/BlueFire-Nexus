@@ -11,6 +11,7 @@ import { evenPosition, evenTime, maxOf, PLAYBACK_RULE, segmentIndexAt } from "./
 import type { Timeline } from "./playback";
 import { capital, clockTime, elapsed, outcomeClass, outcomeWords, sensorWord, stepLabel } from "./format";
 import type { StyleVars } from "./motion";
+import { firstAlertOnScreen } from "./moment";
 
 interface ScrubberProps {
   recording: Recording;
@@ -128,7 +129,7 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
     if (handled) event.preventDefault();
   };
 
-  const first = timeline.firstAlert;
+  const first = firstAlertOnScreen(timeline.firstAlert, time, segment, revealed);
   return (
     <div className="lv-scrub-wrap">
       <div
@@ -156,7 +157,7 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
         </svg>
         <div className="lv-lanes-hint" title={lanes.map((lane, index) => `${index === 0 ? "Upper" : "Lower"} row: ${lane.label}`).join("\n")} />
         <div className="lv-future" style={{ left: pct(head) }} />
-        {first && time >= first.at ? <div className="lv-first-mark" style={{ left: pct(evenPosition(timeline, first.at)) }} title={`First alert on a test: ${stepLabel(recording, first.step)}`} /> : null}
+        {first ? <div className="lv-first-mark" style={{ left: pct(evenPosition(timeline, first.at)) }} title={`First alert on a test: ${stepLabel(recording, first.step)}`} /> : null}
         <div className="lv-playhead" style={{ left: pct(head) }} />
       </div>
       <div className="lv-legend">

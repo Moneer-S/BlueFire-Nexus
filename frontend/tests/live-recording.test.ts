@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alertsByStep, countsAsAlert, countsForScore, eventsByStep, readRecording, RecordingError, stepById } from "../src/live/recording";
+import { alertsByStep, countsAsAlert, countsForScore, eventsByStep, readRecording, RecordingError } from "../src/live/recording";
 import { alert, event, recording, step } from "./live-fixture";
 
 function valid() {
@@ -133,13 +133,11 @@ describe("times", () => {
 });
 
 describe("recording helpers", () => {
-  it("groups events and matches by step and finds a step by id", () => {
+  it("groups events and matches by step", () => {
     const value = valid();
     expect(eventsByStep(value).get("2")?.map((item) => item.id)).toEqual(["2-1", "2-2"]);
     expect(eventsByStep(value).get("1")?.map((item) => item.id)).toEqual(["1-1"]);
     expect(alertsByStep(value).get("1")).toEqual([]);
-    expect(stepById(value, "2")?.title).toBe("Test 2");
-    expect(stepById(value, "7")).toBeUndefined();
   });
 
   it("never counts a match on the launcher line, and counts only published rules for the score", () => {

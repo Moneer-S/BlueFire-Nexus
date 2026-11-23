@@ -112,6 +112,16 @@ export function scoreOnScreen(timeline: Timeline, frame: Frame, moment: StepMome
   return score;
 }
 
+/**
+ * The first alert on a test as the screen tells it: from its fire time, but
+ * while its own step plays, not before that step's outcome is told, so the
+ * flag, the timeline's mark and the score never disagree.
+ */
+export function firstAlertOnScreen(first: FirstAlert | null, time: number, segment: Segment | null | undefined, revealed: boolean): FirstAlert | null {
+  if (!first || time < first.at) return null;
+  return segment?.step.id === first.step.id && !revealed ? null : first;
+}
+
 export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[], matches: ReturnType<typeof stepMatches>): StepMoment | null {
   const segment = frame.segment;
   if (!segment) return null;

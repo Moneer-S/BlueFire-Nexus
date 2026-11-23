@@ -1,7 +1,7 @@
 // The step, told as one plain sentence low on the screen, with its score word
 // once the outcome is known.
 
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef } from "react";
 import type { Alert, Recording, Step } from "./recording";
 import { countsAsAlert, countsForScore } from "./recording";
 import { capital, comparedStep, falseAlertsOf, howItWent, outcomeClass, outcomeWords, plural, roleWords, sensorShortName, sentence, stepLabel } from "./format";
@@ -15,7 +15,8 @@ interface StepCaptionProps {
   stepAlerts: readonly Alert[];
   /** How many events the recording holds for the step. */
   total: number;
-  onFix?: (stepId: string) => void;
+  /** Starts fixing the step: in the app, its fixer; on the single page, the step's detail. */
+  onFix: (stepId: string) => void;
   /** True while playback runs fast: then only outcomes are announced, so announcements do not pile up. */
   quiet: boolean;
   /** Called when the caption held keyboard focus and the element that had it went away or was hidden. */
@@ -133,7 +134,6 @@ function Compare({ recording, step, moment }: { recording: Recording; step: Step
 }
 
 function StepCaptionView({ recording, moment, stepAlerts, total, onFix, quiet, onLoseFocus }: StepCaptionProps) {
-  const [asked, setAsked] = useState<string | null>(null);
   const box = useRef<HTMLElement | null>(null);
   // Whether keyboard focus is inside the caption. A focused element that is
   // removed or hidden fires no blur, so this stays true until focus is put back.
@@ -190,7 +190,7 @@ function StepCaptionView({ recording, moment, stepAlerts, total, onFix, quiet, o
             <button
               type="button"
               className="lv-fix"
-              onClick={() => (onFix ? onFix(step.id) : setAsked(step.id))}
+              onClick={() => onFix(step.id)}
               aria-describedby={`lv-fix-hint-${step.id}`}
               tabIndex={moment.revealed ? 0 : -1}
             >
@@ -215,7 +215,7 @@ function StepCaptionView({ recording, moment, stepAlerts, total, onFix, quiet, o
           <Compare recording={recording} step={step} moment={moment} />
           {hint ? (
             <div className="lv-fix-hint" id={`lv-fix-hint-${step.id}`} role="status">
-              {asked === step.id && !onFix ? "Fixing starts in the BlueFire app: open this recording there to work on this step." : hint}
+              {hint}
             </div>
           ) : null}
         </div>

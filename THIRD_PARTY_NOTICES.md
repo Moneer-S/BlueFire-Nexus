@@ -10,9 +10,13 @@ SHA-256 `693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3`.
 Inter is a trademark of Rasmus Andersson. BlueFire does not imply endorsement.
 
 The single replay page, `bluefire/ui/replay.html`, is meant to be passed around and opened on
-its own, so it embeds `InterVariable.woff2` and the React and react-dom scripts (MIT License,
-Copyright (c) Meta Platforms, Inc. and affiliates) in the one file, and carries their notices,
-with the MIT permission text, in a comment in its head.
+its own, so it embeds `InterVariable.woff2` and the React, react-dom and scheduler scripts
+(`react@19.2.8`, `react-dom@19.2.8`, `scheduler@0.27.0`; MIT License, Copyright (c) Meta
+Platforms, Inc. and affiliates) in the one file, and carries their notices, with the MIT
+permission text, the Inter copyright line and the whole SIL Open Font License, in a comment in
+its head. The build puts the page together with
+`vite-plugin-singlefile@2.3.4` (MIT License), a development dependency whose code is not in the
+page.
 
 BlueFire Nexus records third-party source provenance before any public content is imported, adapted, or integrated through an external adapter. A source record is not proof that remote bytes were fetched, vendored, redistributed, or executed.
 

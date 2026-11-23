@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { layoutNetwork } from "../src/live/networkLayout";
 import type { Network } from "../src/live/recording";
 import { buildTimeline, frameAt } from "../src/live/playback";
-import { momentOf, revealTime, runFacts, scoreOnScreen, stepMatches } from "../src/live/moment";
+import { firstAlertOnScreen, momentOf, revealTime, runFacts, scoreOnScreen, stepMatches } from "../src/live/moment";
 import { whoIsWinning } from "../src/live/RaceLine";
 import { middleCut } from "../src/live/format";
 import { alert, event, recording, step } from "./live-fixture";
@@ -105,6 +105,22 @@ describe("the watch view's words and numbers", () => {
     const after = at(told + 0.05);
     expect(scoreOnScreen(timeline, before.frame, before.moment).alerted).toBe(0);
     expect(scoreOnScreen(timeline, after.frame, after.moment).alerted).toBe(1);
+  });
+
+  it("names the first alert on the race only once the score counts it", () => {
+    const first = timeline.segments[0];
+    expect(first).toBeDefined();
+    if (!first) return;
+    const told = revealTime(timeline, first);
+    const shown = (screen: number) => {
+      const { frame, moment } = at(screen);
+      return firstAlertOnScreen(frame.race.firstAlert, frame.time, frame.segment, moment?.revealed ?? false);
+    };
+    expect(at(told - 0.05).frame.race.firstAlert).not.toBeNull();
+    expect(shown(told - 0.05)).toBeNull();
+    expect(shown(told + 0.05)?.step.id).toBe("1");
+    const later = timeline.segments[1];
+    if (later) expect(shown(later.start)?.step.id).toBe("1");
   });
 });
 

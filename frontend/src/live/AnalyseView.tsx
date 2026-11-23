@@ -19,12 +19,14 @@ interface AnalyseViewProps {
   facts: RunFacts;
   colours: Map<string, string>;
   select: string | undefined;
+  /** True when the chosen step's detail takes keyboard focus as the view opens. */
+  focusSelected?: boolean;
   onSelect: (stepId: string | undefined) => void;
   onWatch: (stepId: string) => void;
   onFix?: (stepId: string) => void;
 }
 
-export function AnalyseView({ recording, timeline, facts, colours, select, onSelect, onWatch, onFix }: AnalyseViewProps) {
+export function AnalyseView({ recording, timeline, facts, colours, select, focusSelected = false, onSelect, onWatch, onFix }: AnalyseViewProps) {
   const rows = useMemo(() => stepRows(recording), [recording]);
   const numbers = useMemo(() => testNumbers(recording), [recording]);
   const sensors = recording.network.sensors.filter((sensor) => rows.some((row) => row.bySensor.has(sensor.id)));
@@ -36,8 +38,9 @@ export function AnalyseView({ recording, timeline, facts, colours, select, onSel
   // A step chosen in the table, or from a link in the detail or the summary,
   // moves focus to its detail, whose actions are then the next stops. A step
   // chosen in the lanes keeps focus there for the arrow keys, and one named in
-  // the page's address takes nothing.
-  const [focusDetail, setFocusDetail] = useState(false);
+  // the page's address takes nothing. A step opened from watch mode, whose
+  // control went away with it, takes focus too.
+  const [focusDetail, setFocusDetail] = useState(focusSelected);
 
   const choose = (stepId: string | undefined) => {
     setFocusDetail(false);

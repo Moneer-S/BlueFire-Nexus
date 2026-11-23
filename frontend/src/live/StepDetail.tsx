@@ -193,7 +193,6 @@ function EventLines({ recording, events, marks, colours, refusal }: { recording:
 }
 
 export function StepDetail({ recording, row, colours, testNumber, testsTotal, origin, onSelect, onWatch, onFix, onClose, takeFocus }: StepDetailProps) {
-  const [asked, setAsked] = useState(false);
   const article = useRef<HTMLElement | null>(null);
   // The detail is mounted again for every step, so this runs once per chosen step.
   useEffect(() => {
@@ -284,8 +283,8 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
             </span>
           ) : null}
         </span>
-        {hint ? (
-          <button type="button" className="lv-fix" onClick={() => (onFix ? onFix(step.id) : setAsked(true))} aria-describedby={`lv-dt-hint-${step.id}`}>
+        {hint && onFix ? (
+          <button type="button" className="lv-fix" onClick={() => onFix(step.id)} aria-describedby={`lv-dt-hint-${step.id}`}>
             <svg viewBox="0 0 16 16" aria-hidden="true">
               <path d="M3 8h9M8.5 4.5 12 8l-3.5 3.5" />
             </svg>
@@ -294,7 +293,6 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         ) : null}
         {hint ? (
           <p className="lv-dt-hint" id={`lv-dt-hint-${step.id}`} role="status">
-            {asked && !onFix ? "Fixing starts in the BlueFire app: open this recording there to work on this step. " : ""}
             {hint}
           </p>
         ) : null}

@@ -491,11 +491,6 @@ export function timeOf(value: Time): number {
   return Date.parse(value);
 }
 
-/** The step an id names, or undefined. */
-export function stepById(recording: Recording, id: string): Step | undefined {
-  return recording.steps.find((step) => step.id === id);
-}
-
 function groupByStep<T extends { step: string }>(recording: Recording, items: readonly T[]): Map<string, T[]> {
   const groups = new Map<string, T[]>(recording.steps.map((step) => [step.id, []]));
   for (const item of items) {

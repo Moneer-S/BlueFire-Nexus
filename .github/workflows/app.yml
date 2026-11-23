@@ -156,7 +156,9 @@ jobs:
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install --quiet -e .
 
-      - name: Open the screens the service serves
+      # Also the single replay page that the command line writes for the shipped
+      # recording, opened from a file address.
+      - name: Open the screens the service serves, and the replay page
         env:
           BLUEFIRE_PYTHON: /tmp/venv/bin/python
         run: pnpm test:service
