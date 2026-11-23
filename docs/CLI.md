@@ -106,11 +106,16 @@ import lock for more than five seconds.
 
 `page` writes the single replay page of one recording, shipped or imported, to
 a new file: the packaged page `bluefire/ui/replay.html` with the recording put
-inside it. The page plays in any browser with nothing installed and loads
-nothing from anywhere (see [LIVE_VIEW.md](LIVE_VIEW.md)). It prints the
-recording's id, the file's path and its size. It never replaces a file: when
-`--out` names one that exists, it exits with status 2 and writes nothing. An id
-that is not in the list exits with status 2 and prints `recording_not_found`.
+inside it, and beside it the recording's `origin` from the list, whose note the
+page shows under the title. The page plays in any browser with nothing
+installed and loads nothing from anywhere (see [LIVE_VIEW.md](LIVE_VIEW.md)).
+It prints the recording's id, the file's path and its size. It never replaces a
+file: when `--out` names one that exists, it exits with status 2 and writes
+nothing. An id that is not in the list exits with status 2 and prints
+`recording_not_found`. A recording that is still running, with no
+`source.finished` yet, exits with status 2, prints `recording_running` and
+writes nothing: a page is made of a finished run, and a running one is watched
+in the app.
 
 ## Durable jobs and proposal review
 

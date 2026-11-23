@@ -203,7 +203,8 @@ The app lists recordings, returns one whole, and imports one: the routes are in
 [API.md](API.md) under "Recordings", and the commands `bluefire recordings list`
 and `bluefire recordings import <file>` in [CLI.md](CLI.md).
 `bluefire recordings page <id> --out <file>` writes the single replay page of
-one recording ([LIVE_VIEW.md](LIVE_VIEW.md)). A recording shipped
+one finished recording, with the note on where it comes from
+([LIVE_VIEW.md](LIVE_VIEW.md)). A recording shipped
 with the app is one that this repository's lab workflow recorded in CI; it is
 kept unchanged under `bluefire/data/recordings/`.
 

@@ -395,6 +395,15 @@
   color: var(--lv-text-soft);
 }
 
+/* Where the recording comes from: quiet, always shown, never in an outcome colour. */
+.lv-origin {
+  max-width: 78ch;
+  margin: 1px 0 0;
+  font-size: var(--lv-xs);
+  line-height: 1.4;
+  color: var(--lv-muted);
+}
+
 .lv-modes button:disabled {
   opacity: 0.4;
   cursor: default;

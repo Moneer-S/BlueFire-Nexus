@@ -76,7 +76,10 @@ bluefire recordings page RECORDING_ID --out replay.html
 
 The command writes a new file: the packaged page `bluefire/ui/replay.html`
 with the recording put inside it (see [CLI.md](CLI.md)). `bluefire recordings
-list` gives the ids. The page is one file of under 1 MB plus the recording.
+list` gives the ids. A page is made of a finished run: the command refuses a
+recording that is still running (it has no end time yet) and writes nothing;
+a running recording is watched in the app. The page is one file of under 1 MB
+plus the recording.
 It carries its own script, styles and font, and its content security policy
 lets it load nothing and connect nowhere: the page makes no request by itself.
 The one way out is the link to the CI run that made the recording, shown only
@@ -85,8 +88,18 @@ repository, when the recording names one), and followed only when someone
 clicks it. The text of a recording is always shown
 as text, never read as markup.
 
+Beside the recording the command writes where it comes from, as the app lists
+it, and the page shows that note under the title at all times. A recording
+shipped with BlueFire says so and names the CI run that made it. An imported
+recording says what BlueFire checked, that the file follows the format and its
+parts agree, and what it cannot confirm: that the steps ran, where and when,
+and the engine and CI run the file names. A page that holds no such note, a
+template filled by other means, says that it does not say where its recording
+comes from.
+
 The browser test `frontend/tests/service/replay-page.spec.ts`, run by the app
 workflow, makes this page for the shipped recording and checks what a person
-does and sees on it: watching, playing and pausing, moving on the timeline by
+does and sees on it: where the recording comes from, for a shipped, an imported
+and an unsaid origin, watching, playing and pausing, moving on the timeline by
 pointer and keyboard, the address, the unseen test and its fix hint, analyse
 mode, the score at the end, and that the page makes no request.

@@ -675,14 +675,9 @@ def _check_race(
             )
 
 
-# The replay page's template holds its recording in this one element, as JSON.
-_PAGE_ELEMENT = re.compile(
-    r'(<script id="bluefire-recording" type="application/json">)(.*?)(</script>)', re.DOTALL
-)
-# Any script element that names the recording's id, however its attributes are written.
-_PAGE_ELEMENT_LOOSE = re.compile(
-    r"<script\b[^>]*\bid\s*=\s*[\"']?bluefire-recording[\"'\s/>]", re.IGNORECASE
-)
+# The replay page's template holds its recording, and where the recording comes from,
+# each in one element of its own, as JSON.
+_PAGE_ELEMENTS = ("bluefire-recording", "bluefire-origin")
 
 
 def replay_template() -> str:
@@ -692,27 +687,38 @@ def replay_template() -> str:
     return page.read_text(encoding="utf-8")
 
 
-def replay_page(recording: Mapping[str, Any], template: str | None = None) -> str:
+def replay_page(
+    recording: Mapping[str, Any], origin: Mapping[str, Any], template: str | None = None
+) -> str:
     """The single replay page for one recording: the template with the recording inside.
 
     The recording's JSON replaces the content of the template's one
-    ``bluefire-recording`` element. Every ``<`` in it is written as ``\\u003c``,
-    which JSON reads back as the same character, so no text of a recording can
-    end the element, open a comment or start another element. A template that
-    does not hold exactly one such element is refused.
+    ``bluefire-recording`` element, and ``origin`` (the ``origin`` of the
+    recording's list entry: its kind and note) that of the one ``bluefire-origin``
+    element; the page shows the note under the title. Every ``<`` in them is
+    written as ``\\u003c``, which JSON reads back as the same character, so no
+    text can end the element, open a comment or start another element. A
+    template that does not hold exactly one of each element is refused.
     """
 
     page = replay_template() if template is None else template
-    found = list(_PAGE_ELEMENT.finditer(page))
-    if len(found) != 1 or len(_PAGE_ELEMENT_LOOSE.findall(page)) != 1:
-        raise ValueError(
-            "The replay page template must hold exactly one "
-            '<script id="bluefire-recording" type="application/json"> element.'
+    for name, value in zip(_PAGE_ELEMENTS, (recording, origin), strict=True):
+        exact = re.compile(
+            rf'(<script id="{name}" type="application/json">)(.*?)(</script>)', re.DOTALL
         )
-    data = json.dumps(recording, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-    data = data.replace("<", "\\u003c")
-    element = found[0]
-    return page[: element.start(2)] + data + page[element.end(2) :]
+        # Any script element that names the id, however its attributes are written.
+        loose = re.compile(rf"<script\b[^>]*\bid\s*=\s*[\"']?{name}[\"'\s/>]", re.IGNORECASE)
+        found = list(exact.finditer(page))
+        if len(found) != 1 or len(loose.findall(page)) != 1:
+            raise ValueError(
+                "The replay page template must hold exactly one "
+                f'<script id="{name}" type="application/json"> element.'
+            )
+        data = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        data = data.replace("<", "\\u003c")
+        element = found[0]
+        page = page[: element.start(2)] + data + page[element.end(2) :]
+    return page
 
 
 def invalid_recording(exc: RecordingError) -> APIError:

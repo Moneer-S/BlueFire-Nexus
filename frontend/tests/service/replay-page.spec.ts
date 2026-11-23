@@ -37,6 +37,8 @@ const HOSTILE_LINK = "javascript:alert(document.domain)";
 let workspace = "";
 let shippedPage = "";
 let hostilePage = "";
+let unsaidPage = "";
+const ORIGIN_ELEMENT = '<script id="bluefire-origin" type="application/json">';
 
 /** Runs the app's command line on the test's own workspace. */
 function bluefire(...args: string[]): void {
@@ -64,6 +66,13 @@ test.beforeAll(() => {
   bluefire("recordings", "import", recordingFile);
   hostilePage = join(workspace, "hostile.html");
   bluefire("recordings", "page", hostile.id, "--out", hostilePage);
+
+  // The shipped recording's page with its origin taken out, as a template filled by other means would be.
+  const made = readFileSync(shippedPage, "utf-8");
+  const start = made.indexOf(ORIGIN_ELEMENT) + ORIGIN_ELEMENT.length;
+  if (start < ORIGIN_ELEMENT.length) throw new Error("The page has no origin element.");
+  unsaidPage = join(workspace, "unsaid.html");
+  writeFileSync(unsaidPage, `${made.slice(0, start)}null${made.slice(made.indexOf("</script>", start))}`);
 });
 
 test.afterAll(() => {
@@ -123,6 +132,10 @@ test("watch mode tells the run step by step, and plays, pauses and moves by poin
 
   await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
   await expect(caption(page)).toContainText(firstStep.plain);
+  // Under the title: the recording shipped with BlueFire, and the CI run that made it.
+  const origin = page.getByText(/^Shipped with BlueFire\. This repository's lab workflow recorded it in the CI run at /);
+  await expect(origin).toBeVisible();
+  await expect(origin).toContainText(String(shipped.source.run_url));
 
   // Playing: the clock moves. The button pauses it, and plays it again.
   const play = page.getByRole("button", { name: "Pause", exact: true });
@@ -268,10 +281,23 @@ test("the address opens a step's detail, or a moment of a step in watch mode", a
   expect(requests.filter((url) => !url.startsWith(pathToFileURL(shippedPage).href))).toEqual([]);
 });
 
+test("a page that does not say where its recording comes from says so", async ({ page }) => {
+  const { requests, problems } = await open(page, unsaidPage, "?paused=1");
+
+  await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
+  await expect(page.getByText("This page does not say where its recording comes from.", { exact: true })).toBeVisible();
+  await expect(page.getByText(/^Shipped with BlueFire/)).toHaveCount(0);
+  expect(problems).toEqual([]);
+  expect(requests).toEqual([]);
+});
+
 test("a recording cannot make the page load anything: its markup and addresses are shown as text", async ({ page }) => {
   const { requests, problems } = await open(page, hostilePage, "?step=1&paused=1");
 
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(HOSTILE_IMAGE);
+  // An imported recording says what BlueFire checked and what it cannot confirm.
+  await expect(page.getByText(/^Imported\. BlueFire checked that this file follows the recording format/)).toContainText("It cannot confirm that the steps ran");
+  await expect(page.getByText(/^Shipped with BlueFire/)).toHaveCount(0);
   await expect(caption(page)).toContainText(`${HOSTILE_IMAGE} </script><!--`);
   await expect(caption(page)).toContainText(`Opens ${HOSTILE_LINK} <a href="${HOSTILE_LINK}">here</a>`);
   await expect(page.locator("img")).toHaveCount(0);

@@ -8,6 +8,7 @@ import binascii
 import json
 import sys
 import threading
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -783,8 +784,16 @@ def _execute(
         if args.recording_command == "list":
             return service.recordings()
         if args.recording_command == "page":
-            recording = service.recording(args.recording_id)["recording"]
-            page = replay_page(recording).encode("utf-8")
+            detail = service.recording(args.recording_id)
+            recording, summary = detail["recording"], detail["summary"]
+            if summary["running"]:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "recording_running",
+                    "The recording is still running: it has no end time yet. A replay page "
+                    "is made of a finished run; watch a running one in the app.",
+                )
+            page = replay_page(recording, summary["origin"]).encode("utf-8")
             _write_new_file(args.out, page, description="replay page")
             return {
                 "schema_version": "bluefire.recording-page.v1",

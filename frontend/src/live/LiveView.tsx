@@ -21,6 +21,8 @@ export type LiveMode = "watch" | "analyse";
 
 export interface LiveViewProps {
   recording: Recording;
+  /** Where the recording comes from, in the words of whoever shows it: shown, as text, under the title. */
+  origin?: string;
   initial?: { step?: string; at?: number; paused?: boolean; mode?: LiveMode; select?: string };
   /** Starts fixing a step. When absent, "Fix this" in watch mode opens the step's detail, and the detail offers no "Fix this". */
   onFix?: (stepId: string) => void;
@@ -110,8 +112,8 @@ const Provenance = memo(function Provenance({ recording }: { recording: Recordin
   );
 });
 
-/** The wordmark and the run's title. */
-const Brand = memo(function Brand({ recording }: { recording: Recording }) {
+/** The wordmark, the run's title and where the recording comes from. */
+const Brand = memo(function Brand({ recording, origin }: { recording: Recording; origin: string | undefined }) {
   return (
     <div className="lv-brand">
       <div className="lv-brand-row">
@@ -124,6 +126,7 @@ const Brand = memo(function Brand({ recording }: { recording: Recording }) {
         <h1 className="lv-run-title">{recording.title}</h1>
       </div>
       <Provenance recording={recording} />
+      {origin === undefined ? null : <p className="lv-origin">{origin}</p>}
     </div>
   );
 });
@@ -156,7 +159,7 @@ function PlayIcon({ playing }: { playing: boolean }) {
   );
 }
 
-export function LiveView({ recording, initial, onFix }: LiveViewProps) {
+export function LiveView({ recording, origin, initial, onFix }: LiveViewProps) {
   const timeline = useMemo(() => buildTimeline(recording), [recording]);
   const firstMode: LiveMode = recording.steps.length > 0 ? (initial?.mode ?? "watch") : "watch";
   const [time, setTime] = useState(() => startTime(timeline, initial));
@@ -306,7 +309,7 @@ export function LiveView({ recording, initial, onFix }: LiveViewProps) {
   return (
     <div className={`lv lv--${mode}${hasSteps ? "" : " lv--plan"}${playing ? "" : " is-paused"}`}>
       <header className="lv-top">
-        <Brand recording={recording} />
+        <Brand recording={recording} origin={origin} />
         <div className="lv-score-wrap">
           {hasSteps ? (
             <div className="lv-score" aria-label={mode === "watch" ? "The score so far" : "The score"}>
