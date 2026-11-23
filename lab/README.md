@@ -424,8 +424,11 @@ is one runner's answer.
    table for the run page.
 5. A job that runs no test takes the three runners' results and gives every run
    of a test the answer all three gave (`bluefire-lab combine`). Where they
-   differ, the answer is `unstable`: the report shows it with each runner's
-   answer, and it counts in no total. That holds for each of the three answers
+   differ, the answer is `unstable`: it counts in no total, and the report
+   lists every such run, of whatever kind (a test, its run with a hardening
+   change or with changed input arguments, a control run), with each runner's
+   answer. A runner that left no results fails the combination, and a test
+   that only some runners could run is unstable too. That holds for each of the three answers
    apart: whether the technique took effect, what the pinned rules saw, and
    what they saw with the lab's own rules. A rule of the lab's own counts as
    accepted only when every runner accepted it, and a control passes only when
