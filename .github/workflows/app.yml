@@ -59,9 +59,10 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet -e ".[detections,test]"
 
-      # Every test starts a service of its own, so they run side by side.
+      # Every test starts a service of its own, so they run side by side. Started
+      # as a module so that the tests can import each other from the repository's root.
       - name: Test
-        run: '"$RUNNER_TEMP/venv/bin/pytest" -n auto'
+        run: '"$RUNNER_TEMP/venv/bin/python" -m pytest -n auto'
 
   interface:
     name: interface types, lint, tests and build
