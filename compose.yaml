@@ -2,18 +2,41 @@
 #
 #   docker compose up app
 #
-# Open the address it prints. The app listens on this machine only
-# (127.0.0.1:8765), which is why the container shares the host's network. What
-# you save stays in the volume "workspace" between starts.
+# Open the address it prints. The link and its code work once, within five
+# minutes of the start: for a fresh one, stop it and run the command again, or
+# run `docker compose restart app` and read `docker compose logs app`.
+#
+# The app accepts connections from this machine only (127.0.0.1:8765), which
+# is why the container shares the host's network. Docker Engine on Linux does
+# that as it is. Docker Desktop on macOS and Windows needs "Enable host
+# networking" switched on in its settings first.
+#
+# What you save stays in the volumes "workspace" and "state" between starts.
+# The container reads the checkout as user 1000. If your clone is not readable
+# by that user, set BLUEFIRE_UID and BLUEFIRE_GID to the output of `id -u` and
+# `id -g` before the first start. To change them later, hand the volumes to the
+# new user once:
+#
+#   docker compose run --rm --user 0:0 --entrypoint chown app -R <uid>:<gid> /workspace /state
+#
+# A model credential for the Assistant goes into a file named .env beside this
+# one, as NAME=value, under the name the Settings screen asks for.
 services:
   app:
     build:
       context: .
       dockerfile: docker/app.Dockerfile
     network_mode: host
+    init: true
+    user: "${BLUEFIRE_UID:-1000}:${BLUEFIRE_GID:-1000}"
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - .:/app:ro
       - workspace:/workspace
+      - state:/state
 
 volumes:
   workspace:
+  state:

@@ -13,7 +13,7 @@
     "vite.replay.config.ts",
     "vitest.config.ts",
     "playwright.config.ts",
-    "playwright.detection.config.ts",
+    "playwright.service.config.ts",
     "eslint.config.js"
   ]
 }

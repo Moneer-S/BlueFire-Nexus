@@ -4,7 +4,8 @@ A recording is one file that holds what really happened in a run: the network
 it ran on, every step of the attacker, what the sensors recorded, which rules
 matched, and the score. It is made to be replayed: by the app's live view, and
 by a single HTML page that plays without the app. Neither reader is in the
-repository yet.
+repository yet. The app already keeps recordings: it lists them, returns one
+whole, and imports one (see "In the app" below).
 
 A recording is made from the files of a run by an engine that ran the steps for
 real: today `bluefire-lab` (published attack tests on one disposable host),
@@ -184,3 +185,71 @@ alert.
 | `first_alert_seconds` | number | Optional, attack path only: seconds from the start of the first step of role `test` to the first alert of a published rule on a step of role `test`. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
 | `goal_seconds` | number | Optional, attack path only: seconds from the start of the first step to the end of the step that reached the goal. Not written for a test list. |
 | `false_alerts` | number | Optional. Published rules that matched ordinary activity (see `ordinary`) at a level that counts as an alert. Each such rule is one false alert, whatever the number of events it matched. |
+
+## A recording that is still running
+
+A recording without `source.finished` is still running: its engine has not
+finished the run. While it runs, the engine sends the recording again, whole,
+each time it grows, with the same `id`, `source.engine` and `source.started`. A
+reader replaces what it holds with the newer copy; it never merges two copies.
+The last copy the engine sends has `source.finished`, and from then on the
+recording does not change.
+
+## In the app
+
+The app lists recordings, returns one whole, and imports one: the routes are in
+[API.md](API.md) under "Recordings", and the commands `bluefire recordings list`
+and `bluefire recordings import <file>` in [CLI.md](CLI.md). A recording shipped
+with the app is one that this repository's lab workflow recorded in CI; it is
+kept unchanged under `bluefire/data/recordings/`.
+
+On import the app refuses a recording, and names each problem, unless it
+follows this format and its parts agree with each other:
+
+- The top-level keys are those of the table above. The keys the app reads are
+  there with their types, every word is one the tables allow, and every time is
+  a UTC time. An optional key the app reads is left out when it is not known,
+  never null; only `attacker.goal` and the values of an event's `fields` may be
+  null. The events, the alerts with their `raised`, and each step's `started`
+  and `ended` fall inside the run's `started` and `finished`. Steps
+  are sorted by `order`, and events and alerts by `time`.
+- Every id that a step, an event, an alert or a link names exists, and ids are
+  unique. An event is on the host of its sensor. An alert's events belong to the
+  alert's step.
+- An alert `counts` exactly when its rule's level is `high` or `critical` and it
+  is not `launcher_only`; a `launcher_only` alert has no events, and one that
+  counts has at least one. An alert of the detector `pinned` has the origin
+  `pinned`, and one of the detector `lab` the origin `lab`. `raised` is not
+  earlier than `time`, and is absent when the detector ran after the run.
+- A step's `visibility.answer` is `alert` exactly when an alert of a published
+  rule that counts is on the step. Its `outcome` is the one the rules under
+  "A step" give for its `happened.answer` and `visibility.answer`, and its
+  `outcome_with_lab_rules`, when present, the one they give when a counting alert
+  of a lab rule counts too. `visibility.events` is there unless the answer is
+  `inconclusive` or `not applicable`; `alert` and `telemetry only` need at least
+  one event and `no telemetry` none. `visibility.kept` is not more than
+  `visibility.events`, and it (or `events` when there is no `kept`) is the number
+  of the step's events the recording holds.
+- A step's `first_event` is the time of its earliest event in the recording, and
+  is there exactly when it has events. `first_alert` is the time of its earliest
+  counting alert of a published rule, and is there exactly when it has one.
+  `first_alert_with_lab_rules` is the same over every counting alert, on a step
+  with `outcome_with_lab_rules` only.
+- The counts of `score` are the ones its steps give; `false_alerts`, when
+  `ordinary` is there, is the number of `ordinary.matches` at a level that counts.
+  A test list has no `first_alert_seconds` or `goal_seconds`. In an attack path,
+  `first_alert_seconds` is the time its steps give, to the millisecond (zero when
+  the alert's stamp is earlier than the first start), and `goal_seconds` the time
+  from the first step's start to the end of one of the steps. Which step reached
+  the goal is not checked.
+- The file is at most 8 MiB, with at most 2,000 steps, 20,000 events and 20,000
+  alerts, nested at most 8 deep. Event `fields` hold at most 64 plain values.
+  Numbers are finite, keys appear once in an object, and no text or key holds a
+  NUL. Only a step's `command`, `output` and `plain`, the attacker's
+  `description` and `goal`, and `notes` may hold other control characters, such
+  as line breaks, tabs or a terminal's escapes; every other text holds none,
+  an event's `text` included.
+
+These checks show that a recording agrees with itself. They do not show that
+its steps ran, where or when, which sensor recorded each event, or which step
+reached the goal: the app says so next to every imported recording.

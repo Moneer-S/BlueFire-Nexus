@@ -1,0 +1,255 @@
+{
+ "networks": {
+  "west": {
+   "Name": "bluefire-lab-sc-west",
+   "Id": "1111111111111111111111111111111111111111111111111111111111111111",
+   "Driver": "bridge",
+   "EnableIPv4": true,
+   "EnableIPv6": false,
+   "IPAM": {
+    "Driver": "default",
+    "Options": {},
+    "Config": [
+     {
+      "Subnet": "172.18.0.0/16",
+      "IPRange": "",
+      "Gateway": ""
+     }
+    ]
+   },
+   "Internal": true,
+   "Options": {
+    "com.docker.network.bridge.gateway_mode_ipv4": "isolated"
+   },
+   "Labels": {
+    "bluefire.lab.range": "seal-check",
+    "bluefire.lab.run": "20261123T183048Z-47960e"
+   },
+   "Containers": {}
+  },
+  "east": {
+   "Name": "bluefire-lab-sc-east",
+   "Id": "2222222222222222222222222222222222222222222222222222222222222222",
+   "Driver": "bridge",
+   "EnableIPv4": true,
+   "EnableIPv6": false,
+   "IPAM": {
+    "Driver": "default",
+    "Options": {},
+    "Config": [
+     {
+      "Subnet": "172.19.0.0/16",
+      "IPRange": "",
+      "Gateway": ""
+     }
+    ]
+   },
+   "Internal": true,
+   "Options": {
+    "com.docker.network.bridge.gateway_mode_ipv4": "isolated"
+   },
+   "Labels": {
+    "bluefire.lab.range": "seal-check",
+    "bluefire.lab.run": "20261123T183048Z-47960e"
+   },
+   "Containers": {}
+  }
+ },
+ "containers": {
+  "left": {
+   "Id": "3333333333333333333333333333333333333333333333333333333333333333",
+   "State": {
+    "Status": "created"
+   },
+   "Image": "sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609",
+   "Name": "/bluefire-lab-sc-left",
+   "HostConfig": {
+    "Binds": null,
+    "NetworkMode": "1111111111111111111111111111111111111111111111111111111111111111",
+    "PortBindings": {},
+    "VolumesFrom": null,
+    "CapAdd": null,
+    "CgroupnsMode": "private",
+    "Dns": null,
+    "DnsOptions": [],
+    "DnsSearch": [
+     "."
+    ],
+    "ExtraHosts": null,
+    "IpcMode": "private",
+    "PidMode": "",
+    "Privileged": false,
+    "PublishAllPorts": false,
+    "SecurityOpt": null,
+    "UTSMode": "",
+    "UsernsMode": "",
+    "Devices": [],
+    "Sysctls": {
+     "net.ipv4.ip_forward": "0"
+    },
+    "Mounts": [
+     {
+      "Type": "bind",
+      "Source": "/srv/run/plant-mount",
+      "Target": "/plant",
+      "ReadOnly": true
+     }
+    ]
+   },
+   "Mounts": [
+    {
+     "Type": "bind",
+     "Source": "/srv/run/plant-mount",
+     "Destination": "/plant",
+     "Mode": "",
+     "RW": false,
+     "Propagation": "rprivate"
+    }
+   ],
+   "Config": {
+    "Hostname": "left",
+    "Labels": {
+     "bluefire.lab.range": "seal-check",
+     "bluefire.lab.run": "20261123T183048Z-47960e"
+    }
+   },
+   "NetworkSettings": {
+    "Ports": {},
+    "Networks": {
+     "bluefire-lab-sc-west": {
+      "Aliases": [
+       "left"
+      ],
+      "NetworkID": "",
+      "IPAddress": "",
+      "IPPrefixLen": 0,
+      "DNSNames": null
+     }
+    }
+   }
+  },
+  "middle": {
+   "Id": "4444444444444444444444444444444444444444444444444444444444444444",
+   "State": {
+    "Status": "created"
+   },
+   "Image": "sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609",
+   "Name": "/bluefire-lab-sc-middle",
+   "HostConfig": {
+    "Binds": null,
+    "NetworkMode": "1111111111111111111111111111111111111111111111111111111111111111",
+    "PortBindings": {},
+    "VolumesFrom": null,
+    "CapAdd": null,
+    "CgroupnsMode": "private",
+    "Dns": null,
+    "DnsOptions": [],
+    "DnsSearch": [
+     "."
+    ],
+    "ExtraHosts": null,
+    "IpcMode": "private",
+    "PidMode": "",
+    "Privileged": false,
+    "PublishAllPorts": false,
+    "SecurityOpt": null,
+    "UTSMode": "",
+    "UsernsMode": "",
+    "Devices": [],
+    "Sysctls": {
+     "net.ipv4.ip_forward": "0"
+    }
+   },
+   "Mounts": [],
+   "Config": {
+    "Hostname": "middle",
+    "Labels": {
+     "bluefire.lab.range": "seal-check",
+     "bluefire.lab.run": "20261123T183048Z-47960e"
+    }
+   },
+   "NetworkSettings": {
+    "Ports": {},
+    "Networks": {
+     "bluefire-lab-sc-east": {
+      "Aliases": [
+       "middle"
+      ],
+      "NetworkID": "",
+      "IPAddress": "",
+      "IPPrefixLen": 0,
+      "DNSNames": [
+       "bluefire-lab-sc-middle",
+       "middle",
+       "444444444444"
+      ]
+     },
+     "bluefire-lab-sc-west": {
+      "Aliases": [
+       "middle"
+      ],
+      "NetworkID": "",
+      "IPAddress": "",
+      "IPPrefixLen": 0,
+      "DNSNames": null
+     }
+    }
+   }
+  },
+  "right": {
+   "Id": "5555555555555555555555555555555555555555555555555555555555555555",
+   "State": {
+    "Status": "created"
+   },
+   "Image": "sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609",
+   "Name": "/bluefire-lab-sc-right",
+   "HostConfig": {
+    "Binds": null,
+    "NetworkMode": "2222222222222222222222222222222222222222222222222222222222222222",
+    "PortBindings": {},
+    "VolumesFrom": null,
+    "CapAdd": null,
+    "CgroupnsMode": "private",
+    "Dns": null,
+    "DnsOptions": [],
+    "DnsSearch": [
+     "."
+    ],
+    "ExtraHosts": null,
+    "IpcMode": "private",
+    "PidMode": "",
+    "Privileged": false,
+    "PublishAllPorts": false,
+    "SecurityOpt": null,
+    "UTSMode": "",
+    "UsernsMode": "",
+    "Devices": [],
+    "Sysctls": {
+     "net.ipv4.ip_forward": "0"
+    }
+   },
+   "Mounts": [],
+   "Config": {
+    "Hostname": "right",
+    "Labels": {
+     "bluefire.lab.range": "seal-check",
+     "bluefire.lab.run": "20261123T183048Z-47960e"
+    }
+   },
+   "NetworkSettings": {
+    "Ports": {},
+    "Networks": {
+     "bluefire-lab-sc-east": {
+      "Aliases": [
+       "right"
+      ],
+      "NetworkID": "",
+      "IPAddress": "",
+      "IPPrefixLen": 0,
+      "DNSNames": null
+     }
+    }
+   }
+  }
+ }
+}

@@ -1,4 +1,4 @@
-"""Command line of the lab: run, evaluate, report, recording, compare."""
+"""Command line of the lab: run, evaluate, report, recording, compare, atomic, range."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ import os
 import sys
 from pathlib import Path
 
-from . import compare, evaluate, recording, report, run
+from . import atomic, compare, evaluate, recording, report, run
+from .range import engine as range_engine
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -45,7 +46,54 @@ def main(arguments: list[str] | None = None) -> int:
         "after", type=Path, help="folder with the later run's results.json; gets compare.md"
     )
 
+    atomic_tests = commands.add_parser("atomic", help="read published Atomic Red Team tests as upstream does")
+    atomic_commands = atomic_tests.add_subparsers(dest="atomic_command", required=True)
+    vectors = atomic_commands.add_parser(
+        "argv", help="write the argument vectors upstream starts for every step of a range's path"
+    )
+    vectors.add_argument("spec", type=Path, help="the range's spec file, such as lab/range/range-one.yaml")
+    vectors.add_argument(
+        "--atomics", type=Path, required=True, help="atomics folder of Atomic Red Team at the spec's commit"
+    )
+    vectors.add_argument("--out", type=Path, required=True, help="the JSON file to write")
+
+    ranging = commands.add_parser(
+        "range", help="bring a range up from its spec file, seal it, and take it down"
+    )
+    actions = ranging.add_subparsers(dest="action", required=True)
+    bringing = actions.add_parser(
+        "run", help="create the range, prove it is sealed, and take it down again (exit 3: the seal failed)"
+    )
+    bringing.add_argument(
+        "spec", type=Path, help="the range's spec file, for example lab/range/seal-check.yaml"
+    )
+    bringing.add_argument(
+        "--out", type=Path, required=True, help="new folder for seal.json and manifest.json"
+    )
+    bringing.add_argument(
+        "--hold",
+        type=float,
+        default=0,
+        help="seconds to keep the sealed range up where the path will run, before the seal is checked again",
+    )
+    bringing.add_argument(
+        "--plant",
+        choices=range_engine.PLANTS,
+        help="plant one break, to show that the seal catches it; the run then fails",
+    )
+    removing = actions.add_parser(
+        "down",
+        help="remove the containers and networks that carry both the spec's prefix and its range label",
+    )
+    removing.add_argument("spec", type=Path, help="the range's spec file")
+
     options = parser.parse_args(arguments)
+    if options.command == "range":
+        if options.action == "down":
+            return range_engine.down(options.spec)
+        return range_engine.run(options.spec, options.out, options.plant, options.hold)
+    if options.command == "atomic":
+        return atomic.write(options.spec, options.atomics, options.out)
     if options.command == "run":
         # Attack tests run only where the machine is thrown away afterwards.
         if os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":

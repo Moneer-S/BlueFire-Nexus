@@ -1,0 +1,219 @@
+name: range one
+
+# Range one is a small network of disposable containers with a path of published attack
+# tests through it, written in lab/range/range-one.yaml. Every container of a range sits
+# on internal networks with no route out, and a run proves that before anything runs in
+# it. The jobs hold no secrets and a read-only token.
+
+on:
+  pull_request:
+    paths:
+      - lab/**
+      - .github/workflows/range-one.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # The lab starts each test of the path itself, so its argument vectors must be the ones
+  # Invoke-AtomicRedTeam would start. This job runs Invoke-AtomicRedTeam for every step with
+  # stand-ins for sh and bash that only record how they were started: no test runs here.
+  atomic-parity:
+    name: argument vectors against Invoke-AtomicRedTeam
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      POWERSHELL_YAML_VERSION: 0.4.12
+      SPEC: lab/range/range-one.yaml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the lab and the executor's dependency
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
+          sudo pwsh -NoLogo -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module powershell-yaml -RequiredVersion $POWERSHELL_YAML_VERSION -Scope AllUsers -Force"
+          pwsh --version
+
+      - name: Fetch the tests and the executor at the spec's pins
+        run: |
+          spec() { "$RUNNER_TEMP/venv/bin/python" -c "import sys, yaml; d = yaml.safe_load(open(sys.argv[1])); print($1)" "$SPEC"; }
+          atomic_red_team=$(spec 'd["atomic_red_team"]["repo"] + "@" + d["atomic_red_team"]["commit"]')
+          executor=$(spec 'd["executor"]["reference"] + "@" + d["executor"]["commit"]')
+          fetch() {
+            git init -q "$2"
+            git -C "$2" remote add origin "https://github.com/${1%@*}"
+            git -C "$2" fetch -q --depth 1 --filter=blob:none origin "${1#*@}"
+          }
+          checkout() {
+            git -C "$2" checkout -q FETCH_HEAD
+            test "$(git -C "$2" rev-parse HEAD)" = "${1#*@}"
+          }
+          # The executor runs privateConfig.ps1 from the folder above its checkout when it
+          # exists, so that folder is a new one.
+          mkdir "$RUNNER_TEMP/upstream"
+          fetch "$executor" "$RUNNER_TEMP/upstream/invoke-atomicredteam"
+          checkout "$executor" "$RUNNER_TEMP/upstream/invoke-atomicredteam"
+          fetch "$atomic_red_team" "$RUNNER_TEMP/atomic-red-team"
+          # Only the folders of the path's techniques are checked out.
+          spec '"\n".join(sorted({"atomics/" + s["technique"] for s in d["path"]["steps"]}))' \
+            | git -C "$RUNNER_TEMP/atomic-red-team" sparse-checkout set --stdin
+          checkout "$atomic_red_team" "$RUNNER_TEMP/atomic-red-team"
+          # A range host has the atomics at /opt/atomics, and the path goes into the commands.
+          test ! -e /opt/atomics
+          sudo install -d -o "$USER" /opt/atomics
+          cp -r "$RUNNER_TEMP/atomic-red-team/atomics/." /opt/atomics/
+
+      - name: Write the lab's argument vectors
+        run: |
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" atomic argv "$SPEC" --atomics /opt/atomics \
+            --out "$RUNNER_TEMP/argv.json"
+
+      - name: Compare them with what Invoke-AtomicRedTeam starts
+        run: |
+          python3 -I lab/range/atomic_parity.py --expected "$RUNNER_TEMP/argv.json" \
+            --executor "$RUNNER_TEMP/upstream/invoke-atomicredteam" --work "$RUNNER_TEMP/parity" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the argument vectors
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: atomic-argv
+          path: ${{ runner.temp }}/argv.json
+          retention-days: 30
+          if-no-files-found: error
+
+  # The seal on a range of three bare containers on two networks
+  # (lab/range/seal-check.yaml): it passes, and each of five planted breaks fails
+  # it for its own reason.
+  seal:
+    name: the range is sealed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SPEC: lab/range/seal-check.yaml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the lab
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
+          echo "LAB=$RUNNER_TEMP/venv/bin/bluefire-lab" >> "$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP/seal" >> "$GITHUB_ENV"
+          docker version
+
+      - name: The seal holds
+        run: '"$LAB" range run "$SPEC" --out "$OUT/sealed"'
+
+      # Each of these breaks is caught by the static seal, on containers that were created
+      # and never started, except the missing isolated gateway mode: with that one only, the
+      # run starts the containers (their networks are internal) to show that the host canary
+      # catches it too.
+      - name: Planted breaks fail the seal
+        run: |
+          planted() {
+            local code=0
+            "$LAB" range run "$SPEC" --out "$OUT/$1" --plant "$1" || code=$?
+            if [ "$code" -ne 3 ]; then echo "plant $1: exit code $code, not 3"; return 1; fi
+            if ! jq -e --arg check "$2" '[.phases[].checks[] | select(.check == $check and .pass == false)] | length > 0' \
+              "$OUT/$1/seal.json" > /dev/null; then
+              echo "plant $1: the check \"$2\" did not fail"
+              return 1
+            fi
+            echo "plant $1: caught by $2"
+          }
+          planted not-internal "network: internal"
+          planted no-isolated-gateway "host canary"
+          planted published-port "container: port bindings"
+          planted bind-mount "container: mounts"
+
+      # An extra container, on an internal network of its own, is connected to a range network
+      # after the seal passed, while the range is held where the path will run.
+      - name: A network connect after the seal makes the run invalid
+        run: |
+          "$LAB" range run "$SPEC" --out "$OUT/connect" --hold 120 &
+          run=$!
+          for _ in $(seq 1 120); do
+            if jq -e '.phases[] | select(.phase == "dynamic" and .passed)' "$OUT/connect/seal.json" > /dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          image=$(jq -r '.containers.left.image_id' "$OUT/connect/manifest.json")
+          network=$(jq -r '.networks.west.id' "$OUT/connect/manifest.json")
+          extra_network=$(docker network create --internal -o com.docker.network.bridge.gateway_mode_ipv4=isolated \
+            --label bluefire.lab.range=seal-check-extra bluefire-lab-extra)
+          extra=$(docker run -d --name bluefire-lab-extra --network "$extra_network" \
+            --label bluefire.lab.range=seal-check-extra "$image")
+          docker network connect "$network" "$extra"
+          code=0
+          wait "$run" || code=$?
+          docker rm -f "$extra"
+          "$LAB" range down "$SPEC"
+          docker network rm "$extra_network"
+          if [ "$code" -ne 4 ]; then echo "exit code $code, not 4"; exit 1; fi
+          if ! jq -e --arg c "$extra" --arg n "$network" \
+            '[.watch.findings[] | select(.type == "network" and .action == "connect" and .id == $n and .container == $c)] | length > 0' \
+            "$OUT/connect/seal.json" > /dev/null; then
+            echo "the event watch did not report the connect of the extra container"
+            exit 1
+          fi
+          jq -e '[.phases[].checks[] | select(.check == "event watch" and .pass == false)] | length > 0' \
+            "$OUT/connect/seal.json" > /dev/null
+          echo "plant connect: caught by event watch"
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f "$OUT/sealed/seal.md" ]; then cat "$OUT/sealed/seal.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          {
+            echo
+            echo "### Planted breaks"
+            echo
+            echo "| Break | Exit code | Checks that failed |"
+            echo "|---|---|---|"
+            for plant in not-internal no-isolated-gateway published-port bind-mount connect; do
+              if [ -f "$OUT/$plant/seal.json" ]; then
+                code=$(jq -r '.exit_code' "$OUT/$plant/manifest.json")
+                caught=$(jq -r '[.phases[].checks[] | select(.pass == false) | .check] | unique | join(", ")' "$OUT/$plant/seal.json")
+                echo "| $plant | $code | $caught |"
+              else
+                echo "| $plant | not run | |"
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Take down what is left
+        if: always()
+        run: |
+          docker rm -f bluefire-lab-extra 2> /dev/null || true
+          "$LAB" range down "$SPEC"
+          docker network rm bluefire-lab-extra 2> /dev/null || true
+          docker ps -a --filter name=bluefire-lab
+          docker network ls --filter name=bluefire-lab
+
+      - name: Upload the seal records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: range-seal
+          path: ${{ runner.temp }}/seal
+          retention-days: 30
+          if-no-files-found: error

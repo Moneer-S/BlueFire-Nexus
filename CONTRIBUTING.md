@@ -15,12 +15,14 @@ python -m venv .venv
 # Linux/macOS: source .venv/bin/activate
 # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,detections]"
 ~~~
 
 To only look at the app, Docker is enough: `docker compose up app` starts it
-from your checkout and prints its address. [`compose.yaml`](compose.yaml) says
-how.
+from your checkout and prints its address, which works once, within five
+minutes. [`compose.yaml`](compose.yaml) says how to get a fresh one, and what
+Docker Desktop needs: the container shares the host's network, which Docker
+Engine on Linux gives as it is.
 
 Frontend changes also require pnpm 11.19.0. Optional detection-backend work
 uses the pinned pySigma and yara-python versions documented in
@@ -44,12 +46,18 @@ pnpm typecheck
 pnpm lint
 pnpm test                     # logic and quick component tests
 pnpm build                    # bluefire/ui must then be unchanged: commit it when it is not
-pnpm test:e2e                 # the screens in a browser
+pnpm test:e2e                 # the screens of the demo build, which has sample data and no service
+pnpm test:service             # the screens the real service serves from bluefire/ui
 ~~~
 
+`pnpm test:service` starts the service itself, with the Python that
+`BLUEFIRE_PYTHON` names (`python3` when it is not set). The same workflow also
+starts the app once with `docker compose up app` and checks that the interface
+answers.
+
 The browser tests need Chromium's system libraries. Where those are missing,
-run them in the image the workflow uses, from the repository's root, after
-`pnpm install` and `pnpm build:e2e`:
+run the demo build's tests in the image the workflow uses, from the
+repository's root, after `pnpm install` and `pnpm build:e2e`:
 
 ~~~bash
 docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
@@ -57,12 +65,21 @@ docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
   mcr.microsoft.com/playwright:v1.62.1-noble npx playwright test
 ~~~
 
-A pull request that touches `runner/` also runs the runner's tests, in the
-`runner` workflow:
+A pull request that touches `runner/`, or one of the app's files that the
+runner builds into itself, also runs the runner's tests, in the `runner`
+workflow. They need the settings the workflow gives them:
 
 ~~~bash
-cargo test --manifest-path runner/Cargo.toml --all --locked
+CARGO_PROFILE_DEV_OPT_LEVEL=1 CARGO_PROFILE_TEST_OPT_LEVEL=1 \
+  cargo test --manifest-path runner/Cargo.toml --all --locked -- --test-threads=1
 ~~~
+
+One test hashes the test program itself against a deadline, which an
+unoptimized build misses, and several take a file lock, which is why they run
+one at a time. The collection tests accept two exact builds of gzip, Ubuntu's
+`1.12-1ubuntu3.2` and `1.12-1ubuntu3.1`: where `/usr/bin/gzip` is another
+build, point `BLUEFIRE_TEST_GZIP` at one of those, as
+[`runner.yml`](.github/workflows/runner.yml) does.
 
 The linters are there to run by hand: `python -m ruff check bluefire tests_platform`,
 `python -m black --check bluefire tests_platform`, `python -m mypy bluefire`,
@@ -128,6 +145,11 @@ Attack tests run only in the `lab` workflow, on GitHub-hosted runners. A pull
 request that changes `lab/` runs it. The run page shows the results. When a
 previous successful run on `main` has an available artifact, the comparison
 shows which answers changed.
+
+`.github/workflows/windows-inventory.yml` is a separate probe, started by hand
+or by a change to the file itself. It reads what GitHub's hosted Windows images
+offer as sensors and checks that one harmless process start is recorded. It
+runs no attack test and is not part of the lab's results.
 
 - A test is a published Atomic Red Team test, pinned by its GUID in
   [`lab/pinned-tests.yaml`](lab/pinned-tests.yaml), with a check that can show

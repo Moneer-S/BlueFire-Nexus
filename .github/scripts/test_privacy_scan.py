@@ -71,6 +71,7 @@ class PrivacyScan(unittest.TestCase):
                 f"file://{MAC_HOME}/runner/work/report.html",
                 f"The workspace is under {HOME}/runner.",
                 f"rm {HOME}/bluefire-lab/.bash_history",
+                f"useradd --create-home art; ls {HOME}/art/.bashrc",
                 f"/tmp/claude-1000/-{HOME[1:]}-runner-work-project/x and /tmp/pytest" + "-of-runner/pytest-0",
             ]
         )
@@ -126,6 +127,8 @@ class PrivacyScan(unittest.TestCase):
             f"{WINDOWS_HOME}\\runneradministrator",
             f"{MAC_HOME}/bluefire-lab",
             f"{HOME}/bluefire-labs",
+            f"{HOME}/arthur",
+            f"{MAC_HOME}/art",
             "/x/-" + "home-runnerx-project",
             f'{{"a":"{HOME}/runner","b":"{WINDOWS_HOME_IN_JSON}\\\\alice"}}',
             f"{HOME}/alice then {HOME}/runner",
