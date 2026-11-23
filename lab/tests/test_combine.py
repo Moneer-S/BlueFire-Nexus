@@ -91,19 +91,82 @@ def test_a_technique_that_took_effect_on_some_runners_only_is_unstable() -> None
     assert combined["summary"]["took_effect"] == 0
 
 
-def test_a_test_that_runs_twice_is_matched_in_order_and_one_a_runner_left_out_is_unstable() -> None:
+def test_a_test_that_runs_twice_is_matched_in_order() -> None:
+    # The canary runs first and last. On the second runner only its last run missed the alert.
     first = a_runner(a_run("canary", "c", visibility="alert"), a_run("canary", "c", visibility="alert"))
-    second = a_runner(
-        a_run("canary", "c", visibility="alert"),
-        a_run("canary", "c", visibility="alert"),
-        a_run("test", "only-here"),
-    )
+    second = a_runner(a_run("canary", "c", visibility="alert"), a_run("canary", "c"))
 
     combined = combine.combine([first, second])
 
-    assert [test.get("unstable") for test in combined["tests"][:2]] == [None, None]
-    assert combined["tests"][2]["runners"][0]["execution"] == "not run"
-    assert combined["tests"][2]["execution"]["answer"] == "unstable"
+    assert [test.get("unstable") for test in combined["tests"]] == [
+        None,
+        ["visibility", "with the lab's rules"],
+    ]
+    assert combined["summary"]["unstable"] == 0  # no test of the list is unstable
+    assert combined["summary"]["unstable_other_runs"] == 1
+
+
+def test_a_run_only_one_runner_has_is_unstable_and_keeps_a_number_and_a_partner_of_its_own() -> None:
+    # The second runner has a program the first lacks, so it ran one test more, and that test's
+    # run with a hardening change. Each runner numbers its own runs.
+    def numbered(*tests) -> list[dict]:
+        return [{**test, "order": order} for order, test in enumerate(tests, start=1)]
+
+    change = {"name": "lock", "title": "a change"}
+    first = a_runner(*numbered(a_run("test", "a"), a_run("hardened", "a", defense=change, compared_with=1)))
+    first["dropped"] = [{"technique": "T1", "name": "test b", "reason": "the target has no gcc"}]
+    second = a_runner(
+        *numbered(
+            a_run("test", "a"),
+            a_run("test", "b"),
+            a_run("hardened", "a", defense=change, compared_with=1),
+            a_run("hardened", "b", defense=change, compared_with=2),
+        )
+    )
+
+    combined = combine.combine([first, second])
+    by_order = {test["order"]: test for test in combined["tests"]}
+
+    assert sorted(by_order) == [1, 2, 3, 4] and len(combined["tests"]) == 4
+    only_there = next(test for test in combined["tests"] if test["guid"] == "b" and test["role"] == "test")
+    its_hardened_run = next(
+        test for test in combined["tests"] if test["guid"] == "b" and test["role"] == "hardened"
+    )
+    assert only_there["runners"][0]["execution"] == "not run"
+    assert only_there["execution"]["answer"] == "unstable"
+    assert by_order[its_hardened_run["compared_with"]] is only_there
+    # The hardened run both runners have still points at its own test.
+    assert by_order[by_order[2]["compared_with"]]["guid"] == "a"
+    assert combined["dropped"] == [
+        {"technique": "T1", "name": "test b", "reason": "the target has no gcc (on runner 1 only)"}
+    ]
+
+
+def test_a_hardened_run_blocked_on_some_runners_only_is_not_counted_as_blocked_and_is_listed() -> None:
+    change = {"name": "lock", "title": "a change", "why": "a reason", "apply": "true", "revert": "true"}
+    blocked = a_run("hardened", "a", execution="blocked", defense=change, compared_with=1)
+    open_ = a_run("hardened", "a", execution="took effect", defense=change, compared_with=1)
+    runners = [
+        a_runner(a_run("test", "a"), blocked),
+        a_runner(a_run("test", "a"), blocked),
+        a_runner(a_run("test", "a"), open_),
+    ]
+    for runner in runners:
+        runner.update(a_report(), tests=runner["tests"], controls=runner["controls"])
+        for test in runner["tests"]:
+            test["user"], test["events"] = "root", []
+            test["execution"].update(prerequisites="none declared", exit_code=0)
+            test["visibility"].update(basis="a reason", launcher_only_rules=[])
+
+    combined = combine.combine(runners)
+    page, summary = report.html_report(combined), report.markdown_summary(combined)
+
+    assert (combined["summary"]["hardened"], combined["summary"]["blocked"]) == (1, 0)
+    assert combined["summary"]["unstable_other_runs"] == 1
+    assert "and so did 1 run of another kind" in summary
+    assert "| T1 | test a (with a change) | execution | blocked, blocked, took effect |" in summary
+    section = page[page.index('id="unstable"') :]
+    assert "blocked, blocked, took effect" in section
 
 
 def test_a_rule_of_the_labs_own_counts_only_when_every_runner_accepted_it() -> None:
@@ -117,6 +180,35 @@ def test_a_rule_of_the_labs_own_counts_only_when_every_runner_accepted_it() -> N
 
     assert not rule["accepted"]
     assert rule["reason"] == "not accepted on every runner; runner 2: it matched no event of a test"
+
+
+def test_a_rule_named_with_a_test_is_accepted_or_not_as_the_runners_together_say() -> None:
+    def runner(accepted: bool) -> dict:
+        test = a_run("test", "a", lab="alert" if accepted else None)
+        test["visibility"]["with_lab_rules"]["rules"] = [
+            {"id": "rule-1", "title": "A Rule", "accepted": accepted}
+        ]
+        verdict = {"id": "rule-1", "title": "A Rule", "accepted": accepted, "reason": "a reason"}
+        return a_runner(test, lab_rules=[verdict])
+
+    combined = combine.combine([runner(True), runner(False)])
+
+    assert combined["tests"][0]["visibility"]["with_lab_rules"]["rules"][0]["accepted"] is False
+    assert combined["tests"][0]["visibility"]["with_lab_rules"]["answer"] == "unstable"
+    # A rule or a control that only the second runner has is not lost.
+    second = runner(True)
+    second["lab_rules"].append({"id": "rule-2", "title": "Another", "accepted": True, "reason": "a reason"})
+    second["controls"].append({"name": "cleanup", "passed": False, "detail": "could not be checked"})
+    combined = combine.combine([runner(True), second])
+    assert [(rule["id"], rule["accepted"]) for rule in combined["lab_rules"]] == [
+        ("rule-1", True),
+        ("rule-2", False),
+    ]
+    assert combined["controls"][1] == {
+        "name": "cleanup",
+        "passed": False,
+        "detail": "runner 1: the control is missing; runner 2: could not be checked",
+    }
 
 
 def test_a_control_that_failed_on_one_runner_fails_the_run() -> None:
@@ -139,10 +231,32 @@ def test_the_command_writes_the_combined_answers_and_fails_with_a_failed_control
     written = json.loads((tmp_path / "results.json").read_text())
     assert [runner["folder"] for runner in written["runners"]] == ["lab-run-1", "lab-run-2"]
 
-    (tmp_path / "lab-run-2").rename(tmp_path / "unfinished")
-    (tmp_path / "unfinished" / "results.json").unlink()
+    # A runner that uploaded its files without results was not evaluated: nothing is combined.
+    (tmp_path / "lab-run-3").mkdir()
+    with pytest.raises(SystemExit, match="no results.json in lab-run-3"):
+        combine.main(tmp_path)
+    (tmp_path / "lab-run-3").rmdir()
+    (tmp_path / "lab-run-2" / "results.json").unlink()
+    (tmp_path / "lab-run-2").rmdir()
     with pytest.raises(SystemExit, match="at least two"):
         combine.main(tmp_path)
+
+
+def test_evaluating_a_folder_of_runners_evaluates_each_and_combines_them(tmp_path: Path, monkeypatch) -> None:
+    from bluefire_lab import __main__ as command
+
+    for name in ("lab-run-1", "lab-run-2"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "run.json").write_text("{}")
+    evaluated, combined = [], []
+    monkeypatch.setattr(command.evaluate, "main", lambda folder, engine: evaluated.append(folder.name) or 0)
+    monkeypatch.setattr(command.combine, "main", lambda folder: combined.append(folder) or 0)
+
+    assert command.main(["evaluate", str(tmp_path), "--engine", "zircolite"]) == 0
+    assert (evaluated, combined) == (["lab-run-1", "lab-run-2"], [tmp_path])
+    # A runner whose evaluation failed fails the whole, though the combination itself went through.
+    monkeypatch.setattr(command.evaluate, "main", lambda folder, engine: int(folder.name == "lab-run-2"))
+    assert command.main(["evaluate", str(tmp_path), "--engine", "zircolite"]) == 1
 
 
 def test_the_report_shows_an_unstable_answer_with_each_runners_answer() -> None:
