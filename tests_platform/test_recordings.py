@@ -234,9 +234,13 @@ def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFire
     for _ in range(1000):
         nested["a"] = {}
         nested = nested["a"]
+    huge = small_recording("rec-path")
+    huge["kind"] = "attack path"
+    huge["score"].update(first_alert_seconds=0.1, goal_seconds=10**1000)
 
     message, problems = refusal(service, recording)
     _, deep_problems = refusal(service, deep)
+    _, huge_problems = refusal(service, huge)
 
     assert message == (
         "The recording is not valid: steps[0].title must not hold control characters."
@@ -252,6 +256,7 @@ def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFire
         "events[2].time must be a UTC time such as 2026-11-17T17:07:23.834Z.",
     ]
     assert deep_problems == ["A recording nests objects and lists at most 8 deep."]
+    assert huge_problems == ["score.goal_seconds must be a number of seconds, zero or more."]
 
 
 def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -> None:

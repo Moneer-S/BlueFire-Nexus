@@ -228,10 +228,11 @@ class _Checker:
         if not self.present(parent, key, where, required=False):
             return
         value = parent[key]
+        # The bounds also refuse NaN and infinity, and they compare a whole number of any size
+        # without turning it into a float first.
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
-            or not math.isfinite(value)
             or not 0 <= value <= _MAX_COUNT
         ):
             self.fail(f"{where}.{key}", "must be a number of seconds, zero or more.")
