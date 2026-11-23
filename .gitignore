@@ -24,7 +24,7 @@ bluefire/native/bluefire-runner.exe
 
 # Virtual environments
 .venv/
-.venv-codex/
+.venv-*/
 venv/
 env/
 ENV/

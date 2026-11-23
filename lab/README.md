@@ -5,6 +5,15 @@ target, records what the sensors on that target saw, evaluates pinned detection
 rules over those records, and reports two answers for every test: did the
 technique take effect, and what did the defense see.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/report-dark.png">
+  <img src="../docs/report-light.png" width="1280" alt="Report for run 44133154347 showing the outcome totals, runner details and first rows of the results table.">
+</picture>
+
+The top of the report of
+[run 44133154347](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44133154347),
+as that run's job pictured it. The whole report is in the run's artifact.
+
 ## What it shows today
 
 Everything in this section comes from one run of the `lab` workflow:
@@ -586,8 +595,9 @@ does not remove a network while a container from outside is still connected to
 it. The run then records that its teardown was not complete, and `range down`
 removes the network once that container is gone.
 
-The `range-one` workflow runs the passing case and five planted breaks (`--plant`
-and a network connect from outside), each of which must fail the seal for its
+The job `seal` in `.github/workflows/range-one.yml` runs the passing case and
+five planted breaks (`--plant` and a network connect from outside), each of
+which must fail the seal for its
 own reason: a network that is not internal, a network without the isolated
 gateway mode (caught by the host canary as well), a published port, a bind
 mount, and an extra container connected to a range network after the seal
@@ -596,6 +606,21 @@ mount, and an extra container connected to a range network after the seal
 shows it on a GitHub-hosted runner with Docker Engine 28.0.4: the passing case
 was sealed, each of the four `--plant` breaks was stopped by its own check, and
 the connect was recorded by the event watch.
+
+## Range one: the path
+
+`lab/range/range-one.yaml` holds the path of range one: eleven steps made of ten
+published tests. `bluefire-lab atomic argv lab/range/range-one.yaml --atomics
+<atomics folder> --out argv.json` writes, for each step, the argument vectors of
+its attack, its prereq checks and its cleanup, read from the pinned YAML as
+Invoke-AtomicRedTeam reads it. The job `atomic-parity` in
+`.github/workflows/range-one.yml` runs Invoke-AtomicRedTeam for the same steps
+with stand-ins for `sh` and `bash` that record how they were started and run
+nothing, and fails on any byte that differs. In
+[run 45246198695](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45246198695)
+every vector was identical: 11 steps, each with its attack, prereq check and
+cleanup. Range one's own hosts, its defenses and a run of the path: not yet
+shown.
 
 ## Not yet shown
 

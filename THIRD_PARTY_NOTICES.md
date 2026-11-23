@@ -257,3 +257,16 @@ from PyPI. Its tests and lint use [pytest](https://github.com/pytest-dev/pytest)
 The checks in `.github/workflows/checks.yml` run [gitleaks](https://github.com/gitleaks/gitleaks)
 (MIT), a release binary pinned by digest, and [detect-secrets](https://github.com/Yelp/detect-secrets)
 (Apache-2.0) from PyPI.
+
+## App checks and the one-command start: what they fetch
+
+None of the following is copied into this repository.
+
+| Project | Pin | Licence | Use |
+|---|---|---|---|
+| [Playwright image](https://mcr.microsoft.com/en-us/artifact/mar/playwright) | `mcr.microsoft.com/playwright:v1.62.1-noble` | Apache-2.0 for Playwright; the image's Ubuntu packages and browser keep their own licences | Container of the browser tests in `.github/workflows/app.yml` and in `CONTRIBUTING.md` |
+| [gzip](https://www.gnu.org/software/gzip/) as Ubuntu packages it | `gzip_1.12-1ubuntu3.2_amd64.deb`, pinned by digest | GPL-3.0-or-later | The exact gzip build the runner's collection tests expect, in `.github/workflows/runner.yml` |
+| [Python image](https://hub.docker.com/_/python) | `python:3.12-slim` | PSF-2.0 for Python; the image's Debian packages keep their own licences | Base of `docker/app.Dockerfile`, which `docker compose up app` builds |
+
+The app's own Python and JavaScript dependencies are named in `pyproject.toml` and
+`frontend/package.json`, and the release dependency inventory above covers what a wheel carries.

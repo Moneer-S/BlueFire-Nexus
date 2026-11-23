@@ -1,8 +1,9 @@
-name: range-one
+name: range one
 
-# Brings ranges up in Docker on a hosted runner. Every container of a range sits
-# on internal networks with no route out, and the run proves that before
-# anything runs in it. The jobs hold no secrets and a read-only token.
+# Range one is a small network of disposable containers with a path of published attack
+# tests through it, written in lab/range/range-one.yaml. Every container of a range sits
+# on internal networks with no route out, and a run proves that before anything runs in
+# it. The jobs hold no secrets and a read-only token.
 
 on:
   pull_request:
@@ -23,6 +24,78 @@ defaults:
     shell: bash
 
 jobs:
+  # The lab starts each test of the path itself, so its argument vectors must be the ones
+  # Invoke-AtomicRedTeam would start. This job runs Invoke-AtomicRedTeam for every step with
+  # stand-ins for sh and bash that only record how they were started: no test runs here.
+  atomic-parity:
+    name: argument vectors against Invoke-AtomicRedTeam
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      POWERSHELL_YAML_VERSION: 0.4.12
+      SPEC: lab/range/range-one.yaml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the lab and the executor's dependency
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
+          sudo pwsh -NoLogo -NoProfile -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module powershell-yaml -RequiredVersion $POWERSHELL_YAML_VERSION -Scope AllUsers -Force"
+          pwsh --version
+
+      - name: Fetch the tests and the executor at the spec's pins
+        run: |
+          spec() { "$RUNNER_TEMP/venv/bin/python" -c "import sys, yaml; d = yaml.safe_load(open(sys.argv[1])); print($1)" "$SPEC"; }
+          atomic_red_team=$(spec 'd["atomic_red_team"]["repo"] + "@" + d["atomic_red_team"]["commit"]')
+          executor=$(spec 'd["executor"]["reference"] + "@" + d["executor"]["commit"]')
+          fetch() {
+            git init -q "$2"
+            git -C "$2" remote add origin "https://github.com/${1%@*}"
+            git -C "$2" fetch -q --depth 1 --filter=blob:none origin "${1#*@}"
+          }
+          checkout() {
+            git -C "$2" checkout -q FETCH_HEAD
+            test "$(git -C "$2" rev-parse HEAD)" = "${1#*@}"
+          }
+          # The executor runs privateConfig.ps1 from the folder above its checkout when it
+          # exists, so that folder is a new one.
+          mkdir "$RUNNER_TEMP/upstream"
+          fetch "$executor" "$RUNNER_TEMP/upstream/invoke-atomicredteam"
+          checkout "$executor" "$RUNNER_TEMP/upstream/invoke-atomicredteam"
+          fetch "$atomic_red_team" "$RUNNER_TEMP/atomic-red-team"
+          # Only the folders of the path's techniques are checked out.
+          spec '"\n".join(sorted({"atomics/" + s["technique"] for s in d["path"]["steps"]}))' \
+            | git -C "$RUNNER_TEMP/atomic-red-team" sparse-checkout set --stdin
+          checkout "$atomic_red_team" "$RUNNER_TEMP/atomic-red-team"
+          # A range host has the atomics at /opt/atomics, and the path goes into the commands.
+          test ! -e /opt/atomics
+          sudo install -d -o "$USER" /opt/atomics
+          cp -r "$RUNNER_TEMP/atomic-red-team/atomics/." /opt/atomics/
+
+      - name: Write the lab's argument vectors
+        run: |
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" atomic argv "$SPEC" --atomics /opt/atomics \
+            --out "$RUNNER_TEMP/argv.json"
+
+      - name: Compare them with what Invoke-AtomicRedTeam starts
+        run: |
+          python3 -I lab/range/atomic_parity.py --expected "$RUNNER_TEMP/argv.json" \
+            --executor "$RUNNER_TEMP/upstream/invoke-atomicredteam" --work "$RUNNER_TEMP/parity" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the argument vectors
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: atomic-argv
+          path: ${{ runner.temp }}/argv.json
+          retention-days: 30
+          if-no-files-found: error
+
   # The seal on a range of three bare containers on two networks
   # (lab/range/seal-check.yaml): it passes, and each of five planted breaks fails
   # it for its own reason.
