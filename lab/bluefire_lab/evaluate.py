@@ -12,8 +12,8 @@ test, a text only the effect prints, or failing both the test's exit status.
 "blocked" when the test ran again with a hardening change in place and did
 not take effect, while it took effect without the change.
 
-Visibility: "alert" when a rule of an alert level matched an event of the test,
-"telemetry only" when the test left events but no such match, "no telemetry"
+Visibility: "alert" when a published rule of an alert level matched an event of
+the test, "telemetry only" when the test left events but no such match, "no telemetry"
 when it left none. "inconclusive" when the measurement cannot be trusted.
 
 The executor starts a test as one shell process whose command line is the whole
@@ -528,9 +528,12 @@ def visibility(
     pinned = [rule for rule in cited if rule["origin"] == "pinned"]
     ours = [rule for rule in cited if rule["origin"] == "lab"]
     if any(rule["alert"] for rule in pinned):
-        answer, basis = "alert", "a rule of an alert level matched an event of the test"
+        answer, basis = "alert", "a published rule of an alert level matched an event of the test"
     elif mine:
-        answer, basis = "telemetry only", "the test left events, and no rule of an alert level matched one"
+        answer, basis = (
+            "telemetry only",
+            "the test left events, and no published rule of an alert level matched one",
+        )
     else:
         answer, basis = "no telemetry", "nothing of the test was recorded besides its launcher's start"
     result = {
@@ -857,6 +860,17 @@ def check_controls(
     return checks
 
 
+def result_head(test: dict) -> dict:
+    """What results.json repeats of a test's record in run.json: who it is, and how it ran."""
+
+    head = {
+        key: test[key]
+        for key in ("order", "role", "technique", "guid", "name", "executor", "elevated", "user")
+    }
+    kept = ("rule", "args", "defense", "compared_with", "plain", "technique_name", "tactic")
+    return {**head, **{key: test[key] for key in kept if key in test}}
+
+
 def main(run_dir: Path, engine: Path) -> int:
     run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     events, raw, other = sysmon.read(run_dir / "sysmon.txt")
@@ -911,11 +925,7 @@ def main(run_dir: Path, engine: Path) -> int:
     for test in run["tests"]:
         if test["role"] == "baseline":
             continue
-        result = {
-            key: test[key]
-            for key in ("order", "role", "technique", "guid", "name", "executor", "elevated", "user")
-        }
-        result.update({key: test[key] for key in ("rule", "args", "defense", "compared_with") if key in test})
+        result = result_head(test)
         if "defense" in test:
             attack = step_of(test, "attack")
             result["output"] = ((attack["output"] + attack["error"]).strip() if attack else "")[-2000:]

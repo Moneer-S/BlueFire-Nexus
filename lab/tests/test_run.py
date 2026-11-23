@@ -102,6 +102,27 @@ def test_an_input_argument_the_test_does_not_declare_stops_the_run(tmp_path: Pat
         run.upstream_definition({**spec, "args": {"histroy_path": "~/.zsh_history"}}, tmp_path)
 
 
+def test_the_technique_name_and_the_tactics_come_from_the_upstream_files(tmp_path: Path) -> None:
+    guid = "435057fb-74b1-410e-9403-d81baf194f75"
+    upstream = {"name": "a test", "auto_generated_guid": guid, "supported_platforms": ["linux"],
+                "executor": {"name": "sh", "command": "true"}}  # fmt: skip
+    technique = {"display_name": "Scheduled Task/Job: Cron", "atomic_tests": [upstream]}
+    (tmp_path / "T1053.003").mkdir()
+    (tmp_path / "T1053.003" / "T1053.003.yaml").write_text(json.dumps(technique))
+    (tmp_path / "Indexes" / "Indexes-CSV").mkdir(parents=True)
+    (tmp_path / "Indexes" / "Indexes-CSV" / "linux-index.csv").write_text(
+        "Tactic,Technique #,Technique Name,Test #,Test Name,Test GUID,Executor Name\n"
+        f"persistence,T1053.003,Scheduled Task/Job: Cron,1,a test,{guid},sh\n"
+        f"execution,T1053.003,Scheduled Task/Job: Cron,1,a test,{guid},sh\n"
+        "discovery,T1082,System Information Discovery,8,Hostname Discovery,another-guid,sh\n"
+    )
+    spec = {"technique": "T1053.003", "guid": guid, "name": "a test"}
+
+    assert run.upstream_definition(spec, tmp_path)["technique_name"] == "Scheduled Task/Job: Cron"
+    assert run.tactics(tmp_path) == {guid: "persistence, execution", "another-guid": "discovery"}
+    assert run.tactics(tmp_path / "T1053.003") == {}  # a checkout without the index
+
+
 def test_the_inventory_reads_accounts_sockets_and_services() -> None:
     passwd = (
         "root:x:0:0:root:/root:/bin/bash\n"

@@ -38,6 +38,8 @@ AUDIT_LOG = "/var/log/audit/audit.log"
 AUDIT_PROBE = "/var/tmp/bluefire-lab-audit-probe"
 TECHNIQUE = re.compile(r"T\d{4}(\.\d{3})?")
 GUID = re.compile(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+# Upstream's index of its Linux tests, under the atomics folder: one row for each tactic of a test.
+TACTICS = Path("Indexes", "Indexes-CSV", "linux-index.csv")
 
 
 def now() -> str:
@@ -121,13 +123,15 @@ def invoke(test: dict, executor: Path, atomics: Path, *flags: str) -> list[str]:
 
 
 def upstream_definition(spec: dict, atomics: Path) -> dict:
-    """Find the pinned test in the upstream definitions and check it is the one meant."""
+    """Find the pinned test in the upstream definitions and check it is the one meant. It
+    comes back with the name upstream gives its technique, as technique_name."""
 
     technique, guid = spec["technique"], spec["guid"]
     if not TECHNIQUE.fullmatch(technique) or not GUID.fullmatch(guid):
         raise SystemExit(f"not a technique id and a test GUID: {technique} {guid}")
     path = atomics / technique / f"{technique}.yaml"
-    tests = yaml.safe_load(path.read_text(encoding="utf-8"))["atomic_tests"]
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    tests = document["atomic_tests"]
     found = [test for test in tests if test.get("auto_generated_guid") == guid]
     if not found:
         raise SystemExit(f"{path} has no test with GUID {guid}")
@@ -142,7 +146,26 @@ def upstream_definition(spec: dict, atomics: Path) -> dict:
     unknown = sorted(set(spec.get("args") or {}) - set(test.get("input_arguments") or {}))
     if unknown:
         raise SystemExit(f"{guid} {test['name']!r} has no input argument {', '.join(unknown)}")
+    if document.get("display_name"):
+        test["technique_name"] = document["display_name"]
     return test
+
+
+def tactics(atomics: Path) -> dict[str, str]:
+    """The ATT&CK tactics of each Linux test by its GUID, from upstream's index of tests. A
+    technique can serve several tactics: the index has a row for each, and they are joined.
+    Empty when the checkout does not hold the index."""
+
+    found: dict[str, list[str]] = {}
+    try:
+        with open(atomics / TACTICS, encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                guid, tactic = row.get("Test GUID"), row.get("Tactic")
+                if guid and tactic and tactic not in found.setdefault(guid, []):
+                    found[guid].append(tactic)
+    except OSError:
+        return {}
+    return {guid: ", ".join(names) for guid, names in found.items()}
 
 
 def marker(run_id: str, order: int, edge: str) -> list[str]:
@@ -316,9 +339,14 @@ def run_test(item: dict, context: dict) -> dict:
         "user": user,
         "steps": [],
     }
-    for key in ("rule", "effect", "output", "prepare", "args", "dwell"):
+    for key in ("rule", "effect", "output", "prepare", "args", "dwell", "plain"):
         if key in spec:
             record[key] = spec[key]
+    # What ATT&CK calls the technique, and the tactics upstream lists the test under.
+    if "technique_name" in upstream:
+        record["technique_name"] = upstream["technique_name"]
+    if spec["guid"] in context["tactics"]:
+        record["tactic"] = context["tactics"][spec["guid"]]
     if "effect" in spec:
         record["effect"] = fill(spec["effect"], context)  # as it ran, so that the report shows it so
     if "defense" in item:
@@ -493,8 +521,11 @@ def main(
         "home": pwd.getpwnam(account).pw_dir,
         "atomics": atomics.resolve(),
         "executor": executor.resolve(),
+        "tactics": tactics(atomics.resolve()),
         "probes": [],
     }
+    if not context["tactics"]:
+        print(f"no tactic is recorded: the tests' checkout has no {TACTICS}", flush=True)
     requirements()
     # Stop before anything runs if the list names a test that is not the one upstream, a test
     # the target cannot run included.
