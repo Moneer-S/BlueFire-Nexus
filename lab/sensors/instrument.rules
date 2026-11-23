@@ -1,0 +1,27 @@
+## The auditd rules the lab itself needs, whatever sensor settings are under
+## test. "bluefire-lab run" loads them after the settings' own audit rules.
+##
+## The lab has to know which process belongs to which test: the marker commands
+## around a test, the shell the executor starts for it, and what that shell
+## starts. It reads that from the record auditd makes of every program start,
+## which names the process, its parent and its audit session. These rules make
+## sure such a record exists for every start, also under sensor settings that
+## record few of them, such as a published Sysmon configuration or published
+## audit rules.
+##
+## The kernel takes the key of a record from the first rule that matches, in
+## the order the rules were loaded. So a record that a rule of the settings
+## under test would also have made carries that rule's key, and counts as that
+## sensor's telemetry. A record that carries the key below exists only because
+## of these rules: the lab uses it to tie events to tests, never counts it as
+## telemetry of a test, and never gives it to the rule engine.
+
+## A backlog large enough for a burst, whatever the settings under test set.
+-b 32768
+
+## The file the lab writes until auditd has recorded the write.
+-w /var/tmp/bluefire-lab-audit-probe -p wa -k bluefire-lab-instrument
+
+## Every program start.
+-a always,exit -F arch=b64 -S execve -S execveat -k bluefire-lab-instrument
+-a always,exit -F arch=b32 -S execve -S execveat -k bluefire-lab-instrument

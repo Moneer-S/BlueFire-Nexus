@@ -29,6 +29,7 @@ import json
 import re
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -54,6 +55,13 @@ def systemds_own(event: dict) -> bool:
         image.endswith("/systemd-user-runtime-dir") and " stop " in command
     )
 
+
+# The key of the audit rules the lab itself needs (lab/sensors/instrument.rules). A record with
+# this key exists only because of those rules: it ties events to tests and is never telemetry.
+INSTRUMENT_KEY = "bluefire-lab-instrument"
+# How far Sysmon's clock may run ahead of or behind auditd's for one moment. In the lab's runs
+# Sysmon stamps the same program start 6 to 9 ms later than auditd does.
+CLOCK_SKEW = 0.05
 
 # The programs a launcher can be, by the executor a test declares. On Ubuntu sh is dash.
 SHELLS = {"sh": ("/sh", "/dash"), "bash": ("/bash",)}
@@ -340,6 +348,90 @@ def describe_audit(event: dict, why: str) -> dict:
     }
 
 
+def instrument_starts(audit_events: list[dict]) -> list[dict]:
+    """Every program start auditd recorded, with the fields the lab ties events to tests by:
+    the process, its parent, its audit session, its account, the program and its arguments.
+
+    The lab's instrument rules have auditd record every start, whatever sensor settings are
+    under test, so this list does not depend on those settings. A start has the names Sysmon
+    gives the same fields, and the record's own name under AuditEvent."""
+
+    starts = [
+        {
+            "EventID": sysmon.PROCESS_START,
+            "EventRecordID": event["serial"],
+            "AuditEvent": event["event"],
+            "UtcTime": event["time"],
+            "ProcessGuid": f"{event['call'].get('pid', '')}@{event['event']}",
+            "ProcessId": event["call"].get("pid", ""),
+            "ParentProcessId": event["call"].get("ppid", ""),
+            "ParentProcessGuid": "",
+            "Image": event["call"].get("exe", ""),
+            "CommandLine": event["command"],
+            "User": event["names"].get("UID", event["call"].get("uid", "")),
+            "TerminalSessionId": event["call"].get("ses", sysmon.NO_SESSION),
+        }
+        for event in audit_events
+        if "EXECVE" in event["types"] and event["call"].get("success") == "yes"
+    ]
+    return sorted(starts, key=when)
+
+
+def seconds(time: str) -> float:
+    """A sensor's timestamp ("2026-11-16 04:00:05.010") as seconds."""
+
+    return datetime.strptime(time + "+0000", "%Y-%m-%d %H:%M:%S.%f%z").timestamp()
+
+
+def tie(events: list[dict], starts: list[dict]) -> None:
+    """Give each of Sysmon's events its Owner: the program start it belongs to, among those the
+    instrument recorded.
+
+    Sysmon's own record of a program start goes to the instrument's start of the same process
+    nearest in time, of the same command line if there is one, or else of the same program. A
+    process that becomes another program keeps its id, and Sysmon stamps both starts alike, so
+    the command line is what tells them apart. Any other event goes where Sysmon's record of
+    its process's start went, when Sysmon made one: that also ties a process that was forked
+    and never started a program, whose events Sysmon gives its parent's identity. Otherwise it
+    goes to the latest start of its process id that is not after it. An event of a process no
+    start is known for gets no Owner.
+    """
+
+    by_process: dict[str, list[tuple[float, dict]]] = collections.defaultdict(list)
+    for start in starts:
+        by_process[start["ProcessId"]].append((seconds(start["UtcTime"]), start))
+    by_sensor_identity: dict[str, str] = {}
+    for event in events:
+        known = by_process.get(event.get("ProcessId", ""))
+        if event["EventID"] != sysmon.PROCESS_START or not known or not event.get("UtcTime"):
+            continue
+        moment = seconds(event["UtcTime"])
+        same = (
+            [start for start in known if start[1]["CommandLine"] == event.get("CommandLine")]
+            or [start for start in known if start[1]["Image"] == event.get("Image")]
+            or known
+        )
+        nearest = min(same, key=lambda start: abs(start[0] - moment))
+        if abs(nearest[0] - moment) <= 1:
+            event["Owner"] = nearest[1]["ProcessGuid"]
+            by_sensor_identity[event.get("ProcessGuid", "")] = event["Owner"]
+    by_sensor_identity.pop("", None)
+    for event in events:
+        if event["EventID"] == sysmon.PROCESS_START or not event.get("UtcTime"):
+            continue
+        if event.get("ProcessGuid") in by_sensor_identity:
+            event["Owner"] = by_sensor_identity[event["ProcessGuid"]]
+            continue
+        moment = seconds(event["UtcTime"])
+        earlier = [
+            start
+            for start in by_process.get(event.get("ProcessId", ""), [])
+            if start[0] <= moment + CLOCK_SKEW
+        ]
+        if earlier:
+            event["Owner"] = earlier[-1][1]["ProcessGuid"]
+
+
 def when(event: dict) -> tuple[str, int]:
     return event["UtcTime"], int(event["EventRecordID"] or 0)
 
@@ -438,7 +530,8 @@ def describe(event: dict, why: str) -> dict:
             collections.defaultdict(str, event)
         )
     return {
-        "record": int(event["EventRecordID"]),
+        # A start the instrument recorded is named by auditd's record, any other by Sysmon's number.
+        "record": f"audit {event['AuditEvent']}" if "AuditEvent" in event else int(event["EventRecordID"]),
         "time": event.get("UtcTime", ""),
         "kind": sysmon.KINDS.get(event["EventID"], f"event {event['EventID']}"),
         "process_id": event.get("ProcessId", ""),
@@ -446,7 +539,9 @@ def describe(event: dict, why: str) -> dict:
         "image": event.get("Image", ""),
         "detail": detail,
         "why": why,
-        "fields": {name: value for name, value in event.items() if value not in ("", "-")},
+        "fields": {
+            name: value for name, value in event.items() if value not in ("", "-") and name != "Owner"
+        },
     }
 
 
@@ -556,7 +651,7 @@ def visibility(
 
     mine = []
     for event in events:
-        guid = event.get("ProcessGuid", "")
+        guid = event.get("Owner", "")
         if guid in owned:
             mine.append(describe(event, owned[guid]))
         elif guid == launcher["ProcessGuid"] and event["EventID"] not in (
@@ -569,9 +664,8 @@ def visibility(
     # session (the change of login uid that starts it, sudo's records) as the executor's are.
     attack = step_of(test, "attack")
     pids = {launcher["ProcessId"]} | {event["ProcessId"] for event in starts if event["ProcessGuid"] in owned}
-    # So is a process forked from one of those that never started a program Sysmon saw: a
-    # subshell, or a fork whose program the kernel refused to start (noexec). auditd names its
-    # parent.
+    # So is a process forked from one of those that never started a program: a subshell, or a
+    # fork whose program the kernel refused to start (noexec). auditd names its parent.
     started = {event["ProcessId"] for event in starts}
     forks: dict[str, set[str]] = collections.defaultdict(set)
     for event in context.get("audit_events", []):
@@ -591,6 +685,8 @@ def visibility(
         event
         for event in context.get("audit_events", [])
         if event["call"].get("pid") in pids
+        # A record that exists only because of the lab's instrument rules is not telemetry.
+        and event["call"].get("key") != INSTRUMENT_KEY
         and (
             (attack and attack["session"] and event["call"].get("ses") == attack["session"])
             or start <= event["time"] <= end
@@ -605,7 +701,11 @@ def visibility(
         ),
         default=(None, None, None),
     )[2]
-    launched = [launcher["EventRecordID"]]
+    launched = [
+        event["EventRecordID"]
+        for event in events
+        if event.get("Owner") == launcher["ProcessGuid"] and event["EventID"] == sysmon.PROCESS_START
+    ]
     for event in audit_events:
         if event["event"] == launcher_exec:
             launched.append(f"audit {event['event']}")
@@ -691,7 +791,7 @@ def ordinary_activity(
     counts: collections.Counter[str] = collections.Counter()
     hits: dict[str, list[int]] = collections.defaultdict(list)
     for event in events:
-        session = session_of.get(event.get("ProcessGuid", ""))
+        session = session_of.get(event.get("Owner", ""))
         if session in baseline_sessions:
             kind = "baseline_events"
         elif session in (None, sysmon.NO_SESSION) and not any(
@@ -855,16 +955,22 @@ def check_controls(
     audit_in_time = audit is None or (
         audit["probe_time"] is not None and (first is None or audit["probe_time"] < first)
     )
+    # The lab's instrument, auditd's record of every program start, must have recorded it too.
+    tied = (audit or {}).get("instrument_probe_time", "")
+    instrument_in_time = tied == "" or (tied is not None and (first is None or tied < first))
     if ready is None or not seen:
         detail = "the sensor did not report the probe command"
     elif not in_time:
         detail = "the sensor reported the probe command only after the first test began"
     elif not audit_in_time:
         detail = "auditd did not record the probe write before the first test began"
+    elif not instrument_in_time:
+        detail = "auditd did not record the start of the probe command before the first test began"
     else:
         detail = f"the sensor reported a probe command {ready} s after it was started, before the first test"
         detail += ", and auditd recorded the probe write before it too" if audit else ""
-    checks = [control("readiness", ready is not None and in_time and audit_in_time, detail)]
+    passed = ready is not None and in_time and audit_in_time and instrument_in_time
+    checks = [control("readiness", passed, detail)]
 
     attempted = [test for test in tests if test["execution"]["answer"] != "not attempted"]
     unmeasured = [
@@ -1010,6 +1116,22 @@ def check_controls(
     return checks
 
 
+def settings_facts(run_dir: Path, settings: dict) -> dict:
+    """One set of sensor settings of a run, with the text of its files for the report."""
+
+    facts = dict(settings)
+    for sensor in ("sysmon", "audit"):
+        if settings.get(sensor):
+            data = (run_dir / settings[sensor]).read_bytes()
+            facts[f"{sensor}_sha256"] = hashlib.sha256(data).hexdigest()
+            facts[f"{sensor}_text"] = data.decode("utf-8", "replace")
+    loaded = run_dir / f"audit-rules-loaded-{settings['name']}.txt"
+    if loaded.is_file():
+        # What auditd lists after loading: the settings' own rules it accepted, and the instrument's.
+        facts["audit_rules_loaded"] = len(loaded.read_text(encoding="utf-8").splitlines())
+    return facts
+
+
 def summarize(tests: list[dict]) -> dict:
     """The totals of a run. An answer that is unstable, or could not be given, is in none of
     the totals of answers: a test counts as an alert only when its execution answer is
@@ -1052,19 +1174,28 @@ def summarize(tests: list[dict]) -> dict:
 
 def main(run_dir: Path, engine: Path) -> int:
     run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    audit = run.get("audit") or {}
+    if "instrument" not in audit:
+        raise SystemExit(
+            "this run is from before the lab tied events to tests by auditd's records of program starts: "
+            "evaluate it with the checkout that made it (results.json names the commit under run.tools.lab)"
+        )
     events, raw, other = sysmon.read(run_dir / "sysmon.txt")
-    starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
+    # auditd's records: those the sensor settings under test made, which are telemetry, and
+    # those only the lab's instrument rules made, which tie events to tests and are not.
+    all_records = auditd.read(run_dir / "audit.txt")
+    audit_events = auditd.events(all_records)
+    starts = instrument_starts(audit_events)
+    tie(events, starts)
+    instrument_only = {event["event"] for event in audit_events if event["call"].get("key") == INSTRUMENT_KEY}
+    records = [record for record in all_records if record["event"] not in instrument_only]
     rules = rule_index(run_dir / "rules" / "linux")
     lab_rules = rule_index(run_dir / "lab-rules" / "linux", "lab")
     matched, counts = run_engine(engine, run_dir, events, raw)
     lab_matched, lab_counts = run_engine(engine, run_dir, events, raw, "lab-rules")
     for record, ids in lab_matched.items():
         matched[record].extend(ids)
-    # When the run had auditd record beside Sysmon: its records, its events, and the rules that matched.
-    audit = run.get("audit")
-    records = auditd.read(run_dir / "audit.txt") if audit else []
-    audit_events = auditd.events(records)
-    audit_matched, audit_counts = run_audit_engine(engine, run_dir, records) if audit else ({}, None)
+    audit_matched, audit_counts = run_audit_engine(engine, run_dir, records)
     for record, ids in audit_matched.items():
         matched[record].extend(ids)
     for index, by_category in ((rules, counts), (lab_rules, lab_counts)):
@@ -1128,7 +1259,7 @@ def main(run_dir: Path, engine: Path) -> int:
             key: test[key]
             for key in ("order", "role", "technique", "guid", "name", "executor", "elevated", "user")
         }
-        kept = ("rule", "args", "defense", "compared_with", "shows_technique")
+        kept = ("rule", "args", "defense", "compared_with", "shows_technique", "settings")
         result.update({key: test[key] for key in kept if key in test})
         if "defense" in test:
             attack = step_of(test, "attack")
@@ -1154,18 +1285,29 @@ def main(run_dir: Path, engine: Path) -> int:
     test_windows = [
         window for order, window in windows.items() if order not in baseline and None not in window
     ]
-    ordinary = ordinary_activity(run, events, starts, matched, rules, test_windows, audit_events)
+    under_test = [event for event in audit_events if event["event"] not in instrument_only]
+    ordinary = ordinary_activity(run, events, starts, matched, rules, test_windows, under_test)
     verdicts = judge_lab_rules(lab_rules, tests, ordinary)
     second_answers(tests, verdicts)
-    audit_control = audit_facts(audit, audit_events) if audit else None
+    audit_control = audit_facts(audit, audit_events)
+    probe = f"/usr/bin/true bluefire-lab-probe {run['id']}"
+    audit_control["instrument_probe_time"] = min(
+        (start["UtcTime"] for start in starts if start["CommandLine"] == probe), default=None
+    )
+    sensor_starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
     results = {
         "schema": "bluefire-lab/results/1",
         "run": {
             key: run.get(key)
             for key in ("id", "started", "finished", "account", "target", "tools", "inventory", "aborted")
         },
+        # The sensor settings of the run: the lab's own, and those given as an input if any, which
+        # every test but the canary then ran under.
+        "settings": [settings_facts(run_dir, settings) for settings in run.get("settings", [])],
+        "switches": run.get("switches", []),
         "sensor": {
             **run["sensor"],
+            "configuration_changes": sum(1 for event in events if event["EventID"] == "16"),
             "version": next((e["Version"] for e in events if e["EventID"] == "4" and "Version" in e), None),
             "configuration_sha256": hashlib.sha256((run_dir / "sensor-config.xml").read_bytes()).hexdigest(),
             "configuration_text": (run_dir / "sensor-config.xml").read_text(encoding="utf-8"),
@@ -1177,10 +1319,11 @@ def main(run_dir: Path, engine: Path) -> int:
             "rules_sha256": hashlib.sha256((run_dir / audit["rules"]).read_bytes()).hexdigest(),
             "rules_text": (run_dir / audit["rules"]).read_text(encoding="utf-8"),
             "records": len(records),
-            "events": len(audit_events),
-        }
-        if audit
-        else None,
+            "events": len(under_test),
+            # What only the lab's instrument rules recorded: used to tie events to tests, never counted.
+            "instrument_events": len(instrument_only),
+            "instrument_text": (run_dir / audit["instrument"]).read_text(encoding="utf-8"),
+        },
         "rules": {
             "source": (run_dir / "rules" / "SOURCE").read_text(encoding="utf-8").strip(),
             "license": "Detection Rule License 1.1, https://github.com/SigmaHQ/Detection-Rule-License",
@@ -1198,7 +1341,9 @@ def main(run_dir: Path, engine: Path) -> int:
             key: ordinary[key] for key in ("baseline_events", "system_events", "pinned_rules", "parts")
         },
         "engine": {"name": "Zircolite", "version": found.group(1) if found else None, "counts": tally},
-        "controls": check_controls(run, tests, starts, sysmon.loss(events, other), tally, audit_control),
+        "controls": check_controls(
+            run, tests, sensor_starts, sysmon.loss(events, other), tally, audit_control
+        ),
         "summary": summarize(tests),
         "tests": tests,
         "dropped": run.get("dropped", []),

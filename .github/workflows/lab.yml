@@ -27,6 +27,18 @@ on:
           (the full 40-character commit), optionally followed by :folder
         required: false
         default: ""
+      sysmon_config:
+        description: >-
+          A Sysmon for Linux configuration to test in place of the lab's own:
+          owner/repository@commit:path/to/file.xml (the full 40-character commit)
+        required: false
+        default: ""
+      audit_rules:
+        description: >-
+          Audit rules to test in place of the lab's own:
+          owner/repository@commit:path/to/file.rules (the full 40-character commit)
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -196,6 +208,32 @@ jobs:
           echo "$RULE_SET" > "$RUN/rule-set/SOURCE"
           echo "rule files: $(find "$RUN/rule-set/files" -type f | wc -l)"
 
+      # Only when the run was started by hand with the input "sysmon_config" or "audit_rules": each
+      # is one file of a public repository at a commit. Every test but the known-detected one then
+      # runs under these settings, with the lab's instrument rules loaded after them.
+      - name: Fetch the sensor settings given as inputs
+        if: ${{ inputs.sysmon_config != '' || inputs.audit_rules != '' }}
+        env:
+          SYSMON_CONFIG: ${{ inputs.sysmon_config }}
+          AUDIT_RULES: ${{ inputs.audit_rules }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/given-settings"
+          fetch_file() {
+            if ! printf '%s\n' "$1" | grep -Eqx '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}:[A-Za-z0-9_./-]+'; then
+              echo "the input is owner/repository@commit:path/to/file, with the full 40-character commit: $1"
+              exit 1
+            fi
+            case "$1" in *..*) echo "the path must not contain .."; exit 1 ;; esac
+            repository=${1%%@*}
+            rest=${1#*@}
+            curl -fsSL --retry 3 -o "$RUNNER_TEMP/given-settings/$2" \
+              "https://raw.githubusercontent.com/$repository/${rest%%:*}/${rest#*:}"
+            echo "$1" > "$RUNNER_TEMP/given-settings/${2%.*}.SOURCE"
+          }
+          if [ -n "$SYSMON_CONFIG" ]; then fetch_file "$SYSMON_CONFIG" sysmon.xml; fi
+          if [ -n "$AUDIT_RULES" ]; then fetch_file "$AUDIT_RULES" audit.rules; fi
+          ls -l "$RUNNER_TEMP/given-settings"
+
       - name: Create the test account and reject its outbound traffic
         run: |
           sudo useradd --create-home --shell /bin/bash bluefire-lab
@@ -256,6 +294,8 @@ jobs:
             --executor /opt/bluefire-lab/invoke-atomicredteam \
             --sensor-config lab/sensors/sysmon.xml \
             --audit-rules lab/sensors/audit.rules \
+            --instrument lab/sensors/instrument.rules \
+            --given-settings "$RUNNER_TEMP/given-settings" \
             --out "$RUN"
 
       - name: Evaluate the rules and compute the answers
@@ -326,12 +366,12 @@ jobs:
       - name: Write the report
         if: always()
         env:
-          RULE_SET: ${{ inputs.rules }}
+          GIVEN: ${{ inputs.rules }}${{ inputs.sysmon_config }}${{ inputs.audit_rules }}
         run: |
           "$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUNNER_TEMP/lab-run"
           cat "$RUNNER_TEMP/lab-run/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          # The lab's own text uses no em dash. The text of a rule set given as an input is not the lab's.
-          if [ -z "$RULE_SET" ] && grep -n $'\xe2\x80\x94' "$RUNNER_TEMP/lab-run/report.html" "$RUNNER_TEMP/lab-run/summary.md"; then
+          # The lab's own text uses no em dash. The text of rules or settings given as inputs is not the lab's.
+          if [ -z "$GIVEN" ] && grep -n $'\xe2\x80\x94' "$RUNNER_TEMP/lab-run/report.html" "$RUNNER_TEMP/lab-run/summary.md"; then
             echo "the report must not use the em dash"
             exit 1
           fi

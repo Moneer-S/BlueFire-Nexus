@@ -421,6 +421,48 @@ the set:
 Not yet shown on `main`: the first run with this input is the one this section
 will link.
 
+### Your sensor settings
+
+The lab's own sensor settings record far more than a defender's do: Sysmon
+with every event of five kinds, and audit rules written for this lab. So what
+the lab reports as seen is an upper bound. Two inputs put published or your own
+settings under test instead, each one file of a public repository at a commit,
+`owner/repository@commit:path/to/file`:
+
+- `sysmon_config`: a Sysmon for Linux configuration;
+- `audit_rules`: a file of audit rules.
+
+```bash
+gh workflow run lab.yml \
+  -f audit_rules=Neo23x0/auditd@6111069472c26c4120002933b67cef9855dfbad5:audit.rules \
+  -f sysmon_config=microsoft/MSTIC-Sysmon@ad23e3703bd4fbe3d84bc32a46310fa2ae60f996:linux/configs/main.xml
+```
+
+Give one or both. Every test, the harmless command and the baseline then run
+under the given settings, and their answers are answers under those settings.
+A sensor you give no settings for records nothing under them: Sysmon gets a
+configuration that records no event, and auditd only what programs report to
+it themselves. Three things stay the lab's:
+
+- The known-detected test runs under the lab's own settings, first and last.
+  The pinned rules are known to catch it there, so it still shows that the
+  sensors, the export and the rule engine work. Under settings that do not
+  record its `rm`, it could show nothing.
+- The lab's instrument rules are loaded after your audit rules, so that the
+  lab can tie events to tests. Records only they made are not counted.
+- Audit rules that lock the configuration (`-e 2`) are refused: the lab could
+  not load its own again.
+
+The report names the settings a run was given, prints both files, and says how
+many audit rules auditd listed as loaded. The lab's own rules are judged under
+the given settings too, so a rule that needs an event your settings do not
+record is not accepted in such a run. The field that says whether a test's
+telemetry shows the technique was written under the lab's own settings, so a
+run under other settings does not use it.
+
+Not yet shown on `main`: the first run with these inputs is the one this
+section will link.
+
 ## How a run works
 
 The `lab` workflow runs the whole list on three hosted runners at the same time,
@@ -470,8 +512,18 @@ is one runner's answer.
    held, or the test as left behind. The report lists the tests left behind.
    Several have no cleanup command upstream.
 3. `bluefire-lab evaluate` computes `results.json` from the files the run
-   leaves. A Sysmon event belongs to a test when its process is in the audit
-   session of the test's attack step. Two more rules apply inside the test's
+   leaves. Which process belongs to which test it reads from auditd's record
+   of every program start, which names the process, its parent and its audit
+   session. The lab's own audit rules
+   ([`sensors/instrument.rules`](sensors/instrument.rules)) make sure that
+   record exists for every start, whatever sensor settings are under test. A
+   record that only those rules made ties events to tests and is never counted
+   as telemetry or given to the rule engine: the kernel gives a record the key
+   of the first rule that matches, so a record that a rule of the settings
+   under test would also have made carries that rule's key. A process belongs
+   to a test when it is in the audit session of the test's attack step, and a
+   Sysmon event belongs to the process whose start Sysmon tied it to, or
+   else to the latest start of its process id. Two more rules apply inside the test's
    window, between its markers. What cron starts for the test account belongs
    to a test run as that account. What systemd starts belongs to a test run as
    root, unless the same command also ran outside every test's window. The
@@ -480,7 +532,7 @@ is one runner's answer.
    line (`sh -c` or `bash -c`, as the test declares); files it writes count as
    the test's. An auditd record belongs to a test when its process is one that
    belongs to the test by those rules, or was forked by one and never started a
-   program Sysmon saw (a subshell, or a start the kernel refused), which leaves
+   program (a subshell, or a start the kernel refused), which leaves
    out the driver's own records in the same session. It then judges each of
    the lab's own rules on
    the tests, their variants and the ordinary activity. "Telemetry only"

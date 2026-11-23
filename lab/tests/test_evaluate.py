@@ -114,6 +114,7 @@ def telemetry() -> list[dict]:
 
 def see(test, events, matched=None, system=(), audit=(), rule_set=None):
     starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
+    evaluate.tie(events, starts)  # as the evaluation does, with the program starts auditd recorded
     edges = [evaluate.marker_time(starts, "r1", test["order"], edge) for edge in ("start", "end")]
     context = {
         "account": ACCOUNT,
@@ -651,6 +652,7 @@ def test_ordinary_activity_is_the_baseline_and_what_ran_in_no_session_outside_th
     window = [("2026-11-16 04:00:01.000", "2026-11-16 04:00:06.000")]
     matched = {"1": ["lab-rule"], "3": ["medium-rule"], "4": ["lab-rule"], "5": ["lab-rule"]}
 
+    evaluate.tie(events, events)
     ordinary = evaluate.ordinary_activity(run_record, events, events, matched, RULES, window)
 
     assert (ordinary["baseline_events"], ordinary["system_events"]) == (1, 1)
@@ -789,6 +791,10 @@ def test_auditd_must_record_its_probe_in_time_and_lose_no_record() -> None:
     assert failed(sound) == []
     assert failed({**sound, "probe_time": None}) == ["readiness"]
     assert failed({**sound, "probe_time": "2026-11-16 04:00:02.000"}) == ["readiness"]
+    # The lab's instrument, auditd's own record of the probe command's start, must be in time too.
+    assert failed({**sound, "instrument_probe_time": "2026-11-16 04:00:00.490"}) == []
+    assert failed({**sound, "instrument_probe_time": None}) == ["readiness"]
+    assert failed({**sound, "instrument_probe_time": "2026-11-16 04:00:02.000"}) == ["readiness"]
     assert failed({**sound, "lost_after": 3}) == ["loss"]
     assert failed({**sound, "lost_before": None}) == ["loss"]
     # auditd rotated its log during the run, as in run 44050159740: the export holds only the last part.
@@ -911,3 +917,100 @@ def test_what_the_engine_made_of_another_rule_set_does_not_fail_the_run() -> Non
     assert failed_controls(
         [CAUGHT, measured("control"), CAUGHT], engine=[{**theirs, "origin": "pinned"}]
     ) == ["engine"]
+
+
+def started(
+    serial, second, pid, parent, command, session, success="yes", key="bluefire-lab-instrument"
+) -> dict:
+    """An auditd event: a program start, as auditd.events joins its records."""
+
+    return {
+        "event": f"1794893574.919:{serial}",
+        "serial": str(serial),
+        "time": f"2026-11-16 04:00:{second:06.3f}",
+        "types": ["SYSCALL", "EXECVE", "CWD", "PATH", "PROCTITLE"],
+        "call": {"syscall": "59", "success": success, "ses": str(session), "pid": str(pid), "ppid": str(parent),
+                 "exe": "/usr/bin/" + command.split()[0], "key": key},
+        "names": {"SYSCALL": "execve", "UID": ACCOUNT},
+        "paths": ["/usr/bin/" + command.split()[0]],
+        "command": command,
+    }  # fmt: skip
+
+
+def test_the_program_starts_auditd_recorded_are_what_events_are_tied_to_tests_by() -> None:
+    audit = [
+        started(12, 5.0, 120, 105, "sh -c touch /tmp/x; id", 11),
+        started(10, 2.0, 100, 99, "pwsh -Command Invoke-AtomicTest", 11),
+        started(14, 5.2, 122, 120, "missing", 11, success="no"),  # the kernel refused it: no program started
+        written(15, 11),
+    ]
+
+    starts = evaluate.instrument_starts(audit)
+
+    assert [(start["ProcessId"], start["ParentProcessId"], start["CommandLine"]) for start in starts] == [
+        ("100", "99", "pwsh -Command Invoke-AtomicTest"),
+        ("120", "105", "sh -c touch /tmp/x; id"),
+    ]
+    assert starts[1]["TerminalSessionId"] == "11" and starts[1]["Image"] == "/usr/bin/sh"
+    assert starts[1]["User"] == ACCOUNT and starts[1]["AuditEvent"] == "1794893574.919:12"
+    assert evaluate.describe(starts[1], "launcher")["record"] == "audit 1794893574.919:12"
+
+
+def test_sysmons_events_are_tied_to_the_program_starts_auditd_recorded() -> None:
+    # Process 120 starts as a shell and then becomes sysctl, as bash -c "sysctl ..." does. Sysmon
+    # reports both starts, with the time of the first and an identity of its own for each.
+    command = "bash -c sysctl -w x=0"
+    starts = evaluate.instrument_starts(
+        [started(12, 5.0, 120, 105, command, 11), started(13, 5.004, 120, 105, "sysctl -w x=0", 11)]
+    )
+    shell, sysctl = (start["ProcessGuid"] for start in starts)
+
+    def seen(event: dict, identity: str, **fields) -> dict:
+        return {**event, "ProcessGuid": identity, **fields}
+
+    events = [
+        seen(start(1, 5.009, 120, 105, command, 11), "{as-shell}", Image="/usr/bin/bash"),
+        seen(start(2, 5.009, 120, 105, "sysctl -w x=0", 11), "{as-sysctl}", Image="/usr/bin/sysctl"),
+        seen(other(3, 5.002, sysmon.FILE_CREATED, 120, TargetFilename="/tmp/by-the-shell"), "{as-shell}"),
+        seen(other(4, 5.5, sysmon.PROCESS_END, 120), "{as-sysctl}"),
+        # A child the shell forked, which never started a program: Sysmon gives it the shell's identity.
+        seen(other(5, 5.003, sysmon.FILE_CREATED, 121, TargetFilename="/tmp/by-a-fork"), "{as-shell}"),
+        # Under a configuration that records no starts, only the process id and the time are left.
+        seen(other(6, 5.1, sysmon.FILE_CREATED, 120, TargetFilename="/tmp/later"), "{unknown-1}"),
+        seen(other(7, 4.0, sysmon.FILE_CREATED, 120, TargetFilename="/tmp/before-any-start"), "{unknown-2}"),
+        seen(
+            other(8, 5.1, sysmon.FILE_CREATED, 999, TargetFilename="/tmp/of-an-unknown-process"),
+            "{unknown-3}",
+        ),
+    ]
+
+    evaluate.tie(events, starts)
+
+    assert [event.get("Owner") for event in events] == [
+        shell,
+        sysctl,
+        shell,
+        sysctl,
+        shell,
+        sysctl,
+        None,
+        None,
+    ]
+    assert "Owner" not in evaluate.describe(events[0], "session")["fields"]
+
+
+def test_a_record_only_the_labs_instrument_rules_made_is_not_telemetry() -> None:
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+    # The start of "id" by the test's shell: once recorded only for the lab's instrument, and
+    # once by a rule of the sensor settings under test, whose key it then carries.
+    for_the_lab = started(178, 5.01, 121, 120, "id", 11)
+    for_the_settings = started(178, 5.01, 121, 120, "id", 11, key="recon")
+    matched = {"audit 1794893574.919:178": ["high-rule"]}
+
+    unseen, nothing = see(a_test(), events, matched, audit=[for_the_lab])
+    seen, mine = see(a_test(), events, matched, audit=[for_the_settings])
+
+    assert (unseen["answer"], nothing) == ("no telemetry", [])
+    assert (seen["answer"], [event["detail"] for event in mine]) == ("alert", ["/usr/bin/id by id"])

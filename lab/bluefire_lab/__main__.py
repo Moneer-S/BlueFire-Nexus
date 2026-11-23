@@ -19,7 +19,18 @@ def main(arguments: list[str] | None = None) -> int:
     running.add_argument("--atomics", type=Path, required=True, help="atomics folder of Atomic Red Team")
     running.add_argument("--executor", type=Path, required=True, help="checkout of Invoke-AtomicRedTeam")
     running.add_argument("--sensor-config", type=Path, required=True, help="Sysmon configuration file")
-    running.add_argument("--audit-rules", type=Path, help="auditd rules to load, so that auditd records too")
+    running.add_argument("--audit-rules", type=Path, required=True, help="the lab's own auditd rules")
+    running.add_argument(
+        "--instrument",
+        type=Path,
+        required=True,
+        help="the auditd rules the lab itself needs, loaded after whichever settings are under test",
+    )
+    running.add_argument(
+        "--given-settings",
+        type=Path,
+        help="folder with sensor settings to test in place of the lab's own: sysmon.xml, audit.rules, or both",
+    )
     running.add_argument("--account", default="bluefire-lab", help="unprivileged account the tests run as")
     running.add_argument("--out", type=Path, required=True, help="folder for run.json and sysmon.txt")
 
@@ -63,6 +74,8 @@ def main(arguments: list[str] | None = None) -> int:
             options.out,
             options.account,
             options.audit_rules,
+            options.instrument,
+            options.given_settings,
         )
     if options.command == "evaluate":
         if (options.folder / "run.json").is_file():

@@ -81,10 +81,29 @@ def telemetry_note(test: dict) -> str:
 
     if test["execution"]["answer"] != "took effect" or test["visibility"]["answer"] != "telemetry only":
         return ""
+    if test.get("settings") == "given":
+        return ""  # the list's judgment was made under the lab's own sensor settings
     shows = test.get("shows_technique")
     if shows is None:
         return "not judged whether it shows the technique"
     return "shows the technique: a gap a rule could close" if shows else "does not show the technique itself"
+
+
+def given_settings(results: dict) -> dict | None:
+    """The sensor settings given to the run as an input, when it had any."""
+
+    return next((found for found in results.get("settings", []) if found["name"] == "given"), None)
+
+
+def given_settings_note(results: dict) -> str:
+    given = given_settings(results)
+    if not given:
+        return ""
+    return (
+        " Every test but the known-detected one ran under sensor settings given to the run as an input: "
+        f"Sysmon configuration {given.get('sysmon_source', 'none')}; audit rules "
+        f"{given.get('audit_source', 'none given: auditd records nothing under these settings but what programs report themselves')}."
+    )
 
 
 def lede(results: dict) -> str:
@@ -106,7 +125,8 @@ def lede(results: dict) -> str:
         f"{summary['alert']} raised an alert, {summary['telemetry_only']} left telemetry but no alert, "
         f"and {summary['no_telemetry']} left no telemetry."
     )
-    if summary.get("telemetry_only") and "gaps_a_rule_could_close" in summary:
+    text += given_settings_note(results)
+    if summary.get("telemetry_only") and "gaps_a_rule_could_close" in summary and not given_settings(results):
         beside, unjudged = summary["telemetry_beside_the_technique"], summary["telemetry_not_judged"]
         text += (
             f" For {summary['gaps_a_rule_could_close']} of the {summary['telemetry_only']} with telemetry and no "
@@ -581,7 +601,35 @@ def html_report(results: dict) -> str:
     audit_configuration = (
         f'<p class="note">auditd, rules SHA-256 <span class="mono">{e(audit["rules_sha256"])}</span>:</p>'
         f'<pre class="box">{e(audit["rules_text"])}</pre>'
+        + (
+            '<p class="note">The rules the lab itself needs, loaded after whichever settings are under test. '
+            f"The {audit.get('instrument_events', 0)} events only these rules recorded tie events to tests. They "
+            "are not counted as telemetry and not given to the rule engine:</p>"
+            f'<pre class="box">{e(audit["instrument_text"])}</pre>'
+            if audit.get("instrument_text")
+            else ""
+        )
         if audit
+        else ""
+    )
+    given = given_settings(results)
+    given_configuration = (
+        '<p class="note">The settings given to this run as an input, which every test but the known-detected '
+        "one ran under. That test ran under the lab's own settings, at the start and at the end, to show that "
+        "the sensors, the export and the rule engine work: the pinned rules are known to catch it there. "
+        f"Sysmon configuration, {e(given['sysmon_source'])}, SHA-256 "
+        f'<span class="mono">{e(given["sysmon_sha256"])}</span>:</p>'
+        f'<pre class="box">{e(given["sysmon_text"])}</pre>'
+        + (
+            f'<p class="note">Audit rules, {e(given["audit_source"])}, SHA-256 '
+            f'<span class="mono">{e(given["audit_sha256"])}</span>. With the lab\'s instrument rules after them, '
+            f"auditd listed {given.get('audit_rules_loaded', 'an unknown number of')} rules as loaded:</p>"
+            f'<pre class="box">{e(given["audit_text"])}</pre>'
+            if given.get("audit")
+            else '<p class="note">No audit rules were given: auditd recorded only what programs report '
+            "themselves, and what the lab's instrument rules record, which is not counted.</p>"
+        )
+        if given
         else ""
     )
     tests = [test for test in results["tests"] if test["role"] == "test"]
@@ -774,9 +822,11 @@ control fails as a whole.</p>
 <h2>How this was measured</h2>
 <p class="note">Each test is a published Atomic Red Team test, pinned by its GUID and run unchanged by the
 upstream executor on the target, as an unprivileged account unless the test declares that it needs root.
-A marker command runs before and after each test. Each step runs in a kernel audit session of its own,
-and an event is tied to a test when its process is in the session of the test's attack step; an auditd
-record, when the process that wrote it is one of the test's. What a test schedules runs outside its session,
+A marker command runs before and after each test. Each step runs in a kernel audit session of its own.
+Which process is in which session is read from auditd's record of every program start, which the lab's own
+audit rules make sure exists whatever sensor settings are under test; a record only those rules made is not
+counted as telemetry. An event is tied to a test when its process is in the session of the test's attack
+step; an auditd record, when the process that wrote it is one of the test's. What a test schedules runs outside its session,
 so two rules go by time, between the test's markers: what cron starts for the test account belongs to a test
 run as that account, and what systemd starts belongs to a test run as root, unless the same command also ran
 outside every test's window. A late step of systemd for an earlier test can still land in such a window.
@@ -786,8 +836,9 @@ The sensors' own timestamps are used throughout.</p>
 <p class="note">The answers can be computed again from the files of the run's artifact:</p>
 <pre class="box">{e(RECOMPUTE)}</pre>
 <h3 id="sensor">Sensor configuration</h3>
-<p class="note">"No telemetry" means none under this configuration. Sysmon for Linux, SHA-256
-<span class="mono">{e(sensor["configuration_sha256"])}</span>:</p>
+{given_configuration}
+<p class="note">"No telemetry" means none under the configuration a test ran under. The lab's own settings.
+Sysmon for Linux, SHA-256 <span class="mono">{e(sensor["configuration_sha256"])}</span>:</p>
 <pre class="box">{e(sensor["configuration_text"])}</pre>
 {audit_configuration}
 {inventory_section}
