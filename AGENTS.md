@@ -2,46 +2,43 @@
 
 These notes apply to everyone who works here.
 
-## Where work happens
+## What this is
 
-Work goes in `lab/`. It is a test bench for defenders: it runs published
-attack tests against a disposable lab target, records what the defenses on that
-target saw, and shows what changes when a defense is changed.
+BlueFire Nexus is a range you can watch. A small real network runs, an attacker
+works through it, and the app shows each step next to what the defenses saw.
 
-The earlier product (`bluefire/`, `runner/`, `frontend/`, `tests_platform/`,
-`tools/` and its documents) was removed. It stays in the git history, for
-example at the tag `v3.0.0-rc2`. Do not bring it back.
+The app is the product: `bluefire/`, `frontend/` and `runner/`. Build on it.
+`lab/` is the engine that runs real attack tests and records what the sensors
+saw. New work puts real runs under the app's screens and makes those screens
+better. A screen or a feature that is not used yet is left alone, not removed.
 
 ## Rules
 
-1. **A result is real or it is labelled.** Real means the attack test ran on a
-   lab target, a sensor on that target produced the telemetry, and a rule engine
-   evaluated that telemetry. Fixtures, replays and mocks help development, and
-   they are never presented as results. A claim in a document links to the CI
-   run that shows it, or says "not yet shown".
-2. **Attack tests run only on lab targets.** A lab target is a GitHub-hosted
-   runner inside this repository's own workflows, or a disposable container
-   whose name starts with `bluefire-lab-`, on a network named the same way.
-   Never run an attack test on a developer machine itself, and never send test
-   traffic to anything the lab did not create.
+1. **A result is real or it is labelled.** Real means the test ran in a range,
+   a sensor there produced the telemetry, and a rule engine evaluated it.
+   Fixtures, replays and mocks help development, and they are never presented
+   as results.
+2. **Attacks run only inside a range.** A range is a set of containers that the
+   project starts on networks with no route out, or a GitHub-hosted runner
+   inside this repository's own workflows. Nothing attacks a developer machine
+   itself or anything a range did not create.
 3. **Use published tests and tools, pinned.** Attack steps come from maintained
    public projects such as Atomic Red Team, pinned to a commit or version and
    recorded in `THIRD_PARTY_NOTICES.md`. Do not write new attack techniques.
-   Detection rules, hardening changes, parsers and reports are ours to write.
+   The path that strings published steps together is ours to write, and so are
+   detection rules, hardening changes, parsers and reports.
 4. **This repository is public.** Commits, pull requests, issues, comments, CI
    logs and CI artifacts can be read by anyone. Keep out secrets and details of
    any developer machine: user names, host names, local paths, addresses.
-   Published evidence comes from CI runners only.
+   Pictures and recordings that are published come from CI runners.
 5. **Write for a stranger.** Commit messages, pull request text and documents
    say what the change does and how it was checked. Plain messages only: no
    trailers or footers, no status notes or to-do lists. Name a branch after the
-   change, for example `lab/first-loop`.
-6. **Keep it small.** The lab is a thin layer that joins existing tools. Before
-   adding a module, look for a maintained tool that already does the job. A CI
-   run on a clean runner is the proof: do not build machinery whose job is to
-   hold or check proof. When a new way of doing something in `lab/` replaces an
-   old one there, delete the old one in the same change: the next contributor
-   copies the nearest example.
+   change, for example `range/first-range`.
+6. **Borrow before you build.** Ranges, sensors, rules and engines exist as
+   open projects. Our code joins them to the app.
+7. **How it looks matters.** A change that makes a screen or the README worse
+   to look at is a regression.
 
 ## Pull requests
 
@@ -60,20 +57,11 @@ example at the tag `v3.0.0-rc2`. Do not bring it back.
 ## Checks
 
 - The scan for private paths and the secret scans run on every pull request.
-  Keep them running when other checks change. They are the three jobs of
-  `.github/workflows/checks.yml`, and each first shows that it catches
-  something planted. Run the path scan before you push, it needs nothing
-  installed: `python3 .github/scripts/privacy_scan.py` for the files, and
-  `python3 .github/scripts/privacy_scan.py --commits origin/main..HEAD` for
-  every commit of your branch. A path that reached a pushed commit stays in the
-  history even after a later commit removes it.
-- Do not skip, disable or loosen a check to make a failing change pass. Removing
-  a check together with the code it guarded is a different thing, and fine.
+  Keep them running when other checks change.
+- Checks are few and fast. A test checks behaviour that a user of the app can
+  observe. Fix or delete a test that still passes when that behaviour breaks,
+  or that fails when only the internals change.
 - When the same mistake happens twice, make it impossible: by design first, then
-  a type, then a lint or CI check whose error names the fix, then a test. A rule
-  in this file comes last, for judgment calls only. Add a check only for a
-  mistake that really happened, and show that it fails on that mistake.
-- A test checks behaviour that a user of the code can observe. Fix or delete a
-  test that still passes when that behaviour breaks, or that fails when only the
-  internals change, in a change of its own: never in the change that makes it
-  fail.
+  a type, then a lint or CI check whose error names the fix, then a test. Add a
+  check only for a mistake that really happened, and show that it fails on that
+  mistake.
