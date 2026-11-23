@@ -243,6 +243,13 @@ those runs installed.
 
 Each `lab-run` artifact includes the SigmaHQ rules used and their license.
 
+The ranges (`lab/range/`, `.github/workflows/range-one.yml`) pull the following image by digest
+when a range runs. It is not copied into this repository, and it runs unchanged.
+
+| Project | Pin | Licence | Use |
+|---|---|---|---|
+| [nginx official image](https://github.com/nginx/docker-nginx) | `nginx:1.28.0-bookworm@sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609` | nginx: BSD-2-Clause; the image's Debian packages under their own licences | The bare hosts of `lab/range/seal-check.yaml`: a listener for the seal's probes |
+
 The lab's Python package depends on [PyYAML](https://github.com/yaml/pyyaml) (MIT), installed
 from PyPI. Its tests and lint use [pytest](https://github.com/pytest-dev/pytest) (MIT) and
 [Ruff](https://github.com/astral-sh/ruff) (MIT), installed the same way in CI.
