@@ -63,7 +63,7 @@ describe("the timeline", () => {
       lastReal = real;
     }
     for (const segment of timeline.segments) {
-      const middle = (segment.bodyStart + segment.end) / 2;
+      const middle = (segment.bodyStart + segment.bodyEnd) / 2;
       expect(realToScreen(timeline, screenToReal(timeline, middle))).toBeCloseTo(middle, 6);
     }
     expect(screenToReal(timeline, timeline.duration)).toBe(timeOf(at(121)));

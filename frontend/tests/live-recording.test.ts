@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alertsByStep, countsAsAlert, countsForScore, eventsByStep, readRecording, RecordingError } from "../src/live/recording";
+import { alertsByStep, countsAsAlert, countsForScore, eventsByStep, readRecording, RecordingError, timeOf } from "../src/live/recording";
 import { alert, event, recording, step } from "./live-fixture";
 
 function valid() {
@@ -129,6 +129,13 @@ describe("times", () => {
     expect(refusal(changed(["steps", 0, "started"], "2026-13-01T10:00:10Z"))).toBe('The start of Step "1" is not a time: "2026-13-01T10:00:10Z".');
     expect(() => readRecording(changed(["steps", 0, "started"], "2026-01-01T10:00:10Z"))).not.toThrow();
     expect(() => readRecording(changed(["steps", 0, "started"], "2026-01-01T10:00:10.5Z"))).not.toThrow();
+  });
+
+  it("accepts up to six digits after the second, as the service does, and plays them to the millisecond", () => {
+    const read = readRecording(changed(["steps", 0, "started"], "2026-01-01T10:00:09.999999Z"));
+    expect(timeOf(read.steps[0]?.started ?? "")).toBe(Date.parse("2026-01-01T10:00:09.999Z"));
+    expect(timeOf("2026-01-01T10:00:00.000001Z")).toBe(Date.parse("2026-01-01T10:00:00Z"));
+    expect(refusal(changed(["steps", 0, "started"], "2026-01-01T10:00:10.0000001Z"))).toBe('The start of Step "1" is not a UTC time such as 2026-11-17T17:07:23.834Z: "2026-01-01T10:00:10.0000001Z".');
   });
 });
 

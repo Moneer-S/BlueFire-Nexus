@@ -15,8 +15,9 @@ value the engine did not measure is left out, and the reader shows it as not
 known.
 
 The format is JSON, UTF-8, one object. Its `schema` is `bluefire.recording/1`.
-Times are ISO 8601 in UTC with a `Z`, to the millisecond where the source has
-it (`2026-11-17T17:07:23.834Z`).
+Times are ISO 8601 in UTC with a `Z`, with up to six digits after the second
+where the source has them (`2026-11-17T17:07:23.834Z`). The live view plays
+them to the millisecond.
 
 ## Top level
 

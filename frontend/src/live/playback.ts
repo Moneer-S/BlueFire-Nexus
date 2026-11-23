@@ -10,8 +10,11 @@
 // range: MIN_BODY + (MAX_BODY - MIN_BODY) * d / (d + HALF), with d in seconds.
 // A step of 0.1 s gets about 1.8 s, one of 8 s about 6.8 s, one of a minute
 // about 10.8 s, and no step gets more than 12 s. Inside the body, real time
-// runs linearly, so events keep their order and spacing. Every silence
-// between two steps, whatever its real length, becomes one short beat.
+// runs linearly, so events keep their order and spacing. When the light of a
+// match fired in the body would reach its rule engine too late to be told, the
+// step holds after its body, its clock stopped, until a moment after it lands.
+// Every silence between two steps, whatever its real length, becomes one short
+// beat.
 
 import { countsAsAlert, countsForScore, timeOf } from "./recording";
 import type { Alert, Recording, RecordingEvent, Step } from "./recording";
@@ -27,7 +30,16 @@ export const PLAYBACK_RULE = {
   half: 8,
   /** Screen seconds of every silence between two steps. */
   beat: 0.5,
+  /** Screen seconds a recorded event takes to travel from its host to the rule engines. */
+  travel: 0.9,
+  /** Screen seconds a step's outcome is told, at least, before the step ends. */
+  told: 0.25,
 } as const;
+
+/** The screen time at which a match's light reaches its rule engine. A match on the launcher line has no light. */
+export function landing(fire: Fire): number {
+  return fire.at + (fire.alert.events.length > 0 ? PLAYBACK_RULE.travel : 0);
+}
 
 /** Screen seconds of a step's body for a real duration in seconds. */
 export function bodySeconds(realSeconds: number): number {
@@ -44,7 +56,9 @@ export interface Segment {
   start: number;
   /** Screen time where the lead ends and the real window starts to play. */
   bodyStart: number;
-  /** Screen time where the segment ends. */
+  /** Screen time where the real window has played. */
+  bodyEnd: number;
+  /** Screen time where the segment ends: the body's end, or later when the step holds for a match's light to land. */
   end: number;
   /** The real window the body plays, in ms. It holds the step's events and matches. */
   realStart: number;
@@ -209,7 +223,7 @@ function finite(values: number[]): number[] {
 }
 
 function placeInBody(segment: Segment, real: number): number {
-  const body = segment.end - segment.bodyStart;
+  const body = segment.bodyEnd - segment.bodyStart;
   const span = segment.realEnd - segment.realStart;
   if (span <= 0) return segment.bodyStart;
   const clamped = Math.min(segment.realEnd, Math.max(segment.realStart, real));
@@ -220,9 +234,8 @@ function alertReal(alert: Alert): number {
   return timeOf(alert.raised ?? alert.time);
 }
 
-/** Builds the compressed timeline of a recording. */
-export function buildTimeline(recording: Recording): Timeline {
-  const facts = stepFacts(recording);
+/** Lays the steps out on screen, each holding after its body for the seconds `holds` gives it. */
+function layOut(recording: Recording, facts: Map<string, StepFacts>, holds: ReadonlyMap<string, number>): { segments: Segment[]; gaps: Gap[]; duration: number } {
   const segments: Segment[] = [];
   const gaps: Gap[] = [];
   let screen = 0;
@@ -250,49 +263,89 @@ export function buildTimeline(recording: Recording): Timeline {
       screen += PLAYBACK_RULE.beat;
     }
     const bodyStart = screen + PLAYBACK_RULE.lead;
-    const end = bodyStart + bodySeconds((realEnd - realStart) / 1000);
-    segments.push({ step, index, start: screen, bodyStart, end, realStart, realEnd, timed });
+    const bodyEnd = bodyStart + bodySeconds((realEnd - realStart) / 1000);
+    const end = bodyEnd + (holds.get(step.id) ?? 0);
+    segments.push({ step, index, start: screen, bodyStart, bodyEnd, end, realStart, realEnd, timed });
     screen = end;
     previousEnd = realEnd;
   });
+  return { segments, gaps, duration: screen };
+}
+
+/** When each event arrives and each match fires on a laid-out screen, both in time order. */
+function placeAll(recording: Recording, laid: { segments: Segment[]; duration: number }): { arrivals: Arrival[]; fires: Fire[] } {
+  const segmentOf = new Map(laid.segments.map((segment) => [segment.step.id, segment]));
+  const arrival = new Map<string, number>();
+  const arrivals: Arrival[] = [];
+  const fires: Fire[] = [];
+  for (const event of recording.events) {
+    const segment = segmentOf.get(event.step);
+    if (!segment) continue;
+    const at = placeInBody(segment, timeOf(event.time));
+    arrival.set(event.id, at);
+    arrivals.push({ event, at });
+  }
+  for (const alert of recording.alerts) {
+    const segment = segmentOf.get(alert.step);
+    if (!segment) continue;
+    const base = alert.raised === undefined ? placeInBody(segment, timeOf(alert.time)) : realToScreen(laid, timeOf(alert.raised));
+    // A match fires once every event it names has arrived.
+    let at = Math.max(base, segment.bodyStart);
+    for (const id of alert.events) at = Math.max(at, arrival.get(id) ?? segment.bodyStart);
+    fires.push({ alert, at });
+  }
+  arrivals.sort((a, b) => a.at - b.at);
+  fires.sort((a, b) => a.at - b.at);
+  return { arrivals, fires };
+}
+
+/**
+ * How long each step holds after its body so that the light of every match
+ * fired by its end lands a moment before the step ends. A match raised live
+ * after its step ended fires later on screen and is told from then.
+ */
+function holdsFor(segments: readonly Segment[], fires: readonly Fire[]): Map<string, number> {
+  const segmentOf = new Map(segments.map((segment) => [segment.step.id, segment]));
+  const holds = new Map<string, number>();
+  for (const fire of fires) {
+    const segment = segmentOf.get(fire.alert.step);
+    if (!segment || fire.at > segment.end) continue;
+    const need = landing(fire) + PLAYBACK_RULE.told - segment.end;
+    if (need > (holds.get(segment.step.id) ?? 0)) holds.set(segment.step.id, need);
+  }
+  return holds;
+}
+
+/** Builds the compressed timeline of a recording. */
+export function buildTimeline(recording: Recording): Timeline {
+  const facts = stepFacts(recording);
+  let laid = layOut(recording, facts, new Map());
+  let placed = placeAll(recording, laid);
+  // A hold moves only later steps, and a match keeps its place inside its own body.
+  const holds = holdsFor(laid.segments, placed.fires);
+  if (holds.size > 0) {
+    laid = layOut(recording, facts, holds);
+    placed = placeAll(recording, laid);
+  }
+  const { segments, gaps, duration } = laid;
 
   const byStep = new Map<string, StepPlay>(recording.steps.map((step) => [step.id, { arrivals: [], fires: [], firstCounting: null, firstCountingWithLabRules: null }]));
   const timeline: Timeline = {
     recording,
     segments,
     gaps,
-    duration: screen,
-    arrival: new Map(),
-    fire: new Map(),
-    arrivals: [],
-    fires: [],
+    duration,
+    arrival: new Map(placed.arrivals.map(({ event, at }) => [event.id, at])),
+    fire: new Map(placed.fires.map(({ alert, at }) => [alert.id, at])),
+    arrivals: placed.arrivals,
+    fires: placed.fires,
     byStep,
     tests: segments.filter((segment) => segment.step.role === "test"),
     withLabRules: recording.steps.some((step) => step.outcome_with_lab_rules !== undefined),
     firstAlert: null,
     firstAlertWithLabRules: null,
   };
-
   const segmentOf = new Map(segments.map((segment) => [segment.step.id, segment]));
-  for (const event of recording.events) {
-    const segment = segmentOf.get(event.step);
-    if (!segment) continue;
-    const at = placeInBody(segment, timeOf(event.time));
-    timeline.arrival.set(event.id, at);
-    timeline.arrivals.push({ event, at });
-  }
-  for (const alert of recording.alerts) {
-    const segment = segmentOf.get(alert.step);
-    if (!segment) continue;
-    const base = alert.raised === undefined ? placeInBody(segment, timeOf(alert.time)) : realToScreen(timeline, timeOf(alert.raised));
-    // A match fires once every event it names has arrived.
-    let at = Math.max(base, segment.bodyStart);
-    for (const id of alert.events) at = Math.max(at, timeline.arrival.get(id) ?? segment.bodyStart);
-    timeline.fire.set(alert.id, at);
-    timeline.fires.push({ alert, at });
-  }
-  timeline.arrivals.sort((a, b) => a.at - b.at);
-  timeline.fires.sort((a, b) => a.at - b.at);
   for (const arrival of timeline.arrivals) byStep.get(arrival.event.step)?.arrivals.push(arrival);
   for (const fire of timeline.fires) {
     const own = byStep.get(fire.alert.step);
@@ -351,16 +404,17 @@ export function segmentIndexAt(timeline: Timeline, screen: number): number {
   return found;
 }
 
-/** The real time (ms) shown at screen time `screen`. During a lead the clock waits at the step's start. */
+/** The real time (ms) shown at screen time `screen`. During a lead the clock waits at the step's start, and during a hold at its end. */
 export function screenToReal(timeline: Timeline, screen: number): number {
   const t = clampScreen(timeline, screen);
   const segment = timeline.segments[segmentIndexAt(timeline, t)];
   if (!segment) return timeOf(timeline.recording.source.started);
   if (t <= segment.bodyStart) return segment.realStart;
-  if (t <= segment.end) {
-    const body = segment.end - segment.bodyStart;
+  if (t <= segment.bodyEnd) {
+    const body = segment.bodyEnd - segment.bodyStart;
     return segment.realStart + ((segment.realEnd - segment.realStart) * (t - segment.bodyStart)) / body;
   }
+  if (t <= segment.end) return segment.realEnd;
   const next = timeline.segments[segment.index + 1];
   if (!next) return segment.realEnd;
   const beat = next.start - segment.end;
@@ -369,7 +423,7 @@ export function screenToReal(timeline: Timeline, screen: number): number {
 }
 
 /** The screen time at which real time `real` (ms) plays. A time inside a silence falls inside its beat. */
-export function realToScreen(timeline: Timeline, real: number): number {
+export function realToScreen(timeline: Pick<Timeline, "segments" | "duration">, real: number): number {
   const segments = timeline.segments;
   const first = segments[0];
   if (!first || real <= first.realStart) return first ? first.bodyStart : 0;

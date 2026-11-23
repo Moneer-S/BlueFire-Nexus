@@ -21,7 +21,10 @@ plays in a browser with nothing installed.
 - **Silences are shortened, and the screen says so.** Every step gets one bar
   on the timeline, and the time between two steps plays as a short beat
   whatever its real length. The legend under the timeline says "silences
-  shortened", and the clock always shows the recording's own time.
+  shortened", and the clock always shows the recording's own time. A step whose
+  last match fires near its end stays on screen, its clock held at the step's
+  end, until that match's light has reached the rule engine and the step's
+  outcome is told.
 - **The score is the recording's.** While watching, the score counts a step
   once the screen has told its outcome; at the end of the run it is the
   recording's `score`. False alerts, on ordinary activity outside every step,
