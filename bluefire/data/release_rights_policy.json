@@ -132,8 +132,8 @@
     ]
   },
   "frontend": {
-    "lockfile_sha256": "ccc0c8846ba8939b5a03a0c98d3a9a117a3c7ceb723b1014af7677cfd27cf46b",
-    "locked_package_count": 393,
+    "lockfile_sha256": "e046c61300ef5320ed01673398c866327dc127835c48a4f1d14b62b8b7bef23f",
+    "locked_package_count": 395,
     "direct_requirements": {
       "@dagrejs/dagre": "3.1.1",
       "@radix-ui/react-dialog": "^1.1.15",
@@ -165,6 +165,7 @@
       "typescript": "^5.9.2",
       "typescript-eslint": "^8.44.1",
       "vite": "^7.1.7",
+      "vite-plugin-singlefile": "^2.3.4",
       "vitest": "^3.2.4"
     },
     "runtime_packages_by_license": {

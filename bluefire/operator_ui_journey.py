@@ -124,7 +124,7 @@ def _read_json(path: Path) -> Mapping[str, Any]:
 
 def _packaged_ui(repository: Path) -> Path:
     ui_root = repository / "bluefire" / "ui"
-    expected = {"index.html", "app.js", "styles.css", "fonts"}
+    expected = {"index.html", "app.js", "styles.css", "replay.html", "fonts"}
     _require(ui_root.is_dir() and not ui_root.is_symlink(), "the packaged production UI is absent")
     entries = {item.name: item for item in ui_root.iterdir()}
     _require(set(entries) == expected, "the packaged production UI inventory is not exact")

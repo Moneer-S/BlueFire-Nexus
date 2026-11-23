@@ -42,7 +42,7 @@ it (`2026-11-17T17:07:23.834Z`).
 | `environment` | string | Plain words: `GitHub-hosted runner` or `containers on a developer machine`. |
 | `started`, `finished` | time | The run's start and end. |
 | `repository`, `commit` | string | Optional. The repository and commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
-| `run_url` | string | Optional. The CI run that made the recording. |
+| `run_url` | string | Optional. The CI run that made the recording. A reader shows it as a link only when it is the https address of a GitHub Actions run (`https://github.com/<owner>/<repository>/actions/runs/<number>`) of the recording's own `repository` when that is given, and leaves out anything else. |
 | `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. |
 
 ## `network`

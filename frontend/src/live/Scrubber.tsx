@@ -1,0 +1,200 @@
+// The scrubber: one even bar per step, so the strip reads as the rhythm of
+// the run, with two slim rows under it (every sensor's events, and the alerts
+// that count). It moves the clock by pointer and by keyboard. Analyse mode
+// has the same steps on their true lengths.
+
+import { memo, useMemo, useRef } from "react";
+import type { KeyboardEvent, PointerEvent } from "react";
+import type { Recording, StepRole } from "./recording";
+import { countsForScore } from "./recording";
+import { evenPosition, evenTime, maxOf, PLAYBACK_RULE, segmentIndexAt } from "./playback";
+import type { Timeline } from "./playback";
+import { capital, clockTime, elapsed, outcomeClass, outcomeWords, sensorWord, stepLabel } from "./format";
+import type { StyleVars } from "./motion";
+
+interface ScrubberProps {
+  recording: Recording;
+  timeline: Timeline;
+  time: number;
+  real: number;
+  /** True once the current step's outcome is told: until then the timeline does not say it either. */
+  revealed: boolean;
+  onSeek: (time: number) => void;
+}
+
+const BINS = 720;
+const WIDTH = 1000;
+const ROW = 4;
+const GAP = 2;
+
+interface Lane {
+  key: string;
+  label: string;
+  className: string;
+  path: string;
+}
+
+/** Ticks binned by position, so a busy run stays a calm row. */
+function lanePath(positions: readonly number[], row: number, height: number): string {
+  const bins = new Set<number>();
+  for (const at of positions) bins.add(Math.min(BINS - 1, Math.max(0, Math.floor(at * BINS))));
+  const width = WIDTH / BINS;
+  return [...bins]
+    .sort((a, b) => a - b)
+    .map((bin) => `M${(bin * width).toFixed(2)} ${row}h${Math.max(1.1, width * 0.8).toFixed(2)}v${height}h-${Math.max(1.1, width * 0.8).toFixed(2)}Z`)
+    .join("");
+}
+
+/** Canary and control steps are checks on the lab, not attacks: drawn as outlines. */
+function isCheck(role: StepRole): boolean {
+  return role === "canary" || role === "control";
+}
+
+/** One bar per step. It changes only when the current step does, not on every frame. */
+const ScrubberCells = memo(function ScrubberCells({ recording, timeline, current }: { recording: Recording; timeline: Timeline; current: number }) {
+  const count = timeline.segments.length;
+  return (
+    <div className="lv-cells">
+      {timeline.segments.map((item, index) => {
+        const state = index < current ? " is-past" : index === current ? " is-now" : "";
+        const role = item.step.role === "test" ? "" : isCheck(item.step.role) ? " is-short is-check" : " is-short";
+        return <div key={item.step.id} className={`lv-cell is-${outcomeClass(item.step.outcome)}${role}${state}`} style={{ left: `${(index / Math.max(1, count)) * 100}%` }} title={`${capital(stepLabel(recording, item.step))} (${item.step.role}): ${item.step.title}`} />;
+      })}
+    </div>
+  );
+});
+
+export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: ScrubberProps) {
+  const track = useRef<HTMLDivElement | null>(null);
+  const dragging = useRef(false);
+  const duration = timeline.duration;
+  const count = timeline.segments.length;
+  const pct = (position: number) => `${position * 100}%`;
+
+  // Two quiet rows only: every sensor's events in one colour, and the alerts that count. Analyse mode has the full lanes.
+  const lanes = useMemo<Lane[]>(() => {
+    const rows: (Omit<Lane, "path"> & { positions: number[] })[] = [];
+    const sensorNames = recording.network.sensors.filter((sensor) => timeline.arrivals.some(({ event }) => event.sensor === sensor.id)).map((sensor) => sensorWord(sensor.name));
+    const events = timeline.arrivals.map(({ at }) => evenPosition(timeline, at));
+    const alerts = timeline.fires.filter(({ alert }) => countsForScore(alert)).map(({ at }) => evenPosition(timeline, at));
+    if (events.length > 0) rows.push({ key: "events", label: `events recorded by ${[...new Set(sensorNames)].join(" and ")}`, className: "is-events", positions: events });
+    if (alerts.length > 0) rows.push({ key: "alert", label: "alerts of published rules", className: "is-alert", positions: alerts });
+    return rows.map((row, index) => ({ key: row.key, label: row.label, className: row.className, path: lanePath(row.positions, index * (ROW + GAP), ROW) }));
+  }, [recording, timeline]);
+
+  const lanesHeight = Math.max(0, lanes.length * (ROW + GAP) - GAP);
+  const current = segmentIndexAt(timeline, time);
+  const segment = timeline.segments[current];
+  const longest = useMemo(() => Math.max(0, maxOf(timeline.gaps.map((gap) => (gap.realEnd - gap.realStart) / 1000))), [timeline]);
+  const shortRoles = [...new Set(recording.steps.filter((step) => step.role !== "test").map((step) => (step.role === "hardened" || step.role === "variant" ? "reruns" : step.role)))];
+  const checks = recording.steps.some((step) => isCheck(step.role));
+  const noEffect = recording.steps.some((step) => !isCheck(step.role) && (step.outcome === "no effect" || step.outcome === "inconclusive"));
+  const head = evenPosition(timeline, time);
+
+  const timeAtPointer = (clientX: number): number => {
+    const box = track.current?.getBoundingClientRect();
+    if (!box || box.width <= 0) return time;
+    return evenTime(timeline, (clientX - box.left) / box.width);
+  };
+  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    dragging.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    onSeek(timeAtPointer(event.clientX));
+  };
+  const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (dragging.current) onSeek(timeAtPointer(event.clientX));
+  };
+  const onPointerUp = () => {
+    dragging.current = false;
+  };
+  const stepTo = (index: number) => {
+    const target = timeline.segments[Math.min(count - 1, Math.max(0, index))];
+    if (target) onSeek(target.start);
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const index = Math.max(0, current);
+    let handled = true;
+    if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+      if (event.shiftKey) onSeek(Math.min(duration, time + 1));
+      else stepTo(index + 1);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+      if (event.shiftKey) onSeek(Math.max(0, time - 1));
+      else stepTo(segment && time - segment.start > 0.4 ? index : index - 1);
+    } else if (event.key === "PageUp") stepTo(index + 10);
+    else if (event.key === "PageDown") stepTo(index - 10);
+    else if (event.key === "Home") onSeek(0);
+    else if (event.key === "End") onSeek(duration);
+    else handled = false;
+    if (handled) event.preventDefault();
+  };
+
+  const first = timeline.firstAlert;
+  return (
+    <div className="lv-scrub-wrap">
+      <div
+        className="lv-scrub"
+        ref={track}
+        role="slider"
+        tabIndex={0}
+        aria-label="Timeline: arrow keys move by step, Shift and an arrow key by a second"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(duration)}
+        aria-valuenow={Math.round(time)}
+        aria-valuetext={segment ? `${capital(stepLabel(recording, segment.step))}, ${revealed ? outcomeWords(segment.step.outcome) : "running"}: ${segment.step.title}, ${segment.index + 1} of ${count}, ${clockTime(real)} UTC` : "No steps"}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onKeyDown={onKeyDown}
+        style={{ "--lanes-h": `${lanesHeight}px`, "--slot": pct(count > 0 ? 1 / count : 1) } as StyleVars}
+      >
+        <ScrubberCells recording={recording} timeline={timeline} current={current} />
+        <svg className="lv-lanes" viewBox={`0 0 ${WIDTH} ${Math.max(1, lanesHeight)}`} preserveAspectRatio="none" aria-hidden="true">
+          {lanes.map((lane) => (
+            <path key={lane.key} className={`lv-lane ${lane.className}`} d={lane.path} />
+          ))}
+        </svg>
+        <div className="lv-lanes-hint" title={lanes.map((lane, index) => `${index === 0 ? "Upper" : "Lower"} row: ${lane.label}`).join("\n")} />
+        <div className="lv-future" style={{ left: pct(head) }} />
+        {first && time >= first.at ? <div className="lv-first-mark" style={{ left: pct(evenPosition(timeline, first.at)) }} title={`First alert on a test: ${stepLabel(recording, first.step)}`} /> : null}
+        <div className="lv-playhead" style={{ left: pct(head) }} />
+      </div>
+      <div className="lv-legend">
+        <span>
+          <i className="is-alerted" />
+          alerted
+        </span>
+        <span>
+          <i className="is-seen" />
+          seen, no alert
+        </span>
+        <span>
+          <i className="is-unseen" />
+          unseen
+        </span>
+        <span>
+          <i className="is-stopped" />
+          stopped
+        </span>
+        {noEffect ? (
+          <span>
+            <i className="is-noeffect" />
+            no effect or inconclusive
+          </span>
+        ) : null}
+        <span>
+          <i className="is-future" />
+          still to come
+        </span>
+        <span className="lv-legend-sep" />
+        {shortRoles.length > 0 ? (
+          <span title={checks ? "Canary and control steps check the lab itself and are drawn as outlines: solid when they alerted, dashed otherwise. None of these is in the score of tests." : "None of these is in the score of tests."}>
+            <i className="is-short" />
+            short: {shortRoles.join(", ")}
+          </span>
+        ) : null}
+        <span title={longest > 0 ? `Every step gets one bar. Silences between steps play as a short beat; the longest, ${elapsed(longest, 0)}, plays as ${PLAYBACK_RULE.beat} s.` : "Every step gets one bar."}>silences shortened</span>
+      </div>
+    </div>
+  );
+}

@@ -108,6 +108,8 @@ jobs:
       - name: The committed interface is the one this source builds
         working-directory: .
         run: |
+          # Files the build made that are not committed count too, so a missing page is caught.
+          git add --intent-to-add -- bluefire/ui
           if ! git diff --exit-code --stat -- bluefire/ui; then
             echo "bluefire/ui is not what frontend/ builds: run pnpm build in frontend/ and commit bluefire/ui"
             exit 1

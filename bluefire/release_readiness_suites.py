@@ -657,6 +657,26 @@ def _frontend_suites(
         environment=production_environment,
         timeout_seconds=600,
     )
+    if build_code == 0:
+        # The single replay page is built after the app, into the same folder, as `pnpm build` does.
+        build_code, _stdout, _stderr = _run(
+            [
+                os.fspath(node),
+                os.fspath(binaries["vite"]),
+                "build",
+                "--configLoader",
+                "runner",
+                "--config",
+                "vite.replay.config.ts",
+                "--mode",
+                "production",
+                "--outDir",
+                os.fspath(production_output),
+            ],
+            cwd=frontend,
+            environment=production_environment,
+            timeout_seconds=600,
+        )
     generated = _ui_digest(production_output) if build_code == 0 else {}
     committed = _ui_digest(repository / "bluefire/ui")
     parity = bool(generated) and generated == committed
