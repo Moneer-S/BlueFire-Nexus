@@ -1,0 +1,480 @@
+from __future__ import annotations
+
+import copy
+import json
+import threading
+from pathlib import Path
+from typing import Any, Iterator
+
+import pytest
+
+from bluefire import cli, recordings
+from bluefire.api import generate_browser_bootstrap_capability
+from bluefire.application_errors import APIError
+from bluefire.service import BlueFireService
+from tests_platform.test_api import json_body, request, running_server
+
+ROOT = Path(__file__).resolve().parents[1]
+SHIPPED = ROOT / "bluefire" / "data" / "recordings" / "lab-linux-host.json"
+SHIPPED_RUN = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895"
+
+
+def small_recording(recording_id: str = "rec-small") -> dict[str, Any]:
+    """Two steps of a test list, in the shape the lab writes them: one alerted, one seen."""
+
+    def step(step_id: str, title: str, answer: str, events: int, outcome: str) -> dict[str, Any]:
+        return {
+            "id": step_id,
+            "order": int(step_id),
+            "role": "test",
+            "title": title,
+            "technique": {"id": "T1070.003"},
+            "host": "target",
+            "started": f"2026-11-17T17:07:2{step_id}.000Z",
+            "ended": f"2026-11-17T17:07:2{step_id}.500Z",
+            "happened": {"answer": "took effect", "basis": "the effect check exited with 0"},
+            "visibility": {
+                "answer": answer,
+                "basis": "what the sensors and rules said",
+                "events": events,
+            },
+            "outcome": outcome,
+            "first_event": f"2026-11-17T17:07:2{step_id}.100Z",
+            **({"first_alert": f"2026-11-17T17:07:2{step_id}.100Z"} if answer == "alert" else {}),
+        }
+
+    def event(
+        event_id: str, step_id: str, time: str, kind: str, text: str, **extra: Any
+    ) -> dict[str, Any]:
+        return {
+            "id": event_id,
+            "time": time,
+            "host": "target",
+            "sensor": "sysmon",
+            "kind": kind,
+            "text": text,
+            "step": step_id,
+            "tied_by": "session",
+            **extra,
+        }
+
+    return {
+        "schema": "bluefire.recording/1",
+        "id": recording_id,
+        "title": "Two published tests on one Linux host",
+        "kind": "test list",
+        "source": {
+            "engine": "bluefire-lab",
+            "environment": "GitHub-hosted runner",
+            "started": "2026-11-17T17:07:20Z",
+            "finished": "2026-11-17T17:08:14Z",
+        },
+        "network": {
+            "hosts": [{"id": "target", "name": "runner", "role": "Linux host under test", "kind": "host"}],
+            "sensors": [{"id": "sysmon", "name": "Sysmon for Linux 1.6.0", "host": "target", "records": "process starts"}],
+            "detectors": [{"id": "pinned", "name": "Published Sigma rules", "rules": 1, "when": "after the run"}],
+        },
+        "attacker": {"kind": "scripted", "description": "A list of published tests.", "goal": None},
+        "steps": [
+            step("1", "Clear Bash history (rm)", "alert", 2, "alerted"),
+            step("2", "List running processes", "telemetry only", 1, "seen"),
+        ],
+        "events": [
+            event("1-1", "1", "2026-11-17T17:07:21.100Z", "process start", "rm /tmp/lab/.bash_history",
+                  user="lab", image="/usr/bin/rm", fields={"ProcessId": "41"}),
+            event("1-2", "1", "2026-11-17T17:07:21.102Z", "file deleted", "/tmp/lab/.bash_history"),
+            event("2-1", "2", "2026-11-17T17:07:22.100Z", "process start", "ps aux", image="/usr/bin/ps"),
+        ],
+        "alerts": [
+            {"id": "alert-1", "time": "2026-11-17T17:07:21.100Z", "host": "target", "detector": "pinned",
+             "rule": {"id": "rule-1", "title": "History File Deletion", "level": "high", "origin": "pinned"},
+             "counts": True, "step": "1", "events": ["1-1"]},
+        ],
+        "score": {"steps": 2, "took_effect": 2, "alerted": 1, "seen": 1, "unseen": 0, "stopped": 0},
+        "notes": [],
+    }  # fmt: skip
+
+
+@pytest.fixture
+def service(tmp_path: Path) -> Iterator[BlueFireService]:
+    instance = BlueFireService(
+        project_root=ROOT, runs_dir=tmp_path / "runs", product_db_path=tmp_path / "product.sqlite3"
+    )
+    try:
+        yield instance
+    finally:
+        instance.close()
+
+
+def imported(service: BlueFireService) -> list[dict[str, Any]]:
+    entries = service.recordings()["recordings"]
+    return [entry for entry in entries if entry["origin"]["kind"] == "imported"]
+
+
+def refusal(service: BlueFireService, recording: dict[str, Any]) -> tuple[str, list[str]]:
+    """The message and the problems of a refused import; nothing is stored."""
+
+    with pytest.raises(APIError) as refused:
+        service.import_recording({"recording": recording})
+    assert refused.value.status == 422
+    assert refused.value.code == "recording_invalid"
+    assert imported(service) == []
+    assert isinstance(refused.value.details, dict)
+    return refused.value.message, list(refused.value.details["problems"])
+
+
+def test_the_shipped_lab_recording_is_listed_with_its_origin_and_read_back_whole(
+    service: BlueFireService,
+) -> None:
+    listed = service.recordings()
+
+    assert listed["unreadable_count"] == 0
+    [entry] = listed["recordings"]
+    assert entry["origin"] == {
+        "kind": "shipped",
+        "run_url": SHIPPED_RUN,
+        "note": "Shipped with BlueFire. This repository's lab workflow recorded it in the CI "
+        f"run at {SHIPPED_RUN}. BlueFire checked that it follows the recording format and "
+        "that its parts agree with each other.",
+    }
+    assert entry["running"] is False
+    assert entry["counts"]["steps"] == 91
+    assert {key: entry["score"][key] for key in ("steps", "alerted", "seen", "unseen")} == {
+        "steps": 60,
+        "alerted": 3,
+        "seen": 56,
+        "unseen": 1,
+    }
+    detail = service.recording(entry["id"])
+    assert detail["summary"] == entry
+    assert detail["recording"] == json.loads(SHIPPED.read_bytes())
+
+    shipped = json.loads(SHIPPED.read_bytes())
+    again = service.import_recording({"recording": shipped})
+    shipped["title"] = "Something else"
+    with pytest.raises(APIError) as refused:
+        service.import_recording({"recording": shipped})
+    assert again["created"] is False and again["summary"]["origin"]["kind"] == "shipped"
+    assert refused.value.code == "recording_id_taken"
+    assert imported(service) == []
+
+
+def test_a_recording_is_imported_listed_and_read_back_whole(
+    service: BlueFireService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording = small_recording()
+
+    first = service.import_recording({"recording": recording})
+    again = service.import_recording({"recording": copy.deepcopy(recording)})
+    service.import_recording({"recording": small_recording("rec-other")})
+    entries = imported(service)
+    detail = service.recording("rec-small")
+    monkeypatch.setattr(recordings, "MAX_LISTED", 1)
+    bounded = service.recordings()
+
+    assert first["created"] is True and again["created"] is False
+    assert [entry["id"] for entry in entries] == ["rec-other", "rec-small"]
+    # Past the bound the list says how many imported files it left out.
+    assert [entry["id"] for entry in bounded["recordings"]][1:] == ["rec-other"]
+    assert bounded["omitted_count"] == 1 and bounded["unreadable_count"] == 0
+    entry = entries[1]
+    assert entry["counts"] == {"steps": 2, "events": 3, "alerts": 1}
+    assert entry["score"] == recording["score"]
+    assert entry["running"] is False
+    assert "cannot confirm that the steps ran" in entry["origin"]["note"]
+    assert detail["recording"] == recording
+
+
+def test_a_running_recording_grows_by_import_and_is_frozen_once_finished(
+    service: BlueFireService,
+) -> None:
+    recording = small_recording("rec-live")
+    del recording["source"]["finished"]
+    service.import_recording({"recording": recording})
+    running = service.recording("rec-live")["summary"]["running"]
+
+    growing = copy.deepcopy(recording)
+    growing["notes"] = ["Two steps have run."]
+    still_running = service.import_recording({"recording": growing})
+    other_run = copy.deepcopy(growing)
+    other_run["source"]["started"] = "2026-11-17T17:07:19Z"
+    with pytest.raises(APIError) as other_refused:
+        service.import_recording({"recording": other_run})
+
+    grown = small_recording("rec-live")
+    grown["notes"] = ["The run has ended."]
+    replaced = service.import_recording({"recording": grown})
+    changed = small_recording("rec-live")
+    changed["title"] = "Something else"
+    with pytest.raises(APIError) as refused:
+        service.import_recording({"recording": changed})
+
+    assert running is True
+    assert still_running["replaced"] is True and still_running["summary"]["running"] is True
+    assert other_refused.value.status == 409
+    assert other_refused.value.code == "recording_id_taken"
+    assert replaced["replaced"] is True and replaced["summary"]["running"] is False
+    assert refused.value.status == 409 and refused.value.code == "recording_id_taken"
+    assert service.recording("rec-live")["recording"] == grown
+
+
+def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFireService) -> None:
+    recording = small_recording()
+    recording["network"]["detectors"][0]["rules"] = 10**1000
+    recording["steps"][0]["title"] = "Clear\x07history"
+    recording["steps"][0]["extra"] = float("inf")
+    recording["steps"][1]["outcome"] = "maybe"
+    recording["steps"][1]["test"] = {"guid": "a\x00b"}
+    recording["events"][0]["step"] = "9"
+    recording["events"][1]["host"] = ["target"]
+    recording["events"][2]["time"] = "2026-99-99T99:99:99Z"
+    deep = small_recording()
+    nested: dict[str, Any] = {}
+    deep["steps"][0]["extra"] = nested
+    for _ in range(1000):
+        nested["a"] = {}
+        nested = nested["a"]
+    huge = small_recording("rec-path")
+    huge["kind"] = "attack path"
+    huge["score"].update(first_alert_seconds=0.1, goal_seconds=10**1000)
+
+    message, problems = refusal(service, recording)
+    _, deep_problems = refusal(service, deep)
+    _, huge_problems = refusal(service, huge)
+
+    assert message == (
+        "The recording is not valid: steps[0].title must not hold control characters."
+    )
+    assert problems == [
+        "steps[0].title must not hold control characters.",
+        "steps[0].extra is not a finite number.",
+        "steps[1].test.guid must not hold a NUL character.",
+        "network.detectors[0].rules must be a whole number from 0 to 1000000000.",
+        "steps[1].outcome must be one of: stopped, no effect, alerted, seen, unseen, inconclusive.",
+        "events[0].step names step '9' that the recording does not have.",
+        "events[1].host names host a value that the recording does not have.",
+        "events[2].time must be a UTC time such as 2026-11-17T17:07:23.834Z.",
+    ]
+    assert deep_problems == ["A recording nests objects and lists at most 8 deep."]
+    assert huge_problems == ["score.goal_seconds must be a number of seconds, zero or more."]
+
+
+def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -> None:
+    claims = small_recording()
+    claims["score"].update(steps=50, alerted=50)
+    claims["steps"][1]["outcome"] = "unseen"
+    claims["steps"][1]["visibility"]["events"] = 999
+    claims["steps"][0]["visibility"]["kept"] = 3
+    claims["steps"][1]["first_alert"] = "2026-11-17T17:07:22.100Z"
+    claims["events"][0]["time"] = "1999-01-01T00:00:00Z"
+    claims["score"]["first_alert_seconds"] = 0.5
+    race = small_recording("rec-path")
+    race["kind"] = "attack path"
+    race["score"].update(first_alert_seconds=0.001, goal_seconds=999999)
+
+    message, problems = refusal(service, claims)
+    _, race_problems = refusal(service, race)
+    race["score"].update(first_alert_seconds=0.1, goal_seconds=1.5)
+    accepted = service.import_recording({"recording": race})
+
+    assert message == (
+        "The recording is not valid: events[0].time falls outside the run's start and end."
+    )
+    assert problems == [
+        "events[0].time falls outside the run's start and end.",
+        "steps[0].first_event is 2026-11-17T17:07:21.100Z, but the step's first sensor event is at "
+        "1999-01-01T00:00:00Z.",
+        "steps[0].visibility.kept is more than visibility.events (2).",
+        "steps[0].visibility counts events the recording does not hold (2).",
+        "steps[1].first_alert is set, but the step has no counting alert of a published rule.",
+        "steps[1].outcome is unseen, but happened 'took effect' and visibility 'telemetry only' "
+        "give seen.",
+        "steps[1].visibility counts events the recording does not hold (1).",
+        "score.steps is 50, but the steps give 2.",
+        "score.alerted is 50, but the steps give 1.",
+        "score.seen is 1, but the steps give 0.",
+        "score.unseen is 0, but the steps give 1.",
+        "score.first_alert_seconds is written only for an attack path.",
+    ]
+    assert race_problems == [
+        "score.first_alert_seconds is 0.001, but the steps give 0.100.",
+        "score.goal_seconds is 999999, but no step ends that long after the first step started.",
+    ]
+    assert accepted["created"] is True
+
+
+def test_a_null_in_place_of_a_left_out_value_is_refused(service: BlueFireService) -> None:
+    race = small_recording("rec-path")
+    race["kind"] = "attack path"
+    race["score"].update(first_alert_seconds=None, goal_seconds=1.5)
+    live = small_recording("rec-live")
+    live["network"]["detectors"][0]["when"] = "live"
+    live["alerts"][0]["raised"] = None
+    live["steps"][0]["started"] = None
+    live["source"]["finished"] = None
+
+    _, race_problems = refusal(service, race)
+    _, live_problems = refusal(service, live)
+
+    assert race_problems == [
+        "score.first_alert_seconds is null; a value that is not known is left out."
+    ]
+    assert live_problems == [
+        "source.finished is null; a value that is not known is left out.",
+        "steps[0].started is null; a value that is not known is left out.",
+        "alerts[0].raised is null; a value that is not known is left out.",
+    ]
+
+
+def test_a_finished_recording_is_not_overwritten_by_an_older_import_from_another_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two libraries on one store, as the server and the command line are, import in turn."""
+
+    root = tmp_path / "recordings"
+    server, command_line = recordings.RecordingLibrary(root), recordings.RecordingLibrary(root)
+    running = small_recording("rec-live")
+    del running["source"]["finished"]
+    server.import_recording({"recording": running})
+    older = copy.deepcopy(running)
+    older["notes"] = ["One step has run."]
+    finished = small_recording("rec-live")
+
+    write = recordings._write_atomically
+    checked, go_on = threading.Event(), threading.Event()
+
+    def slow_write(*args: Any, **kwargs: Any) -> None:
+        if threading.current_thread().name == "older":
+            checked.set()
+            go_on.wait(5)
+        write(*args, **kwargs)
+
+    monkeypatch.setattr(recordings, "_write_atomically", slow_write)
+    results: dict[str, Any] = {}
+
+    def send(name: str, library: recordings.RecordingLibrary, recording: dict[str, Any]) -> None:
+        try:
+            results[name] = library.import_recording({"recording": recording})
+        except APIError as exc:
+            results[name] = exc.code
+
+    first = threading.Thread(target=send, args=("older", server, older), name="older")
+    first.start()
+    assert checked.wait(5)
+    second = threading.Thread(target=send, args=("finished", command_line, finished))
+    second.start()
+    second.join(0.5)
+    go_on.set()
+    first.join(10)
+    second.join(10)
+
+    assert results["older"]["replaced"] is True
+    assert results["finished"]["replaced"] is True
+    assert server.get("rec-live")[0] == finished
+    assert [path.name for path in root.glob("*.json")] == ["rec-live.json"]
+
+
+def test_a_recording_id_cannot_reach_outside_the_store(
+    service: BlueFireService, tmp_path: Path
+) -> None:
+    escaping = small_recording("../../outside")
+    _, problems = refusal(service, escaping)
+    with pytest.raises(APIError) as read_refused:
+        service.recording("../product")
+
+    assert problems == ["id must be 1 to 64 letters, digits, '-' or '_'."]
+    assert read_refused.value.status == 400 and read_refused.value.code == "invalid_recording_id"
+    assert not (tmp_path / "runs" / "recordings").exists()
+    assert [path for path in tmp_path.rglob("outside*")] == []
+
+
+def test_recordings_are_imported_and_read_through_the_http_server(
+    service: BlueFireService,
+) -> None:
+    recording = small_recording()
+    shipped = json.loads(SHIPPED.read_bytes())
+    capability = generate_browser_bootstrap_capability()
+    with running_server(
+        service,  # type: ignore[arg-type]
+        max_request_body=1024,
+        bootstrap_capability=capability,
+    ) as (server, _):
+        created = request(server, "POST", "/api/v1/recordings", body={"recording": recording})
+        listed = request(server, "GET", "/api/v1/recordings")
+        detail = request(server, "GET", "/api/v1/recordings/rec-small")
+        whole = request(server, "GET", f"/api/v1/recordings/{shipped['id']}")
+        large = request(server, "POST", "/api/v1/recordings", body={"recording": shipped})
+        missing = request(server, "GET", "/api/v1/recordings/rec-none")
+        outside = request(server, "GET", "/api/v1/recordings/..%2F..%2Fproduct")
+        invalid = request(
+            server, "POST", "/api/v1/recordings", body={"recording": {"schema": "other"}}
+        )
+        other_route = request(server, "POST", "/api/v1/runs/preflight", body={"x": "y" * 2048})
+        unauthenticated = request(server, "GET", "/api/v1/recordings", authenticated=False)
+        server.max_recording_body = 2048
+        too_large = request(
+            server, "POST", "/api/v1/recordings", body={"recording": small_recording("rec-big")}
+        )
+
+    assert created[0] == 201, created[2]
+    assert json_body(created[2])["summary"]["id"] == "rec-small"
+    assert [item["id"] for item in json_body(listed[2])["recordings"]] == [
+        shipped["id"],
+        "rec-small",
+    ]
+    assert json_body(detail[2])["recording"] == recording
+    assert json_body(whole[2])["recording"] == shipped
+    # Only the import route reads a body as large as a recording.
+    assert large[0] == 201 and json_body(large[2])["created"] is False
+    assert other_route[0] == 413
+    assert too_large[0] == 413
+    assert missing[0] == 404
+    assert json_body(missing[2])["error"]["code"] == "recording_not_found"
+    assert outside[0] == 400
+    assert invalid[0] == 422
+    assert json_body(invalid[2])["error"]["message"] == (
+        "The recording is not valid: schema must be 'bluefire.recording/1'."
+    )
+    assert unauthenticated[0] in {401, 403}
+
+
+def test_the_command_line_imports_and_lists_a_recording_file(
+    service: BlueFireService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    path = tmp_path / "recording.json"
+    path.write_text(json.dumps(small_recording()), encoding="utf-8")
+    broken = tmp_path / "broken.json"
+    broken.write_text(json.dumps({**small_recording(), "kind": "story"}), encoding="utf-8")
+    not_a_number = tmp_path / "nan.json"
+    with_nan = small_recording("rec-nan")
+    with_nan["score"]["first_alert_seconds"] = float("nan")
+    not_a_number.write_text(json.dumps(with_nan), encoding="utf-8")
+
+    imported_status = cli.main(["recordings", "import", str(path)])
+    imported_output = json.loads(capsys.readouterr().out)
+    refused = cli.main(["recordings", "import", str(broken)])
+    refused_output = json.loads(capsys.readouterr().out)
+    nan_refused = cli.main(["recordings", "import", str(not_a_number)])
+    nan_output = json.loads(capsys.readouterr().out)
+    listed = cli.main(["recordings", "list"])
+    listed_output = json.loads(capsys.readouterr().out)
+
+    assert imported_status == 0 and imported_output["created"] is True
+    assert refused == 2
+    assert refused_output["error"]["message"] == (
+        "The recording is not valid: recording.kind must be one of: test list, attack path."
+    )
+    assert nan_refused == 2
+    assert nan_output["error"]["message"] == (
+        "The recording is not valid: The file is not UTF-8 JSON: NaN is not a JSON number"
+    )
+    assert listed == 0
+    assert [item["origin"]["kind"] for item in listed_output["recordings"]] == [
+        "shipped",
+        "imported",
+    ]
+    assert listed_output["recordings"][1]["id"] == "rec-small"

@@ -790,6 +790,13 @@ def run_release_acceptance(
 ) -> dict[str, Any]:
     contract = load_release_contract()
     repository = discover_repository_root(repository_root)
+    # The gates run test files and scripts that were removed from the repository
+    # together with the former test matrix. Say so at once, not one gate at a time.
+    if not (repository / "tools" / "run_release_readiness_gate_journey.py").is_file():
+        raise ValueError(
+            "release acceptance cannot run from this checkout: the tests and scripts that its "
+            "gates run are no longer in the repository. The last commit that holds them is ebe5a9bf"
+        )
     result = run_acceptance(
         contract,
         repository_root=repository,

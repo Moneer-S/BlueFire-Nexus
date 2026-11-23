@@ -9,7 +9,7 @@ BlueFire serves one loopback JSON API under `/api/v1`. Requests and responses us
 - Host must identify the current loopback listener and port.
 - Every API request requires a valid bounded session in `X-BlueFire-Session`; cookies are not accepted as authority. The packaged UI exchanges the CLI's 384-bit one-time connection code via `X-BlueFire-Browser-Bootstrap` on `POST /api/v1/session`, receiving a no-store JSON object with one `session` value. It keeps that value in origin-and-tab-scoped session storage, sends it only to the exact API origin, omits ambient credentials and refuses redirects. The server stores only digests. An optional manual launch fragment is stripped before exchange; the desktop opener receives only the credential-free URL.
 - Every POST requires an exact same-origin `Origin` header.
-- Request bodies require one numeric `Content-Length` and are limited to 1 MiB.
+- Request bodies require one numeric `Content-Length` and are limited to 1 MiB. Only `POST /api/v1/recordings` has a limit of its own, 8 MiB and 1 KiB, the server's `max_recording_body`, because one recording is larger than the other JSON bodies.
 - Duplicate JSON keys, non-finite numbers, transfer encoding, absolute request targets, traversal, backslashes, and NUL paths are rejected.
 - Responses use restrictive CSP, frame, referrer, permissions, and content-type headers.
 - Static UI assets are public, but the API is not. No permissive CORS or remote/multi-user authentication is provided.
@@ -75,6 +75,8 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 | GET | `/api/v1/runs/{run_id}` | Full run, evidence, detections, events, manifest |
 | GET | `/api/v1/runs/{run_id}/events` | Cursor-paginated run events |
 | POST | `/api/v1/runs/{run_id}/replays` | Create a lineage-linked replay (`201`) |
+| GET, POST | `/api/v1/recordings` | List the shipped and imported recordings, or import one (`201`) |
+| GET | `/api/v1/recordings/{recording_id}` | One whole recording with its list entry |
 | POST | `/api/v1/comparisons` | Compare two or more runs |
 | GET | `/api/v1/comparison-snapshots` | List recent immutable run-comparison snapshots |
 | GET | `/api/v1/comparison-snapshots/{snapshot_id}` | Reopen a saved comparison and check current source-bundle integrity |
@@ -449,6 +451,73 @@ POST /api/v1/runner/remove     {"confirm_runner_id":"bluefire-rust-runner.v1"}
 ```
 
 At least two unique IDs are required; the first is the baseline.
+
+### Recordings
+
+A recording is one file in the format of [RECORDING.md](RECORDING.md): what an
+engine outside the app, such as the lab, ran and what the defenses saw. The app
+keeps two kinds:
+
+- `shipped`: a recording that comes with BlueFire, under
+  `bluefire/data/recordings/`. Each is one that this repository's lab workflow
+  recorded in CI, and its entry gives that run's address from the recording's
+  own `source.run_url`. It cannot be replaced.
+- `imported`: a recording sent to `POST /api/v1/recordings` or imported with
+  `bluefire recordings import`, kept as `<runs-dir>/recordings/<id>.json`.
+
+`GET /api/v1/recordings` returns:
+
+```json
+{
+  "schema_version": "bluefire.recording-list.v1",
+  "recordings": [
+    {
+      "id": "175a3a26",
+      "title": "60 published tests on one Linux host",
+      "kind": "test list",
+      "source": {"engine": "bluefire-lab", "environment": "GitHub-hosted runner",
+                 "started": "...", "finished": "...", "run_url": "...", "commit": "..."},
+      "score": {"steps": 60, "took_effect": 60, "alerted": 3, "seen": 56, "unseen": 1,
+                "alerted_with_lab_rules": 17, "stopped": 8, "false_alerts": 2},
+      "counts": {"steps": 91, "events": 1931, "alerts": 233},
+      "origin": {"kind": "shipped", "run_url": "...", "note": "Shipped with BlueFire. ..."},
+      "running": false,
+      "digest": "sha256:..."
+    }
+  ],
+  "unreadable_count": 0,
+  "omitted_count": 0
+}
+```
+
+`origin.note` says in plain words what the entry is. For an imported recording
+it says what BlueFire checked (the format, and that the score, the outcomes, the
+events, the alerts and the times agree) and what it cannot confirm (that the
+steps ran, where and when, which sensor recorded each event, which step reached
+the goal, and the engine, commit and CI run the file names). `running` is true
+while the recording has no `source.finished`. The list reads at most 200
+imported files, in the order of their ids: `unreadable_count` counts those that
+no longer follow the format, which are left out, and `omitted_count` the
+imported files after the 200th, which are not read.
+
+`GET /api/v1/recordings/{recording_id}` returns
+`{"schema_version": "bluefire.recording-entry.v1", "summary": {...}, "recording": {...}}`
+with the whole recording as it was shipped or imported. An id is 1 to 64
+letters, digits, `-` or `_`; any other is `400 invalid_recording_id`, and an
+unknown one `404 recording_not_found`.
+
+`POST /api/v1/recordings` takes `{"recording": {...}}` and returns `201` with
+`{"created", "replaced", "summary"}`. Sending the same recording again changes
+nothing (`created: false`). A recording that is still running may be sent again
+whole as it grows, with the same `source.engine` and `source.started`: it
+replaces the stored file in one step (`replaced: true`). Once stored with its
+end time, or when shipped, a recording is frozen, and a different one under its
+id is `409 recording_id_taken`. A recording that does not follow the format, or
+whose parts disagree, is `422 recording_invalid`; `details.problems` lists up to
+20 problems in plain words, and the message starts with the first. Imports into
+one runs directory, from the server or the command line, take one lock in turn;
+when it cannot be had within five seconds the import is
+`503 recordings_busy` and nothing is stored.
 
 ### Run event pages
 

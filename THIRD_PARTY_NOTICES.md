@@ -213,6 +213,77 @@ complete upstream LICENSE-MIT text:
 > IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 > DEALINGS IN THE SOFTWARE.
 
+## Example recording shipped with the app
+
+`bluefire/data/recordings/lab-linux-host.json` (1,135,924 bytes, SHA-256
+`d8056aa091bd8ab74bd604d540053d4eb0674741b32ebe76cc7c0cb009dc3595`) is the
+recording that this repository's lab workflow wrote on a GitHub-hosted runner in
+the run https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895
+(artifact `lab-run`), unchanged. It is data, not code: nothing in it is run.
+
+- It quotes the commands and the printed output of published Atomic Red Team tests
+  at commit `a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6`, and their names and GUIDs.
+  Atomic Red Team is MIT, Copyright (c) 2018 Red Canary, Inc.; the complete license
+  is preserved at `bluefire/data/atomic_red_team_LICENSE.txt`.
+- It names the published SigmaHQ rules that matched, by title, id and level, at
+  commit `552f3fee420ef232a8e5790c4fae591847e32347` (release `r2026-07-01`). The
+  rules are under the [Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License);
+  no rule text is copied. The recording does not carry each rule's author, so they
+  are listed here, as each rule's `author` field gives them at that commit:
+
+| Rule | Id | Author |
+|---|---|---|
+| ASLR Disabled Via Sysctl or Direct Syscall - Linux | `e497a24e-9345-4a62-9803-b06d7d7cb132` | Milad Cheraghi |
+| Bash Interactive Shell | `6104e693-a7d6-4891-86cb-49a258523559` | @d4ns4n_ |
+| Binary Padding - Linux | `c52a914f-3d8b-4b2a-bb75-b3991e75f8ba` | Igor Fits, oscd.community |
+| Chmod Targeting Sensitive Directories | `6419afd1-3742-47a5-a7e6-b50386cd15f8` | Christopher Peacock @SecurePeacock, SCYTHE @scythe_io |
+| Creation Of An User Account | `759d0d51-bc99-4b5e-9add-8f5b2c8e7512` | Marie Euler, Pawel Mazur |
+| Crontab Enumeration | `403ed92c-b7ec-4edd-9947-5b535ee12d46` | Joseliyo Sanchez, @Joseliyo_Jstnk |
+| Data Compressed | `a3b5e3e9-1b49-4119-8b8e-0344a01f21ee` | Timur Zinniatullin, oscd.community |
+| Decode Base64 Encoded Text | `e2072cab-8c9a-459b-b63c-40ae79e27031` | Daniil Yugoslavskiy, oscd.community |
+| Disable Or Stop Services | `de25eeb8-3655-4643-ac3a-b662d3f26b6b` | Nasreddine Bencherchali (Nextron Systems) |
+| Execution Of Script Located In Potentially Suspicious Directory | `30bcce26-51c5-49f2-99c8-7b59e3af36c7` | Joseliyo Sanchez, @Joseliyo_Jstnk |
+| File and Directory Discovery - Linux | `d3feb4ee-ff1d-4d3d-bd10-5b28a238cc72` | Daniil Yugoslavskiy, oscd.community, CheraghiMilad |
+| File Deletion | `30aed7b6-d2c1-4eaf-9382-b6bc43e50c57` | Ömer Günal, oscd.community |
+| File or Folder Permissions Change | `74c01ace-0152-4094-8ae2-6fd776dd43e5` | Jakob Weinzettl, oscd.community |
+| File Time Attribute Change - Linux | `b3cec4e7-6901-4b0d-a02d-8ab2d8eb818b` | Igor Fits, oscd.community |
+| Hidden Files and Directories | `d08722cd-3d09-449a-80b4-83ea2d9d4616` | Pawel Mazur |
+| History File Deletion | `1182f3b3-e716-4efa-99ab-d2685d04360f` | Florian Roth (Nextron Systems) |
+| Linux Base64 Encoded Pipe to Shell | `ba592c6d-6888-43c3-b8c6-689b8fe47337` | pH-T (Nextron Systems) |
+| Linux Base64 Encoded Shebang In CLI | `fe2f9663-41cb-47e2-b954-8a228f3b9dff` | Nasreddine Bencherchali (Nextron Systems) |
+| Linux Logs Clearing Attempts | `80915f59-9b56-4616-9de0-fd0dea6c12fe` | Ömer Günal, oscd.community |
+| Linux Setuid Capability Set on a Binary via Setcap Utility | `ed447910-bc30-4575-a598-3a2e49516a7a` | Luc Génaux |
+| Linux Shell Pipe to Shell | `880973f3-9708-491c-a77b-2a35a1921158` | Florian Roth (Nextron Systems) |
+| Local Groups Discovery - Linux | `676381a6-15ca-4d73-a9c8-6a22e970b90d` | Ömer Günal, Alejandro Ortuno, oscd.community |
+| Local System Accounts Discovery - Linux | `b45e3d6f-42c6-47d8-a478-df6bd6cf534c` | Alejandro Ortuno, oscd.community, CheraghiMilad |
+| Masquerading as Linux Crond Process | `9d4548fa-bba0-4e88-bd66-5d5bf516cda0` | Timur Zinniatullin, oscd.community |
+| New Cron File Created | `6c4e2f43-d94d-4ead-b64d-97e53fa2bd05` | Roberto Rodriguez (Cyb3rWard0g), OTR (Open Threat Research), MSTIC |
+| Nohup Execution | `e4ffe466-6ff8-48d4-94bd-e32d1a6061e2` | Christopher Peacock @SecurePeacock, SCYTHE @scythe_io |
+| Potential Suspicious Change To Sensitive/Critical Files | `86157017-c2b1-4d4a-8c33-93b8e67e4af4` | @d4ns4n_ (Wuerth-Phoenix) |
+| Potentially Suspicious Execution From Tmp Folder | `312b42b1-bded-4441-8b58-163a3af58775` | Joseliyo Sanchez, @Joseliyo_Jstnk |
+| Print History File Contents | `d7821ff1-4527-4e33-9f84-d0d57fa2fb66` | Florian Roth (Nextron Systems) |
+| Program Executions in Suspicious Folders | `a39d7fa7-3fbd-4dc2-97e1-d87f546b1bbc` | Florian Roth (Nextron Systems) |
+| Scheduled Cron Task/Job - Linux | `6b14bac8-3e3a-4324-8109-42f0546a347f` | Alejandro Ortuno, oscd.community |
+| Security Software Discovery - Linux | `c9d8b7fd-78e4-44fe-88f6-599135d46d60` | Daniil Yugoslavskiy, oscd.community |
+| Service Reload or Start - Linux | `2625cc59-0634-40d0-821e-cb67382a3dd7` | Jakob Weinzettl, oscd.community, CheraghiMilad |
+| Split A File Into Pieces - Linux | `2dad0cba-c62a-4a4f-949f-5f6ecd619769` | Igor Fits, oscd.community |
+| Suspicious Commands Linux | `1543ae20-cbdf-4ec1-8d12-7664d667a825` | Florian Roth (Nextron Systems) |
+| Suspicious History File Operations - Linux | `eae8ce9f-bde9-47a6-8e79-f20d18419910` | Mikhail Larin, oscd.community |
+| Suspicious Invocation of Shell via AWK - Linux | `8c1a5675-cb85-452f-a298-b01b22a51856` | Li Ling, Andy Parkidomo, Robert Rakowski, Blake Hartstein (Bloomberg L.P.) |
+| System Information Discovery | `42df45e7-e6e9-43b5-8f26-bec5b39cc239` | Ömer Günal, oscd.community |
+| System Information Discovery - Auditd | `f34047d9-20d3-4e8b-8672-0a35cc50dc71` | Pawel Mazur |
+| System Network Discovery - Linux | `e7bd1cfa-b446-4c88-8afb-403bcd79e3fa` | Ömer Günal and remotephone, oscd.community |
+| System Owner or User Discovery - Linux | `9a0d8ca0-2385-4020-b6c6-cb6153ca56f3` | Timur Zinniatullin, oscd.community |
+| Unix Shell Configuration Modification | `a94cdd87-6c54-4678-a6cc-2814ffe5a13d` | Peter Matkovski, IAI |
+| Use Of Hidden Paths Or Files | `9e1bef8d-0fff-46f6-8465-9aa54e128c1e` | David Burkett, @signalblur |
+| User Has Been Deleted Via Userdel | `08f26069-6f80-474b-8d1f-d971c6fedea0` | Tuan Le (NCSGroup) |
+
+The recording also names the tools of the run (Invoke-AtomicRedTeam, Sysmon for
+Linux, auditd, Zircolite) with their versions, and holds what Sysmon for Linux and
+auditd recorded on the runner. Those tools ran in CI only; none of them is shipped.
+The home folders it names belong to the runner's lab accounts: `bluefire-lab`, which
+the lab creates, and `art`, which Atomic Red Team's own tests create.
+
 ## Release license decision
 
 BlueFire Nexus remains MIT licensed. The repository does not contain contributor assignments,
@@ -269,3 +340,16 @@ from PyPI. Its tests and lint use [pytest](https://github.com/pytest-dev/pytest)
 The checks in `.github/workflows/checks.yml` run [gitleaks](https://github.com/gitleaks/gitleaks)
 (MIT), a release binary pinned by digest, and [detect-secrets](https://github.com/Yelp/detect-secrets)
 (Apache-2.0) from PyPI.
+
+## App checks and the one-command start: what they fetch
+
+None of the following is copied into this repository.
+
+| Project | Pin | Licence | Use |
+|---|---|---|---|
+| [Playwright image](https://mcr.microsoft.com/en-us/artifact/mar/playwright) | `mcr.microsoft.com/playwright:v1.62.1-noble` | Apache-2.0 for Playwright; the image's Ubuntu packages and browser keep their own licences | Container of the browser tests in `.github/workflows/app.yml` and in `CONTRIBUTING.md` |
+| [gzip](https://www.gnu.org/software/gzip/) as Ubuntu packages it | `gzip_1.12-1ubuntu3.2_amd64.deb`, pinned by digest | GPL-3.0-or-later | The exact gzip build the runner's collection tests expect, in `.github/workflows/runner.yml` |
+| [Python image](https://hub.docker.com/_/python) | `python:3.12-slim` | PSF-2.0 for Python; the image's Debian packages keep their own licences | Base of `docker/app.Dockerfile`, which `docker compose up app` builds |
+
+The app's own Python and JavaScript dependencies are named in `pyproject.toml` and
+`frontend/package.json`, and the release dependency inventory above covers what a wheel carries.

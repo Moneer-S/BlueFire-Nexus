@@ -17,6 +17,7 @@ _RUN_ID = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
 _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _DETECTION_ID = re.compile(r"^detection-[0-9a-f]{20}$")
 _PROPOSAL_RECORD_ID = re.compile(r"^proposal-review-[0-9a-f]{32}$")
+_RECORDING_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _MANAGEMENT_IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(0|[1-9][0-9]*)\."
@@ -512,6 +513,23 @@ class APIRoutes:
             )
             return ("", None)
         return (candidate_id, action)
+
+    def _recording_request(self, path: str) -> tuple[bool, str | None] | None:
+        """Parse ``/recordings`` and ``/recordings/{id}``: (valid, recording id or None)."""
+        collection = f"{API_PREFIX}/recordings"
+        if path != collection and not path.startswith(collection + "/"):
+            return None
+        if not self._management_query_free():
+            return (False, None)
+        if path == collection:
+            return (True, None)
+        recording_id = path[len(collection) + 1 :]
+        if not _RECORDING_ID.fullmatch(recording_id):
+            self._error(
+                HTTPStatus.BAD_REQUEST, "invalid_recording_id", "Recording identifier is invalid."
+            )
+            return (False, None)
+        return (True, recording_id)
 
     def _resource_action_request(self, path: str) -> tuple[str, str, str] | None:
         prefix = f"{API_PREFIX}/resources/"

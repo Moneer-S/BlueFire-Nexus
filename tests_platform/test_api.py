@@ -757,6 +757,18 @@ class StubService:
         self.calls.append(("comparison_assistance_context", snapshot_id))
         return {"saved": True}
 
+    def recordings(self) -> Mapping[str, Any]:
+        self.calls.append(("recordings",))
+        return {"recordings": []}
+
+    def recording(self, recording_id: str) -> Mapping[str, Any]:
+        self.calls.append(("recording", recording_id))
+        return {"recording": {"id": recording_id}}
+
+    def import_recording(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.calls.append(("import_recording", request))
+        return {"created": True}
+
 
 @contextmanager
 def running_server(

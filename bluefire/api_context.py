@@ -449,6 +449,15 @@ class PlatformService(Protocol):
     def events(self, run_id: str, *, after_sequence: int, limit: int) -> JsonResult:
         """Return one validated page from the tamper-evident run event stream."""
 
+    def recordings(self) -> JsonResult:
+        """List the shipped and imported recordings, each with where it came from."""
+
+    def recording(self, recording_id: str) -> JsonResult:
+        """Return one whole recording with its list entry."""
+
+    def import_recording(self, request: JsonObject) -> JsonResult:
+        """Store a recording, or the grown version of one that is still running."""
+
     def prepare_replay(self, run_id: str, request: JsonObject) -> JsonResult: ...
 
     def submit_replay(self, run_id: str, request: JsonObject) -> JsonResult: ...
