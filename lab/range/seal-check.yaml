@@ -1,0 +1,36 @@
+# A range with nothing in it but the seal: three bare containers on two
+# networks. left and middle share west, middle and right share east, and left
+# and right share none, so the seal's matrix has pairs that must connect and a
+# pair that must not.
+#
+# Each container runs the official nginx image, unchanged, pinned by digest.
+# Its web server listens on port 80 as soon as the container starts, which
+# gives every "must connect" probe a real listener, and the image (Debian
+# bookworm) has bash, coreutils' timeout and getent, which the seal's probes
+# use. Nothing else runs in the containers.
+range: seal-check
+version: 1
+prefix: bluefire-lab-sc
+docker: {min_engine: 28}
+networks:
+  west: {}
+  east: {}
+hosts:
+  left:
+    kind: host
+    role: a bare host on west
+    networks: [west]
+    listens: [80]
+    image: nginx:1.28.0-bookworm@sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609
+  middle:
+    kind: host
+    role: a bare host on both networks
+    networks: [west, east]
+    listens: [80]
+    image: nginx:1.28.0-bookworm@sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609
+  right:
+    kind: host
+    role: a bare host on east
+    networks: [east]
+    listens: [80]
+    image: nginx:1.28.0-bookworm@sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609

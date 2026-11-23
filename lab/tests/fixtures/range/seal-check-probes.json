@@ -1,0 +1,302 @@
+{
+ "left": {
+  "by_host": {
+   "left": {
+    "west": "172.18.0.1"
+   },
+   "middle": {
+    "west": "172.18.0.2",
+    "east": "172.19.0.1"
+   },
+   "right": {
+    "east": "172.19.0.2"
+   }
+  },
+  "subnets": {
+   "west": [
+    "172.18.0.0/16"
+   ],
+   "east": [
+    "172.19.0.0/16"
+   ]
+  },
+  "canary": [
+   [
+    "172.17.0.1"
+   ],
+   36037
+  ],
+  "plan": {
+   "control": [
+    "control left -> middle@west:80",
+    "172.18.0.2",
+    80
+   ],
+   "probes": [
+    [
+     "left -> middle@west:80",
+     "172.18.0.2",
+     80,
+     "segmentation: must connect",
+     "connect"
+    ],
+    [
+     "left -> right@east:80",
+     "172.19.0.2",
+     80,
+     "segmentation: must fail",
+     "fail"
+    ],
+    [
+     "outside 1.1.1.1:443",
+     "1.1.1.1",
+     443,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "outside 8.8.8.8:53",
+     "8.8.8.8",
+     53,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "outside 169.254.169.254:80",
+     "169.254.169.254",
+     80,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "outside 168.63.129.16:80",
+     "168.63.129.16",
+     80,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "host canary 172.17.0.1:36037",
+     "172.17.0.1",
+     36037,
+     "host canary: must fail",
+     "fail"
+    ]
+   ],
+   "subnets": [
+    "172.18.0.0/16"
+   ],
+   "names": {
+    "middle": [
+     "172.18.0.0/16"
+    ],
+    "right": [],
+    "example.com": [],
+    "host.docker.internal": [],
+    "gateway.docker.internal": []
+   }
+  },
+  "output": "probe\tcontrol left -> middle@west:80\t0\t\nprobe\tleft -> middle@west:80\t0\t\nprobe\tleft -> right@east:80\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/172.19.0.2/80: Network is unreachable\nprobe\toutside 1.1.1.1:443\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/1.1.1.1/443: Network is unreachable\nprobe\thost canary 172.17.0.1:36037\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/172.17.0.1/36037: Network is unreachable\nprobe\toutside 169.254.169.254:80\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/169.254.169.254/80: Network is unreachable\nprobe\toutside 8.8.8.8:53\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/8.8.8.8/53: Network is unreachable\nprobe\toutside 168.63.129.16:80\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/168.63.129.16/80: Network is unreachable\nroute\tIface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT                                                       \nroute\teth0\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0                                                                               \nroute6\t00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo\nroute6\t00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000004 00000000 80200001       lo\nroute6\t00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo\nforward\t0\nresolv\tnameserver 127.0.0.11\nresolv\toptions ndots:0\nname\tmiddle\t0\t172.18.0.2\nname\tright\t2\t\nname\texample.com\t2\t\nname\thost.docker.internal\t2\t\nname\tgateway.docker.internal\t2\t\ndone\n"
+ },
+ "middle": {
+  "by_host": {
+   "left": {
+    "west": "172.18.0.1"
+   },
+   "middle": {
+    "west": "172.18.0.2",
+    "east": "172.19.0.1"
+   },
+   "right": {
+    "east": "172.19.0.2"
+   }
+  },
+  "subnets": {
+   "west": [
+    "172.18.0.0/16"
+   ],
+   "east": [
+    "172.19.0.0/16"
+   ]
+  },
+  "canary": [
+   [
+    "172.17.0.1"
+   ],
+   36037
+  ],
+  "plan": {
+   "control": [
+    "control middle -> left@west:80",
+    "172.18.0.1",
+    80
+   ],
+   "probes": [
+    [
+     "middle -> left@west:80",
+     "172.18.0.1",
+     80,
+     "segmentation: must connect",
+     "connect"
+    ],
+    [
+     "middle -> right@east:80",
+     "172.19.0.2",
+     80,
+     "segmentation: must connect",
+     "connect"
+    ],
+    [
+     "outside 1.1.1.1:443",
+     "1.1.1.1",
+     443,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "outside 8.8.8.8:53",
+     "8.8.8.8",
+     53,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "outside 169.254.169.254:80",
+     "169.254.169.254",
+     80,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "outside 168.63.129.16:80",
+     "168.63.129.16",
+     80,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "host canary 172.17.0.1:36037",
+     "172.17.0.1",
+     36037,
+     "host canary: must fail",
+     "fail"
+    ]
+   ],
+   "subnets": [
+    "172.18.0.0/16",
+    "172.19.0.0/16"
+   ],
+   "names": {
+    "left": [
+     "172.18.0.0/16"
+    ],
+    "right": [
+     "172.19.0.0/16"
+    ],
+    "example.com": [],
+    "host.docker.internal": [],
+    "gateway.docker.internal": []
+   }
+  },
+  "output": "probe\tcontrol middle -> left@west:80\t0\t\nprobe\tmiddle -> right@east:80\t0\t\nprobe\tmiddle -> left@west:80\t0\t\nprobe\toutside 1.1.1.1:443\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/1.1.1.1/443: Network is unreachable\nprobe\toutside 169.254.169.254:80\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/169.254.169.254/80: Network is unreachable\nprobe\toutside 8.8.8.8:53\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/8.8.8.8/53: Network is unreachable\nprobe\toutside 168.63.129.16:80\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/168.63.129.16/80: Network is unreachable\nprobe\thost canary 172.17.0.1:36037\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/172.17.0.1/36037: Network is unreachable\nroute\tIface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT                                                       \nroute\teth1\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0                                                                               \nroute\teth0\t000013AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0                                                                               \nroute6\t00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo\nroute6\t00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000003 00000000 80200001       lo\nroute6\t00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo\nforward\t0\nresolv\tnameserver 127.0.0.11\nresolv\toptions ndots:0\nname\tleft\t0\t172.18.0.1\nname\tright\t0\t172.19.0.2\nname\texample.com\t2\t\nname\thost.docker.internal\t2\t\nname\tgateway.docker.internal\t2\t\ndone\n"
+ },
+ "right": {
+  "by_host": {
+   "left": {
+    "west": "172.18.0.1"
+   },
+   "middle": {
+    "west": "172.18.0.2",
+    "east": "172.19.0.1"
+   },
+   "right": {
+    "east": "172.19.0.2"
+   }
+  },
+  "subnets": {
+   "west": [
+    "172.18.0.0/16"
+   ],
+   "east": [
+    "172.19.0.0/16"
+   ]
+  },
+  "canary": [
+   [
+    "172.17.0.1"
+   ],
+   36037
+  ],
+  "plan": {
+   "control": [
+    "control right -> middle@east:80",
+    "172.19.0.1",
+    80
+   ],
+   "probes": [
+    [
+     "right -> left@west:80",
+     "172.18.0.1",
+     80,
+     "segmentation: must fail",
+     "fail"
+    ],
+    [
+     "right -> middle@east:80",
+     "172.19.0.1",
+     80,
+     "segmentation: must connect",
+     "connect"
+    ],
+    [
+     "outside 1.1.1.1:443",
+     "1.1.1.1",
+     443,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "outside 8.8.8.8:53",
+     "8.8.8.8",
+     53,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "outside 169.254.169.254:80",
+     "169.254.169.254",
+     80,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "outside 168.63.129.16:80",
+     "168.63.129.16",
+     80,
+     "outside: must fail",
+     "fail"
+    ],
+    [
+     "host canary 172.17.0.1:36037",
+     "172.17.0.1",
+     36037,
+     "host canary: must fail",
+     "fail"
+    ]
+   ],
+   "subnets": [
+    "172.19.0.0/16"
+   ],
+   "names": {
+    "left": [],
+    "middle": [
+     "172.19.0.0/16"
+    ],
+    "example.com": [],
+    "host.docker.internal": [],
+    "gateway.docker.internal": []
+   }
+  },
+  "output": "probe\tcontrol right -> middle@east:80\t0\t\nprobe\tright -> left@west:80\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/172.18.0.1/80: Network is unreachable\nprobe\toutside 8.8.8.8:53\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/8.8.8.8/53: Network is unreachable\nprobe\toutside 1.1.1.1:443\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/1.1.1.1/443: Network is unreachable\nprobe\toutside 168.63.129.16:80\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/168.63.129.16/80: Network is unreachable\nprobe\thost canary 172.17.0.1:36037\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/172.17.0.1/36037: Network is unreachable\nprobe\toutside 169.254.169.254:80\t1\tbash: connect: Network is unreachable bash: line 1: /dev/tcp/169.254.169.254/80: Network is unreachable\nprobe\tright -> middle@east:80\t0\t\nroute\tIface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT                                                       \nroute\teth0\t000013AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0                                                                               \nroute6\t00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo\nroute6\t00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000004 00000000 80200001       lo\nroute6\t00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo\nforward\t0\nresolv\tnameserver 127.0.0.11\nresolv\toptions ndots:0\nname\tleft\t2\t\nname\tmiddle\t0\t172.19.0.1\nname\texample.com\t2\t\nname\thost.docker.internal\t2\t\nname\tgateway.docker.internal\t2\t\ndone\n"
+ }
+}

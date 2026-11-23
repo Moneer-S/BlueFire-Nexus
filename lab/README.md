@@ -518,6 +518,79 @@ Seven controls must pass, or the run fails as a whole:
   7.0.0-1014-aws (run 44096893965, the same tests before the cron.d test's
   change) have both been seen.
 
+## A range and its seal
+
+A range is a small network of disposable containers, described by a spec file
+under [`range/`](range). The lab brings it up with the plain Docker CLI, proves
+that it is sealed, and takes it down again:
+
+```bash
+pip install ./lab
+bluefire-lab range run lab/range/seal-check.yaml --out <new folder>
+bluefire-lab range down lab/range/seal-check.yaml
+```
+
+It needs Docker Engine 28 or later on a local endpoint (`unix://` or
+`npipe://`). Nothing in a range runs a published test yet: the containers of
+[`seal-check.yaml`](range/seal-check.yaml) run nothing but the official nginx
+image's web server, which gives the seal a real listener to connect to.
+
+Every network is created `--internal` with the isolated gateway mode, so that
+the Docker host has no address on it, and without IPv6. Every container is
+created with the same few flags (a name and labels, its host name, its networks
+with its host name as alias, `--dns-search .`, `net.ipv4.ip_forward=0`, a pids
+and a memory limit, and `--pull never`) and nothing else. Every object is
+addressed by the full ID Docker returned when it was created. The seal is
+checked on the created containers
+before any of them starts, then on the running ones, and once more where the
+path of published tests will run:
+
+- **Objects:** the run's label and the spec's prefix name exactly the
+  containers and networks the run created, and no other container shares a
+  range container's network, pid or ipc namespace (`--network container:<id>`
+  leaves no trace on the network itself).
+- **Networks:** internal, bridge, no IPv6, isolated gateway mode, and once the
+  containers run, exactly the spec's members.
+- **Containers:** the pinned image; not privileged; no added capability; no
+  published port; no device, bind mount, volume or mount of any kind; no extra
+  host, DNS server or DNS option; no host namespace; no unconfined security
+  option; only the spec's networks, each with the host's alias.
+- **Inside each container**, with a probe script that uses only bash,
+  coreutils' `timeout` and `getent`: first a connection that must work (so that
+  a broken tool cannot pass a probe that must fail), then every pair the spec
+  derives (hosts that share a network must connect on each port the target
+  listens on; hosts that share none must fail), four outside addresses (public
+  resolvers and cloud metadata endpoints), and a canary: for the seal's
+  duration the engine listens on a random TCP port on the Docker host, every
+  container tries it at every gateway the daemon knows, and the canary must see
+  no connection. A probe that must fail passes only when nothing answered
+  (network unreachable, no route to host, or a timeout); a refused connection
+  fails, since something routed the packet and answered it. Also: routes only
+  to the container's own subnets, forwarding off, no Docker socket, Docker's
+  resolver only, range names resolving only to shared subnets and outside names
+  not resolving.
+- **Events:** a watch on Docker's events runs from before the first create to
+  the end of the teardown, and any event on the range that the engine did not
+  cause breaks the seal, as does the create or start of any other container
+  that joins a range container's namespaces.
+
+The run writes `seal.json` (every check, with the command it read, the value it
+observed and whether it passed), `seal.md`, `manifest.json` and
+`docker-events.ndjson` on every exit path, and takes the range down on every
+exit path after the first create. Its exit code is 0 when the range was sealed
+and still was at the end, 1 when it refused to start or Docker failed, 3 when
+the seal failed and nothing ran in the range, and 4 when the run was made
+invalid. `range down` removes only containers and networks that carry both the
+spec's prefix and its range label.
+
+The `range-one` workflow runs the passing case and five planted breaks (`--plant`
+and a network connect from outside), each of which must fail the seal for its
+own reason: a network that is not internal, a network without the isolated
+gateway mode (caught by the host canary as well), a published port, a bind
+mount, and an extra container connected to a range network after the seal
+(caught by the event watch). That it does so on a hosted runner is not yet
+shown.
+
 ## Not yet shown
 
 - Tests on Windows, attack chains of several steps, and a lab on a local
