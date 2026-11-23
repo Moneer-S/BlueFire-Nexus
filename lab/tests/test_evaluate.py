@@ -623,8 +623,15 @@ def test_ordinary_activity_is_the_baseline_and_what_ran_in_no_session_outside_th
             {
                 "role": "baseline",
                 "steps": [step("baseline-root", 30), step("marker-end", 31)],
-                "parts": [{"name": "root", "what": "ordinary work", "author": "the lab", "session": "30",
-                           "exit_status": 0}],
+                "parts": [
+                    {
+                        "name": "root",
+                        "what": "ordinary work",
+                        "author": "the lab",
+                        "session": "30",
+                        "exit_status": 0,
+                    }
+                ],
             }
         ]
     }
@@ -675,7 +682,12 @@ def test_ordinary_activity_leaves_out_a_failed_lookup_as_a_tests_events_do() -> 
 
 
 def judged(
-    test_rules=("lab-rule",), variant_rules=("lab-rule",), variant_took=True, noise=None, sibling=False, parts=()
+    test_rules=("lab-rule",),
+    variant_rules=("lab-rule",),
+    variant_took=True,
+    noise=None,
+    sibling=False,
+    parts=(),
 ) -> dict:
     def result(order, role, rules, answer="took effect", **extra) -> dict:
         lab = [{**RULES[rule_id], "alert": True} for rule_id in rules]

@@ -515,9 +515,7 @@ def html_report(results: dict) -> str:
         + '<p class="note">Rules this repository adds for gaps the pinned rules leave. A rule is accepted when it '
         "alerts on a test, still alerts when that test runs again with changed input arguments, and matches "
         "nothing in a baseline of ordinary activity or in the runner's own work. Most of the baseline was not "
-        "written by the rules' author. "
-        + e(ordinary_note(results))
-        + "</p>"
+        "written by the rules' author. " + e(ordinary_note(results)) + "</p>"
         if results.get("lab_rules")
         else ""
     )

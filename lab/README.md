@@ -200,18 +200,35 @@ uses. It is accepted only when all three of these hold in the same run:
 - every published procedure it alerts on ran again with changed input arguments
   (the `variants` in [`pinned-tests.yaml`](pinned-tests.yaml)) and took effect,
   and it alerted on each of those runs;
-- it matches nothing in the ordinary activity: a baseline of ordinary
-  administration with the same tools and files, run as root and as the test
-  account, and the runner's and the lab's own work outside the tests. The
-  baseline adds and
-  deletes accounts, among them a system account without a login shell; writes
-  a systemd drop-in with a shell, copies a whole unit file into place with `cp`
-  and masks a unit; changes file modes without the setuid or setgid bit;
-  truncates and copies files that are not history files, and truncates one to
-  a size other than zero; runs a program from `/tmp` and one from
-  `~/.local/bin`; searches with `find` for files by other names; zips and
-  unzips a file without a password; and writes an ordinary module into the
-  account's own Python site folder.
+- it matches nothing in the ordinary activity: the baseline, and the runner's
+  and the lab's own work outside the tests. The baseline has six parts
+  (`baseline` in [`pinned-tests.yaml`](pinned-tests.yaml)), and every part must
+  run to its end, or no rule is accepted. Three parts are other people's work,
+  run as they wrote it, because a rule's author can only write ordinary work
+  the rule was already written around:
+  - three Ubuntu packages (`vsftpd`, `sysstat`, `redis-server`) installed with
+    `apt` and removed again: their maintainer scripts add system accounts and
+    groups, install services, timers and a cron file, and start two services;
+  - a published Ansible role (`geerlingguy.node_exporter`, at a pinned commit)
+    applied as it is: it downloads a program, adds a system account for it,
+    writes a systemd unit from a template, and enables and starts the service;
+  - a program (`jq`, from a release tarball pinned by digest) built with its
+    own configure script and makefile, and installed into the account's folder.
+
+  Three parts are this repository's own. Two use the very tools and files the
+  rules look at, as root and as the test account: they add and
+  delete accounts, among them a system account without a login shell; write
+  a systemd drop-in with a shell, copy a whole unit file into place with `cp`
+  and mask a unit; change file modes without the setuid or setgid bit;
+  truncate and copy files that are not history files, and truncate one to
+  a size other than zero; run a program from `/tmp` and one from
+  `~/.local/bin`; search with `find` for files by other names; zip and
+  unzip a file without a password; and write an ordinary module into the
+  account's own Python site folder. The third is the false alarm that the
+  rule for a unit file written by a shell names itself: two new services
+  written by hand with a shell, started once and removed. The runs described
+  in this section are from before the baseline had the parts by others and
+  the hand-written services.
 
 This has a limit. Changed input arguments show that a rule does not depend on
 the values they set, such as an account name or a file path. They cannot show
@@ -277,11 +294,13 @@ file (`rm ~/.bash_history.bak`, record 1094), and "Binary Padding - Linux" its
 three uses of `truncate`. The others are medium or lower, for example "User Has
 Been Deleted Via Userdel" on the baseline's `userdel`.
 
-The baseline is a short script, not days of real administration, so a rule that
-stays quiet on it can still be noisy elsewhere. One such case is known: the
-rule for a unit file written by a shell also alerts when an administrator
-writes a new unit by hand. A draft that could not fire with this sensor is kept
-in [`rules/rejected`](rules/rejected) with the reason.
+The baseline is a few minutes of activity, not days of real administration, so
+a rule that stays quiet on it can still be noisy elsewhere. One such case was
+known when the runs above were made: the rule for a unit file written by a
+shell also alerts when an administrator writes a new unit by hand. The baseline
+now does exactly that, so the rule is judged on its own false alarm. A draft
+that could not fire with this sensor is kept in
+[`rules/rejected`](rules/rejected) with the reason.
 
 ## What the target has
 

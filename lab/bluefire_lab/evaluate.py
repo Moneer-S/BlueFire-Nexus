@@ -686,8 +686,9 @@ def judge_lab_rules(lab_rules: dict, tests: list[dict], ordinary: dict) -> list[
         if not fires:
             reason = "it matched no event of a test"
         elif unfinished:
-            reason = "a part of the ordinary activity did not run to its end, so the rule was not judged on it: " + (
-                "; ".join(f"{part['name']} (exit status {part['exit_status']})" for part in unfinished)
+            reason = (
+                "a part of the ordinary activity did not run to its end, so the rule was not judged on it: "
+                + ("; ".join(f"{part['name']} (exit status {part['exit_status']})" for part in unfinished))
             )
         elif noise:
             reason = f"it matched {len(noise)} event{'' if len(noise) == 1 else 's'} of ordinary activity"
