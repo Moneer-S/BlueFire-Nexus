@@ -9,7 +9,7 @@ BlueFire is a Python control plane, a separately built Rust runner, and a React/
 | `bluefire/` | Python contracts, registry, planner, AI proposal boundary, policy, orchestration, storage, evidence, detections, API, CLI |
 | `bluefire/catalog/` | Built-in behavior/action catalogs |
 | `bluefire/data/` | Packaged scenarios, config, and research registry |
-| `scenarios/` | Checkout copies of the eight canonical scenarios |
+| `scenarios/` | Checkout copies of the fourteen canonical scenarios |
 | `config/` | Declarative example configuration |
 | `runner/` | Rust execution authority and boundary tests |
 | `frontend/` | React/TypeScript source, unit tests, and Playwright tests |
@@ -150,11 +150,7 @@ Measurements apply only to that workload, browser and machine, not live or insta
 
 ## Product-level tests
 
-The opt-in harness this section describes, `tests_platform/test_execute_e2e.py`, was removed from the repository together with the heavy test matrix, and the last commit that holds it is `ebe5a9bf`.
-
-The opt-in real-runner E2E harness requires a freshly built binary.
-
-The harness creates temporary sandboxes and currently covers the canonical, Linux-oriented, Windows-oriented, and restricted-canary scenario cases. Keep this opt-in because a real runner performs real local effects even though the fixtures are harmless and disposable.
+The opt-in harness this section described, `tests_platform/test_execute_e2e.py`, was removed from the repository together with the heavy test matrix, and the last commit that holds it is `ebe5a9bf`. It needed a freshly built runner binary, created temporary sandboxes and covered the canonical, Linux-oriented, Windows-oriented, and restricted-canary scenario cases. It was opt-in because a real runner performs real local effects even though the fixtures are harmless and disposable.
 
 Product tests should prove:
 
@@ -322,7 +318,7 @@ review and sanitize any excerpt separately before sharing it.
 
 - Python, Rust, frontend, browser, security, package, installed-wheel, API, and CLI checks pass.
 - Version is consistent across Python, Rust, and frontend metadata.
-- Eight packaged/check-out scenarios and twenty action descriptors remain in parity.
+- Fourteen packaged/check-out scenarios and twenty action descriptors remain in parity.
 - Research pins/licenses and optional dependency versions are current and reviewed.
 - Generated screenshots use real UI with sanitized seeded data.
 - README/docs match shipped behavior and limitations.

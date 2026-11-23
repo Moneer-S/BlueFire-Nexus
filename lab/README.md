@@ -5,6 +5,15 @@ target, records what the sensors on that target saw, evaluates pinned detection
 rules over those records, and reports two answers for every test: did the
 technique take effect, and what did the defense see.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/report-dark.png">
+  <img src="../docs/report-light.png" width="1280" alt="Report for run 44133154347 showing the outcome totals, runner details and first rows of the results table.">
+</picture>
+
+The top of the report of
+[run 44133154347](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44133154347),
+as that run's job pictured it. The whole report is in the run's artifact.
+
 ## What it shows today
 
 Everything in this section comes from one run of the `lab` workflow:
