@@ -139,3 +139,9 @@
 .active-work-state .attention { color: var(--amber-soft); font-weight: 600; }
 .recent-work-name .recent-work-mode::after { content: "·"; margin-left: 6px; color: var(--muted); }
 .recent-work-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.overview-recorded { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--muted-strong); font-size: .75rem; line-height: 1.45; text-decoration: none; }
+.overview-recorded:hover { border-color: var(--line-strong); color: var(--text); }
+.overview-recorded > svg { width: 16px; height: 16px; color: var(--blue-soft); }
+.overview-recorded > svg:last-child { width: 13px; height: 13px; }
+.overview-recorded strong { color: var(--text); font-weight: 600; }
+.overview-recorded small { display: block; color: var(--muted); font-size: .7rem; }

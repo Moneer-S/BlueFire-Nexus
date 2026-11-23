@@ -164,7 +164,7 @@ export function runFacts(recording: Recording, timeline: Timeline): RunFacts {
   const first = timeline.segments[0];
   const last = timeline.segments[timeline.segments.length - 1];
   const start = first ? first.realStart : Date.parse(recording.source.started);
-  const end = last ? last.realEnd : Date.parse(recording.source.finished);
+  const end = last ? last.realEnd : Date.parse(recording.source.finished ?? recording.source.started);
   const roles = new Map(recording.steps.map((step) => [step.id, step]));
   const found = timeline.fires.find(({ alert }) => countsForScore(alert) && roles.get(alert.step)?.role !== "test");
   const step = found ? roles.get(found.alert.step) : undefined;

@@ -20,7 +20,7 @@ Open the exact one-use URL printed after the listener is ready. Its fragment cap
 | Getting Started | Choose an objective, review its environment, or follow a scenario through durable review |
 | Scenarios | Browse the eight seeded versioned graphs and open the authoritative active definition for editing/running |
 | Builder | Edit typed nodes, parameters, bindings, outcomes, alternates, and route-depth layout; use focus mode and commands |
-| Runs | Configure, preflight, start, and open durable run history or deep links |
+| Runs | Watch recorded runs in the live view, import a recording, and configure, preflight, start, and open durable run history or deep links |
 | Compare | Select a baseline and one or more candidate runs |
 | Behaviors | Inspect contracts, readiness, observables, provenance, and limitations |
 | Runner Profiles / Runners | Inspect scope and capability policy or runner readiness |
@@ -148,6 +148,32 @@ Do not interpret the presence of a Run button as readiness. Preflight reports:
 - refusal findings.
 
 Resolve a refusal by fixing the graph, environment, or least-privilege profile—not by broadly enabling actions or scope.
+
+## Recorded runs
+
+A recording is one file that holds a run an engine outside the app really
+carried out: the steps, what the sensors recorded, which rules matched, and the
+score ([Recordings](RECORDING.md)). **Runs** lists the recorded runs first,
+newest first: each says what it is (a test list or an attack path), where and
+when it was recorded, whether it shipped with BlueFire or was imported, its
+score in words, and "Still running" while its engine is still sending it. The
+runs of experiments from Build follow under **Experiment runs**.
+
+Select a recorded run to play it in the live view at `#/runs/recorded/<id>`.
+The address keeps the moment you are at (the step, the position in it, whether
+playback is paused, watch or analyse mode, and the chosen step), so a link or a
+reload opens the same place. While a recording is still running, the page asks
+the service for it again every few seconds and shows what has arrived. **Fix
+this** on a step opens its detail in analyse mode, where the hint says where
+the gap is: a sensor, or a rule. Making the change from there is not part of
+BlueFire yet.
+
+To import a recording, select **Import a recording** on **Runs** and choose its
+JSON file, or run `bluefire recordings import <file>`. A recording the service
+refuses is not stored, and each problem it found is listed. An imported
+recording opens at once, with the service's note above the view: what BlueFire
+checked, and what it cannot confirm. A CI run that an imported file names is
+shown there as text, never as a link to the run that made the recording.
 
 ## Run and review
 

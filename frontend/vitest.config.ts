@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  // The demo build's client reads the recording that ships with the service.
+  server: { fs: { allow: [".", "../bluefire/data/recordings"] } },
   test: {
     environment: "jsdom",
     setupFiles: ["./tests/setup.ts"],

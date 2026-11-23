@@ -3,9 +3,9 @@
 A recording is one file that holds what really happened in a run: the network
 it ran on, every step of the attacker, what the sensors recorded, which rules
 matched, and the score. It is made to be replayed: by the app's live view, and
-by a single HTML page that plays without the app. Neither reader is in the
-repository yet. The app already keeps recordings: it lists them, returns one
-whole, and imports one (see "In the app" below).
+by a single HTML page that plays without the app. The app keeps recordings: it
+lists them, returns one whole, imports one, and plays one in its live view (see
+"In the app" below).
 
 A recording is made from the files of a run by an engine that ran the steps for
 real: today `bluefire-lab` (published attack tests on one disposable host),
@@ -199,7 +199,9 @@ recording does not change.
 
 The app lists recordings, returns one whole, and imports one: the routes are in
 [API.md](API.md) under "Recordings", and the commands `bluefire recordings list`
-and `bluefire recordings import <file>` in [CLI.md](CLI.md). A recording shipped
+and `bluefire recordings import <file>` in [CLI.md](CLI.md). The Runs screen
+lists them, imports one from a file and plays one in the live view; the
+[user guide](USER_GUIDE.md#recorded-runs) says how. A recording shipped
 with the app is one that this repository's lab workflow recorded in CI; it is
 kept unchanged under `bluefire/data/recordings/`.
 

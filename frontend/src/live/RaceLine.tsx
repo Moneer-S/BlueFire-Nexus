@@ -153,7 +153,7 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
               </span>
             ) : null}
           </span>
-          <span className="lv-race-end">{elapsed(length / 1000, 0)} end of the run</span>
+          <span className="lv-race-end">{elapsed(length / 1000, 0)} {recording.source.finished ? "end of the run" : "so far"}</span>
         </div>
       </div>
     </section>

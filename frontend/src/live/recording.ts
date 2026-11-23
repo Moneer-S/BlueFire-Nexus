@@ -29,7 +29,8 @@ export interface Source {
   engine: string;
   environment: string;
   started: Time;
-  finished: Time;
+  /** Absent while the run is still going: the engine sends the recording again as it grows. */
+  finished?: Time;
   repository?: string;
   commit?: string;
   run_url?: string;
@@ -334,7 +335,7 @@ export function readRecording(value: unknown): Recording {
   text(source.engine, "The source's engine");
   text(source.environment, "The source's environment");
   time(source.started, "The source's start");
-  time(source.finished, "The source's end");
+  optionalTime(source.finished, "The source's end");
   optionalText(source.repository, "The source's repository");
   optionalText(source.commit, "The source's commit");
   optionalText(source.run_url, "The address of the run that made the recording");

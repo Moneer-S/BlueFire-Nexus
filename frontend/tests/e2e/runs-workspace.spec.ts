@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 test("Runs fits laptop and narrow screens while idle history stays ahead of live controls", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("./#/runs");
-  await expect(page.getByRole("heading", { name: "Run history" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Experiment runs" })).toBeVisible();
   await expect(page.locator(".live-console")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Check run", exact: true })).toHaveCount(0);
   await page.getByRole("link", { name: "Review new run", exact: true }).click();
