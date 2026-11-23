@@ -310,6 +310,55 @@ def test_the_watch_reports_a_second_start_and_an_exec_the_engine_did_not_run(tmp
     assert watch.settle(0) == []
 
 
+def test_the_end_of_a_command_is_matched_to_the_one_the_engine_waits_for_before_one_that_may_never_end(
+    tmp_path: Path,
+) -> None:
+    # A command that runs until the teardown is announced first, without waiting for its end. A
+    # short command's end must not be taken for it, or the short command would look unreported.
+    ended = an_event("container", "exec_die", "c" * 64, name="bluefire-lab-sc-left")
+
+    def announce(watch: engine.Watch) -> None:
+        watch.expect("container", "exec_die", id="c" * 64)
+        watch.expect("container", "exec_die", required=True, id="c" * 64)
+
+    watch = watched([ended], announce, tmp_path)
+
+    assert watch.findings == []
+    assert watch.settle(0) == []
+
+
+def test_a_container_started_with_init_is_seen_unless_the_engine_set_it() -> None:
+    objects = fixture("seal-check-created.json")
+    objects["containers"]["left"]["HostConfig"]["Init"] = True
+
+    checks = static(objects, started=False)
+
+    assert failed(checks) == {"container: init"}
+
+
+PARENT = {"image": "ubuntu:noble@sha256:" + "1" * 64, "layers": ["sha256:" + "a" * 64]}
+
+
+def a_built_image(layers: list[str], tags: list[str] | None = None) -> dict:
+    return {
+        "Id": "sha256:" + "b" * 64,
+        "RepoTags": tags or ["bluefire-lab-wz-web:0123"],
+        "RootFS": {"Layers": layers},
+    }
+
+
+def test_a_built_image_passes_only_under_its_tag_and_on_the_pinned_image() -> None:
+    def judged(image: dict) -> bool:
+        checked = seal.built_image("web", "bluefire-lab-wz-web:0123", "sha256:" + "b" * 64, image, PARENT)
+        return checked["pass"]
+
+    assert judged(a_built_image(["sha256:" + "a" * 64, "sha256:" + "c" * 64]))
+    # Another image given the same tag, built on something else.
+    assert not judged(a_built_image(["sha256:" + "d" * 64, "sha256:" + "c" * 64]))
+    assert not judged(a_built_image(["sha256:" + "a" * 64], tags=["bluefire-lab-wz-web:4567"]))
+    assert not judged({**a_built_image(["sha256:" + "a" * 64]), "Id": "sha256:" + "e" * 64})
+
+
 def a_joiner(target: str, mode: str = "NetworkMode") -> dict:
     """`docker inspect` of a container outside the range, trimmed; Docker records its target as a full ID."""
 

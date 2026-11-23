@@ -241,6 +241,11 @@ def container(
         value = config.get(key)
         return check(name, subject, command, value, "empty", not value)
 
+    # --init makes Docker bind-mount its own docker-init program, read-only, at /sbin/docker-init.
+    # That mount is not listed under Mounts, so the check names it: only hosts built from base have it.
+    settings_of = spec.hosts[host]
+    init = settings_of.built and settings_of.kind != "defense"
+
     return [
         check(
             "container: id",
@@ -296,6 +301,14 @@ def container(
         empty("container: binds", "Binds"),
         empty("container: volumes from", "VolumesFrom"),
         check("container: mounts", subject, command, mounts, [], not mounts),
+        check(
+            "container: init",
+            subject,
+            command,
+            config.get("Init"),
+            "true: Docker's docker-init, mounted read-only" if init else "not set",
+            bool(config.get("Init")) == init,
+        ),
         empty("container: extra hosts", "ExtraHosts"),
         empty("container: DNS servers", "Dns"),
         empty("container: DNS options", "DnsOptions"),
@@ -385,6 +398,38 @@ def image(host: str, image_ref: str, digest: str, inspected: dict) -> dict:
         found,
         digest,
         digest in found,
+    )
+
+
+def built_on(layers: list[str], parent: list[str]) -> bool:
+    """True when an image's layers start with every layer of the image it says it was built from."""
+
+    return bool(parent) and layers[: len(parent)] == parent
+
+
+def built_image(host: str, tag: str, image_id: str, inspected: dict, parent: dict) -> dict:
+    """Check f for a host built from the spec: it runs the image found under the tag of this build, on the pinned image.
+
+    The tag carries the hash of the rendered build context. Any image can carry a
+    tag, so the check also needs the image's layers to start with the layers of
+    the image its Dockerfile pins by digest (`parent`: its reference and layers,
+    read from the registry). That shows what the image was built on, not that
+    the rest of it is what the context would build today.
+    """
+
+    layers = (inspected.get("RootFS") or {}).get("Layers") or []
+    found = {
+        "id": inspected.get("Id"),
+        "tags": inspected.get("RepoTags") or [],
+        "built on": parent["image"] if built_on(layers, parent["layers"]) else "not the pinned image",
+    }
+    return check(
+        "pins: built image",
+        f"container {host}",
+        ["docker", "image", "inspect", inspected.get("Id", "")],
+        found,
+        {"id": image_id, "tag": tag, "built on": parent["image"]},
+        found["id"] == image_id and tag in found["tags"] and built_on(layers, parent["layers"]),
     )
 
 

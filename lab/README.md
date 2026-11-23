@@ -539,7 +539,8 @@ Every network is created `--internal` with the isolated gateway mode, so that
 the Docker host has no address on it, and without IPv6. Every container is
 created with the same few flags (a name and labels, its host name, its networks
 with its host name as alias, `--dns-search .`, `net.ipv4.ip_forward=0`, a pids
-and a memory limit, and `--pull never`) and nothing else. Every object is
+and a memory limit, `--pull never`, and `--init` for a host built from the
+spec) and nothing else. Every object is
 addressed by the full ID Docker returned when it was created. The seal is
 checked on the created containers
 before any of them starts, then on the running ones, and once more where the
@@ -551,10 +552,15 @@ path of published tests will run:
   leaves no trace on the network itself).
 - **Networks:** internal, bridge, no IPv6, isolated gateway mode, and once the
   containers run, exactly the spec's members.
-- **Containers:** the pinned image; not privileged; no added capability; no
+- **Containers:** the pinned image, or the image built from the spec under the
+  tag of its build context, whose layers start with those of the image its
+  Dockerfile pins by digest; not privileged; no added capability; no
   published port; no device, bind mount, volume or mount of any kind; no extra
   host, DNS server or DNS option; no host namespace; no unconfined security
-  option; only the spec's networks, each with the host's alias.
+  option; only the spec's networks, each with the host's alias. `--init` only
+  where the engine sets it: Docker then mounts its own `docker-init` program
+  read-only at `/sbin/docker-init`, a mount that `docker inspect` does not list
+  under `Mounts`, so the check `container: init` names it.
 - **Inside each container**, with a probe script that uses only bash,
   coreutils' `timeout` and `getent`: first a connection that must work (so that
   a broken tool cannot pass a probe that must fail), then every pair the spec
@@ -596,6 +602,121 @@ mount, and an extra container connected to a range network after the seal
 shows it on a GitHub-hosted runner with Docker Engine 28.0.4: the passing case
 was sealed, each of the four `--plant` breaks was stopped by its own check, and
 the connect was recorded by the event watch.
+
+## The defense of a range
+
+A range's defense is Wazuh: one manager and an agent inside each host it
+watches. [`wazuh-check.yaml`](range/wazuh-check.yaml) is the smallest such
+range, a manager and one host on one internal network, and shows that what
+happens on the host reaches the manager. No published test runs in it.
+
+```bash
+pip install ./lab
+bluefire-lab range render lab/range/wazuh-check.yaml --out <folder>   # optional: only writes the build files
+bluefire-lab range run lab/range/wazuh-check.yaml --out <new folder>
+```
+
+- **The pieces.** The manager is the official `wazuh/wazuh-manager` 4.14.10
+  image, pinned by digest, alone: no indexer and no dashboard, and its Filebeat
+  is kept from starting. Its rules are the stock ruleset. The lab adds one
+  decoder, which reads the fields of snoopy's lines and raises no alert. The
+  agent, package 4.14.10-1 checked against the SHA-512 in the spec, is baked
+  into hosts built from Ubuntu noble, pinned by digest, with every package from
+  the Ubuntu snapshot archive at the moment the spec names except the
+  certificate store (ca-certificates and the openssl it needs), which comes
+  from the live archive of the build day so that the snapshot can be reached
+  over HTTPS; its version is not recorded. On those hosts
+  snoopy 2.5.1 writes every program start to syslog, with the `BLUEFIRE_TAG` of
+  the process that started it, and rsyslog writes the lines with timestamps to
+  the microsecond. A host starts its services from a plain script, without
+  systemd.
+- **Images from the spec.** `range render` writes one multi-stage Dockerfile
+  and a bake file. Every image is tagged with the spec's prefix and a hash of
+  the build context, so `range run` builds with `docker buildx bake --load`
+  only when a tag is missing or its image is not built on the pinned image
+  (the pinned image's layers are read from its registry), and starts each
+  container from the image ID it found. A local image under the right tag and
+  on the right base is trusted to be what the context builds: nothing checks
+  the rest of it. The containers have no mount of any kind: the manager image declares
+  no volume, and its configuration is baked in under `/wazuh-config-mount/`,
+  which the image's own start copies into place.
+- **What the agent collects.** The lab never writes an ossec.conf of its own.
+  The build takes the stock file that the agent package or the manager image
+  installed and makes a short list of edits, each of which must find the exact
+  text it expects in the stock file. `manifest.json` holds, for the manager and
+  every agent, the diff against the stock file and each change with its label:
+  - *lab addition*: the agent reads `/var/log/auth.log` and
+    `/var/log/snoopy.log` (the stock file reads `/var/log/dpkg.log` already),
+    and watches `/etc`, `/home`, `/root`, `/tmp` and `/var/tmp` in real time
+    with inotify; the manager writes every event it receives to
+    `archives.json`, whether or not a rule matched; the snoopy decoder.
+  - *removed*: on the agent, the features the spec lists under `off`: command
+    monitoring (the stock `df`, `netstat` and `last` on a timer), the security
+    configuration assessment, rootcheck and the system inventory. They are
+    periodic scans or inventories, not live telemetry of what happens on a
+    host, and the commands would fill the archive. On the manager: the same
+    features and its file monitoring, since the manager's own container is not
+    a defended host; vulnerability detection and the indexer connection, which
+    need an indexer and the internet; the check for a newer version; Filebeat.
+  - *startup*: the agent reports to `manager` by its name in the range, enrolls
+    itself on port 1515 with no password (only range hosts can reach the
+    port), waits 1 s after enrolling instead of 20, and does not restart itself
+    when the manager first sends it the shared configuration; the manager reads
+    new agent keys every second.
+- **Ready.** Before the dynamic seal, within 180 s of the start: the manager's
+  ports 1514 and 1515 answer; each agent's state file says it is connected and
+  its log says its real-time file monitoring started, with none of the errors
+  after which a folder is not watched (inotify could not start, or its watch
+  limit was reached); the manager's `agent_control` lists each agent active at
+  the pinned version; and a nonce the engine sends to syslog on each agent host
+  arrives in the manager's `archives.json`. The delay from the nonce to the
+  archive is recorded. A range that is not ready stops with exit code 1 and a
+  message that says which part failed and which copied file to read; a test
+  shows this on stand-in files, and no run has shown it yet.
+- **Versions.** In each phase of the seal, `agent_control` on the manager is
+  run again, and the manager and every agent must report the pinned version.
+- **Delivery.** Where the path of published tests will run, the engine makes a
+  few harmless marks on each agent host: three lines sent to syslog, a file
+  created and then changed in each folder watched in real time, and one
+  program start, and records when each reached the archive. After the seal is
+  checked again, the engine sends an end nonce and waits until the archive has
+  caught up with each watched log. For each watched log, the lines written
+  between the ready nonce and the end nonce are counted in the file copied out
+  of the host, and each must be the full log of an event of that agent and
+  location in the copied archive; an identical line outside the window does not
+  count for one inside it. `delivery_gap` in `manifest.json` is true when a
+  line is missing, a mark did not reach the archive, or one of Wazuh's own
+  counters of lost events is above zero (analysisd, remoted, the agent's
+  logcollector, and its log's lines about a full buffer or a full inotify
+  queue); `delivery_findings` says which. It is null, and the summary says "not
+  counted", when a log was not copied or is shorter than its window, or a mark
+  was not made. A log with no line in the window is shown as not shown, not as
+  delivered. logcollector writes its counters once a minute, so the manifest
+  says whether they reach the end nonce; when they do not, its last minute is
+  covered by the line count only. A lost event is a result about the defense,
+  so it flags the run and does not fail it.
+- **What the run keeps.** While the run lasts, two commands of the engine
+  follow the manager's `archives.json` and `alerts.json` into `live/`, for a
+  live view; no result is computed from them. After the run, `docker cp` by ID
+  copies into `raw/hosts/<host>/` the manager's archives and alerts
+  (compressed), its log, its state files and both ossec.conf files, and each
+  agent host's watched logs, syslog, agent log, state files and ossec.conf
+  files. Only folders and regular files are written: a link is left out and
+  listed under `collected` in the manifest (Wazuh's own `archives.json` and
+  `alerts.json` are links to the day's file, which is kept), so that nothing a
+  container planted can make the lab read a file of the machine that runs it.
+  `defense.md` sums it up for the job summary.
+
+Some limits: snoopy does not see the first program of a `docker exec` (the
+engine's `bash`), nor static programs; a process without `BLUEFIRE_TAG` has
+the tag `(undefined)`. The agent package is for amd64 only.
+
+The `wazuh` job of the `range-one` workflow runs this on a GitHub-hosted
+runner, fails unless there was no delivery gap, every mark arrived, snoopy's
+tag was decoded and every ossec.conf is the lab's edits of the stock file, and
+writes the ready delays, the marks, the delivery table and the seal to its
+summary. Not yet shown on a GitHub-hosted runner: no run of that job is linked
+here yet.
 
 ## Not yet shown
 
