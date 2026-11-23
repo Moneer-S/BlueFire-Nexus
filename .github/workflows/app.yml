@@ -62,6 +62,11 @@ jobs:
       # Every test starts a service of its own, so they run side by side. Started
       # as a module so that the tests can import each other from the repository's root.
       - name: Test
+        env:
+          # A hosted runner can be several times slower than a workstation. The tests wait a
+          # short time for a background job so that a hung job fails. This stretches those
+          # waits, not what the tests check: see tests_platform/conftest.py.
+          BLUEFIRE_TEST_WAIT_SCALE: "4"
         run: '"$RUNNER_TEMP/venv/bin/python" -m pytest -n auto'
 
   interface:
