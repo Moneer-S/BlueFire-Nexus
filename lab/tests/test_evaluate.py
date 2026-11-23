@@ -112,7 +112,7 @@ def telemetry() -> list[dict]:
     ]
 
 
-def see(test, events, matched=None, system=(), audit=(), rule_set=None):
+def see(test, events, matched=None, system=(), audit=(), rule_set=None, container=False):
     starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
     evaluate.tie(events, starts)  # as the evaluation does, with the program starts auditd recorded
     edges = [evaluate.marker_time(starts, "r1", test["order"], edge) for edge in ("start", "end")]
@@ -124,6 +124,7 @@ def see(test, events, matched=None, system=(), audit=(), rule_set=None):
         "audit_events": list(audit),
         "lookups": evaluate.lookups(list(audit)),
         "rule_set": rule_set,
+        "container": container,
     }
     return evaluate.visibility(test, events, starts, matched or {}, RULES, context)
 

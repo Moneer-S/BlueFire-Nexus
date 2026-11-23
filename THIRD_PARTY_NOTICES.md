@@ -30,6 +30,7 @@ licence files found beside it. The runs this repository's documents link used th
 |---|---|---|---|
 | [Neo23x0/auditd](https://github.com/Neo23x0/auditd) | commit `61110694`, file `audit.rules` | Apache-2.0 | Published audit rules, as sensor settings under test |
 | [MSTIC-Sysmon](https://github.com/microsoft/MSTIC-Sysmon) | commit `ad23e370`, file `linux/configs/main.xml` | MIT | Published Sysmon for Linux configuration, as sensor settings under test |
+| [nginx](https://hub.docker.com/_/nginx), the official image | `1.30.7`, by digest `sha256:7fad6c0d...` | BSD-2-Clause for nginx; the image holds Debian packages under their own licences | Container image run as the target. It is pulled onto the runner and not redistributed |
 | [rustinel-rules](https://github.com/Karib0u/rustinel-rules) | commit `26793460`, folder `rules/sigma/linux` | its `LICENSE`, headed "Detection Rule License (DRL) 1.1": use and redistribution with the notice and each rule's author kept | Rule set evaluated as a column of its own |
 
 The lab's Python package depends on [PyYAML](https://github.com/yaml/pyyaml) (MIT), installed

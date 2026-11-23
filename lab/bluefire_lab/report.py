@@ -118,6 +118,12 @@ def lede(results: dict) -> str:
             f"each of {len(runners)} GitHub-hosted runners ({target['os']}, "
             f"{'kernel' if len(kernels) == 1 else 'kernels'} {' and '.join(kernels)})"
         )
+    if target.get("image"):
+        hosts = f"each of {len(runners)} GitHub-hosted runners" if runners else "a GitHub-hosted runner"
+        where = (
+            f"a container of the image {target['image']} ({target['os']}), which the lab started on {hosts} "
+            "with no way out of the container"
+        )
     text = (
         f"{count(summary['tests'], 'published attack test')} ran on {where} on "
         f"{results['run']['started'][:10]}. {summary['took_effect']} took effect"
@@ -331,6 +337,46 @@ def unstable_table(results: dict) -> str:
         "<tr><th>Technique</th><th>Run of a test</th><th>Answer</th><th>What each runner answered</th></tr>"
     )
     return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>'
+
+
+def image_section(results: dict) -> str:
+    """For a run inside a container: the image, the settings read back, and the check made from it."""
+
+    leash, target = results.get("leash"), results["run"]["target"]
+    if not leash or not target.get("image"):
+        return ""
+    rows = "".join(
+        f'<tr><td>{e(moment)} the tests</td><td class="wide">{e(probe["probe"])}</td><td>{e(probe["expected"])}</td>'
+        f'<td><span class="pill {"good" if probe["held"] else "bad"}">'
+        f"{'succeeded' if probe['succeeded'] else 'failed'}</span></td></tr>"
+        for moment in ("before", "after")
+        for probe in (leash.get(moment) or {}).get("probes", [])
+    )
+    refused = [
+        reason for moment in ("before", "after") for reason in (leash.get(moment) or {}).get("refused", [])
+    ]
+    head = "<tr><th>When</th><th>Probe</th><th>Had to</th><th>Did</th></tr>"
+    return (
+        '<h2 id="image">The image as the target</h2>'
+        f'<p class="note">The tests ran inside a container that the lab started from the image '
+        f'<span class="mono">{e(target["image"])}</span> (image id <span class="mono">{e(target.get("image_id", ""))}'
+        "</span>) with the image's own command, and removed afterwards. The sensors ran on the machine that "
+        "hosted it, which is not a target. The container sat on one internal network, with the executor and the "
+        "test definitions as read-only folders and nothing else of the host. The lab read the container's "
+        "settings back from the runtime and refuses a privileged container, an added capability, a device, a "
+        "namespace or a writable folder of the host, the Docker socket, a published port, a restart policy and "
+        "any other network. "
+        + (f"Refused: {e('; '.join(refused))}. " if refused else "None of these was found. ")
+        + "Each probe below was made by TCP with the host's own tool inside the container's network "
+        "namespace, so that a tool missing in the image cannot pass it.</p>"
+        f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>'
+        '<p class="note">A run inside an image runs each test once, as the image is: what a test needs and the '
+        "image lacks is not fetched, and the test is then left out or not attempted. The baseline of ordinary "
+        "activity, the hardening changes and the runs with changed input arguments belong to a run on the "
+        "runner itself, so the lab's own rules, which are judged on those, are not evaluated here. auditd's "
+        "file watches name paths of the host and do not see files inside the container; its records of "
+        "program starts do.</p>"
+    )
 
 
 def hardened_runs(results: dict) -> list[dict]:
@@ -800,6 +846,7 @@ telemetry shows only what happened beside the technique, or there is none, the s
 first. {e(unstable_note)}Select a test to see its events and rules.</p>
 {lab_rules}
 {rule_set_section(results)}
+{image_section(results)}
 {hardening}
 {behind}
 {unstable}
