@@ -126,6 +126,7 @@ from .product_store import (
 )
 from .receiver_defense_jobs import ReceiverDefenseJobs
 from .receiver_defense_service import ReceiverDefenseServiceMixin
+from .recordings import RecordingLibrary
 from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
 from .replay import ReplayError, ReplayRequest, prepare_replay
 from .replay_preparation import (
@@ -258,6 +259,7 @@ class BlueFireService(
         self._macos_workspace_endpoint: Any | None = None
         self.store = RunStore(runs_dir or Path.cwd() / ".bluefire-runs")
         self.recovered_runs = self.store.recover_interrupted_runs()
+        self.recording_library = RecordingLibrary(self.store.root / "recordings")
         self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())
         self.runner_factory = runner_factory or self._managed_runner
         self._native_tool_setup_runner_factory = runner_factory
@@ -4623,6 +4625,15 @@ class BlueFireService(
             for run in self.store.list_runs()
         ]
         return {"schema_version": "bluefire.run-list.v1", "runs": runs}
+
+    def recordings(self) -> Mapping[str, Any]:
+        return self.recording_library.list()
+
+    def recording(self, recording_id: str) -> Mapping[str, Any]:
+        return self.recording_library.detail(recording_id)
+
+    def import_recording(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self.recording_library.import_recording(request)
 
     def detail(self, run_id: str) -> Mapping[str, Any]:
         try:

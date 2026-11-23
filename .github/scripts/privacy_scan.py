@@ -7,8 +7,9 @@ A file fails the scan when its content or its name
   written with either kind of slash, or a tool's folder named after a home
   directory (/-home-<name>-..., C--Users-<name>-..., pytest-of-<name>). Only the
   accounts that hosted runners and lab targets use are accepted: /home/runner,
-  /Users/runner, C:\Users\runneradmin and /home/bluefire-lab, and the exact
-  strings that ACCEPTED_PATHS lists for single files;
+  /Users/runner, C:\Users\runneradmin, /home/bluefire-lab and /home/art (the
+  account that Atomic Red Team's own tests create on a lab target), and the
+  exact strings that ACCEPTED_PATHS lists for single files;
 - carries a marker string that tags a file as not for publication; or
 - is a kind of file that is never committed: logs, databases, keys, archives, or
   anything in a folder for build or run output.
@@ -38,8 +39,11 @@ import sys
 NOT_A_NAME = rb"\s\\/\"'`<>*?$%{}\[\]()|,;:=&\x00"
 HOME_PATH = re.compile(rb"(?i)[\\/](home|users)[\\/]+([^" + NOT_A_NAME + rb"]+)")
 TOOL_FOLDER = re.compile(rb"(?i)(?:[\\/]-(?:home|users)-|\b[a-z]--users-|pytest-of-)([^" + NOT_A_NAME + rb"]+)")
-PUBLIC_HOMES = {(b"home", b"runner"), (b"users", b"runner"), (b"users", b"runneradmin"), (b"home", b"bluefire-lab")}
-PUBLIC_ACCOUNTS = (b"runner", b"runneradmin", b"bluefire-lab")
+PUBLIC_HOMES = {
+    (b"home", b"runner"), (b"users", b"runner"), (b"users", b"runneradmin"), (b"home", b"bluefire-lab"),
+    (b"home", b"art"),
+}  # fmt: skip
+PUBLIC_ACCOUNTS = (b"runner", b"runneradmin", b"bluefire-lab", b"art")
 
 # Each marker is written in two parts so that this file does not carry it.
 MARKERS = (
