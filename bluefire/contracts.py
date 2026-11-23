@@ -829,6 +829,19 @@ class ScenarioDefinition:
         return document
 
 
+def _safe_yaml(text: str) -> Any:
+    """Parse YAML with the safe loader, the C one where PyYAML was built with libyaml.
+
+    Both loaders build the same values. The C one reads the catalog and the
+    scenarios several times faster, and reading them is most of what starting
+    the service costs.
+    """
+
+    import yaml
+
+    return yaml.load(text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))  # nosec B506
+
+
 def _load_yaml_mapping(path: str | Path, context: str) -> Mapping[str, Any]:
     try:
         import yaml
@@ -836,7 +849,7 @@ def _load_yaml_mapping(path: str | Path, context: str) -> Mapping[str, Any]:
         raise RuntimeError("PyYAML is required to load BlueFire YAML contracts") from exc
     source = Path(path)
     try:
-        value = yaml.safe_load(source.read_text(encoding="utf-8"))
+        value = _safe_yaml(source.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ContractError(f"could not read {context}: {source}") from exc
     except yaml.YAMLError as exc:

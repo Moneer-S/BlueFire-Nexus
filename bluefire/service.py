@@ -93,6 +93,7 @@ from .contracts import (
     ContractError,
     ExecutionMode,
     ScenarioDefinition,
+    _safe_yaml,
     load_scenario,
 )
 from .detection_ai_jobs import DetectionAIJobs
@@ -6692,7 +6693,7 @@ class BlueFireService(
                 if not resource.name.casefold().endswith((".yaml", ".yml")):
                     continue
                 try:
-                    raw = yaml.safe_load(resource.read_text(encoding="utf-8"))
+                    raw = _safe_yaml(resource.read_text(encoding="utf-8"))
                 except (OSError, UnicodeError, yaml.YAMLError) as exc:
                     raise ContractError(f"packaged YAML cannot be loaded: {resource.name}") from exc
                 if isinstance(raw, Mapping) and raw.get("schema_version") == (
