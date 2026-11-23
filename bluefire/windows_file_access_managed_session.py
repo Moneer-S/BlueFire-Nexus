@@ -683,9 +683,6 @@ class ManagedCorrectionControl:
             "persisted_consume_digest": row["persisted_consume_digest"],
         }
 
-    def accept_ack(self, value: Mapping[str, Any]) -> dict[str, Any]:
-        return self.wait_delivered(self.register_ack(value))
-
     def wait_ack(self, cancel_event: threading.Event) -> dict[str, Any]:
         while not self._ack_event.wait(0.01):
             _require(

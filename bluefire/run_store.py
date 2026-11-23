@@ -1957,10 +1957,6 @@ class RunStore:
             os.close(descriptor)
 
     @classmethod
-    def _last_event_sequence(cls, path: Path) -> int:
-        return cls._last_event_state(path)[0]
-
-    @classmethod
     def _last_event_state(cls, path: Path) -> tuple[int, str | None]:
         if not path.exists():
             return 0, None

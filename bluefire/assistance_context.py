@@ -138,10 +138,6 @@ def is_audit(request):
     return request.get("selection", {}).get("kind") == AUDIT_KIND
 
 
-def is_file_access(request):
-    return request.get("selection", {}).get("kind") in {FILE_ACCESS_KIND, FILE_ACCESS_RETEST_KIND}
-
-
 def is_analysis_only(request):
     return request.get("selection", {}).get("kind") in ANALYSIS_KINDS
 
