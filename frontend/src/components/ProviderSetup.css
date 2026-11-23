@@ -1,0 +1,68 @@
+.provider-workspace { container: provider-workspace / inline-size; }
+.provider-workspace .provider-workspace-body { gap: 18px; padding: 22px 24px; }
+.provider-workspace h3 { margin: 0; font-size: 1rem; line-height: 1.4; }
+.provider-workspace p { margin-block: 0; }
+.provider-summary { padding-bottom: 20px; border-bottom: 1px solid var(--line-strong); }
+.provider-summary > header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 20px; }
+.provider-summary > header > div { min-width: 0; }
+.provider-summary h3 { font-size: 1.25rem; overflow-wrap: anywhere; }
+.provider-summary .provider-summary-label { margin-bottom: 4px; color: var(--muted); font-size: .75rem; }
+.provider-summary-facts, .provider-usage-summary dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 24px; margin: 18px 0 0; }
+.provider-summary-facts > div, .provider-usage-summary dl > div { min-width: 0; }
+.provider-summary dt, .provider-usage-summary dt { color: var(--muted); font-size: .75rem; line-height: 1.5; }
+.provider-summary dd { margin: 5px 0 0; color: var(--text); font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; }
+.provider-usage-summary { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.provider-usage-summary dl { margin: 0; }
+.provider-usage-summary dd { color: var(--blue-soft); font-size: 1.125rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.provider-usage-summary > p { margin-top: 10px; color: var(--muted); font-size: .75rem; line-height: 1.5; }
+.provider-exact-connection { margin-top: 16px; }
+.provider-workspace summary { width: fit-content; cursor: pointer; font-size: .8125rem; color: var(--muted-strong); }
+.provider-workspace summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
+.provider-exact-connection .data-list { margin-top: 8px; }
+.provider-mode-guidance { max-width: 105ch; color: var(--muted-strong); font-size: .8125rem; line-height: 1.6; }
+.provider-preset { max-width: 520px; }
+.provider-connection-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; align-items: start; }
+.provider-connection-fields > .field, .provider-authorization-limits > .field { min-width: 0; }
+.provider-field-wide { grid-column: 1 / -1; }
+.provider-request-limit-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 14px; }
+.provider-connection-fields details > .field { margin-top: 14px; max-width: 520px; }
+.provider-authorization { display: grid; gap: 16px; padding-block: 22px; border-block: 1px solid var(--line-strong); }
+.provider-authorization > p { color: var(--muted-strong); font-size: .8125rem; line-height: 1.6; }
+.provider-authorization-context { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.provider-authorization-context .data-list { margin: 0; }
+.provider-data-policy { padding-left: 20px; border-left: 2px solid var(--line-strong); color: var(--muted-strong); font-size: .8125rem; line-height: 1.6; }
+.provider-data-policy strong { display: block; margin-bottom: 6px; color: var(--text); }
+.provider-purposes { min-width: 0; margin: 0; padding: 12px 0 0; border: 0; border-top: 1px solid var(--line); }
+.provider-purposes legend { padding: 0 12px 0 0; font-size: .875rem; font-weight: 600; }
+.provider-purpose-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 24px; }
+.provider-workspace .provider-purpose-grid .check-row { min-width: 0; margin: 0; padding-block: 4px; font-size: .8125rem; line-height: 1.5; }
+.provider-workspace .check-row input { flex-shrink: 0; margin-top: 3px; }
+.provider-authorization-limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 24px; }
+.provider-authorization .provider-budget-summary { padding: 12px 0; border-block: 1px solid var(--line); color: var(--text); font-size: .8125rem; font-variant-numeric: tabular-nums; }
+.provider-authorization > .field { max-width: 520px; }
+.provider-authorization > .button { justify-self: start; }
+.provider-saved-authorizations { border-top: 1px solid var(--line); padding-top: 14px; }
+.provider-authorization-record { display: grid; gap: 10px; padding: 16px 0; border-bottom: 1px solid var(--line); font-size: .8125rem; overflow-wrap: anywhere; }
+.provider-authorization-record > .button { justify-self: start; }
+.provider-authorization-record .data-list { margin: 0; }
+.provider-saved-connections { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line-strong); }
+.provider-saved-connection { display: flex; justify-content: space-between; align-items: start; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.provider-saved-connection > div:first-child { min-width: 0; }
+.provider-saved-connection strong { font-size: .875rem; overflow-wrap: anywhere; }
+.provider-saved-connection p { margin-top: 5px; color: var(--muted-strong); font-size: .8125rem; overflow-wrap: anywhere; }
+.provider-saved-connection details { margin-top: 6px; }
+.provider-saved-connection .row-badges { justify-content: flex-end; flex-shrink: 0; }
+@container provider-workspace (max-width: 760px) {
+  .provider-workspace .provider-workspace-body { padding: 18px; }
+  .provider-authorization-context { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .provider-data-policy { padding-left: 14px; }
+  .provider-summary-facts, .provider-usage-summary dl { gap: 12px; }
+}
+@container provider-workspace (max-width: 540px) {
+  .provider-connection-fields, .provider-purpose-grid, .provider-authorization-limits, .provider-request-limit-fields { grid-template-columns: minmax(0, 1fr); }
+  .provider-summary-facts, .provider-usage-summary dl { grid-template-columns: minmax(0, 1fr); }
+  .provider-summary-facts > div, .provider-usage-summary dl > div { display: grid; grid-template-columns: minmax(100px, .8fr) minmax(0, 1.2fr); gap: 12px; align-items: baseline; }
+  .provider-summary dd { margin: 0; }
+  .provider-saved-connection { flex-direction: column; }
+  .provider-saved-connection .row-badges { justify-content: flex-start; }
+}

@@ -1,0 +1,144 @@
+{
+  "schema_version": "bluefire.s3-audit-workflow-vector.v1",
+  "origin": "handcrafted_synthetic_consistency_only",
+  "scope": {
+    "account_id": "123456789012",
+    "bucket": "bluefire-owned-fixture",
+    "created_at": "2026-10-09T00:00:00Z",
+    "expires_at": "2026-10-09T01:00:00Z",
+    "limits": {
+      "api_calls": 300,
+      "audit_bytes": 20971520,
+      "audit_events": 1000,
+      "audit_seconds": 1800,
+      "business_attempts": 6,
+      "business_seconds": 1800,
+      "cleanup_seconds": 900,
+      "convergence_seconds": 300,
+      "object_bytes": 65536,
+      "policy_changes": 1,
+      "request_seconds": 30,
+      "rollbacks": 1,
+      "session_seconds": 900,
+      "sessions": 6
+    },
+    "objects": [
+      {
+        "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+        "purpose": "primary",
+        "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 32
+      },
+      {
+        "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+        "purpose": "health",
+        "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size_bytes": 32
+      }
+    ],
+    "ownership_receipt_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "policy": {
+      "baseline_digest": "sha256:c4968fa7f97c0855d1f111ae972bb664331b359f155be7fe48a74699d4f0bba2",
+      "legitimate_sid": "BlueFireLegitimate00000000000000000000000000000000",
+      "probe_sid": "BlueFireProbe00000000000000000000000000000000"
+    },
+    "prefix": "bluefire/s3-00000000000000000000000000000000/",
+    "region": "us-east-1",
+    "roles": {
+      "controller": "arn:aws:iam::123456789012:role/bluefire-controller",
+      "legitimate": "arn:aws:iam::123456789012:role/bluefire-legitimate",
+      "probe": "arn:aws:iam::123456789012:role/bluefire-probe"
+    },
+    "schema_version": "bluefire.s3-access-scope.v1",
+    "scope_id": "s3-00000000000000000000000000000000"
+  },
+  "source": {
+    "schema_version": "bluefire.s3-audit-source.v1",
+    "audit_source_id": "synthetic-trail-delivery",
+    "experiment_scope_digest": "sha256:17155daa72f37a51d5ede5124d44a800c70a7851f7621a65a652e4b38423cdce",
+    "trail_arn": "arn:aws:cloudtrail:us-east-1:123456789012:trail/synthetic",
+    "source_account_id": "123456789012",
+    "event_region": "us-east-1",
+    "audit_bucket": "bluefire-audit-fixture",
+    "audit_bucket_owner_account_id": "123456789012",
+    "audit_bucket_region": "us-west-2",
+    "exact_delivery_root_prefix": "AWSLogs/123456789012/CloudTrail/us-east-1/",
+    "collector_role_arn": "arn:aws:iam::123456789012:role/bluefire-audit-reader",
+    "managed_profile_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "protected_runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "worker_generation": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "expires_at": "2026-10-09T01:00:00Z",
+    "audit_limits": {
+      "api_calls": 9,
+      "sessions": 1,
+      "files": 4,
+      "sdk_body_bytes": 393216,
+      "compressed_bytes": 262144,
+      "expanded_bytes": 1048576,
+      "events": 500,
+      "seconds": 30
+    }
+  },
+  "workflow": {
+    "schema_version": "bluefire.s3-audit-workflow.v1",
+    "workflow_job_id": "job-11111111111111111111111111111111",
+    "environment_id": "synthetic-audited-environment",
+    "resource_key": "sha256:3aaabb18f26bbc55cce3f7578acdabb5e46f6b11471b07af296f8609b773776b",
+    "scope_digest": "sha256:17155daa72f37a51d5ede5124d44a800c70a7851f7621a65a652e4b38423cdce",
+    "source": {
+      "schema_version": "bluefire.s3-audit-source.v1",
+      "audit_source_id": "synthetic-trail-delivery",
+      "experiment_scope_digest": "sha256:17155daa72f37a51d5ede5124d44a800c70a7851f7621a65a652e4b38423cdce",
+      "trail_arn": "arn:aws:cloudtrail:us-east-1:123456789012:trail/synthetic",
+      "source_account_id": "123456789012",
+      "event_region": "us-east-1",
+      "audit_bucket": "bluefire-audit-fixture",
+      "audit_bucket_owner_account_id": "123456789012",
+      "audit_bucket_region": "us-west-2",
+      "exact_delivery_root_prefix": "AWSLogs/123456789012/CloudTrail/us-east-1/",
+      "collector_role_arn": "arn:aws:iam::123456789012:role/bluefire-audit-reader",
+      "managed_profile_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "protected_runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "worker_generation": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "expires_at": "2026-10-09T01:00:00Z",
+      "audit_limits": {
+        "api_calls": 9,
+        "sessions": 1,
+        "files": 4,
+        "sdk_body_bytes": 393216,
+        "compressed_bytes": 262144,
+        "expanded_bytes": 1048576,
+        "events": 500,
+        "seconds": 30
+      }
+    },
+    "budget": {
+      "per_batch": {
+        "api_calls": 9,
+        "sessions": 1,
+        "files": 4,
+        "sdk_body_bytes": 393216,
+        "compressed_bytes": 262144,
+        "expanded_bytes": 1048576,
+        "events": 500,
+        "seconds": 30
+      },
+      "workflow": {
+        "api_calls": 18,
+        "sessions": 2,
+        "files": 8,
+        "sdk_body_bytes": 786432,
+        "compressed_bytes": 524288,
+        "expanded_bytes": 2097152,
+        "events": 1000,
+        "seconds": 60,
+        "batches": 2,
+        "wire_plus_expansion_bytes": 2883584
+      }
+    }
+  },
+  "expected": {
+    "source_digest": "sha256:468e0a2d4a8b04c1991245603b2a9672b0e5aea10b687fc7e8c7f9a1caadb15b",
+    "workflow_digest": "sha256:b6b8403f2c6439b3f0a91042867162e921994451c8f73ad57494cce7c49d2b5c"
+  }
+}

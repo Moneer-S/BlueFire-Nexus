@@ -1,0 +1,29 @@
+{
+  "schema_version": "bluefire.s3-audit-wire-vectors.v1",
+  "request_schema": "bluefire.s3-worker-request.v3",
+  "result_schema": "bluefire.s3-worker-result.v3",
+  "request_bytes": 81920,
+  "line_bytes": 16384,
+  "send_bytes": 2048,
+  "durable_bytes": 8192,
+  "conversation_bytes": 65536,
+  "reservation_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "prefix": "AWSLogs/123456789012/CloudTrail/us-east-1/2026/10/09/",
+  "start_after": "AWSLogs/123456789012/CloudTrail/us-east-1/2026/10/09/123456789012_CloudTrail_us-east-1_20261009T0000Z_",
+  "sdk_s3_host": "s3.us-west-2.amazonaws.com",
+  "cases": [
+    {"name": "baseline_one", "phase": "baseline", "candidate_count": 1, "selected_count": 1, "size_bytes": 100, "truncated": false, "actual_sends": 5},
+    {"name": "retest_four_of_five", "phase": "retest", "candidate_count": 5, "selected_count": 4, "size_bytes": 100, "truncated": true, "actual_sends": 8},
+    {"name": "baseline_empty", "phase": "baseline", "candidate_count": 0, "selected_count": 0, "size_bytes": 100, "truncated": false, "actual_sends": 4}
+  ],
+  "request_refusals": [
+    {"pointer": "/max_sends", "value": true},
+    {"pointer": "/max_sends", "value": 8},
+    {"pointer": "/audit_authority_digest", "value": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+    {"pointer": "/audit/original_pair/reads/0/cleanup", "value": "unknown"},
+    {"pointer": "/audit/original_pair/reads/0/reservation_digest", "value": "not-a-digest"},
+    {"pointer": "/audit/source/audit_bucket_owner_account_id", "value": "999999999999"},
+    {"pointer": "/audit/source/managed_profile_digest", "value": "not-a-digest"},
+    {"pointer": "/audit/source/worker_generation", "value": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}
+  ]
+}

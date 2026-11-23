@@ -1,0 +1,92 @@
+//! BlueFire Nexus's local execution authority.
+//!
+//! The Python control plane may select registered actions and submit typed
+//! manifests, but this crate owns the final policy decision and every real
+//! side effect.
+
+pub mod actions;
+pub mod ad_smb_descriptor;
+pub mod ad_smb_events;
+pub mod ad_smb_files;
+pub mod ad_smb_read;
+pub mod ad_smb_share;
+pub mod ad_smb_worker;
+mod atomic_chmod;
+mod atomic_gzip;
+mod cancellation_witness;
+mod canonical;
+pub mod contract;
+mod native_tool_inspection;
+pub mod native_tool_installations;
+mod native_tool_setup;
+#[cfg(target_os = "linux")]
+mod owned_child_identity;
+mod process;
+#[cfg(target_os = "linux")]
+mod protected_launch_channel;
+pub mod provider_action;
+pub mod providers;
+mod receipt_store;
+mod receiver_auth;
+#[cfg(target_os = "linux")]
+mod reservation_storage;
+mod reviewed_chmod_builds;
+mod reviewed_gzip_builds;
+mod reviewed_native_builds;
+pub mod runner;
+pub mod runner_s3_access;
+pub mod s3_access_binding;
+mod s3_access_plan;
+mod s3_access_policy;
+mod s3_access_scope;
+pub mod s3_access_send;
+pub mod s3_admission;
+mod s3_audit_binding;
+mod s3_fixture_binding;
+#[cfg(target_os = "linux")]
+mod s3_reservation;
+#[cfg(target_os = "linux")]
+mod s3_runtime;
+#[cfg(target_os = "linux")]
+mod s3_runtime_manifest;
+#[cfg(target_os = "linux")]
+mod s3_worker_process;
+#[cfg(target_os = "linux")]
+mod s3_worker_protocol;
+#[cfg(any(target_os = "linux", test))]
+mod s3_worker_result;
+mod s3_worker_result_contract;
+#[cfg(target_os = "linux")]
+mod s3_worker_secret;
+pub mod safety;
+pub mod service_admission;
+#[cfg(target_os = "linux")]
+pub mod service_cgroup_reader;
+#[cfg(any(target_os = "linux", test))]
+mod service_installations;
+pub mod service_observer;
+pub mod service_operation_binding;
+pub mod service_payload;
+#[cfg(target_os = "linux")]
+pub mod service_query_reader;
+pub mod service_reservation;
+
+pub use actions::{inventory, ActionDescriptor, ACTION_SDK_SCHEMA_VERSION};
+pub use cancellation_witness::{run_internal_cancellation_descendant, INTERNAL_DESCENDANT_VERB};
+pub use contract::{
+    seal_manifest, seal_profile, utc_now, Approval, Capability, CleanupReport, EvidenceKind,
+    EvidenceRecord, ExecutionLimits, ExecutionManifest, NetworkDestination, Platform,
+    ProviderActionLimits, ProviderArtifact, ProviderArtifactSpec, ProviderExecutionBinding,
+    ProviderParameterSpec, ProviderParameterType, RunMode, RunnerProfile, SafetyTier, TargetScope,
+    TaskResult, TaskStatus,
+};
+pub use native_tool_setup::inspect_candidate;
+pub use native_tool_setup::inspect_installation;
+pub use providers::{provider_runtimes, ProviderRuntimeDescriptor};
+pub use runner::{execute_files, Runner, RunnerError, MAX_DOCUMENT_BYTES};
+pub use safety::RECEIPT_PROTOCOL_VERSION;
+pub mod file_access;
+pub mod file_access_contract;
+pub mod macos_file_access;
+pub mod windows_file_access_read;
+pub mod windows_file_access_worker;

@@ -1,0 +1,1383 @@
+"""Crash-surviving supervisor for one exact fixed Rust runner task.
+
+This module is launched with isolated Python module resolution by
+``SubprocessRustRunner.execute_task``.  It has one intentionally tiny CLI: an
+absolute path to a private, bounded configuration file.  It never accepts a
+command, argument vector, environment variable, or executable choice from the
+authenticated transport request.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import re
+import secrets
+import stat
+import sys
+import threading
+import time
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from hashlib import sha256
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent.parent))
+    import bluefire.windows_file_access_managed_result as windows_correction_result
+    import bluefire.windows_file_access_managed_session as windows_correction_session
+    from bluefire.runner_client import (
+        RunnerDurableResultExists,
+        RunnerPendingResultExists,
+        RunnerTaskCancelled,
+        RunnerTransportError,
+        SubprocessRustRunner,
+        _consume_receiver_task_environment,
+        _PinnedPrivateDirectory,
+        execution_task_identity,
+        runner_watchdog_control_root,
+    )
+    from bluefire.runner_darwin_containment import (
+        _validate_macos_launch_parent,
+        apply_macos_no_fork_sandbox,
+    )
+    from bluefire.runner_private_files import (
+        _is_link_or_reparse,
+        _PrivateFileCleanupError,
+        _read_descriptor_bounded,
+    )
+    from bluefire.runner_transport_errors import transport_failure_reason
+    from bluefire.s3_access_launch import S3Launch, consume_s3_launch
+    from bluefire.service_launch import ServiceLaunch, consume_service_launch
+    from bluefire.util import canonical_json_bytes, file_hash
+else:
+    from . import windows_file_access_managed_result as windows_correction_result
+    from . import windows_file_access_managed_session as windows_correction_session
+    from .runner_client import (
+        RunnerDurableResultExists,
+        RunnerPendingResultExists,
+        RunnerTaskCancelled,
+        RunnerTransportError,
+        SubprocessRustRunner,
+        _consume_receiver_task_environment,
+        _PinnedPrivateDirectory,
+        execution_task_identity,
+        runner_watchdog_control_root,
+    )
+    from .runner_darwin_containment import (
+        _validate_macos_launch_parent,
+        apply_macos_no_fork_sandbox,
+    )
+    from .runner_private_files import (
+        _is_link_or_reparse,
+        _PrivateFileCleanupError,
+        _read_descriptor_bounded,
+    )
+    from .runner_transport_errors import transport_failure_reason
+    from .s3_access_launch import S3Launch, consume_s3_launch
+    from .service_launch import ServiceLaunch, consume_service_launch
+    from .util import canonical_json_bytes, file_hash
+
+_CONFIG_SCHEMA = "bluefire.runner-watchdog-config.v5"
+_READY_SCHEMA = "bluefire.runner-watchdog-ready.v1"
+_STATUS_SCHEMA = "bluefire.runner-watchdog-status.v2"
+_CONFIG_LIMIT_BYTES = 8 * 1024 * 1024
+_WATCHDOG_SOURCE_LIMIT_BYTES, _STATUS_LIMIT_BYTES = 2 * 1024 * 1024, 4096
+_START_TIMEOUT_SECONDS, _POLL_SECONDS = 10.0, 0.025
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DARWIN_PROOF_NONCE = re.compile(r"^[0-9a-f]{64}$")
+_DARWIN_LAUNCH_NAME = re.compile(r"^\.bluefire-verified-launch-[0-9a-f]{64}$")
+_WATCHDOG_STAT_FIELDS = tuple(
+    "st_dev st_ino st_mode st_nlink st_uid st_gid st_size st_mtime_ns st_ctime_ns".split()
+)
+_CANCELLATION_ACTION_ID = "sandbox.execution.process-tree-cancellation-witness.v1"
+_CANCELLATION_CONTROL_PARENT = ".bluefire-cancellation-witness-v1"
+_CANCELLATION_READY_SCHEMA = "bluefire.process-tree-cancellation-ready.v1"
+_CANCELLATION_ACK_TIMEOUT_SECONDS = 2.0
+_CONFIG_KEYS = frozenset(
+    {
+        "schema_version",
+        "task_id",
+        "runner_binary",
+        "runner_binary_digest",
+        "parent_death_script_digest",
+        "watchdog_script_digest",
+        "watchdog_interpreter",
+        "watchdog_interpreter_digest",
+        "work_root",
+        "timeout_seconds",
+        "output_limit_bytes",
+        "durable_result_path",
+        "durable_result_parent_identity",
+        "durable_result_parent_mount_identity",
+        "manifest",
+        "profile",
+        "cancellation_lease_token",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _WatchdogConfig:
+    task_id: str
+    runner_binary: Path
+    runner_binary_digest: str
+    parent_death_script_digest: str
+    watchdog_script_digest: str
+    watchdog_interpreter: Path
+    watchdog_interpreter_digest: str
+    work_root: Path
+    timeout_seconds: float
+    output_limit_bytes: int
+    durable_result_path: Path
+    durable_result_parent: _PinnedPrivateDirectory
+    manifest: Mapping[str, Any]
+    profile: Mapping[str, Any]
+    cancellation_lease_token: str | None
+    windows_correction_session: windows_correction_session.ManagedCorrectionDescriptor | None
+    control_root: Path
+    control: _PinnedPrivateDirectory
+
+    @property
+    def start_path(self) -> Path:
+        return self.control_root / "start"
+
+    @property
+    def cancel_path(self) -> Path:
+        return self.control_root / "cancel"
+
+    @property
+    def ready_path(self) -> Path:
+        return self.control_root / "ready.json"
+
+    @property
+    def status_path(self) -> Path:
+        return self.control_root / "status.json"
+
+    @property
+    def config_path(self) -> Path:
+        return self.control_root / "config.json"
+
+
+@dataclass(frozen=True)
+class _CapturedControlFile:
+    payload: bytes
+    identity: tuple[int, int]
+    snapshot: tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class _CancellationHandshake:
+    ready: _CapturedControlFile
+    request: _CapturedControlFile | None = None
+    acknowledgement: _CapturedControlFile | None = None
+
+
+class _WatchdogLeaseCleanupError(RunnerTransportError):
+    """Retain the load/close failures from all watchdog directory leases."""
+
+    def __init__(self, failures: Sequence[BaseException]) -> None:
+        self.failures = tuple(failures)
+        super().__init__("runner watchdog lease cleanup had multiple failures")
+
+
+def _extend_lease_failures(
+    failures: list[BaseException],
+    failure: BaseException,
+) -> None:
+    if isinstance(failure, (_PrivateFileCleanupError, _WatchdogLeaseCleanupError)):
+        for nested in failure.failures:
+            _extend_lease_failures(failures, nested)
+    else:
+        failures.append(failure)
+
+
+def _close_watchdog_pins(
+    pins: Sequence[_PinnedPrivateDirectory],
+    *,
+    primary_failure: BaseException | None = None,
+) -> None:
+    """Attempt every close and aggregate cleanup failures with the primary one."""
+
+    cleanup_failures: list[BaseException] = []
+    for pinned in pins:
+        try:
+            pinned.close()
+        except BaseException as exc:
+            _extend_lease_failures(cleanup_failures, exc)
+    if not cleanup_failures:
+        return
+    failures: list[BaseException] = []
+    if primary_failure is not None:
+        _extend_lease_failures(failures, primary_failure)
+    failures.extend(cleanup_failures)
+    raise _WatchdogLeaseCleanupError(failures) from failures[0]
+
+
+def _watchdog_source_snapshot(details: os.stat_result) -> tuple[int, ...]:
+    return tuple(int(getattr(details, field)) for field in _WATCHDOG_STAT_FIELDS)
+
+
+def _verified_watchdog_script(expected_digest: str) -> tuple[Path, os.stat_result]:
+    """Normalize one Darwin launch hard link to its verified canonical sibling."""
+
+    launch_path = Path(__file__).resolve(strict=True)
+    if sys.platform != "darwin" or launch_path.name == "runner_watchdog.py":
+        details = launch_path.lstat()
+        if (
+            launch_path.name != "runner_watchdog.py"
+            or not stat.S_ISREG(details.st_mode)
+            or details.st_nlink != 1
+            or _is_link_or_reparse(launch_path)
+            or file_hash(launch_path) != expected_digest
+        ):
+            raise OSError("unsafe packaged watchdog script")
+        return launch_path, details
+
+    if _DARWIN_LAUNCH_NAME.fullmatch(launch_path.name) is None:
+        raise OSError("invalid Darwin watchdog launch path")
+    canonical_name = "runner_watchdog.py"
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    parent_descriptor = -1
+    launch_descriptor = -1
+    canonical_descriptor = -1
+    try:
+        parent_descriptor = os.open(launch_path.parent, directory_flags)
+        effective_user_id = _validate_macos_launch_parent(launch_path.parent, parent_descriptor)
+        launch_descriptor = os.open(
+            launch_path.name,
+            file_flags,
+            dir_fd=parent_descriptor,
+        )
+        canonical_descriptor = os.open(
+            canonical_name,
+            file_flags,
+            dir_fd=parent_descriptor,
+        )
+        launch_details = os.fstat(launch_descriptor)
+        canonical_details = os.fstat(canonical_descriptor)
+        visible_launch = os.stat(
+            launch_path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        visible_canonical = os.stat(
+            canonical_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        payload = _read_descriptor_bounded(
+            canonical_descriptor,
+            _WATCHDOG_SOURCE_LIMIT_BYTES,
+        )
+        current_launch = os.fstat(launch_descriptor)
+        current_canonical = os.fstat(canonical_descriptor)
+        if (
+            not stat.S_ISREG(launch_details.st_mode)
+            or not stat.S_ISREG(canonical_details.st_mode)
+            or not os.path.samestat(launch_details, canonical_details)
+            or not os.path.samestat(launch_details, visible_launch)
+            or not os.path.samestat(canonical_details, visible_canonical)
+            or launch_details.st_nlink != 2
+            or canonical_details.st_nlink != 2
+            or launch_details.st_uid != effective_user_id
+            or canonical_details.st_uid != effective_user_id
+            or stat.S_IMODE(launch_details.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
+            or _watchdog_source_snapshot(current_launch)
+            != _watchdog_source_snapshot(launch_details)
+            or _watchdog_source_snapshot(current_canonical)
+            != _watchdog_source_snapshot(canonical_details)
+            or "sha256:" + sha256(payload).hexdigest() != expected_digest
+        ):
+            raise OSError("Darwin watchdog launch identity changed")
+        _validate_macos_launch_parent(launch_path.parent, parent_descriptor)
+        return launch_path.with_name(canonical_name), canonical_details
+    finally:
+        for descriptor in (
+            canonical_descriptor,
+            launch_descriptor,
+            parent_descriptor,
+        ):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def _load_config(path_argument: str) -> _WatchdogConfig:
+    path = Path(path_argument)
+    try:
+        if not path.is_absolute() or path.name != "config.json":
+            raise OSError("invalid watchdog configuration path")
+        control_root = path.parent.resolve(strict=True)
+        if control_root != path.parent:
+            raise OSError("watchdog control identity changed")
+        with _PinnedPrivateDirectory(control_root) as pinned:
+            raw = pinned.read("config.json", maximum=_CONFIG_LIMIT_BYTES)
+            session_raw = (
+                pinned.read("session.json", maximum=_CONFIG_LIMIT_BYTES)
+                if pinned.has_name("session.json")
+                else None
+            )
+            control_identity = pinned.directory_identity()
+    except (OSError, RunnerTransportError):
+        raise RunnerTransportError("runner watchdog state is unavailable") from None
+
+    value = SubprocessRustRunner._decode_json(raw, "runner watchdog configuration")
+    if set(value) != _CONFIG_KEYS or value.get("schema_version") != _CONFIG_SCHEMA:
+        raise RunnerTransportError("runner watchdog configuration is invalid")
+
+    task_id = value.get("task_id")
+    binary_digest = value.get("runner_binary_digest")
+    parent_death_digest = value.get("parent_death_script_digest")
+    watchdog_digest = value.get("watchdog_script_digest")
+    watchdog_interpreter_digest = value.get("watchdog_interpreter_digest")
+    timeout_seconds = value.get("timeout_seconds")
+    output_limit_bytes = value.get("output_limit_bytes")
+    manifest = value.get("manifest")
+    profile = value.get("profile")
+    cancellation_lease_token = value.get("cancellation_lease_token")
+    durable_result_parent_identity = value.get("durable_result_parent_identity")
+    durable_result_parent_mount_identity = value.get("durable_result_parent_mount_identity")
+    if (
+        not isinstance(task_id, str)
+        or not isinstance(binary_digest, str)
+        or _DIGEST.fullmatch(binary_digest) is None
+        or not isinstance(parent_death_digest, str)
+        or _DIGEST.fullmatch(parent_death_digest) is None
+        or not isinstance(watchdog_digest, str)
+        or _DIGEST.fullmatch(watchdog_digest) is None
+        or not isinstance(watchdog_interpreter_digest, str)
+        or _DIGEST.fullmatch(watchdog_interpreter_digest) is None
+        or isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, int | float)
+        or not math.isfinite(float(timeout_seconds))
+        or not 0 < float(timeout_seconds) <= 86_400
+        or isinstance(output_limit_bytes, bool)
+        or not isinstance(output_limit_bytes, int)
+        or not 4096 <= output_limit_bytes <= 64 * 1024 * 1024
+        or not isinstance(manifest, dict)
+        or not isinstance(profile, dict)
+        or not isinstance(durable_result_parent_identity, list)
+        or len(durable_result_parent_identity) != 2
+        or any(type(item) is not int for item in durable_result_parent_identity)
+        or int(durable_result_parent_identity[0]) < 0
+        or int(durable_result_parent_identity[1]) <= 0
+        or (
+            sys.platform.startswith("linux")
+            and (
+                type(durable_result_parent_mount_identity) is not int
+                or int(durable_result_parent_mount_identity) <= 0
+            )
+        )
+        or (
+            not sys.platform.startswith("linux")
+            and durable_result_parent_mount_identity is not None
+        )
+        or (
+            manifest.get("action_id") == _CANCELLATION_ACTION_ID
+            and (
+                not isinstance(cancellation_lease_token, str)
+                or re.fullmatch(r"[0-9a-f]{64}", cancellation_lease_token) is None
+            )
+        )
+        or (
+            manifest.get("action_id") != _CANCELLATION_ACTION_ID
+            and cancellation_lease_token is not None
+        )
+    ):
+        raise RunnerTransportError("runner watchdog configuration is invalid")
+
+    managed_descriptor = None
+    if manifest.get("action_id") == windows_correction_session.ACTION_ID:
+        if session_raw is None:
+            raise RunnerTransportError("runner watchdog configuration is invalid")
+        try:
+            session_value = SubprocessRustRunner._decode_json(
+                session_raw, "runner managed correction session"
+            )
+            managed_descriptor = windows_correction_session.validate_descriptor(
+                session_value,
+                manifest,
+                profile,
+                task_id=task_id,
+            )
+        except (
+            RunnerTransportError,
+            windows_correction_session.ManagedCorrectionSessionError,
+        ):
+            raise RunnerTransportError("runner watchdog configuration is invalid") from None
+    elif session_raw is not None:
+        raise RunnerTransportError("runner watchdog configuration is invalid")
+
+    try:
+        watchdog_script, watchdog_details = _verified_watchdog_script(watchdog_digest)
+        parent_death_script = watchdog_script.with_name("runner_parent_death.py")
+        parent_death_details = parent_death_script.lstat()
+        binary_raw = value.get("runner_binary")
+        watchdog_interpreter_raw = value.get("watchdog_interpreter")
+        work_raw = value.get("work_root")
+        destination_raw = value.get("durable_result_path")
+        if not all(
+            isinstance(item, str)
+            for item in (
+                binary_raw,
+                watchdog_interpreter_raw,
+                work_raw,
+                destination_raw,
+            )
+        ):
+            raise OSError("invalid watchdog paths")
+        runner_binary = Path(str(binary_raw))
+        watchdog_interpreter = Path(str(watchdog_interpreter_raw))
+        work_root = Path(str(work_raw))
+        destination = Path(str(destination_raw))
+        if (
+            not stat.S_ISREG(watchdog_details.st_mode)
+            or watchdog_script.name != "runner_watchdog.py"
+            or not stat.S_ISREG(parent_death_details.st_mode)
+            or parent_death_details.st_nlink != 1
+            or _is_link_or_reparse(parent_death_script)
+            or file_hash(parent_death_script) != parent_death_digest
+            or parent_death_script.name != "runner_parent_death.py"
+            or not runner_binary.is_absolute()
+            or not watchdog_interpreter.is_absolute()
+            or not work_root.is_absolute()
+            or not destination.is_absolute()
+        ):
+            raise OSError("watchdog paths must be absolute")
+        runner_binary = runner_binary.resolve(strict=True)
+        watchdog_interpreter = watchdog_interpreter.resolve(strict=True)
+        work_root = work_root.resolve(strict=True)
+        destination = destination.resolve(strict=False)
+        if (
+            not runner_binary.is_file()
+            or not watchdog_interpreter.is_file()
+            or not work_root.is_dir()
+            or _is_link_or_reparse(runner_binary)
+            or _is_link_or_reparse(watchdog_interpreter)
+            or _is_link_or_reparse(work_root)
+            or file_hash(watchdog_interpreter) != watchdog_interpreter_digest
+        ):
+            raise OSError("unsafe watchdog paths")
+        expected_root = runner_watchdog_control_root(destination, task_id)
+        if expected_root != control_root:
+            raise OSError("watchdog task identity changed")
+    except (OSError, RunnerTransportError):
+        raise RunnerTransportError("runner watchdog configuration is invalid") from None
+
+    control = _PinnedPrivateDirectory(
+        control_root,
+        expected_identity=control_identity,
+    )
+    try:
+        control.__enter__()
+    except (OSError, RunnerTransportError) as exc:
+        _close_watchdog_pins((control,), primary_failure=exc)
+        raise RunnerTransportError("runner watchdog state is unavailable") from None
+
+    durable_result_parent = _PinnedPrivateDirectory(
+        destination.parent,
+        expected_identity=(
+            int(durable_result_parent_identity[0]),
+            int(durable_result_parent_identity[1]),
+        ),
+        expected_mount_identity=(
+            int(durable_result_parent_mount_identity)
+            if durable_result_parent_mount_identity is not None
+            else None
+        ),
+    )
+    try:
+        durable_result_parent.__enter__()
+    except (OSError, RunnerTransportError) as exc:
+        _close_watchdog_pins(
+            (control, durable_result_parent),
+            primary_failure=exc,
+        )
+        raise RunnerTransportError("runner durable result lease is unavailable") from None
+
+    return _WatchdogConfig(
+        task_id=task_id,
+        runner_binary=runner_binary,
+        runner_binary_digest=binary_digest,
+        parent_death_script_digest=parent_death_digest,
+        watchdog_script_digest=watchdog_digest,
+        watchdog_interpreter=watchdog_interpreter,
+        watchdog_interpreter_digest=watchdog_interpreter_digest,
+        work_root=work_root,
+        timeout_seconds=float(timeout_seconds),
+        output_limit_bytes=output_limit_bytes,
+        durable_result_path=destination,
+        durable_result_parent=durable_result_parent,
+        manifest=manifest,
+        profile=profile,
+        cancellation_lease_token=cancellation_lease_token,
+        windows_correction_session=managed_descriptor,
+        control_root=control_root,
+        control=control,
+    )
+
+
+def _write_private_json(
+    config: _WatchdogConfig,
+    name: str,
+    value: Mapping[str, Any],
+) -> None:
+    payload = canonical_json_bytes(dict(value)) + b"\n"
+    if len(payload) > _STATUS_LIMIT_BYTES:
+        raise RunnerTransportError("runner watchdog status exceeds its size limit")
+    try:
+        config.control.create(name, payload, maximum=_STATUS_LIMIT_BYTES)
+    except (OSError, RunnerTransportError):
+        raise RunnerTransportError("runner watchdog state is unavailable") from None
+
+
+def _close_config(config: _WatchdogConfig) -> None:
+    """Release both watchdog pins without abandoning the second close."""
+
+    _close_watchdog_pins((config.control, config.durable_result_parent))
+
+
+def _signal_exists(config: _WatchdogConfig, name: str, expected: bytes) -> bool:
+    try:
+        if not config.control.has_name(name):
+            return False
+        return config.control.read(name, maximum=32) == expected
+    except (OSError, RunnerTransportError):
+        # An invalid object at a control name is treated as fail-closed cancel.
+        return name == "cancel"
+
+
+def _wait_for_start(config: _WatchdogConfig) -> str:
+    deadline = time.monotonic() + _START_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if _signal_exists(config, "cancel", b"cancel\n"):
+            return "cancelled"
+        if _signal_exists(config, "start", b"start\n"):
+            return "started"
+        time.sleep(_POLL_SECONDS)
+    return "start_timeout"
+
+
+def _cooperative_cancellation(
+    config: _WatchdogConfig,
+    requested: threading.Event,
+    acknowledged: threading.Event,
+    runner_process_ids: Sequence[int],
+    handshakes: list[_CancellationHandshake] | None = None,
+) -> None:
+    """Request the one reviewed Rust witness handshake through fixed private names."""
+
+    captured = handshakes if handshakes is not None else []
+    if captured:
+        return
+    control_paths = _cancellation_control_paths(config)
+    if control_paths is None:
+        return
+    control_parent, control_root = control_paths
+    try:
+        if (
+            _is_link_or_reparse(control_parent)
+            or control_parent.resolve(strict=True) != control_root.parent
+            or _is_link_or_reparse(control_root)
+            or control_root.resolve(strict=True).parent != control_parent
+        ):
+            return
+        with _PinnedPrivateDirectory(control_parent):
+            with _PinnedPrivateDirectory(control_root, share_delete=True) as control:
+                if set(control.names(maximum=5)) != {".lease", "ready.json"}:
+                    return
+                expected_lease = f"lease:{config.cancellation_lease_token}\n".encode("ascii")
+                if control.read(".lease", maximum=72, apply_permissions=False) != expected_lease:
+                    return
+                ready_payload, ready_identity, ready_snapshot = control.read_with_snapshot_identity(
+                    "ready.json", maximum=1024, apply_permissions=False
+                )
+                ready = _decode_cancellation_ready(config, ready_payload)
+                if (
+                    len(runner_process_ids) != 1
+                    or ready.get("parent_process_id") != runner_process_ids[0]
+                ):
+                    return
+                captured.append(
+                    _CancellationHandshake(
+                        ready=_CapturedControlFile(
+                            ready_payload,
+                            ready_identity,
+                            ready_snapshot,
+                        )
+                    )
+                )
+                nonce = secrets.token_hex(32)
+                request = f"cancel:{nonce}\n".encode("ascii")
+                expected_ack = f"ack:{nonce}\n".encode("ascii")
+                control.create("cancel.request", request, maximum=72)
+                request_payload, request_identity, request_snapshot = (
+                    control.read_with_snapshot_identity(
+                        "cancel.request", maximum=72, apply_permissions=False
+                    )
+                )
+                if request_payload != request:
+                    return
+                captured[0] = replace(
+                    captured[0],
+                    request=_CapturedControlFile(
+                        request_payload,
+                        request_identity,
+                        request_snapshot,
+                    ),
+                )
+                requested.set()
+                deadline = time.monotonic() + _CANCELLATION_ACK_TIMEOUT_SECONDS
+                while time.monotonic() < deadline:
+                    if control.has_name("cancel.ack"):
+                        ack_payload, ack_identity, ack_snapshot = (
+                            control.read_with_snapshot_identity(
+                                "cancel.ack", maximum=69, apply_permissions=False
+                            )
+                        )
+                        if ack_payload == expected_ack:
+                            captured[0] = replace(
+                                captured[0],
+                                acknowledgement=_CapturedControlFile(
+                                    ack_payload,
+                                    ack_identity,
+                                    ack_snapshot,
+                                ),
+                            )
+                            acknowledged.set()
+                        return
+                    time.sleep(_POLL_SECONDS)
+    except (FileExistsError, OSError, RunnerTransportError, ValueError):
+        return
+
+
+def _cancellation_control_paths(config: _WatchdogConfig) -> tuple[Path, Path] | None:
+    manifest = config.manifest
+    profile = config.profile
+    request_hash = manifest.get("request_hash")
+    witness_task_id = (
+        "execute-" + request_hash.removeprefix("sha256:")
+        if isinstance(request_hash, str) and _DIGEST.fullmatch(request_hash) is not None
+        else None
+    )
+    transport_task_id, _transport_request_hash = execution_task_identity(manifest, profile)
+    if (
+        manifest.get("action_id") != _CANCELLATION_ACTION_ID
+        or manifest.get("behavior_id") != _CANCELLATION_ACTION_ID
+        or manifest.get("params") != {}
+        or manifest.get("platform") != "windows"
+        or profile.get("platform") != "windows"
+        or witness_task_id is None
+        or config.task_id != transport_task_id
+    ):
+        return None
+    sandbox_raw = profile.get("sandbox_root")
+    if not isinstance(sandbox_raw, str):
+        return None
+    try:
+        sandbox = Path(sandbox_raw)
+        if not sandbox.is_absolute() or _is_link_or_reparse(sandbox):
+            return None
+        sandbox = sandbox.resolve(strict=True)
+        if not sandbox.is_dir():
+            return None
+        parent = sandbox / _CANCELLATION_CONTROL_PARENT
+        return parent, parent / str(request_hash).removeprefix("sha256:")
+    except (OSError, RunnerTransportError):
+        return None
+
+
+def _decode_cancellation_ready(
+    config: _WatchdogConfig,
+    payload: bytes,
+) -> Mapping[str, Any]:
+    ready = SubprocessRustRunner._decode_json(
+        payload,
+        "runner cancellation readiness",
+    )
+    request_hash = config.manifest.get("request_hash")
+    witness_task_id = (
+        "execute-" + request_hash.removeprefix("sha256:")
+        if isinstance(request_hash, str) and _DIGEST.fullmatch(request_hash)
+        else None
+    )
+    transport_task_id, _transport_request_hash = execution_task_identity(
+        config.manifest, config.profile
+    )
+    if (
+        set(ready)
+        != {
+            "schema_version",
+            "task_id",
+            "request_hash",
+            "parent_process_id",
+            "descendant_process_id",
+        }
+        or ready.get("schema_version") != _CANCELLATION_READY_SCHEMA
+        or witness_task_id is None
+        or config.task_id != transport_task_id
+        or ready.get("task_id") != witness_task_id
+        or ready.get("request_hash") != config.manifest.get("request_hash")
+        or type(ready.get("parent_process_id")) is not int
+        or int(ready["parent_process_id"]) <= 0
+        or type(ready.get("descendant_process_id")) is not int
+        or int(ready["descendant_process_id"]) <= 0
+        or ready["parent_process_id"] == ready["descendant_process_id"]
+    ):
+        raise RunnerTransportError("runner cancellation readiness is invalid")
+    return ready
+
+
+def _cancellation_ready(
+    config: _WatchdogConfig,
+    control: _PinnedPrivateDirectory,
+) -> Mapping[str, Any]:
+    return _decode_cancellation_ready(
+        config,
+        control.read("ready.json", maximum=1024, apply_permissions=False),
+    )
+
+
+def _cleanup_cooperative_cancellation(
+    config: _WatchdogConfig,
+    requested: threading.Event,
+    acknowledged: threading.Event,
+    handshakes: Sequence[_CancellationHandshake] = (),
+) -> bool:
+    """Delete only identities captured during the live fixed handshake."""
+
+    control_paths = _cancellation_control_paths(config)
+    if control_paths is None:
+        return config.manifest.get("action_id") != _CANCELLATION_ACTION_ID
+    control_parent, control_root = control_paths
+    try:
+        if not control_root.exists():
+            return False
+        if (
+            _is_link_or_reparse(control_parent)
+            or control_parent.resolve(strict=True) != control_root.parent
+            or _is_link_or_reparse(control_root)
+            or control_root.resolve(strict=True).parent != control_parent
+        ):
+            return False
+        with _PinnedPrivateDirectory(control_parent):
+            with _PinnedPrivateDirectory(control_root, share_delete=True) as control:
+                names = set(control.names(maximum=5))
+                expected_lease = f"lease:{config.cancellation_lease_token}\n".encode("ascii")
+                if (
+                    ".lease" not in names
+                    or control.read(".lease", maximum=72, apply_permissions=False) != expected_lease
+                ):
+                    return False
+                if not handshakes:
+                    return (
+                        names == {".lease"} and not requested.is_set() and not acknowledged.is_set()
+                    )
+                if len(handshakes) != 1:
+                    return False
+                handshake = handshakes[0]
+                records: dict[str, _CapturedControlFile] = {
+                    "ready.json": handshake.ready,
+                }
+                if handshake.request is not None:
+                    records["cancel.request"] = handshake.request
+                if handshake.acknowledgement is not None:
+                    records["cancel.ack"] = handshake.acknowledgement
+                if names != {".lease", *records}:
+                    return False
+                if requested.is_set() != (handshake.request is not None):
+                    return False
+                if acknowledged.is_set() != (handshake.acknowledgement is not None):
+                    return False
+                _decode_cancellation_ready(config, handshake.ready.payload)
+                for name, record in sorted(records.items()):
+                    maximum = 72 if name == "cancel.request" else 1024
+                    observed, observed_identity, observed_snapshot = (
+                        control.read_with_snapshot_identity(
+                            name,
+                            maximum=maximum,
+                            expected_identity=record.identity,
+                            apply_permissions=False,
+                        )
+                    )
+                    if (
+                        observed != record.payload
+                        or observed_identity != record.identity
+                        or observed_snapshot != record.snapshot
+                    ):
+                        return False
+                    control.unlink(
+                        name,
+                        maximum=maximum,
+                        expected=record.payload,
+                        expected_identity=record.identity,
+                        expected_snapshot=record.snapshot,
+                        apply_permissions=False,
+                    )
+                return set(control.names(maximum=2)) == {".lease"}
+    except (OSError, RunnerTransportError, ValueError):
+        return False
+
+
+def _classify_failure(error: RunnerTransportError) -> str:
+    reason = transport_failure_reason(error)
+    if reason != "other_transport":
+        return reason
+    message = str(error).casefold()
+    if "timed out" in message:
+        return "timed_out"
+    if "output limit" in message:
+        return "output_limit"
+    if "unsupported result schema" in message:
+        return "unsupported_result_schema"
+    if "not valid utf-8 json" in message:
+        return "invalid_json"
+    if "result" in message or "does not match" in message or "json" in message:
+        return "invalid_result"
+    return "runner_failure"
+
+
+def _cleanup_private_inputs(config: _WatchdogConfig) -> None:
+    for name in ("config.json", "session.json", "start", "cancel", "ready.json"):
+        try:
+            identity = config.control.file_identity(
+                name,
+                maximum=_CONFIG_LIMIT_BYTES,
+                apply_permissions=False,
+            )
+            config.control.unlink(
+                name,
+                maximum=_CONFIG_LIMIT_BYTES,
+                expected_identity=identity,
+            )
+        except (OSError, RunnerTransportError):
+            continue
+
+
+def _publish_darwin_no_fork_proof(descriptor: int | None, nonce: str | None) -> None:
+    if sys.platform != "darwin":
+        return
+    if (
+        descriptor is None
+        or descriptor <= 2
+        or nonce is None
+        or _DARWIN_PROOF_NONCE.fullmatch(nonce) is None
+        or not apply_macos_no_fork_sandbox()
+    ):
+        raise RunnerTransportError("Darwin watchdog no-fork proof is unavailable")
+    payload = f"no-fork-v1:{nonce}:{os.getpid()}\n".encode("ascii")
+    try:
+        if os.write(descriptor, payload) != len(payload):
+            raise OSError("short Darwin no-fork proof write")
+        os.close(descriptor)
+    except OSError:
+        raise RunnerTransportError("Darwin watchdog no-fork proof failed") from None
+
+
+def _run_managed_windows_correction(
+    config: _WatchdogConfig,
+    runner: SubprocessRustRunner,
+    cancel_event: threading.Event,
+    receiver_environment: Mapping[str, str],
+) -> None:
+    """Own one live correction through terminal and physical cleanup."""
+
+    import bluefire.windows_file_access_correction_observation as observation
+    import bluefire.windows_file_access_pair_admission as pair_admission
+    import bluefire.windows_session_facts as session_facts
+    from bluefire.windows_file_access_correction_credential import CorrectionBeginProducer
+    from bluefire.windows_file_access_pair_launch import launch_correction_retest
+
+    descriptor = config.windows_correction_session
+    if descriptor is None or os.name != "nt":
+        raise RunnerTransportError("Managed correction watchdog is unavailable.")
+    environment = dict(receiver_environment)
+    if type(receiver_environment) is dict:
+        receiver_environment.clear()
+    key_hex = environment.pop("BLUEFIRE_RECEIVER_TASK_KEY", None)
+    environment_task = environment.pop("BLUEFIRE_RECEIVER_TASK_ID", None)
+    if (
+        environment
+        or environment_task != config.task_id
+        or not isinstance(key_hex, str)
+        or re.fullmatch(r"[0-9a-f]{64}", key_hex) is None
+    ):
+        raise RunnerTransportError("Managed correction receiver authentication is invalid.")
+    key = bytearray.fromhex(key_hex)
+    del key_hex
+    started_at = datetime.now(timezone.utc)
+    ready_bytes: bytes | None = None
+    terminal_bytes: bytes | None = None
+    terminal_returncode: int | None = None
+    consume_receipt: dict[str, Any] | None = None
+    ack_received = threading.Event()
+    retained_owners: list[Any] = []
+
+    try:
+        observation_input, original, packet = windows_correction_session.correction_inputs(
+            descriptor
+        )
+        record, _receipt = pair_admission.checked_provenance(observation_input.checked_setup)
+
+        def require_current() -> None:
+            windows_correction_session.validate_descriptor(
+                descriptor.value,
+                config.manifest,
+                config.profile,
+                task_id=config.task_id,
+            )
+            if cancel_event.is_set():
+                raise RunnerTransportError("Managed correction was cancelled.")
+            principal = session_facts.current_process_principal()
+            principal.validate()
+            if (
+                principal.elevated is not False
+                or principal.user_sid != record["resource"]["owner_sid"]
+            ):
+                raise RunnerTransportError("Managed correction principal is invalid.")
+
+        require_current()
+        checked = observation.observe_correction_postimage(
+            observation_input,
+            now_ms=time.time_ns() // 1_000_000,
+            deadline=descriptor.packet_deadline,
+            cancelled=cancel_event.is_set,
+        )
+        require_current()
+
+        def require_ready() -> None:
+            require_current()
+            if not ack_received.is_set():
+                raise RunnerTransportError("Managed correction acknowledgement is unavailable.")
+
+        def evidence(stage: str, raw: bytes, returncode: int | None, clock: datetime) -> None:
+            del clock
+            nonlocal ready_bytes, terminal_bytes, terminal_returncode, consume_receipt
+            if stage == "packet":
+                if raw != descriptor.packet or returncode is not None:
+                    raise RunnerTransportError("Managed correction packet changed.")
+                return
+            if stage == "ready":
+                if ready_bytes is not None or returncode is not None:
+                    raise RunnerTransportError("Managed correction Ready is invalid.")
+                nonce = windows_correction_session.new_ack_nonce()
+                ready_payload = windows_correction_session.watchdog_ready_payload(
+                    descriptor, raw, nonce
+                )
+                windows_correction_session.write_frame(
+                    sys.stdout.buffer, "ready", ready_payload, key
+                )
+                acknowledgement = windows_correction_session.read_frame(
+                    sys.stdin.buffer,
+                    expected_kind="ack",
+                    key=key,
+                )
+                checked_ack = windows_correction_session.validate_watchdog_ack(
+                    acknowledgement,
+                    descriptor,
+                    ready_payload,
+                )
+                require_current()
+                ready_bytes = raw
+                consume_receipt = dict(checked_ack["persisted_consume_receipt"])
+                ack_received.set()
+                try:
+                    windows_correction_session.write_frame(
+                        sys.stdout.buffer,
+                        "acknowledged",
+                        windows_correction_session.acknowledgement_payload(checked_ack),
+                        key,
+                    )
+                except (OSError, windows_correction_session.ManagedCorrectionSessionError):
+                    # The exact ack already transferred ownership to this watchdog.
+                    pass
+                return
+            if stage == "terminal":
+                if (
+                    terminal_bytes is not None
+                    or not ack_received.is_set()
+                    or type(returncode) is not int
+                    or returncode not in (0, 4)
+                ):
+                    raise RunnerTransportError("Managed correction terminal is invalid.")
+                terminal_bytes, terminal_returncode = raw, returncode
+                return
+            raise RunnerTransportError("Managed correction evidence stage is invalid.")
+
+        producer = CorrectionBeginProducer(
+            checked,
+            original,
+            packet,
+            revalidate_original=require_current,
+            require_ready_allowance=require_ready,
+            cancellation_event=cancel_event,
+        )
+        require_current()
+        launched = launch_correction_retest(
+            checked,
+            original,
+            packet,
+            producer,
+            revalidate_original=require_current,
+            evidence_sink=evidence,
+            cancellation_event=cancel_event,
+            retain_launch_owner=retained_owners.append,
+        )
+        owner = retained_owners[0] if len(retained_owners) == 1 else None
+        cleanup_deadline = time.monotonic() + min(12.0, config.timeout_seconds)
+        while (
+            owner is not None
+            and launched.cleanup != "verified"
+            and time.monotonic() < cleanup_deadline
+        ):
+            if owner.retry_cleanup():
+                launched = owner.outcome(True)
+                break
+            time.sleep(_POLL_SECONDS)
+        process = launched.process
+        if (
+            launched.cleanup != "verified"
+            or process is None
+            or process.cleanup_receipt is None
+            or ready_bytes is None
+            or terminal_bytes is None
+            or terminal_returncode is None
+            or consume_receipt is None
+        ):
+            raise RunnerTransportError("Managed correction closure is unresolved.")
+        receipt = process.cleanup_receipt
+        managed = windows_correction_result.build_managed_result(
+            descriptor,
+            ready=ready_bytes,
+            terminal=terminal_bytes,
+            actual_returncode=terminal_returncode,
+            persisted_consume_receipt=consume_receipt,
+            cleanup_receipt=bytes(receipt._raw),
+        )
+        result = windows_correction_result.build_runner_result(
+            descriptor,
+            managed,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+        )
+        runner._commit_managed_correction_result(
+            result,
+            config.manifest,
+            config.profile,
+            task_id=config.task_id,
+            durable_result_path=config.durable_result_path,
+        )
+    finally:
+        key[:] = b"\0" * len(key)
+
+
+def _run(
+    config: _WatchdogConfig,
+    *,
+    receiver_environment: Mapping[str, str],
+    service_launch: ServiceLaunch | S3Launch | None = None,
+    darwin_proof_descriptor: int | None = None,
+    darwin_proof_nonce: str | None = None,
+) -> tuple[str, str | None, Mapping[str, bool] | None]:
+    gate = _wait_for_start(config)
+    if gate == "cancelled":
+        _publish_darwin_no_fork_proof(darwin_proof_descriptor, darwin_proof_nonce)
+        return (
+            "cancelled",
+            "cancelled",
+            {
+                "cooperative_requested": False,
+                "cooperative_acknowledged": False,
+                "forced_tree_termination": False,
+                "control_cleanup_verified": True,
+            },
+        )
+    if gate != "started":
+        _publish_darwin_no_fork_proof(darwin_proof_descriptor, darwin_proof_nonce)
+        return "failed", "start_timeout", None
+
+    cancel_event = threading.Event()
+    cooperative_request_event = threading.Event()
+    cooperative_ack_event = threading.Event()
+    runner_process_ids: list[int] = []
+    cancellation_handshakes: list[_CancellationHandshake] = []
+    stop_polling = threading.Event()
+    darwin_launch_started = False
+    darwin_proof_published = False
+
+    def mark_darwin_launch_started() -> None:
+        nonlocal darwin_launch_started
+        darwin_launch_started = True
+
+    def publish_darwin_proof() -> None:
+        nonlocal darwin_proof_published
+        if sys.platform != "darwin" or darwin_proof_published:
+            return
+        _publish_darwin_no_fork_proof(
+            darwin_proof_descriptor,
+            darwin_proof_nonce,
+        )
+        darwin_proof_published = True
+
+    def observe_cancel() -> None:
+        while not stop_polling.is_set():
+            if _signal_exists(config, "cancel", b"cancel\n"):
+                try:
+                    _cooperative_cancellation(
+                        config,
+                        cooperative_request_event,
+                        cooperative_ack_event,
+                        runner_process_ids,
+                        cancellation_handshakes,
+                    )
+                finally:
+                    cancel_event.set()
+                return
+            stop_polling.wait(_POLL_SECONDS)
+
+    observer = threading.Thread(
+        target=observe_cancel,
+        name="bluefire-watchdog-cancel",
+        daemon=True,
+    )
+    observer.start()
+    try:
+        if file_hash(config.runner_binary) != config.runner_binary_digest:
+            return "failed", "runner_identity_changed", None
+        runner = SubprocessRustRunner(
+            config.runner_binary,
+            config.work_root,
+            timeout_seconds=config.timeout_seconds,
+            output_limit_bytes=config.output_limit_bytes,
+            durable_result_guard=config.durable_result_parent,
+            _kill_child_on_job_close=True,
+            _watchdog_interpreter=config.watchdog_interpreter,
+        )
+        if (
+            runner.runner_binary_digest != config.runner_binary_digest
+            or runner._watchdog_interpreter_digest != config.watchdog_interpreter_digest
+            or runner.parent_death_script_digest != config.parent_death_script_digest
+            or runner.watchdog_script_digest != config.watchdog_script_digest
+        ):
+            return "failed", "runner_identity_changed", None
+        if config.windows_correction_session is not None:
+            _run_managed_windows_correction(
+                config,
+                runner,
+                cancel_event,
+                receiver_environment,
+            )
+            return "succeeded", None, None
+        runner._execute_task_locally(
+            config.manifest,
+            config.profile,
+            task_id=config.task_id,
+            cancel_event=cancel_event,
+            durable_result_path=config.durable_result_path,
+            receiver_environment=receiver_environment,
+            cooperative_request_event=cooperative_request_event,
+            cooperative_ack_event=cooperative_ack_event,
+            runner_process_id_sink=runner_process_ids,
+            cancellation_lease_token=config.cancellation_lease_token,
+            darwin_launch_started=mark_darwin_launch_started,
+            darwin_launch_sealed=publish_darwin_proof,
+            **({"service_launch": service_launch} if service_launch is not None else {}),
+        )
+        return "succeeded", None, None
+    except RunnerTaskCancelled as exc:
+        cleanup_verified = _cleanup_cooperative_cancellation(
+            config,
+            cooperative_request_event,
+            cooperative_ack_event,
+            cancellation_handshakes,
+        )
+        if config.manifest.get("action_id") == _CANCELLATION_ACTION_ID and not cleanup_verified:
+            return "failed", "cancellation_cleanup_failed", None
+        return (
+            "cancelled",
+            "cancelled",
+            {
+                "cooperative_requested": exc.cooperative_requested,
+                "cooperative_acknowledged": exc.cooperative_acknowledged,
+                "forced_tree_termination": exc.forced_tree_termination,
+                "control_cleanup_verified": cleanup_verified,
+            },
+        )
+    except RunnerDurableResultExists:
+        return "failed", "durable_result_exists", None
+    except RunnerPendingResultExists:
+        return "failed", "pending_result_exists", None
+    except RunnerTransportError as exc:
+        return "failed", _classify_failure(exc), None
+    except BaseException:
+        return "failed", "watchdog_failure", None
+    finally:
+        stop_polling.set()
+        observer.join(timeout=1)
+        if sys.platform == "darwin" and not darwin_launch_started:
+            publish_darwin_proof()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    darwin_proof_descriptor: int | None = None
+    darwin_proof_nonce: str | None = None
+    if sys.platform == "darwin":
+        if len(arguments) != 3:
+            return 64
+        try:
+            darwin_proof_descriptor = int(arguments[1])
+        except ValueError:
+            return 64
+        darwin_proof_nonce = arguments[2]
+        if (
+            darwin_proof_descriptor <= 2
+            or _DARWIN_PROOF_NONCE.fullmatch(darwin_proof_nonce) is None
+        ):
+            return 64
+    elif len(arguments) != 1:
+        return 64
+
+    def fail_before_launch(code: int) -> int:
+        try:
+            _publish_darwin_no_fork_proof(
+                darwin_proof_descriptor,
+                darwin_proof_nonce,
+            )
+        except RunnerTransportError:
+            return 67
+        return code
+
+    try:
+        config = _load_config(arguments[0])
+    except RunnerTransportError:
+        return fail_before_launch(65)
+    service_launch: ServiceLaunch | S3Launch | None = None
+    s3_launch = None
+    try:
+        receiver_environment = _consume_receiver_task_environment(expected_task_id=config.task_id)
+        service_launch = consume_service_launch(
+            config.manifest,
+            config.profile,
+            task_id=config.task_id,
+            runner_digest=config.runner_binary_digest,
+            watchdog_digest=config.watchdog_script_digest,
+            interpreter_digest=config.watchdog_interpreter_digest,
+        )
+        s3_launch = consume_s3_launch(
+            config.manifest,
+            config.profile,
+            task_id=config.task_id,
+            runner_digest=config.runner_binary_digest,
+            watchdog_digest=config.watchdog_script_digest,
+            interpreter_digest=config.watchdog_interpreter_digest,
+        )
+        if service_launch is not None and s3_launch is not None:
+            raise RunnerTransportError("Multiple protected launch channels are invalid.")
+        service_launch = service_launch or s3_launch
+    except RunnerTransportError:
+        for channel in (service_launch, s3_launch):
+            if channel is not None:
+                try:
+                    channel.close()
+                except RunnerTransportError:
+                    pass
+        try:
+            _close_config(config)
+        except RunnerTransportError:
+            pass
+        return fail_before_launch(65)
+
+    try:
+        _write_private_json(
+            config,
+            "ready.json",
+            {
+                "schema_version": _READY_SCHEMA,
+                "task_id": config.task_id,
+                "watchdog_pid": os.getpid(),
+            },
+        )
+    except RunnerTransportError:
+        _cleanup_private_inputs(config)
+        if service_launch is not None:
+            try:
+                service_launch.close()
+            except RunnerTransportError:
+                pass
+        try:
+            _close_config(config)
+        except RunnerTransportError:
+            pass
+        return fail_before_launch(66)
+
+    state = "failed"
+    error_code: str | None = "watchdog_failure"
+    cancellation_facts: Mapping[str, bool] | None = None
+    execution_failed = False
+    try:
+        state, error_code, cancellation_facts = _run(
+            config,
+            receiver_environment=receiver_environment,
+            **({"service_launch": service_launch} if service_launch is not None else {}),
+            darwin_proof_descriptor=darwin_proof_descriptor,
+            darwin_proof_nonce=darwin_proof_nonce,
+        )
+        status: dict[str, Any] = {
+            "schema_version": _STATUS_SCHEMA,
+            "task_id": config.task_id,
+            "state": state,
+            "error_code": error_code,
+            "watchdog_pid": os.getpid(),
+        }
+        if state == "cancelled":
+            if cancellation_facts is None:
+                raise RunnerTransportError("runner cancellation proof is unavailable")
+            status.update(cancellation_facts)
+        if state == "succeeded":
+            status["result_digest"] = file_hash(config.durable_result_path)
+        # A published terminal status is valid only after every live-control
+        # input is gone. The final cleanup in `finally` remains as a fail-safe.
+        _cleanup_private_inputs(config)
+        _write_private_json(config, "status.json", status)
+    except (OSError, RunnerTransportError):
+        execution_failed = True
+    finally:
+        if service_launch is not None:
+            try:
+                service_launch.close()
+            except RunnerTransportError:
+                execution_failed = True
+        try:
+            _cleanup_private_inputs(config)
+        except (OSError, RunnerTransportError):
+            execution_failed = True
+        try:
+            _close_config(config)
+        except RunnerTransportError:
+            execution_failed = True
+
+    if execution_failed:
+        return 67
+
+    if state == "succeeded":
+        return 0
+    if error_code == "cancelled":
+        return 20
+    if error_code == "timed_out":
+        return 21
+    return 22
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

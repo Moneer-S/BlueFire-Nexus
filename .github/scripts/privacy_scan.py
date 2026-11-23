@@ -7,7 +7,8 @@ A file fails the scan when its content or its name
   written with either kind of slash, or a tool's folder named after a home
   directory (/-home-<name>-..., C--Users-<name>-..., pytest-of-<name>). Only the
   accounts that hosted runners and lab targets use are accepted: /home/runner,
-  /Users/runner, C:\Users\runneradmin and /home/bluefire-lab;
+  /Users/runner, C:\Users\runneradmin and /home/bluefire-lab, and the exact
+  strings that ACCEPTED_PATHS lists for single files;
 - carries a marker string that tags a file as not for publication; or
 - is a kind of file that is never committed: logs, databases, keys, archives, or
   anything in a folder for build or run output.
@@ -51,6 +52,17 @@ FORBIDDEN_SUFFIXES = (
     ".gz", ".tgz", ".zip", ".tar", ".7z", ".xz", ".bz2", ".rar",
 )  # fmt: skip
 FORBIDDEN_FOLDERS = {"node_modules", "__pycache__", ".pytest_cache", "runs", "build"}
+
+# The app's prepared Linux lab creates an account of its own and names that
+# account's home directory. That exact string is accepted in these files only.
+# A new finding gets an entry of its own here, never a wider pattern.
+APP_LAB_HOME = b"/home" b"/bluefire"
+ACCEPTED_PATHS = {
+    "bluefire/prepared_lab.py": (APP_LAB_HOME,),
+    "bluefire/prepared_lab_install.py": (APP_LAB_HOME,),
+    "bluefire/prepared_lab_runtime.py": (APP_LAB_HOME,),
+    "docs/PREPARED_LINUX_LAB.md": (APP_LAB_HOME + b"/lab-isolation.json",),
+}
 
 ADVICE = {
     "user home path": "write the path relative to the repository or with a placeholder such as "
@@ -110,6 +122,8 @@ def findings_in(relative: str, data: bytes) -> set[tuple[str, int, str]]:
     for text in readings(data):
         if any(marker in text for marker in MARKERS):
             found.add((relative, 0, "private marker"))
+        for literal in ACCEPTED_PATHS.get(relative, ()):
+            text = re.sub(re.escape(literal) + rb"(?=$|[\s\"'`])", b"<accepted>", text)
         line, counted = 1, 0
         for offset in home_paths(text):
             line += text.count(b"\n", counted, offset)

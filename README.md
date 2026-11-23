@@ -131,6 +131,8 @@ Python coordinates experiments and detection evaluation. The Rust runner perform
 
 The framework includes native methods and reviewed external-tool adaptations, including a Linux gzip test adapted from Atomic Red Team. Detection backends include local SQLite, Sigma conversion to SQLite, and YARA for file content, subject to the installed backend requirements.
 
+[`lab/`](lab/README.md) is the engine for real runs: it runs published attack tests on a disposable host with real sensors and reports what the defenses saw. Its numbers, each with the CI run that shows it, are in [the lab's README](lab/README.md).
+
 [Architecture](docs/ARCHITECTURE.md) · [Execution](docs/EXECUTION_MODEL.md) · [Detection backends](docs/DETECTION_LAB.md) · [Reviewed T1082 source intake](docs/SOURCE_INTAKE.md) · [Development](docs/DEVELOPMENT.md) · [Contributing](CONTRIBUTING.md)
 
 ## Current scope

@@ -1,8 +1,26 @@
-# gitleaks' own rules, plus one exception. Without useDefault, this file would
-# replace the built-in rules with none, and gitleaks could find nothing.
+# gitleaks' own rules, plus the exceptions below. Without useDefault, this file
+# would replace the built-in rules with none, and gitleaks could find nothing.
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "detect-secrets stores one-way fingerprints, not credential values"
 paths = ['''^\.secrets\.baseline$''']
+
+# Each entry below is one exact string in one named file. A new finding gets an
+# entry of its own, never a wider pattern.
+[[allowlists]]
+description = "Names of the interface's browser storage keys, not credentials"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^frontend/src/lib/(ad-smb|assistance|composition|receiver-defense|s3-access)\.ts$''']
+regexes = [
+  '''^bluefire\.ad-smb\.pending\.v1$''',
+  '''^bluefire\.assistance\.receipt\.v1$''',
+  '''^bluefire\.composition\.pending\.v1$''',
+  '''^bluefire\.composition\.proposals\.v1$''',
+  '''^bluefire\.composition\.cancellations\.v1$''',
+  '''^bluefire\.receiver-defense\.pending\.v1$''',
+  '''^bluefire\.s3\.pending\.v1$''',
+  '''^bluefire\.s3\.pending-stops\.v1$''',
+]

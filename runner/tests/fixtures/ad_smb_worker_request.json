@@ -1,0 +1,292 @@
+{
+  "challenge": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "channel_digest": "sha256:15d186bbe8d194a984d3862e4693b197e1de6864eebef246f6d1ec99f53dafae",
+  "client_identity_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "credential_binding_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  "expected_upn_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "host_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "host_role": "client",
+  "manifest": {
+    "action_id": "owned.ad.smb_access.v1",
+    "approval": {
+      "approved_at": "2026-10-09T00:00:00Z",
+      "approved_by": "reviewer",
+      "expires_at": "2026-10-09T00:00:30Z",
+      "request_hash": "sha256:adfb726965ca9c3007420f62f0f4138c2db894d011a4e8cb167e86bdda80e445"
+    },
+    "behavior_id": "identity.ad.smb_access.v1",
+    "cleanup_action_id": null,
+    "evidence_refs": [],
+    "expires_at": "2026-10-09T00:00:30Z",
+    "limits": {
+      "max_artifact_bytes": 1048576,
+      "max_files": 2,
+      "max_stderr_bytes": 65536,
+      "max_stdout_bytes": 4259840,
+      "timeout_ms": 60000
+    },
+    "mode": "execute",
+    "params": {
+      "ad_smb_request": {
+        "change": null,
+        "deadline": "2026-10-09T00:00:30+00:00",
+        "environment_digest": "sha256:ee529a40f0dd97a8239710e2cae6284cf6e0f02fd15b77b8d1b1084237adc01b",
+        "host": {
+          "channel_digest": "sha256:15d186bbe8d194a984d3862e4693b197e1de6864eebef246f6d1ec99f53dafae",
+          "host_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "native_generation": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "profile_digest": "sha256:0755fc88b4c2a73e07d70717d048811fc5557e30f255bf1a2927fb965f8724be",
+          "runner_profile_id": "ad-client"
+        },
+        "index": 0,
+        "operation_job_id": "job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "phase": "baseline",
+        "principal_binding_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+        "request_id": "c95cc179086f3dcc6ff7f70c90372dd3",
+        "requested_at": "2026-10-09T00:00:00+00:00",
+        "review_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "reviewed_by": "reviewer",
+        "schema_version": "bluefire.ad-smb-step.v1",
+        "scope": {
+          "authentication": {
+            "encryption_required": true,
+            "hardened_unc_receipt_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mutual_authentication_required": true,
+            "ntlm_fallback": false,
+            "package": "Kerberos",
+            "signing_required": true,
+            "spn": "cifs/member.lab.example"
+          },
+          "created_at": "2026-10-09T00:00:00+00:00",
+          "domain": {
+            "dns": "lab.example",
+            "sid": "S-1-5-21-111-222-333"
+          },
+          "exclusive_writer_receipt_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "expires_at": "2026-10-09T00:55:00+00:00",
+          "files": [
+            {
+              "file_id": "22222222222222222222222222222222",
+              "name": "records.jsonl",
+              "ntfs_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "purpose": "primary",
+              "records": 1,
+              "sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+              "size_bytes": 128,
+              "volume_serial": "f123456789abcdef"
+            },
+            {
+              "file_id": "33333333333333333333333333333333",
+              "name": "health.jsonl",
+              "ntfs_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "purpose": "health",
+              "records": 1,
+              "sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "size_bytes": 128,
+              "volume_serial": "f123456789abcdef"
+            }
+          ],
+          "hosts": {
+            "client": {
+              "architecture": "x86_64",
+              "fqdn": "client.lab.example",
+              "host_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "identity_receipt_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "ipv4": "10.44.0.3",
+              "os_build": "10.0.22631.1000",
+              "os_product": "windows_client"
+            },
+            "dc": {
+              "architecture": "x86_64",
+              "fqdn": "dc.lab.example",
+              "host_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "identity_receipt_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "ipv4": "10.44.0.1",
+              "os_build": "10.0.20348.1000",
+              "os_product": "windows_server_2022"
+            },
+            "member": {
+              "architecture": "x86_64",
+              "fqdn": "member.lab.example",
+              "host_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "identity_receipt_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "ipv4": "10.44.0.2",
+              "os_build": "10.0.20348.1000",
+              "os_product": "windows_server_2022"
+            }
+          },
+          "limits": {
+            "audit_bytes": 4194304,
+            "audit_events": 1000,
+            "audit_seconds": 600,
+            "business_attempts": 6,
+            "business_seconds": 1800,
+            "cleanup_seconds": 900,
+            "generated_bytes": 65536,
+            "operation_seconds": 60,
+            "returned_payload_bytes": 1048576,
+            "rollbacks": 1,
+            "session_seconds": 900,
+            "sessions": 6,
+            "share_changes": 1
+          },
+          "native_parser_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "network": {
+            "flows": [
+              {
+                "destination": "dc",
+                "port_from": 88,
+                "port_through": 88,
+                "source": "client",
+                "transport": "tcp"
+              },
+              {
+                "destination": "dc",
+                "port_from": 53,
+                "port_through": 53,
+                "source": "client",
+                "transport": "udp"
+              },
+              {
+                "destination": "member",
+                "port_from": 445,
+                "port_through": 445,
+                "source": "client",
+                "transport": "tcp"
+              }
+            ],
+            "kernel_traffic_metered": false,
+            "policy_receipt_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "ownership_receipt_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "principals": {
+            "controller": {
+              "credential_handle": "credential-11111111111111111111111111111111",
+              "group_sids": [
+                "S-1-5-21-111-222-333-513"
+              ],
+              "identity_receipt_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "kind": "domain_user",
+              "sid": "S-1-5-21-111-222-333-1001",
+              "sid_history": []
+            },
+            "legitimate": {
+              "credential_handle": "credential-33333333333333333333333333333333",
+              "group_sids": [
+                "S-1-5-21-111-222-333-513"
+              ],
+              "identity_receipt_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "kind": "domain_user",
+              "sid": "S-1-5-21-111-222-333-1003",
+              "sid_history": []
+            },
+            "probe": {
+              "credential_handle": "credential-22222222222222222222222222222222",
+              "group_sids": [
+                "S-1-5-21-111-222-333-513"
+              ],
+              "identity_receipt_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "kind": "domain_user",
+              "sid": "S-1-5-21-111-222-333-1002",
+              "sid_history": []
+            }
+          },
+          "readiness_receipt_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "schema_version": "bluefire.ad-smb-scope.v1",
+          "scope_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "share": {
+            "administrative": false,
+            "baseline_descriptor_digest": "sha256:2bf1593df7bb3345312afcf4acc3322ccca12fcd5983e9d6e953969ada635c1d",
+            "dfs": false,
+            "identity_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "local_root": "C:\\BlueFire\\AD\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "bf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "root_file_id": "11111111111111111111111111111111",
+            "root_ntfs_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "unc": "\\\\member.lab.example\\bf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "volume_serial": "f123456789abcdef"
+          }
+        },
+        "scope_digest": "sha256:921107b3ddfb1e9031c534ccfb154261f93fe3f13c341098d798ce43ee44fdc1",
+        "step": "read_probe_primary",
+        "target": {
+          "admission_verified": false,
+          "authenticated_remote_reader": false,
+          "client_host_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "effective_access_claim": false,
+          "expected_remote_sid": "S-1-5-21-111-222-333-1002",
+          "file": {
+            "file_id": "22222222222222222222222222222222",
+            "name": "records.jsonl",
+            "ntfs_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            "purpose": "primary",
+            "records": 1,
+            "sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "size_bytes": 128,
+            "volume_serial": "f123456789abcdef"
+          },
+          "hardened_unc_receipt_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "member_fqdn": "member.lab.example",
+          "member_host_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "reader": "probe",
+          "schema_version": "bluefire.ad-smb-read-target.v1",
+          "scope_digest": "sha256:921107b3ddfb1e9031c534ccfb154261f93fe3f13c341098d798ce43ee44fdc1",
+          "scope_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "share_unc": "\\\\member.lab.example\\bf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "workflow_job_id": "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "platform": "windows",
+    "policy_digest": "sha256:0755fc88b4c2a73e07d70717d048811fc5557e30f255bf1a2927fb965f8724be",
+    "request_hash": "sha256:adfb726965ca9c3007420f62f0f4138c2db894d011a4e8cb167e86bdda80e445",
+    "request_id": "ad-c95cc179086f3dcc6ff7f70c90372dd3",
+    "requested_at": "2026-10-09T00:00:00Z",
+    "required_capabilities": [
+      "ad_smb_access"
+    ],
+    "run_id": "job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "runner_id": "bluefire-rust-runner.v1",
+    "runner_profile_id": "ad-client",
+    "safety_tier": "controlled",
+    "schema_version": "bluefire.runner-manifest.v1",
+    "step_id": "read_probe_primary",
+    "target_scope": {
+      "filesystem": [],
+      "network": []
+    }
+  },
+  "prior_local_authentication_ids": [],
+  "profile": {
+    "allowed_actions": [
+      "owned.ad.smb_access.v1"
+    ],
+    "approval_required_at_or_above": "safe",
+    "capabilities": [
+      "ad_smb_access"
+    ],
+    "control_blocked_actions": [],
+    "limits": {
+      "max_artifact_bytes": 1048576,
+      "max_files": 2,
+      "max_stderr_bytes": 65536,
+      "max_stdout_bytes": 4259840,
+      "timeout_ms": 60000
+    },
+    "max_safety_tier": "controlled",
+    "platform": "windows",
+    "policy_digest": "sha256:0755fc88b4c2a73e07d70717d048811fc5557e30f255bf1a2927fb965f8724be",
+    "profile_id": "ad-client",
+    "runner_id": "bluefire-rust-runner.v1",
+    "sandbox_root": "C:\\BlueFire\\owned",
+    "schema_version": "bluefire.runner-profile.v1",
+    "target_scope": {
+      "filesystem": [],
+      "network": []
+    }
+  },
+  "remaining_ms": 29000,
+  "request_hash": "sha256:65bdf8554368dacf568837a7ac6026ebd08de7208052f0b54c1b73e2292b8655",
+  "schema_version": "bluefire.ad-smb-worker-request.v1",
+  "task_id": "execute-65bdf8554368dacf568837a7ac6026ebd08de7208052f0b54c1b73e2292b8655"
+}

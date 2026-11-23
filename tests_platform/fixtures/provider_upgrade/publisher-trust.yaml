@@ -1,0 +1,7 @@
+key_id: fixture-release-2026
+provenance:
+  purpose: Verify independently signed parameter-attesting provider lifecycle fixtures
+  source: Ephemeral build key discarded after signing committed BlueFire fixtures
+public_key: EIV5pJJKy6SHVjIgkamkMARJoK4fmKY3QijGY_PJjQ8  # pragma: allowlist secret -- public signed fixture material
+publisher_id: bluefire.fixture.provider-upgrade
+trusted_by: provider-fixture-reviewer

@@ -1,0 +1,25 @@
+.graph-proposal-review { flex-shrink: 0; padding: 0 0 10px; border-bottom: 1px solid var(--line); font-size: .8rem; line-height: 1.5; }
+.graph-review-heading { display: flex; align-items: start; justify-content: space-between; gap: 24px; }
+.graph-review-heading h2 { font-size: 1rem; margin: 0 0 5px; }
+.graph-review-heading p { color: var(--muted-strong); max-width: 760px; margin: 0 0 9px; }
+.graph-review-heading a { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: .76rem; }
+.graph-review-heading a svg { width: 14px; height: 14px; }
+.graph-plan-review { padding: 0; border: 0; color: var(--blue-soft); background: none; font-size: .75rem; text-decoration: underline; text-underline-offset: 3px; }
+.graph-plan-dialog { max-height: calc(100dvh - 40px); overflow-y: auto; font-size: .85rem; line-height: 1.6; }
+.graph-plan-dialog li { margin: 8px 0; }
+.graph-plan-dialog details { margin-top: 16px; overflow-wrap: anywhere; }
+.workbench-builder > .page-header { flex-shrink: 0; scroll-margin-top: 60px; }
+.graph-proposal-review details { margin-top: 8px; color: var(--muted-strong); overflow-wrap: anywhere; }
+.graph-proposal-review summary { cursor: pointer; }
+.graph-proposal-review li { margin: 7px 0; }
+.graph-decline { background: none; color: var(--muted-strong); border: 0; padding: 8px 0 0; font-size: .75rem; text-decoration: underline; text-underline-offset: 3px; }
+.graph-review-editor { border: 0; padding: 0; margin: 0; min-width: 0; }
+div.graph-review-editor { display: contents; }
+.builder-assistance-actions { display: flex; gap: 5px; flex-wrap: wrap; }
+.graph-review-editor:disabled { opacity: .8; }
+@media (max-width: 760px) { .graph-review-heading { flex-direction: column; gap: 8px; } }
+
+.graph-step-changes { margin: 12px 0; }
+.graph-step-changes h3 { margin: 0; font-size: .9rem; }
+.graph-step-changes table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.graph-step-changes th, .graph-step-changes td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }

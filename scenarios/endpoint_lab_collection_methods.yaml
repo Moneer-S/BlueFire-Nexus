@@ -1,0 +1,66 @@
+schema_version: bluefire.scenario.v1
+id: scenario.endpoint.lab-collection-methods.v1
+title: Compare record collection methods
+purpose: Compare how JSONL, TAR and gzip collection preserve sample values for detection.
+start: create_fixture
+steps:
+  - id: create_fixture
+    behavior_id: sandbox.fixture.create.v1
+    parameters: {record_count: 8}
+  - id: discover_system
+    behavior_id: endpoint.discovery.system.v1
+  - id: discover_processes
+    behavior_id: endpoint.discovery.processes.v1
+    parameters: {record_limit: 20}
+  - id: seed_lab_material
+    behavior_id: sandbox.identity-material.seed.v1
+  - id: inspect_lab_material
+    behavior_id: sandbox.identity-material.inspect.v1
+    inputs:
+      identity_material: {from_step: seed_lab_material, artifact: identity_material}
+  - id: transform_fixture
+    behavior_id: sandbox.fixture.transform.v1
+    parameters: {redact_values: false}
+    inputs:
+      workspace: {from_step: create_fixture, artifact: workspace}
+  - id: select_records
+    behavior_id: sandbox.discovery.metadata.v1
+    inputs:
+      fixture: {from_step: transform_fixture, artifact: fixture}
+  - id: stage_collection
+    behavior_id: sandbox.collection.records.v1
+    alternates: [sandbox.collection.archive.v1]
+    parameters: {stage_variant: primary}
+    inputs:
+      records: {from_step: select_records, artifact: records}
+  - id: cleanup_workspace
+    behavior_id: sandbox.cleanup.v1
+    parameters: {verify_removal: true}
+    inputs:
+      workspace: {from_step: create_fixture, artifact: workspace}
+edges:
+  - {from_step: create_fixture, outcome: success, to_step: discover_system}
+  - {from_step: discover_system, outcome: success, to_step: discover_processes}
+  - {from_step: discover_processes, outcome: success, to_step: seed_lab_material}
+  - {from_step: discover_processes, outcome: partial, to_step: seed_lab_material}
+  - {from_step: seed_lab_material, outcome: success, to_step: inspect_lab_material}
+  - {from_step: inspect_lab_material, outcome: success, to_step: transform_fixture}
+  - {from_step: transform_fixture, outcome: success, to_step: select_records}
+  - {from_step: select_records, outcome: success, to_step: stage_collection}
+  - {from_step: stage_collection, outcome: success, to_step: cleanup_workspace}
+  - {from_step: stage_collection, outcome: blocked, to_step: cleanup_workspace}
+  - {from_step: stage_collection, outcome: failed, to_step: cleanup_workspace}
+provenance:
+  source: BlueFire Nexus authored compatible collection experiment
+  reference: scenario.endpoint.lab-collection-methods.v1
+  license: MIT
+  derived: false
+  notes: New identities preserve earlier collection contracts; both methods consume the identical digest-bound transformed file and retain receipt-bound cleanup.
+limitations:
+  - All material is generated public lab data inside the runner-owned sandbox; no personal file or credential is selected.
+  - Record collection validates and canonicalizes the transformed JSONL; whole-file collection preserves that same file inside one uncompressed ustar member. The output type and experiment objective are identical.
+  - This attack case retains the public generated values; these are controlled lab stand-ins and do not establish malicious intent on a host.
+  - Enable Collection contents in Run review; the product selects the collection paths and observation schedule. Missing observations leave the objective incomplete.
+  - The primary output is staged/collection/bundle.jsonl or staged/collection/bundle.tar. The heldout parameter selects staged/variation with the same respective filename.
+  - System and process discovery and public canary inspection produce executed evidence; the semantic collector proves only the independently read staged bytes and bounded parsed counts.
+  - Evaluate immutable detector revisions separately against the full observed run, meaningful benign activity, a real replay, and a held-out variation; successful action completion does not claim a detector fired.

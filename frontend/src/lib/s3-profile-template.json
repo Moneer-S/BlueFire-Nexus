@@ -1,0 +1,18 @@
+{
+  "id": "s3-access-template.v1",
+  "mode": "execute",
+  "environment_type": "cloud_lab",
+  "platforms": ["linux"],
+  "scope": ["sandbox.workspace"],
+  "network_allowlist": [],
+  "capabilities": ["cloud.aws.s3.access"],
+  "safety_tiers": ["safe", "controlled"],
+  "approval_required": true,
+  "enabled_actions": ["owned.aws.s3_access.v1"],
+  "blocked_actions": [],
+  "cleanup_policy": "always",
+  "runner_binary": {"env": "BLUEFIRE_RUNNER_BINARY"},
+  "sandbox_root": {"env": "BLUEFIRE_SANDBOX_ROOT"},
+  "budgets": {"max_seconds": 120, "max_steps": 12, "max_artifacts": 100, "max_bytes": 5242880},
+  "secrets": {}
+}

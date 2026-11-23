@@ -1,0 +1,8 @@
+.adaptive-authorization-review { margin: 18px 0; padding: 18px; border: 1px solid var(--line); border-radius: 10px; }
+.adaptive-authorization-review > h3 { margin: 0 0 8px; font-size: 1rem; }
+.adaptive-authorization-review p { color: var(--muted); line-height: 1.5; }
+.adaptive-authorization-review > article { margin: 18px 0; }
+.adaptive-authorization-review h4 { font-size: .9rem; margin: 0 0 8px; }
+.adaptive-reviewed-method { padding: 12px 0; border-top: 1px solid var(--line); }
+.adaptive-reviewed-method > strong { font-size: .88rem; }
+.adaptive-authorization-review pre { overflow-wrap: anywhere; white-space: pre-wrap; max-height: 340px; overflow: auto; }

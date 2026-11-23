@@ -1,0 +1,116 @@
+[build-system]
+requires = ["setuptools>=84.1.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# The maintained Python product is the `bluefire` package.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bluefire*"]
+exclude = ["tests_platform*"]
+namespaces = false
+
+[tool.setuptools]
+include-package-data = false
+zip-safe = false
+
+[tool.setuptools.package-data]
+bluefire = [
+  "_source_revision.txt",
+  "catalog/*.yaml",
+  "data/*.yaml",
+  "data/*.json",
+  "data/*.txt",
+  "ui/*.css",
+  "ui/*.html",
+  "ui/*.js",
+  "ui/fonts/*.woff2",
+  "ui/fonts/*.txt",
+  "native/*.json",
+  "native/bluefire-runner",
+  "native/bluefire-runner.exe",
+]
+
+[project]
+name = "bluefire-nexus"
+dynamic = ["version"]
+description = "Evidence-first security experiment control plane with a bounded Rust runner"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "BlueFire-Nexus Contributors" }]
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+dependencies = [
+  "PyYAML>=6.0.1,<7",
+  "cryptography>=50,<51",
+  "PyNaCl>=1.5,<2",
+  "tomli==2.4.1; python_version < '3.11'",
+]
+
+[project.scripts]
+bluefire = "bluefire.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "bluefire.__version__" }
+
+[project.urls]
+Homepage = "https://github.com/Moneer-S/BlueFire-Nexus"
+Repository = "https://github.com/Moneer-S/BlueFire-Nexus"
+Issues = "https://github.com/Moneer-S/BlueFire-Nexus/issues"
+
+[project.optional-dependencies]
+detections = [
+  "pysigma==1.5.0",
+  "pysigma-backend-sqlite==1.2.2",
+  "yara-python==4.5.4",
+]
+test = [
+  "pytest>=9.0.3,<10",
+  "pytest-timeout>=2.4,<3",
+  "pytest-xdist>=3.6,<4",
+]
+dev = [
+  "bandit[toml]>=1.8,<2",
+  "black>=26.3.1,<27",
+  "build>=1.2.2,<2",
+  "cyclonedx-bom>=7.3.1,<8",
+  "detect-secrets>=1.5,<2",
+  "jsonschema>=4.23,<5",
+  "mypy>=1.14,<2",
+  "pip-audit>=2.8,<3",
+  "pre-commit>=4.0,<5",
+  "pytest>=9.0.3,<10",
+  "pytest-timeout>=2.4,<3",
+  "pytest-xdist>=3.6,<4",
+  "ruff>=0.9,<1",
+  "types-PyYAML>=6.0.12,<7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests_platform"]
+python_files = ["test_*.py"]
+addopts = "-q"
+timeout = 180
+timeout_method = "thread"
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.bandit]
+exclude_dirs = ["tests_platform"]
+skips = ["B101"]
