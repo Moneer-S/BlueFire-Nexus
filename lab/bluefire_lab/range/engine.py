@@ -364,7 +364,9 @@ class Run:
             "range": self.spec.range,
             "run_id": self.run_id,
             "plant": self.plant,
-            "passed": bool(self.phases) and all(phase["passed"] for phase in self.phases),
+            # True only for a run that ended sealed: never while it runs, and never for a run that was
+            # stopped, made invalid or ended in an error after its recorded phases had passed.
+            "passed": self.manifest["result"] == "sealed" and all(phase["passed"] for phase in self.phases),
             "phases": self.phases,
             "watch": {"events": self.watch.events, "findings": list(self.watch.findings)},
         }
@@ -822,20 +824,19 @@ class Run:
                     except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
                         complete = False
                         self.manifest["teardown"].append({"object": "teardown", "error": str(error)[:300]})
-                if self.watch.process:
-                    missing = self.watch.settle()
-                    self.watch.stop()
-                    if self.watch.findings and code == EXIT_OK:
-                        code, result = EXIT_INVALID, "invalid"
-                        reason = "the event watch saw an event on the range that the engine did not cause"
-                    if missing:
-                        self.manifest["teardown"].append(
-                            {"object": "event watch", "error": "not reported: " + "; ".join(missing)}
-                        )
                 self.manifest["teardown_complete"] = complete
                 if not complete and code == EXIT_OK:
                     code, result = EXIT_REFUSED, "engine error"
                     reason = "the teardown left objects behind: see teardown in manifest.json"
+                if self.watch.process:
+                    # The watch runs to the end of the teardown: what it saw there is the seal's last phase.
+                    final = self.watch.check(watch_command)
+                    self.watch.stop()
+                    if self.phases:
+                        self.phases.append({"phase": "teardown", "passed": final["pass"], "checks": [final]})
+                    if not final["pass"] and code == EXIT_OK:
+                        code, result = EXIT_INVALID, "invalid"
+                        reason = "the event watch failed during the teardown: see seal.json"
                 self.manifest.update({"result": result, "reason": reason, "exit_code": code})
                 self.manifest["engine_clock"]["ended"] = now()
                 self.write()

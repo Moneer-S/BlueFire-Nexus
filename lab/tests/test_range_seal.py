@@ -327,6 +327,127 @@ def test_the_watch_reports_another_container_that_joins_a_range_containers_names
     assert apart.findings == []
 
 
+class Stream:
+    """Stands in for the `docker events` process: the test feeds the watch itself."""
+
+    def poll(self) -> int:
+        return 0
+
+
+class Teardown(engine.Run):
+    """A run with Docker's steps stubbed, whose every seal phase passes; the teardown shows `events` to the watch."""
+
+    def __init__(self, folder: Path, events: list[str], watching: bool = True):
+        super().__init__(SPEC, "seal-check.yaml", folder, None, 0)
+        self.events = events
+        self.watching = watching
+        self.watch.settle = lambda seconds=0.2: engine.Watch.settle(self.watch, seconds)
+
+    def preflight(self) -> None:
+        def start(since: str) -> None:
+            self.watch.process, self.watch.alive = Stream(), True
+
+        self.watch.start = start
+
+    def pull(self) -> None:
+        pass
+
+    def create_networks(self) -> None:
+        self.created = True
+
+    def create_containers(self) -> None:
+        pass
+
+    def start(self) -> None:
+        pass
+
+    def ready(self) -> None:
+        pass
+
+    def static_checks(self, started: bool) -> list[dict]:
+        return []
+
+    def dynamic_checks(self) -> list[dict]:
+        return []
+
+    def teardown(self) -> bool:
+        self.watch.containers.add("c" * 64)
+        self.watch.expect("container", "destroy", required=True, id="c" * 64)
+        self.watch.feed(line + "\n" for line in self.events)
+        self.watch.alive = self.watching
+        return True
+
+
+DESTROY = an_event("container", "destroy", "c" * 64, name="bluefire-lab-sc-left")
+INTRUDER = an_event("network", "connect", "n" * 64, name="bluefire-lab-sc-west", container="c" * 64)
+
+
+@pytest.mark.parametrize(
+    "events, watching, code",
+    [
+        ([DESTROY], True, engine.EXIT_OK),
+        ([], True, engine.EXIT_INVALID),
+        ([DESTROY, INTRUDER], True, engine.EXIT_INVALID),
+        ([DESTROY], False, engine.EXIT_INVALID),
+    ],
+    ids=["reported", "destroy-not-reported", "event-not-caused", "watch-stopped"],
+)
+def test_the_watch_during_the_teardown_is_part_of_the_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, events: list[str], watching: bool, code: int
+) -> None:
+    monkeypatch.setattr(engine, "docker", lambda *a, **k: subprocess.CompletedProcess(a, 0, "now\n", ""))
+
+    run = Teardown(tmp_path, events, watching)
+    run.run()
+
+    record = json.loads((tmp_path / "seal.json").read_text())
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["exit_code"] == code
+    assert record["passed"] == (code == engine.EXIT_OK)
+    assert [phase["phase"] for phase in record["phases"]] == ["static", "dynamic", "after path", "teardown"]
+    assert record["phases"][-1]["passed"] == (code == engine.EXIT_OK)
+    title = "passed" if code == engine.EXIT_OK else "failed"
+    assert (tmp_path / "seal.md").read_text().startswith(f"### Seal of seal-check: {title}")
+
+
+def test_a_run_stopped_after_the_seal_passed_is_not_recorded_as_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ctrl-C where the path will run: every recorded phase passed, and the run is still invalid.
+    monkeypatch.setattr(engine, "docker", lambda *a, **k: subprocess.CompletedProcess(a, 0, "now\n", ""))
+    run = Teardown(tmp_path, [DESTROY])
+
+    def stopped() -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run, "hold_window", stopped)
+    run.run()
+
+    record = json.loads((tmp_path / "seal.json").read_text())
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert (manifest["exit_code"], manifest["result"]) == (engine.EXIT_INVALID, "invalid")
+    assert all(phase["passed"] for phase in record["phases"])
+    assert record["passed"] is False
+    assert (tmp_path / "seal.md").read_text().startswith("### Seal of seal-check: failed")
+
+
+def test_a_teardown_that_left_objects_behind_stays_an_engine_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A removal Docker refused is never reported as a destroy: the failed removal is the cause.
+    monkeypatch.setattr(engine, "docker", lambda *a, **k: subprocess.CompletedProcess(a, 0, "now\n", ""))
+    run = Teardown(tmp_path, [])
+    monkeypatch.setattr(run, "teardown", lambda: Teardown.teardown(run) and False)
+    run.run()
+
+    record = json.loads((tmp_path / "seal.json").read_text())
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["exit_code"] == engine.EXIT_REFUSED
+    assert manifest["teardown_complete"] is False
+    assert manifest["reason"].startswith("the teardown left objects behind")
+    assert record["passed"] is False
+
+
 @pytest.mark.parametrize("mode", ["NetworkMode", "PidMode", "IpcMode"])
 def test_the_objects_check_fails_on_a_container_that_shares_a_namespace_with_the_range(mode: str) -> None:
     objects = fixture("seal-check-started.json")

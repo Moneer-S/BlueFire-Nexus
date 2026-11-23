@@ -581,7 +581,9 @@ path of published tests will run:
 - **Events:** a watch on Docker's events runs from before the first create to
   the end of the teardown, and any event on the range that the engine did not
   cause breaks the seal, as does the create or start of any other container
-  that joins a range container's namespaces.
+  that joins a range container's namespaces. The watch is checked once more
+  after the teardown, as the seal's last phase: Docker must have reported the
+  removal of every object, to a watch that was still running.
 
 The run writes `seal.json` (every check, with the command it read, the value it
 observed and whether it passed), `seal.md`, `manifest.json` and
@@ -589,16 +591,18 @@ observed and whether it passed), `seal.md`, `manifest.json` and
 exit path after the first create. Its exit code is 0 when the range was sealed
 and still was at the end, 1 when it refused to start or Docker failed, 3 when
 the seal failed and nothing ran in the range, and 4 when the run was made
-invalid. `range down` removes only containers and networks that carry both the
-spec's prefix and its range label. One case leaves something for it: Docker
-does not remove a network while a container from outside is still connected to
-it. The run then records that its teardown was not complete, and `range down`
-removes the network once that container is gone.
+invalid. `passed` at the top of `seal.json` is true only for a run that ended
+sealed: a run that was stopped or made invalid after its checks had passed is
+not recorded as passed. `range down` removes only containers and networks that
+carry both the spec's prefix and its range label. One case leaves something for
+it: Docker does not remove a network while a container from outside is still
+connected to it. The run then records that its teardown was not complete, and
+`range down` removes the network once that container is gone.
 
 The job `seal` in `.github/workflows/range-one.yml` runs the passing case and
 five planted breaks (`--plant` and a network connect from outside), each of
-which must fail the seal for its
-own reason: a network that is not internal, a network without the isolated
+which must fail the seal for its own reason: a network that is not internal, a
+network without the isolated
 gateway mode (caught by the host canary as well), a published port, a bind
 mount, and an extra container connected to a range network after the seal
 (caught by the event watch).
