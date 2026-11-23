@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -37,7 +38,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from . import build, ossec, seal, wazuh
+from . import atomics, build, ossec, plants, seal, wazuh
 from .spec import Spec, SpecError, load
 
 EXIT_OK = 0
@@ -413,6 +414,9 @@ class Run:
             "containers": {},
             "ready": {},
             "defense": None,
+            "atomic_red_team": None,
+            "weaknesses": plants.weaknesses(spec),
+            "plants": None,
             "result": "incomplete",
             "reason": None,
             "exit_code": None,
@@ -468,6 +472,8 @@ class Run:
             (self.out / "defense.md").write_text(
                 wazuh.summary(self.manifest, record["passed"]), encoding="utf-8"
             )
+        if self.manifest["weaknesses"] or self.manifest["plants"] or self.manifest["ready"].get("plants"):
+            (self.out / "plants.md").write_text(plants.summary(self.manifest), encoding="utf-8")
 
     def phase(self, name: str, checks: list[dict]) -> bool:
         self.phases.append({"phase": name, "passed": seal.passed(checks), "checks": checks})
@@ -496,6 +502,8 @@ class Run:
             "api": (version.get("Server") or {}).get("ApiVersion"),
             "rootless": self.rootless,
             "endpoint": scheme,
+            # Whether the daemon confines containers with AppArmor (name=apparmor) shows here.
+            "security_options": info.get("SecurityOptions") or [],
         }
         try:
             major = int(server.split(".")[0])
@@ -548,6 +556,17 @@ class Run:
             self.images[host.name] = {"reference": reference, "id": image["Id"], "digest": host.digest}
         if any(host.built for host in self.spec.hosts.values()):
             rendered = build.render(self.spec, self.out / "build")
+            if self.spec.atomics and self.spec.atomics.lock:
+                locked = atomics.read_lock(
+                    atomics.lock_path(self.spec).read_text(encoding="utf-8"), self.spec
+                )
+                self.manifest["atomic_red_team"] = {
+                    "repo": self.spec.atomics.repo,
+                    "commit": self.spec.atomics.commit,
+                    "lock": locked,
+                    "note": "every file was fetched at the commit and had the lock's SHA-256; the images carry the "
+                    "src folders and served files as data, and no build step runs published text",
+                }
             layers_of: dict[str, list[str]] = {}
             for host in rendered.tags:
                 image = self.spec.wazuh.manager_image if self.spec.hosts[host].kind == "defense" else None
@@ -716,9 +735,9 @@ class Run:
         self.started_at = time.monotonic()
 
     def execute(
-        self, identifier: str, script: str, timeout: float, tag: str = "engine:seal"
+        self, identifier: str, script: str, timeout: float, tag: str = "engine:seal", user: str = "root"
     ) -> subprocess.CompletedProcess:
-        """Run a script of the engine's own as root in a range container, and announce its events.
+        """Run a script of the engine's own in a range container, as root unless told, and announce its events.
 
         The process carries BLUEFIRE_TAG, so that snoopy's lines name it as the engine's.
         """
@@ -732,7 +751,7 @@ class Run:
         return docker(
             "exec",
             "-u",
-            "root",
+            user,
             "--env",
             f"BLUEFIRE_TAG={tag}",
             identifier,
@@ -789,6 +808,45 @@ class Run:
                 )
         if self.spec.wazuh:
             self.defense_ready(deadline, budget)
+        checks = self.run_checks(plants.ready_checks(self.spec), "engine:ready")
+        self.manifest["ready"]["plants"] = checks
+        self.write()
+        failed = [f"{item['check']} ({item['subject']})" for item in checks if not item["pass"]]
+        if failed:
+            raise NotReady(
+                f"{'; '.join(failed)}: see ready.plants in manifest.json for what each command printed"
+            )
+
+    def run_checks(self, checks: list[plants.Check], tag: str) -> list[dict]:
+        """Run each plant check's commands in order, as its accounts, and judge what they printed."""
+
+        results = []
+        for item in checks:
+            outputs = []
+            for command in item.commands:
+                done = self.execute(self.containers[command.host], command.script, 120, tag, command.user)
+                outputs.append((done.returncode, done.stdout))
+            observed, good = item.judge(outputs)
+            where = "; ".join(f"{c.host} as {c.user}: {c.script}" for c in item.commands)
+            results.append(seal.check(item.name, item.subject, where, observed, item.expected, good))
+        return results
+
+    def plant_checks(self) -> None:
+        """Check, with the engine's own commands, that what the spec plants is in place the way the path needs it."""
+
+        locked = (
+            atomics.read_lock(atomics.lock_path(self.spec).read_text(encoding="utf-8"), self.spec)
+            if (self.spec.atomics and self.spec.atomics.lock)
+            else {}
+        )
+        addresses = {host: entry.get("addresses", {}) for host, entry in self.manifest["containers"].items()}
+        results = self.run_checks(plants.checks(self.spec, locked, addresses), "engine:plant")
+        self.manifest["plants"] = {
+            "passed": all(item["pass"] for item in results),
+            "checks": results,
+            "note": "each check uses what is planted once, with the engine's own commands (tag engine:plant); "
+            "none runs a published test",
+        }
         self.write()
 
     def defense_ready(self, deadline: float, budget: int) -> None:
@@ -1177,6 +1235,10 @@ class Run:
                 build.OSSEC_CONF,
                 build.STOCK,
             ]
+        for host in self.spec.hosts.values():
+            if "inet-server" in host.services:
+                # The stand-in internet's access log and what was uploaded to it.
+                paths[host.name] = ["/var/log/inet", build.INET_UPLOADS]
         for host, wanted in paths.items():
             copied[host] = {path: self.copy_out(host, path) for path in wanted}
         for kind in ("archives", "alerts"):
@@ -1399,6 +1461,21 @@ class Run:
                 )
             else:
                 checks.append(seal.image(host, spec.hosts[host].image, spec.hosts[host].digest, image))
+        for host, settings in spec.hosts.items():
+            if settings.atomics_src:
+                script = f'printf "%s" "$(< {build.COMMIT_FILE})"'
+                done = self.execute(self.containers[host], script, 30)
+                checks.append(
+                    seal.check(
+                        "pins: published files",
+                        f"container {host}",
+                        f"docker exec -u root --env BLUEFIRE_TAG=engine:seal {self.containers[host]} "
+                        f"bash -c {shlex.quote(script)}",
+                        done.stdout.strip(),
+                        spec.atomics.commit,
+                        done.returncode == 0 and done.stdout.strip() == spec.atomics.commit,
+                    )
+                )
         if spec.wazuh:
             # Read again in every phase: the version each Wazuh piece reports to the manager now.
             listed, _ = self.listing("engine:seal")
@@ -1533,6 +1610,7 @@ class Run:
                 return code
             sealed = True
             code, result = EXIT_INVALID, "invalid"
+            self.plant_checks()
             # The path of published tests runs here in a later version of the lab. Until then, a range
             # with a defense gets the engine's harmless marks.
             if self.spec.wazuh:
@@ -1592,24 +1670,54 @@ class Run:
                     except subprocess.TimeoutExpired:
                         tail.kill()
                 self.manifest["teardown_complete"] = complete
-                if not complete and code == EXIT_OK:
-                    code, result = EXIT_REFUSED, "engine error"
-                    reason = "the teardown left objects behind: see teardown in manifest.json"
+                watched = None
                 if self.watch.process:
                     # The watch runs to the end of the teardown: what it saw there is the seal's last phase.
                     final = self.watch.check(watch_command)
                     self.watch.stop()
+                    watched = final["pass"]
                     if self.phases:
                         self.phases.append({"phase": "teardown", "passed": final["pass"], "checks": [final]})
-                    if not final["pass"] and code == EXIT_OK:
-                        code, result = EXIT_INVALID, "invalid"
-                        reason = "the event watch failed during the teardown: see seal.json"
+                code, result, reason = outcome(
+                    (code, result, reason), complete, watched, self.manifest.get("plants")
+                )
                 self.manifest.update({"result": result, "reason": reason, "exit_code": code})
                 self.manifest["engine_clock"]["ended"] = now()
                 self.write()
             finally:
                 for number, handler in held.items():
                     signal.signal(number, handler)
+
+
+def outcome(
+    reached: tuple[int, str, str | None],
+    teardown_complete: bool,
+    watch_passed: bool | None,
+    planted: dict | None,
+) -> tuple[int, str, str | None]:
+    """A run's exit code, result and reason once its teardown is over.
+
+    `reached` is what the run had reached before the teardown. Only a run that
+    ended sealed changes here: a teardown that left objects behind makes it an
+    engine error, a failed event watch during the teardown makes it invalid, and
+    only then failed plant checks make it "plants not in place", so that this
+    softer result never hides one of the others.
+    """
+
+    code, result, reason = reached
+    if code != EXIT_OK:
+        return reached
+    if not teardown_complete:
+        return EXIT_REFUSED, "engine error", "the teardown left objects behind: see teardown in manifest.json"
+    if watch_passed is False:
+        return EXIT_INVALID, "invalid", "the event watch failed during the teardown: see seal.json"
+    if planted and not planted.get("passed"):
+        # The range was sealed, and not the range its spec describes: the path could not run in it.
+        failed = [
+            f"{item['check']} ({item['subject']})" for item in planted.get("checks") or [] if not item["pass"]
+        ]
+        return EXIT_REFUSED, "plants not in place", "plant checks failed: " + ", ".join(failed)
+    return reached
 
 
 def summary(record: dict, manifest: dict) -> str:
@@ -1710,9 +1818,26 @@ def render(spec_path: Path, out: Path) -> int:
             f"bluefire-lab range: every host of {spec.range} runs a pinned image, so there is nothing to build"
         )
         return EXIT_OK
-    rendered = build.render(spec, Path(out))
+    try:
+        rendered = build.render(spec, Path(out))
+    except SpecError as error:
+        print(f"bluefire-lab range: {error}")
+        return EXIT_REFUSED
     for host, tag in rendered.tags.items():
         print(f"{host}: {tag}")
+    return EXIT_OK
+
+
+def lock(spec_path: Path) -> int:
+    """Write the lock of the published files the spec's hosts carry."""
+
+    try:
+        spec = load(spec_path)
+        written = atomics.lock(spec)
+    except (OSError, SpecError, ValueError) as error:
+        print(f"bluefire-lab range: {error}")
+        return EXIT_REFUSED
+    print(f"{written}: {len(written.read_text(encoding='utf-8').splitlines()) - 1} files")
     return EXIT_OK
 
 

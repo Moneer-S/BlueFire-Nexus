@@ -491,6 +491,11 @@ def script(control: tuple[str, str, int], probes: list[tuple[str, str, int]], na
         "if [ -e /proc/net/ipv6_route ]; then",
         "  while IFS= read -r line; do printf 'route6\\t%s\\n' \"$line\"; done < /proc/net/ipv6_route",
         "fi",
+        "for table in /proc/net/tcp /proc/net/tcp6; do",
+        '  if [ -e "$table" ]; then',
+        '    while IFS= read -r line; do printf \'tcp\\t%s\\n\' "$line"; done < "$table"',
+        "  fi",
+        "done",
         "printf 'forward\\t%s\\n' \"$(cat /proc/sys/net/ipv4/ip_forward)\"",
         "for socket in /var/run/docker.sock /run/docker.sock; do",
         '  if [ -e "$socket" ]; then printf \'socket\\t%s\\n\' "$socket"; fi',
@@ -512,6 +517,7 @@ def parse(output: str) -> dict:
         "name": {},
         "route": [],
         "route6": [],
+        "tcp": [],
         "forward": None,
         "socket": [],
         "resolv": [],
@@ -524,7 +530,7 @@ def parse(output: str) -> dict:
             found["probe"][fields[0]] = {"code": int(fields[1]), "text": fields[2]}
         elif kind == "name" and len(fields) == 3 and fields[1].isdigit():
             found["name"][fields[0]] = {"code": int(fields[1]), "addresses": fields[2].split()}
-        elif kind in ("route", "route6", "socket", "resolv"):
+        elif kind in ("route", "route6", "tcp", "socket", "resolv"):
             found[kind].append(rest)
         elif kind == "forward":
             found["forward"] = rest.strip()
@@ -560,6 +566,31 @@ def _route6_foreign(lines: list[str]) -> list[str]:
             continue
         foreign.append(line)
     return foreign
+
+
+def listening(lines: list[str]) -> list[str]:
+    """The TCP sockets in LISTEN state on an address other than loopback, as `address:port`, from the
+    lines of /proc/net/tcp and /proc/net/tcp6 (their header lines are skipped)."""
+
+    found = set()
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 4 or fields[3] != "0A" or ":" not in fields[1]:
+            continue
+        address_hex, port_hex = fields[1].split(":")
+        try:
+            raw = bytes.fromhex(address_hex)
+            port = int(port_hex, 16)
+        except ValueError:
+            continue
+        # The kernel prints each 32-bit word of the address in host order (little-endian here).
+        raw = b"".join(bytes(reversed(raw[i : i + 4])) for i in range(0, len(raw), 4))
+        address = ipaddress.ip_address(raw)
+        mapped = getattr(address, "ipv4_mapped", None)
+        if address.is_loopback or (mapped is not None and mapped.is_loopback):
+            continue
+        found.add(f"[{address}]:{port}" if address.version == 6 else f"{address}:{port}")
+    return sorted(found)
 
 
 def in_any(address: str, subnets: list[str]) -> bool:
@@ -629,6 +660,18 @@ def inside(
     checks.append(
         check("routes: IPv6", subject, command, foreign6, "loopback and link-local only", not foreign6)
     )
+    sockets = listening(found["tcp"])
+    ports = sorted({int(socket.rsplit(":", 1)[1]) for socket in sockets})
+    checks.append(
+        check(
+            "listening: only declared ports",
+            subject,
+            command,
+            sockets,
+            f"TCP ports {plan['listens']} (the spec's listens), on any address but loopback",
+            ports == sorted(plan["listens"]),
+        )
+    )
     checks.append(check("forwarding off", subject, command, found["forward"], "0", found["forward"] == "0"))
     checks.append(check("no Docker socket", subject, command, found["socket"], [], not found["socket"]))
     resolver = found["resolv"]
@@ -695,7 +738,13 @@ def plan_for(
         )
     for name in OUTSIDE_NAMES:
         names[name] = []
-    return {"control": control or ("control (none)", "", 0), "probes": probes, "subnets": own, "names": names}
+    return {
+        "control": control or ("control (none)", "", 0),
+        "probes": probes,
+        "subnets": own,
+        "names": names,
+        "listens": sorted(spec.hosts[host].listens),
+    }
 
 
 def script_for(plan: dict) -> str:
