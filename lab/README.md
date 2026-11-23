@@ -745,8 +745,14 @@ edits of the stock file and every plant check passed, and writes the build
 time, the plant checks, the
 ready delays, the marks, the delivery table and the seal to its summary. Each
 image has a cache scope of its own in the GitHub Actions cache, and BuildKit
-runs from its own image, pinned by digest. Not yet shown on a GitHub-hosted
-runner for the seven hosts: no run of that job is linked here yet. The same
+runs from its own image, pinned by digest.
+[Run 45281159443](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45281159443)
+shows it for the seven hosts on a GitHub-hosted runner with Docker Engine
+28.0.4 and AppArmor: the seal passed (201 checks before the start, 430 after
+it and 430 again at the end), the range was ready 35 s after its containers
+started, every plant check passed, and every line of the window was delivered
+from `web`, `db` and `build` (for example `auth.log` 43 of 43 and `snoopy.log`
+137 of 137 on `web`). The same
 defense on a smaller range, one manager and one agent host, was shown by
 [run 45262448946](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45262448946)
 on a GitHub-hosted runner with Docker Engine 28.0.4, from a build without a
@@ -838,12 +844,13 @@ command printed), `seal.json`, `seal.md`, `defense.md`, `plants.md`,
 build context) and `raw/hosts/<host>/`, which now also holds `inet`'s access
 log and uploads.
 
-Not yet shown: a run on a GitHub-hosted runner (the `range-one` job, no run
-linked yet); the services (sshd, sudo, nginx, php-fpm, MariaDB) under
-AppArmor's `docker-default` profile, which the Docker used so far did not
-apply (`manifest.json` records the daemon's security options under `docker`);
-how many of the image build's steps a warm GitHub Actions cache saves; the
-path of published tests through the range; ordinary activity; scoring.
+The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
+`docker-default` profile on the hosted runner: run 45281159443's
+`manifest.json` records the daemon's security options under `docker`, and
+every plant check that uses them passed there.
+
+Not yet shown: the path of published tests through the range; ordinary
+activity; scoring.
 
 ## Range one: the path
 
