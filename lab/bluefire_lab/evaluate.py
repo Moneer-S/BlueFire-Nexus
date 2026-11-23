@@ -499,6 +499,19 @@ def attribute(
         ),
         None,
     )
+    if context.get("container"):
+        # In a container the executor's log names the launcher by the id it has there, which is
+        # not the one the sensors on the host record. The launcher is then the one process of the
+        # attack step that the executor's PowerShell started as that shell with one command.
+        powershells = {event["ProcessId"] for event in members if event["Image"].endswith("/pwsh")}
+        shells = [
+            event
+            for event in members
+            if event["ParentProcessId"] in powershells
+            and event["Image"].endswith(shell)
+            and event["CommandLine"].startswith(f"{test.get('executor')} -c ")
+        ]
+        launcher = shells[0] if len(shells) == 1 and "launcher_pid" in test else None
     if launcher is None:
         return None, {}
     owned = {}
@@ -928,6 +941,31 @@ def rule_order(rule: dict) -> tuple[int, str]:
     return levels.index(rule["level"]) if rule["level"] in levels else len(levels), rule["title"]
 
 
+def leash_held(leash: dict) -> tuple[bool, str]:
+    """Whether a container target was held, and the sentence the control says about it."""
+
+    wrong = []
+    for moment in ("before", "after"):
+        found = leash.get(moment)
+        if not found or not found.get("probes"):
+            wrong.append(f"the check {moment} the tests did not run")
+            continue
+        wrong += [f"{moment} the tests: {reason}" for reason in found["refused"]]
+        wrong += [
+            f"{moment} the tests, {probe['probe']} {'succeeded' if probe['succeeded'] else 'failed'}"
+            for probe in found["probes"]
+            if not probe["held"]
+        ]
+    if leash.get("left"):
+        wrong.append(f"{len(leash['left'])} containers or networks of the run were left")
+    probes = len((leash.get("before") or {}).get("probes") or [])
+    return not wrong, "; ".join(wrong) or (
+        f"the container's settings gave it no way out, and all {probes} probes came out as they had to, "
+        "before the first test and after the last: from the container nothing outside it answered, and "
+        "the same probes from the host did. Nothing of the run was left"
+    )
+
+
 def check_controls(
     run: dict,
     tests: list[dict],
@@ -1004,6 +1042,11 @@ def check_controls(
             + "; ".join(f"{test['defense']['title']} ({test.get('name', '')})" for test in left),
         )
     )
+
+    if audit and "leash" in audit:
+        # Only for a run inside a container: its settings and what it could reach, read before
+        # the first test and again after the last, and that nothing of the run was left.
+        checks.append(control("leash", *leash_held(audit["leash"])))
 
     cleaned = [test["cleanup"]["answer"] for test in tests if "cleanup" in test]
     behind = [
@@ -1190,9 +1233,12 @@ def main(run_dir: Path, engine: Path) -> int:
     instrument_only = {event["event"] for event in audit_events if event["call"].get("key") == INSTRUMENT_KEY}
     records = [record for record in all_records if record["event"] not in instrument_only]
     rules = rule_index(run_dir / "rules" / "linux")
-    lab_rules = rule_index(run_dir / "lab-rules" / "linux", "lab")
+    container = bool(run["target"].get("container"))
+    # A run inside an image has no baseline and no runs with changed input arguments, which the
+    # lab's own rules are judged on: there they are not evaluated at all.
+    lab_rules = {} if container else rule_index(run_dir / "lab-rules" / "linux", "lab")
     matched, counts = run_engine(engine, run_dir, events, raw)
-    lab_matched, lab_counts = run_engine(engine, run_dir, events, raw, "lab-rules")
+    lab_matched, lab_counts = ({}, {}) if container else run_engine(engine, run_dir, events, raw, "lab-rules")
     for record, ids in lab_matched.items():
         matched[record].extend(ids)
     audit_matched, audit_counts = run_audit_engine(engine, run_dir, records)
@@ -1250,6 +1296,7 @@ def main(run_dir: Path, engine: Path) -> int:
         "audit_events": audit_events,
         "lookups": lookups(audit_events),
         "rule_set": rule_set,
+        "container": container,
     }
     tests, by_order = [], {}
     for test in run["tests"]:
@@ -1294,6 +1341,8 @@ def main(run_dir: Path, engine: Path) -> int:
     audit_control["instrument_probe_time"] = min(
         (start["UtcTime"] for start in starts if start["CommandLine"] == probe), default=None
     )
+    if container:
+        audit_control["leash"] = run.get("leash") or {}
     sensor_starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
     results = {
         "schema": "bluefire-lab/results/1",
@@ -1333,10 +1382,11 @@ def main(run_dir: Path, engine: Path) -> int:
                 **({"auditd": audit_counts["loaded"]} if audit_counts else {}),
             },
             "alert_levels": list(ALERT_LEVELS),
-            "lab": sum(lab_counts[category]["loaded"] or 0 for category in CATEGORIES),
+            "lab": sum(lab_counts.get(category, {}).get("loaded") or 0 for category in CATEGORIES),
         },
         "lab_rules": verdicts,
         "rule_set": rule_set,
+        "leash": run.get("leash"),
         "ordinary_activity": {
             key: ordinary[key] for key in ("baseline_events", "system_events", "pinned_rules", "parts")
         },

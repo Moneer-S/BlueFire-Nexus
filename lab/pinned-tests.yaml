@@ -41,7 +41,8 @@
 #            an inventory of the target first, and a test whose program is
 #            not there is left out, with the reason in the report. The lab
 #            itself needs systemctl and ss, and the job uses useradd and awk
-#            before the run, so those never leave a test out where it runs.
+#            before the run, so those never leave a test out where it runs. In
+#            a run inside a container only the image's own programs count.
 # In effect and defense commands, {home} and {account} stand for the home
 # folder and the name of the account the tests run as.
 #
@@ -231,6 +232,7 @@ tests:
   - technique: T1518.001
     guid: 23b91cd2-c99c-4002-9e41-317c63e024a2
     name: Security Software Discovery - ps (Linux)
+    needs: [ps]
     shows_technique: true
     output: "falcond|nessusd"
   # The listing stays in a file until the cleanup. The check passes only when the
@@ -238,6 +240,7 @@ tests:
   - technique: T1057
     guid: 4ff64f0b-aaf2-4866-b39d-38d9791407cc
     name: Process Discovery - ps
+    needs: [ps]
     shows_technique: true
     effect: grep -qE '^root +1 ' /tmp/loot.txt
   - technique: T1049
@@ -249,6 +252,7 @@ tests:
   - technique: T1083
     guid: 13c5e1ae-605b-46c4-a79f-db28c77ff24e
     name: Nix File and Directory Discovery 2
+    needs: [find]
     shows_technique: true
     output: "./.bashrc"
     leftover: test -e /tmp/T1083.txt
@@ -362,6 +366,7 @@ tests:
   - technique: T1037.004
     guid: 126f71af-e1c9-405c-94ef-26a47b16c102
     name: rc.local
+    needs: [sudo]
     shows_technique: true
     effect: test -x /etc/rc.local && grep -q aW1wb3J0IG9z /etc/rc.local
   - technique: T1546.005
@@ -440,6 +445,7 @@ tests:
   - technique: T1556.003
     guid: 4b9dde80-ae22-44b1-a82a-644bf009eb9c
     name: Malicious PAM rule
+    needs: [sudo]
     shows_technique: true
     effect: head -n 1 /etc/pam.d/su-l | grep -qF 'pam_succeed_if.so uid >= 0'
   - technique: T1078.003
@@ -463,6 +469,7 @@ tests:
   - technique: T1552.004
     guid: 46959285-906d-40fa-9437-5a439accd878
     name: Discover Private SSH Keys
+    needs: [find]
     shows_technique: true
     args: {search_path: "~"}
     prepare: >-
@@ -482,6 +489,7 @@ tests:
   - technique: T1552.004
     guid: 7c247dc7-5128-4643-907b-73a76d9135c3
     name: Copy Private SSH Keys with CP
+    needs: [find]
     shows_technique: true
     args: {search_path: "~"}
     prepare: >-
@@ -497,6 +505,7 @@ tests:
   - technique: T1552.004
     guid: 5e417277-0ae7-4ad5-a3e8-0fa27c122b29
     name: Find TLS private key files
+    needs: [find]
     shows_technique: true
     args: {file_path: "~"}
     prepare: echo 'bluefire-lab-planted-tls, not a key' > ~/bluefire-lab-server.key
@@ -512,6 +521,7 @@ tests:
   - technique: T1548.001
     guid: 759055b3-3885-4582-a8ec-c00c9d64dd79
     name: Set a SetUID flag on file
+    needs: [sudo]
     shows_technique: true
     effect: test -u /tmp/evilBinary
     variants:
@@ -520,6 +530,7 @@ tests:
   - technique: T1548.001
     guid: db55f666-7cba-46c6-9fe6-205a05c3242c
     name: Set a SetGID flag on file
+    needs: [sudo]
     shows_technique: true
     effect: test -g /tmp/evilBinary
     variants:
@@ -530,7 +541,7 @@ tests:
     guid: db53959c-207d-4000-9e7a-cd8eb417e072
     name: Make and modify capabilities of a binary
     shows_technique: true
-    needs: [make, gcc, setcap, getcap]
+    needs: [make, gcc, setcap, getcap, sudo]
     effect: getcap /tmp/cap | grep -q cap_setuid
   - technique: T1036.003
     guid: a315bfff-7a98-403b-b442-2ea1b255e556
@@ -607,6 +618,7 @@ tests:
   - technique: T1685.006
     guid: 989cc1b1-3642-4260-a809-54f9dd559683
     name: rm -rf
+    needs: [sudo]
     shows_technique: true
     effect: test ! -e /var/log/system.log
 
@@ -731,7 +743,7 @@ tests:
     guid: 42e3a5bd-1e45-427f-aa08-2a65fa29a820
     name: Linux - Stop service using systemctl
     shows_technique: true
-    needs: [systemctl]
+    needs: [systemctl, sudo]
     prepare: systemctl start cron
     effect: "! systemctl is-active --quiet cron"
   - technique: T1685
@@ -745,12 +757,13 @@ tests:
     guid: 53bcf8a0-1549-4b85-b919-010c56d724ff
     name: Install root CA on Debian/Ubuntu
     shows_technique: true
-    needs: [openssl, update-ca-certificates]
+    needs: [openssl, update-ca-certificates, sudo]
     effect: test -f /usr/local/share/ca-certificates/rootCA.crt && test -L /etc/ssl/certs/rootCA.pem
   # No cleanup upstream: the setting stays in /etc/sudoers until the runner is gone.
   - technique: T1548.003
     guid: a7b17659-dd5e-46f7-b7d1-e6792c91d0bc
     name: Unlimited sudo cache timeout
+    needs: [sudo]
     shows_technique: true
     effect: grep -q 'timestamp_timeout=-1' /etc/sudoers
 

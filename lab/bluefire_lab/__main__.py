@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import combine, compare, evaluate, report, run
+from . import combine, compare, evaluate, report, run, target
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -33,6 +33,17 @@ def main(arguments: list[str] | None = None) -> int:
     )
     running.add_argument("--account", default="bluefire-lab", help="unprivileged account the tests run as")
     running.add_argument("--out", type=Path, required=True, help="folder for run.json and sysmon.txt")
+
+    running.add_argument(
+        "--image",
+        help="run the tests inside a container the lab starts from this image, on a network with no way out",
+    )
+
+    leashing = commands.add_parser(
+        "leash", help="check that a container has no way out: its settings, and probes from its network"
+    )
+    leashing.add_argument("container", help="name of the container")
+    leashing.add_argument("--network", required=True, help="the one network the container may be on")
 
     evaluating = commands.add_parser("evaluate", help="compute results.json from the files of a run")
     evaluating.add_argument(
@@ -76,7 +87,21 @@ def main(arguments: list[str] | None = None) -> int:
             options.audit_rules,
             options.instrument,
             options.given_settings,
+            options.image,
         )
+    if options.command == "leash":
+        found = target.leash({"container": options.container, "network": options.network, "read_only": []})
+        for reason in found["refused"]:
+            print(f"refused: {reason}")
+        for probe in found["probes"]:
+            outcome = "succeeded" if probe["succeeded"] else "failed"
+            print(
+                f"{'ok     ' if probe['held'] else 'WRONG  '} {probe['probe']}: {outcome}, expected: {probe['expected']}"
+            )
+        print(
+            "the container is held" if found["held"] else "the container is NOT held: no test may run in it"
+        )
+        return 0 if found["held"] else 1
     if options.command == "evaluate":
         if (options.folder / "run.json").is_file():
             return evaluate.main(options.folder, options.engine)

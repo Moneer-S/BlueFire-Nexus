@@ -9,6 +9,7 @@ that caused them even when a process detaches from its parent.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 import platform
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import yaml
 
-from . import auditd, evaluate, sysmon
+from . import auditd, evaluate, sysmon, target
 
 # Run as root by sh: write the login uid, which makes the kernel start a new
 # audit session, print that session's id on a line of its own, then become the
@@ -61,11 +62,32 @@ def output_of(*command: str) -> str:
     return done.stdout.strip()
 
 
-def step(label: str, user: str, command: list[str], timeout: float = 60) -> dict:
-    """Run a command as a user in a new audit session and return what happened."""
+def step(
+    label: str, user: str, command: list[str], timeout: float = 60, container: str | None = None
+) -> dict:
+    """Run a command as a user in a new audit session and return what happened. With a
+    container, the command runs inside it: the same account there has the same id, and the
+    process writes its own login uid, which needs no privilege while none is set."""
 
     uid = str(pwd.getpwnam(user).pw_uid)
     wrapped = ["sudo", "sh", "-c", SESSION_SHIM, "sh", uid, "sudo", "-u", user, "-H", "--", *command]
+    if container:
+        home = "/root" if user == "root" else pwd.getpwnam(user).pw_dir
+        # PowerShell, which the executor runs in, needs no ICU data in this mode.
+        environment = ["--env", f"HOME={home}", "--env", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1"]
+        inside = ["sh", "-c", SESSION_SHIM, "sh", uid, *command]
+        wrapped = [
+            "sudo",
+            "docker",
+            "exec",
+            "--user",
+            user,
+            *environment,
+            "--workdir",
+            "/",
+            container,
+            *inside,
+        ]
     started = time.monotonic()
     try:
         done = subprocess.run(
@@ -121,7 +143,7 @@ def quoted(text: str) -> str:
     return "'" + str(text).replace("'", "''") + "'"
 
 
-def invoke(test: dict, executor: Path, atomics: Path, *flags: str) -> list[str]:
+def invoke(test: dict, executor: Path, atomics: Path, *flags: str, pwsh: str = "pwsh") -> list[str]:
     """The command that has Invoke-AtomicRedTeam act on one test."""
 
     script = (
@@ -129,7 +151,7 @@ def invoke(test: dict, executor: Path, atomics: Path, *flags: str) -> list[str]:
         f"Invoke-AtomicTest {test['technique']} -TestGuids {test['guid']} "
         f"-PathToAtomicsFolder {quoted(atomics)} " + " ".join(flags)
     )
-    return ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]
+    return [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]
 
 
 def upstream_definition(spec: dict, atomics: Path) -> dict:
@@ -165,14 +187,19 @@ def marker(run_id: str, order: int, edge: str) -> list[str]:
     return ["/usr/bin/true", "bluefire-lab-marker", run_id, str(order), edge]
 
 
-def read_execution_log(path: str) -> dict:
-    """What the executor wrote about the test it ran: the process id and exit code."""
+def read_execution_log(path: str, container: str | None = None) -> dict:
+    """What the executor wrote about the test it ran: the process id and exit code. In a
+    container the id is the one the process has there, not the one the sensors on the host
+    record."""
 
-    try:
-        with open(path, encoding="utf-8-sig", newline="") as handle:
-            rows = list(csv.DictReader(handle))
-    except OSError:
-        return {}
+    if container:
+        text = target.docker("exec", "--user", "root", container, "cat", path).stdout
+    else:
+        try:
+            text = Path(path).read_text(encoding="utf-8-sig")
+        except OSError:
+            return {}
+    rows = list(csv.DictReader(io.StringIO(text.lstrip("\ufeff"), newline="")))
     if not rows:
         return {}
     last = rows[-1]
@@ -363,10 +390,15 @@ def run_test(item: dict, context: dict) -> dict:
     if "compared_with" in item:
         record["compared_with"] = item["compared_with"]
 
+    container = context.get("container")
+
     def do(label: str, command: list[str], as_user: str = user, timeout: float = 60) -> dict:
-        result = step(label, as_user, command, timeout)
+        result = step(label, as_user, command, timeout, container)
         record["steps"].append(result)
         return result
+
+    def atomic(*flags: str) -> list[str]:
+        return invoke(spec, executor, atomics, *flags, pwsh=context.get("pwsh", "pwsh"))
 
     arguments = []
     if spec.get("args"):
@@ -377,11 +409,12 @@ def run_test(item: dict, context: dict) -> dict:
     if "prepare" in spec and do("prepare", ["sh", "-c", spec["prepare"]])["exit_status"] != 0:
         record["prerequisites"] = "not met"
     elif upstream.get("dependencies"):
-        check = invoke(spec, executor, atomics, "-CheckPrereqs", *arguments)
-        get = invoke(spec, executor, atomics, "-GetPrereqs", *arguments)
+        check = atomic("-CheckPrereqs", *arguments)
+        get = atomic("-GetPrereqs", *arguments)
         met = "Prerequisites met" in do("prerequisites", check, timeout=300)["output"]
         # The test's own account fetches first, so that what it creates is its own. Root is next.
-        for fetcher in dict.fromkeys((user, "root")):
+        # An image runs as it is, on a network with no way out: what it lacks is not fetched.
+        for fetcher in () if container else dict.fromkeys((user, "root")):
             if not met:
                 do("get-prerequisites", get, fetcher, 900)
                 met = "Prerequisites met" in do("prerequisites", check, timeout=300)["output"]
@@ -399,22 +432,15 @@ def run_test(item: dict, context: dict) -> dict:
             # An effect that is there before the test ran is not the test's doing.
             do("effect-before", ["sh", "-c", record["effect"]], "root")
         do("marker-start", marker(run_id, order, "start"), account)
-        attack = invoke(
-            spec,
-            executor,
-            atomics,
-            f"-TimeoutSeconds {limit}",
-            f"-ExecutionLogPath {quoted(log)}",
-            *arguments,
-        )
+        attack = atomic(f"-TimeoutSeconds {limit}", f"-ExecutionLogPath {quoted(log)}", *arguments)
         do("attack", attack, timeout=limit + 60)
         time.sleep(float(spec.get("dwell", 0)))
         do("marker-end", marker(run_id, order, "end"), account)
-        record.update(read_execution_log(log))
+        record.update(read_execution_log(log, container))
         if "effect" in spec:
             # As root, so that neither the account's rights nor a hardening change decide the check.
             do("effect", ["sh", "-c", record["effect"]], "root")
-        do("cleanup", invoke(spec, executor, atomics, "-Cleanup", *arguments), timeout=limit + 60)
+        do("cleanup", atomic("-Cleanup", *arguments), timeout=limit + 60)
         if "leftover" in record:
             do("leftover", ["sh", "-c", record["leftover"]], "root")
         record["cleanup"] = evaluate.cleanup(record)["answer"]
@@ -558,17 +584,65 @@ def apply_settings(settings: dict, out: Path, installed: bool = False) -> dict:
     return {"to": settings["name"], "time": now(), "audit_rules_loaded": len(listing.splitlines())}
 
 
-def facts(context: dict) -> tuple[dict, dict]:
-    release = dict(
-        line.rstrip("\n").split("=", 1) for line in open("/etc/os-release", encoding="utf-8") if "=" in line
+def container_inventory(box: dict, programs: set[str]) -> dict:
+    """What a container target is: the accounts that can log in, the programs running in it,
+    its listening addresses, read with the host's tool in its network namespace, and where
+    each program the tests need is."""
+
+    def inside(*command: str) -> str:
+        return target.docker("exec", "--user", "root", box["container"], *command).stdout
+
+    state = target.inspect(box)[0].get("State") or {}
+    running = target.docker("top", box["container"], "-eo", "comm").stdout.splitlines()[1:]
+    sockets = output_of(
+        "sudo", "nsenter", "--target", str(state.get("Pid", "")), "--net", "ss", "-H", "-tuln"
     )
+    return {
+        "accounts": login_accounts(inside("cat", "/etc/passwd"), inside("cat", "/etc/shells")),
+        "services": sorted({line.strip() for line in running if line.strip()}),
+        "listening": listening(sockets),
+        "programs": {name: inside("sh", "-c", f"command -v {name}").strip() for name in sorted(programs)},
+    }
+
+
+def start_container(image: str, context: dict) -> dict:
+    """Start the image as the target, with the executor and the tests read-only in it, and give
+    it the test account under the id the account has on the host, so that the sensors on the
+    host name it alike. Stops, with nothing left, when the image cannot take that."""
+
+    powershell = Path(shutil.which("pwsh") or "pwsh").resolve()
+    modules = Path("/usr/local/share/powershell/Modules")
+    folders = [str(context["executor"]), str(context["atomics"]), str(powershell.parent)]
+    box = target.start(image, context["id"], folders + ([str(modules)] if modules.is_dir() else []))
+    target.close_host(box)
+    uid = str(pwd.getpwnam(context["account"]).pw_uid)
+    add = ("useradd", "--create-home", "--uid", uid, "--shell", "/bin/bash", context["account"])
+    added = target.docker("exec", "--user", "root", box["container"], *add)
+    if added.returncode != 0:
+        target.close_host(box, on=False)
+        target.remove()
+        raise SystemExit(
+            f"the image cannot take the test account: {(added.stdout + added.stderr).strip()[-300:]}"
+        )
+    context.update(container=box["container"], pwsh=str(powershell))
+    return box
+
+
+def facts(context: dict, box: dict | None = None) -> tuple[dict, dict]:
+    text = Path("/etc/os-release").read_text(encoding="utf-8")
+    if box:
+        text = target.docker("exec", box["container"], "cat", "/etc/os-release").stdout
+    release = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
     image = " ".join(os.environ.get(name, "") for name in ("ImageOS", "ImageVersion")).strip()
-    target = {
+    where = {
         "os": release.get("PRETTY_NAME", "").strip('"'),
         "kernel": platform.release(),
         "architecture": platform.machine(),
         "runner_image": image or None,
     }
+    if box:
+        described = target.inspect(box)[0]
+        where.update(container=box["container"], image=box["image"], image_id=described.get("Image", ""))
     tools = {
         "atomic-red-team": output_of("git", "-C", str(context["atomics"]), "rev-parse", "HEAD"),
         "invoke-atomicredteam": output_of("git", "-C", str(context["executor"]), "rev-parse", "HEAD"),
@@ -586,7 +660,7 @@ def facts(context: dict) -> tuple[dict, dict]:
         # Where the lab's own rules come from: this repository at the commit that ran.
         "lab": f"{os.environ.get('GITHUB_REPOSITORY', '')}@{os.environ.get('GITHUB_SHA', '')}",
     }
-    return target, tools
+    return where, tools
 
 
 def main(
@@ -599,6 +673,7 @@ def main(
     audit_rules: Path,
     instrument: Path,
     given: Path | None = None,
+    image: str | None = None,
 ) -> int:
     document = yaml.safe_load(tests.read_text(encoding="utf-8"))
     out.mkdir(parents=True, exist_ok=True)
@@ -616,16 +691,27 @@ def main(
     for item in plan(document):
         if item["role"] != "baseline":
             upstream_definition(item["spec"], context["atomics"])
-    target, tools = facts(context)
+    box = None
+    if image:
+        # An image runs the tests once, as it is: the baseline, the hardening changes and the runs
+        # with changed input arguments belong to a run on the runner itself.
+        document = {key: value for key, value in document.items() if key != "baseline"}
+        document["tests"] = [
+            {key: value for key, value in spec.items() if key not in ("defenses", "variants")}
+            for spec in document["tests"]
+        ]
+        box = start_container(image, context)
+    where, tools = facts(context, box)
     # What the target has decides which tests can run on it.
-    found = inventory({program for spec in document["tests"] for program in spec.get("needs", [])})
+    programs = {program for spec in document["tests"] for program in spec.get("needs", [])}
+    found = container_inventory(box, programs) if box else inventory(programs)
     sequence, left_out = runs_for(document, found)
     record: dict = {
         "schema": "bluefire-lab/run/1",
         "id": context["id"],
         "started": now(),
         "account": account,
-        "target": target,
+        "target": where,
         "tools": tools,
         "inventory": found,
         "sensor": {"name": "Sysmon for Linux", "configuration": "sensor-config.xml"},
@@ -662,8 +748,26 @@ def main(
         record["sensor"]["ready_after_seconds"] = ready
         record["sensor"]["process_id"] = context.get("sensor_pid")
         record["probes"] = context["probes"]
+        if box:
+            # The container's settings and what it can reach, before the first test.
+            record["leash"] = {"before": target.leash(box)}
+            for made in record["leash"]["before"]["probes"]:
+                print(
+                    f"    {'ok     ' if made['held'] else 'WRONG  '} {made['probe']}: {made['expected']}",
+                    flush=True,
+                )
         if ready is None:
             record["aborted"] = "the sensor did not report a probe command within 30 seconds"
+            print(record["aborted"], flush=True)
+        elif box and not record["leash"]["before"]["held"]:
+            wrong = record["leash"]["before"]["refused"] + [
+                f"{made['probe']} {'succeeded' if made['succeeded'] else 'failed'}"
+                for made in record["leash"]["before"]["probes"]
+                if not made["held"]
+            ]
+            record["aborted"] = "the container is not held, so no test ran in it: " + "; ".join(
+                wrong or ["no probe ran"]
+            )
             print(record["aborted"], flush=True)
         else:
             print(f"the sensor reported a probe command after {ready} s", flush=True)
@@ -701,6 +805,11 @@ def main(
                     flush=True,
                 )
     finally:
+        if box:
+            # The same check again while the container still exists, then everything of the run goes.
+            record.setdefault("leash", {})["after"] = target.leash(box)
+            target.close_host(box, on=False)
+            record["leash"]["left"] = target.remove()
         pid = context.get("sensor_pid") or sensor_pid()
         subprocess.run(["sudo", "systemctl", "stop", "sysmon"], check=False)
         (out / "sysmon.txt").write_bytes(journal(since, pid))

@@ -39,6 +39,12 @@ on:
           owner/repository@commit:path/to/file.rules (the full 40-character commit)
         required: false
         default: ""
+      image:
+        description: >-
+          A public container image to run the tests inside, in place of the runner itself:
+          name@sha256:digest
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -237,6 +243,20 @@ jobs:
           if [ -n "$AUDIT_RULES" ]; then fetch_file "$AUDIT_RULES" audit.rules; fi
           ls -l "$RUNNER_TEMP/given-settings"
 
+      # Only when the run was started by hand with the input "image". The image is pulled now,
+      # by digest: once the container exists it has no way to fetch anything.
+      - name: Pull the image given as an input
+        if: ${{ inputs.image != '' }}
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          if ! printf '%s\n' "$IMAGE" | grep -Eqx '[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}'; then
+            echo "the input image is name@sha256:digest, with the 64-character digest: $IMAGE"
+            exit 1
+          fi
+          docker pull --quiet "$IMAGE"
+          docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$IMAGE"
+
       - name: Create the test account and reject its outbound traffic
         run: |
           sudo useradd --create-home --shell /bin/bash bluefire-lab
@@ -288,10 +308,13 @@ jobs:
           echo "stopped:" $timers
 
       - name: Run the tests
+        env:
+          IMAGE: ${{ inputs.image }}
         run: |
           # So that what the run writes while the tests run is not theirs to change.
           umask 022
           "$RUNNER_TEMP/venv/bin/bluefire-lab" run \
+            ${IMAGE:+--image "$IMAGE"} \
             --tests lab/pinned-tests.yaml \
             --atomics /opt/bluefire-lab/atomic-red-team/atomics \
             --executor /opt/bluefire-lab/invoke-atomicredteam \
@@ -335,6 +358,40 @@ jobs:
           retention-days: 5
           if-no-files-found: error
 
+  # Only for a run with the input "image": shows that the check a container target must pass can
+  # fail. A container of the same image, with nothing started in it by the lab and no test in the
+  # job, is put on a network that has a route out, and the check must refuse it.
+  leash:
+    name: the check refuses a container with a route out
+    if: ${{ inputs.image != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the lab
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
+
+      - name: A container on a network with a route out is refused
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          docker network create --label bluefire-lab=1 bluefire-lab-route-out
+          docker run --detach --name bluefire-lab-route-out --label bluefire-lab=1 --network bluefire-lab-route-out "$IMAGE"
+          if "$RUNNER_TEMP/venv/bin/bluefire-lab" leash bluefire-lab-route-out --network bluefire-lab-route-out | tee "$RUNNER_TEMP/leash.txt"; then
+            echo "the check passed a container that has a route out"
+            exit 1
+          fi
+          grep -q 'refused: the network bluefire-lab-route-out is not internal' "$RUNNER_TEMP/leash.txt"
+          grep -q 'WRONG   from the container to an outside address over IPv4: succeeded' "$RUNNER_TEMP/leash.txt"
+          docker rm --force bluefire-lab-route-out
+          docker network rm bluefire-lab-route-out
+
   # Apart from the attack tests: this job only reads what the three runners uploaded. It gives
   # each test the answer all three runners gave, or marks the answer unstable.
   answers:
@@ -369,7 +426,7 @@ jobs:
       - name: Write the report
         if: always()
         env:
-          GIVEN: ${{ inputs.rules }}${{ inputs.sysmon_config }}${{ inputs.audit_rules }}
+          GIVEN: ${{ inputs.rules }}${{ inputs.sysmon_config }}${{ inputs.audit_rules }}${{ inputs.image }}
         run: |
           "$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUNNER_TEMP/lab-run"
           cat "$RUNNER_TEMP/lab-run/summary.md" >> "$GITHUB_STEP_SUMMARY"

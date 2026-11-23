@@ -463,6 +463,50 @@ run under other settings does not use it.
 Not yet shown on `main`: the first run with these inputs is the one this
 section will link.
 
+### Your image, as the target
+
+The input `image` names a public container image by digest,
+`name@sha256:digest`. The tests then run inside a container of that image, a
+throwaway copy of a real build, and not on the runner itself.
+
+```bash
+gh workflow run lab.yml -f image=nginx@sha256:7fad6c0dff97965adbddf28027d934b111fc0221a554315dc274712f3fba24d3
+```
+
+The lab starts the container itself, with the image's own command, and removes
+it at the end. The sensors stay on the runner, which hosts the container and is
+not a target. What the run does differently:
+
+- **No way out.** The container sits on one internal network. The lab reads
+  its settings back from the runtime and refuses a privileged container, an
+  added capability, a device, a namespace or a writable folder of the host, the
+  Docker socket, a published port, a restart policy and any other network.
+  Before the first test and after the last it probes from inside the
+  container's network namespace, by TCP, with the runner's own tools: an
+  outside address over IPv4 and IPv6, the cloud metadata address, a listener
+  the lab opens on the runner for the check, and a lookup of an outside name
+  must all fail, and the same probes from the runner must succeed, or the
+  check shows nothing. A control, `leash`, fails the run otherwise, and no
+  test runs in a container that is not held. A second job puts a container of
+  the same image on a network with a route out, with no test in that job, and
+  the check must refuse it.
+- **The image runs as it is.** The executor and the test definitions are
+  read-only folders in the container. The lab adds the test account, and
+  nothing else. A test whose program the image lacks is left out, and a
+  prerequisite the image lacks is not fetched: the test is then not
+  attempted. The image needs `sh`, `useradd` and the C library PowerShell is
+  built for (glibc).
+- **Each test runs once.** The baseline of ordinary activity, the hardening
+  changes and the runs with changed input arguments belong to a run on the
+  runner, so the lab's own rules, which are judged on those, are not
+  evaluated in a run inside an image.
+- **What the sensors see.** Sysmon and auditd on the runner record the
+  container's processes. auditd's file watches name paths of the runner and
+  do not see files inside the container.
+
+Not yet shown on `main`: the first run with this input is the one this section
+will link.
+
 ## How a run works
 
 The `lab` workflow runs the whole list on three hosted runners at the same time,
