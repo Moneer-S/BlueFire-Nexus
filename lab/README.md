@@ -381,6 +381,46 @@ same process, is the test's. And auditd rotates its log at 8 MB by default,
 which it did during the first run with this change: the lab now sets it not to
 rotate, and the loss control would fail a run in which it did; none has since.
 
+## Bring your own
+
+A run started by hand takes inputs that put your own material in place of the
+lab's, with no change to the code. Each is one input of the `lab` workflow, in
+the Actions tab of this repository or of a fork, or with `gh workflow run`.
+
+### Your rule set, as a column of its own
+
+The input `rules` names a public GitHub repository of Sigma rules at a commit,
+and optionally a folder in it: `owner/repository@commit`, with the full
+40-character commit, or `owner/repository@commit:folder`.
+
+```bash
+gh workflow run lab.yml -f rules=Karib0u/rustinel-rules@267934601f97943e6c4774fb6c55527de92955d4:rules/sigma/linux
+```
+
+The run fetches the YAML files under that folder and evaluates them apart from
+the pinned rules. The report and the run page get one more column, "With the
+rules of owner/repository alone", and a section that says what was done with
+the set:
+
+- A rule is evaluated when it is one Sigma rule with an id, for the product
+  `linux`, and for a kind of event the lab's sensors record: the categories
+  `process_creation`, `file_event` and `network_connection`, or the service
+  `auditd`. Every other file is counted as left out, with the reason.
+- The rule engine may be unable to convert some rules. The section gives, for
+  each kind of event, how many of the rules it loaded.
+- An alert in the column is a match of a rule of level high or critical, as
+  everywhere. A rule that gives no level is said to give none, and a match of
+  it counts as an alert in this column.
+- A match on nothing but the launcher line is not counted, as for the pinned
+  rules. The set changes no other answer, and what the engine made of it does
+  not fail the run.
+- The rules travel in the run's artifact, with the licence files found at the
+  top of their repository. Check that the licence allows that before you run
+  someone else's rules here: the artifact of a public repository is public.
+
+Not yet shown on `main`: the first run with this input is the one this section
+will link.
+
 ## How a run works
 
 The `lab` workflow runs the whole list on three hosted runners at the same time,

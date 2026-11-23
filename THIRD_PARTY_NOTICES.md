@@ -22,6 +22,14 @@ their license. Tetragon was used only in the earlier sensor trials,
 | [jq](https://github.com/jqlang/jq) | release `jq-1.8.2`, tarball pinned by digest | MIT, with other licences for parts (see its `COPYING`) | Built from source on the lab target as ordinary activity |
 | Ubuntu packages [vsftpd](https://packages.ubuntu.com/noble/vsftpd), [sysstat](https://packages.ubuntu.com/noble/sysstat), [redis-server](https://packages.ubuntu.com/noble/redis-server) | the versions Ubuntu 24.04's archive serves on the day of the run | GPL-2.0, GPL-2.0-or-later, BSD-3-Clause | Installed and removed on the lab target as ordinary activity |
 
+A run started by hand can be given another Sigma rule set, sensor settings or an image as
+inputs. What such a run fetches is named in its report and travels in its artifact with the
+licence files found beside it. The runs this repository's documents link used these:
+
+| Project | Pin | Licence | Use |
+|---|---|---|---|
+| [rustinel-rules](https://github.com/Karib0u/rustinel-rules) | commit `26793460`, folder `rules/sigma/linux` | its `LICENSE`, headed "Detection Rule License (DRL) 1.1": use and redistribution with the notice and each rule's author kept | Rule set evaluated as a column of its own |
+
 The lab's Python package depends on [PyYAML](https://github.com/yaml/pyyaml) (MIT), installed
 from PyPI. Its tests and lint use [pytest](https://github.com/pytest-dev/pytest) (MIT) and
 [Ruff](https://github.com/astral-sh/ruff) (MIT), installed the same way in CI.

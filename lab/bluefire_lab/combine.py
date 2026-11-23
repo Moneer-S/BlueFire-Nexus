@@ -21,13 +21,18 @@ from .compare import answers, identity
 from .evaluate import summarize
 
 ANSWERS = ("execution", "visibility", "with the lab's rules")
+# A fourth answer, when the run evaluated a rule set given as an input.
+OTHER = "with the other rule set"
 UNSTABLE = "unstable"
 
 
 def given(test: dict) -> dict[str, str]:
     """The answers one runner gave for a run of a test, by name."""
 
-    return dict(zip(ANSWERS, answers(test), strict=True))
+    said = dict(zip(ANSWERS, answers(test), strict=True))
+    if "other_rules" in test["visibility"]:
+        said[OTHER] = test["visibility"]["other_rules"]["answer"]
+    return said
 
 
 def by_identity(results: dict) -> dict[tuple, dict]:
@@ -83,6 +88,8 @@ def combine(runs: list[dict]) -> dict:
                 test["execution"].update(answer=UNSTABLE, basis=basis)
             elif name == "visibility":
                 test["visibility"].update(answer=UNSTABLE, basis=basis)
+            elif name == OTHER:
+                test["visibility"]["other_rules"]["answer"] = UNSTABLE
             else:
                 test["visibility"].setdefault("with_lab_rules", {"rules": []})["answer"] = UNSTABLE
 

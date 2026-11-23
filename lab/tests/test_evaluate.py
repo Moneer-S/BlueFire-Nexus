@@ -7,6 +7,8 @@ parent, and a detached child has parent 1. They are constructed, not recorded.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from bluefire_lab import evaluate, sysmon
 
 ACCOUNT = "bluefire-lab"
@@ -28,6 +30,9 @@ RULES = {
         ("lab-rule", "high", "lab"),
     )
 }
+# Rules of a rule set given as an input, under names of their own. One gives no level.
+RULES["other:their-rule"] = {**RULES["high-rule"], "id": "their-rule", "level": "no level", "origin": "other"}
+RULES["other:high-rule"] = {**RULES["high-rule"], "level": "low", "origin": "other"}
 
 
 def start(record, second, pid, parent_pid, command, session, user=ACCOUNT, parent_known=False) -> dict:
@@ -107,7 +112,7 @@ def telemetry() -> list[dict]:
     ]
 
 
-def see(test, events, matched=None, system=(), audit=()):
+def see(test, events, matched=None, system=(), audit=(), rule_set=None):
     starts = [event for event in events if event["EventID"] == sysmon.PROCESS_START]
     edges = [evaluate.marker_time(starts, "r1", test["order"], edge) for edge in ("start", "end")]
     context = {
@@ -117,6 +122,7 @@ def see(test, events, matched=None, system=(), audit=()):
         "system_commands": set(system),
         "audit_events": list(audit),
         "lookups": evaluate.lookups(list(audit)),
+        "rule_set": rule_set,
     }
     return evaluate.visibility(test, events, starts, matched or {}, RULES, context)
 
@@ -833,3 +839,75 @@ def test_the_control_says_when_the_harmless_command_did_not_take_effect() -> Non
     assert [check["detail"] for check in checks if check["name"] == "control"] == [
         "the harmless command did not take effect: the effect check exited with status 1"
     ]
+
+
+def test_another_rule_set_has_a_column_of_its_own_and_changes_no_other_answer() -> None:
+    given = {"source": "someone/rules@" + "a" * 40}
+    # Their rule without a level matched the test's "id"; their copy of a pinned rule, which
+    # they give the level low, matched it too, and only their rule matched the launcher.
+    matched = {"7": ["other:their-rule", "other:high-rule"], "5": ["other:their-rule"]}
+
+    seen, _ = see(a_test(), telemetry(), matched, rule_set=given)
+    without, _ = see(a_test(), telemetry(), matched)
+    quiet, _ = see(
+        a_test(), telemetry(), {"7": ["other:high-rule"], "5": ["other:their-rule"]}, rule_set=given
+    )
+
+    assert seen["answer"] == "telemetry only" and seen["rules"] == [] and seen["launcher_only_rules"] == []
+    assert seen["other_rules"]["answer"] == "alert"  # a match of a rule without a level counts as an alert
+    assert [(rule["id"], rule["level"], rule["alert"]) for rule in seen["other_rules"]["rules"]] == [
+        ("high-rule", "low", False),
+        ("their-rule", "no level", True),
+    ]
+    assert "other_rules" not in without
+    assert quiet["other_rules"]["answer"] == "telemetry only"
+    assert [rule["id"] for rule in quiet["other_rules"]["launcher_only_rules"]] == ["their-rule"]
+
+
+def test_a_rule_set_is_sorted_by_the_kind_of_event_and_what_is_left_out_says_why(tmp_path: Path) -> None:
+    files = tmp_path / "rule-set" / "files"
+    (files / "linux").mkdir(parents=True)
+    (tmp_path / "rule-set" / "SOURCE").write_text("someone/rules@" + "a" * 40 + ":rules\n")
+    (tmp_path / "rule-set" / "LICENSE").write_text("a licence\n")
+
+    def rule(name: str, logsource: str, extra: str = "id: 1\n") -> None:
+        (files / "linux" / name).write_text(f"title: {name}\n{extra}logsource:\n{logsource}detection: {{}}\n")
+
+    rule("process.yml", "  product: linux\n  category: process_creation\n", "id: 1\nlevel: high\n")
+    rule("audit.yaml", "  product: Linux\n  service: auditd\n", "id: 2\n")  # no level
+    rule("windows.yml", "  product: windows\n  category: process_creation\n")
+    rule("syslog.yml", "  product: linux\n  service: syslog\n")
+    rule("no-id.yml", "  product: linux\n  category: file_event\n", "")
+    (files / "collection.yml").write_text("action: global\n---\ntitle: a\n---\ntitle: b\n")
+    (files / "broken.yml").write_text("title: [unclosed\n")
+    (files / "README.md").write_text("not a rule\n")
+
+    found = evaluate.sort_rule_set(tmp_path)
+
+    assert (found["files"], found["sorted"], found["no_level"]) == (7, 2, 1)
+    assert found["license_files"] == ["LICENSE"]
+    assert sorted(found["paths"].items()) == [
+        ("linux/auditd/0001.yml", "linux/audit.yaml"),
+        ("linux/process_creation/0002.yml", "linux/process.yml"),
+    ]
+    assert (tmp_path / "engine" / "rule-set" / "linux" / "auditd" / "0001.yml").is_file()
+    assert {item["reason"]: item["rules"] for item in found["left_out"]} == {
+        "for the product windows": 1,
+        "for a Linux log source the lab's sensors do not provide: syslog": 1,
+        "no id, by which the rule engine names a rule that matched": 1,
+        "not one Sigma rule with a log source and a detection": 1,
+        "not readable as YAML": 1,
+    }
+    index = evaluate.rule_index(tmp_path / "engine" / "rule-set" / "linux", "other")
+    assert (index["other:1"]["level"], index["other:2"]["level"]) == ("high", evaluate.NO_LEVEL)
+    assert index["other:2"]["file"] == "linux/auditd/0001.yml"
+
+
+def test_what_the_engine_made_of_another_rule_set_does_not_fail_the_run() -> None:
+    theirs = {"category": "process_creation", "origin": "other", "kind": "process start",
+              "rules": 30, "loaded": 22, "given": 900, "read": 900}  # fmt: skip
+
+    assert failed_controls([CAUGHT, measured("control"), CAUGHT], engine=[*ENGINE, theirs]) == []
+    assert failed_controls(
+        [CAUGHT, measured("control"), CAUGHT], engine=[{**theirs, "origin": "pinned"}]
+    ) == ["engine"]
