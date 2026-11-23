@@ -54,6 +54,9 @@ LOG_FORMATS = ("syslog",)
 SERVICES = {"sshd": "openssh-server"}
 # Agents connect to the manager on 1514 and enroll on 1515.
 MANAGER_PORTS = (1514, 1515)
+# The logs every agent must collect, because the engine reads its own lines in them: the ready and
+# end nonces and the syslog marks go to auth.log, the program start mark to snoopy.log.
+ENGINE_LOGS = ("/var/log/auth.log", "/var/log/snoopy.log")
 
 
 class SpecError(ValueError):
@@ -90,6 +93,9 @@ class Wazuh:
     manager_image: str
     agent_version: str
     agent_sha512: str
+    # The level from which a Wazuh alert counts as an alert when a step is scored. It is not the
+    # manager's log_alert_level: the manager keeps the stock 3, so that matches below this level
+    # are still written to alerts.json and can be shown for review. It changes no image.
     alert_level: int
     off: tuple[str, ...]
 
@@ -279,7 +285,7 @@ def parse(data: object, text: str = "") -> Spec:
     for network in networks:
         if not any(network in host.networks for host in hosts.values()):
             raise SpecError(f"network {network} has no host")
-    _defense_hosts(hosts, wazuh)
+    _defense_hosts(hosts, wazuh, watch)
     spec = Spec(name, 1, prefix, min_engine, tuple(networks), hosts, text, base, wazuh, watch)
     for host in hosts:
         if not any(probe.source == host and probe.must == "connect" for probe in matrix(spec)):
@@ -375,7 +381,10 @@ def _defense(value: object) -> tuple[Wazuh, Watch]:
         )
     level = wazuh["alert_level"]
     if not isinstance(level, int) or isinstance(level, bool) or not 0 < level <= 16:
-        raise SpecError("defense.wazuh.alert_level must be a Wazuh rule level from 1 to 16")
+        raise SpecError(
+            "defense.wazuh.alert_level must be a Wazuh rule level from 1 to 16: the level from which an "
+            "alert counts when a step is scored"
+        )
     off = wazuh.get("off", [])
     if not isinstance(off, list) or any(item not in OFF for item in off) or len(set(off)) != len(off):
         raise SpecError(f"defense.wazuh.off may list only these agent features, once each: {', '.join(OFF)}")
@@ -383,7 +392,7 @@ def _defense(value: object) -> tuple[Wazuh, Watch]:
     return Wazuh(manager_image, version, deb["sha512"], level, tuple(off)), watch
 
 
-def _defense_hosts(hosts: dict[str, Host], wazuh: Wazuh | None) -> None:
+def _defense_hosts(hosts: dict[str, Host], wazuh: Wazuh | None, watch: Watch) -> None:
     managers = [host for host in hosts.values() if host.kind == "defense"]
     if wazuh is None:
         if managers:
@@ -406,6 +415,14 @@ def _defense_hosts(hosts: dict[str, Host], wazuh: Wazuh | None) -> None:
     for host in hosts.values():
         if host.agent and not set(host.networks) & set(manager.networks):
             raise SpecError(f"host {host.name} has an agent and shares no network with the manager")
+        collected = {log.path for log in watch.merged(host.watch).logs}
+        missing = [path for path in ENGINE_LOGS if path not in collected]
+        if host.agent and missing:
+            raise SpecError(
+                f"the agent on host {host.name} does not collect {', '.join(missing)}: add each to "
+                "defense.watch.logs (format syslog), since the engine's ready and end nonces and its "
+                "marks are lines in auth.log and snoopy.log, and without them the range is never ready"
+            )
 
 
 def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh: Wazuh | None) -> Host:

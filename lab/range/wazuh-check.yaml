@@ -21,9 +21,12 @@ defense:
     agent_deb:
       version: 4.14.10-1
       sha512: 5ee41846e81b2f5f5017bb0f968ac039443f09a400e5feb8121a4e52db6bb8d1c91683667b03a657a0236c858bd1f159026b493ace504ec8f92e491e6c8ae04d  # pragma: allowlist secret
+    # The level from which an alert counts when a step is scored. The manager keeps
+    # its stock log_alert_level 3, so alerts.json also holds the matches below it.
     alert_level: 12
     off: [command_monitoring, sca, rootcheck, syscollector]
   watch:
+    # auth.log and snoopy.log are required: the engine's nonces and marks are lines in them.
     logs:
       - {path: /var/log/auth.log, format: syslog}
       - {path: /var/log/snoopy.log, format: syslog}

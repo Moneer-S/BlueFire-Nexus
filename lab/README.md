@@ -660,7 +660,9 @@ bluefire-lab range run lab/range/wazuh-check.yaml --out <new folder>
   text it expects in the stock file. `manifest.json` holds, for the manager and
   every agent, the diff against the stock file and each change with its label:
   - *lab addition*: the agent reads `/var/log/auth.log` and
-    `/var/log/snoopy.log` (the stock file reads `/var/log/dpkg.log` already),
+    `/var/log/snoopy.log` (the stock file reads `/var/log/dpkg.log` already;
+    the loader refuses a spec whose agent does not collect auth.log and
+    snoopy.log, since the engine's nonces and marks are lines in them),
     and watches `/etc`, `/home`, `/root`, `/tmp` and `/var/tmp` in real time
     with inotify; the manager writes every event it receives to
     `archives.json`, whether or not a rule matched; the snoopy decoder.
@@ -677,6 +679,11 @@ bluefire-lab range run lab/range/wazuh-check.yaml --out <new folder>
     port), waits 1 s after enrolling instead of 20, and does not restart itself
     when the manager first sends it the shared configuration; the manager reads
     new agent keys every second.
+- **Alert level.** `defense.wazuh.alert_level` (12 in the check range) is the
+  level from which a Wazuh alert will count as an alert when a step is scored,
+  and `manifest.json` records it. It is not the manager's `log_alert_level`,
+  which keeps its stock value 3, so that `alerts.json` also holds the matches
+  below it for review. It changes no image. No step is scored yet.
 - **Ready.** Before the dynamic seal, within 180 s of the start: the manager's
   ports 1514 and 1515 answer; each agent's state file says it is connected and
   its log says its real-time file monitoring started, with none of the errors

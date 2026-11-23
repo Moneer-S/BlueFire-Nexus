@@ -221,6 +221,14 @@ def put(value, *path: str):
             put(["/tmp", "/tmp"], "defense", "watch", "fim_realtime"),
             "defense.watch.fim_realtime lists a folder twice",
         ),
+        (
+            put([{"path": "/var/log/snoopy.log", "format": "syslog"}], "defense", "watch", "logs"),
+            "the agent on host web does not collect /var/log/auth.log: add each to defense.watch.logs",
+        ),
+        (
+            put([], "defense", "watch", "logs"),
+            "does not collect /var/log/auth.log, /var/log/snoopy.log",
+        ),
         (put([1514], "hosts", "manager", "listens"), "must list 1514 and 1515 in listens"),
         (put(IMAGE, "hosts", "manager", "image"), "host manager runs the Wazuh manager"),
         (
