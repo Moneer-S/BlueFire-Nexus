@@ -32,6 +32,8 @@ from .application_errors import APIError
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_REQUEST_BODY = 1_048_576
+# One recording of up to 8 MiB (``recordings.MAX_RECORDING_BYTES``) in its import envelope.
+MAX_RECORDING_REQUEST_BODY = 8 * 1024 * 1024 + 1024
 _REJECTION_CLOSE_SECONDS = 0.2
 _REJECTION_DISCARD_BYTES = 65_536
 _REVIEWED_T1082_INTAKE_ROUTE = f"{API_PREFIX}/research-intakes/mitre-attack-t1082-v19-2"
@@ -182,10 +184,14 @@ class BlueFireHTTPServer(ThreadingHTTPServer):
         ui_root: Path,
         max_request_body: int,
         browser_sessions: _BrowserSessionAuthority,
+        max_recording_body: int = MAX_RECORDING_REQUEST_BODY,
     ) -> None:
         self.service = service
         self.ui_root = ui_root
         self.max_request_body = max_request_body
+        # Only the recording import route reads a body this large; every other
+        # route keeps ``max_request_body``.
+        self.max_recording_body = max_recording_body
         self.browser_sessions = browser_sessions
         super().__init__(server_address, handler_class)
 
@@ -437,6 +443,16 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/scenarios":
             self._dispatch(lambda: self.platform_server.service.scenarios())
+            return
+        recording_request = self._routes._recording_request(path)
+        if recording_request is not None:
+            valid, recording_id = recording_request
+            if not valid:
+                return
+            if recording_id is None:
+                self._dispatch(lambda: self.platform_server.service.recordings())
+            else:
+                self._dispatch(lambda: self.platform_server.service.recording(recording_id))
             return
         if path == f"{API_PREFIX}/runs":
             self._dispatch(lambda: self.platform_server.service.list())
@@ -710,7 +726,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if self._is_api_path(path) and not self._require_browser_session(unread_body=True):
             return
-        body = self._read_json_object()
+        body = self._read_json_object(
+            self.platform_server.max_recording_body
+            if path == f"{API_PREFIX}/recordings"
+            else self.platform_server.max_request_body
+        )
         if body is None:
             return
         comparison_snapshots_path = f"{API_PREFIX}/comparison-snapshots"
@@ -1025,6 +1045,17 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/runs/preflight":
             self._dispatch(lambda: self.platform_server.service.preflight(body))
+            return
+        recording_request = self._routes._recording_request(path)
+        if recording_request is not None:
+            valid, recording_id = recording_request
+            if valid and recording_id is None:
+                self._dispatch(
+                    lambda: self.platform_server.service.import_recording(body),
+                    success_status=HTTPStatus.CREATED,
+                )
+            elif valid:
+                self._method_not_allowed("GET")
             return
         if path == f"{API_PREFIX}/runs":
             self._dispatch(
@@ -1571,7 +1602,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _read_json_object(self) -> dict[str, Any] | None:
+    def _read_json_object(self, limit: int) -> dict[str, Any] | None:
         if self.headers.get_all("Transfer-Encoding", []):
             self._reject_unread_body(
                 HTTPStatus.BAD_REQUEST,
@@ -1592,11 +1623,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             )
             return None
         length = int(raw_length, 10)
-        if length > self.platform_server.max_request_body:
+        if length > limit:
             self._reject_unread_body(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                 "body_too_large",
-                f"JSON request bodies are limited to {self.platform_server.max_request_body} bytes.",
+                f"JSON request bodies are limited to {limit} bytes.",
             )
             return None
         content_types = self.headers.get_all("Content-Type", [])
@@ -1825,14 +1856,19 @@ def create_server(
     port: int = DEFAULT_PORT,
     ui_root: str | Path | None = None,
     max_request_body: int = MAX_REQUEST_BODY,
+    max_recording_body: int = MAX_RECORDING_REQUEST_BODY,
 ) -> BlueFireHTTPServer:
     """Create, but do not start, a loopback-only platform HTTP server."""
 
     _validate_bind(host, port)
-    if isinstance(max_request_body, bool) or not isinstance(max_request_body, int):
-        raise ValueError("max_request_body must be a positive integer")
-    if not 1 <= max_request_body <= 16 * 1024 * 1024:
-        raise ValueError("max_request_body must be between 1 byte and 16 MiB")
+    for name, limit in (
+        ("max_request_body", max_request_body),
+        ("max_recording_body", max_recording_body),
+    ):
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise ValueError(f"{name} must be a positive integer")
+        if not 1 <= limit <= 16 * 1024 * 1024:
+            raise ValueError(f"{name} must be between 1 byte and 16 MiB")
     root = _validate_ui_root(ui_root)
     browser_sessions = _BrowserSessionAuthority(browser_bootstrap_capability)
     server_type = (
@@ -1847,6 +1883,7 @@ def create_server(
         ui_root=root,
         max_request_body=max_request_body,
         browser_sessions=browser_sessions,
+        max_recording_body=max_recording_body,
     )
 
 

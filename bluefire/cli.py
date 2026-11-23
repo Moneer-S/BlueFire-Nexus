@@ -30,6 +30,12 @@ from .receiver import (
     ReceiverConfig,
     run_loopback_receiver,
 )
+from .recordings import (
+    MAX_RECORDING_BYTES,
+    RecordingError,
+    invalid_recording,
+    parse_recording_bytes,
+)
 from .runner_bootstrap import managed_product_root
 from .runner_trust import RunnerTrustError, load_local_enrollment
 from .service import BlueFireService
@@ -250,6 +256,14 @@ def _parser() -> argparse.ArgumentParser:
     run_events.add_argument("run_id")
     run_events.add_argument("--after-sequence", type=int, default=0)
     run_events.add_argument("--limit", type=int, default=200)
+
+    recordings = commands.add_parser(
+        "recordings", help="List recordings and import one that an engine wrote"
+    )
+    recording_commands = recordings.add_subparsers(dest="recording_command", required=True)
+    recording_commands.add_parser("list", help="List shipped and imported recordings")
+    recording_import = recording_commands.add_parser("import", help="Import one recording file")
+    recording_import.add_argument("path", type=Path)
 
     detections = commands.add_parser(
         "detections", help="Manage the immutable Detection Lab lifecycle"
@@ -759,6 +773,17 @@ def _execute(
                 limit=args.limit,
             )
         return service.detail(args.run_id)
+    if args.command == "recordings":
+        if args.recording_command == "list":
+            return service.recordings()
+        text = _bounded_utf8_text(
+            args.path, maximum_bytes=MAX_RECORDING_BYTES, description="recording"
+        )
+        try:
+            recording = parse_recording_bytes(text.encode("utf-8"))
+        except RecordingError as exc:
+            raise invalid_recording(exc) from None
+        return service.import_recording({"recording": recording})
     if args.command == "detections":
         if args.detection_command == "health":
             return service.detection_health()

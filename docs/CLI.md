@@ -87,6 +87,20 @@ bluefire --runs-dir .bluefire-runs bundle validate RUN_ID
 
 Events are ordered and paged by sequence. `--after-sequence` is exclusive and defaults to `0`; `--limit` defaults to `200`. Validate a finalized bundle before replay, comparison, export, or sharing. A valid hash chain proves internal consistency, not who produced the bundle.
 
+## Recordings
+
+```bash
+bluefire --runs-dir .bluefire-runs recordings list
+bluefire --runs-dir .bluefire-runs recordings import recording.json
+```
+
+`list` prints the recordings shipped with BlueFire and those imported into this
+runs directory, in the shape of `GET /api/v1/recordings` (see [API.md](API.md)).
+`import` reads one recording file of at most 8 MiB in the format of
+[RECORDING.md](RECORDING.md), checks it as the import route does, and stores it
+under `<runs-dir>/recordings/`. A refused file exits with status 2 and prints
+`recording_invalid` with each problem, or `recording_id_taken`.
+
 ## Durable jobs and proposal review
 
 The web console creates durable jobs for asynchronous run control. The CLI can inspect and control those same records:
