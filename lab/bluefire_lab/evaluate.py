@@ -935,6 +935,9 @@ def summarize(tests: list[dict]) -> dict:
             1 for test in took if test["visibility"].get("with_lab_rules", {}).get("answer") == "alert"
         ),
         "unstable": sum(1 for test in measured if test.get("unstable")),
+        # Runs of any other kind with an unstable answer: with a hardening change, with changed
+        # input arguments, or of the known-detected test or the harmless command.
+        "unstable_other_runs": sum(1 for test in tests if test["role"] != "test" and test.get("unstable")),
     }
 
 
