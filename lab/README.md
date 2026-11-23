@@ -664,7 +664,9 @@ bluefire-lab range run lab/range/range-one.yaml --out <new folder>
   text it expects in the stock file. `manifest.json` holds, for the manager and
   every agent, the diff against the stock file and each change with its label:
   - *lab addition*: the agent reads `/var/log/auth.log` and
-    `/var/log/snoopy.log` (the stock file reads `/var/log/dpkg.log` already),
+    `/var/log/snoopy.log` (the stock file reads `/var/log/dpkg.log` already;
+    the loader refuses a spec whose agent does not collect auth.log and
+    snoopy.log, since the engine's nonces and marks are lines in them),
     and watches `/etc`, `/home`, `/root`, `/tmp` and `/var/tmp` in real time
     with inotify; the manager writes every event it receives to
     `archives.json`, whether or not a rule matched; the snoopy decoder.
@@ -683,6 +685,11 @@ bluefire-lab range run lab/range/range-one.yaml --out <new folder>
     port), waits 1 s after enrolling instead of 20, and does not restart itself
     when the manager first sends it the shared configuration; the manager reads
     new agent keys every second.
+- **Alert level.** `defense.wazuh.alert_level` (12 in range one) is the
+  level from which a Wazuh alert will count as an alert when a step is scored,
+  and `manifest.json` records it. It is not the manager's `log_alert_level`,
+  which keeps its stock value 3, so that `alerts.json` also holds the matches
+  below it for review. It changes no image. No step is scored yet.
 - **Ready.** Before the dynamic seal, within 180 s of the start: the manager's
   ports 1514 and 1515 answer; each agent's state file says it is connected and
   its log says its real-time file monitoring started, with none of the errors
@@ -738,8 +745,15 @@ edits of the stock file and every plant check passed, and writes the build
 time, each image's build steps taken from the cache, the plant checks, the
 ready delays, the marks, the delivery table and the seal to its summary. Each
 image has a cache scope of its own in the GitHub Actions cache, and BuildKit
-runs from its own image, pinned by digest. Not yet shown on a GitHub-hosted runner: no run of
-that job is linked here yet.
+runs from its own image, pinned by digest. Not yet shown on a GitHub-hosted
+runner for the seven hosts: no run of that job is linked here yet. The same
+defense on a smaller range, one manager and one agent host, was shown by
+[run 45262448946](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45262448946)
+on a GitHub-hosted runner with Docker Engine 28.0.4, from a build without a
+cache: the range was sealed and ready 28 s after its containers started, the
+ready nonce was in the manager's archive 0.2 s after it was logged, all 14
+marks arrived, and every line of the window was delivered (`auth.log` 8 of 8,
+`snoopy.log` 35 of 35), with every counter of lost events at zero.
 
 ## Range one: its hosts
 

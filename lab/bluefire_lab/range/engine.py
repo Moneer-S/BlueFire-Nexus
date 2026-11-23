@@ -434,6 +434,10 @@ class Run:
                 "manager_image": spec.wazuh.manager_image,
                 "agent_deb": {"version": spec.wazuh.agent_version, "sha512": spec.wazuh.agent_sha512},
                 "alert_level": spec.wazuh.alert_level,
+                "alert_level_note": (
+                    "the level from which a Wazuh alert counts as an alert when a step is scored; the manager "
+                    "keeps the stock log_alert_level 3, so alerts.json also holds the matches below it"
+                ),
                 "off": list(spec.wazuh.off),
                 "snoopy_decoder_sha256": hashlib.sha256(build.SNOOPY_DECODER.encode()).hexdigest(),
                 "manager": spec.manager,
