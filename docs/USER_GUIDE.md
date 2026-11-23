@@ -283,4 +283,4 @@ BlueFire is local-first. Keep these limits visible when interpreting a successfu
 - Detection Lab provides bounded local Sigma/SQLite execution but no SIEM deployment connector, production SPL validation, or automatic public-corpus synchronization;
 - hashes establish bundle consistency, not a digital signature or producer identity.
 
-See the README's [current limitations](../README.md#current-limitations), [Threat model](THREAT_MODEL.md), and [Responsible use](RESPONSIBLE_USE.md) before broadening any lab.
+See the README's [current scope](../README.md#current-scope), [Threat model](THREAT_MODEL.md), and [Responsible use](RESPONSIBLE_USE.md) before broadening any lab.

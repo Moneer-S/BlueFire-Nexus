@@ -1,0 +1,17 @@
+{
+  "schema_version": "bluefire.python-runtime-backports.v1",
+  "distributions": [
+    {
+      "requirement": "tomli==2.4.1; python_version < '3.11'",
+      "distribution": "tomli",
+      "version": "2.4.1",
+      "license": "MIT",
+      "requires_python": ">=3.8",
+      "requires_dist": [],
+      "filename": "tomli-2.4.1-py3-none-any.whl",
+      "size": 14583,
+      "sha256": "0d85819802132122da43cb86656f8d1f8c6587d54ae7dcaf30e90533028b49fe",
+      "source": "https://files.pythonhosted.org/packages/7b/61/cceae43728b7de99d9b847560c262873a1f6c98202171fd5ed62640b494b/tomli-2.4.1-py3-none-any.whl"
+    }
+  ]
+}

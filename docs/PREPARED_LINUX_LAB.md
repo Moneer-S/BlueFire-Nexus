@@ -105,7 +105,7 @@ with no supplementary groups, zero capabilities, and `no_new_privs`. Source/runt
 read-only in that namespace. The inherited Windows environment, interop, proxies, and secrets
 are not forwarded. The exact
 [util-linux namespace controls](https://man7.org/linux/man-pages/man1/unshare.1.html) are checked
-again before starting the product. `<home>/lab-isolation.json` records those local checks;
+again before starting the product. `/home/bluefire/lab-isolation.json` records those local checks;
 it is setup diagnostics, not independently observed experiment evidence.
 
 Open the **complete URL printed by BlueFire**, including its one-time session fragment. The

@@ -1,0 +1,1624 @@
+{
+  "schema_version": "bluefire.service-operation-binding-fixtures.v1",
+  "provenance": "authored deterministic software vectors; no effects or observations",
+  "valid": [
+    {
+      "name": "create_unit",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:ccef5da5120740737c75a07935a01cb5748be7a9e866e944dca3a22dabf9f8bd"
+    },
+    {
+      "name": "reload",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 3,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "reload",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:41490a89979eaba58f9f70e2ccdca2502493c6481cc3704ba89254c1ab38587b"
+    },
+    {
+      "name": "enable",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 5,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "enable",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:09ed940bee96f6c97062f5b5a3f65f0530f36050fd16c1f8fe5d57b92f7a6fc5"
+    },
+    {
+      "name": "start",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 7,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "start",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:fed843b36990b27f92d5125b5a2bd53094176bf30eb82f265d812bce8721fbb2"
+    },
+    {
+      "name": "stop",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 9,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "stop",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:d7e1b855d8028a7ffe8394ae00e99b3b737034c467335d91db4834a6a6c2dd80"
+    },
+    {
+      "name": "disable",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 11,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "disable",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:ddd1e444953032ee19be69e721333c4e68d44ae6e058e5b0c74a99c50d029af9"
+    },
+    {
+      "name": "remove_links",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 13,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "remove_links",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:b20e07a139eb2057f9052ddbd1817e00be72d6eff012763ef71156b59ddf5052"
+    },
+    {
+      "name": "remove_unit",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 15,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "remove_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:4203e8f19ee1fff72db332b9a4351e6beb502c7dd7a169b7f6f56f2c04e45ffc"
+    },
+    {
+      "name": "reload_after_cleanup",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 17,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "reload_after_cleanup",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:74619180919732e079c4a3815e017a0c0b4521709679a3d764501d0bebbb541a"
+    },
+    {
+      "name": "fractional-time",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00.123456Z",
+          "cleanup_due_at": "2026-01-01T00:30:00.123456Z"
+        },
+        "identity_digest": "sha256:ca952f9d03d7a58805fa631252da415966e1ad2329cd3b1ddd8a2176ab00e8d2",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:0298e994c244f4e130fad59246893bcc7e5abe0195a876c7ef67b1ef9993a039"
+    },
+    {
+      "name": "hour-ceiling",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T01:00:00Z"
+        },
+        "identity_digest": "sha256:35847aa26b0dd0946822325d4ef2565b8c21749f49810fb19616d7656bb90b3a",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:890bcb2c1c5a74f8828302d939f52468b3682d418dbf18f688e79009d9e73072"
+    },
+    {
+      "name": "uid-ceiling",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 4294967294,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:5fe52662b46d0754e1bf505a63abc46caa6c9caabb4872cd561ca274c928b4f0",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:381ec63fec301ac8926650accd7779e3fa0ea51bbcbae1a0037d60d9b461b767"
+    },
+    {
+      "name": "pending-revision-ceiling",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 63,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "stop",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "canonical_sha256": "sha256:3a8ca4d1689bda72ad92a17daa58bda0c1671308902bb8510bb2c1b5a246a303"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "legacy-schema",
+      "document": {
+        "schema_version": "bluefire.runner-profile.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "unknown-operation",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "shell",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "null-operation",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": null,
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "boolean-revision",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": true,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "float-revision",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1.0,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "zero-revision",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 0,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "completed-revision",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 2,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "high-revision",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 65,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "negative-revision",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": -1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "identity-hash-mismatch",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "uppercase-digest",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "missing-digest-prefix",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "null-installation",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": null,
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "operation-id-case",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "operation-id-arbitrary",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "start-my-service",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "request-newline",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request\n",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "request-path",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "../request",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "request-unicode",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-\u00e9",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "request-too-long",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "root-owner",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 0,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:43e7cd0bd47cb9aee599f9c16797592f0680363d60bf4bf051e82625b770719e",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "boolean-owner",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": true,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:08cfc8442df1252c3e38da17fad02b9363c769266fa4a7ce6d5ae108f3020cf7",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "float-owner",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000.0,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:c24e46152f41ae87182efb8882dedc082bd8779f087670ebf7ebba19e3bf79c6",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "uid-overflow",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 4294967295,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:bc626b4a8e7900a01d0f06bd549e8527922c398fbb06b6a552d89d923f37f666",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "empty-manager",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "00000000000000000000000000000000",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:797e4af72924c75d9b5bc235ad6446db919f23cbf04cd0b8f120f9f69f36d327",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "empty-nonce",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "00000000000000000000000000000000",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:ee84ba04f57bc1cc6138c3fd73d4a1659f36b863389bf2d2ec2cfb434536b6bb",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "empty-boot",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "00000000-0000-0000-0000-000000000000",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:f0da23da4f7efda13600a9a10c415543177fd559417a2177775d83205c7ab8a3",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "unit-digest-invalid",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:bad",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:20de121bf41210c0765e311136a3bcd4aaaa0f59f913890425f830e760bdb964",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "legacy-identity-schema",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v0",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:65fb9d55516ea6c24b81cc4ebbfc0cf8c0c801655a774726327afcd652f44d1f",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "offset-time",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00+00:00",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:6ff992e1f210cc1fbdc8a5d664b9f732ce0efd2f7d325ca784d89afff64235fc",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "lowercase-z",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:20de97e2db65c56084af1d2a93e9a41fbae70ce2be483ad286170a359a1abb50",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "leap-second",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:60Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:fc30acb1f28370e48acd9c6d7e33ef00c03f8538bf92f6df599dd9205a7e1f70",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "year-zero",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "0000-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:9a71ceac524c740c67d8933dbb89efed5453d4742f08374a745b4857b1e801d5",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "invalid-date",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-02-30T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:9dd4cffd5ac61ba02c174928896dd1c41ea1f2a1682f589d86673b2d848407a7",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "too-many-fraction-digits",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00.1234567Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:2815e4626af5d4a7d162b33a8d4add05ba02e373836a9c3dfbcd8ebe1e977c0c",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "empty-time-fraction",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00.Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:4bd60ec6826cc6c3770a88e4f61c300eb41e0358a2812627718d6757ba68f9cf",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "equal-cleanup-time",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:00:00Z"
+        },
+        "identity_digest": "sha256:1b7719ad7b72c5916f3c8390b70c23c2044ae65211206f33dbbb1efec83c120e",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "earlier-cleanup-time",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2025-12-31T23:59:59Z"
+        },
+        "identity_digest": "sha256:2746c062c1b1888bebd1d43f30a63bc5d0aa0d6ff9d692a07415fbd6799f7c37",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "above-hour-ceiling",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T01:00:00.000001Z"
+        },
+        "identity_digest": "sha256:be86593f6a566bd726ecc69fbee1de0d9fd222701605125a7d92b8ec17592711",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "unknown-field",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "command": "not-an-input"
+      }
+    },
+    {
+      "name": "unknown-identity-field",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z",
+          "command": "not-an-input"
+        },
+        "identity_digest": "sha256:9e3635a9cd52c8f16b0c1e16776c3ffe8bc5b3e0d7a1c5cd3c42713b60ec7302",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "reviewed_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "missing-required-field",
+      "document": {
+        "schema_version": "bluefire.service-operation-binding.v1",
+        "identity": {
+          "schema_version": "bluefire.owned-user-service.v1",
+          "authorization_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "runner_profile_id": "runner.profile.v1",
+          "workspace_id": "workspace-synthetic-1",
+          "target_scope_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "owner_uid": 1000,
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "unit_nonce": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "unit_content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "created_at": "2026-01-01T00:00:00Z",
+          "cleanup_due_at": "2026-01-01T00:30:00Z"
+        },
+        "identity_digest": "sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81",
+        "journal_request_id": "request-synthetic-1",
+        "journal_revision": 1,
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "operation_id": "op-cccccccccccccccccccccccccccccccc",
+        "operation": "create_unit",
+        "manager_installation_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_installation_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    }
+  ],
+  "invalid_json": [
+    {
+      "name": "null-document",
+      "json": "null"
+    },
+    {
+      "name": "array-document",
+      "json": "[]"
+    },
+    {
+      "name": "duplicate-operation",
+      "json": "{\"identity\":{\"authorization_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"boot_id\":\"12345678-1234-1234-1234-123456789abc\",\"cleanup_due_at\":\"2026-01-01T00:30:00Z\",\"created_at\":\"2026-01-01T00:00:00Z\",\"manager_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"owner_uid\":1000,\"runner_profile_id\":\"runner.profile.v1\",\"schema_version\":\"bluefire.owned-user-service.v1\",\"target_scope_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"unit_content_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"unit_nonce\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"workspace_id\":\"workspace-synthetic-1\"},\"identity_digest\":\"sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81\",\"journal_record_hash\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"journal_request_id\":\"request-synthetic-1\",\"journal_revision\":1,\"manager_installation_digest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"operation\":\"create_unit\",\"operation\":\"create_unit\",\"operation_id\":\"op-cccccccccccccccccccccccccccccccc\",\"payload_installation_digest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"reviewed_scope_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"schema_version\":\"bluefire.service-operation-binding.v1\"}"
+    },
+    {
+      "name": "duplicate-identity-owner",
+      "json": "{\"identity\":{\"authorization_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"boot_id\":\"12345678-1234-1234-1234-123456789abc\",\"cleanup_due_at\":\"2026-01-01T00:30:00Z\",\"created_at\":\"2026-01-01T00:00:00Z\",\"manager_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"owner_uid\":1000,\"owner_uid\":1000,\"runner_profile_id\":\"runner.profile.v1\",\"schema_version\":\"bluefire.owned-user-service.v1\",\"target_scope_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"unit_content_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"unit_nonce\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"workspace_id\":\"workspace-synthetic-1\"},\"identity_digest\":\"sha256:a27aa048a345c06f239bfd07cb1cfe1ff51f9c6365c78b9c397aff7e01e5ee81\",\"journal_record_hash\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"journal_request_id\":\"request-synthetic-1\",\"journal_revision\":1,\"manager_installation_digest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"operation\":\"create_unit\",\"operation_id\":\"op-cccccccccccccccccccccccccccccccc\",\"payload_installation_digest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"reviewed_scope_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"schema_version\":\"bluefire.service-operation-binding.v1\"}"
+    }
+  ],
+  "invalid_bytes": [
+    {
+      "name": "utf-8-sig",
+      "fixture_note": "Authored canonical JSON with a UTF-8 BOM for rejection testing. # pragma: allowlist secret", "hex": "efbbbf7b226964656e74697479223a7b22617574686f72697a6174696f6e5f646967657374223a227368613235363a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22626f6f745f6964223a2231323334353637382d313233342d313233342d313233342d313233343536373839616263222c22636c65616e75705f6475655f6174223a22323032362d30312d30315430303a33303a30305a222c22637265617465645f6174223a22323032362d30312d30315430303a30303a30305a222c226d616e616765725f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f776e65725f756964223a313030302c2272756e6e65725f70726f66696c655f6964223a2272756e6e65722e70726f66696c652e7631222c22736368656d615f76657273696f6e223a22626c7565666972652e6f776e65642d757365722d736572766963652e7631222c227461726765745f73636f70655f646967657374223a227368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c22756e69745f636f6e74656e745f646967657374223a227368613235363a63636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c22756e69745f6e6f6e6365223a226262626262626262626262626262626262626262626262626262626262626262222c22776f726b73706163655f6964223a22776f726b73706163652d73796e7468657469632d31227d2c226964656e746974795f646967657374223a227368613235363a61323761613034386133343563303666323339626664303763623163666531666635316639633633363563373862396333393761666637653031653565653831222c226a6f75726e616c5f7265636f72645f68617368223a227368613235363a31313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c226a6f75726e616c5f726571756573745f6964223a22726571756573742d73796e7468657469632d31222c226a6f75726e616c5f7265766973696f6e223a312c226d616e616765725f696e7374616c6c6174696f6e5f646967657374223a227368613235363a65656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565222c226f7065726174696f6e223a226372656174655f756e6974222c226f7065726174696f6e5f6964223a226f702d6363636363636363636363636363636363636363636363636363636363636363222c227061796c6f61645f696e7374616c6c6174696f6e5f646967657374223a227368613235363a66666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666222c2272657669657765645f73636f70655f646967657374223a227368613235363a64646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736368656d615f76657273696f6e223a22626c7565666972652e736572766963652d6f7065726174696f6e2d62696e64696e672e7631227d"
+    },
+    {
+      "name": "utf-16",
+      "hex": "fffe7b0022006900640065006e00740069007400790022003a007b00220061007500740068006f00720069007a006100740069006f006e005f0064006900670065007300740022003a0022007300680061003200350036003a00610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610022002c00220062006f006f0074005f006900640022003a002200310032003300340035003600370038002d0031003200330034002d0031003200330034002d0031003200330034002d0031003200330034003500360037003800390061006200630022002c00220063006c00650061006e00750070005f006400750065005f006100740022003a00220032003000320036002d00300031002d00300031005400300030003a00330030003a00300030005a0022002c00220063007200650061007400650064005f006100740022003a00220032003000320036002d00300031002d00300031005400300030003a00300030003a00300030005a0022002c0022006d0061006e0061006700650072005f006900640022003a0022006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610022002c0022006f0077006e00650072005f0075006900640022003a0031003000300030002c002200720075006e006e00650072005f00700072006f00660069006c0065005f006900640022003a002200720075006e006e00650072002e00700072006f00660069006c0065002e007600310022002c00220073006300680065006d0061005f00760065007200730069006f006e0022003a00220062006c007500650066006900720065002e006f0077006e00650064002d0075007300650072002d0073006500720076006900630065002e007600310022002c0022007400610072006700650074005f00730063006f00700065005f0064006900670065007300740022003a0022007300680061003200350036003a00620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620022002c00220075006e00690074005f0063006f006e00740065006e0074005f0064006900670065007300740022003a0022007300680061003200350036003a00630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630022002c00220075006e00690074005f006e006f006e006300650022003a0022006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620062006200620022002c00220077006f0072006b00730070006100630065005f006900640022003a00220077006f0072006b00730070006100630065002d00730079006e007400680065007400690063002d00310022007d002c0022006900640065006e0074006900740079005f0064006900670065007300740022003a0022007300680061003200350036003a00610032003700610061003000340038006100330034003500630030003600660032003300390062006600640030003700630062003100630066006500310066006600350031006600390063003600330036003500630037003800620039006300330039003700610066006600370065003000310065003500650065003800310022002c0022006a006f00750072006e0061006c005f007200650063006f00720064005f00680061007300680022003a0022007300680061003200350036003a00310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310031003100310022002c0022006a006f00750072006e0061006c005f0072006500710075006500730074005f006900640022003a00220072006500710075006500730074002d00730079006e007400680065007400690063002d00310022002c0022006a006f00750072006e0061006c005f007200650076006900730069006f006e0022003a0031002c0022006d0061006e0061006700650072005f0069006e007300740061006c006c006100740069006f006e005f0064006900670065007300740022003a0022007300680061003200350036003a00650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650065006500650022002c0022006f007000650072006100740069006f006e0022003a0022006300720065006100740065005f0075006e006900740022002c0022006f007000650072006100740069006f006e005f006900640022003a0022006f0070002d006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630063006300630022002c0022007000610079006c006f00610064005f0069006e007300740061006c006c006100740069006f006e005f0064006900670065007300740022003a0022007300680061003200350036003a00660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660066006600660022002c002200720065007600690065007700650064005f00730063006f00700065005f0064006900670065007300740022003a0022007300680061003200350036003a00640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640064006400640022002c00220073006300680065006d0061005f00760065007200730069006f006e0022003a00220062006c007500650066006900720065002e0073006500720076006900630065002d006f007000650072006100740069006f006e002d00620069006e00640069006e0067002e007600310022007d00"
+    },
+    {
+      "name": "utf-32",
+      "hex": "fffe00007b000000220000006900000064000000650000006e00000074000000690000007400000079000000220000003a0000007b00000022000000610000007500000074000000680000006f00000072000000690000007a0000006100000074000000690000006f0000006e0000005f000000640000006900000067000000650000007300000074000000220000003a000000220000007300000068000000610000003200000035000000360000003a00000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000220000002c00000022000000620000006f0000006f000000740000005f0000006900000064000000220000003a0000002200000031000000320000003300000034000000350000003600000037000000380000002d000000310000003200000033000000340000002d000000310000003200000033000000340000002d000000310000003200000033000000340000002d000000310000003200000033000000340000003500000036000000370000003800000039000000610000006200000063000000220000002c00000022000000630000006c00000065000000610000006e00000075000000700000005f0000006400000075000000650000005f0000006100000074000000220000003a00000022000000320000003000000032000000360000002d00000030000000310000002d00000030000000310000005400000030000000300000003a00000033000000300000003a00000030000000300000005a000000220000002c00000022000000630000007200000065000000610000007400000065000000640000005f0000006100000074000000220000003a00000022000000320000003000000032000000360000002d00000030000000310000002d00000030000000310000005400000030000000300000003a00000030000000300000003a00000030000000300000005a000000220000002c000000220000006d000000610000006e000000610000006700000065000000720000005f0000006900000064000000220000003a000000220000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000610000006100000061000000220000002c000000220000006f000000770000006e00000065000000720000005f000000750000006900000064000000220000003a000000310000003000000030000000300000002c0000002200000072000000750000006e0000006e00000065000000720000005f00000070000000720000006f00000066000000690000006c000000650000005f0000006900000064000000220000003a0000002200000072000000750000006e0000006e00000065000000720000002e00000070000000720000006f00000066000000690000006c000000650000002e0000007600000031000000220000002c00000022000000730000006300000068000000650000006d000000610000005f00000076000000650000007200000073000000690000006f0000006e000000220000003a00000022000000620000006c0000007500000065000000660000006900000072000000650000002e0000006f000000770000006e00000065000000640000002d000000750000007300000065000000720000002d000000730000006500000072000000760000006900000063000000650000002e0000007600000031000000220000002c000000220000007400000061000000720000006700000065000000740000005f00000073000000630000006f00000070000000650000005f000000640000006900000067000000650000007300000074000000220000003a000000220000007300000068000000610000003200000035000000360000003a00000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000220000002c00000022000000750000006e00000069000000740000005f000000630000006f0000006e00000074000000650000006e000000740000005f000000640000006900000067000000650000007300000074000000220000003a000000220000007300000068000000610000003200000035000000360000003a00000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000220000002c00000022000000750000006e00000069000000740000005f0000006e0000006f0000006e0000006300000065000000220000003a000000220000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000620000006200000062000000220000002c00000022000000770000006f000000720000006b00000073000000700000006100000063000000650000005f0000006900000064000000220000003a00000022000000770000006f000000720000006b00000073000000700000006100000063000000650000002d00000073000000790000006e0000007400000068000000650000007400000069000000630000002d00000031000000220000007d0000002c000000220000006900000064000000650000006e000000740000006900000074000000790000005f000000640000006900000067000000650000007300000074000000220000003a000000220000007300000068000000610000003200000035000000360000003a00000061000000320000003700000061000000610000003000000034000000380000006100000033000000340000003500000063000000300000003600000066000000320000003300000039000000620000006600000064000000300000003700000063000000620000003100000063000000660000006500000031000000660000006600000035000000310000006600000039000000630000003600000033000000360000003500000063000000370000003800000062000000390000006300000033000000390000003700000061000000660000006600000037000000650000003000000031000000650000003500000065000000650000003800000031000000220000002c000000220000006a0000006f00000075000000720000006e000000610000006c0000005f0000007200000065000000630000006f00000072000000640000005f00000068000000610000007300000068000000220000003a000000220000007300000068000000610000003200000035000000360000003a00000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000310000003100000031000000220000002c000000220000006a0000006f00000075000000720000006e000000610000006c0000005f000000720000006500000071000000750000006500000073000000740000005f0000006900000064000000220000003a00000022000000720000006500000071000000750000006500000073000000740000002d00000073000000790000006e0000007400000068000000650000007400000069000000630000002d00000031000000220000002c000000220000006a0000006f00000075000000720000006e000000610000006c0000005f0000007200000065000000760000006900000073000000690000006f0000006e000000220000003a000000310000002c000000220000006d000000610000006e000000610000006700000065000000720000005f000000690000006e0000007300000074000000610000006c0000006c0000006100000074000000690000006f0000006e0000005f000000640000006900000067000000650000007300000074000000220000003a000000220000007300000068000000610000003200000035000000360000003a00000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000650000006500000065000000220000002c000000220000006f0000007000000065000000720000006100000074000000690000006f0000006e000000220000003a000000220000006300000072000000650000006100000074000000650000005f000000750000006e0000006900000074000000220000002c000000220000006f0000007000000065000000720000006100000074000000690000006f0000006e0000005f0000006900000064000000220000003a000000220000006f000000700000002d0000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000630000006300000063000000220000002c000000220000007000000061000000790000006c0000006f00000061000000640000005f000000690000006e0000007300000074000000610000006c0000006c0000006100000074000000690000006f0000006e0000005f000000640000006900000067000000650000007300000074000000220000003a000000220000007300000068000000610000003200000035000000360000003a00000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000660000006600000066000000220000002c0000002200000072000000650000007600000069000000650000007700000065000000640000005f00000073000000630000006f00000070000000650000005f000000640000006900000067000000650000007300000074000000220000003a000000220000007300000068000000610000003200000035000000360000003a00000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000640000006400000064000000220000002c00000022000000730000006300000068000000650000006d000000610000005f00000076000000650000007200000073000000690000006f0000006e000000220000003a00000022000000620000006c0000007500000065000000660000006900000072000000650000002e000000730000006500000072000000760000006900000063000000650000002d0000006f0000007000000065000000720000006100000074000000690000006f0000006e0000002d00000062000000690000006e00000064000000690000006e000000670000002e0000007600000031000000220000007d000000"
+    },
+    {
+      "name": "invalid-utf8",
+      "hex": "ff"
+    }
+  ]
+}

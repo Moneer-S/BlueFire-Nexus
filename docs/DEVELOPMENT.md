@@ -14,7 +14,7 @@ BlueFire is a Python control plane, a separately built Rust runner, and a React/
 | `runner/` | Rust execution authority and boundary tests |
 | `frontend/` | React/TypeScript source, unit tests, and Playwright tests |
 | `bluefire/ui/` | Built frontend assets packaged by Python |
-| `tests_platform/` | Python contract, integration, storage, and E2E tests |
+| `tests_platform/` | Python contract, integration, and storage tests |
 | `docs/` | Public user, operator, and developer documentation |
 
 ## Python setup
@@ -46,6 +46,8 @@ justify another `pip-audit` exception.
 
 Do not install project dependencies globally. Keep test run stores, databases, sandboxes, caches, and build artifacts untracked.
 
+The probe script this paragraph describes was removed from the repository together
+with the heavy test matrix, and the last commit that holds it is `ebe5a9bf`.
 The Windows Gate 01 acceptance browser probe uses an existing Edge installation and
 the Playwright core version declared by the committed frontend pnpm lock. Before
 running it, set `BLUEFIRE_ACCEPTANCE_NODE_BINARY` to the reviewed absolute Node 22+
@@ -126,27 +128,15 @@ Before accepting UI changes, test keyboard navigation, focus/dialog behavior, lo
 
 ### Opt-in graph-scale qualification
 
+The suite this section describes was removed from the repository together with the heavy
+test matrix, and the last commit that holds it is `ebe5a9bf`.
+
 `graph-scale-production.spec.ts` exercises the production bundle with a synthetic graph of
 128 nodes, 256 outcome edges and at most 65,536 canonical JSON bytes, matching the
 [selected-step assistance boundary](contextual-graph-assistance.md#selected-step-parameter-context).
 This is not a universal saved-graph limit. The check uses synthetic session/catalog/scenario
 responses and refuses effect requests; it does not run a real service, model or experiment.
 It is opt-in, not part of the default `pnpm test:e2e` run.
-
-After the production build above, run from `frontend/`. All four `BLUEFIRE_S3_BROWSER_*`
-variables are required: `OUTPUT` must name a fresh, empty, existing absolute directory;
-`BUNDLE` the absolute built `bluefire/ui` directory; `EXECUTABLE` an absolute path to an
-already installed Chromium executable; and `PORT` an unused loopback TCP port. This Bash
-example creates the output directory and requires the browser and port to be selected:
-
-```bash
-export BLUEFIRE_S3_BROWSER_OUTPUT="$(cd "$(mktemp -d)" && pwd)"
-export BLUEFIRE_S3_BROWSER_BUNDLE="$(cd ../bluefire/ui && pwd)"
-export BLUEFIRE_S3_BROWSER_EXECUTABLE="${BLUEFIRE_S3_BROWSER_EXECUTABLE:?Set an absolute installed Chromium executable path}"
-export BLUEFIRE_S3_BROWSER_PORT="${BLUEFIRE_S3_BROWSER_PORT:?Set an unused loopback TCP port}"
-VITE_DEMO_MODE=false PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-  pnpm exec playwright test --config playwright.onboarding.config.ts graph-scale-production.spec.ts
-```
 
 The 1440x900 and 1366x768 viewports cover focused/full graph and ordered-step transitions,
 retained full-graph reload and an unchanged serialized draft. Each timing series retains
@@ -160,19 +150,9 @@ Measurements apply only to that workload, browser and machine, not live or insta
 
 ## Product-level tests
 
-The opt-in real-runner E2E harness requires a freshly built binary:
+The opt-in harness this section describes, `tests_platform/test_execute_e2e.py`, was removed from the repository together with the heavy test matrix, and the last commit that holds it is `ebe5a9bf`.
 
-```bash
-export BLUEFIRE_E2E_RUNNER="$(pwd)/runner/target/release/bluefire-runner"
-python -m pytest tests_platform/test_execute_e2e.py
-```
-
-Windows PowerShell:
-
-```powershell
-$env:BLUEFIRE_E2E_RUNNER = (Resolve-Path .\runner\target\release\bluefire-runner.exe)
-python -m pytest tests_platform\test_execute_e2e.py
-```
+The opt-in real-runner E2E harness requires a freshly built binary.
 
 The harness creates temporary sandboxes and currently covers the canonical, Linux-oriented, Windows-oriented, and restricted-canary scenario cases. Keep this opt-in because a real runner performs real local effects even though the fixtures are harmless and disposable.
 
@@ -275,6 +255,7 @@ bluefire --runs-dir path/to/temp-runs ui --host 127.0.0.1 --port 8765
 Each supported wheel contains exactly one matching native runner. Build and test that runner
 independently before staging it; staging and wheel tags are packaging controls, not dynamic host proof.
 
+The native-wheel CI jobs that this paragraph describes were removed from the repository with the rest of the heavy test matrix, and the last commit that holds them is `ebe5a9bf`; the verifier script itself remains in `tools/`.
 Native-wheel CI additionally runs `tools/verify_packaged_runner.py inspect` and then copies the verifier outside the checkout for installed-wheel `smoke`. The smoke report includes a sanitized `disposable_workspace` proof showing the temporary work root is outside the checkout, source runner overrides are absent, sandbox scopes remain inside the disposable root, and cleanup leaves zero retained files. The proof deliberately omits absolute paths.
 
 ## Contract-change workflow
@@ -304,6 +285,10 @@ See [Action SDK](ACTION_SDK.md) and [Behavior authoring](BEHAVIOR_AUTHORING.md).
 Do not push, merge, rewrite history, publish packages/releases, or change remotes without explicit authorization.
 
 ## Release checklist
+
+The tests and tool scripts that the release gates run were removed from the repository
+together with the heavy test matrix, so `bluefire acceptance run --release` cannot pass
+from the current tree; the last commit that holds them is `ebe5a9bf`.
 
 For the full acceptance suite on Windows with the pinned GNU Rust toolchain,
 `BLUEFIRE_ACCEPTANCE_RUST_LINKER=windows-gnu-self-contained` selects its bundled
@@ -335,7 +320,7 @@ Never commit them, upload them to CI artifacts, or include them in PRs or releas
 Preserve them locally until the failing invocation and cleanup have been diagnosed;
 review and sanitize any excerpt separately before sharing it.
 
-- Python, Rust, frontend, browser, security, package, installed-wheel, API, CLI, and opt-in disposable E2E checks pass.
+- Python, Rust, frontend, browser, security, package, installed-wheel, API, and CLI checks pass.
 - Version is consistent across Python, Rust, and frontend metadata.
 - Eight packaged/check-out scenarios and twenty action descriptors remain in parity.
 - Research pins/licenses and optional dependency versions are current and reviewed.

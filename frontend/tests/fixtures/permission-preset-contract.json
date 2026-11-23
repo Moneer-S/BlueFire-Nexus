@@ -1,0 +1,14 @@
+{
+  "world_writable": {
+    "artifact_type": "collector_observation",
+    "observation_kind": "filesystem",
+    "permission_status": "available",
+    "other_write_bit": true
+  },
+  "non_owner_writable": {
+    "artifact_type": "collector_observation",
+    "observation_kind": "filesystem",
+    "permission_status": "available",
+    "non_owner_write_bit": true
+  }
+}

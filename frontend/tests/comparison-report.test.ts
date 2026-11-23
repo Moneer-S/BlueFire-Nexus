@@ -1,0 +1,73 @@
+import { expect, it } from "vitest";
+import { comparisonReport } from "../src/lib/comparison-report";
+import { compareDemoRuns, demoRuns } from "../src/lib/demo";
+import capture from "../../tests_platform/fixtures/s3_comparison_v1.json";
+import type { ComparisonResponse } from "../src/types";
+
+it("exports unmet objectives, unknown evidence and failed cleanup without substituting success", () => {
+  const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
+  const run = comparison.summaries[0]!;
+  run.objective_reached = false;
+  run.evidence_details = undefined;
+  run.cleanup_success = false;
+  const report = comparisonReport(comparison, { [run.run_id]: "Compare retained records" }, { [run.run_id]: "2026-09-09T07:00:00Z" });
+  expect(report).toContain(`| Baseline | Compare retained records | ${run.mode} | Not achieved | Not reported | Not reported | Needs attention |`);
+  expect(report).toContain(`Run ID: ${run.run_id}`);
+  expect(report).toContain("Created: 2026-09-09T07:00:00Z");
+  expect(report).toContain("Simulate outcomes are synthetic");
+  expect(report).toContain("Missing observations do not establish defense success");
+  expect(report).toContain(comparison.comparison_id);
+  expect(report).toContain('"objective_reached": false');
+});
+
+it("exports the verified capability result and unknown proof apart from graph completion", () => {
+  const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
+  const digest = `sha256:${"b".repeat(64)}`;
+  for (const [index, run] of comparison.summaries.entries()) {
+    run.mode = "execute";
+    run.graph_objective_reached = true;
+    run.objective_reached = index === 0 ? false : null;
+    run.capability_objective = {
+      schema_version: "bluefire.composition-objective-projection.v1",
+      run_id: run.run_id,
+      attempt_id: `attempt-${String(index + 1).padStart(32, "0")}`,
+      state: index === 0 ? "verified" : "unverified",
+      objective_digest: digest,
+      established: index === 0 ? false : null,
+      result_digest: index === 0 ? digest : null,
+    };
+  }
+
+  const report = comparisonReport(comparison);
+
+  expect(report).toContain("| Not achieved |");
+  expect(report).toContain("| Unknown (proof unavailable) |");
+  expect(report).toContain("Run-level completion: met. Capability proof: verified.");
+  expect(report).toContain("Run-level completion: met. Capability proof: unavailable.");
+});
+
+it("keeps untrusted gap content inert in the readable report and preserves it in JSON", () => {
+  const comparison = compareDemoRuns(demoRuns.map((run) => run.run_id));
+  const untrusted = '<img src="https://example.invalid/pixel"> ``` [remote](https://example.invalid)';
+  comparison.summaries[0]!.evidence_details = { observed_artifacts: [], evidence_gaps: [{ reason: untrusted }] };
+  const report = comparisonReport(comparison, { [comparison.summaries[0]!.run_id]: untrusted });
+  const [readable, json] = report.split("```json\n");
+  expect(readable).not.toContain("<img");
+  expect(readable).not.toContain("[remote]");
+  expect(JSON.parse(json!.slice(0, json!.lastIndexOf("\n```"))).summaries[0].evidence_details.evidence_gaps[0].reason).toBe(untrusted);
+});
+
+it("exports the captured S3 read comparison without turning unknown into a cloud conclusion", () => {
+  const fixture = capture as unknown as { cases: Array<{ name: string; response: ComparisonResponse }> };
+  const comparison = fixture.cases.find((item) => item.name === "unknown_cleanup")?.response;
+  expect(comparison?.s3_access).toBeDefined();
+  const report = comparisonReport(comparison!);
+  const [readable, json] = report.split("```json\n");
+  expect(readable).toContain("## S3 access outcomes");
+  expect(readable).toContain("Reported change: unknown");
+  expect(readable).toContain("cleanup unknown");
+  expect(readable).toContain("does not establish defensive effectiveness");
+  expect(readable).not.toMatch(/prevention rate|coverage percentage|effectiveness percentage/i);
+  const exported = JSON.parse(json!.slice(0, json!.lastIndexOf("\n```"))) as ComparisonResponse;
+  expect(exported.s3_access).toEqual(comparison!.s3_access);
+});

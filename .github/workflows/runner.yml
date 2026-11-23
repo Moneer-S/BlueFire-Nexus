@@ -1,0 +1,76 @@
+name: runner
+
+# The Rust runner's own tests. Starts only when the runner changes, so that a
+# change elsewhere does not wait for a Rust build.
+
+on:
+  pull_request:
+    paths:
+      - runner/**
+      - rust-toolchain.toml
+      - tests_platform/fixtures/**
+      - .github/workflows/runner.yml
+  push:
+    branches: [main]
+    paths:
+      - runner/**
+      - rust-toolchain.toml
+      - tests_platform/fixtures/**
+      - .github/workflows/runner.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # One test hashes the test program itself against a 30 second deadline. An
+  # unoptimized build is over 100 MB and hashes too slowly for that, so the
+  # test build is lightly optimized.
+  CARGO_PROFILE_DEV_OPT_LEVEL: 1
+  CARGO_PROFILE_TEST_OPT_LEVEL: 1
+  GZIP_PACKAGE: gzip_1.12-1ubuntu3.2_amd64.deb
+  GZIP_PACKAGE_DIGEST: sha256:4067522fbffe22672e4cf683bfc32e4a304bc872cf76f10049ab36d1a9eedb91
+  GZIP_PROGRAM_DIGEST: sha256:afea077ce127d4fa9ad410d3066ba2b54dea19c0b44f04adf56c72d5f7b7a9bb
+
+jobs:
+  test:
+    name: runner tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+
+      - name: Prepare the gzip the collection tests expect
+        run: |
+          # The tests accept two exact gzip builds. This puts one of them in a
+          # folder only root can change, so that the runner image's own gzip,
+          # which changes with its updates, does not decide the result.
+          package="$RUNNER_TEMP/$GZIP_PACKAGE"
+          curl --fail --location --proto '=https' --tlsv1.2 --max-time 120 \
+            "https://security.ubuntu.com/ubuntu/pool/main/g/gzip/$GZIP_PACKAGE" --output "$package"
+          echo "${GZIP_PACKAGE_DIGEST#sha256:}  $package" | sha256sum --check
+          extracted="$RUNNER_TEMP/gzip-package"
+          mkdir "$extracted"
+          dpkg-deb --extract "$package" "$extracted"
+          echo "${GZIP_PROGRAM_DIGEST#sha256:}  $extracted/usr/bin/gzip" | sha256sum --check
+          tool_root=/usr/lib/bluefire-ci-tools/gzip-1.12-1ubuntu3.2
+          sudo install -d -o root -g root -m 0755 /usr/lib/bluefire-ci-tools "$tool_root"
+          sudo install -o root -g root -m 0755 "$extracted/usr/bin/gzip" "$tool_root/gzip"
+          echo "BLUEFIRE_TEST_GZIP=$tool_root/gzip" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: cargo test --manifest-path runner/Cargo.toml --all --locked

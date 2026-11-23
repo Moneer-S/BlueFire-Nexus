@@ -1,0 +1,272 @@
+{
+  "admission": {
+    "grant": {
+      "action_id": "owned.user_service.fixed_wait.v1",
+      "claim": {
+        "approval_expires_at": "2026-01-01T12:10:00Z",
+        "approval_id": "approval-owned-service.v1",
+        "consumed_at": "2026-01-01T12:01:00Z",
+        "maximum_tier": "controlled",
+        "plan_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "profile_id": "sandbox-execute.v1",
+        "state_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "target_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "execution": {
+        "manifest_digest": "sha256:95f675cca746cec7e3698bbd76509a8e2e8c1376418657bc1d8776c24d488f04",
+        "operation_binding_digest": "sha256:5df56dc007ea89e1bfcbdcd73fd55346ffa7815114781b535681140d5726c75a",
+        "profile_digest": "sha256:6259f8935894f73ad878f9df496d1b3d3764ea18d5d69f266e88aadb5d35a893",
+        "task_id": "execute-26d965d72e7632b3f7ddca279795a3a0a4d9e9a1a89b0956499bea839d548d9c"
+      },
+      "manifest_request_hash": "sha256:c611c2d566aee2f2f328e971770091ffb2319e667241c07db1f255a8823a3e34",
+      "operation_binding": {
+        "identity": {
+          "authorization_digest": "sha256:9d48973aaebe74e13215a68b59e5b409257562980c78df382d205a06c94b1701",
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "cleanup_due_at": "2026-01-01T12:30:00Z",
+          "created_at": "2026-01-01T12:00:00Z",
+          "manager_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "owner_uid": 1000,
+          "runner_profile_id": "sandbox-execute.v1",
+          "schema_version": "bluefire.owned-user-service.v1",
+          "target_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "unit_content_digest": "sha256:313c0a3c968ce65dc33fadc4d52e142bd88b19ab46c14682657774ec52bd00d0",
+          "unit_nonce": "ffffffffffffffffffffffffffffffff",
+          "workspace_id": "workspace-owned-service.v1"
+        },
+        "identity_digest": "sha256:a94de19650558a32b88cf704e63e21cfe126fe10f1e2c817f96e271f86d7e87b",
+        "journal_record_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "journal_request_id": "request-owned-service.v1",
+        "journal_revision": 1,
+        "manager_installation_digest": "sha256:e47f660ba20173275c1b55519cdf77b5057d30809bd25da37df77547f0c06093",
+        "operation": "create_unit",
+        "operation_id": "op-22222222222222222222222222222222",
+        "payload_installation_digest": "sha256:bb1aff6500c24ae2baba19a0641a0bfc32baa5dc6cf990931935b9a485425965",
+        "reviewed_scope_digest": "sha256:9d48973aaebe74e13215a68b59e5b409257562980c78df382d205a06c94b1701",
+        "schema_version": "bluefire.service-operation-binding.v1"
+      },
+      "run_id": "run-owned-service.v1",
+      "schema_version": "bluefire.owned-user-service-grant.v1",
+      "scope": {
+        "action_id": "owned.user_service.fixed_wait.v1",
+        "cleanup_expires_at": "2026-01-01T12:30:00Z",
+        "created_at": "2026-01-01T12:00:00Z",
+        "effects": {
+          "cleanup": [
+            "stop",
+            "disable",
+            "remove_links",
+            "remove_unit",
+            "reload_after_cleanup"
+          ],
+          "setup": [
+            "create_unit",
+            "reload",
+            "enable",
+            "start"
+          ]
+        },
+        "installations": {
+          "manager": {
+            "content_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "digest": "sha256:e47f660ba20173275c1b55519cdf77b5057d30809bd25da37df77547f0c06093",
+            "installation_id": "owned.service.manager.binary.v1",
+            "path": "/usr/bin/systemctl"
+          },
+          "payload": {
+            "content_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "digest": "sha256:bb1aff6500c24ae2baba19a0641a0bfc32baa5dc6cf990931935b9a485425965",
+            "installation_id": "owned.service.payload.binary.v1",
+            "path": "/opt/bluefire/owned-service-payload"
+          }
+        },
+        "limits": {
+          "cleanup_timeout_seconds": 30,
+          "max_memory_bytes": 134217728,
+          "max_processes": 4,
+          "max_runtime_seconds": 60,
+          "max_unit_bytes": 16384,
+          "setup_timeout_seconds": 30
+        },
+        "manager": {
+          "bus_identity": "unix:path=/run/user/1000/bus",
+          "kind": "systemd.user.v1"
+        },
+        "parameters": {
+          "duration_seconds": 10,
+          "memory_max_bytes": 67108864
+        },
+        "profile_id": "sandbox-execute.v1",
+        "profile_policy_digest": "sha256:0e05a21a8e43757e0fa6937cd456c5c2a90ec8c9d6fd97857a6eaee1a1ee4ff1",
+        "scenario_id": "owned-service-scenario.v1",
+        "schema_version": "bluefire.owned-user-service-scope.v1",
+        "setup_expires_at": "2026-01-01T12:05:00Z",
+        "step_id": "owned-service-step.v1",
+        "target": {
+          "boot_id": "12345678-1234-1234-1234-123456789abc",
+          "manager_instance_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "owner_uid": 1000
+        },
+        "target_scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "template": {
+          "content_digest": "sha256:cc89696233c84e5e8d5c212bbfe760491f672f1383637a361adce1517d75e6a3",
+          "template_id": "bluefire.user-service.fixed-wait.v1"
+        },
+        "unit": {
+          "content_digest": "sha256:313c0a3c968ce65dc33fadc4d52e142bd88b19ab46c14682657774ec52bd00d0",
+          "name": "bluefire-ffffffffffffffffffffffffffffffff.service",
+          "nonce": "ffffffffffffffffffffffffffffffff"
+        },
+        "workspace": {
+          "root": "/tmp/bluefire-owned-service-workspace",
+          "workspace_id": "workspace-owned-service.v1"
+        }
+      },
+      "scope_digest": "sha256:9d48973aaebe74e13215a68b59e5b409257562980c78df382d205a06c94b1701",
+      "step_id": "owned-service-step.v1"
+    },
+    "grant_digest": "sha256:32e4f4dff10df421388bc65f11820d53d98fa91e46d359489afe042271415271",
+    "issuer": {
+      "client_id": "bluefire-client.v1",
+      "enrollment_generation": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "peer_fingerprint": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "runner_id": "bluefire-rust-runner.v1",
+      "server_instance_id": "bluefire-server-instance.v1"
+    },
+    "schema_version": "bluefire.owned-user-service-admission.v1"
+  },
+  "manifest": {
+    "action_id": "owned.user_service.fixed_wait.v1",
+    "approval": {
+      "approved_at": "2026-01-01T12:01:00Z",
+      "approved_by": "synthetic-operator",
+      "expires_at": "2026-01-01T12:10:00Z",
+      "request_hash": "sha256:c611c2d566aee2f2f328e971770091ffb2319e667241c07db1f255a8823a3e34"
+    },
+    "behavior_id": "owned.service.behavior.v1",
+    "cleanup_action_id": "sandbox.cleanup.v1",
+    "evidence_refs": [],
+    "expires_at": "2026-01-01T12:07:00Z",
+    "limits": {
+      "max_artifact_bytes": 5242880,
+      "max_files": 100,
+      "max_stderr_bytes": 1048576,
+      "max_stdout_bytes": 1048576,
+      "timeout_ms": 30000
+    },
+    "mode": "execute",
+    "params": {
+      "duration_seconds": 10,
+      "memory_max_bytes": 67108864
+    },
+    "platform": "linux",
+    "policy_digest": "sha256:f7751cc2d21776f7138885bed56a6b8bb5ed11c4c688a18207b1025677428383",
+    "request_hash": "sha256:c611c2d566aee2f2f328e971770091ffb2319e667241c07db1f255a8823a3e34",
+    "request_id": "request-7a50cca718904b0b89691aaa5347bd66",
+    "requested_at": "2026-01-01T12:02:00Z",
+    "required_capabilities": [
+      "native_execution"
+    ],
+    "run_id": "run-owned-service.v1",
+    "runner_id": "bluefire-rust-runner.v1",
+    "runner_profile_id": "sandbox-execute.v1",
+    "safety_tier": "controlled",
+    "schema_version": "bluefire.runner-manifest.v1",
+    "step_id": "owned-service-step.v1",
+    "target_scope": {
+      "filesystem": [
+        "fixtures"
+      ],
+      "network": []
+    }
+  },
+  "now": "2026-01-01T12:03:00Z",
+  "profile": {
+    "allowed_actions": [
+      "endpoint.discovery.processes.v1",
+      "endpoint.discovery.system.v1",
+      "owned.service.manager.v1",
+      "owned.service.payload.v1",
+      "owned.user_service.fixed_wait.v1",
+      "sandbox.archive.tar.v1",
+      "sandbox.cleanup.v1",
+      "sandbox.collection.archive.v1",
+      "sandbox.collection.atomic-gzip.v1",
+      "sandbox.collection.records.v1",
+      "sandbox.collection.stage.v1",
+      "sandbox.discovery.list.v1",
+      "sandbox.discovery.metadata.v1",
+      "sandbox.discovery.recursive.v1",
+      "sandbox.execution.native-canary.v1",
+      "sandbox.export.local.v1",
+      "sandbox.fixture.create.v1",
+      "sandbox.fixture.transform.v1",
+      "sandbox.identity-material.inspect.v1",
+      "sandbox.identity-material.seed.v1",
+      "sandbox.network.loopback.v1",
+      "sandbox.observability.variant.v1",
+      "sandbox.peer.handoff.v1"
+    ],
+    "approval_required_at_or_above": "safe",
+    "capabilities": [
+      "cleanup",
+      "export_local",
+      "filesystem_read",
+      "filesystem_write",
+      "native_execution",
+      "network_loopback",
+      "process_discovery",
+      "process_spawn",
+      "system_discovery"
+    ],
+    "control_blocked_actions": [],
+    "limits": {
+      "max_artifact_bytes": 5242880,
+      "max_files": 100,
+      "max_stderr_bytes": 1048576,
+      "max_stdout_bytes": 1048576,
+      "timeout_ms": 120000
+    },
+    "max_safety_tier": "controlled",
+    "native_tool_installations": [
+      {
+        "adapter_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "adapter_id": "owned.service.manager.v1",
+        "adapter_version": "1.0.0",
+        "architecture": "x86_64",
+        "content_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "installation_location": "/usr/bin/systemctl",
+        "platform": "linux",
+        "schema_version": "bluefire.native-tool-installation.v1",
+        "size_bytes": 4096,
+        "tool_id": "owned.service.manager.binary.v1",
+        "tool_version": "1.0.0"
+      },
+      {
+        "adapter_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "adapter_id": "owned.service.payload.v1",
+        "adapter_version": "1.0.0",
+        "architecture": "x86_64",
+        "content_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "installation_location": "/opt/bluefire/owned-service-payload",
+        "platform": "linux",
+        "schema_version": "bluefire.native-tool-installation.v1",
+        "size_bytes": 4096,
+        "tool_id": "owned.service.payload.binary.v1",
+        "tool_version": "1.0.0"
+      }
+    ],
+    "platform": "linux",
+    "policy_digest": "sha256:f7751cc2d21776f7138885bed56a6b8bb5ed11c4c688a18207b1025677428383",
+    "profile_id": "sandbox-execute.v1",
+    "runner_id": "bluefire-rust-runner.v1",
+    "sandbox_root": "/tmp/bluefire-owned-service-workspace",
+    "schema_version": "bluefire.runner-profile.v1",
+    "target_scope": {
+      "filesystem": [
+        "fixtures"
+      ],
+      "network": []
+    }
+  }
+}

@@ -1,0 +1,18 @@
+.objective-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.objective-context > div { min-width: 0; }
+.objective-context span { color: var(--muted); font-size: var(--font-body-sm); }
+.objective-context p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.objective-context a { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.objective-context a svg { width: 16px; height: 16px; }
+.objective-context-mismatch { color: var(--amber); }
+.objective-context-mismatch p { margin: 0; }
+@media (max-width: 640px) {
+  .objective-context { align-items: flex-start; flex-direction: column; }
+}

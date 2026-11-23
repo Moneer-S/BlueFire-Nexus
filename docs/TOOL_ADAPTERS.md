@@ -93,6 +93,9 @@ installation checks must be proven by the concrete adapter before it is executab
 
 ## Validation and rollback
 
+The test file this section names was removed from the repository together with the
+heavy test matrix, and the last commit that holds it is `ebe5a9bf`.
+
 `tests_platform/test_tool_adapter_contract.py` checks unknown-field rejection,
 logical value bounds, canonical identity, mutation isolation and supervision limits.
 These deterministic contract tests are not live execution or detection proof.

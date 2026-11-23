@@ -1,0 +1,44 @@
+.composition-knowledge { margin-block: 12px 18px; min-width: 0; }
+.composition-knowledge > .button { gap: 8px; color: var(--blue-soft); }
+.composition-knowledge-content { margin-top: 12px; padding: 20px 22px; border: 1px solid var(--line-strong); border-radius: 10px; background: linear-gradient(130deg, color-mix(in srgb, var(--blue) 6%, var(--surface)), var(--surface) 65%); }
+.composition-knowledge-heading { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 12px 24px; }
+.composition-knowledge-heading > div { flex: 1 1 360px; min-width: 0; }
+.composition-knowledge-heading h3 { margin: 0 0 7px; font-size: 1rem; font-weight: 600; }
+.composition-knowledge-heading p { max-width: 760px; margin: 0; font-size: .79rem; line-height: 1.6; color: var(--muted-strong); }
+.composition-knowledge-history { flex: none; padding-top: 3px; font-size: .71rem; color: var(--blue-soft); }
+.composition-knowledge-controls { display: flex; align-items: start; flex-wrap: wrap; gap: 12px 20px; margin-block: 18px; }
+.composition-knowledge-controls > .button { flex: none; }
+.composition-knowledge-picker { flex: 1 1 300px; min-width: 0; }
+.composition-knowledge-picker > summary { width: fit-content; cursor: pointer; padding-block: 8px; font-size: .77rem; color: var(--text); }
+.composition-knowledge-picker > summary span { margin-left: 10px; font-size: .7rem; color: var(--muted-strong); }
+.composition-knowledge-picker fieldset { margin: 10px 0 0; padding: 12px 14px 14px; border: 1px solid var(--line); border-radius: 7px; min-width: 0; }
+.composition-knowledge-picker legend { padding-inline: 5px; font-size: .7rem; color: var(--muted-strong); }
+.composition-knowledge-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 18px; }
+.composition-knowledge-options label { display: flex; gap: 8px; align-items: start; cursor: pointer; font-size: .77rem; }
+.composition-knowledge-options input { flex: none; accent-color: var(--blue); margin: 3px 0 0; }
+.composition-knowledge-options small { display: block; margin-top: 3px; color: var(--muted-strong); font-size: .7rem; }
+.composition-knowledge-options label:has(input:disabled) { cursor: default; opacity: .55; }
+.composition-knowledge-results { display: grid; gap: 20px; }
+.composition-knowledge-attempt { border-top: 1px solid var(--line); padding-top: 16px; min-width: 0; }
+.composition-knowledge-attempt > header, .composition-knowledge-attempt > header > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; }
+.composition-knowledge-attempt > header { justify-content: space-between; margin-bottom: 13px; }
+.composition-knowledge-attempt h4 { margin: 0; font-size: .85rem; font-weight: 600; }
+.composition-knowledge-attempt > header span { font-size: .73rem; color: var(--muted-strong); }
+.composition-knowledge-attempt > header a { color: var(--blue-soft); font-size: .75rem; }
+.composition-findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); align-items: start; gap: 12px; padding: 0; margin: 0; list-style: none; }
+.composition-finding { padding: 14px 16px; border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--surface) 88%, transparent); min-width: 0; }
+.composition-finding-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 5px 14px; }
+.composition-finding-heading h5 { margin: 0; font-size: .81rem; font-weight: 550; }
+.composition-finding-heading > span { font-size: .67rem; color: var(--blue-soft); }
+.composition-finding-time { margin: 6px 0 12px; color: var(--muted-strong); font-size: .69rem; overflow-wrap: anywhere; }
+.composition-finding .data-list { margin-block: 10px; }
+.composition-finding .data-list > div { gap: 6px 12px; }
+.composition-finding .data-list dt, .composition-finding .data-list dd { font-size: .72rem; overflow-wrap: anywhere; }
+.composition-finding-source { padding-top: 7px; border-top: 1px solid var(--line); }
+.composition-finding-source summary, .composition-knowledge-identity summary, .composition-knowledge-unavailable summary { width: fit-content; color: var(--muted-strong); font-size: .7rem; cursor: pointer; padding-block: 4px; }
+.composition-knowledge code { font-size: .67rem; overflow-wrap: anywhere; white-space: normal; }
+.composition-knowledge-muted, .composition-knowledge-unavailable p { margin: 10px 0; color: var(--muted-strong); font-size: .76rem; line-height: 1.6; }
+.composition-knowledge-identity { border-top: 1px solid var(--line); padding-top: 12px; }
+.composition-knowledge-identity > code { display: block; margin-top: 8px; }
+.composition-knowledge :is(summary, input, a):focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; border-radius: 3px; }
+@media (max-width: 900px) { .composition-knowledge-content { padding: 16px; } }

@@ -2,6 +2,8 @@
 
 This historical baseline maps the earlier local product surface. It does not satisfy a release gate or establish release readiness. The locked `bluefire acceptance run --release` contract is the machine-verifiable release authority.
 
+The tests and tool scripts that the release gates run were removed from the repository together with the heavy test matrix, so `bluefire acceptance run --release` cannot pass from the current tree. The same cut removed `tests_platform/test_runner_*.py`, `tests_platform/test_ui_assets.py` and the `.github/workflows/tests.yml` wheel matrix that this page names, and the last commit that holds all of them is `ebe5a9bf`.
+
 ## Product boundary
 
 - BlueFire Nexus ships a Python control plane, packaged browser UI, typed catalogs, immutable run records, optional AI proposal handling, and a separately built Rust runner.

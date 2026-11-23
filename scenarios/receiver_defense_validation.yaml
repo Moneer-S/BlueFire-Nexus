@@ -1,0 +1,84 @@
+schema_version: bluefire.scenario.v1
+id: scenario.receiver-defense.redaction-validation.v1
+title: Validate receiver redaction and legitimate use
+purpose: Compare acceptance of generated records before and after explicit redaction at the owned loopback receiver.
+start: create_fixture
+steps:
+  - id: create_fixture
+    behavior_id: sandbox.fixture.create.v1
+    parameters:
+      record_count: 8
+
+  - id: transform_fixture
+    behavior_id: sandbox.fixture.transform.v1
+    parameters:
+      redact_values: false
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+  - id: inspect_fixture_metadata
+    behavior_id: sandbox.discovery.metadata.v1
+    inputs:
+      fixture:
+        from_step: transform_fixture
+        artifact: fixture
+
+  - id: stage_records
+    behavior_id: sandbox.collection.stage.v1
+    parameters:
+      bundle_format: jsonl
+    inputs:
+      records:
+        from_step: inspect_fixture_metadata
+        artifact: records
+
+  - id: handoff_to_receiver
+    behavior_id: sandbox.peer.handoff.v1
+    parameters:
+      port: 4317
+    inputs:
+      bundle:
+        from_step: stage_records
+        artifact: bundle
+
+  - id: cleanup_workspace
+    behavior_id: sandbox.cleanup.v1
+    parameters:
+      verify_removal: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+edges:
+  - {from_step: create_fixture, outcome: success, to_step: transform_fixture}
+  - {from_step: transform_fixture, outcome: success, to_step: inspect_fixture_metadata}
+  - {from_step: transform_fixture, outcome: partial, to_step: cleanup_workspace}
+  - {from_step: transform_fixture, outcome: blocked, to_step: cleanup_workspace}
+  - {from_step: transform_fixture, outcome: failed, to_step: cleanup_workspace}
+  - {from_step: inspect_fixture_metadata, outcome: success, to_step: stage_records}
+  - {from_step: inspect_fixture_metadata, outcome: partial, to_step: cleanup_workspace}
+  - {from_step: inspect_fixture_metadata, outcome: blocked, to_step: cleanup_workspace}
+  - {from_step: inspect_fixture_metadata, outcome: failed, to_step: cleanup_workspace}
+  - {from_step: stage_records, outcome: success, to_step: handoff_to_receiver}
+  - {from_step: stage_records, outcome: partial, to_step: cleanup_workspace}
+  - {from_step: stage_records, outcome: blocked, to_step: cleanup_workspace}
+  - {from_step: stage_records, outcome: failed, to_step: cleanup_workspace}
+  - {from_step: handoff_to_receiver, outcome: success, to_step: cleanup_workspace}
+  - {from_step: handoff_to_receiver, outcome: partial, to_step: cleanup_workspace}
+  - {from_step: handoff_to_receiver, outcome: blocked, to_step: cleanup_workspace}
+  - {from_step: handoff_to_receiver, outcome: failed, to_step: cleanup_workspace}
+
+provenance:
+  source: BlueFire Nexus authored receiver-defense validation scenario
+  reference: scenario.receiver-defense.redaction-validation.v1
+  license: MIT
+  derived: false
+  notes: Uses generated fixture records, the registered JSONL staging and peer handoff actions, and explicit workspace cleanup.
+
+limitations:
+  - The baseline intentionally retains generated record values so the receiver can establish a reviewed-record acceptance baseline; the retained-control workflow separately tests redaction.
+  - The peer handoff is restricted to the owned disposable loopback receiver and requires native Execute approval.
+  - This synthetic experiment measures the local receiver policy only; it does not establish external prevention or detection coverage.

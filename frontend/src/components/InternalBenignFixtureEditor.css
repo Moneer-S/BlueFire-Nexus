@@ -1,0 +1,13 @@
+.internal-benign-editor { container-type: inline-size; }
+.internal-benign-sample { min-width: 0; margin: .75rem 0; padding: .65rem; border: 1px solid var(--line); border-radius: .5rem; }
+.internal-benign-sample legend { font-size: .85rem; }
+.internal-benign-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: .55rem; align-items: start; margin: .65rem 0; }
+.internal-benign-field > *, .internal-benign-value { min-width: 0; }
+.internal-benign-value { display: grid; gap: .35rem; }
+.internal-benign-sample input, .internal-benign-sample select, .internal-benign-sample textarea { width: 100%; min-width: 0; }
+.internal-benign-field > button { justify-self: start; }
+.internal-benign-missing { overflow-wrap: anywhere; }
+@container (min-width: 560px) {
+  .internal-benign-field { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; }
+  .internal-benign-field > button { margin-top: 1.6rem; }
+}

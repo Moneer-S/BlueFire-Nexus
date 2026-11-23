@@ -1,0 +1,990 @@
+{
+  "cases": [
+    {
+      "name": "prepare_fixture",
+      "request": {
+        "deadline": "2026-10-09T00:00:30Z",
+        "exclusive_writer_digest": null,
+        "fixture": {
+          "expected_etag": null,
+          "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "purpose": "primary",
+          "schema_version": "bluefire.s3-fixture-operation.v2"
+        },
+        "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+        "launch_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "max_sends": 6,
+        "operation": "prepare_fixture",
+        "policy_change": null,
+        "request_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_version": "bluefire.s3-worker-request.v2",
+        "scope": {
+          "account_id": "123456789012",
+          "bucket": "bluefire-owned-fixture",
+          "created_at": "2026-10-09T00:00:00Z",
+          "expires_at": "2026-10-09T01:00:00Z",
+          "limits": {
+            "api_calls": 300,
+            "audit_bytes": 20971520,
+            "audit_events": 1000,
+            "audit_seconds": 1800,
+            "business_attempts": 6,
+            "business_seconds": 1800,
+            "cleanup_seconds": 900,
+            "convergence_seconds": 300,
+            "object_bytes": 65536,
+            "policy_changes": 1,
+            "request_seconds": 30,
+            "rollbacks": 1,
+            "session_seconds": 900,
+            "sessions": 6
+          },
+          "objects": [
+            {
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+              "purpose": "primary",
+              "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+              "size_bytes": 123
+            },
+            {
+              "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+              "purpose": "health",
+              "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+              "size_bytes": 122
+            }
+          ],
+          "ownership_receipt_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "policy": {
+            "baseline_digest": "sha256:c4968fa7f97c0855d1f111ae972bb664331b359f155be7fe48a74699d4f0bba2",
+            "legitimate_sid": "BlueFireLegitimate00000000000000000000000000000000",
+            "probe_sid": "BlueFireProbe00000000000000000000000000000000"
+          },
+          "prefix": "bluefire/s3-00000000000000000000000000000000/",
+          "region": "us-east-1",
+          "roles": {
+            "controller": "arn:aws:iam::123456789012:role/bluefire-controller",
+            "legitimate": "arn:aws:iam::123456789012:role/bluefire-legitimate",
+            "probe": "arn:aws:iam::123456789012:role/bluefire-probe"
+          },
+          "schema_version": "bluefire.s3-access-scope.v1",
+          "scope_id": "s3-00000000000000000000000000000000"
+        },
+        "scope_digest": "sha256:50b7b6da45d1d7b7be097886eda8fc0f4ec32851d9c2133a595bcb88057e6c37",
+        "worker_generation": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "request_digest": "sha256:7a65939a17e1fafdee7dea1440b4163f783aba0c90dc715b81b2709238e28d84",
+      "result": {
+        "calls": [
+          {
+            "http_status": 200,
+            "operation": "GetCallerIdentity",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "GetBucketVersioning",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "error_code": "ObjectLockConfigurationNotFoundError",
+            "http_status": 404,
+            "operation": "GetObjectLockConfiguration",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "error_code": "NoSuchKey",
+            "http_status": 404,
+            "operation": "GetObject",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "PutObject",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "GetObject",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          }
+        ],
+        "data": {
+          "bucket_shape": "never_versioned_no_object_lock",
+          "etag": "\"owned-token\"",
+          "expected_object": {
+            "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+            "purpose": "primary",
+            "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+            "size_bytes": 123
+          },
+          "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_mutated": false,
+          "purpose": "primary",
+          "state": "owned"
+        },
+        "outcome": "observed",
+        "problem": null,
+        "request_digest": "sha256:7a65939a17e1fafdee7dea1440b4163f783aba0c90dc715b81b2709238e28d84",
+        "runtime_isolation_proven": false,
+        "schema_version": "bluefire.s3-worker-result.v2",
+        "send_permits_consumed": 6
+      },
+      "sends": [
+        {
+          "kind": "send",
+          "request_digest": "sha256:7a65939a17e1fafdee7dea1440b4163f783aba0c90dc715b81b2709238e28d84",
+          "send": {
+            "host": "sts.us-east-1.amazonaws.com",
+            "method": "POST",
+            "operation": "GetCallerIdentity",
+            "payload_digest": "sha256:ab821ae955788b0e33ebd34c208442ccfc2d406e2edc5e7a39bd6458fbb4f843",
+            "resource": {},
+            "role": "controller",
+            "service": "sts"
+          },
+          "send_digest": "sha256:1d5d3c8956fc252f7cb8d99fa97bcfc6eb6e06d3cb1054865bebd64a2bf4ba7a",
+          "sequence": 1
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:7a65939a17e1fafdee7dea1440b4163f783aba0c90dc715b81b2709238e28d84",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetBucketVersioning",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:9f63735f1f14bc8a98ceb52410fdeb838191c25c99a488db5bc8dbe33430a26b",
+          "sequence": 2
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:7a65939a17e1fafdee7dea1440b4163f783aba0c90dc715b81b2709238e28d84",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetObjectLockConfiguration",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:8608ab5d43bd97be0314c3c9050cdf5d66ae6fd1862d7121bcdd68227f9b4efa",
+          "sequence": 3
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:7a65939a17e1fafdee7dea1440b4163f783aba0c90dc715b81b2709238e28d84",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetObject",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:5cf320df2aa80bfb7a72fe365f3c34b6a664b67114798c35821559a3cb8fb46f",
+          "sequence": 4
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:7a65939a17e1fafdee7dea1440b4163f783aba0c90dc715b81b2709238e28d84",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "PUT",
+            "operation": "PutObject",
+            "payload_digest": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:1cc469886a42aadd7686f5c90c8b4186527e88e46043adac759a3f55adcacb35",
+          "sequence": 5
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:7a65939a17e1fafdee7dea1440b4163f783aba0c90dc715b81b2709238e28d84",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetObject",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:a19b688e17a40ff2cea405e3c78e3a1b3ce8843091c8948db3701f081f76aeca",
+          "sequence": 6
+        }
+      ]
+    },
+    {
+      "name": "reconcile_fixture",
+      "request": {
+        "deadline": "2026-10-09T00:00:30Z",
+        "exclusive_writer_digest": null,
+        "fixture": {
+          "expected_etag": null,
+          "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "purpose": "primary",
+          "schema_version": "bluefire.s3-fixture-operation.v2"
+        },
+        "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+        "launch_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "max_sends": 5,
+        "operation": "reconcile_fixture",
+        "policy_change": null,
+        "request_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_version": "bluefire.s3-worker-request.v2",
+        "scope": {
+          "account_id": "123456789012",
+          "bucket": "bluefire-owned-fixture",
+          "created_at": "2026-10-09T00:00:00Z",
+          "expires_at": "2026-10-09T01:00:00Z",
+          "limits": {
+            "api_calls": 300,
+            "audit_bytes": 20971520,
+            "audit_events": 1000,
+            "audit_seconds": 1800,
+            "business_attempts": 6,
+            "business_seconds": 1800,
+            "cleanup_seconds": 900,
+            "convergence_seconds": 300,
+            "object_bytes": 65536,
+            "policy_changes": 1,
+            "request_seconds": 30,
+            "rollbacks": 1,
+            "session_seconds": 900,
+            "sessions": 6
+          },
+          "objects": [
+            {
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+              "purpose": "primary",
+              "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+              "size_bytes": 123
+            },
+            {
+              "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+              "purpose": "health",
+              "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+              "size_bytes": 122
+            }
+          ],
+          "ownership_receipt_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "policy": {
+            "baseline_digest": "sha256:c4968fa7f97c0855d1f111ae972bb664331b359f155be7fe48a74699d4f0bba2",
+            "legitimate_sid": "BlueFireLegitimate00000000000000000000000000000000",
+            "probe_sid": "BlueFireProbe00000000000000000000000000000000"
+          },
+          "prefix": "bluefire/s3-00000000000000000000000000000000/",
+          "region": "us-east-1",
+          "roles": {
+            "controller": "arn:aws:iam::123456789012:role/bluefire-controller",
+            "legitimate": "arn:aws:iam::123456789012:role/bluefire-legitimate",
+            "probe": "arn:aws:iam::123456789012:role/bluefire-probe"
+          },
+          "schema_version": "bluefire.s3-access-scope.v1",
+          "scope_id": "s3-00000000000000000000000000000000"
+        },
+        "scope_digest": "sha256:50b7b6da45d1d7b7be097886eda8fc0f4ec32851d9c2133a595bcb88057e6c37",
+        "worker_generation": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "request_digest": "sha256:a335bcfcddeef11ce80aa5acdf46b3404d1982ae97af016698cdd32b5d33fcb3",
+      "result": {
+        "calls": [
+          {
+            "http_status": 200,
+            "operation": "GetCallerIdentity",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "GetBucketVersioning",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "error_code": "ObjectLockConfigurationNotFoundError",
+            "http_status": 404,
+            "operation": "GetObjectLockConfiguration",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "GetObject",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "ListObjectsV2",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          }
+        ],
+        "data": {
+          "bucket_shape": "never_versioned_no_object_lock",
+          "etag": "\"owned-token\"",
+          "expected_object": {
+            "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+            "purpose": "primary",
+            "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+            "size_bytes": 123
+          },
+          "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_mutated": false,
+          "purpose": "primary",
+          "state": "owned"
+        },
+        "outcome": "observed",
+        "problem": null,
+        "request_digest": "sha256:a335bcfcddeef11ce80aa5acdf46b3404d1982ae97af016698cdd32b5d33fcb3",
+        "runtime_isolation_proven": false,
+        "schema_version": "bluefire.s3-worker-result.v2",
+        "send_permits_consumed": 5
+      },
+      "sends": [
+        {
+          "kind": "send",
+          "request_digest": "sha256:a335bcfcddeef11ce80aa5acdf46b3404d1982ae97af016698cdd32b5d33fcb3",
+          "send": {
+            "host": "sts.us-east-1.amazonaws.com",
+            "method": "POST",
+            "operation": "GetCallerIdentity",
+            "payload_digest": "sha256:ab821ae955788b0e33ebd34c208442ccfc2d406e2edc5e7a39bd6458fbb4f843",
+            "resource": {},
+            "role": "controller",
+            "service": "sts"
+          },
+          "send_digest": "sha256:9562a4c90b9c9e2ebcfe942a73fac366815550a57a7cf6759b31369a47e30c19",
+          "sequence": 1
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:a335bcfcddeef11ce80aa5acdf46b3404d1982ae97af016698cdd32b5d33fcb3",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetBucketVersioning",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:0bdac944b7b19affd8d7c46ee3ba9cba2b1c5fb145e984d1facab18df17d34ff",
+          "sequence": 2
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:a335bcfcddeef11ce80aa5acdf46b3404d1982ae97af016698cdd32b5d33fcb3",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetObjectLockConfiguration",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:f86ab3b4abc9f3fab0e5f47e8766eb03a82f8772c9be2e46cef1ed5c09b6b428",
+          "sequence": 3
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:a335bcfcddeef11ce80aa5acdf46b3404d1982ae97af016698cdd32b5d33fcb3",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetObject",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:f0ec691f8391e5d5a1d1ee08a71309b0bcfe02ffbe7c520b76f43d0ab6842b53",
+          "sequence": 4
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:a335bcfcddeef11ce80aa5acdf46b3404d1982ae97af016698cdd32b5d33fcb3",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "ListObjectsV2",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "max_keys": 3,
+              "prefix": "bluefire/s3-00000000000000000000000000000000/"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:52d730ad111a6282565d7053fb3e9a0ce7e915d6c4a83d766d8ebcfcccb5f37c",
+          "sequence": 5
+        }
+      ]
+    },
+    {
+      "name": "cleanup_fixture",
+      "request": {
+        "deadline": "2026-10-09T00:00:30Z",
+        "exclusive_writer_digest": null,
+        "fixture": {
+          "expected_etag": "\"owned-token\"",
+          "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "purpose": "primary",
+          "schema_version": "bluefire.s3-fixture-operation.v2"
+        },
+        "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+        "launch_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "max_sends": 7,
+        "operation": "cleanup_fixture",
+        "policy_change": null,
+        "request_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_version": "bluefire.s3-worker-request.v2",
+        "scope": {
+          "account_id": "123456789012",
+          "bucket": "bluefire-owned-fixture",
+          "created_at": "2026-10-09T00:00:00Z",
+          "expires_at": "2026-10-09T01:00:00Z",
+          "limits": {
+            "api_calls": 300,
+            "audit_bytes": 20971520,
+            "audit_events": 1000,
+            "audit_seconds": 1800,
+            "business_attempts": 6,
+            "business_seconds": 1800,
+            "cleanup_seconds": 900,
+            "convergence_seconds": 300,
+            "object_bytes": 65536,
+            "policy_changes": 1,
+            "request_seconds": 30,
+            "rollbacks": 1,
+            "session_seconds": 900,
+            "sessions": 6
+          },
+          "objects": [
+            {
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+              "purpose": "primary",
+              "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+              "size_bytes": 123
+            },
+            {
+              "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+              "purpose": "health",
+              "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+              "size_bytes": 122
+            }
+          ],
+          "ownership_receipt_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "policy": {
+            "baseline_digest": "sha256:c4968fa7f97c0855d1f111ae972bb664331b359f155be7fe48a74699d4f0bba2",
+            "legitimate_sid": "BlueFireLegitimate00000000000000000000000000000000",
+            "probe_sid": "BlueFireProbe00000000000000000000000000000000"
+          },
+          "prefix": "bluefire/s3-00000000000000000000000000000000/",
+          "region": "us-east-1",
+          "roles": {
+            "controller": "arn:aws:iam::123456789012:role/bluefire-controller",
+            "legitimate": "arn:aws:iam::123456789012:role/bluefire-legitimate",
+            "probe": "arn:aws:iam::123456789012:role/bluefire-probe"
+          },
+          "schema_version": "bluefire.s3-access-scope.v1",
+          "scope_id": "s3-00000000000000000000000000000000"
+        },
+        "scope_digest": "sha256:50b7b6da45d1d7b7be097886eda8fc0f4ec32851d9c2133a595bcb88057e6c37",
+        "worker_generation": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "request_digest": "sha256:c5af8abad9a3569e6961dda1ddfdd1ec76a17f0bc11b8efc6278c8e96b312256",
+      "result": {
+        "calls": [
+          {
+            "http_status": 200,
+            "operation": "GetCallerIdentity",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "GetBucketVersioning",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "error_code": "ObjectLockConfigurationNotFoundError",
+            "http_status": 404,
+            "operation": "GetObjectLockConfiguration",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "GetObject",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 204,
+            "operation": "DeleteObject",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "error_code": "NoSuchKey",
+            "http_status": 404,
+            "operation": "GetObject",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "ListObjectsV2",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          }
+        ],
+        "data": {
+          "bucket_shape": "never_versioned_no_object_lock",
+          "etag": null,
+          "expected_object": {
+            "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+            "purpose": "primary",
+            "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+            "size_bytes": 123
+          },
+          "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_mutated": false,
+          "purpose": "primary",
+          "state": "absent"
+        },
+        "outcome": "observed",
+        "problem": null,
+        "request_digest": "sha256:c5af8abad9a3569e6961dda1ddfdd1ec76a17f0bc11b8efc6278c8e96b312256",
+        "runtime_isolation_proven": false,
+        "schema_version": "bluefire.s3-worker-result.v2",
+        "send_permits_consumed": 7
+      },
+      "sends": [
+        {
+          "kind": "send",
+          "request_digest": "sha256:c5af8abad9a3569e6961dda1ddfdd1ec76a17f0bc11b8efc6278c8e96b312256",
+          "send": {
+            "host": "sts.us-east-1.amazonaws.com",
+            "method": "POST",
+            "operation": "GetCallerIdentity",
+            "payload_digest": "sha256:ab821ae955788b0e33ebd34c208442ccfc2d406e2edc5e7a39bd6458fbb4f843",
+            "resource": {},
+            "role": "controller",
+            "service": "sts"
+          },
+          "send_digest": "sha256:66a98b9a13aac89408df97bb6774398c57d09b81a7529ee46b996e87dcd9f62b",
+          "sequence": 1
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:c5af8abad9a3569e6961dda1ddfdd1ec76a17f0bc11b8efc6278c8e96b312256",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetBucketVersioning",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:c3bbcded88c40c3e7b9188fc54815fe7d49b5ade0dabdddbd421e8df542bb68e",
+          "sequence": 2
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:c5af8abad9a3569e6961dda1ddfdd1ec76a17f0bc11b8efc6278c8e96b312256",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetObjectLockConfiguration",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:dd2b3f3d31387e3aa2a6354a8d7f7943f396f7013cc99d3dc8f2aaec4a731c77",
+          "sequence": 3
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:c5af8abad9a3569e6961dda1ddfdd1ec76a17f0bc11b8efc6278c8e96b312256",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetObject",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:6db72fd23180dd77d8295d6c94283fbdf1073313fb1ebd41be53f33342792ed0",
+          "sequence": 4
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:c5af8abad9a3569e6961dda1ddfdd1ec76a17f0bc11b8efc6278c8e96b312256",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "DELETE",
+            "operation": "DeleteObject",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "expected_etag": "\"owned-token\"",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:b5890f40dc3052fff81e076b61b5539922418e6ae1277ecc7e10b30f28a61ffb",
+          "sequence": 5
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:c5af8abad9a3569e6961dda1ddfdd1ec76a17f0bc11b8efc6278c8e96b312256",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetObject",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:6b532d22d7e0551962a018b0f9387764d631468b3c61d2b142c7e24809eae228",
+          "sequence": 6
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:c5af8abad9a3569e6961dda1ddfdd1ec76a17f0bc11b8efc6278c8e96b312256",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "ListObjectsV2",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "max_keys": 3,
+              "prefix": "bluefire/s3-00000000000000000000000000000000/"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:839037284163f7cee9619644190882a27d5d5c9d66b7beb2167cba0d25e99dca",
+          "sequence": 7
+        }
+      ]
+    },
+    {
+      "name": "cleanup_fixture-absent",
+      "request": {
+        "deadline": "2026-10-09T00:00:30Z",
+        "exclusive_writer_digest": null,
+        "fixture": {
+          "expected_etag": null,
+          "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "purpose": "primary",
+          "schema_version": "bluefire.s3-fixture-operation.v2"
+        },
+        "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+        "launch_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "max_sends": 7,
+        "operation": "cleanup_fixture",
+        "policy_change": null,
+        "request_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema_version": "bluefire.s3-worker-request.v2",
+        "scope": {
+          "account_id": "123456789012",
+          "bucket": "bluefire-owned-fixture",
+          "created_at": "2026-10-09T00:00:00Z",
+          "expires_at": "2026-10-09T01:00:00Z",
+          "limits": {
+            "api_calls": 300,
+            "audit_bytes": 20971520,
+            "audit_events": 1000,
+            "audit_seconds": 1800,
+            "business_attempts": 6,
+            "business_seconds": 1800,
+            "cleanup_seconds": 900,
+            "convergence_seconds": 300,
+            "object_bytes": 65536,
+            "policy_changes": 1,
+            "request_seconds": 30,
+            "rollbacks": 1,
+            "session_seconds": 900,
+            "sessions": 6
+          },
+          "objects": [
+            {
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+              "purpose": "primary",
+              "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+              "size_bytes": 123
+            },
+            {
+              "key": "bluefire/s3-00000000000000000000000000000000/health.jsonl",
+              "purpose": "health",
+              "sha256": "sha256:20a4142edc0698eb65577555c49c2e48785fe78eb304f36db341c086bc89f9c2",
+              "size_bytes": 122
+            }
+          ],
+          "ownership_receipt_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "policy": {
+            "baseline_digest": "sha256:c4968fa7f97c0855d1f111ae972bb664331b359f155be7fe48a74699d4f0bba2",
+            "legitimate_sid": "BlueFireLegitimate00000000000000000000000000000000",
+            "probe_sid": "BlueFireProbe00000000000000000000000000000000"
+          },
+          "prefix": "bluefire/s3-00000000000000000000000000000000/",
+          "region": "us-east-1",
+          "roles": {
+            "controller": "arn:aws:iam::123456789012:role/bluefire-controller",
+            "legitimate": "arn:aws:iam::123456789012:role/bluefire-legitimate",
+            "probe": "arn:aws:iam::123456789012:role/bluefire-probe"
+          },
+          "schema_version": "bluefire.s3-access-scope.v1",
+          "scope_id": "s3-00000000000000000000000000000000"
+        },
+        "scope_digest": "sha256:50b7b6da45d1d7b7be097886eda8fc0f4ec32851d9c2133a595bcb88057e6c37",
+        "worker_generation": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "request_digest": "sha256:555f487362c889340f837ba2207a44e6878fb781900ea456e425e5779061cd37",
+      "result": {
+        "calls": [
+          {
+            "http_status": 200,
+            "operation": "GetCallerIdentity",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "GetBucketVersioning",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "error_code": "ObjectLockConfigurationNotFoundError",
+            "http_status": 404,
+            "operation": "GetObjectLockConfiguration",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "error_code": "NoSuchKey",
+            "http_status": 404,
+            "operation": "GetObject",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          },
+          {
+            "http_status": 200,
+            "operation": "ListObjectsV2",
+            "request_id": "SAFE-REQUEST-ID",
+            "role": "controller"
+          }
+        ],
+        "data": {
+          "bucket_shape": "never_versioned_no_object_lock",
+          "etag": null,
+          "expected_object": {
+            "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl",
+            "purpose": "primary",
+            "sha256": "sha256:adb6f741eaa90c6a55812e09d5dbb68feba406f7234b1a35d12b2fb1a53de695",
+            "size_bytes": 123
+          },
+          "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "policy_mutated": false,
+          "purpose": "primary",
+          "state": "absent"
+        },
+        "outcome": "observed",
+        "problem": null,
+        "request_digest": "sha256:555f487362c889340f837ba2207a44e6878fb781900ea456e425e5779061cd37",
+        "runtime_isolation_proven": false,
+        "schema_version": "bluefire.s3-worker-result.v2",
+        "send_permits_consumed": 5
+      },
+      "sends": [
+        {
+          "kind": "send",
+          "request_digest": "sha256:555f487362c889340f837ba2207a44e6878fb781900ea456e425e5779061cd37",
+          "send": {
+            "host": "sts.us-east-1.amazonaws.com",
+            "method": "POST",
+            "operation": "GetCallerIdentity",
+            "payload_digest": "sha256:ab821ae955788b0e33ebd34c208442ccfc2d406e2edc5e7a39bd6458fbb4f843",
+            "resource": {},
+            "role": "controller",
+            "service": "sts"
+          },
+          "send_digest": "sha256:6e9c47861218d0ce735ab946450b4e94ec60f3d5b357b3d7e88362351c518a42",
+          "sequence": 1
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:555f487362c889340f837ba2207a44e6878fb781900ea456e425e5779061cd37",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetBucketVersioning",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:58e0510a6f443df89be450ef60f8247233ada40aa28f1be1e5bdcb0b7a4da586",
+          "sequence": 2
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:555f487362c889340f837ba2207a44e6878fb781900ea456e425e5779061cd37",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetObjectLockConfiguration",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:bf4e61d9309085b39838631a3fdba7eaa01d4e06171e5d2f6cc2da7b0e99ada7",
+          "sequence": 3
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:555f487362c889340f837ba2207a44e6878fb781900ea456e425e5779061cd37",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "GetObject",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "intent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "key": "bluefire/s3-00000000000000000000000000000000/records.jsonl"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:0ab5dca4433da9d6183fad2015a29a7966ecab79be1a2b30e63f167be8b707fa",
+          "sequence": 4
+        },
+        {
+          "kind": "send",
+          "request_digest": "sha256:555f487362c889340f837ba2207a44e6878fb781900ea456e425e5779061cd37",
+          "send": {
+            "host": "s3.us-east-1.amazonaws.com",
+            "method": "GET",
+            "operation": "ListObjectsV2",
+            "payload_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "resource": {
+              "bucket": "bluefire-owned-fixture",
+              "fixture_authority_digest": "sha256:034448cb5457c2b2eaf5e28b9390c594f3334ad44d0593fb2d1d6e67f791bf3d",
+              "max_keys": 3,
+              "prefix": "bluefire/s3-00000000000000000000000000000000/"
+            },
+            "role": "controller",
+            "service": "s3"
+          },
+          "send_digest": "sha256:f0faba8b53c0d89cfba33fe1f5bd95019ad10d05f72161bdc243168d141bc19b",
+          "sequence": 5
+        }
+      ]
+    }
+  ],
+  "enrollment": {
+    "bucket_shape": "never_versioned_no_object_lock",
+    "exclusive_writer_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "generation_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "schema_version": "bluefire.s3-fixture-enrollment.v2",
+    "scope_digest": "sha256:50b7b6da45d1d7b7be097886eda8fc0f4ec32851d9c2133a595bcb88057e6c37"
+  },
+  "payloads": {
+    "health": "{\"purpose\":\"health\",\"schema_version\":\"bluefire.s3-generated-fixture.v1\",\"scope_id\":\"s3-00000000000000000000000000000000\"}\n",
+    "primary": "{\"purpose\":\"primary\",\"schema_version\":\"bluefire.s3-generated-fixture.v1\",\"scope_id\":\"s3-00000000000000000000000000000000\"}\n"
+  },
+  "schema_version": "bluefire.s3-fixture-golden.v2"
+}
