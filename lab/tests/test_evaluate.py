@@ -551,6 +551,8 @@ def test_the_labs_rules_give_a_second_answer_and_never_change_the_first() -> Non
     test = {"visibility": answer}
 
     assert answer["answer"] == "telemetry only"
+    # The first answer says what it counts: a lab rule's alert does not make its words false.
+    assert answer["basis"] == "the test left events, and no published rule of an alert level matched one"
     assert [rule["id"] for rule in answer["rules"]] == ["medium-rule"]
     assert [rule["id"] for rule in answer["with_lab_rules"]["rules"]] == ["lab-rule"]
     evaluate.second_answers([test], [{"id": "lab-rule", "accepted": True}])
@@ -559,6 +561,26 @@ def test_the_labs_rules_give_a_second_answer_and_never_change_the_first() -> Non
     assert answer["with_lab_rules"]["answer"] == "telemetry only"
     assert answer["with_lab_rules"]["rules"][0]["accepted"] is False
     assert answer["answer"] == "telemetry only"
+
+
+def test_a_result_keeps_the_plain_sentence_technique_name_and_tactic_the_run_recorded() -> None:
+    record = {
+        "order": 4, "role": "test", "technique": "T1070.003", "guid": "g", "name": "Clear history",
+        "executor": "sh", "elevated": False, "user": "bluefire-lab", "steps": [],
+    }  # fmt: skip
+    described = {
+        **record,
+        "plain": "Deletes the shell history file with rm.",
+        "technique_name": "Indicator Removal: Clear Command History",
+        "tactic": "stealth",
+    }
+
+    assert {key: evaluate.result_head(described)[key] for key in ("plain", "technique_name", "tactic")} == {
+        "plain": "Deletes the shell history file with rm.",
+        "technique_name": "Indicator Removal: Clear Command History",
+        "tactic": "stealth",
+    }
+    assert not {"plain", "technique_name", "tactic", "steps"} & set(evaluate.result_head(record))
 
 
 def test_ordinary_activity_is_the_baseline_and_what_ran_in_no_session_outside_the_tests() -> None:

@@ -417,7 +417,13 @@ rotate, and the loss control would fail a run in which it did; none has since.
 4. `bluefire-lab report` writes `report.html`, one file that loads nothing from
    elsewhere when it opens (it refuses to write one that would), and the same
    table for the run page.
-5. A separate job, which runs no test, compares the run with the latest
+5. `bluefire-lab recording` writes `recording.json`: the run as one file, made
+   to be replayed step by step. It holds each step in order, the events tied to
+   it and the rules that matched, taken only from `run.json` and
+   `results.json`. Its format is [`docs/RECORDING.md`](../docs/RECORDING.md).
+   The job writes it whenever the evaluation wrote `results.json`, also when a
+   control failed, and it is part of the run's artifact.
+6. A separate job, which runs no test, compares the run with the latest
    successful run on `main` (`bluefire-lab compare`) and writes to the run page
    which answers changed and what changed under them: events, rules that
    match, a rule of the lab's own accepted now and how many published
@@ -532,7 +538,11 @@ The answers can be computed again from a run's artifact, on any machine:
 pip install ./lab
 bluefire-lab evaluate <folder of the unpacked artifact> --engine <path to Zircolite 4.7.1>
 bluefire-lab report <folder of the unpacked artifact>
+bluefire-lab recording <folder of the unpacked artifact> [--run-url <address of the CI run>] [--tests lab/pinned-tests.yaml]
 ```
+
+`--tests` supplies the plain sentence of each test for a run made before
+`run.json` recorded them; the recording's notes then say so.
 
 Two runs' artifacts can be compared the same way:
 

@@ -117,6 +117,13 @@ jobs:
             | while read -r technique; do echo "atomics/$technique"; done \
             | git -C /opt/bluefire-lab/atomic-red-team sparse-checkout set --stdin
           git -C /opt/bluefire-lab/atomic-red-team checkout -q FETCH_HEAD
+          # Upstream's index of its Linux tests names each test's tactic. That one file is taken by
+          # itself: a sparse checkout of its folder would also bring the files of the folder above
+          # it, 54 MB of other indexes.
+          index=atomics/Indexes/Indexes-CSV/linux-index.csv
+          mkdir -p "/opt/bluefire-lab/atomic-red-team/${index%/*}"
+          git -C /opt/bluefire-lab/atomic-red-team show "HEAD:$index" \
+            > "/opt/bluefire-lab/atomic-red-team/$index"
           fetch "$SIGMA" /opt/bluefire-lab/sigma
           git -C /opt/bluefire-lab/sigma sparse-checkout set rules/linux
           git -C /opt/bluefire-lab/sigma checkout -q FETCH_HEAD
@@ -206,6 +213,13 @@ jobs:
           "$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUN"
           cat "$RUN/summary.md" >> "$GITHUB_STEP_SUMMARY"
           if grep -n $'\xe2\x80\x94' "$RUN/report.html" "$RUN/summary.md"; then echo "the report must not use the em dash"; exit 1; fi
+
+      # The run as one file that can be replayed: its format is docs/RECORDING.md.
+      - name: Write the recording
+        if: always()
+        run: |
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" recording "$RUN" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Take pictures of the report
         if: always()

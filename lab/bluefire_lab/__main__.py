@@ -1,4 +1,4 @@
-"""Command line of the lab: run, evaluate, report."""
+"""Command line of the lab: run, evaluate, report, recording, compare."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import compare, evaluate, report, run
+from . import compare, evaluate, recording, report, run
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -29,6 +29,15 @@ def main(arguments: list[str] | None = None) -> int:
 
     reporting = commands.add_parser("report", help="write report.html and summary.md from results.json")
     reporting.add_argument("folder", type=Path, help="folder with results.json")
+
+    replaying = commands.add_parser(
+        "recording", help="write recording.json, the run as one file that can be replayed"
+    )
+    replaying.add_argument("folder", type=Path, help="folder with run.json and results.json")
+    replaying.add_argument("--run-url", help="address of the CI run that made the files")
+    replaying.add_argument(
+        "--tests", type=Path, help="the list of pinned tests, for a run made before it recorded plain words"
+    )
 
     comparing = commands.add_parser("compare", help="say which answers changed since an earlier run, and why")
     comparing.add_argument("before", type=Path, help="folder with the earlier run's results.json")
@@ -57,6 +66,8 @@ def main(arguments: list[str] | None = None) -> int:
         return evaluate.main(options.folder, options.engine)
     if options.command == "compare":
         return compare.main(options.before, options.after)
+    if options.command == "recording":
+        return recording.main(options.folder, options.run_url, options.tests)
     return report.main(options.folder)
 
 
