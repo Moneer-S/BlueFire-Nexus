@@ -1,14 +1,14 @@
 // What the watch view needs about the current step at one moment: pure.
 
-import { countsForScore } from "./recording";
+import { countsForScore, timeOf } from "./recording";
 import type { Alert, Recording, RecordingEvent, Step } from "./recording";
 import type { FirstAlert, Frame, ScoreSoFar, Segment, Timeline } from "./playback";
-import { maxOf } from "./playback";
+import { landing, maxOf, PLAYBACK_RULE } from "./playback";
 import { matchKind, strongerKind } from "./format";
 import type { MatchKind } from "./format";
 
 /** Screen seconds a recorded event takes to travel from its host to the rule engines. */
-export const TRAVEL = 0.9;
+export const TRAVEL = PLAYBACK_RULE.travel;
 /** The share of the travel spent between the host and its sensor. */
 export const TO_SENSOR = 0.26;
 
@@ -58,17 +58,13 @@ function firstCountingFire(timeline: Timeline, stepId: string): { alert: Alert; 
 
 const REVEALS = new WeakMap<Segment, number>();
 
-/** The screen time at which a match's light reaches its rule engine. A match on the launcher line has no light. */
-function landing(fire: { alert: Alert; at: number }): number {
-  return fire.at + (fire.alert.events.length > 0 ? TRAVEL : 0);
-}
-
 /**
  * The screen time at which a step's outcome is told. An alerted step is told
  * when the light of its first alert that counts reaches the rule engine. Any
  * other step is told once the rule engines have judged what was recorded: a
  * little before the middle of its body, or when its last match lands, and
- * always a moment before the step ends.
+ * always a moment before the step ends. The step holds after its body for as
+ * long as that takes, so each light lands while the step is on screen.
  */
 export function revealTime(timeline: Timeline, segment: Segment): number {
   const known = REVEALS.get(segment);
@@ -79,14 +75,14 @@ export function revealTime(timeline: Timeline, segment: Segment): number {
 }
 
 function workOutReveal(timeline: Timeline, segment: Segment): number {
-  const middle = segment.bodyStart + (segment.end - segment.bodyStart) * 0.42;
+  const middle = segment.bodyStart + (segment.bodyEnd - segment.bodyStart) * 0.42;
   if (segment.step.outcome === "alerted") {
     const fire = firstCountingFire(timeline, segment.step.id);
     if (fire) return Math.max(landing(fire), segment.bodyStart);
   }
   const fires = timeline.byStep.get(segment.step.id)?.fires ?? [];
   const last = Math.max(middle, maxOf(fires.map(landing)));
-  return Math.max(segment.bodyStart, Math.min(last, segment.end - 0.25));
+  return Math.max(segment.bodyStart, Math.min(last, segment.end - PLAYBACK_RULE.told));
 }
 
 /**
@@ -110,6 +106,16 @@ export function scoreOnScreen(timeline: Timeline, frame: Frame, moment: StepMome
   if (test && step.outcome === "seen") score.seen += 1;
   if (test && step.outcome === "unseen") score.unseen += 1;
   return score;
+}
+
+/**
+ * The first alert on a test as the screen tells it: from its fire time, but
+ * while its own step plays, not before that step's outcome is told, so the
+ * flag, the timeline's mark and the score never disagree.
+ */
+export function firstAlertOnScreen(first: FirstAlert | null, time: number, segment: Segment | null | undefined, revealed: boolean): FirstAlert | null {
+  if (!first || time < first.at) return null;
+  return segment?.step.id === first.step.id && !revealed ? null : first;
 }
 
 export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[], matches: ReturnType<typeof stepMatches>): StepMoment | null {
@@ -163,11 +169,11 @@ export interface RunFacts {
 export function runFacts(recording: Recording, timeline: Timeline): RunFacts {
   const first = timeline.segments[0];
   const last = timeline.segments[timeline.segments.length - 1];
-  const start = first ? first.realStart : Date.parse(recording.source.started);
-  const end = last ? last.realEnd : Date.parse(recording.source.finished ?? recording.source.started);
+  const start = first ? first.realStart : timeOf(recording.source.started);
+  const end = last ? last.realEnd : timeOf(recording.source.finished ?? recording.source.started);
   const roles = new Map(recording.steps.map((step) => [step.id, step]));
   const found = timeline.fires.find(({ alert }) => countsForScore(alert) && roles.get(alert.step)?.role !== "test");
   const step = found ? roles.get(found.alert.step) : undefined;
-  const otherFirst = found && step ? { step, at: found.at, real: Date.parse(found.alert.raised ?? found.alert.time) } : null;
+  const otherFirst = found && step ? { step, at: found.at, real: timeOf(found.alert.raised ?? found.alert.time) } : null;
   return { start, end, otherFirst };
 }

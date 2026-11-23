@@ -133,7 +133,7 @@
     ]
   },
   "frontend": {
-    "lockfile_sha256": "e046c61300ef5320ed01673398c866327dc127835c48a4f1d14b62b8b7bef23f",
+    "lockfile_sha256": "839cde61aa028ec6034665a0a5c107056fec15195f774be441d85fbff2d957ba",
     "locked_package_count": 395,
     "direct_requirements": {
       "@dagrejs/dagre": "3.1.1",
@@ -157,7 +157,6 @@
       "@types/react": "^19.1.16",
       "@types/react-dom": "^19.1.9",
       "@vitejs/plugin-react": "^5.0.3",
-      "css-tree": "3.2.1",
       "eslint": "^9.36.0",
       "eslint-plugin-react-hooks": "^5.2.0",
       "eslint-plugin-react-refresh": "^0.4.20",

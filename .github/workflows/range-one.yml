@@ -217,3 +217,90 @@ jobs:
           path: ${{ runner.temp }}/seal
           retention-days: 30
           if-no-files-found: error
+
+  # The defense on a range of two hosts on one network (lab/range/wazuh-check.yaml): a
+  # Wazuh manager and a host with a Wazuh agent, built from the spec. The run waits until
+  # the agent is ready and a nonce logged on the host is in the manager's archive, makes a
+  # few harmless marks on the host, and counts how many lines of each watched log reached
+  # the manager. No published test runs in this job.
+  wazuh:
+    name: the defense sees the host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SPEC: lab/range/wazuh-check.yaml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the lab
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
+          echo "LAB=$RUNNER_TEMP/venv/bin/bluefire-lab" >> "$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP/wazuh" >> "$GITHUB_ENV"
+          docker version
+
+      - name: Render the images
+        run: '"$LAB" range render "$SPEC" --out range-build'
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The run below finds every image under the tag of this build context and builds nothing.
+      - name: Build the images
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          source: ./range-build
+          files: ./bake.json
+          load: true
+          set: |
+            *.cache-from=type=gha,scope=range-wazuh
+            *.cache-to=type=gha,mode=max,scope=range-wazuh
+
+      - name: Run the range
+        run: '"$LAB" range run "$SPEC" --out "$OUT/run"'
+
+      # The engine flags a delivery gap and does not fail the run on it: a lost event is a result
+      # about the defense. This job is there to show that the defense sees the host, so here a gap,
+      # a mark that did not arrive, a broken decoder or a configuration that is not the lab's edits
+      # fails it.
+      - name: The defense saw every mark and every line
+        run: |
+          if ! jq -e '
+            .defense.delivery_gap == false
+            and (.defense.marks | length > 0 and all(.made and .archived))
+            and .defense.snoopy_tag.works == true
+            and ([.defense.configuration[] | .matches_the_lab_edits] | length > 0 and all)
+            and (.defense | has("collect_error") | not)
+          ' "$OUT/run/manifest.json" > /dev/null; then
+            jq '.defense | {delivery_gap, delivery_findings, marks, snoopy_tag, collect_error,
+              configuration: (.configuration | map_values(.matches_the_lab_edits // .error))}' "$OUT/run/manifest.json"
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f "$OUT/run/defense.md" ]; then cat "$OUT/run/defense.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f "$OUT/run/seal.md" ]; then cat "$OUT/run/seal.md" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Take down what is left
+        if: always()
+        run: |
+          "$LAB" range down "$SPEC"
+          docker ps -a --filter name=bluefire-lab
+          docker network ls --filter name=bluefire-lab
+
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: range-wazuh
+          path: ${{ runner.temp }}/wazuh
+          retention-days: 30
+          if-no-files-found: error

@@ -10,9 +10,13 @@ SHA-256 `693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3`.
 Inter is a trademark of Rasmus Andersson. BlueFire does not imply endorsement.
 
 The single replay page, `bluefire/ui/replay.html`, is meant to be passed around and opened on
-its own, so it embeds `InterVariable.woff2` and the React and react-dom scripts (MIT License,
-Copyright (c) Meta Platforms, Inc. and affiliates) in the one file, and carries their notices,
-with the MIT permission text, in a comment in its head.
+its own, so it embeds `InterVariable.woff2` and the React, react-dom and scheduler scripts
+(`react@19.2.8`, `react-dom@19.2.8`, `scheduler@0.27.0`; MIT License, Copyright (c) Meta
+Platforms, Inc. and affiliates) in the one file, and carries their notices, with the MIT
+permission text, the Inter copyright line and the whole SIL Open Font License, in a comment in
+its head. The build puts the page together with
+`vite-plugin-singlefile@2.3.4` (MIT License), a development dependency whose code is not in the
+page.
 
 BlueFire Nexus records third-party source provenance before any public content is imported, adapted, or integrated through an external adapter. A source record is not proof that remote bytes were fetched, vendored, redistributed, or executed.
 
@@ -319,12 +323,24 @@ those runs installed.
 
 Each `lab-run` artifact includes the SigmaHQ rules used and their license.
 
-The ranges (`lab/range/`, `.github/workflows/range-one.yml`) pull the following image by digest
-when a range runs. It is not copied into this repository, and it runs unchanged.
+The ranges (`lab/range/`, `.github/workflows/range-one.yml`) pull the following images and
+packages at the pins their spec files give, when a range is built or runs. None of them is copied
+into this repository. The nginx image runs unchanged; the others are the base of images the lab
+builds from a spec (`bluefire-lab range render`), which add the lab's configuration files.
 
 | Project | Pin | Licence | Use |
 |---|---|---|---|
 | [nginx official image](https://github.com/nginx/docker-nginx) | `nginx:1.28.0-bookworm@sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609` | nginx: BSD-2-Clause; the image's Debian packages under their own licences | The bare hosts of `lab/range/seal-check.yaml`: a listener for the seal's probes |
+| [Ubuntu official image](https://hub.docker.com/_/ubuntu) | `ubuntu:noble-20261110.1@sha256:882e1e56091c9ffbc70c026ff5935fe85d3c91ad155917865ba2ffa23ede1560`, with packages from the [Ubuntu snapshot archive](https://snapshot.ubuntu.com/) at `20261120T000000Z` | Each package under its own licence, listed in its `/usr/share/doc/<package>/copyright` | The base of the hosts the lab builds, such as `web` in `lab/range/wazuh-check.yaml` |
+| [Wazuh manager image](https://github.com/wazuh/wazuh-docker) | `wazuh/wazuh-manager:4.14.10@sha256:eabfa7ee4e63acb51c2130fa0583e30f843d030b091cf45a4fbd93d78fa21517` | Wazuh: GPL-2.0; the image's Amazon Linux 2023 packages under their own licences | The range's Wazuh manager, with the lab's edits of its stock `ossec.conf`, the lab's snoopy decoder and Filebeat kept from starting |
+| [Wazuh agent](https://github.com/wazuh/wazuh) | package `wazuh-agent_4.14.10-1_amd64.deb` from `packages.wazuh.com`, SHA-512 `5ee41846e81b2f5f5017bb0f968ac039443f09a400e5feb8121a4e52db6bb8d1c91683667b03a657a0236c858bd1f159026b493ace504ec8f92e491e6c8ae04d` | GPL-2.0 | The agent inside each watched host, with the lab's edits of its stock `ossec.conf` |
+| [snoopy](https://github.com/a2o/snoopy) | Ubuntu noble package `snoopy` `2.5.1-1`, from the snapshot above | GPL-2.0 | Writes every program start on a watched host to syslog |
+
+The tests in `lab/tests/fixtures/range/wazuh/` hold short excerpts of the stock `ossec.conf` files
+that the pinned agent package and manager image install (Wazuh, GPL-2.0), as test data for the
+lab's edits of them, and lines and events trimmed from one run of `lab/range/wazuh-check.yaml`.
+The workflow's image build uses [docker/setup-buildx-action](https://github.com/docker/setup-buildx-action)
+and [docker/bake-action](https://github.com/docker/bake-action) (Apache-2.0), pinned to a commit.
 
 The lab's Python package depends on [PyYAML](https://github.com/yaml/pyyaml) (MIT), installed
 from PyPI. Its tests and lint use [pytest](https://github.com/pytest-dev/pytest) (MIT) and

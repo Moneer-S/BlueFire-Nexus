@@ -1,6 +1,6 @@
 // Small pure helpers for the words and numbers the live view shows.
 
-import { countsAsAlert, countsForScore } from "./recording";
+import { countsAsAlert, countsForScore, timeOf } from "./recording";
 import type { Alert, Outcome, Recording, Sensor, Source, Step, StepRole } from "./recording";
 
 // Made once: building an Intl formatter on every call is slow, and these run on every frame.
@@ -110,7 +110,7 @@ export function span(ms: number): string {
 
 /** A date such as 23 Nov 2026, in UTC. */
 export function day(iso: string): string {
-  const ms = Date.parse(iso);
+  const ms = timeOf(iso);
   if (Number.isNaN(ms)) return "";
   return DAY.format(ms);
 }

@@ -35,6 +35,7 @@ from .recordings import (
     RecordingError,
     invalid_recording,
     parse_recording_bytes,
+    replay_page,
 )
 from .runner_bootstrap import managed_product_root
 from .runner_trust import RunnerTrustError, load_local_enrollment
@@ -264,6 +265,11 @@ def _parser() -> argparse.ArgumentParser:
     recording_commands.add_parser("list", help="List shipped and imported recordings")
     recording_import = recording_commands.add_parser("import", help="Import one recording file")
     recording_import.add_argument("path", type=Path)
+    recording_page = recording_commands.add_parser(
+        "page", help="Write the single replay page of one recording to a new file"
+    )
+    recording_page.add_argument("recording_id")
+    recording_page.add_argument("--out", type=Path, required=True)
 
     detections = commands.add_parser(
         "detections", help="Manage the immutable Detection Lab lifecycle"
@@ -776,6 +782,16 @@ def _execute(
     if args.command == "recordings":
         if args.recording_command == "list":
             return service.recordings()
+        if args.recording_command == "page":
+            recording = service.recording(args.recording_id)["recording"]
+            page = replay_page(recording).encode("utf-8")
+            _write_new_file(args.out, page, description="replay page")
+            return {
+                "schema_version": "bluefire.recording-page.v1",
+                "recording_id": recording["id"],
+                "path": str(args.out),
+                "bytes": len(page),
+            }
         text = _bounded_utf8_text(
             args.path, maximum_bytes=MAX_RECORDING_BYTES, description="recording"
         )
@@ -1007,6 +1023,26 @@ def _public_key_bytes(path: Path) -> bytes:
     if len(raw) != 32 or canonical != encoded:
         raise ValueError("publisher public key must encode exactly 32 raw bytes")
     return raw
+
+
+def _write_new_file(path: Path, payload: bytes, *, description: str) -> None:
+    """Write ``payload`` to a file that does not exist yet; an existing file is never replaced."""
+
+    try:
+        handle = path.open("xb")
+    except FileExistsError:
+        raise ValueError(
+            f"the {description} was not written: the file already exists. "
+            "Name a new file with --out."
+        ) from None
+    except OSError as exc:
+        raise ValueError(f"unable to create the {description} file") from exc
+    try:
+        with handle:
+            handle.write(payload)
+    except OSError as exc:
+        path.unlink(missing_ok=True)
+        raise ValueError(f"unable to write the {description}") from exc
 
 
 def _bounded_utf8_text(

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { layoutNetwork } from "../src/live/networkLayout";
 import type { Network } from "../src/live/recording";
 import { buildTimeline, frameAt } from "../src/live/playback";
-import { momentOf, revealTime, runFacts, scoreOnScreen, stepMatches } from "../src/live/moment";
+import { firstAlertOnScreen, momentOf, revealTime, runFacts, scoreOnScreen, stepMatches } from "../src/live/moment";
 import { whoIsWinning } from "../src/live/RaceLine";
 import { middleCut } from "../src/live/format";
 import { alert, event, recording, step } from "./live-fixture";
@@ -105,6 +105,42 @@ describe("the watch view's words and numbers", () => {
     const after = at(told + 0.05);
     expect(scoreOnScreen(timeline, before.frame, before.moment).alerted).toBe(0);
     expect(scoreOnScreen(timeline, after.frame, after.moment).alerted).toBe(1);
+  });
+
+  it("names the first alert on the race only once the score counts it", () => {
+    const first = timeline.segments[0];
+    expect(first).toBeDefined();
+    if (!first) return;
+    const told = revealTime(timeline, first);
+    const shown = (screen: number) => {
+      const { frame, moment } = at(screen);
+      return firstAlertOnScreen(frame.race.firstAlert, frame.time, frame.segment, moment?.revealed ?? false);
+    };
+    expect(at(told - 0.05).frame.race.firstAlert).not.toBeNull();
+    expect(shown(told - 0.05)).toBeNull();
+    expect(shown(told + 0.05)?.step.id).toBe("1");
+    const later = timeline.segments[1];
+    if (later) expect(shown(later.start)?.step.id).toBe("1");
+  });
+
+  it.each(["alerted", "seen"] as const)("lets the light of a match on a %s step's last event land and tells the step before the next one begins", (outcome) => {
+    const late = recording({
+      steps: [step("1", 10, 11, { outcome }), step("2", 20, 21)],
+      events: [event("1-1", "1", 10.2), event("1-2", "1", 11)],
+      alerts: [alert("a", "1", 11, ["1-2"], outcome === "seen" ? { rule: { id: "r", title: "R", level: "low", origin: "pinned" }, counts: false } : {})],
+    });
+    const lateTimeline = buildTimeline(late);
+    const next = lateTimeline.segments[1];
+    expect(next).toBeDefined();
+    if (!next) return;
+    const frame = frameAt(lateTimeline, next.start - 0.01);
+    const own = late.alerts;
+    const moment = momentOf(lateTimeline, frame, own, stepMatches(own));
+    expect(frame.step?.id).toBe("1");
+    expect(moment?.revealed).toBe(true);
+    expect(moment?.landed.map(({ alert: item }) => item.id)).toEqual(["a"]);
+    expect(scoreOnScreen(lateTimeline, frame, moment).alerted).toBe(outcome === "alerted" ? 1 : 0);
+    expect(scoreOnScreen(lateTimeline, frame, moment).seen).toBe(outcome === "seen" ? 1 : 0);
   });
 });
 

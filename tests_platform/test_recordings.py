@@ -241,6 +241,9 @@ def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFire
     message, problems = refusal(service, recording)
     _, deep_problems = refusal(service, deep)
     _, huge_problems = refusal(service, huge)
+    halved = small_recording("rec-halved")
+    halved["notes"] = ["half of a pair: \ud83d"]
+    _, halved_problems = refusal(service, halved)
 
     assert message == (
         "The recording is not valid: steps[0].title must not hold control characters."
@@ -257,6 +260,9 @@ def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFire
     ]
     assert deep_problems == ["A recording nests objects and lists at most 8 deep."]
     assert huge_problems == ["score.goal_seconds must be a number of seconds, zero or more."]
+    assert halved_problems == [
+        "notes[0] must not hold half of a character pair (a lone surrogate)."
+    ]
 
 
 def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -> None:
@@ -436,6 +442,78 @@ def test_recordings_are_imported_and_read_through_the_http_server(
         "The recording is not valid: schema must be 'bluefire.recording/1'."
     )
     assert unauthenticated[0] in {401, 403}
+
+
+PAGE_ELEMENT = '<script id="bluefire-recording" type="application/json">'
+
+
+def page_recording(page: str) -> Any:
+    """Read a replay page's recording back the way a browser does: up to the first end tag."""
+
+    assert page.count(PAGE_ELEMENT) == 1
+    start = page.index(PAGE_ELEMENT) + len(PAGE_ELEMENT)
+    return json.loads(page[start : page.index("</script>", start)])
+
+
+def test_the_command_line_writes_the_replay_page_of_the_shipped_recording(
+    service: BlueFireService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    shipped = json.loads(SHIPPED.read_bytes())
+    out = tmp_path / "replay.html"
+    template = (ROOT / "bluefire" / "ui" / "replay.html").read_text(encoding="utf-8")
+
+    written = cli.main(["recordings", "page", shipped["id"], "--out", str(out)])
+    written_output = json.loads(capsys.readouterr().out)
+    page = out.read_text(encoding="utf-8")
+    again = cli.main(["recordings", "page", shipped["id"], "--out", str(out)])
+    again_output = json.loads(capsys.readouterr().out)
+    missing = cli.main(["recordings", "page", "rec-none", "--out", str(tmp_path / "none.html")])
+    missing_output = json.loads(capsys.readouterr().out)
+
+    assert written == 0
+    assert written_output["recording_id"] == shipped["id"]
+    assert written_output["bytes"] == len(page.encode("utf-8"))
+    assert page_recording(template) is None
+    assert page_recording(page) == shipped
+    # Only the element's content changed: the page is the packaged one.
+    start = page.index(PAGE_ELEMENT)
+    assert page[:start] == template[: template.index(PAGE_ELEMENT)]
+    assert page.endswith(template[template.index(PAGE_ELEMENT) + len(PAGE_ELEMENT) + 4 :])
+    # An existing file is never replaced.
+    assert again == 2
+    assert "already exists" in again_output["error"]["message"]
+    assert out.read_text(encoding="utf-8") == page
+    assert missing == 2 and missing_output["error"]["code"] == "recording_not_found"
+    assert not (tmp_path / "none.html").exists()
+
+
+def test_a_recording_whose_texts_hold_markup_comes_back_whole_from_its_page() -> None:
+    recording = small_recording()
+    recording["title"] = "</script><script>alert(1)</script>"
+    recording["steps"][0]["title"] = "<!-- </SCRIPT > <script"
+    recording["steps"][0]["plain"] = "Ends </script\n><!--<script>"
+    recording["events"][0]["text"] = "<img src=http://example.invalid/x.png>"
+    recording["notes"] = ["</ScRiPt>", "<!--", "-->", "<script>"]
+    template = recordings.replay_template()
+
+    page = recordings.replay_page(recording)
+
+    assert page_recording(page) == recording
+    # The recording adds no markup: no "<" of its own, so one element, ended once.
+    start = page.index(PAGE_ELEMENT) + len(PAGE_ELEMENT)
+    assert "<" not in page[start : page.index("</script>", start)]
+    assert page.lower().count("<script") == template.lower().count("<script")
+    for broken in (
+        template.replace(PAGE_ELEMENT, "<script>"),
+        template.replace("</body>", f"{PAGE_ELEMENT}null</script></body>"),
+        template.replace("</body>", '<script id="bluefire-recording">null</script></body>'),
+    ):
+        with pytest.raises(ValueError, match="exactly one"):
+            recordings.replay_page(recording, broken)
 
 
 def test_the_command_line_imports_and_lists_a_recording_file(

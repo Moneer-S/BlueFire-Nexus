@@ -1,0 +1,1074 @@
+{
+ "agent": "web",
+ "nonces": {
+  "ready": "bluefire-ready-20261123T000000Z-000000-web",
+  "end": "bluefire-end-20261123T000000Z-000000-web"
+ },
+ "logs": {
+  "/var/log/auth.log": [
+   "2026-11-23T19:51:32.001788+00:00 web sshd[15]: Server listening on 0.0.0.0 port 22.",
+   "2026-11-23T19:51:32.001879+00:00 web sshd[15]: Server listening on :: port 22.",
+   "2026-11-23T19:51:42.564092+00:00 web sshd[107]: Connection closed by 127.0.0.1 port 52392",
+   "2026-11-23T19:52:09.773586+00:00 web bluefire-ready: bluefire-ready-20261123T000000Z-000000-web",
+   "2026-11-23T19:52:19.280040+00:00 web sshd[192]: Connection closed by 172.18.0.1 port 48968",
+   "2026-11-23T19:52:19.296162+00:00 web sshd[204]: Connection closed by 172.18.0.1 port 48978",
+   "2026-11-23T19:52:21.398096+00:00 web bluefire-mark: bluefire-mark-1-20261123T000000Z-000000",
+   "2026-11-23T19:52:21.886928+00:00 web bluefire-mark: bluefire-mark-2-20261123T000000Z-000000",
+   "2026-11-23T19:52:22.345265+00:00 web bluefire-mark: bluefire-mark-3-20261123T000000Z-000000",
+   "2026-11-23T19:52:32.811161+00:00 web sshd[266]: Connection closed by 172.18.0.1 port 46542",
+   "2026-11-23T19:52:32.819636+00:00 web sshd[286]: Connection closed by 172.18.0.1 port 46548",
+   "2026-11-23T19:52:34.191536+00:00 web bluefire-end: bluefire-end-20261123T000000Z-000000-web"
+  ],
+  "/var/log/snoopy.log": [
+   "2026-11-23T19:51:36.201615+00:00 web snoopy[7]: [login:(unknown) ssh:((undefined)) sid:1 uid:0 euid:0 cwd:/ tag:(undefined)]: sleep infinity",
+   "2026-11-23T19:51:36.201734+00:00 web snoopy[7]: [login:(unknown) ssh:((undefined)) sid:1 uid:0 euid:0 cwd:/ tag:(undefined)]: sleep infinity",
+   "2026-11-23T19:51:42.550099+00:00 web snoopy[107]: [login:(unknown) ssh:((undefined)) sid:107 uid:0 euid:0 cwd:/ tag:(undefined)]: /usr/sbin/sshd -R",
+   "2026-11-23T19:52:09.771621+00:00 web snoopy[160]: [login:(unknown) ssh:((undefined)) sid:160 uid:0 euid:0 cwd:/ tag:engine:ready]: logger -p authpriv.info -t bluefire-ready bluefire-ready-20261123T000000Z-000000-web",
+   "2026-11-23T19:52:19.231910+00:00 web snoopy[173]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514",
+   "2026-11-23T19:52:19.242940+00:00 web snoopy[183]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1515",
+   "2026-11-23T19:52:19.243361+00:00 web snoopy[185]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/1.1.1.1/443",
+   "2026-11-23T19:52:19.244496+00:00 web snoopy[189]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/169.254.169.254/80",
+   "2026-11-23T19:52:19.244712+00:00 web snoopy[191]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/168.63.129.16/80",
+   "2026-11-23T19:52:19.245304+00:00 web snoopy[192]: [login:(unknown) ssh:((undefined)) sid:192 uid:0 euid:0 cwd:/ tag:(undefined)]: /usr/sbin/sshd -R",
+   "2026-11-23T19:52:19.246022+00:00 web snoopy[195]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.17.0.1/50559",
+   "2026-11-23T19:52:19.253504+00:00 web snoopy[199]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514",
+   "2026-11-23T19:52:19.255726+00:00 web snoopy[201]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/8.8.8.8/53",
+   "2026-11-23T19:52:19.265029+00:00 web snoopy[204]: [login:(unknown) ssh:((undefined)) sid:204 uid:0 euid:0 cwd:/ tag:(undefined)]: /usr/sbin/sshd -R",
+   "2026-11-23T19:52:19.279563+00:00 web snoopy[205]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: cat /proc/sys/net/ipv4/ip_forward",
+   "2026-11-23T19:52:19.285010+00:00 web snoopy[206]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts manager",
+   "2026-11-23T19:52:19.289518+00:00 web snoopy[207]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts example.com",
+   "2026-11-23T19:52:19.295721+00:00 web snoopy[208]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts host.docker.internal",
+   "2026-11-23T19:52:19.301983+00:00 web snoopy[209]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts gateway.docker.internal",
+   "2026-11-23T19:52:21.395855+00:00 web snoopy[210]: [login:(unknown) ssh:((undefined)) sid:210 uid:0 euid:0 cwd:/ tag:engine:mark]: logger -p authpriv.notice -t bluefire-mark bluefire-mark-1-20261123T000000Z-000000",
+   "2026-11-23T19:52:21.884662+00:00 web snoopy[216]: [login:(unknown) ssh:((undefined)) sid:216 uid:0 euid:0 cwd:/ tag:engine:mark]: logger -p authpriv.notice -t bluefire-mark bluefire-mark-2-20261123T000000Z-000000",
+   "2026-11-23T19:52:22.343028+00:00 web snoopy[222]: [login:(unknown) ssh:((undefined)) sid:222 uid:0 euid:0 cwd:/ tag:engine:mark]: logger -p authpriv.notice -t bluefire-mark bluefire-mark-3-20261123T000000Z-000000",
+   "2026-11-23T19:52:25.518379+00:00 web snoopy[246]: [login:(unknown) ssh:((undefined)) sid:240 uid:0 euid:0 cwd:/ tag:engine:mark]: /bin/echo bluefire-mark-program-20261123T000000Z-000000",
+   "2026-11-23T19:52:32.786230+00:00 web snoopy[254]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514",
+   "2026-11-23T19:52:32.792175+00:00 web snoopy[264]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514",
+   "2026-11-23T19:52:32.792195+00:00 web snoopy[265]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1515",
+   "2026-11-23T19:52:32.792534+00:00 web snoopy[266]: [login:(unknown) ssh:((undefined)) sid:266 uid:0 euid:0 cwd:/ tag:(undefined)]: /usr/sbin/sshd -R",
+   "2026-11-23T19:52:32.792612+00:00 web snoopy[269]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/1.1.1.1/443",
+   "2026-11-23T19:52:32.793218+00:00 web snoopy[273]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/8.8.8.8/53",
+   "2026-11-23T19:52:32.793597+00:00 web snoopy[275]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/168.63.129.16/80",
+   "2026-11-23T19:52:32.794147+00:00 web snoopy[279]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/169.254.169.254/80",
+   "2026-11-23T19:52:32.794359+00:00 web snoopy[276]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.17.0.1/42543",
+   "2026-11-23T19:52:32.805449+00:00 web snoopy[285]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: cat /proc/sys/net/ipv4/ip_forward",
+   "2026-11-23T19:52:32.806115+00:00 web snoopy[286]: [login:(unknown) ssh:((undefined)) sid:286 uid:0 euid:0 cwd:/ tag:(undefined)]: /usr/sbin/sshd -R",
+   "2026-11-23T19:52:32.808472+00:00 web snoopy[287]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts manager",
+   "2026-11-23T19:52:32.812062+00:00 web snoopy[288]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts example.com",
+   "2026-11-23T19:52:32.816434+00:00 web snoopy[289]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts host.docker.internal",
+   "2026-11-23T19:52:32.820488+00:00 web snoopy[290]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts gateway.docker.internal",
+   "2026-11-23T19:52:34.189491+00:00 web snoopy[291]: [login:(unknown) ssh:((undefined)) sid:291 uid:0 euid:0 cwd:/ tag:engine:end]: logger -p authpriv.info -t bluefire-end bluefire-end-20261123T000000Z-000000-web"
+  ],
+  "/var/log/dpkg.log": [
+   "2026-11-23 19:45:00 trigproc libc-bin:amd64 2.39-0ubuntu8.9 <none>",
+   "2026-11-23 19:45:00 status half-configured libc-bin:amd64 2.39-0ubuntu8.9",
+   "2026-11-23 19:45:00 status installed libc-bin:amd64 2.39-0ubuntu8.9"
+  ]
+ },
+ "windows": {
+  "/var/log/auth.log": [
+   3,
+   11
+  ],
+  "/var/log/snoopy.log": [
+   3,
+   38
+  ],
+  "/var/log/dpkg.log": [
+   3,
+   3
+  ]
+ },
+ "archive": [
+  {
+   "timestamp": "2026-11-23T19:51:50.198+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:51:36.201615+00:00 web snoopy[7]: [login:(unknown) ssh:((undefined)) sid:1 uid:0 euid:0 cwd:/ tag:(undefined)]: sleep infinity",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "1",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "(undefined)",
+    "command": "sleep infinity"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:51:50.200+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:51:36.201734+00:00 web snoopy[7]: [login:(unknown) ssh:((undefined)) sid:1 uid:0 euid:0 cwd:/ tag:(undefined)]: sleep infinity",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "1",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "(undefined)",
+    "command": "sleep infinity"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:51:50.203+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:51:42.550099+00:00 web snoopy[107]: [login:(unknown) ssh:((undefined)) sid:107 uid:0 euid:0 cwd:/ tag:(undefined)]: /usr/sbin/sshd -R",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "107",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "(undefined)",
+    "command": "/usr/sbin/sshd -R"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:51:50.205+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/auth.log",
+   "full_log": "2026-11-23T19:51:42.564092+00:00 web sshd[107]: Connection closed by 127.0.0.1 port 52392",
+   "decoder": {
+    "parent": "sshd",
+    "name": "sshd"
+   },
+   "data": {
+    "srcip": "127.0.0.1",
+    "srcport": "52392"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:11.178+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/auth.log",
+   "full_log": "2026-11-23T19:52:09.773586+00:00 web bluefire-ready: bluefire-ready-20261123T000000Z-000000-web",
+   "decoder": {}
+  },
+  {
+   "timestamp": "2026-11-23T19:52:11.178+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:09.771621+00:00 web snoopy[160]: [login:(unknown) ssh:((undefined)) sid:160 uid:0 euid:0 cwd:/ tag:engine:ready]: logger -p authpriv.info -t bluefire-ready bluefire-ready-20261123T000000Z-000000-web",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "160",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:ready",
+    "command": "logger -p authpriv.info -t bluefire-ready bluefire-ready-20261123T000000Z-000000-web"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.179+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/auth.log",
+   "full_log": "2026-11-23T19:52:19.280040+00:00 web sshd[192]: Connection closed by 172.18.0.1 port 48968",
+   "decoder": {
+    "parent": "sshd",
+    "name": "sshd"
+   },
+   "data": {
+    "srcip": "172.18.0.1",
+    "srcport": "48968"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.179+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/auth.log",
+   "full_log": "2026-11-23T19:52:19.296162+00:00 web sshd[204]: Connection closed by 172.18.0.1 port 48978",
+   "decoder": {
+    "parent": "sshd",
+    "name": "sshd"
+   },
+   "data": {
+    "srcip": "172.18.0.1",
+    "srcport": "48978"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.182+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.231910+00:00 web snoopy[173]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.184+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.242940+00:00 web snoopy[183]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1515",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1515"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.186+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.243361+00:00 web snoopy[185]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/1.1.1.1/443",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/1.1.1.1/443"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.188+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.244496+00:00 web snoopy[189]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/169.254.169.254/80",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/169.254.169.254/80"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.190+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.244712+00:00 web snoopy[191]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/168.63.129.16/80",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/168.63.129.16/80"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.192+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.245304+00:00 web snoopy[192]: [login:(unknown) ssh:((undefined)) sid:192 uid:0 euid:0 cwd:/ tag:(undefined)]: /usr/sbin/sshd -R",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "192",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "(undefined)",
+    "command": "/usr/sbin/sshd -R"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.194+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.246022+00:00 web snoopy[195]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.17.0.1/50559",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/172.17.0.1/50559"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.196+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.253504+00:00 web snoopy[199]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.199+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.255726+00:00 web snoopy[201]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/8.8.8.8/53",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/8.8.8.8/53"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.201+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.265029+00:00 web snoopy[204]: [login:(unknown) ssh:((undefined)) sid:204 uid:0 euid:0 cwd:/ tag:(undefined)]: /usr/sbin/sshd -R",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "204",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "(undefined)",
+    "command": "/usr/sbin/sshd -R"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.203+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.279563+00:00 web snoopy[205]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: cat /proc/sys/net/ipv4/ip_forward",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "cat /proc/sys/net/ipv4/ip_forward"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.205+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.285010+00:00 web snoopy[206]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts manager",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "getent hosts manager"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.207+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.289518+00:00 web snoopy[207]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts example.com",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "getent hosts example.com"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.209+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.295721+00:00 web snoopy[208]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts host.docker.internal",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "getent hosts host.docker.internal"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:21.211+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:19.301983+00:00 web snoopy[209]: [login:(unknown) ssh:((undefined)) sid:166 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts gateway.docker.internal",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "166",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "getent hosts gateway.docker.internal"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:22.766+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "syscheck",
+   "full_log": "File '/tmp/bluefire-mark-20261123T000000Z-000000.txt' added\nMode: realtime\n",
+   "decoder": {
+    "name": "syscheck_new_entry"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:23.179+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/auth.log",
+   "full_log": "2026-11-23T19:52:21.398096+00:00 web bluefire-mark: bluefire-mark-1-20261123T000000Z-000000",
+   "decoder": {}
+  },
+  {
+   "timestamp": "2026-11-23T19:52:23.180+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/auth.log",
+   "full_log": "2026-11-23T19:52:21.886928+00:00 web bluefire-mark: bluefire-mark-2-20261123T000000Z-000000",
+   "decoder": {}
+  },
+  {
+   "timestamp": "2026-11-23T19:52:23.182+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/auth.log",
+   "full_log": "2026-11-23T19:52:22.345265+00:00 web bluefire-mark: bluefire-mark-3-20261123T000000Z-000000",
+   "decoder": {}
+  },
+  {
+   "timestamp": "2026-11-23T19:52:23.184+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:21.395855+00:00 web snoopy[210]: [login:(unknown) ssh:((undefined)) sid:210 uid:0 euid:0 cwd:/ tag:engine:mark]: logger -p authpriv.notice -t bluefire-mark bluefire-mark-1-20261123T000000Z-000000",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "210",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:mark",
+    "command": "logger -p authpriv.notice -t bluefire-mark bluefire-mark-1-20261123T000000Z-000000"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:23.186+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:21.884662+00:00 web snoopy[216]: [login:(unknown) ssh:((undefined)) sid:216 uid:0 euid:0 cwd:/ tag:engine:mark]: logger -p authpriv.notice -t bluefire-mark bluefire-mark-2-20261123T000000Z-000000",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "216",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:mark",
+    "command": "logger -p authpriv.notice -t bluefire-mark bluefire-mark-2-20261123T000000Z-000000"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:23.188+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:22.343028+00:00 web snoopy[222]: [login:(unknown) ssh:((undefined)) sid:222 uid:0 euid:0 cwd:/ tag:engine:mark]: logger -p authpriv.notice -t bluefire-mark bluefire-mark-3-20261123T000000Z-000000",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "222",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:mark",
+    "command": "logger -p authpriv.notice -t bluefire-mark bluefire-mark-3-20261123T000000Z-000000"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:25.131+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "syscheck",
+   "full_log": "File '/tmp/bluefire-mark-20261123T000000Z-000000.txt' modified\nMode: realtime\nChanged attributes: size,mtime,md5,sha1,sha256\nSize changed from '4' to '8'\nOld modification time was: '1795463542', now it is '1795463545'\nOld md5sum was: '00000000000000000000000000000000'\nNew md5sum is : '00000000000000000000000000000000'\nOld sha1sum was: '0000000000000000000000000000000000000000'\nNew sha1sum is : '0000000000000000000000000000000000000000'\nOld sha256sum was: '0000000000000000000000000000000000000000000000000000000000000000'\nNew sha256sum is : '0000000000000000000000000000000000000000000000000000000000000000'\n",
+   "decoder": {
+    "name": "syscheck_integrity_changed"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:27.180+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:25.518379+00:00 web snoopy[246]: [login:(unknown) ssh:((undefined)) sid:240 uid:0 euid:0 cwd:/ tag:engine:mark]: /bin/echo bluefire-mark-program-20261123T000000Z-000000",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "240",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:mark",
+    "command": "/bin/echo bluefire-mark-program-20261123T000000Z-000000"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.180+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/auth.log",
+   "full_log": "2026-11-23T19:52:32.811161+00:00 web sshd[266]: Connection closed by 172.18.0.1 port 46542",
+   "decoder": {
+    "parent": "sshd",
+    "name": "sshd"
+   },
+   "data": {
+    "srcip": "172.18.0.1",
+    "srcport": "46542"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.180+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/auth.log",
+   "full_log": "2026-11-23T19:52:32.819636+00:00 web sshd[286]: Connection closed by 172.18.0.1 port 46548",
+   "decoder": {
+    "parent": "sshd",
+    "name": "sshd"
+   },
+   "data": {
+    "srcip": "172.18.0.1",
+    "srcport": "46548"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.183+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.786230+00:00 web snoopy[254]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.185+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.792175+00:00 web snoopy[264]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1514"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.187+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.792195+00:00 web snoopy[265]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1515",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/172.18.0.1/1515"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.189+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.792534+00:00 web snoopy[266]: [login:(unknown) ssh:((undefined)) sid:266 uid:0 euid:0 cwd:/ tag:(undefined)]: /usr/sbin/sshd -R",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "266",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "(undefined)",
+    "command": "/usr/sbin/sshd -R"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.191+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.792612+00:00 web snoopy[269]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/1.1.1.1/443",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/1.1.1.1/443"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.193+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.793218+00:00 web snoopy[273]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/8.8.8.8/53",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/8.8.8.8/53"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.195+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.793597+00:00 web snoopy[275]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/168.63.129.16/80",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/168.63.129.16/80"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.197+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.794147+00:00 web snoopy[279]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/169.254.169.254/80",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/169.254.169.254/80"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.200+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.794359+00:00 web snoopy[276]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: timeout 3 bash -c exec 3<>/dev/tcp/172.17.0.1/42543",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "timeout 3 bash -c exec 3<>/dev/tcp/172.17.0.1/42543"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.202+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.805449+00:00 web snoopy[285]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: cat /proc/sys/net/ipv4/ip_forward",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "cat /proc/sys/net/ipv4/ip_forward"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.204+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.806115+00:00 web snoopy[286]: [login:(unknown) ssh:((undefined)) sid:286 uid:0 euid:0 cwd:/ tag:(undefined)]: /usr/sbin/sshd -R",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "286",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "(undefined)",
+    "command": "/usr/sbin/sshd -R"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.206+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.808472+00:00 web snoopy[287]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts manager",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "getent hosts manager"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.208+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.812062+00:00 web snoopy[288]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts example.com",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "getent hosts example.com"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.210+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.816434+00:00 web snoopy[289]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts host.docker.internal",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "getent hosts host.docker.internal"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:33.212+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:32.820488+00:00 web snoopy[290]: [login:(unknown) ssh:((undefined)) sid:247 uid:0 euid:0 cwd:/ tag:engine:seal]: getent hosts gateway.docker.internal",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "247",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:seal",
+    "command": "getent hosts gateway.docker.internal"
+   }
+  },
+  {
+   "timestamp": "2026-11-23T19:52:35.181+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/auth.log",
+   "full_log": "2026-11-23T19:52:34.191536+00:00 web bluefire-end: bluefire-end-20261123T000000Z-000000-web",
+   "decoder": {}
+  },
+  {
+   "timestamp": "2026-11-23T19:52:35.181+0000",
+   "agent": {
+    "name": "web"
+   },
+   "location": "/var/log/snoopy.log",
+   "full_log": "2026-11-23T19:52:34.189491+00:00 web snoopy[291]: [login:(unknown) ssh:((undefined)) sid:291 uid:0 euid:0 cwd:/ tag:engine:end]: logger -p authpriv.info -t bluefire-end bluefire-end-20261123T000000Z-000000-web",
+   "decoder": {
+    "name": "bluefire-snoopy"
+   },
+   "data": {
+    "login": "(unknown)",
+    "ssh": "(undefined)",
+    "sid": "291",
+    "uid": "0",
+    "euid": "0",
+    "cwd": "/",
+    "tag": "engine:end",
+    "command": "logger -p authpriv.info -t bluefire-end bluefire-end-20261123T000000Z-000000-web"
+   }
+  }
+ ],
+ "expected": [
+  {
+   "source": "/var/log/auth.log",
+   "lines": 8,
+   "delivered": 8,
+   "missing": 0,
+   "events": 8
+  },
+  {
+   "source": "/var/log/snoopy.log",
+   "lines": 35,
+   "delivered": 35,
+   "missing": 0,
+   "events": 35
+  },
+  {
+   "source": "/var/log/dpkg.log",
+   "lines": 0,
+   "delivered": 0,
+   "missing": 0,
+   "events": 0
+  }
+ ]
+}

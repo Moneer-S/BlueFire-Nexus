@@ -282,13 +282,13 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[], where: s
   return found;
 }
 
-/** Times are ISO 8601 in UTC with a Z, so a recording plays the same in every time zone. */
-const UTC_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+/** Times are ISO 8601 in UTC with a Z, so a recording plays the same in every time zone, with up to six digits after the second. */
+const UTC_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
 
 function time(value: unknown, where: string): void {
   const raw = text(value, where);
   if (!UTC_TIME.test(raw)) fail(`${where} is not a UTC time such as 2026-11-17T17:07:23.834Z: ${JSON.stringify(raw)}.`);
-  if (Number.isNaN(Date.parse(raw))) fail(`${where} is not a time: ${JSON.stringify(raw)}.`);
+  if (Number.isNaN(timeOf(raw))) fail(`${where} is not a time: ${JSON.stringify(raw)}.`);
 }
 
 /** The values a source field of an event may hold: text, a number, true or false, null, or a list of text. */
@@ -489,12 +489,9 @@ export function readRecording(value: unknown): Recording {
 
 /** Milliseconds since 1970 of a recording time. */
 export function timeOf(value: Time): number {
-  return Date.parse(value);
-}
-
-/** The step an id names, or undefined. */
-export function stepById(recording: Recording, id: string): Step | undefined {
-  return recording.steps.find((step) => step.id === id);
+  // A browser reads at most milliseconds the same everywhere, so digits past
+  // the third are cut, which keeps every time in its order.
+  return Date.parse(value.replace(/(\.\d{3})\d+Z$/, "$1Z"));
 }
 
 function groupByStep<T extends { step: string }>(recording: Recording, items: readonly T[]): Map<string, T[]> {

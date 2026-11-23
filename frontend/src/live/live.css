@@ -41,7 +41,8 @@
   font-family: Inter, system-ui, sans-serif;
   font-size: 15px;
   line-height: 1.4;
-  font-feature-settings: "cv11", "ss01", "tnum";
+  /* No contextual alternates: Inter would draw a recording's "->" or "=>" as an arrow it does not hold. */
+  font-feature-settings: "cv11", "ss01", "tnum", "calt" 0;
   -webkit-font-smoothing: antialiased;
   color-scheme: dark;
 }
@@ -1923,7 +1924,16 @@
 .lv-stepno b {
   font-size: 14px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   color: var(--lv-text-soft);
+}
+
+/* As wide as the longest place, and takes no height. */
+.lv-stepno .lv-stepno-sizer {
+  height: 0;
+  margin-top: -1px;
+  overflow: hidden;
+  visibility: hidden;
 }
 
 .lv-stepno span {

@@ -92,6 +92,7 @@ Events are ordered and paged by sequence. `--after-sequence` is exclusive and de
 ```bash
 bluefire --runs-dir .bluefire-runs recordings list
 bluefire --runs-dir .bluefire-runs recordings import recording.json
+bluefire --runs-dir .bluefire-runs recordings page RECORDING_ID --out replay.html
 ```
 
 `list` prints the recordings shipped with BlueFire and those imported into this
@@ -102,6 +103,14 @@ under `<runs-dir>/recordings/`. A refused file exits with status 2 and prints
 `recording_invalid` with each problem, `recording_id_taken`, or
 `recordings_busy` when a server importing into the same runs directory holds the
 import lock for more than five seconds.
+
+`page` writes the single replay page of one recording, shipped or imported, to
+a new file: the packaged page `bluefire/ui/replay.html` with the recording put
+inside it. The page plays in any browser with nothing installed and loads
+nothing from anywhere (see [LIVE_VIEW.md](LIVE_VIEW.md)). It prints the
+recording's id, the file's path and its size. It never replaces a file: when
+`--out` names one that exists, it exits with status 2 and writes nothing. An id
+that is not in the list exits with status 2 and prints `recording_not_found`.
 
 ## Durable jobs and proposal review
 

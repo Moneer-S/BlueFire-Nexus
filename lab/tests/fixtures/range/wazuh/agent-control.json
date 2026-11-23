@@ -1,0 +1,4 @@
+{
+ "agent_control -l": "\nWazuh agent_control. List of available agents:\n   ID: 000, Name: manager (server), IP: 127.0.0.1, Active/Local\n   ID: 001, Name: web, IP: any, Active\n\nList of agentless devices:\n\n",
+ "agent_control -i 001": "\nWazuh agent_control. Agent information:\n   Agent ID:   001\n   Agent Name: web\n   IP address: any\n   Status:     Active\n\n   Operating system:    Linux |web |6.8.0 |#1 SMP |x86_64\n   Client version:      Wazuh v4.14.10\n   Configuration hash:  (null)\n   Shared file hash:    x\n   Last keep alive:     1795463527\n\n   Syscheck last started at:  Mon Nov 23 19:51:33 2026\n   Syscheck last ended at:    Mon Nov 23 19:51:48 2026\n\n"
+}

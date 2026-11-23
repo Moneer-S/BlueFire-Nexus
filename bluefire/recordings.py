@@ -64,6 +64,8 @@ SHIPPED_NOTE = (
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# Half of a character pair on its own: JSON can escape it, UTF-8 cannot write it.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 _TOP_LEVEL = {
     "schema", "id", "title", "kind", "source", "network", "attacker",
     "steps", "events", "alerts", "ordinary", "score", "notes",
@@ -114,6 +116,8 @@ def _walk(value: Mapping[str, Any], check: _Checker) -> None:
         if isinstance(item, Mapping):
             if any(_CONTROL.search(key) for key in item):
                 check.fail(where or "recording", "has a key that holds control characters.")
+            if any(_LONE_SURROGATE.search(key) for key in item):
+                check.fail(where or "recording", "has a key that holds half of a character pair.")
             children = [(child, f"{where}.{key}" if where else key) for key, child in item.items()]
             stack.extend((child, path, depth + 1) for child, path in reversed(children))
         elif isinstance(item, list):
@@ -126,6 +130,8 @@ def _walk(value: Mapping[str, Any], check: _Checker) -> None:
         elif isinstance(item, str):
             if "\x00" in item:
                 check.fail(where, "must not hold a NUL character.")
+            elif _LONE_SURROGATE.search(item):
+                check.fail(where, "must not hold half of a character pair (a lone surrogate).")
             elif not _FREE_TEXT.fullmatch(where) and _CONTROL.search(item):
                 check.fail(where, "must not hold control characters.")
 
@@ -667,6 +673,46 @@ def _check_race(
                 f"is {score['goal_seconds']}, but no step ends that long after the first "
                 "step started.",
             )
+
+
+# The replay page's template holds its recording in this one element, as JSON.
+_PAGE_ELEMENT = re.compile(
+    r'(<script id="bluefire-recording" type="application/json">)(.*?)(</script>)', re.DOTALL
+)
+# Any script element that names the recording's id, however its attributes are written.
+_PAGE_ELEMENT_LOOSE = re.compile(
+    r"<script\b[^>]*\bid\s*=\s*[\"']?bluefire-recording[\"'\s/>]", re.IGNORECASE
+)
+
+
+def replay_template() -> str:
+    """The packaged replay page, ``bluefire/ui/replay.html``, which holds no recording."""
+
+    page = resources.files("bluefire").joinpath("ui").joinpath("replay.html")
+    return page.read_text(encoding="utf-8")
+
+
+def replay_page(recording: Mapping[str, Any], template: str | None = None) -> str:
+    """The single replay page for one recording: the template with the recording inside.
+
+    The recording's JSON replaces the content of the template's one
+    ``bluefire-recording`` element. Every ``<`` in it is written as ``\\u003c``,
+    which JSON reads back as the same character, so no text of a recording can
+    end the element, open a comment or start another element. A template that
+    does not hold exactly one such element is refused.
+    """
+
+    page = replay_template() if template is None else template
+    found = list(_PAGE_ELEMENT.finditer(page))
+    if len(found) != 1 or len(_PAGE_ELEMENT_LOOSE.findall(page)) != 1:
+        raise ValueError(
+            "The replay page template must hold exactly one "
+            '<script id="bluefire-recording" type="application/json"> element.'
+        )
+    data = json.dumps(recording, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    data = data.replace("<", "\\u003c")
+    element = found[0]
+    return page[: element.start(2)] + data + page[element.end(2) :]
 
 
 def invalid_recording(exc: RecordingError) -> APIError:

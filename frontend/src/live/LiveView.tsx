@@ -32,7 +32,7 @@ export interface LiveMoment {
 export interface LiveViewProps {
   recording: Recording;
   initial?: { step?: string; at?: number; paused?: boolean; mode?: LiveMode; select?: string };
-  /** Starts fixing a step. When absent, "Fix this" says that fixing starts in the app. */
+  /** Starts fixing a step. When absent, "Fix this" in watch mode opens the step's detail, and the detail offers no "Fix this". */
   onFix?: (stepId: string) => void;
   /** Told where the viewer is when the step, the mode, the chosen step or the pause changes, and when the clock moves while paused. */
   onMoment?: (moment: LiveMoment) => void;
@@ -177,6 +177,9 @@ export function LiveView({ recording, initial, onFix, onMoment }: LiveViewProps)
   const [speed, setSpeed] = useState<number>(1);
   const [mode, setMode] = useState<LiveMode>(firstMode);
   const [select, setSelect] = useState<string | undefined>(initial?.select);
+  // Whether analyse mode opens with keyboard focus on the chosen step's detail:
+  // true when a control that goes away with watch mode opened it.
+  const [focusDetail, setFocusDetail] = useState(false);
   const [seek, setSeek] = useState(0);
   const timeRef = useRef(time);
   const playButton = useRef<HTMLButtonElement | null>(null);
@@ -274,7 +277,9 @@ export function LiveView({ recording, initial, onFix, onMoment }: LiveViewProps)
   const hardened = useMemo(() => recording.steps.filter((step) => step.role === "hardened").length, [recording]);
   const onlyHardenedStop = useMemo(() => recording.steps.every((step) => step.outcome !== "stopped" || step.role === "hardened"), [recording]);
   const allSteps = `${plural(recording.steps.length, "step")} in all`;
-  const falseAlerts = recording.score.false_alerts;
+  const widestPlace = useMemo(() => recording.steps.map((step) => placeInRole(recording, step)).reduce((widest, place) => (place.length > widest.length ? place : widest), ""), [recording]);
+  // Ordinary activity has no times in a recording, so while watching, its false alerts are told only at the end.
+  const falseAlerts = mode === "analyse" || frame.ended ? recording.score.false_alerts : undefined;
 
   // One rule for entering watch mode, however the page was opened: playback
   // starts from where the clock stands, and plays unless it is at the end.
@@ -290,6 +295,7 @@ export function LiveView({ recording, initial, onFix, onMoment }: LiveViewProps)
       setPlaying(false);
       // Analysing from watch mode opens the step that was on screen.
       setSelect(stepId);
+      setFocusDetail(false);
       setMode("analyse");
       return;
     }
@@ -298,6 +304,7 @@ export function LiveView({ recording, initial, onFix, onMoment }: LiveViewProps)
   const openInAnalyse = useCallback((id: string) => {
     setPlaying(false);
     setSelect(id);
+    setFocusDetail(true);
     setMode("analyse");
   }, []);
   const watchStep = (id: string) => {
@@ -379,7 +386,8 @@ export function LiveView({ recording, initial, onFix, onMoment }: LiveViewProps)
             <NetworkMap recording={recording} moment={moment} speed={speed} seek={seek} colours={colours} labDetectors={labDetectors} arrival={arrival} />
             <EventLog recording={recording} moment={moment} total={total} colours={colours} onOpen={openStep} />
           </div>
-          <StepCaption recording={recording} moment={moment} stepAlerts={stepAlerts} total={total} onFix={onFix} quiet={playing && speed >= 4} onLoseFocus={focusPlay} />
+          {/* Without the app, "Fix this" opens the step's detail, which says where the gap is. */}
+          <StepCaption recording={recording} moment={moment} stepAlerts={stepAlerts} total={total} onFix={onFix ?? openInAnalyse} quiet={playing && speed >= 4} onLoseFocus={focusPlay} />
           <footer className="lv-transport">
             <div className="lv-controls">
               <button type="button" className="lv-play" ref={playButton} aria-label={playing ? "Pause" : "Play"} onClick={togglePlay} disabled={timeline.duration <= 0}>
@@ -406,17 +414,21 @@ export function LiveView({ recording, initial, onFix, onMoment }: LiveViewProps)
                 {clockTime(frame.real)}
                 <small>UTC</small>
               </b>
-              <span>{elapsed((frame.real - facts.start) / 1000)} into the run</span>
+              <span title={`Counted from the first recorded event of the first step, ${clockTime(facts.start)} UTC`}>{elapsed((frame.real - facts.start) / 1000)} into the run</span>
             </div>
             <Scrubber recording={recording} timeline={timeline} time={time} real={frame.real} revealed={moment?.revealed ?? false} onSeek={jump} />
             <div className="lv-stepno">
               <b>{segment ? placeInRole(recording, segment.step) : ""}</b>
+              {/* Holds the column at the width of the longest place, so the scrubber beside it does not move under the pointer. */}
+              <b className="lv-stepno-sizer" aria-hidden="true">
+                {widestPlace}
+              </b>
               <span>{allSteps}</span>
             </div>
           </footer>
         </>
       ) : (
-        <AnalyseView recording={recording} timeline={timeline} facts={facts} colours={colours} select={select} onSelect={setSelect} onWatch={watchStep} onFix={onFix} />
+        <AnalyseView recording={recording} timeline={timeline} facts={facts} colours={colours} select={select} focusSelected={focusDetail} onSelect={setSelect} onWatch={watchStep} onFix={onFix} />
       )}
     </div>
   );

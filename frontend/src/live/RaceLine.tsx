@@ -2,9 +2,9 @@
 // where the defense's first alert came, with one sentence that says who is winning.
 
 import type { Recording } from "./recording";
-import type { Frame, ScoreSoFar, Timeline } from "./playback";
+import type { FirstAlert, Frame, ScoreSoFar, Timeline } from "./playback";
 import { capital, clockTime, elapsed, falseAlertsOf, plural, span, stepLabel } from "./format";
-import { firstAlertClock } from "./moment";
+import { firstAlertClock, firstAlertOnScreen } from "./moment";
 import type { RunFacts } from "./moment";
 
 interface RaceLineProps {
@@ -22,11 +22,11 @@ interface RaceLineProps {
  * race between the first alert and the goal, both on the recording's real
  * clock: the goal falls `score.goal_seconds` after the first step's start.
  */
-export function whoIsWinning(recording: Recording, frame: Frame, score: ScoreSoFar, facts: RunFacts): string {
+export function whoIsWinning(recording: Recording, frame: Frame, score: ScoreSoFar, facts: RunFacts, firstAlert: FirstAlert | null = frame.race.firstAlert): string {
   const { race } = frame;
   if (frame.segment === null) return "Nothing has run yet.";
   if (recording.kind === "attack path") {
-    const first = race.firstAlert;
+    const first = firstAlert;
     const goal = recording.score.goal_seconds;
     const goalReal = goal === undefined ? null : facts.start + goal * 1000;
     if (goalReal !== null && frame.real >= goalReal) {
@@ -69,7 +69,7 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
   const at = (real: number) => `${(Math.min(1, Math.max(0, (real - facts.start) / length)) * 100).toFixed(3)}%`;
   const head = at(frame.real);
   const first = timeline.firstAlert;
-  const reached = frame.race.firstAlert;
+  const reached = firstAlertOnScreen(frame.race.firstAlert, frame.time, frame.segment, revealed);
   const goal = recording.score.goal_seconds;
   const goalReal = goal !== undefined ? facts.start + goal * 1000 : null;
   const other = facts.otherFirst && frame.time >= facts.otherFirst.at ? facts.otherFirst : null;
@@ -89,7 +89,7 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
   const firstRule = first?.alert.rule.title;
   const firstFalse = firstRule ? falseAlertsOf(recording, firstRule) : 0;
   const firstClock = first ? firstAlertClock(recording, facts, first) : null;
-  const winning = whoIsWinning(recording, frame, score, facts);
+  const winning = whoIsWinning(recording, frame, score, facts, reached);
   // The count of tests that got through leads the sentence, in the attacker's colour.
   const lead = winning.includes("got through") ? (/^\d[\d,]* of [\d,]+ tests?/.exec(winning)?.[0] ?? "") : "";
 
@@ -153,7 +153,9 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
               </span>
             ) : null}
           </span>
-          <span className="lv-race-end">{elapsed(length / 1000, 0)} {recording.source.finished ? "end of the run" : "so far"}</span>
+          <span className="lv-race-end" title={`From the first recorded event of the first step to the end of the last step${recording.source.finished ? "" : " so far"}, ${clockTime(facts.end)} UTC`}>
+            {elapsed(length / 1000, 0)} {recording.source.finished ? "from the first step to the last" : "so far"}
+          </span>
         </div>
       </div>
     </section>
