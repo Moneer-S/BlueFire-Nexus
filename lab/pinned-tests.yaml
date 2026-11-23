@@ -73,67 +73,146 @@ control:
   guid: 486e88ea-4f56-470f-9b57-3f4d73f39133
   name: Hostname Discovery
 
-# Ordinary administration, not an attack test, run after the control: once as
-# root and once as the test account. It uses the tools and files the lab's own
-# rules look at, the way ordinary work does. A rule of the lab's own that
-# matches any of it is not accepted.
+# Ordinary activity, not an attack test, run after the control. A rule of the
+# lab's own that matches any of it is not accepted. Each part runs as root or as
+# the test account, in an audit session of its own, and says who wrote what it
+# runs: a rule's author can only write ordinary work the rule was already
+# written around, so most of the baseline is other people's work. A part that
+# does not run to its end (exit status 0) leaves every rule unaccepted: a rule
+# is not judged quiet on work that did not happen.
 baseline:
-  name: Ordinary administration with the tools the lab's rules look at
-  root: |
-    useradd --system --no-create-home --shell /usr/sbin/nologin bluefire-lab-service
-    userdel bluefire-lab-service
-    useradd --no-create-home --shell /bin/bash bluefire-lab-person
-    userdel bluefire-lab-person
-    mkdir -p /etc/systemd/system/cron.service.d
-    printf '[Service]\nNice=5\n' > /etc/systemd/system/cron.service.d/bluefire-lab.conf
-    systemctl daemon-reload
-    rm /etc/systemd/system/cron.service.d/bluefire-lab.conf
-    rmdir --ignore-fail-on-non-empty /etc/systemd/system/cron.service.d
-    ln -sf /dev/null /etc/systemd/system/bluefire-lab-masked.service
-    rm /etc/systemd/system/bluefire-lab-masked.service
-    systemctl daemon-reload
-    cp /usr/lib/systemd/system/cron.service /etc/systemd/system/bluefire-lab-copy.service
-    systemctl daemon-reload
-    rm /etc/systemd/system/bluefire-lab-copy.service
-    systemctl daemon-reload
-    useradd -rM -s /usr/sbin/nologin bluefire-lab-system
-    userdel bluefire-lab-system
-    install -m 755 /bin/true /usr/local/bin/bluefire-lab-tool
-    chmod 750 /usr/local/bin/bluefire-lab-tool
-    chmod u+x /usr/local/bin/bluefire-lab-tool
-    chmod u+rwx,g+rx,o-rwx /usr/local/bin/bluefire-lab-tool
-    chmod 0755 /usr/local/bin/bluefire-lab-tool
-    rm /usr/local/bin/bluefire-lab-tool
-    truncate -s 0 /var/log/bluefire-lab-baseline.log
-    rm /var/log/bluefire-lab-baseline.log
-    crontab -l || true
-  account: |
-    crontab -l || true
-    echo ls >> ~/.bash_history
-    chmod 600 ~/.bash_history
-    cp ~/.bash_history ~/.bash_history.bak
-    rm ~/.bash_history.bak
-    truncate -s 0 ~/notes.txt
-    rm ~/notes.txt
-    truncate -s 1M ~/scratch.img
-    rm ~/scratch.img
-    cp /bin/true /tmp/bluefire-lab-build-step
-    /tmp/bluefire-lab-build-step
-    rm /tmp/bluefire-lab-build-step
-    mkdir -p ~/.local/bin
-    cp /bin/true ~/.local/bin/bluefire-lab-tool
-    ~/.local/bin/bluefire-lab-tool
-    rm ~/.local/bin/bluefire-lab-tool
-    find ~ -name '*.txt' -type f
-    find /etc -maxdepth 1 -name 'host*'
-    echo notes > /tmp/bluefire-lab-notes.txt
-    zip -q -j /tmp/bluefire-lab-notes.zip /tmp/bluefire-lab-notes.txt
-    unzip -o -q /tmp/bluefire-lab-notes.zip -d /tmp/bluefire-lab-unzipped
-    rm -r /tmp/bluefire-lab-notes.txt /tmp/bluefire-lab-notes.zip /tmp/bluefire-lab-unzipped
-    site=$(python3 -c 'import site; print(site.getusersitepackages())')
-    mkdir -p "$site"
-    echo 'value = 1' > "$site/bluefire_lab_module.py"
-    rm "$site/bluefire_lab_module.py"
+  name: Ordinary activity the lab's rules must stay quiet on
+  parts:
+    # The first two parts are this repository's own: ordinary use of the very
+    # tools and files the lab's rules look at.
+    - name: root
+      as: root
+      author: this repository
+      what: ordinary administration as root with the tools the lab's rules look at
+      run: |
+        useradd --system --no-create-home --shell /usr/sbin/nologin bluefire-lab-service
+        userdel bluefire-lab-service
+        useradd --no-create-home --shell /bin/bash bluefire-lab-person
+        userdel bluefire-lab-person
+        mkdir -p /etc/systemd/system/cron.service.d
+        printf '[Service]\nNice=5\n' > /etc/systemd/system/cron.service.d/bluefire-lab.conf
+        systemctl daemon-reload
+        rm /etc/systemd/system/cron.service.d/bluefire-lab.conf
+        rmdir --ignore-fail-on-non-empty /etc/systemd/system/cron.service.d
+        ln -sf /dev/null /etc/systemd/system/bluefire-lab-masked.service
+        rm /etc/systemd/system/bluefire-lab-masked.service
+        systemctl daemon-reload
+        cp /usr/lib/systemd/system/cron.service /etc/systemd/system/bluefire-lab-copy.service
+        systemctl daemon-reload
+        rm /etc/systemd/system/bluefire-lab-copy.service
+        systemctl daemon-reload
+        useradd -rM -s /usr/sbin/nologin bluefire-lab-system
+        userdel bluefire-lab-system
+        install -m 755 /bin/true /usr/local/bin/bluefire-lab-tool
+        chmod 750 /usr/local/bin/bluefire-lab-tool
+        chmod u+x /usr/local/bin/bluefire-lab-tool
+        chmod u+rwx,g+rx,o-rwx /usr/local/bin/bluefire-lab-tool
+        chmod 0755 /usr/local/bin/bluefire-lab-tool
+        rm /usr/local/bin/bluefire-lab-tool
+        truncate -s 0 /var/log/bluefire-lab-baseline.log
+        rm /var/log/bluefire-lab-baseline.log
+        crontab -l || true
+    - name: account
+      as: account
+      author: this repository
+      what: ordinary work of the test account with the same tools
+      run: |
+        crontab -l || true
+        echo ls >> ~/.bash_history
+        chmod 600 ~/.bash_history
+        cp ~/.bash_history ~/.bash_history.bak
+        rm ~/.bash_history.bak
+        truncate -s 0 ~/notes.txt
+        rm ~/notes.txt
+        truncate -s 1M ~/scratch.img
+        rm ~/scratch.img
+        cp /bin/true /tmp/bluefire-lab-build-step
+        /tmp/bluefire-lab-build-step
+        rm /tmp/bluefire-lab-build-step
+        mkdir -p ~/.local/bin
+        cp /bin/true ~/.local/bin/bluefire-lab-tool
+        ~/.local/bin/bluefire-lab-tool
+        rm ~/.local/bin/bluefire-lab-tool
+        find ~ -name '*.txt' -type f
+        find /etc -maxdepth 1 -name 'host*'
+        echo notes > /tmp/bluefire-lab-notes.txt
+        zip -q -j /tmp/bluefire-lab-notes.zip /tmp/bluefire-lab-notes.txt
+        unzip -o -q /tmp/bluefire-lab-notes.zip -d /tmp/bluefire-lab-unzipped
+        rm -r /tmp/bluefire-lab-notes.txt /tmp/bluefire-lab-notes.zip /tmp/bluefire-lab-unzipped
+        site=$(python3 -c 'import site; print(site.getusersitepackages())')
+        mkdir -p "$site"
+        echo 'value = 1' > "$site/bluefire_lab_module.py"
+        rm "$site/bluefire_lab_module.py"
+    # The false alarm that the lab's rule for a unit file written by a shell names
+    # itself: an administrator who writes a new service by hand. Whoever accepts
+    # that rule has to accept this alert with it, so the rule is judged on it.
+    - name: unit-by-hand
+      as: root
+      author: this repository
+      what: two new systemd services written by hand with a shell, started once and removed again
+      run: |
+        set -e
+        printf '[Unit]\nDescription=BlueFire lab baseline service\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/bluefire-lab-by-hand.service
+        printf '[Unit]\nDescription=BlueFire lab baseline service, with tee\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n' | tee /etc/systemd/system/bluefire-lab-by-hand-tee.service > /dev/null
+        systemctl daemon-reload
+        systemctl enable bluefire-lab-by-hand.service
+        systemctl start bluefire-lab-by-hand.service bluefire-lab-by-hand-tee.service
+        systemctl disable bluefire-lab-by-hand.service
+        rm /etc/systemd/system/bluefire-lab-by-hand.service /etc/systemd/system/bluefire-lab-by-hand-tee.service
+        systemctl daemon-reload
+    # The parts below are other people's work, run as they wrote it. The workflow
+    # downloads the packages, the role and the source before the run (the names
+    # and pins are in .github/workflows/lab.yml and must match these commands).
+    # The role downloads the program it installs itself, while it runs.
+    - name: packages
+      as: root
+      author: the maintainers of the Ubuntu packages vsftpd, sysstat and redis-server
+      what: >-
+        three packages installed with apt and removed again: their maintainer scripts add system
+        accounts and groups, install services, timers and a cron file, and start two services
+      timeout: 600
+      run: |
+        set -e
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install -y -q --no-download vsftpd sysstat redis-server
+        systemctl is-active vsftpd redis-server
+        test -f /etc/cron.d/sysstat
+        apt-get purge -y -q vsftpd sysstat redis-server redis-tools
+    - name: role
+      as: root
+      author: Jeff Geerling (the Ansible role geerlingguy.node_exporter)
+      what: >-
+        a published Ansible role applied as it is: it downloads a program, adds a system account
+        for it, writes a systemd unit from a template, and enables and starts the service
+      timeout: 600
+      run: |
+        set -e
+        cd /opt/bluefire-lab/baseline
+        ANSIBLE_ROLES_PATH=/opt/bluefire-lab/baseline/roles ANSIBLE_LOCALHOST_WARNING=False \
+          /opt/bluefire-lab/baseline/ansible-playbook -i localhost, node-exporter.yml
+        systemctl is-active node_exporter
+    - name: build
+      as: account
+      author: the jq project
+      what: >-
+        a program built from its release's source with its own configure script and makefile,
+        and installed into the account's own folder
+      timeout: 900
+      run: |
+        set -e
+        rm -rf ~/bluefire-lab-build
+        mkdir ~/bluefire-lab-build
+        tar -xzf /opt/bluefire-lab/baseline/jq.tar.gz -C ~/bluefire-lab-build --strip-components=1
+        cd ~/bluefire-lab-build
+        ./configure --with-oniguruma=builtin --prefix="$HOME/.local" > configure.log 2>&1
+        make -j4 > make.log 2>&1
+        make install > install.log 2>&1
+        ~/.local/bin/jq --version
 
 tests:
   # Discovery

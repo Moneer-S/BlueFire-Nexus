@@ -188,10 +188,17 @@ def ordinary_note(results: dict) -> str:
     noisy = ", ".join(
         f"{rule['title']} ({rule['level']}, {rule['events']})" for rule in ordinary["pinned_rules"]
     )
+    parts = "; ".join(
+        f"{part['what']} (written by {part['author']}, {count(part['events'], 'event')}"
+        + ("" if part["exit_status"] == 0 else f", did not run to its end: exit status {part['exit_status']}")
+        + ")"
+        for part in ordinary.get("parts", [])
+    )
     return (
         f"The baseline of ordinary activity left {count(ordinary['baseline_events'], 'event')}, and the runner's "
-        f"own work outside the tests left {count(ordinary['system_events'], 'event')}. Pinned rules that matched "
-        f"them: {noisy or 'none'}."
+        f"own work outside the tests left {count(ordinary['system_events'], 'event')}. "
+        + (f"The parts of the baseline: {parts}. " if parts else "")
+        + f"Pinned rules that matched them: {noisy or 'none'}."
     )
 
 
@@ -507,9 +514,8 @@ def html_report(results: dict) -> str:
         + lab_rules_table(results)
         + '<p class="note">Rules this repository adds for gaps the pinned rules leave. A rule is accepted when it '
         "alerts on a test, still alerts when that test runs again with changed input arguments, and matches "
-        "nothing in a baseline of ordinary use of the same tools or in the runner's own work. "
-        + e(ordinary_note(results))
-        + "</p>"
+        "nothing in a baseline of ordinary activity or in the runner's own work. Most of the baseline was not "
+        "written by the rules' author. " + e(ordinary_note(results)) + "</p>"
         if results.get("lab_rules")
         else ""
     )
