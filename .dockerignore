@@ -1,0 +1,4 @@
+# The app's image takes only pyproject.toml from the checkout. The checkout
+# itself is mounted when the container starts: see docker/app.Dockerfile.
+*
+!pyproject.toml

@@ -18,6 +18,10 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ~~~
 
+To only look at the app, Docker is enough: `docker compose up app` starts it
+from your checkout and prints its address. [`compose.yaml`](compose.yaml) says
+how.
+
 Frontend changes also require pnpm 11.19.0. Optional detection-backend work
 uses the pinned pySigma and yara-python versions documented in
 [docs/DETECTION_LAB.md](docs/DETECTION_LAB.md).

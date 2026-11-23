@@ -1,0 +1,19 @@
+# Starts the app from this checkout with nothing but Docker installed:
+#
+#   docker compose up app
+#
+# Open the address it prints. The app listens on this machine only
+# (127.0.0.1:8765), which is why the container shares the host's network. What
+# you save stays in the volume "workspace" between starts.
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    network_mode: host
+    volumes:
+      - .:/app:ro
+      - workspace:/workspace
+
+volumes:
+  workspace:
