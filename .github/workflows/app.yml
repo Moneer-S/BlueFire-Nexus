@@ -1,9 +1,9 @@
 name: app
 
 # Checks that the app still behaves for the person using it: the service's
-# tests, the interface's types, lint, logic tests and build, and the browser
-# tests of its screens. Each job is meant to finish in a few minutes. The
-# runner's own tests are in runner.yml and start only when the runner changes.
+# tests, the interface's types, lint, logic tests and build, the browser tests
+# of its screens, and the one-command start. Each job is meant to finish in a
+# few minutes. The runner's own tests are in runner.yml.
 
 on:
   pull_request:
@@ -15,6 +15,9 @@ on:
       - tests_platform/**
       - pyproject.toml
       - setup.py
+      - compose.yaml
+      - docker/**
+      - .dockerignore
       - .github/workflows/app.yml
   push:
     branches: [main]
@@ -26,6 +29,9 @@ on:
       - tests_platform/**
       - pyproject.toml
       - setup.py
+      - compose.yaml
+      - docker/**
+      - .dockerignore
       - .github/workflows/app.yml
   workflow_dispatch:
 
@@ -105,10 +111,13 @@ jobs:
       - name: Build the interface
         run: pnpm build
 
+      # A file the build adds counts too, not only one it changes.
       - name: The committed interface is the one this source builds
         working-directory: .
         run: |
-          if ! git diff --exit-code --stat -- bluefire/ui; then
+          changed=$(git status --porcelain -- bluefire/ui)
+          if [ -n "$changed" ]; then
+            echo "$changed"
             echo "bluefire/ui is not what frontend/ builds: run pnpm build in frontend/ and commit bluefire/ui"
             exit 1
           fi
@@ -134,8 +143,23 @@ jobs:
           corepack prepare "pnpm@$PNPM_VERSION" --activate
           pnpm install --frozen-lockfile
 
-      - name: Open the screens in a browser
+      # The interface built with its sample data, with no service behind it.
+      - name: Open the screens of the demo build
         run: pnpm test:e2e
+
+      # The real thing: the Python service serving the committed interface.
+      - name: Install the app
+        working-directory: .
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends python3-venv
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet -e .
+
+      - name: Open the screens the service serves
+        env:
+          BLUEFIRE_PYTHON: /tmp/venv/bin/python
+        run: pnpm test:service
 
       - name: Keep the traces of failed tests
         if: failure()
@@ -145,3 +169,29 @@ jobs:
           path: frontend/test-results
           retention-days: 7
           if-no-files-found: ignore
+
+  start:
+    name: one-command start
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Start the app as the front page says
+        run: docker compose up --detach --quiet-pull app
+
+      - name: The interface answers and the service printed its address
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail --output "$RUNNER_TEMP/index.html" http://127.0.0.1:8765/; then break; fi
+            sleep 1
+          done
+          grep --quiet '<div id="root">' "$RUNNER_TEMP/index.html"
+          docker compose logs app | grep --quiet 'http://127.0.0.1:8765/#bluefire-session='
+
+      - name: Stop it
+        if: always()
+        run: docker compose down --volumes

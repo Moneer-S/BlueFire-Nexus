@@ -1,13 +1,18 @@
 name: runner
 
 # The Rust runner's own tests. Starts only when the runner changes, so that a
-# change elsewhere does not wait for a Rust build.
+# change elsewhere does not wait for a Rust build. The runner builds some of
+# the app's Python files into itself (runner/src/s3_runtime_manifest.rs), and
+# its tests read fixtures the service's tests share, so those count as the
+# runner too.
 
 on:
   pull_request:
     paths:
       - runner/**
       - rust-toolchain.toml
+      - bluefire/s3_*.py
+      - bluefire/util.py
       - tests_platform/fixtures/**
       - .github/workflows/runner.yml
   push:
@@ -15,6 +20,8 @@ on:
     paths:
       - runner/**
       - rust-toolchain.toml
+      - bluefire/s3_*.py
+      - bluefire/util.py
       - tests_platform/fixtures/**
       - .github/workflows/runner.yml
   workflow_dispatch:
