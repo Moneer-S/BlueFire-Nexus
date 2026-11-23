@@ -180,7 +180,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Start the app as the front page says
+      # A user the image has no account for: the app must still be able to
+      # write its workspace and its own state.
+      - name: Start the app as the front page says, as a user of the host's choice
+        env:
+          BLUEFIRE_UID: "4321"
+          BLUEFIRE_GID: "4321"
         run: docker compose up --detach --quiet-pull app
 
       - name: The interface answers and the service printed its address
