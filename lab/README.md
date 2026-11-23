@@ -527,8 +527,10 @@ its attack, its prereq checks and its cleanup, read from the pinned YAML as
 Invoke-AtomicRedTeam reads it. The job `atomic-parity` in
 `.github/workflows/range-one.yml` runs Invoke-AtomicRedTeam for the same steps
 with stand-ins for `sh` and `bash` that record how they were started and run
-nothing, and fails on any byte that differs. A CI run where every vector is
-identical: not yet shown. The range's containers and defenses: not yet shown.
+nothing, and fails on any byte that differs. In
+[run 45246198695](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45246198695)
+every vector was identical: 11 steps, each with its attack, prereq check and
+cleanup. The range's containers and defenses: not yet shown.
 
 ## Not yet shown
 
