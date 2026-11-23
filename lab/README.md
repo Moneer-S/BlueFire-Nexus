@@ -742,7 +742,7 @@ The `range-one` job of the `range-one` workflow runs this on a GitHub-hosted
 runner, fails unless there was no delivery gap, every agent host got its marks
 and every mark arrived, snoopy's tag was decoded, every ossec.conf is the lab's
 edits of the stock file and every plant check passed, and writes the build
-time, each image's build steps taken from the cache, the plant checks, the
+time, the plant checks, the
 ready delays, the marks, the delivery table and the seal to its summary. Each
 image has a cache scope of its own in the GitHub Actions cache, and BuildKit
 runs from its own image, pinned by digest. Not yet shown on a GitHub-hosted

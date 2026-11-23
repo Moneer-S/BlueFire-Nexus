@@ -278,25 +278,12 @@ jobs:
           load: true
           set: ${{ steps.render.outputs.cache }}
 
-      # Each image's build steps, and how many of them came from the cache: a first run on an
-      # empty cache builds every step, a later one should find most of them.
-      - name: Build record
-        if: always() && steps.bake.outputs.metadata != ''
-        env:
-          METADATA: ${{ steps.bake.outputs.metadata }}
-        run: |
-          echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED ))" >> "$GITHUB_ENV"
-          {
-            echo "| Image | Build steps from the cache |"
-            echo "|---|---|"
-            printf '%s' "$METADATA" | jq -r 'to_entries[] | "\(.key) \(.value["buildx.build.ref"] // "")"' |
-              while read -r target ref; do
-                steps=$(docker buildx history inspect "${ref##*/}" \
-                  --format '{{.NumCachedSteps}} of {{.NumTotalSteps}}' 2> /dev/null || echo "not recorded")
-                echo "| $target | $steps |"
-              done
-            echo
-          } > "$RUNNER_TEMP/build-record.md"
+      # How long the images took: a first run on an empty cache builds every step, a later one
+      # should find most of them. The build action writes its own summary of each image's
+      # steps and how many came from the cache.
+      - name: Stop the build clock
+        if: always()
+        run: echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED ))" >> "$GITHUB_ENV"
 
       - name: Run the range
         run: |
@@ -333,7 +320,6 @@ jobs:
           {
             echo "Image build, from the end of the builder's set-up: ${BUILD_SECONDS:-?} s."
             echo
-            if [ -f "$RUNNER_TEMP/build-record.md" ]; then cat "$RUNNER_TEMP/build-record.md"; fi
           } >> "$GITHUB_STEP_SUMMARY"
           for part in plants defense seal; do
             if [ -f "$OUT/run/$part.md" ]; then cat "$OUT/run/$part.md" >> "$GITHUB_STEP_SUMMARY"; fi
