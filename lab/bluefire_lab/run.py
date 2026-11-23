@@ -36,6 +36,18 @@ KEPT_OUTPUT = 20000
 # auditd's log, and the file the driver writes until auditd has recorded the write.
 AUDIT_LOG = "/var/log/audit/audit.log"
 AUDIT_PROBE = "/var/tmp/bluefire-lab-audit-probe"
+# A Sysmon configuration that records no event: for a run whose given sensor settings are
+# audit rules only, so that Sysmon's records are not counted under settings that have none.
+SYSMON_NOTHING = """<Sysmon schemaversion="4.81">
+  <EventFiltering>
+    <ProcessCreate onmatch="include"/>
+    <NetworkConnect onmatch="include"/>
+    <ProcessTerminate onmatch="include"/>
+    <FileCreate onmatch="include"/>
+    <FileDelete onmatch="include"/>
+  </EventFiltering>
+</Sysmon>
+"""
 TECHNIQUE = re.compile(r"T\d{4}(\.\d{3})?")
 GUID = re.compile(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 
@@ -474,6 +486,78 @@ def wait_until_ready(context: dict, since: float) -> int | None:
     return None
 
 
+def given_settings(folder: Path | None, out: Path) -> dict | None:
+    """The sensor settings given to the run as an input, copied into the run's folder: a Sysmon
+    configuration (sysmon.xml), audit rules (audit.rules), or both, each with the place it came
+    from beside it (sysmon.SOURCE, audit.SOURCE). None when the folder holds neither.
+
+    A sensor the input gives no settings for records nothing under them: Sysmon gets a
+    configuration that records no event, and auditd only the lab's instrument."""
+
+    found: dict = {"name": "given"}
+    for sensor, name, copy in (
+        ("sysmon", "sysmon.xml", "given-sysmon.xml"),
+        ("audit", "audit.rules", "given-audit.rules"),
+    ):
+        path = folder / name if folder else None
+        if path and path.is_file():
+            source = path.with_suffix(".SOURCE")
+            shutil.copyfile(path, out / copy)
+            found[sensor] = copy
+            found[f"{sensor}_source"] = (
+                source.read_text(encoding="utf-8").strip() if source.is_file() else name
+            )
+    if "sysmon" not in found and "audit" not in found:
+        return None
+    if "sysmon" not in found:
+        (out / "given-sysmon.xml").write_text(SYSMON_NOTHING, encoding="utf-8")
+        found.update(
+            sysmon="given-sysmon.xml", sysmon_source="none given: Sysmon records nothing under these settings"
+        )
+    if "audit" in found:
+        # Rules that lock the audit configuration would keep the lab from loading its own again.
+        locked = [
+            line for line in (out / found["audit"]).read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.split("#")[0].split()[:2] == ["-e", "2"]
+        ]  # fmt: skip
+        if locked:
+            raise SystemExit(
+                "the given audit rules make the audit configuration immutable (-e 2): the lab cannot load "
+                "its own rules again for the closing canary. Take that line out for the lab run"
+            )
+    return found
+
+
+def apply_settings(settings: dict, out: Path, installed: bool = False) -> dict:
+    """Load one set of sensor settings: Sysmon's configuration (unless Sysmon was just installed
+    with it), then auditd's rules, and after those the lab's instrument rules, so that a record
+    a rule of the settings would make carries that rule's key and only the others carry the
+    instrument's. Returns what the record says about the change."""
+
+    if not installed:
+        loaded = subprocess.run(
+            ["sudo", "sysmon", "-c", str(out / settings["sysmon"])], capture_output=True, text=True
+        )
+        if loaded.returncode != 0:
+            said = (loaded.stdout + loaded.stderr).strip()[-600:]
+            raise SystemExit(f"Sysmon refused the configuration of the {settings['name']} settings: {said}")
+    subprocess.run(["sudo", "auditctl", "-D"], check=True, capture_output=True)
+    if settings.get("audit"):
+        loaded = subprocess.run(
+            ["sudo", "auditctl", "-R", str(out / settings["audit"])], capture_output=True, text=True
+        )
+        if loaded.returncode != 0:
+            raise SystemExit(
+                f"auditd refused the audit rules of the {settings['name']} settings: {loaded.stderr.strip()[-600:]}"
+            )
+    subprocess.run(
+        ["sudo", "auditctl", "-R", str(out / "instrument-rules.txt")], check=True, capture_output=True
+    )
+    listing = subprocess.run(["sudo", "auditctl", "-l"], capture_output=True, text=True).stdout
+    (out / f"audit-rules-loaded-{settings['name']}.txt").write_text(listing, encoding="utf-8")
+    return {"to": settings["name"], "time": now(), "audit_rules_loaded": len(listing.splitlines())}
+
+
 def facts(context: dict) -> tuple[dict, dict]:
     release = dict(
         line.rstrip("\n").split("=", 1) for line in open("/etc/os-release", encoding="utf-8") if "=" in line
@@ -512,7 +596,9 @@ def main(
     sensor_config: Path,
     out: Path,
     account: str,
-    audit_rules: Path | None = None,
+    audit_rules: Path,
+    instrument: Path,
+    given: Path | None = None,
 ) -> int:
     document = yaml.safe_load(tests.read_text(encoding="utf-8"))
     out.mkdir(parents=True, exist_ok=True)
@@ -547,18 +633,27 @@ def main(
         "dropped": left_out,
     }
     shutil.copyfile(sensor_config, out / "sensor-config.xml")
+    shutil.copyfile(instrument, out / "instrument-rules.txt")
+    # auditd's rules name the account's start files, so its home is filled in first.
+    (out / "audit-rules.txt").write_text(fill(audit_rules.read_text(encoding="utf-8"), context))
+    own = {"name": "lab", "sysmon": "sensor-config.xml", "audit": "audit-rules.txt"}
+    # The settings under test: the lab's own, unless the run was given others. The canary
+    # always runs under the lab's own, which the pinned rules are known to catch it under.
+    under_test = given_settings(given, out) or own
+    record["settings"] = [own] if under_test is own else [own, under_test]
+    record["switches"] = []
     since = time.time() - 1
     subprocess.run(
         ["sudo", "sysmon", "-accepteula", "-i", str(sensor_config)], check=True, capture_output=True
     )
-    if audit_rules is not None:
-        # auditd's rules name the account's start files, so its home is filled in first.
-        (out / "audit-rules.txt").write_text(fill(audit_rules.read_text(encoding="utf-8"), context))
-        subprocess.run(
-            ["sudo", "auditctl", "-R", str(out / "audit-rules.txt")], check=True, capture_output=True
-        )
-        record["audit"] = context["audit"] = {"rules": "audit-rules.txt", "probe": AUDIT_PROBE}
-        record["audit"].update(version=tools["auditd"], before=audit_status())
+    record["switches"].append({**apply_settings(own, out, installed=True), "before": 0})
+    current = own
+    record["audit"] = context["audit"] = {
+        "rules": "audit-rules.txt",
+        "instrument": "instrument-rules.txt",
+        "probe": AUDIT_PROBE,
+    }
+    record["audit"].update(version=tools["auditd"], before=audit_status())
     record["inventory"]["sensors"] = {
         name: output_of("systemctl", "is-active", name) for name in ("sysmon", "auditd")
     }
@@ -580,12 +675,23 @@ def main(
                     + (f", with the input arguments {spec['args']}" if item["role"] == "variant" else ""),
                     flush=True,
                 )
+                wanted = own if item["role"] == "canary" else under_test
+                if wanted is not current:
+                    try:
+                        record["switches"].append({**apply_settings(wanted, out), "before": item["order"]})
+                    except SystemExit as refused:
+                        record["aborted"] = str(refused)
+                        print(record["aborted"], flush=True)
+                        break
+                    current = wanted
+                    time.sleep(1)
+                    print(f"    sensor settings: {wanted['name']}", flush=True)
                 if item["role"] == "baseline":
                     done = run_baseline(item, context)
-                    record["tests"].append(done)
+                    record["tests"].append({**done, "settings": current["name"]})
                     print(f"    exit status: {[s['exit_status'] for s in done['steps']]}", flush=True)
                     continue
-                done = run_test(item, context)
+                done = {**run_test(item, context), "settings": current["name"]}
                 record["tests"].append(done)
                 effect = next((s["exit_status"] for s in done["steps"] if s["label"] == "effect"), "none")
                 applied = f", change applied: {done['defense'].get('applied')}" if change else ""

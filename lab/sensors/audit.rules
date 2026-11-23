@@ -1,5 +1,7 @@
-## auditd rules for the lab target, loaded by "bluefire-lab run --audit-rules",
-## which fills in the home folder of the account the tests run as.
+## auditd rules of the lab's own sensor settings, loaded by "bluefire-lab run",
+## which fills in the home folder of the account the tests run as. The rules
+## the lab itself needs in every run are in instrument.rules, and are loaded
+## after these.
 ##
 ## Sysmon for Linux reports a write to a file only when it leaves the file
 ## looking newly created, so an append to a file that already exists, such as a
@@ -15,14 +17,8 @@
 ## and cron and logins set one too, so the machine's own cron jobs and what
 ## cron or a login starts for a test are recorded as well, among them the user
 ## manager systemd starts for a login and what that starts. The runner's agent
-## and the system's services have none.
-
-## Start from no rules, and keep a backlog large enough for a burst.
--D
--b 32768
-
-## The file the lab writes until auditd has recorded the write.
--w /var/tmp/bluefire-lab-audit-probe -p wa -k bluefire-lab-probe
+## and the system's services have none: the lab's instrument rules record
+## their starts, and those records are not counted as telemetry.
 
 ## Shell start files of every account, and of root and of the test account.
 -w /etc/profile -p wa -k shell-start

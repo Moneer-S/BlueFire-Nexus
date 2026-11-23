@@ -100,6 +100,31 @@ def test_a_part_of_the_baseline_that_does_not_say_who_wrote_it_stops_the_run() -
         )
 
 
+def test_given_sensor_settings_are_one_file_or_both_and_must_not_lock_the_audit_rules(tmp_path: Path) -> None:
+    given, out = tmp_path / "given", tmp_path / "out"
+    given.mkdir()
+    out.mkdir()
+
+    assert run.given_settings(None, out) is None
+    assert run.given_settings(given, out) is None
+
+    (given / "audit.rules").write_text("-D\n-w /etc/passwd -p wa -k etcpasswd\n# -e 2\n")
+    (given / "audit.SOURCE").write_text("someone/auditd@" + "a" * 40 + ":audit.rules\n")
+    found = run.given_settings(given, out)
+    assert found["audit"] == "given-audit.rules" and found["audit_source"].startswith("someone/auditd@")
+    # No Sysmon configuration was given, so Sysmon records nothing under these settings.
+    assert found["sysmon_source"].startswith("none given")
+    assert 'ProcessCreate onmatch="include"/' in (out / found["sysmon"]).read_text()
+
+    (given / "sysmon.xml").write_text("<Sysmon/>")
+    assert run.given_settings(given, out)["sysmon_source"] == "sysmon.xml"
+    assert (out / "given-sysmon.xml").read_text() == "<Sysmon/>"
+
+    (given / "audit.rules").write_text("-w /etc/passwd -p wa\n-e 2\n")
+    with pytest.raises(SystemExit, match="immutable"):
+        run.given_settings(given, out)
+
+
 def test_an_input_argument_the_test_does_not_declare_stops_the_run(tmp_path: Path) -> None:
     guid = "23d348f3-cc5c-4ba9-bd0a-ae09069f0914"
     upstream = {"name": "a test", "auto_generated_guid": guid, "supported_platforms": ["linux"],

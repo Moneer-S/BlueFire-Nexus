@@ -392,3 +392,34 @@ def test_a_rule_set_given_as_an_input_has_its_own_column_and_section() -> None:
     assert link in page
     assert "| alert (no level: Their Rule) | 1 |" in summary
     assert "With the rules of" not in report.markdown_summary(results())
+
+
+def test_sensor_settings_given_as_an_input_are_named_and_shown() -> None:
+    document = results()
+    own = {"name": "lab", "sysmon": "sensor-config.xml", "audit": "audit-rules.txt"}
+    given = {
+        "name": "given",
+        "sysmon": "given-sysmon.xml",
+        "sysmon_source": "someone/configs@" + "f" * 40 + ":linux/main.xml",
+        "sysmon_sha256": "1" * 64,
+        "sysmon_text": "<Sysmon><!-- theirs --></Sysmon>",
+        "audit": "given-audit.rules",
+        "audit_source": "someone/auditd@" + "a" * 40 + ":audit.rules",
+        "audit_sha256": "2" * 64,
+        "audit_text": "-w /etc/passwd -p wa -k etcpasswd",
+        "audit_rules_loaded": 212,
+    }
+    document["settings"] = [own, given]
+
+    page, summary = report.html_report(document), report.markdown_summary(document)
+
+    assert (
+        "ran under sensor settings given to the run as an input: Sysmon configuration someone/configs@"
+        in summary
+    )
+    assert "&lt;Sysmon&gt;&lt;!-- theirs --&gt;&lt;/Sysmon&gt;" in page
+    assert "-w /etc/passwd -p wa -k etcpasswd" in page
+    assert "auditd listed 212 rules as loaded" in page
+    assert "The lab's own settings." in page
+    document["settings"] = [own]
+    assert "given to the run as an input" not in report.markdown_summary(document)
