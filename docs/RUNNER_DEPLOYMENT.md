@@ -102,6 +102,10 @@ must match the staged manifest. The explicit tag is a packaging control, not dyn
 
 ## Cross-platform release validation
 
+The journey scripts that GATE-11 runs were removed from the repository together with the heavy
+test matrix, so the release validation journey this section describes cannot pass from the
+current tree; the last commit that holds them is `ebe5a9bf`.
+
 For an interactive, prepared WSL2 lab using the ordinary installed UI and CLI, see
 [Prepared Linux lab](PREPARED_LINUX_LAB.md). Its setup and launch steps are separate from the
 release validation journey below.

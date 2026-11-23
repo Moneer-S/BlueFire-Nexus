@@ -74,8 +74,7 @@ This supports an existing reviewed lab image, not a recommendation to downgrade.
 | `usr/bin/gzip` extracted from that package | 93424 | `16f1f8dbe5b47b3c1160b9066bd15bfdd80548b1b878b1a025c462fec0ca02b1` |
 
 Linux Rust CI prepares the pinned 1.12-1ubuntu3.2 executable under a fresh
-root-owned directory in `/usr/lib`, after verifying its existing ancestors are
-root-owned, non-symlink directories without group or other write access. It does
+root-owned directory in `/usr/lib`. It does
 not change existing directory permissions. The disposable job exposes this
 protected path only to the test fixture via
 `BLUEFIRE_TEST_GZIP`. Product execution does not read this variable. This keeps

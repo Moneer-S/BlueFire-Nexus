@@ -29,6 +29,10 @@ Silicon macOS 26; check requirements for the particular method and local OS.
 
 ### Separate development-build option
 
+The tests workflow named below was removed from the repository with the rest of the heavy test
+matrix, and the last commit that holds it is `ebe5a9bf`, so no later commit has a
+development-build artifact.
+
 For a development build, use the [tests workflow](https://github.com/Moneer-S/BlueFire-Nexus/actions/workflows/tests.yml) and choose a successful run for the exact source commit you want to install. Download the wheel artifact from that run; do not use an artifact from another commit. GitHub may require sign-in to download CI artifacts. Development-build artifacts are separate from the published RC2 release and do not use its `SHA256SUMS`. UI changes from a development artifact are not part of the published RC2 wheels.
 
 Create a `bluefire-v3` directory with a `wheels` subdirectory, and put `SHA256SUMS` in
@@ -123,6 +127,9 @@ Bootstrap verifies the packaged runner manifest and digest, installs it under th
 per-user BlueFire root, and creates local trust. It does not install an administrator service.
 
 ## Platform packages
+
+The hosted checks that this page describes ran in the tests workflow, which was removed from the
+repository with the rest of the heavy test matrix; the last commit that holds it is `ebe5a9bf`.
 
 Use only a wheel whose platform and architecture match the host. Windows hosted CI on Server
 2025 checks generated process-tree cancellation; this is not Windows 11 or effective-access
