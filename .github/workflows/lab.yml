@@ -152,7 +152,10 @@ jobs:
           git -C /opt/bluefire-lab/baseline/roles/node_exporter checkout -q FETCH_HEAD
           curl -fsSL --retry 3 -o /opt/bluefire-lab/baseline/jq.tar.gz "$BASELINE_SOURCE_URL"
           echo "${BASELINE_SOURCE_DIGEST#sha256:}  /opt/bluefire-lab/baseline/jq.tar.gz" | sha256sum --check
-          ln -s "$(command -v ansible-playbook)" /opt/bluefire-lab/baseline/ansible-playbook
+          # Where the runner image keeps Ansible is not in root's search path. A link would count as
+          # a file of the lab's own that the test account can change, so this is a small script.
+          printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v ansible-playbook)" > /opt/bluefire-lab/baseline/ansible-playbook
+          chmod 755 /opt/bluefire-lab/baseline/ansible-playbook
           ansible-playbook --version | head -n 1
           # The rules the run used travel with its results.
           mkdir -p "$RUN/rules"
