@@ -1,0 +1,104 @@
+<!--
+  Wazuh - Agent - Default configuration for ubuntu 24.04
+  More info at: https://documentation.wazuh.com
+  Mailing list: https://groups.google.com/forum/#!forum/wazuh
+-->
+
+<ossec_config>
+  <client>
+    <server>
+      <address>MANAGER_IP</address>
+      <port>1514</port>
+      <protocol>tcp</protocol>
+    </server>
+    <config-profile>ubuntu, ubuntu24, ubuntu24.04</config-profile>
+    <notify_time>20</notify_time>
+    <time-reconnect>60</time-reconnect>
+    <auto_restart>yes</auto_restart>
+    <crypto_method>aes</crypto_method>
+  </client>
+
+  <!-- Policy monitoring -->
+  <rootcheck>
+    <disabled>no</disabled>
+    <check_files>yes</check_files>
+
+    <!-- Frequency that rootcheck is executed - every 12 hours -->
+    <frequency>43200</frequency>
+  </rootcheck>
+
+  <!-- System inventory -->
+  <wodle name="syscollector">
+    <disabled>no</disabled>
+    <interval>1h</interval>
+    <scan_on_start>yes</scan_on_start>
+  </wodle>
+
+  <sca>
+    <enabled>yes</enabled>
+    <scan_on_start>yes</scan_on_start>
+    <interval>12h</interval>
+    <skip_nfs>yes</skip_nfs>
+  </sca>
+
+  <!-- File integrity monitoring -->
+  <syscheck>
+    <disabled>no</disabled>
+
+    <!-- Frequency that syscheck is executed default every 12 hours -->
+    <frequency>43200</frequency>
+
+    <scan_on_start>yes</scan_on_start>
+
+    <!-- Directories to check  (perform all possible verifications) -->
+    <directories>/etc,/usr/bin,/usr/sbin</directories>
+    <directories>/bin,/sbin,/boot</directories>
+
+    <!-- Files/directories to ignore -->
+    <ignore>/etc/mtab</ignore>
+
+    <!-- File types to ignore -->
+    <ignore type="sregex">.log$|.swp$</ignore>
+  </syscheck>
+
+  <!-- Log analysis -->
+  <localfile>
+    <log_format>command</log_format>
+    <command>df -P</command>
+    <frequency>360</frequency>
+  </localfile>
+
+  <localfile>
+    <log_format>full_command</log_format>
+    <command>netstat -tulpn | sed 's/\([[:alnum:]]\+\)\ \+[[:digit:]]\+\ \+[[:digit:]]\+\ \+\(.*\):\([[:digit:]]*\)\ \+\([0-9\.\:\*]\+\).\+\ \([[:digit:]]*\/[[:alnum:]\-]*\).*/\1 \2 == \3 == \4 \5/' | sort -k 4 -g | sed 's/ == \(.*\) ==/:\1/' | sed 1,2d</command>
+    <alias>netstat listening ports</alias>
+    <frequency>360</frequency>
+  </localfile>
+
+  <localfile>
+    <log_format>full_command</log_format>
+    <command>last -n 20</command>
+    <frequency>360</frequency>
+  </localfile>
+
+  <!-- Active response -->
+  <active-response>
+    <disabled>no</disabled>
+    <ca_store>etc/wpk_root.pem</ca_store>
+    <ca_verification>yes</ca_verification>
+  </active-response>
+
+</ossec_config>
+
+<ossec_config>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/ossec/logs/active-responses.log</location>
+  </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/dpkg.log</location>
+  </localfile>
+
+</ossec_config>

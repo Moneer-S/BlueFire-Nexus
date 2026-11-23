@@ -7,26 +7,37 @@ teardown, and any event on the range that the engine did not cause breaks the
 seal. The run writes `seal.json`, `seal.md` and `manifest.json` on every exit
 path, and takes the range down on every exit path after the first create.
 
+Hosts without a pinned image are built from the spec (see `build`). A range
+with a defense also has a ready gate before the dynamic seal, the engine's
+harmless marks where the path will run, and, on every exit path after the
+start, the collection of what Wazuh recorded into `raw/`, the configuration
+diff, the delivery counts and `defense.md`.
+
 Exit codes: 0 the range was sealed and still was at the end; 1 refused before
-anything was created, or an engine error; 3 the seal failed and nothing ran in
-the range; 4 the run was made invalid (the seal failed after the point where the
-path runs, or something the engine did not do happened to the range).
+anything was created, an engine error, or a range that was not ready in time;
+3 the seal failed and nothing ran in the range; 4 the run was made invalid (the
+seal failed after the point where the path runs, or something the engine did
+not do happened to the range).
 """
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import os
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
+import tarfile
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from . import seal
+from . import build, ossec, seal, wazuh
 from .spec import Spec, SpecError, load
 
 EXIT_OK = 0
@@ -34,9 +45,17 @@ EXIT_REFUSED = 1
 EXIT_SEAL = 3
 EXIT_INVALID = 4
 MEMORY = "256m"
+# The Wazuh manager needs about a gigabyte.
+MEMORY_DEFENSE = "1g"
 PIDS_LIMIT = "1024"
 WATCH_SECONDS = 15
 READY_SECONDS = 30
+# For a range with a defense: the manager's ports, each agent connected with its real-time file
+# monitoring started, the manager listing each agent, and a nonce from each agent host in the archive.
+DEFENSE_READY_SECONDS = 180
+MARK_SECONDS = 60
+POLL_SECONDS = 1.0
+BUILD_SECONDS = 3600
 # Breaks planted on purpose, to show that the seal catches each one. A run with a plant always fails.
 PLANTS = ("not-internal", "no-isolated-gateway", "published-port", "bind-mount")
 # With this plant only, the run starts the containers although the static seal failed, so that
@@ -46,6 +65,10 @@ GOES_ON = {"no-isolated-gateway": {"network: gateway mode"}}
 
 class EngineError(RuntimeError):
     """A Docker command failed, or the engine was stopped."""
+
+
+class NotReady(RuntimeError):
+    """A part of the range was not ready in time; the message says which and what to look at."""
 
 
 def now() -> str:
@@ -100,6 +123,35 @@ def write_json(path: Path, data: object) -> None:
     partial = path.with_name(path.name + ".partial")
     partial.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     os.replace(partial, path)
+
+
+def untar(stream, folder: Path) -> list[str]:
+    """Write the folders and regular files of a tar stream under `folder`; return what was left out, and why.
+
+    Nothing but a folder or a regular file is written, and no path leaves `folder`.
+    """
+
+    refused = []
+    with tarfile.open(fileobj=stream, mode="r|") as archive:
+        for member in archive:
+            name = PurePosixPath(member.name)
+            if not name.parts:
+                continue
+            if name.is_absolute() or ".." in name.parts:
+                refused.append(f"{member.name}: a path outside the copy")
+                continue
+            target = folder.joinpath(*name.parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.isreg():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("wb") as out:
+                    shutil.copyfileobj(archive.extractfile(member), out)
+            elif member.issym() or member.islnk():
+                refused.append(f"{member.name}: a link to {member.linkname}")
+            else:
+                refused.append(f"{member.name}: not a regular file")
+    return refused
 
 
 class Watch:
@@ -167,18 +219,23 @@ class Watch:
     def _match(self, event: dict) -> bool:
         actor = event.get("Actor") or {}
         attributes = actor.get("Attributes") or {}
-        for index, allowed in enumerate(self.allowed):
-            if (
-                allowed["type"] == event.get("Type")
-                and allowed["action"] == event.get("Action")
-                and allowed.get("id", actor.get("ID")) == actor.get("ID")
-                and allowed.get("name", attributes.get("name")) == attributes.get("name")
-                and allowed.get("container", attributes.get("container")) == attributes.get("container")
-            ):
-                del self.allowed[index]
-                self.required.discard(allowed["token"])
-                return True
-        return False
+        matching = [
+            index
+            for index, allowed in enumerate(self.allowed)
+            if allowed["type"] == event.get("Type")
+            and allowed["action"] == event.get("Action")
+            and allowed.get("id", actor.get("ID")) == actor.get("ID")
+            and allowed.get("name", attributes.get("name")) == attributes.get("name")
+            and allowed.get("container", attributes.get("container")) == attributes.get("container")
+        ]
+        if not matching:
+            return False
+        # An event that an announcement waits for is matched to it before one that may never come,
+        # such as the end of a command that runs until the teardown.
+        index = next((i for i in matching if self.allowed[i]["token"] in self.required), matching[0])
+        self.required.discard(self.allowed[index]["token"])
+        del self.allowed[index]
+        return True
 
     def _finding(self, event: dict, **more) -> dict:
         actor = event.get("Actor") or {}
@@ -320,7 +377,16 @@ class Run:
         self.images: dict[str, dict] = {}
         self.phases: list[dict] = []
         self.created = False
+        self.started = False
+        self.started_at = time.monotonic()
         self.rootless = False
+        self.platform = "linux/amd64"
+        # Per built host: the image its Dockerfile pins by digest, and that image's layers.
+        self.parents: dict[str, dict] = {}
+        self.tails: list[subprocess.Popen] = []
+        # Per agent host: the nonces it logged, and the line counts of its logs read just before each.
+        self.nonces: dict[str, dict[str, str]] = {}
+        self.windows: dict[str, dict[str, dict[str, int]]] = {}
         self.watch = Watch(spec.prefix, out / "docker-events.ndjson")
         github = os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
         run_url = None
@@ -341,10 +407,12 @@ class Run:
             "plant": plant,
             "hold_seconds": hold,
             "docker": {},
+            "build": None,
             "images": {},
             "networks": {},
             "containers": {},
             "ready": {},
+            "defense": None,
             "result": "incomplete",
             "reason": None,
             "exit_code": None,
@@ -355,6 +423,34 @@ class Run:
                 "note": "the engine's own clock; no result uses it",
             },
         }
+        if spec.wazuh:
+            self.manifest["defense"] = {
+                # The pinned version; the seal checks the version the manager and each agent report.
+                "wazuh_version": spec.wazuh.version,
+                "manager_image": spec.wazuh.manager_image,
+                "agent_deb": {"version": spec.wazuh.agent_version, "sha512": spec.wazuh.agent_sha512},
+                "alert_level": spec.wazuh.alert_level,
+                "alert_level_note": (
+                    "the level from which a Wazuh alert counts as an alert when a step is scored; the manager "
+                    "keeps the stock log_alert_level 3, so alerts.json also holds the matches below it"
+                ),
+                "off": list(spec.wazuh.off),
+                "snoopy_decoder_sha256": hashlib.sha256(build.SNOOPY_DECODER.encode()).hexdigest(),
+                "manager": spec.manager,
+                "agents": spec.agents,
+                "configuration": {},
+                "manager_files": list(build.MANAGER_FILES),
+                "ready": {},
+                "marks": [],
+                "snoopy_tag": None,
+                "delivery": {},
+                "delivery_gap": None,
+                "drops": {},
+                "live": {
+                    "files": ["live/archives.json", "live/alerts.json"],
+                    "note": "followed while the run lasts, for a live view; no result is computed from them",
+                },
+            }
 
     # Outputs
 
@@ -372,6 +468,10 @@ class Run:
         }
         write_json(self.out / "seal.json", record)
         (self.out / "seal.md").write_text(summary(record, self.manifest), encoding="utf-8")
+        if self.manifest["defense"] is not None:
+            (self.out / "defense.md").write_text(
+                wazuh.summary(self.manifest, record["passed"]), encoding="utf-8"
+            )
 
     def phase(self, name: str, checks: list[dict]) -> bool:
         self.phases.append({"phase": name, "passed": seal.passed(checks), "checks": checks})
@@ -390,8 +490,13 @@ class Run:
             contexts = json.loads(docker("context", "inspect").stdout)
             endpoint = ((contexts[0].get("Endpoints") or {}).get("docker") or {}).get("Host", "")
         scheme = endpoint.split("://", 1)[0] if "://" in endpoint else ""
+        self.platform = "{}/{}".format(
+            (version.get("Server") or {}).get("Os") or "linux",
+            (version.get("Server") or {}).get("Arch") or "amd64",
+        )
         self.manifest["docker"] = {
             "server": server,
+            "platform": self.platform,
             "api": (version.get("Server") or {}).get("ApiVersion"),
             "rootless": self.rootless,
             "endpoint": scheme,
@@ -416,12 +521,6 @@ class Run:
                 f"objects named with {self.spec.prefix}- exist already ({names}): remove them with "
                 f"bluefire-lab range down <spec>"
             )
-        missing = [host.name for host in self.spec.hosts.values() if not host.image]
-        if missing:
-            raise SpecError(
-                f"hosts {', '.join(missing)} have no image: building images from a host's plant keys is not in "
-                "the lab yet, so every host needs an image pinned by digest"
-            )
 
     def prefixed(self) -> list[tuple[str, str]]:
         pattern = f"name={self.spec.prefix}-"
@@ -440,16 +539,96 @@ class Run:
                 found.append((identifier, name))
         return found
 
-    def pull(self) -> None:
+    def prepare_images(self) -> None:
+        """Pull the pinned images, and build the others from the rendered spec unless all their tags exist."""
+
         for host in self.spec.hosts.values():
-            reference = host.image
-            if reference in self.images:
+            if host.built:
                 continue
+            reference = host.image
             if docker("image", "inspect", reference, check=False).returncode != 0:
                 docker("pull", "--quiet", reference, timeout=900)
             image = inspect("image", "inspect", reference)[0]
-            self.images[reference] = {"id": image["Id"], "digest": host.digest}
+            self.images[host.name] = {"reference": reference, "id": image["Id"], "digest": host.digest}
+        if any(host.built for host in self.spec.hosts.values()):
+            rendered = build.render(self.spec, self.out / "build")
+            layers_of: dict[str, list[str]] = {}
+            for host in rendered.tags:
+                image = self.spec.wazuh.manager_image if self.spec.hosts[host].kind == "defense" else None
+                image = image or self.spec.base.image
+                if image not in layers_of:
+                    layers_of[image] = self.registry_layers(image)
+                self.parents[host] = {"image": image, "layers": layers_of[image]}
+
+            def present(host: str, tag: str) -> bool:
+                # A tag counts only on an image built on the pinned image; any other is built again.
+                done = docker("image", "inspect", tag, check=False)
+                if done.returncode != 0:
+                    return False
+                layers = (json.loads(done.stdout)[0].get("RootFS") or {}).get("Layers") or []
+                return seal.built_on(layers, self.parents[host]["layers"])
+
+            missing = [tag for host, tag in rendered.tags.items() if not present(host, tag)]
+            started = time.monotonic()
+            if missing:
+                print(f"building {', '.join(missing)} with docker buildx bake", flush=True)
+                try:
+                    done = subprocess.run(
+                        ["docker", "buildx", "bake", "--file", build.BAKE, "--load"],
+                        cwd=rendered.folder,
+                        timeout=BUILD_SECONDS,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired as late:
+                    raise EngineError(f"the image build took longer than {BUILD_SECONDS} s") from late
+                if done.returncode != 0:
+                    raise EngineError(
+                        f"docker buildx bake failed with exit code {done.returncode}: its output is above"
+                    )
+            self.manifest["build"] = {
+                "folder": "build",
+                "context_sha256": rendered.digest,
+                "built_now": bool(missing),
+                "seconds": round(time.monotonic() - started, 1),
+                "note": "an image found under the tag of this build context, built on the pinned image, is not "
+                "built again: the lab trusts that the local image under that tag was built from the context",
+            }
+            for host, tag in rendered.tags.items():
+                image = inspect("image", "inspect", tag)[0]
+                self.images[host] = {
+                    "tag": tag,
+                    "id": image["Id"],
+                    "built_on": self.parents[host]["image"],
+                    "built_on_layers": len(self.parents[host]["layers"]),
+                }
+                if not seal.built_on(
+                    (image.get("RootFS") or {}).get("Layers") or [], self.parents[host]["layers"]
+                ):
+                    raise EngineError(
+                        f"the image built under {tag} is not built on {self.parents[host]['image']}"
+                    )
         self.manifest["images"] = self.images
+        self.write()
+
+    def registry_layers(self, image: str) -> list[str]:
+        """The layers of a pinned image for the daemon's platform, read from its registry without pulling it."""
+
+        done = docker(
+            "buildx", "imagetools", "inspect", image, "--format", "{{json .Image}}", timeout=120, check=False
+        )
+        try:
+            config = json.loads(done.stdout)
+        except ValueError:
+            config = None
+        if isinstance(config, dict) and "rootfs" not in config:
+            config = config.get(self.platform)
+        layers = ((config or {}).get("rootfs") or {}).get("diff_ids") if isinstance(config, dict) else None
+        if done.returncode != 0 or not layers:
+            raise EngineError(
+                f"could not read the layers of {image} for {self.platform} from its registry: "
+                f"{done.stderr.strip()[:300]}"
+            )
+        return layers
 
     def create_networks(self) -> None:
         for network in self.spec.networks:
@@ -482,7 +661,10 @@ class Run:
         first = next(iter(self.spec.hosts))
         for host in self.spec.hosts.values():
             name = self.spec.container_name(host.name)
-            image_id = self.images[host.image]["id"]
+            image_id = self.images[host.name]["id"]
+            # Hosts built from base run a plain start script, so a small init reaps their processes.
+            # The manager keeps its image's own init.
+            init = ["--init"] if host.built and host.kind != "defense" else []
             planted = []
             if host.name == first and self.plant == "published-port":
                 planted = ["-p", f"127.0.0.1::{host.listens[0] if host.listens else 80}"]
@@ -512,7 +694,8 @@ class Run:
                 "--pids-limit",
                 PIDS_LIMIT,
                 "--memory",
-                MEMORY,
+                MEMORY_DEFENSE if host.kind == "defense" else MEMORY,
+                *init,
                 *planted,
                 image_id,
             ).stdout.strip()
@@ -524,15 +707,25 @@ class Run:
         self.write()
 
     def start(self) -> None:
-        for host in self.spec.hosts.values():
+        """Start the containers, the manager first, so that agents find it."""
+
+        hosts = sorted(self.spec.hosts.values(), key=lambda host: host.kind != "defense")
+        for host in hosts:
             identifier = self.containers[host.name]
             for network in host.networks:
                 self.watch.expect("network", "connect", id=self.networks[network], container=identifier)
             self.watch.expect("container", "start", required=True, id=identifier)
+            self.started = True
             docker("start", identifier)
+        self.started_at = time.monotonic()
 
-    def execute(self, identifier: str, script: str, timeout: float) -> subprocess.CompletedProcess:
-        """Run a script of the engine's own as root in a range container, and announce its events."""
+    def execute(
+        self, identifier: str, script: str, timeout: float, tag: str = "engine:seal"
+    ) -> subprocess.CompletedProcess:
+        """Run a script of the engine's own as root in a range container, and announce its events.
+
+        The process carries BLUEFIRE_TAG, so that snoopy's lines name it as the engine's.
+        """
 
         if identifier not in self.containers.values():
             raise EngineError("the engine runs commands only in the range's own containers")
@@ -545,7 +738,7 @@ class Run:
             "-u",
             "root",
             "--env",
-            "BLUEFIRE_TAG=engine:seal",
+            f"BLUEFIRE_TAG={tag}",
             identifier,
             "bash",
             "-c",
@@ -554,24 +747,557 @@ class Run:
             check=False,
         )
 
-    def ready(self) -> None:
-        """Wait until each host's own service listens, so that the seal's controls can reach it."""
+    def poll(self, host: str, script: str, deadline: float, tag: str = "engine:ready"):
+        """Run a check of bash builtins in a host once a second until it exits 0; None when time ran out.
 
+        Each try is a command of its own, so that no program but bash starts in the
+        host and snoopy logs nothing for the checks. A check that exits 2 has seen
+        something that waiting does not mend, and its result is returned at once.
+        """
+
+        while True:
+            done = self.execute(self.containers[host], script, 30, tag)
+            if done.returncode in (0, 2):
+                return done
+            if time.monotonic() + POLL_SECONDS > deadline:
+                return None
+            time.sleep(POLL_SECONDS)
+
+    def ready(self) -> None:
+        """Wait until each host's own service listens, so that the seal's controls can reach it.
+
+        A range with a defense waits too until its defense is ready: see `defense_ready`.
+        """
+
+        budget = DEFENSE_READY_SECONDS if self.spec.wazuh else READY_SECONDS
+        deadline = self.started_at + budget
         for host in self.spec.hosts.values():
             if not host.listens:
                 continue
             ports = " ".join(str(port) for port in host.listens)
-            script = (
-                f"for port in {ports}; do ok=; for i in $(seq 1 {READY_SECONDS * 2}); do "
-                "if (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null; then ok=1; break; fi; sleep 0.5; done; "
-                '[ -n "$ok" ] || exit 1; done'
-            )
-            started = time.monotonic()
-            done = self.execute(self.containers[host.name], script, READY_SECONDS + 30)
+            script = f"for port in {ports}; do (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null || exit 1; done"
+            done = self.poll(host.name, script, deadline)
             self.manifest["ready"][host.name] = {
-                "listening": done.returncode == 0,
-                "seconds": round(time.monotonic() - started, 1),
+                "listening": done is not None,
+                "seconds": round(time.monotonic() - self.started_at, 1),
             }
+            self.write()
+            if done is None:
+                what = (
+                    f"look at raw/hosts/{host.name}/var/ossec/logs/ossec.log"
+                    if host.kind == "defense"
+                    else "look at the host's start script and its service logs under raw/hosts/"
+                )
+                raise NotReady(
+                    f"host {host.name}: port {ports} did not answer within {budget} s of the start; {what}"
+                )
+        if self.spec.wazuh:
+            self.defense_ready(deadline, budget)
+        self.write()
+
+    def defense_ready(self, deadline: float, budget: int) -> None:
+        """The ready gate of the defense, within the same budget as the ports.
+
+        Each agent is connected and its real-time file monitoring has started; the
+        manager lists each agent active at the pinned version; and a nonce the
+        engine logs on each agent host reaches the manager's archives.json.
+        """
+
+        spec, manager = self.spec, self.spec.manager
+        ready = self.manifest["defense"]["ready"]
+        parts = ready.setdefault("parts", {})
+        parts["manager ports"] = self.manifest["ready"][manager]["seconds"]
+        errors = " ".join(f"'{error}'" for error in wazuh.REALTIME_ERRORS)
+        agent_check = (
+            f"log=$(< {wazuh.OSSEC_LOG}) || exit 1; "
+            f'for error in {errors}; do [[ $log == *"$error"* ]] && exit 2; done; '
+            f"state=$(< {wazuh.AGENT_STATE}) && [[ $state == *\"status='connected'\"* ]] && "
+            f"[[ $log == *'{wazuh.REALTIME_STARTED}'* ]]"
+        )
+        for host in spec.agents:
+            done = self.poll(host, agent_check, deadline)
+            good = done is not None and done.returncode == 0
+            parts[f"{host}: agent connected, real-time file monitoring started"] = (
+                round(time.monotonic() - self.started_at, 1) if good else None
+            )
+            self.write()
+            if done is not None and done.returncode == 2:
+                raise NotReady(
+                    f"the agent on {host} could not watch every folder in real time: its log has one of the "
+                    f"errors {', '.join(e.strip() for e in wazuh.REALTIME_ERRORS)} (inotify could not start, or "
+                    f"its watch limit was reached): look at raw/hosts/{host}/var/ossec/logs/ossec.log. On a "
+                    "developer machine, raise fs.inotify.max_user_watches"
+                )
+            if done is None:
+                raise NotReady(
+                    f"the agent on {host} is not connected, or its real-time file monitoring has not started, "
+                    f"within {budget} s: look at raw/hosts/{host}/var/ossec/logs/ossec.log and "
+                    f"raw/hosts/{host}/var/ossec/var/run/wazuh-agentd.state"
+                )
+        listed: dict = {}
+        while True:
+            listed, outputs = self.listing("engine:ready")
+            ready["agent_control"] = outputs
+            good = all(
+                (listed.get(host) or {}).get("status") == "Active"
+                and (listed.get(host) or {}).get("version") == spec.wazuh.version
+                for host in spec.agents
+            )
+            if good or time.monotonic() + POLL_SECONDS > deadline:
+                break
+            time.sleep(POLL_SECONDS)
+        ready["manager lists"] = listed
+        parts["manager lists every agent active at the pinned version"] = (
+            round(time.monotonic() - self.started_at, 1) if good else None
+        )
+        self.write()
+        if not good:
+            raise NotReady(
+                f"agent_control -l on the manager does not list every agent active at Wazuh {spec.wazuh.version} "
+                f"within {budget} s (it lists {listed}): look at raw/hosts/{manager}/var/ossec/logs/ossec.log"
+            )
+        nonces = ready.setdefault("nonces", {})
+        for host in spec.agents:
+            nonce = f"bluefire-ready-{self.run_id}-{host}"
+            logged = self.nonce(host, nonce, "ready", "engine:ready")
+            found = self.wait_archived(nonce, host, "/var/log/auth.log", deadline)
+            delay = round(wazuh.timestamp(found["timestamp"]) - logged, 3) if found and logged else None
+            nonces[host] = {
+                "nonce": nonce,
+                "logged": logged,
+                "archived": found["timestamp"] if found else None,
+                "delay_seconds": delay,
+            }
+            self.write()
+            if not found:
+                raise NotReady(
+                    f"the nonce logged on {host} did not reach the manager's archives.json within {budget} s: "
+                    f"look at raw/hosts/{host}/var/log/auth.log, raw/hosts/{host}/var/ossec/logs/ossec.log and "
+                    f"raw/hosts/{manager}/var/ossec/logs/ossec.log"
+                )
+        parts["a nonce from every agent host in the archive"] = round(time.monotonic() - self.started_at, 1)
+
+    def listing(self, tag: str) -> tuple[dict, dict]:
+        """What the manager's agent_control says now: each agent's ID, status and version, and the manager's own.
+
+        The manager is listed under its host name, from `agent_control -i 000`.
+        """
+
+        identifier = self.containers[self.spec.manager]
+        done = self.execute(identifier, "/var/ossec/bin/agent_control -l", 30, tag)
+        listed = wazuh.agents(done.stdout)
+        outputs = {"agent_control -l": done.stdout}
+        for host in self.spec.agents:
+            if (listed.get(host) or {}).get("status") == "Active":
+                command = f"/var/ossec/bin/agent_control -i {listed[host]['id']}"
+                info = self.execute(identifier, command, 30, tag)
+                listed[host].update(wazuh.agent_info(info.stdout))
+                outputs[f"agent_control -i {listed[host]['id']}"] = info.stdout
+        info = self.execute(identifier, "/var/ossec/bin/agent_control -i 000", 30, tag)
+        listed[self.spec.manager] = {"id": "000", **wazuh.agent_info(info.stdout)}
+        outputs["agent_control -i 000"] = info.stdout
+        return listed, outputs
+
+    def nonce(self, host: str, nonce: str, which: str, tag: str) -> float | None:
+        """Read the line counts of the host's watched logs, then log a nonce to syslog; return when.
+
+        The time is the container's clock, which is the kernel's, like the
+        manager's. The counts open and close the window of the delivery count.
+        """
+
+        logs = [log.path for log in self.spec.watch_for(host).logs]
+        script = (
+            f"for f in {' '.join(logs)}; do n=0; "
+            'if [ -e "$f" ]; then while IFS= read -r line; do n=$((n+1)); done < "$f"; fi; '
+            'printf \'lines\\t%s\\t%s\\n\' "$f" "$n"; done; '
+            "printf 'time\\t%s\\n' \"$EPOCHREALTIME\"; "
+            f"logger -p authpriv.info -t bluefire-{which} {nonce}"
+        )
+        done = self.execute(self.containers[host], script, 60, tag)
+        if done.returncode != 0:
+            raise EngineError(f"logging the {which} nonce on {host} failed: {done.stderr.strip()[:300]}")
+        counts, logged = wazuh.window_counts(done.stdout)
+        self.nonces.setdefault(host, {})[which] = nonce
+        self.windows.setdefault(host, {})[which] = counts
+        return logged
+
+    def archived(self, text: str) -> list[dict]:
+        """The manager's archive events that hold `text`, read with grep in the manager."""
+
+        if not all(c.isalnum() or c in "-_./:" for c in text):
+            raise EngineError("the engine searches the archive only for plain nonces")
+        return self.grep_archive(text)
+
+    def grep_archive(self, text: str) -> list[dict]:
+        done = self.execute(
+            self.containers[self.spec.manager], f"grep -h -F -- '{text}' {wazuh.ARCHIVES}", 30, "engine:ready"
+        )
+        found = []
+        for line in done.stdout.splitlines():
+            try:
+                found.append(json.loads(line))
+            except ValueError:
+                continue
+        return found
+
+    def wait_archived(self, text: str, host: str, location: str, deadline: float) -> dict | None:
+        while True:
+            found = wazuh.find(self.archived(text), text, host, location)
+            if found:
+                return found[0]
+            if time.monotonic() + POLL_SECONDS > deadline:
+                return None
+            time.sleep(POLL_SECONDS)
+
+    def follow(self) -> None:
+        """Follow the manager's archives.json and alerts.json into the run folder while the run lasts.
+
+        Two long-running commands of the engine's own, for a live view. No result
+        is computed from what they write.
+        """
+
+        live = self.out / "live"
+        live.mkdir(exist_ok=True)
+        identifier = self.containers[self.spec.manager]
+        for path, name in ((wazuh.ARCHIVES, "archives.json"), (wazuh.ALERTS, "alerts.json")):
+            action = f"tail -n +1 -F {path}"
+            self.watch.expect("container", f"exec_create: {action}", id=identifier)
+            self.watch.expect("container", f"exec_start: {action}", id=identifier)
+            self.watch.expect("container", "exec_die", id=identifier)
+            with (live / name).open("wb") as target:
+                self.tails.append(
+                    subprocess.Popen(
+                        [
+                            "docker",
+                            "exec",
+                            "--env",
+                            "BLUEFIRE_TAG=engine:live",
+                            identifier,
+                            *action.split(" "),
+                        ],
+                        stdout=target,
+                        stderr=subprocess.DEVNULL,
+                    )
+                )
+
+    def mark(self) -> None:
+        """Harmless marks on each agent host, where the path will run, so that delivery is counted on real lines.
+
+        On each agent host: three lines sent to syslog, a file created and then
+        changed in each folder watched in real time, so that a folder whose watch
+        failed shows, and one program start that snoopy records. Then the engine
+        waits until each has reached the archive.
+        """
+
+        marks = self.manifest["defense"]["marks"]
+        token = self.run_id
+        sent = []
+        for host in self.spec.agents:
+            identifier = self.containers[host]
+            for number in (1, 2, 3):
+                text = f"bluefire-mark-{number}-{token}"
+                done = self.execute(
+                    identifier,
+                    f"printf '%s' \"$EPOCHREALTIME\"; logger -p authpriv.notice -t bluefire-mark {text}",
+                    30,
+                    "engine:mark",
+                )
+                sent.append((host, f"logger line {number}", "/var/log/auth.log", text, done))
+            folders = self.spec.watch_for(host).fim_realtime
+            for step, (write, what, event) in enumerate(
+                ((">", "file created", "added"), (">>", "file changed", "modified"))
+            ):
+                if step and folders:
+                    # Apart in time, so that the change is not one event with the create.
+                    time.sleep(2)
+                for folder in folders:
+                    path = f"{folder.rstrip('/')}/bluefire-mark-{token}.txt"
+                    done = self.execute(
+                        identifier,
+                        f"printf '%s' \"$EPOCHREALTIME\"; printf '{what}\\n' {write} {path}",
+                        30,
+                        "engine:mark",
+                    )
+                    sent.append((host, f"{what} in {folder}", "syscheck", f"File '{path}' {event}", done))
+            text = f"bluefire-mark-program-{token}"
+            done = self.execute(
+                identifier, f"printf '%s' \"$EPOCHREALTIME\"; /bin/echo {text} > /dev/null", 30, "engine:mark"
+            )
+            sent.append((host, "program start", "/var/log/snoopy.log", text, done))
+        deadline = time.monotonic() + MARK_SECONDS
+        for host, mark, location, text, done in sent:
+            try:
+                logged = float(done.stdout.strip()) if done.returncode == 0 else None
+            except ValueError:
+                logged = None
+            while True:
+                search = text.split("'")[1] if "'" in text else text
+                found = [event for event in wazuh.find(self.archived(search), text, host, location)]
+                if found or time.monotonic() + POLL_SECONDS > deadline:
+                    break
+                time.sleep(POLL_SECONDS)
+            event = found[0] if found else None
+            marks.append(
+                {
+                    "host": host,
+                    "mark": mark,
+                    "source": location,
+                    "made": done.returncode == 0,
+                    "archived": event is not None,
+                    "delay_seconds": round(wazuh.timestamp(event["timestamp"]) - logged, 3)
+                    if event and logged
+                    else None,
+                }
+            )
+            if mark == "program start" and event:
+                seen = (event.get("data") or {}).get("tag")
+                self.manifest["defense"]["snoopy_tag"] = {
+                    "expected": "engine:mark",
+                    "seen": seen,
+                    "works": seen == "engine:mark",
+                }
+        self.write()
+
+    def end(self) -> None:
+        """Close the delivery window: log an end nonce on each agent host and wait for it in the archive.
+
+        Then, since logcollector reads each file on its own, wait until each
+        watched log has as many events in the archive as its window has lines
+        (see `in_flight`), so that a line still on its way is not counted lost.
+        """
+
+        deadline = time.monotonic() + MARK_SECONDS
+        for host in self.spec.agents:
+            nonce = f"bluefire-end-{self.run_id}-{host}"
+            logged = self.nonce(host, nonce, "end", "engine:end")
+            found = self.wait_archived(nonce, host, "/var/log/auth.log", deadline)
+            waited = self.in_flight(host, deadline)
+            self.manifest["defense"]["ready"].setdefault("end", {})[host] = {
+                "nonce": nonce,
+                "logged": logged,
+                "archived": found["timestamp"] if found else None,
+                "every log caught up": waited,
+            }
+        self.write()
+
+    def in_flight(self, host: str, deadline: float) -> dict:
+        """Wait until the archive holds, for each watched log of a host, an event for each line of its window.
+
+        Counted per location from the first event there that holds the ready
+        nonce (or, for a log that never holds it, the first event anywhere that
+        does), leaving out the end nonce's own lines. This only decides how long
+        to wait; the delivery count is made later from the copied files.
+        """
+
+        ready, end = self.windows[host]["ready"], self.windows[host]["end"]
+        wanted = {path: end.get(path, 0) - ready.get(path, 0) for path in end}
+        first, last = self.nonces[host]["ready"], self.nonces[host]["end"]
+        started = time.monotonic()
+        while True:
+            # The archive's events of this agent: grep for its name, then keep those whose agent it is.
+            ordered = [
+                event
+                for event in self.grep_archive(f'"name":"{host}"')
+                if (event.get("agent") or {}).get("name") == host
+            ]
+            holds = [i for i, event in enumerate(ordered) if first in (event.get("full_log") or "")]
+            counts = {}
+            for path in wanted:
+                here = [i for i in holds if ordered[i].get("location") == path]
+                start = (here or holds or [len(ordered)])[0]
+                counts[path] = sum(
+                    1
+                    for event in ordered[start:]
+                    if event.get("location") == path and last not in (event.get("full_log") or "")
+                )
+            caught_up = all(counts[path] >= number for path, number in wanted.items())
+            if caught_up or time.monotonic() + POLL_SECONDS > deadline:
+                return {
+                    "caught up": caught_up,
+                    "seconds": round(time.monotonic() - started, 1),
+                    "lines in the window": wanted,
+                    "archive events": counts,
+                }
+            time.sleep(POLL_SECONDS)
+
+    def copy_out(self, host: str, path: str) -> dict:
+        """Copy a file or folder out of a range container by ID, into raw/hosts/<host>/<path>.
+
+        Docker streams it as a tar archive, and only its folders and regular
+        files are written. A link, or anything else, is left out and listed under
+        `refused`: a link that something in the container planted must not make
+        the lab read a file of the machine that runs it.
+        """
+
+        identifier = self.containers[host]
+        folder = self.out / "raw" / "hosts" / host / path.lstrip("/")
+        folder = folder.parent
+        folder.mkdir(parents=True, exist_ok=True)
+        self.watch.expect("container", "archive-path", id=identifier)
+        process = subprocess.Popen(
+            ["docker", "cp", f"{identifier}:{path}", "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        refused = []
+        try:
+            refused = untar(process.stdout, folder)
+        except (tarfile.TarError, OSError) as error:
+            refused.append(f"the archive could not be read: {error}"[:300])
+        finally:
+            process.stdout.close()
+            try:
+                error_output = process.communicate(timeout=300)[1]
+            except subprocess.TimeoutExpired:
+                process.kill()
+                error_output = process.communicate()[1]
+        result: dict = {"copied": process.returncode == 0}
+        if process.returncode != 0:
+            result["error"] = error_output.decode(errors="replace").strip()[:300]
+        if refused:
+            result["refused"] = refused
+        return result
+
+    def collect(self) -> None:
+        """Copy out what the defense recorded, and gzip the manager's archive and alerts."""
+
+        defense = self.manifest["defense"]
+        copied = defense.setdefault("collected", {})
+        manager = self.spec.manager
+        paths = {
+            manager: [
+                "/var/ossec/logs/archives",
+                "/var/ossec/logs/alerts",
+                wazuh.OSSEC_LOG,
+                "/var/ossec/logs/active-responses.log",
+                "/var/ossec/var/run",
+                build.OSSEC_CONF,
+                build.STOCK,
+            ]
+        }
+        for host in self.spec.agents:
+            paths[host] = [log.path for log in self.spec.watch_for(host).logs] + [
+                "/var/log/syslog",
+                wazuh.OSSEC_LOG,
+                "/var/ossec/var/run",
+                build.OSSEC_CONF,
+                build.STOCK,
+            ]
+        for host, wanted in paths.items():
+            copied[host] = {path: self.copy_out(host, path) for path in wanted}
+        for kind in ("archives", "alerts"):
+            # archives.json and alerts.json are links to the current day's file, so the copy left them
+            # out (they are listed as refused) and kept the daily files.
+            folder = self.out / "raw" / "hosts" / manager / "var" / "ossec" / "logs" / kind
+            if not folder.exists():
+                continue
+            for path in sorted(folder.rglob("*.json")):
+                with path.open("rb") as source, gzip.open(path.with_name(path.name + ".gz"), "wb") as target:
+                    shutil.copyfileobj(source, target)
+                path.unlink()
+        self.write()
+
+    def analyse(self) -> None:
+        """The configuration diff of every ossec.conf, the delivery counts and Wazuh's own drop counters.
+
+        Everything here is read from the files copied out of the range.
+        """
+
+        defense = self.manifest["defense"]
+        raw = self.out / "raw" / "hosts"
+        settings = build.conf_settings(self.spec)
+
+        def text(host: str, path: str) -> str | None:
+            file = raw / host / path.lstrip("/")
+            return file.read_text(encoding="utf-8", errors="replace") if file.is_file() else None
+
+        for host in [self.spec.manager, *self.spec.agents]:
+            stock, running = text(host, build.STOCK), text(host, build.OSSEC_CONF)
+            if stock is None or running is None:
+                defense["configuration"][host] = {
+                    "error": "ossec.conf or ossec.conf.stock was not copied out"
+                }
+                continue
+            try:
+                if host == self.spec.manager:
+                    expected, changes = ossec.manager(stock)
+                else:
+                    expected, changes = ossec.agent(stock, settings["agents"][host])
+            except ossec.ConfError as error:
+                defense["configuration"][host] = {"error": str(error)}
+                continue
+            defense["configuration"][host] = {
+                "file": build.OSSEC_CONF,
+                "matches_the_lab_edits": running == expected,
+                "changes": changes,
+                "diff": ossec.diff(stock, running),
+            }
+
+        archive = raw / self.spec.manager / "var" / "ossec" / "logs" / "archives"
+        found = wazuh.events(wazuh.daily_files(archive)) if archive.exists() else []
+        # The line counts read just before each nonce, so that the counts can be made again from raw/.
+        defense["windows"] = self.windows
+        findings, uncounted = [], []
+        for host in self.spec.agents:
+            windows = self.windows.get(host, {})
+            if "ready" not in windows or "end" not in windows:
+                uncounted.append(f"{host}: the run did not reach its end nonce")
+                continue
+            logs = {}
+            for log in self.spec.watch_for(host).logs:
+                content = text(host, log.path)
+                logs[log.path] = wazuh.lines_of(content) if content is not None else None
+            spans = {
+                path: (windows["ready"][path], windows["end"][path])
+                if path in windows["ready"] and path in windows["end"]
+                else None
+                for path in logs
+            }
+            rows = wazuh.delivery(
+                host, logs, spans, found, self.nonces[host]["ready"], self.nonces[host]["end"]
+            )
+            defense["delivery"][host] = rows
+            findings += [
+                f"{host}: {row['missing']} lines of {row['source']} missing" for row in rows if row["missing"]
+            ]
+            uncounted += [f"{host}: {row['source']} not counted" for row in rows if row["missing"] is None]
+        for mark in defense["marks"]:
+            if mark["made"] and not mark["archived"]:
+                findings.append(f"{mark['host']}: the mark '{mark['mark']}' did not reach the archive")
+            elif not mark["made"]:
+                uncounted.append(f"{mark['host']}: the mark '{mark['mark']}' was not made")
+
+        states = {}
+        for host in [self.spec.manager, *self.spec.agents]:
+            folder = raw / host / "var" / "ossec" / "var" / "run"
+            for file in sorted(folder.glob("*.state")) if folder.exists() else []:
+                states[f"{host}: {file.name}"] = wazuh.state(
+                    file.read_text(encoding="utf-8", errors="replace")
+                )
+        defense["states"] = states
+        drops = wazuh.drops(states)
+        end = self.manifest["defense"]["ready"].get("end") or {}
+        for host in self.spec.agents:
+            # logcollector writes its counters once a minute: say whether they reach the end of the window.
+            name = f"{host}: wazuh-logcollector.state"
+            until = wazuh.state_time((drops.get(name) or {}).get("counted until", ""))
+            closed = (end.get(host) or {}).get("archived")
+            if name not in drops:
+                drops[name] = {"counted until": "not written yet"}
+            elif until is not None and closed:
+                covers = until >= wazuh.timestamp(closed)
+                drops[name]["covers the window"] = (
+                    "yes" if covers else "no, it was written before the end nonce"
+                )
+            log = text(host, wazuh.OSSEC_LOG)
+            if log is not None:
+                drops[f"{host}: ossec.log"] = wazuh.lost_warnings(log)
+        defense["drops"] = drops
+        dropped = wazuh.dropped(drops)
+        defense["wazuh_counted_drops"] = dropped
+        if dropped:
+            findings.append("one of Wazuh's own counters of lost events is above zero")
+        # A lost event is a property of the defense under test: the run is flagged, not failed.
+        defense["delivery_findings"] = findings or uncounted
+        defense["delivery_gap"] = True if findings else (None if uncounted else False)
         self.write()
 
     def static_checks(self, started: bool) -> list[dict]:
@@ -598,7 +1324,7 @@ class Run:
             checks += seal.network(spec, network, identifier, inspected, members)
         for host, identifier in self.containers.items():
             inspected = inspect("inspect", identifier)[0]
-            image_id = self.images[spec.hosts[host].image]["id"]
+            image_id = self.images[host]["id"]
             checks += seal.container(spec, host, identifier, inspected, image_id, self.networks, started)
         return checks
 
@@ -668,9 +1394,32 @@ class Run:
             )
         )
         for host, data in inspected.items():
-            reference = spec.hosts[host].image
             image = inspect("image", "inspect", data.get("Image", ""))[0]
-            checks.append(seal.image(host, reference, spec.hosts[host].digest, image))
+            if spec.hosts[host].built:
+                checks.append(
+                    seal.built_image(
+                        host, self.images[host]["tag"], self.images[host]["id"], image, self.parents[host]
+                    )
+                )
+            else:
+                checks.append(seal.image(host, spec.hosts[host].image, spec.hosts[host].digest, image))
+        if spec.wazuh:
+            # Read again in every phase: the version each Wazuh piece reports to the manager now.
+            listed, _ = self.listing("engine:seal")
+            for host in [spec.manager, *spec.agents]:
+                identifier = (listed.get(host) or {}).get("id", "<id>")
+                checks.append(
+                    seal.check(
+                        "pins: manager version" if host == spec.manager else "pins: agent version",
+                        f"container {host}",
+                        f"docker exec {self.containers[spec.manager]} /var/ossec/bin/agent_control -i {identifier}",
+                        listed.get(host),
+                        {"status": "Active", "version": spec.wazuh.version},
+                        (listed.get(host) or {}).get("version") == spec.wazuh.version
+                        # The manager reports itself as Active/Local.
+                        and str((listed.get(host) or {}).get("status")).split("/")[0] == "Active",
+                    )
+                )
         return checks
 
     def hold_window(self) -> None:
@@ -754,7 +1503,7 @@ class Run:
         watch_command = "docker events --filter type=container --filter type=network"
         try:
             self.preflight()
-            self.pull()
+            self.prepare_images()
             since = docker("info", "--format", "{{.SystemTime}}").stdout.strip()
             self.watch.start(since)
             code, result = EXIT_REFUSED, "engine error"
@@ -772,6 +1521,8 @@ class Run:
                 if blocking:
                     return code
             self.start()
+            if self.spec.wazuh:
+                self.follow()
             self.ready()
             dynamic = (
                 self.static_checks(started=True) + self.dynamic_checks() + [self.watch.check(watch_command)]
@@ -786,7 +1537,10 @@ class Run:
                 return code
             sealed = True
             code, result = EXIT_INVALID, "invalid"
-            # The path of published tests runs here in a later version of the lab.
+            # The path of published tests runs here in a later version of the lab. Until then, a range
+            # with a defense gets the engine's harmless marks.
+            if self.spec.wazuh:
+                self.mark()
             self.hold_window()
             after = (
                 self.static_checks(started=True) + self.dynamic_checks() + [self.watch.check(watch_command)]
@@ -796,7 +1550,12 @@ class Run:
                     sorted({item["check"] for item in after if not item["pass"]})
                 )
                 return code
+            if self.spec.wazuh:
+                self.end()
             code, result = EXIT_OK, "sealed"
+            return code
+        except NotReady as error:
+            code, result, reason = EXIT_REFUSED, "not ready", str(error)
             return code
         except SpecError as error:
             reason = str(error)
@@ -818,12 +1577,24 @@ class Run:
             held = hold_signals()
             try:
                 complete = True
+                if self.started and self.spec.wazuh:
+                    try:
+                        self.collect()
+                        self.analyse()
+                    except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
+                        self.manifest["defense"]["collect_error"] = f"{type(error).__name__}: {error}"[:500]
                 if self.created:
                     try:
                         complete = self.teardown()
                     except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
                         complete = False
                         self.manifest["teardown"].append({"object": "teardown", "error": str(error)[:300]})
+                for tail in self.tails:
+                    # The container is gone, so the command's output has ended; the client is stopped too.
+                    try:
+                        tail.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        tail.kill()
                 self.manifest["teardown_complete"] = complete
                 if not complete and code == EXIT_OK:
                     code, result = EXIT_REFUSED, "engine error"
@@ -928,6 +1699,25 @@ def run(spec_path: Path, out: Path, plant: str | None = None, hold: float = 0) -
     if engine.manifest.get("reason"):
         print(engine.manifest["reason"])
     return code
+
+
+def render(spec_path: Path, out: Path) -> int:
+    """Write the build context of the range's images, and print the tags they will carry."""
+
+    try:
+        spec = load(spec_path)
+    except (OSError, SpecError) as error:
+        print(f"bluefire-lab range: {error}")
+        return EXIT_REFUSED
+    if not any(host.built for host in spec.hosts.values()):
+        print(
+            f"bluefire-lab range: every host of {spec.range} runs a pinned image, so there is nothing to build"
+        )
+        return EXIT_OK
+    rendered = build.render(spec, Path(out))
+    for host, tag in rendered.tags.items():
+        print(f"{host}: {tag}")
+    return EXIT_OK
 
 
 def down(spec_path: Path) -> int:

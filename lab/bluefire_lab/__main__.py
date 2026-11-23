@@ -86,11 +86,18 @@ def main(arguments: list[str] | None = None) -> int:
         help="remove the containers and networks that carry both the spec's prefix and its range label",
     )
     removing.add_argument("spec", type=Path, help="the range's spec file")
+    rendering = actions.add_parser(
+        "render", help="write the Dockerfile and bake file that build the range's images, and build nothing"
+    )
+    rendering.add_argument("spec", type=Path, help="the range's spec file")
+    rendering.add_argument("--out", type=Path, required=True, help="folder for the build context")
 
     options = parser.parse_args(arguments)
     if options.command == "range":
         if options.action == "down":
             return range_engine.down(options.spec)
+        if options.action == "render":
+            return range_engine.render(options.spec, options.out)
         return range_engine.run(options.spec, options.out, options.plant, options.hold)
     if options.command == "atomic":
         return atomic.write(options.spec, options.atomics, options.out)

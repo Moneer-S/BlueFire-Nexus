@@ -1,0 +1,91 @@
+<!--
+  Wazuh - Manager - Default configuration for amzn 2023
+  More info at: https://documentation.wazuh.com
+  Mailing list: https://groups.google.com/forum/#!forum/wazuh
+-->
+
+<ossec_config>
+  <global>
+    <jsonout_output>yes</jsonout_output>
+    <alerts_log>yes</alerts_log>
+    <logall>no</logall>
+    <logall_json>no</logall_json>
+    <email_notification>no</email_notification>
+    <update_check>yes</update_check>
+  </global>
+
+  <alerts>
+    <log_alert_level>3</log_alert_level>
+    <email_alert_level>12</email_alert_level>
+  </alerts>
+
+  <!-- Policy monitoring -->
+  <rootcheck>
+    <disabled>no</disabled>
+    <check_files>yes</check_files>
+  </rootcheck>
+
+  <!-- System inventory -->
+  <wodle name="syscollector">
+    <disabled>no</disabled>
+    <interval>1h</interval>
+  </wodle>
+
+  <sca>
+    <enabled>yes</enabled>
+    <scan_on_start>yes</scan_on_start>
+  </sca>
+
+  <vulnerability-detection>
+    <enabled>yes</enabled>
+    <index-status>yes</index-status>
+    <feed-update-interval>60m</feed-update-interval>
+  </vulnerability-detection>
+
+  <indexer>
+    <enabled>yes</enabled>
+    <hosts>
+      <host>https://0.0.0.0:9200</host>
+    </hosts>
+  </indexer>
+
+  <!-- File integrity monitoring -->
+  <syscheck>
+    <disabled>no</disabled>
+    <directories>/etc,/usr/bin,/usr/sbin</directories>
+  </syscheck>
+
+  <!-- Active response -->
+  <global>
+    <white_list>127.0.0.1</white_list>
+  </global>
+
+  <!-- Log analysis -->
+  <localfile>
+    <log_format>command</log_format>
+    <command>df -P</command>
+    <frequency>360</frequency>
+  </localfile>
+
+  <localfile>
+    <log_format>full_command</log_format>
+    <command>last -n 20</command>
+    <frequency>360</frequency>
+  </localfile>
+
+  <!-- Configuration for wazuh-authd -->
+  <auth>
+    <disabled>no</disabled>
+    <port>1515</port>
+    <use_password>no</use_password>
+  </auth>
+
+</ossec_config>
+
+<ossec_config>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/ossec/logs/active-responses.log</location>
+  </localfile>
+
+</ossec_config>
