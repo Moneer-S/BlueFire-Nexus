@@ -1,4 +1,4 @@
-"""Command line of the lab: run, evaluate, report, recording, compare."""
+"""Command line of the lab: run, evaluate, report, recording, compare, atomic."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import compare, evaluate, recording, report, run
+from . import atomic, compare, evaluate, recording, report, run
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -45,7 +45,20 @@ def main(arguments: list[str] | None = None) -> int:
         "after", type=Path, help="folder with the later run's results.json; gets compare.md"
     )
 
+    atomic_tests = commands.add_parser("atomic", help="read published Atomic Red Team tests as upstream does")
+    atomic_commands = atomic_tests.add_subparsers(dest="atomic_command", required=True)
+    vectors = atomic_commands.add_parser(
+        "argv", help="write the argument vectors upstream starts for every step of a range's path"
+    )
+    vectors.add_argument("spec", type=Path, help="the range's spec file, such as lab/range/range-one.yaml")
+    vectors.add_argument(
+        "--atomics", type=Path, required=True, help="atomics folder of Atomic Red Team at the spec's commit"
+    )
+    vectors.add_argument("--out", type=Path, required=True, help="the JSON file to write")
+
     options = parser.parse_args(arguments)
+    if options.command == "atomic":
+        return atomic.write(options.spec, options.atomics, options.out)
     if options.command == "run":
         # Attack tests run only where the machine is thrown away afterwards.
         if os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":

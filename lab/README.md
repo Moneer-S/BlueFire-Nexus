@@ -527,6 +527,20 @@ Seven controls must pass, or the run fails as a whole:
   7.0.0-1014-aws (run 44096893965, the same tests before the cron.d test's
   change) have both been seen.
 
+## Range one: the path
+
+`lab/range/range-one.yaml` holds the path of range one: eleven steps made of ten
+published tests. `bluefire-lab atomic argv lab/range/range-one.yaml --atomics
+<atomics folder> --out argv.json` writes, for each step, the argument vectors of
+its attack, its prereq checks and its cleanup, read from the pinned YAML as
+Invoke-AtomicRedTeam reads it. The job `atomic-parity` in
+`.github/workflows/range-one.yml` runs Invoke-AtomicRedTeam for the same steps
+with stand-ins for `sh` and `bash` that record how they were started and run
+nothing, and fails on any byte that differs. In
+[run 45246198695](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45246198695)
+every vector was identical: 11 steps, each with its attack, prereq check and
+cleanup. The range's containers and defenses: not yet shown.
+
 ## Not yet shown
 
 - Tests on Windows, attack chains of several steps, and a lab on a local

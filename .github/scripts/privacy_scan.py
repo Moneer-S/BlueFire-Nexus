@@ -57,11 +57,14 @@ FORBIDDEN_FOLDERS = {"node_modules", "__pycache__", ".pytest_cache", "runs", "bu
 # account's home directory. That exact string is accepted in these files only.
 # A new finding gets an entry of its own here, never a wider pattern.
 APP_LAB_HOME = b"/home" b"/bluefire"
+# Range one's web host has an account of its own, which the path's steps search.
+RANGE_ONE_WEB_HOME = b"/home" b"/webadmin"
 ACCEPTED_PATHS = {
     "bluefire/prepared_lab.py": (APP_LAB_HOME,),
     "bluefire/prepared_lab_install.py": (APP_LAB_HOME,),
     "bluefire/prepared_lab_runtime.py": (APP_LAB_HOME,),
     "docs/PREPARED_LINUX_LAB.md": (APP_LAB_HOME + b"/lab-isolation.json",),
+    "lab/range/range-one.yaml": (RANGE_ONE_WEB_HOME,),
 }
 
 ADVICE = {
