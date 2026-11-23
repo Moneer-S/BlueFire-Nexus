@@ -729,8 +729,14 @@ The `wazuh` job of the `range-one` workflow runs this on a GitHub-hosted
 runner, fails unless there was no delivery gap, every mark arrived, snoopy's
 tag was decoded and every ossec.conf is the lab's edits of the stock file, and
 writes the ready delays, the marks, the delivery table and the seal to its
-summary. Not yet shown on a GitHub-hosted runner: no run of that job is linked
-here yet.
+summary.
+[Run 45262448946](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45262448946)
+shows it on a GitHub-hosted runner with Docker Engine 28.0.4, from a build
+without a cache: the range was sealed and ready 28 s after its containers
+started, the ready nonce was in the manager's archive 0.2 s after it was
+logged, all 14 marks arrived, and every line of the window was delivered
+(`auth.log` 8 of 8, `snoopy.log` 35 of 35), with every counter of lost events
+at zero.
 
 ## Range one: the path
 
