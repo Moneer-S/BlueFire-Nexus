@@ -91,6 +91,11 @@ def main(arguments: list[str] | None = None) -> int:
     )
     rendering.add_argument("spec", type=Path, help="the range's spec file")
     rendering.add_argument("--out", type=Path, required=True, help="folder for the build context")
+    locking = actions.add_parser(
+        "lock",
+        help="fetch the published files the spec's hosts carry, at its commit, and write their SHA-256 to its lock",
+    )
+    locking.add_argument("spec", type=Path, help="the range's spec file")
 
     options = parser.parse_args(arguments)
     if options.command == "range":
@@ -98,6 +103,8 @@ def main(arguments: list[str] | None = None) -> int:
             return range_engine.down(options.spec)
         if options.action == "render":
             return range_engine.render(options.spec, options.out)
+        if options.action == "lock":
+            return range_engine.lock(options.spec)
         return range_engine.run(options.spec, options.out, options.plant, options.hold)
     if options.command == "atomic":
         return atomic.write(options.spec, options.atomics, options.out)

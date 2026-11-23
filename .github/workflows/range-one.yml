@@ -218,17 +218,17 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-  # The defense on a range of two hosts on one network (lab/range/wazuh-check.yaml): a
-  # Wazuh manager and a host with a Wazuh agent, built from the spec. The run waits until
-  # the agent is ready and a nonce logged on the host is in the manager's archive, makes a
-  # few harmless marks on the host, and counts how many lines of each watched log reached
-  # the manager. No published test runs in this job.
-  wazuh:
-    name: the defense sees the host
+  # Range one's seven hosts on its three networks (lab/range/range-one.yaml), built from the
+  # spec with everything the path will need planted in them. The run seals the range, waits
+  # until the defense is ready, checks that each plant is in place with single uses of what
+  # is planted, makes a few harmless marks on the three agent hosts and counts how many lines
+  # of each watched log reached the manager. No published test runs in this job.
+  range-one:
+    name: range one's hosts, sealed and watched
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      SPEC: lab/range/wazuh-check.yaml
+      SPEC: lab/range/range-one.yaml
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -240,17 +240,35 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
           echo "LAB=$RUNNER_TEMP/venv/bin/bluefire-lab" >> "$GITHUB_ENV"
-          echo "OUT=$RUNNER_TEMP/wazuh" >> "$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP/range-one" >> "$GITHUB_ENV"
           docker version
 
+      # Fetches the published files the hosts carry at the spec's commit, checks each against
+      # lab/range/range-one.lock, and writes the Dockerfile and the bake file.
+      # Each image gets a cache scope of its own: the GitHub Actions cache keeps one index per
+      # scope, and the last image written to a shared scope would replace the others' entries.
       - name: Render the images
-        run: '"$LAB" range render "$SPEC" --out range-build'
+        id: render
+        run: |
+          "$LAB" range render "$SPEC" --out range-build
+          {
+            echo "cache<<EOF"
+            jq -r '.target | keys[] | "\(.).cache-from=type=gha,scope=range-one-\(.)",
+              "\(.).cache-to=type=gha,mode=max,scope=range-one-\(.)"' range-build/bake.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+
+      - name: Start the build clock
+        run: echo "BUILD_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
       # The run below finds every image under the tag of this build context and builds nothing.
       - name: Build the images
+        id: bake
         uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
         env:
           DOCKER_BUILD_RECORD_UPLOAD: "false"
@@ -258,36 +276,54 @@ jobs:
           source: ./range-build
           files: ./bake.json
           load: true
-          set: |
-            *.cache-from=type=gha,scope=range-wazuh
-            *.cache-to=type=gha,mode=max,scope=range-wazuh
+          set: ${{ steps.render.outputs.cache }}
+
+      # How long the images took: a first run on an empty cache builds every step, a later one
+      # should find most of them. The build action writes its own summary of each image's
+      # steps and how many came from the cache.
+      - name: Stop the build clock
+        if: always()
+        run: echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED ))" >> "$GITHUB_ENV"
 
       - name: Run the range
-        run: '"$LAB" range run "$SPEC" --out "$OUT/run"'
+        run: |
+          "$LAB" range run "$SPEC" --out "$OUT/run"
 
       # The engine flags a delivery gap and does not fail the run on it: a lost event is a result
-      # about the defense. This job is there to show that the defense sees the host, so here a gap,
-      # a mark that did not arrive, a broken decoder or a configuration that is not the lab's edits
-      # fails it.
-      - name: The defense saw every mark and every line
+      # about the defense. This job is there to show that the defense sees every agent host and
+      # that the plants are in place, so here a gap, a mark that did not arrive, a broken decoder,
+      # a configuration that is not the lab's edits or a plant check that failed fails it.
+      - name: The defense saw every mark and every line, and every plant is in place
         run: |
           if ! jq -e '
-            .defense.delivery_gap == false
+            .result == "sealed"
+            and .defense.delivery_gap == false
             and (.defense.marks | length > 0 and all(.made and .archived))
+            and ([.defense.marks[].host] | unique) == (.defense.agents | sort)
             and .defense.snoopy_tag.works == true
             and ([.defense.configuration[] | .matches_the_lab_edits] | length > 0 and all)
             and (.defense | has("collect_error") | not)
+            and .plants.passed == true
+            and (.ready.plants | length > 0 and all(.pass))
           ' "$OUT/run/manifest.json" > /dev/null; then
-            jq '.defense | {delivery_gap, delivery_findings, marks, snoopy_tag, collect_error,
-              configuration: (.configuration | map_values(.matches_the_lab_edits // .error))}' "$OUT/run/manifest.json"
+            jq '{result, reason, plants: [.plants.checks[]? | select(.pass | not)],
+              ready: [.ready.plants[]? | select(.pass | not)],
+              defense: (.defense | {delivery_gap, delivery_findings, snoopy_tag, collect_error,
+                configuration: (.configuration | map_values(.matches_the_lab_edits // .error))})}' \
+              "$OUT/run/manifest.json"
             exit 1
           fi
 
       - name: Summary
         if: always()
         run: |
-          if [ -f "$OUT/run/defense.md" ]; then cat "$OUT/run/defense.md" >> "$GITHUB_STEP_SUMMARY"; fi
-          if [ -f "$OUT/run/seal.md" ]; then cat "$OUT/run/seal.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          {
+            echo "Image build, from the end of the builder's set-up: ${BUILD_SECONDS:-?} s."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for part in plants defense seal; do
+            if [ -f "$OUT/run/$part.md" ]; then cat "$OUT/run/$part.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          done
 
       - name: Take down what is left
         if: always()
@@ -300,7 +336,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: range-wazuh
-          path: ${{ runner.temp }}/wazuh
+          name: range-one-run
+          path: ${{ runner.temp }}/range-one
           retention-days: 30
           if-no-files-found: error

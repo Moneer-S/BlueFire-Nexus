@@ -121,9 +121,23 @@ def test_a_probe_is_classified_by_its_exit_code_and_error(code: int, text: str, 
 
 def inside(host: str, output: str, name: str = "seal-check-probes.json") -> list[dict]:
     recorded = fixture(name)[host]
+    # The recorded outputs come from a probe script that did not yet read the socket tables, so they
+    # get the tables of nginx's own listeners on port 80, as /proc/net/tcp and /proc/net/tcp6 print them.
+    if "\ntcp\t" not in output:
+        output = output.replace("done\n", NGINX_SOCKETS + "done\n")
+    plan = {"listens": SPEC.hosts[host].listens, **recorded["plan"]}
     return seal.inside(
-        SPEC, host, ["docker", "exec", "<id>", "bash", "-c", "<probe script>"], 0, output, recorded["plan"]
+        SPEC, host, ["docker", "exec", "<id>", "bash", "-c", "<probe script>"], 0, output, plan
     )
+
+
+NGINX_SOCKETS = (
+    "tcp\t  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+    "tcp\t   0: 00000000:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1\n"
+    "tcp\t   1: 0B00007F:A3C1 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2 1\n"
+    "tcp\t  sl  local_address                         remote_address                        st\n"
+    "tcp\t   0: 00000000000000000000000000000000:0050 00000000000000000000000000000000:0000 0A 0 0 0\n"
+)
 
 
 def test_every_check_inside_the_containers_passes_on_a_sealed_range() -> None:
@@ -192,6 +206,24 @@ def test_a_default_route_a_resolver_search_line_and_forwarding_fail_the_seal() -
         "names: resolver",
         "routes: only own subnets",
     }
+
+
+def test_a_port_that_listens_beyond_the_spec_fails_the_seal_and_loopback_ones_do_not() -> None:
+    output = fixture("seal-check-probes.json")["left"]["output"]
+    # The Wazuh API's port 55000 on every IPv6 address, and a resolver on 127.0.0.11.
+    api = "tcp\t   1: 00000000000000000000000000000000:D6D8 00000000000000000000000000000000:0000 0A 0 0 0\n"
+    loopback = "tcp\t   2: 0B00007F:0035 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 3 1\n"
+    closed = "tcp\t   3: 0200130A:0016 0300130A:9C40 01 00000000:00000000 00:00000000 00000000 0 0 4 1\n"
+
+    with_api = inside("left", output.replace("done\n", NGINX_SOCKETS + api + "done\n"))
+    quiet = inside("left", output.replace("done\n", NGINX_SOCKETS + loopback + closed + "done\n"))
+    silent = inside("left", output.replace("done\n", "tcp\t  sl  local_address\ndone\n"))
+
+    verdict = next(item for item in with_api if item["check"] == "listening: only declared ports")
+    assert verdict["observed"] == ["0.0.0.0:80", "[::]:55000", "[::]:80"]
+    assert failed(with_api) == {"listening: only declared ports"}
+    assert failed(quiet) == set()
+    assert failed(silent) == {"listening: only declared ports"}
 
 
 def test_a_name_that_resolves_outside_the_range_fails_the_seal() -> None:
