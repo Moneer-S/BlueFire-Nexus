@@ -310,3 +310,25 @@ def test_the_run_page_lists_each_test_left_out_with_the_reason() -> None:
     summary = report.markdown_summary(results())
 
     assert "| T1003 | A dropped test | reads other processes' memory |" in summary
+
+
+def test_a_test_whose_cleanup_left_its_effect_behind_is_listed() -> None:
+    document = results()
+    check = {"command": "test ! -e ~/.bash_history", "exit_status": 0, "output": ""}
+    document["tests"][1]["cleanup"] = {
+        "answer": "left behind",
+        "basis": "after the cleanup the check exited with status 0; the test has no cleanup command upstream",
+        "check": check,
+    }
+    document["tests"][2]["cleanup"] = {
+        "answer": "held",
+        "basis": "after the cleanup the check exited with status 1",
+    }
+
+    page, summary = report.html_report(document), report.markdown_summary(document)
+
+    section = page[page.index('id="left-behind"') : page.index("<h2>Controls</h2>")]
+    assert "Clear Bash history (rm)" in section and "Some | discovery" not in section
+    assert "Cleanup: left behind." in page and "Cleanup: held." in page
+    assert "| T1070.003 | Clear Bash history (rm) | `test ! -e ~/.bash_history` |" in summary
+    assert 'id="left-behind"' not in report.html_report(results())

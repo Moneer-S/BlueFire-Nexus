@@ -80,6 +80,7 @@ def a_test(**changes) -> dict:
         "launcher_pid": 120,
         "exit_code": 0,
         "effect": "test -e /tmp/x",
+        "upstream_cleanup": True,
         "steps": [step("marker-start", 10), step("attack", 11), step("marker-end", 12), step("effect", 13)],
     }
     test.update(changes)
@@ -426,6 +427,53 @@ def test_execution_follows_the_prerequisites_and_the_effect_check() -> None:
     assert evaluate.execution(silent)["answer"] == "attempted without effect"
 
 
+def test_an_effect_that_was_there_before_the_test_is_not_the_tests_doing() -> None:
+    absent = a_test(steps=[step("effect-before", 9, status=1), step("attack", 11), step("effect", 13)])
+    present = a_test(steps=[step("effect-before", 9, status=0), step("attack", 11), step("effect", 13)])
+
+    assert evaluate.execution(absent)["answer"] == "took effect"
+    assert evaluate.execution(present)["answer"] == "inconclusive"
+    assert "before the test ran" in evaluate.execution(present)["basis"]
+
+
+def test_a_cleanup_held_when_what_the_test_did_is_no_longer_found_after_it() -> None:
+    def after(status, **changes) -> dict:
+        steps = [step("attack", 11), step("effect", 13), step("cleanup", 14), step("leftover", 15, status)]
+        return a_test(steps=steps, leftover="test -e /tmp/x", **changes)
+
+    held, left = evaluate.cleanup(after(1)), evaluate.cleanup(after(0))
+    no_cleanup_upstream = evaluate.cleanup(after(0, upstream_cleanup=False))
+    prints_only = a_test(steps=[step("attack", 11), step("cleanup", 14)])
+    late = after(1)
+    late["steps"][2]["timed_out"] = True
+    unchecked = a_test(steps=[step("attack", 11), step("cleanup", 14)], leftover="test -e /tmp/x")
+
+    assert held["answer"] == "held"
+    assert (left["answer"], left["check"]["command"]) == ("left behind", "test -e /tmp/x")
+    assert no_cleanup_upstream["basis"].endswith("the test has no cleanup command upstream")
+    assert evaluate.cleanup(prints_only)["answer"] == "nothing to check"
+    assert evaluate.cleanup(late)["answer"] == "not checked"
+    assert evaluate.cleanup(unchecked)["answer"] == "not checked"
+    assert evaluate.cleanup(a_test(prerequisites="not met", steps=[])) is None
+    from_an_earlier_version = after(1)
+    del from_an_earlier_version["upstream_cleanup"]
+    assert evaluate.cleanup(from_an_earlier_version) is None
+
+
+def test_a_cleanup_that_could_not_be_checked_fails_the_run_and_one_left_behind_is_named() -> None:
+    tests = [CAUGHT, measured("control", cleanup="nothing to check"), CAUGHT]
+    left = measured("test", cleanup="left behind")
+
+    checks = evaluate.check_controls(RUN, [*tests, left], PROBE, CLEAN, ENGINE)
+    detail = next(check["detail"] for check in checks if check["name"] == "cleanup")
+
+    assert failed_controls([*tests, left]) == []
+    assert "2 held, 1 leave nothing the list names, and 1 left what they did behind: T1 test" in detail
+    assert failed_controls([*tests, measured("test", cleanup="not checked")]) == ["cleanup"]
+    unrecorded = [{key: value for key, value in test.items() if key != "cleanup"} for test in tests]
+    assert failed_controls(unrecorded) == ["cleanup"]
+
+
 def hardened(applied=True, effect_status=1, **changes) -> dict:
     change = {"name": "lock", "title": "a change", "applied": applied}
     steps = [
@@ -470,7 +518,13 @@ def test_a_test_that_ran_out_of_time_with_the_change_in_place_is_not_blocked() -
 
 
 def measured(
-    role, execution="took effect", visibility="telemetry only", rules=(), launcher_only=(), rule=None
+    role,
+    execution="took effect",
+    visibility="telemetry only",
+    rules=(),
+    launcher_only=(),
+    rule=None,
+    cleanup="held",
 ) -> dict:
     seen = {
         "answer": visibility,
@@ -480,7 +534,9 @@ def measured(
         "launcher_only_rules": list(launcher_only),
     }
     done = {"answer": execution, "basis": "the effect check exited with status 1"}
-    return {"role": role, "name": role, "rule": rule, "execution": done, "visibility": seen}
+    undone = {"answer": cleanup, "basis": "after the cleanup the check exited with status 1"}
+    return {"role": role, "technique": "T1", "name": role, "rule": rule, "execution": done,
+            "visibility": seen, "cleanup": undone}  # fmt: skip
 
 
 CLEAN = {

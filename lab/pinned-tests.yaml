@@ -7,6 +7,13 @@
 #            Exit status 0 means it took effect.
 #   output   A text that the test prints only when it took effect.
 #   Without either, the test's own exit status decides.
+#   The effect command also runs before the test. If it finds the effect then,
+#   the test did not cause it, and the answer is inconclusive.
+# How the lab learns whether the test's cleanup undid what the test did:
+#   leftover One command, run as root after the cleanup. Exit status 0 means
+#            that something of the test is still there. Without it the effect
+#            command is used. A test with neither only prints, and has nothing
+#            to look for. A test that is left behind is listed in the report.
 # Other keys:
 #   prepare  One command, run as the account the test runs as, that puts in
 #            place what the test acts on. When it fails, the test is not
@@ -149,10 +156,12 @@ tests:
     guid: 13c5e1ae-605b-46c4-a79f-db28c77ff24e
     name: Nix File and Directory Discovery 2
     output: "./.bashrc"
+    leftover: test -e /tmp/T1083.txt
   - technique: T1087.001
     guid: c955a599-3653-4fe5-b631-f11c00eb0397
     name: View accounts with UID 0
     output: "root:x:0:0:"
+    leftover: test -e /tmp/T1087.001.txt
   - technique: T1201
     guid: 7c86c55c-70fa-4a05-83c9-3aa19b145d1a
     name: Examine password expiration policy - All Linux
@@ -221,6 +230,8 @@ tests:
       && chmod 600 ~/.ssh/authorized_keys
       && touch -d "1 hour ago" ~/.ssh/authorized_keys
     effect: test -n "$(find {home}/.ssh/authorized_keys -newermt '30 minutes ago')"
+    # The file's age cannot be undone. What can be left behind is other content.
+    leftover: test "$(cat {home}/.ssh/authorized_keys)" != "# planted by the lab, not a key"
     defenses: [ssh-keys-root-owned]
   - technique: T1546.004
     guid: 0a898315-4cfa-4007-bafe-33a4646d115f
@@ -302,11 +313,14 @@ tests:
           && journalctl -q --no-pager -o cat -u systemd-bluefire-variant-helper.service
           | grep -q 'Deactivated successfully'
   # A unit written outside systemd's folders and linked in: the lab's rule does not look there.
+  # The journal keeps the unit's line after the cleanup, so what is looked for then is the
+  # unit file and systemd's link to it.
   - technique: T1569.003
     guid: a1fa406e-2354-4a24-b6d6-94157e7564d4
     name: Create systemd Service Unit from /tmp (Unusual Location)
     needs: [systemctl, journalctl]
     effect: journalctl -q --no-pager -o cat -u atomic_tmp.service | grep -q 'Deactivated successfully'
+    leftover: test -e /tmp/atomic_tmp.service || test -L /etc/systemd/system/atomic_tmp.service
   - technique: T1556.003
     guid: 4b9dde80-ae22-44b1-a82a-644bf009eb9c
     name: Malicious PAM rule
@@ -397,11 +411,13 @@ tests:
     name: Masquerading as FreeBSD or Linux crond process.
     # The test's last command is the renamed copy running "sleep 5", so its exit
     # status shows whether the copy ran. The copy itself is only preparation.
+    leftover: test -e /tmp/crond
     defenses: [tmp-noexec]
   - technique: T1036.005
     guid: 812c3ab8-94b0-4698-a9bf-9420af23ce24
     name: Execute a process from a directory masquerading as the current parent directory
     output: Hello from the Atomic Red Team test T1036.005
+    leftover: test -e {home}/...
     variants:
       - args: {test_message: Hello from a variant run of the lab}
         output: Hello from a variant run of the lab
@@ -479,12 +495,15 @@ tests:
     guid: 11c46cd8-e471-450e-acb8-52a1216ae6a4
     name: Binary simply packed by UPX (linux)
     output: the cake is a lie
+    leftover: test -e /tmp/packed_bin
     defenses: [tmp-noexec]
   - technique: T1027.004
     guid: d0377aa6-850a-42b2-95f0-de558d80be57
     name: C compile
     needs: [gcc]
     output: T1027-004-test.c has compiled and executed
+    # The executor runs a test in /tmp, and upstream has no cleanup for the program it builds.
+    leftover: test -e /tmp/a.out
     defenses: [tmp-noexec]
   # The payload runs through bash, which /tmp mounted noexec does not stop.
   - technique: T1027.013
@@ -492,6 +511,7 @@ tests:
     name: Password-Protected ZIP Payload Extraction and Execution
     needs: [zip, unzip]
     output: "T1027.013: Payload extracted from encrypted ZIP"
+    leftover: test -e /tmp/art_payload.sh || test -e /tmp/art_encrypted.zip
     defenses: [tmp-noexec]
     variants:
       # The test's own input argument, made up for this run, not a secret.
