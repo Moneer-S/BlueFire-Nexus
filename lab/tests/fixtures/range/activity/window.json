@@ -1,0 +1,68 @@
+{
+  "note": "a run of range one on a developer machine, trimmed to each host's go and 70 s after it",
+  "go": {
+    "client": 1795473323.866851,
+    "web": 1795473324.280091,
+    "db": 1795473325.082428
+  },
+  "stop": {
+    "client": 1795473393.866851,
+    "web": 1795473394.280091,
+    "db": 1795473395.082428
+  },
+  "addresses": {
+    "client": [
+      "172.22.0.3"
+    ],
+    "web": [
+      "172.22.0.4",
+      "172.23.0.1",
+      "172.24.0.2"
+    ],
+    "db": [
+      "172.23.0.2",
+      "172.24.0.3"
+    ]
+  },
+  "runs": {
+    "browse": 7,
+    "admin": 1,
+    "cache": 1,
+    "build": null,
+    "backup": 1
+  },
+  "archived runs": {
+    "browse": 7,
+    "admin": 1,
+    "cache": 1,
+    "build": null,
+    "backup": 1
+  },
+  "sources": {
+    "browse": {
+      "file integrity, by folder": 6,
+      "/var/log/nginx/access.log, by address": 8
+    },
+    "admin": {
+      "/var/log/auth.log, by address": 3,
+      "/var/log/auth.log, by account": 4,
+      "snoopy, by account": 9,
+      "snoopy, by address": 1,
+      "snoopy, by tag": 4,
+      "/var/log/auth.log, by the sudo session it closes": 1
+    },
+    "cache": {
+      "snoopy, by tag": 3,
+      "file integrity, by folder": 1
+    },
+    "build": {},
+    "backup": {
+      "snoopy, by tag": 3
+    }
+  },
+  "cron sessions of the account": {
+    "cache": 2,
+    "build": 0,
+    "backup": 2
+  }
+}

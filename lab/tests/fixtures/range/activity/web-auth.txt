@@ -1,0 +1,38 @@
+2026-11-23T22:35:08.233929+00:00 web sshd[204]: Connection closed by 172.22.0.2 port 53602
+2026-11-23T22:35:08.269254+00:00 web sshd[242]: Connection closed by 172.24.0.1 port 55598
+2026-11-23T22:35:08.287899+00:00 web sshd[240]: Connection closed by 172.22.0.2 port 53610
+2026-11-23T22:35:08.335991+00:00 web sshd[267]: Connection closed by 172.24.0.1 port 55606
+2026-11-23T22:35:08.342190+00:00 web sshd[260]: Connection closed by 172.24.0.3 port 38016
+2026-11-23T22:35:08.347750+00:00 web sshd[208]: Connection closed by 172.23.0.2 port 49948
+2026-11-23T22:35:08.349600+00:00 web sshd[269]: Connection closed by 172.23.0.3 port 50656
+2026-11-23T22:35:08.351402+00:00 web sshd[261]: Connection closed by 172.22.0.1 port 40588
+2026-11-23T22:35:08.353878+00:00 web sshd[212]: Connection closed by 172.23.0.3 port 50640
+2026-11-23T22:35:08.357815+00:00 web sshd[243]: Connection closed by 172.23.0.2 port 49956
+2026-11-23T22:35:08.362670+00:00 web sshd[262]: Connection closed by 172.22.0.3 port 45590
+2026-11-23T22:35:08.368901+00:00 web sshd[265]: Connection closed by 172.24.0.4 port 45906
+2026-11-23T22:35:15.549677+00:00 web sudo:      ops : PWD=/ ; USER=root ; COMMAND=/usr/sbin/nginx -t
+2026-11-23T22:35:15.550128+00:00 web sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1002)
+2026-11-23T22:35:15.556725+00:00 web sudo: pam_unix(sudo:session): session closed for user root
+2026-11-23T22:35:20.640894+00:00 web sshd[352]: Accepted publickey for ops from 172.22.0.3 port 58632 ssh2: ED25519 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+2026-11-23T22:35:20.642511+00:00 web sshd[352]: pam_unix(sshd:session): session opened for user ops(uid=1002) by ops(uid=0)
+2026-11-23T22:35:20.710565+00:00 web sshd[363]: Received disconnect from 172.22.0.3 port 58632:11: disconnected by user
+2026-11-23T22:35:20.710865+00:00 web sshd[363]: Disconnected from user ops 172.22.0.3 port 58632
+2026-11-23T22:35:20.711473+00:00 web sshd[352]: pam_unix(sshd:session): session closed for user ops
+2026-11-23T22:35:21.360405+00:00 web sshd[366]: Accepted password for webadmin from 172.22.0.3 port 58644 ssh2
+2026-11-23T22:35:21.362138+00:00 web sshd[366]: pam_unix(sshd:session): session opened for user webadmin(uid=1001) by webadmin(uid=0)
+2026-11-23T22:35:21.428531+00:00 web sshd[377]: Received disconnect from 172.22.0.3 port 58644:11: disconnected by user
+2026-11-23T22:35:21.428751+00:00 web sshd[377]: Disconnected from user webadmin 172.22.0.3 port 58644
+2026-11-23T22:35:21.429310+00:00 web sshd[366]: pam_unix(sshd:session): session closed for user webadmin
+2026-11-23T22:35:24.232826+00:00 web sshd[379]: Accepted publickey for ops from 172.22.0.3 port 41784 ssh2: ED25519 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+2026-11-23T22:35:24.234641+00:00 web sshd[379]: pam_unix(sshd:session): session opened for user ops(uid=1002) by ops(uid=0)
+2026-11-23T22:35:24.314068+00:00 web sudo:      ops : PWD=/home/ops ; USER=root ; COMMAND=/usr/sbin/nginx -t
+2026-11-23T22:35:24.314528+00:00 web sudo: pam_unix(sudo:session): session opened for user root(uid=0) by ops(uid=1002)
+2026-11-23T22:35:24.321046+00:00 web sudo: pam_unix(sudo:session): session closed for user root
+2026-11-23T22:35:24.322318+00:00 web sshd[396]: Received disconnect from 172.22.0.3 port 41784:11: disconnected by user
+2026-11-23T22:35:24.322538+00:00 web sshd[396]: Disconnected from user ops 172.22.0.3 port 41784
+2026-11-23T22:35:24.323311+00:00 web sshd[379]: pam_unix(sshd:session): session closed for user ops
+2026-11-23T22:35:55.559831+00:00 web bluefire-mark: bluefire-mark-1-20261123T223329Z-5396a6
+2026-11-23T22:35:56.008976+00:00 web bluefire-mark: bluefire-mark-2-20261123T223329Z-5396a6
+2026-11-23T22:35:56.481600+00:00 web bluefire-mark: bluefire-mark-3-20261123T223329Z-5396a6
+2026-11-23T22:36:01.652703+00:00 web CRON[464]: pam_unix(cron:session): session opened for user www-data(uid=33) by www-data(uid=0)
+2026-11-23T22:36:01.681582+00:00 web CRON[464]: pam_unix(cron:session): session closed for user www-data

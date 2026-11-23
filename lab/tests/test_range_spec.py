@@ -94,7 +94,6 @@ def test_a_spec_with_the_sections_that_later_parts_read_is_not_refused() -> None
     document = a_spec(
         sentence="a sentence",
         executor={"reference": "redcanaryco/invoke-atomicredteam", "commit": "8af478bb"},
-        activity={"seed": 1, "jobs": []},
         path={"steps": [], "goal": {"plain": "a goal"}},
     )
 
