@@ -1,0 +1,13 @@
+# Applies one published Ansible role as it is, as part of the lab's baseline of
+# ordinary activity (see "baseline" in ../pinned-tests.yaml). The role is other
+# people's work: this file only names it and the version of the program it
+# installs. The lab workflow fetches the role at a pinned commit.
+- name: Apply the published node_exporter role to this machine
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  roles:
+    - role: node_exporter
+  vars:
+    # A fixed version, so that the role does not ask GitHub which one is the latest.
+    node_exporter_version: "1.13.1"

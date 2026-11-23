@@ -17,6 +17,18 @@ their license. Tetragon was used only in the earlier sensor trials,
 | [Zircolite](https://github.com/wagga40/Zircolite) | 4.7.1 | LGPL-3.0-or-later | Rule engine, run as a separate program |
 | [Linux audit daemon](https://github.com/linux-audit/audit-userspace) | Ubuntu 24.04 package `auditd` `1:3.1.2-2.1ubuntu0.1` | GPL-2.0 | Second sensor on the lab target, with the rules in `lab/sensors/audit.rules` |
 | [Tetragon](https://github.com/cilium/tetragon) | 1.8.0 | Apache-2.0 | Sensor tried in the spike |
+| [geerlingguy.node_exporter](https://github.com/geerlingguy/ansible-role-node_exporter) | tag `2.2.0`, commit `0df55616` | MIT | Ansible role applied on the lab target as ordinary activity that the lab's own rules must stay quiet on |
+| [node_exporter](https://github.com/prometheus/node_exporter) | 1.13.1, downloaded by the role | Apache-2.0 | The program that role installs and starts |
+| [jq](https://github.com/jqlang/jq) | release `jq-1.8.2`, tarball pinned by digest | MIT, with other licences for parts (see its `COPYING`) | Built from source on the lab target as ordinary activity |
+| Ubuntu packages [vsftpd](https://packages.ubuntu.com/noble/vsftpd), [sysstat](https://packages.ubuntu.com/noble/sysstat), [redis-server](https://packages.ubuntu.com/noble/redis-server) | the versions Ubuntu 24.04's archive serves on the day of the run | GPL-2.0, GPL-2.0-or-later, BSD-3-Clause | Installed and removed on the lab target as ordinary activity |
+
+A run started by hand can be given another Sigma rule set, sensor settings or an image as
+inputs. What such a run fetches is named in its report and travels in its artifact with the
+licence files found beside it. The runs this repository's documents link used these:
+
+| Project | Pin | Licence | Use |
+|---|---|---|---|
+| [rustinel-rules](https://github.com/Karib0u/rustinel-rules) | commit `26793460`, folder `rules/sigma/linux` | its `LICENSE`, headed "Detection Rule License (DRL) 1.1": use and redistribution with the notice and each rule's author kept | Rule set evaluated as a column of its own |
 
 The lab's Python package depends on [PyYAML](https://github.com/yaml/pyyaml) (MIT), installed
 from PyPI. Its tests and lint use [pytest](https://github.com/pytest-dev/pytest) (MIT) and

@@ -49,6 +49,13 @@ env:
   SIGMA: SigmaHQ/sigma@552f3fee420ef232a8e5790c4fae591847e32347
   ZIRCOLITE_URL: https://github.com/wagga40/Zircolite/releases/download/v4.7.1/Zircolite-4.7.1-linux-x64.zip
   ZIRCOLITE_DIGEST: sha256:f09d3ba377ef0bf4899bba71b63ffca38d714f71765a716e46ad3549da5e316a
+  # Ordinary activity that the lab's own rules must stay quiet on, written by others: packages
+  # of Ubuntu's archive at the versions it serves that day, a published Ansible role and a
+  # source release. The commands that use them are the baseline's parts in lab/pinned-tests.yaml.
+  BASELINE_PACKAGES: vsftpd sysstat redis-server
+  BASELINE_ROLE: geerlingguy/ansible-role-node_exporter@0df55616d72d9a2b22f6c670a74659f112f68b59
+  BASELINE_SOURCE_URL: https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-1.8.2.tar.gz
+  BASELINE_SOURCE_DIGEST: sha256:71b8d6e8f5fe81f6c6d0d110e3892251f6ce76ed095abd315e26e6e1193af3af
 
 jobs:
   package:
@@ -82,7 +89,7 @@ jobs:
   loop:
     name: attack tests on runner ${{ matrix.runner }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -137,6 +144,16 @@ jobs:
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/zircolite.zip" "$ZIRCOLITE_URL"
           echo "${ZIRCOLITE_DIGEST#sha256:}  $RUNNER_TEMP/zircolite.zip" | sha256sum --check
           unzip -q "$RUNNER_TEMP/zircolite.zip" -d /opt/bluefire-lab/zircolite
+          # What the baseline of ordinary activity installs, applies and builds.
+          sudo apt-get install -y -qq --download-only $BASELINE_PACKAGES
+          mkdir -p /opt/bluefire-lab/baseline/roles
+          cp lab/baseline/node-exporter.yml /opt/bluefire-lab/baseline/
+          fetch "$BASELINE_ROLE" /opt/bluefire-lab/baseline/roles/node_exporter
+          git -C /opt/bluefire-lab/baseline/roles/node_exporter checkout -q FETCH_HEAD
+          curl -fsSL --retry 3 -o /opt/bluefire-lab/baseline/jq.tar.gz "$BASELINE_SOURCE_URL"
+          echo "${BASELINE_SOURCE_DIGEST#sha256:}  /opt/bluefire-lab/baseline/jq.tar.gz" | sha256sum --check
+          ln -s "$(command -v ansible-playbook)" /opt/bluefire-lab/baseline/ansible-playbook
+          ansible-playbook --version | head -n 1
           # The rules the run used travel with its results.
           mkdir -p "$RUN/rules"
           cp -r /opt/bluefire-lab/sigma/rules/linux "$RUN/rules/linux"

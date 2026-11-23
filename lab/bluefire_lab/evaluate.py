@@ -202,7 +202,10 @@ def run_engine(
                 "--logfile", f"{prefix}{category}-engine.txt",
             ],
             cwd=work,
-            check=True,
+            # The engine ends with an error when it can convert none of a folder's rules. For the
+            # lab's own sets that fails the evaluation; for a rule set given as an input it is a
+            # fact about that set, which the report states.
+            check="/" not in root,
             capture_output=True,
             timeout=900,
         )  # fmt: skip
@@ -248,11 +251,11 @@ def run_audit_engine(
             "--logfile", log.name,
         ],
         cwd=work,
-        check=True,
+        check="/" not in root,
         capture_output=True,
         timeout=900,
     )  # fmt: skip
-    counts["loaded"], counts["read"] = engine_counts(log.read_text(errors="replace"))
+    counts["loaded"], counts["read"] = engine_counts(log.read_text(errors="replace") if log.exists() else "")
     for rule in json.loads(output.read_text(encoding="utf-8")) if output.exists() else []:
         for match in rule["matches"]:
             record = records[int(match["row_id"]) - 1]
@@ -1041,6 +1044,9 @@ def summarize(tests: list[dict]) -> dict:
             1 for test in took if test["visibility"].get("other_rules", {}).get("answer") == "alert"
         ),
         "unstable": sum(1 for test in measured if test.get("unstable")),
+        # Runs of any other kind with an unstable answer: with a hardening change, with changed
+        # input arguments, or of the known-detected test or the harmless command.
+        "unstable_other_runs": sum(1 for test in tests if test["role"] != "test" and test.get("unstable")),
     }
 
 

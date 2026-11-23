@@ -115,10 +115,17 @@ def lede(results: dict) -> str:
             + (f"; {unjudged} have not been judged" if unjudged else "")
             + "."
         )
-    if summary.get("unstable"):
+    if summary.get("unstable") or summary.get("unstable_other_runs"):
+        others = summary.get("unstable_other_runs", 0)
         text += (
-            f" {count(summary['unstable'], 'test')} got different answers on different runners: such an "
-            "answer is marked unstable and is in none of these counts."
+            f" {count(summary.get('unstable', 0), 'test')} got different answers on different runners"
+            + (
+                f", and so did {count(others, 'run')} of another kind (with a hardening change, with changed "
+                "input arguments, or a control run)"
+                if others
+                else ""
+            )
+            + ": such an answer is marked unstable and is in none of these counts."
         )
     if summary["inconclusive"]:
         text += f" {summary['inconclusive']} could not be measured."
@@ -271,6 +278,38 @@ def left_behind_table(results: dict) -> str:
         for test in left_behind(results)
     )
     head = "<tr><th>Technique</th><th>Test</th><th>Still found after the cleanup</th><th>Cleanup upstream</th></tr>"
+    return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>'
+
+
+def unstable_runs(results: dict) -> list[dict]:
+    """Every run of a test, of any kind, that the runners did not agree on."""
+
+    return [test for test in results["tests"] if test.get("unstable")]
+
+
+def run_kind(test: dict) -> str:
+    """What kind of run of a test this is, in words."""
+
+    if test["role"] == "hardened":
+        return f"with {test['defense']['title']}"
+    if test["role"] == "variant":
+        return "with input arguments " + ", ".join(f"{k}={v}" for k, v in test.get("args", {}).items())
+    return {"canary": "known-detected test", "control": "harmless command"}.get(test["role"], "")
+
+
+def unstable_table(results: dict) -> str:
+    rows = "".join(
+        f'<tr><td class="mono">{e(test["technique"])}</td>'
+        f'<td><a href="#t{test["order"]}">{e(test["name"])}</a>'
+        + (f'<span class="sub">{e(run_kind(test))}</span>' if run_kind(test) else "")
+        + f"</td><td>{e(name)}</td>"
+        f'<td class="wide">{e(", ".join(str(runner.get(name)) for runner in test["runners"]))}</td></tr>'
+        for test in unstable_runs(results)
+        for name in test["unstable"]
+    )
+    head = (
+        "<tr><th>Technique</th><th>Run of a test</th><th>Answer</th><th>What each runner answered</th></tr>"
+    )
     return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>'
 
 
@@ -559,6 +598,14 @@ def html_report(results: dict) -> str:
         if results.get("lab_rules")
         else ""
     )
+    unstable = (
+        '<h2 id="unstable">Answers the runners did not agree on</h2>'
+        + unstable_table(results)
+        + '<p class="note">Every run of a test, of any kind, for which the runners gave different answers. '
+        "Such an answer counts in no total.</p>"
+        if unstable_runs(results)
+        else ""
+    )
     failed = [check for check in results["controls"] if not check["passed"]]
     unstable_note = (
         "An answer is unstable when the runners, which ran the same list at the same time, did not all give "
@@ -707,6 +754,7 @@ first. {e(unstable_note)}Select a test to see its events and rules.</p>
 {rule_set_section(results)}
 {hardening}
 {behind}
+{unstable}
 
 <h2>Controls</h2>
 <p class="note">These checks keep a broken measurement from looking like a finding. A run with a failed
@@ -843,6 +891,19 @@ def markdown_summary(results: dict) -> str:
                 f"| {cell(test['technique'])} | {cell(test['name'] + role)} | "
                 f"`{cell(test['cleanup']['check']['command'])}` |"
             )
+    if unstable_runs(results):
+        lines += [
+            "",
+            "| Technique | Run of a test the runners did not agree on | Answer | What each runner answered |",
+            "|---|---|---|---|",
+        ]
+        for test in unstable_runs(results):
+            kind = f" ({run_kind(test)})" if run_kind(test) else ""
+            for name in test["unstable"]:
+                said = ", ".join(str(runner.get(name)) for runner in test["runners"])
+                lines.append(
+                    f"| {cell(test['technique'])} | {cell(test['name'] + kind)} | {cell(name)} | {cell(said)} |"
+                )
     if results["dropped"]:
         lines += ["", "| Technique | Test left out | Why |", "|---|---|---|"]
         for item in results["dropped"]:
