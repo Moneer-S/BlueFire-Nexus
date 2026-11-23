@@ -1,5 +1,6 @@
 // The single replay page: reads the recording held in the page itself and
-// plays it. Nothing is fetched. The address can say where to start:
+// plays it, with the note on where the recording comes from that the page
+// holds beside it. Nothing is fetched. The address can say where to start:
 // ?step=<step id>&at=<0..1>&paused=1&mode=watch|analyse&select=<step id>
 
 import { StrictMode } from "react";
@@ -28,6 +29,22 @@ function readPage(): { recording: Recording } | { problem: string; empty: boolea
     if (error instanceof RecordingError) return { problem: error.message, empty: false };
     return { problem: `The recording in this page could not be checked: ${error instanceof Error ? error.message : "an unknown failure"}.`, empty: false };
   }
+}
+
+const NO_ORIGIN = "This page does not say where its recording comes from.";
+
+/** Where the recording comes from, as the command that made the page wrote it: the app's note on a shipped or an imported recording. */
+function readOrigin(): string {
+  const text = document.getElementById("bluefire-origin")?.textContent?.trim() ?? "";
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return NO_ORIGIN;
+  }
+  if (typeof value !== "object" || value === null || !("kind" in value) || !("note" in value)) return NO_ORIGIN;
+  if ((value.kind !== "shipped" && value.kind !== "imported") || typeof value.note !== "string" || value.note.trim() === "") return NO_ORIGIN;
+  return value.note;
 }
 
 function readAddress(): NonNullable<LiveViewProps["initial"]> {
@@ -64,7 +81,7 @@ if (root) {
     <StrictMode>
       {"recording" in page ? (
         <LiveViewBoundary fallback={(message) => <Problem title="This recording cannot be played" text={message} />}>
-          <LiveView recording={page.recording} initial={readAddress()} />
+          <LiveView recording={page.recording} origin={readOrigin()} initial={readAddress()} />
         </LiveViewBoundary>
       ) : (
         <Problem title={page.empty ? "No recording here" : "This recording cannot be played"} text={page.problem} />
