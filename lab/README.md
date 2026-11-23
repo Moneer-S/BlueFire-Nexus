@@ -581,15 +581,21 @@ exit path after the first create. Its exit code is 0 when the range was sealed
 and still was at the end, 1 when it refused to start or Docker failed, 3 when
 the seal failed and nothing ran in the range, and 4 when the run was made
 invalid. `range down` removes only containers and networks that carry both the
-spec's prefix and its range label.
+spec's prefix and its range label. One case leaves something for it: Docker
+does not remove a network while a container from outside is still connected to
+it. The run then records that its teardown was not complete, and `range down`
+removes the network once that container is gone.
 
 The `range-one` workflow runs the passing case and five planted breaks (`--plant`
 and a network connect from outside), each of which must fail the seal for its
 own reason: a network that is not internal, a network without the isolated
 gateway mode (caught by the host canary as well), a published port, a bind
 mount, and an extra container connected to a range network after the seal
-(caught by the event watch). That it does so on a hosted runner is not yet
-shown.
+(caught by the event watch).
+[Run 45246204061](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45246204061)
+shows it on a GitHub-hosted runner with Docker Engine 28.0.4: the passing case
+was sealed, each of the four `--plant` breaks was stopped by its own check, and
+the connect was recorded by the event watch.
 
 ## Not yet shown
 
