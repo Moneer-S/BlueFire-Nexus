@@ -857,6 +857,37 @@ def check_controls(
     return checks
 
 
+def summarize(tests: list[dict]) -> dict:
+    """The totals of a run. An answer that is unstable, or could not be given, is in none of
+    the totals of answers: a test counts as an alert only when its execution answer is
+    "took effect" and its visibility answer is "alert"."""
+
+    measured = [test for test in tests if test["role"] == "test"]
+    took = [test for test in measured if test["execution"]["answer"] == "took effect"]
+    hardened = [test for test in tests if test["role"] == "hardened"]
+
+    def seen(answer: str) -> int:
+        return sum(1 for test in took if test["visibility"]["answer"] == answer)
+
+    return {
+        "tests": len(measured),
+        "took_effect": len(took),
+        "alert": seen("alert"),
+        "telemetry_only": seen("telemetry only"),
+        "no_telemetry": seen("no telemetry"),
+        "inconclusive": seen("inconclusive"),
+        "hardened": len(hardened),
+        "blocked": sum(1 for test in hardened if test["execution"]["answer"] == "blocked"),
+        "alert_with_lab_rules": sum(
+            1 for test in took if test["visibility"].get("with_lab_rules", {}).get("answer") == "alert"
+        ),
+        "unstable": sum(1 for test in measured if test.get("unstable")),
+        # Runs of any other kind with an unstable answer: with a hardening change, with changed
+        # input arguments, or of the known-detected test or the harmless command.
+        "unstable_other_runs": sum(1 for test in tests if test["role"] != "test" and test.get("unstable")),
+    }
+
+
 def main(run_dir: Path, engine: Path) -> int:
     run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     events, raw, other = sysmon.read(run_dir / "sysmon.txt")
@@ -933,9 +964,6 @@ def main(run_dir: Path, engine: Path) -> int:
         [str(engine.resolve()), "--version"], capture_output=True, text=True, check=False
     )
     found = re.search(r"v(\d+\.\d+\.\d+)", version.stdout + version.stderr)
-    measured = [test for test in tests if test["role"] == "test"]
-    took = [test for test in measured if test["execution"]["answer"] == "took effect"]
-    hardened = [test for test in tests if test["role"] == "hardened"]
     # What systemd ran during the baseline is ordinary work too: only the tests' windows are left out.
     baseline = {test["order"] for test in run["tests"] if test["role"] == "baseline"}
     test_windows = [
@@ -985,24 +1013,7 @@ def main(run_dir: Path, engine: Path) -> int:
         },
         "engine": {"name": "Zircolite", "version": found.group(1) if found else None, "counts": tally},
         "controls": check_controls(run, tests, starts, sysmon.loss(events, other), tally, audit_control),
-        "summary": {
-            "tests": len(measured),
-            "took_effect": len(took),
-            **{
-                key: sum(1 for test in took if test["visibility"]["answer"] == answer)
-                for key, answer in (
-                    ("alert", "alert"),
-                    ("telemetry_only", "telemetry only"),
-                    ("no_telemetry", "no telemetry"),
-                    ("inconclusive", "inconclusive"),
-                )
-            },
-            "hardened": len(hardened),
-            "blocked": sum(1 for test in hardened if test["execution"]["answer"] == "blocked"),
-            "alert_with_lab_rules": sum(
-                1 for test in took if test["visibility"].get("with_lab_rules", {}).get("answer") == "alert"
-            ),
-        },
+        "summary": summarize(tests),
         "tests": tests,
         "dropped": run.get("dropped", []),
     }

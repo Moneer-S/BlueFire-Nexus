@@ -1,9 +1,10 @@
 name: lab
 
-# Runs published attack tests on a hosted runner, records what a sensor on the
-# runner saw, has a rule engine evaluate pinned detection rules over those
-# records, and publishes a report. The runner is thrown away after the job.
-# The jobs hold no secrets and a read-only token.
+# Runs published attack tests on three hosted runners at once, records what the
+# sensors on each runner saw, has a rule engine evaluate pinned detection rules
+# over those records, and publishes a report of the answers the runners agree
+# on. Each runner is thrown away after its job. The jobs hold no secrets and a
+# read-only token.
 
 on:
   pull_request:
@@ -69,10 +70,16 @@ jobs:
       - name: Test
         run: '"$RUNNER_TEMP/venv/bin/pytest" --rootdir lab -c lab/pyproject.toml lab/tests'
 
+  # The same list on three runners at once. A sensor reports some events only sometimes, so an
+  # answer counts only when all three runners give it: see the job "answers" below.
   loop:
-    name: attack tests on this runner
+    name: attack tests on runner ${{ matrix.runner }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3]
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -200,22 +207,12 @@ jobs:
           engine=$(find /opt/bluefire-lab/zircolite -maxdepth 2 -type f -name Zircolite)
           "$RUNNER_TEMP/venv/bin/bluefire-lab" evaluate "$RUN" --engine "$engine"
 
+      # This runner's own report. The run page gets the report of all three, from the job "answers".
       - name: Write the report
         if: always()
         run: |
           "$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUN"
-          cat "$RUN/summary.md" >> "$GITHUB_STEP_SUMMARY"
           if grep -n $'\xe2\x80\x94' "$RUN/report.html" "$RUN/summary.md"; then echo "the report must not use the em dash"; exit 1; fi
-
-      - name: Take pictures of the report
-        if: always()
-        run: |
-          # The top of the report, in each theme, at a size that fits a README: the summary, the
-          # run's facts and the first rows of the table. The whole report is report.html.
-          google-chrome --headless=new --no-sandbox --hide-scrollbars --window-size=1280,1000 \
-            --screenshot="$RUN/report-light.png" "file://$RUN/report.html"
-          google-chrome --headless=new --no-sandbox --hide-scrollbars --window-size=1280,1000 --force-dark-mode \
-            --screenshot="$RUN/report-dark.png" "file://$RUN/report.html"
 
       - name: Refuse to publish telemetry that contains the job token
         if: always()
@@ -234,6 +231,65 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          name: lab-run-${{ matrix.runner }}
+          path: ${{ runner.temp }}/lab-run
+          # The job "answers" uploads all three again as one artifact, which is the one to keep.
+          retention-days: 5
+          if-no-files-found: error
+
+  # Apart from the attack tests: this job only reads what the three runners uploaded. It gives
+  # each test the answer all three runners gave, or marks the answer unstable.
+  answers:
+    name: answers of the three runners
+    needs: loop
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the lab
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
+
+      - name: Download each runner's files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: lab-run-*
+          path: ${{ runner.temp }}/lab-run
+
+      - name: Combine the runners' answers
+        run: |
+          ls "$RUNNER_TEMP/lab-run"
+          test "$(ls "$RUNNER_TEMP/lab-run" | wc -l)" = 3 || { echo "not all three runners uploaded their files"; exit 1; }
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" combine "$RUNNER_TEMP/lab-run"
+
+      - name: Write the report
+        if: always()
+        run: |
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUNNER_TEMP/lab-run"
+          cat "$RUNNER_TEMP/lab-run/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          if grep -n $'\xe2\x80\x94' "$RUNNER_TEMP/lab-run/report.html" "$RUNNER_TEMP/lab-run/summary.md"; then echo "the report must not use the em dash"; exit 1; fi
+
+      - name: Take pictures of the report
+        if: always()
+        run: |
+          # The top of the report, in each theme, at a size that fits a README: the summary, the
+          # run's facts and the first rows of the table. The whole report is report.html.
+          google-chrome --headless=new --no-sandbox --hide-scrollbars --window-size=1280,1000 \
+            --screenshot="$RUNNER_TEMP/lab-run/report-light.png" "file://$RUNNER_TEMP/lab-run/report.html"
+          google-chrome --headless=new --no-sandbox --hide-scrollbars --window-size=1280,1000 --force-dark-mode \
+            --screenshot="$RUNNER_TEMP/lab-run/report-dark.png" "file://$RUNNER_TEMP/lab-run/report.html"
+
+      # The three runners' files, each in a folder of its own, with the combined answers and report.
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
           name: lab-run
           path: ${{ runner.temp }}/lab-run
           retention-days: 90
@@ -242,7 +298,7 @@ jobs:
   # Apart from the attack tests: this job only reads the two runs' results.
   compare:
     name: compare with the latest run on main
-    needs: loop
+    needs: answers
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

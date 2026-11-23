@@ -61,17 +61,49 @@ def pill(test: dict, answer: str) -> str:
     return f'<span class="pill {tone(test, answer)}">{e(answer)}</span>'
 
 
+# The name of the second visibility answer in what each runner answered (combine.ANSWERS).
+LAB = "with the lab's rules"
+
+
+def runners_note(test: dict, name: str) -> str:
+    """What each runner answered, for an answer the runners did not agree on."""
+
+    if name not in test.get("unstable", []):
+        return ""
+    return "runners: " + ", ".join(runner[name] for runner in test["runners"])
+
+
 def lede(results: dict) -> str:
     summary, target = results["summary"], results["run"]["target"]
+    runners = results.get("runners")
     where = f"{target['os']}, kernel {target['kernel']}"
     if target.get("runner_image"):
         where = f"a GitHub-hosted runner ({where}, image {target['runner_image']})"
+    if runners:
+        kernels = sorted({runner["run"]["target"]["kernel"] for runner in runners})
+        where = (
+            f"each of {len(runners)} GitHub-hosted runners ({target['os']}, "
+            f"{'kernel' if len(kernels) == 1 else 'kernels'} {' and '.join(kernels)})"
+        )
     text = (
         f"{count(summary['tests'], 'published attack test')} ran on {where} on "
-        f"{results['run']['started'][:10]}. {summary['took_effect']} took effect. Of those, "
+        f"{results['run']['started'][:10]}. {summary['took_effect']} took effect"
+        f"{' on every runner' if runners else ''}. Of those, "
         f"{summary['alert']} raised an alert, {summary['telemetry_only']} left telemetry but no alert, "
         f"and {summary['no_telemetry']} left no telemetry."
     )
+    if summary.get("unstable") or summary.get("unstable_other_runs"):
+        others = summary.get("unstable_other_runs", 0)
+        text += (
+            f" {count(summary.get('unstable', 0), 'test')} got different answers on different runners"
+            + (
+                f", and so did {count(others, 'run')} of another kind (with a hardening change, with changed "
+                "input arguments, or a control run)"
+                if others
+                else ""
+            )
+            + ": such an answer is marked unstable and is in none of these counts."
+        )
     if summary["inconclusive"]:
         text += f" {summary['inconclusive']} could not be measured."
     if results.get("lab_rules"):
@@ -142,6 +174,38 @@ def ordinary_note(results: dict) -> str:
     )
 
 
+def unstable_runs(results: dict) -> list[dict]:
+    """Every run of a test, of any kind, that the runners did not agree on."""
+
+    return [test for test in results["tests"] if test.get("unstable")]
+
+
+def run_kind(test: dict) -> str:
+    """What kind of run of a test this is, in words."""
+
+    if test["role"] == "hardened":
+        return f"with {test['defense']['title']}"
+    if test["role"] == "variant":
+        return "with input arguments " + ", ".join(f"{k}={v}" for k, v in test.get("args", {}).items())
+    return {"canary": "known-detected test", "control": "harmless command"}.get(test["role"], "")
+
+
+def unstable_table(results: dict) -> str:
+    rows = "".join(
+        f'<tr><td class="mono">{e(test["technique"])}</td>'
+        f'<td><a href="#t{test["order"]}">{e(test["name"])}</a>'
+        + (f'<span class="sub">{e(run_kind(test))}</span>' if run_kind(test) else "")
+        + f"</td><td>{e(name)}</td>"
+        f'<td class="wide">{e(", ".join(str(runner.get(name)) for runner in test["runners"]))}</td></tr>'
+        for test in unstable_runs(results)
+        for name in test["unstable"]
+    )
+    head = (
+        "<tr><th>Technique</th><th>Run of a test</th><th>Answer</th><th>What each runner answered</th></tr>"
+    )
+    return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>'
+
+
 def hardened_runs(results: dict) -> list[dict]:
     return [test for test in results["tests"] if test["role"] == "hardened"]
 
@@ -200,8 +264,14 @@ def results_table(tests: list[dict], with_lab_rules: bool = False) -> str:
     for test in tests:
         seen = test["visibility"]
         lab = seen.get("with_lab_rules", {})
+        notes = {
+            name: f'<span class="sub">{e(runners_note(test, name))}</span>'
+            if runners_note(test, name)
+            else ""
+            for name in ("execution", "visibility", LAB)
+        }
         lab_cell = (
-            f"<td>{pill(test, lab.get('answer', seen['answer']))}"
+            f"<td>{pill(test, lab.get('answer', seen['answer']))}{notes[LAB]}"
             + "".join(f'<span class="sub">{e(name)}</span>' for name in lab_rule_names(test))
             + "</td>"
             if with_lab_rules
@@ -211,8 +281,8 @@ def results_table(tests: list[dict], with_lab_rules: bool = False) -> str:
             f'<tr><td class="mono">{e(test["technique"])}</td>'
             f'<td><a href="#t{test["order"]}">{e(test["name"])}</a>'
             f'<span class="sub">ran as {e(test["user"])}</span></td>'
-            f"<td>{pill(test, test['execution']['answer'])}</td>"
-            f"<td>{pill(test, seen['answer'])}</td>"
+            f"<td>{pill(test, test['execution']['answer'])}{notes['execution']}</td>"
+            f"<td>{pill(test, seen['answer'])}{notes['visibility']}</td>"
             f'<td class="wide">{"<br>".join(map(e, rule_names(test))) or "none"}'
             + (f'<span class="sub">{e(launcher_note(test))}</span>' if launcher_note(test) else "")
             + "</td>"
@@ -397,7 +467,21 @@ def html_report(results: dict) -> str:
         if results.get("lab_rules")
         else ""
     )
+    unstable = (
+        '<h2 id="unstable">Answers the runners did not agree on</h2>'
+        + unstable_table(results)
+        + '<p class="note">Every run of a test, of any kind, for which the runners gave different answers. '
+        "Such an answer counts in no total.</p>"
+        if unstable_runs(results)
+        else ""
+    )
     failed = [check for check in results["controls"] if not check["passed"]]
+    unstable_note = (
+        "An answer is unstable when the runners, which ran the same list at the same time, did not all give "
+        "the same one: it is shown with each runner's answer and counted in no total. "
+        if results.get("runners")
+        else ""
+    )
     hardening = (
         "<h2>With a hardening change</h2>"
         + hardening_table(results)
@@ -413,11 +497,20 @@ def html_report(results: dict) -> str:
         [
             fact("Run", f"{e(run['started'].replace('T', ' ').replace('Z', ' UTC'))}, id {e(run['id'])}"),
             fact(
-                "Target",
-                f"{e(run['target']['os'])}, kernel {e(run['target']['kernel'])}"
+                "Targets" if results.get("runners") else "Target",
+                "; ".join(
+                    f"{e(target['os'])}, kernel {e(target['kernel'])}"
+                    + (f", runner image {e(target['runner_image'])}" if target.get("runner_image") else "")
+                    for target in (
+                        [runner["run"]["target"] for runner in results["runners"]]
+                        if results.get("runners")
+                        else [run["target"]]
+                    )
+                )
                 + (
-                    f", runner image {e(run['target']['runner_image'])}"
-                    if run["target"].get("runner_image")
+                    ". The events and rule matches shown below are the first runner's; the artifact holds each "
+                    "runner's own files and report in a folder of its own."
+                    if results.get("runners")
                     else ""
                 ),
             ),
@@ -512,9 +605,10 @@ def html_report(results: dict) -> str:
 defense saw: an alert, telemetry without an alert, or nothing. An alert is a match of a Sigma rule whose
 level is {e(" or ".join(rules["alert_levels"]))} on an event of the test. A test that took effect and left
 telemetry but no alert is a gap that a rule could close; one that left no telemetry needs the sensor to
-record more first. Select a test to see its events and rules.</p>
+record more first. {e(unstable_note)}Select a test to see its events and rules.</p>
 {lab_rules}
 {hardening}
+{unstable}
 
 <h2>Controls</h2>
 <p class="note">These checks keep a broken measurement from looking like a finding. A run with a failed
@@ -580,20 +674,25 @@ def markdown_summary(results: dict) -> str:
         + "Events |",
         "|---|---|---|---|---|" + ("---|" if results.get("lab_rules") else "") + "---:|",
     ]
+
+    def said(test: dict, name: str, answer: str) -> str:
+        return cell(answer + (f" ({runners_note(test, name)})" if runners_note(test, name) else ""))
+
     for test in results["tests"]:
         if test["role"] == "test":
             seen = test["visibility"]
             lab = seen.get("with_lab_rules", {})
             lab_cell = (
-                f" {cell(lab.get('answer', seen['answer']))}"
+                f" {said(test, LAB, lab.get('answer', seen['answer']))}"
                 + (f" ({cell('; '.join(lab_rule_names(test)))})" if lab_rule_names(test) else "")
                 + " |"
                 if results.get("lab_rules")
                 else ""
             )
             lines.append(
-                f"| {cell(test['technique'])} | {cell(test['name'])} | {cell(test['execution']['answer'])} | "
-                f"{cell(seen['answer'])} | {cell('; '.join(rule_names(test)) or 'none')}"
+                f"| {cell(test['technique'])} | {cell(test['name'])} | "
+                f"{said(test, 'execution', test['execution']['answer'])} | "
+                f"{said(test, 'visibility', seen['answer'])} | {cell('; '.join(rule_names(test)) or 'none')}"
                 + (f" ({cell(launcher_note(test))})" if launcher_note(test) else "")
                 + " |"
                 + lab_cell
@@ -624,6 +723,19 @@ def markdown_summary(results: dict) -> str:
                 f"{cell(without['execution']['answer']) if without else 'not run'} | "
                 f"{cell(test['execution']['answer'])} | {cell(test['visibility']['answer'])} |"
             )
+    if unstable_runs(results):
+        lines += [
+            "",
+            "| Technique | Run of a test the runners did not agree on | Answer | What each runner answered |",
+            "|---|---|---|---|",
+        ]
+        for test in unstable_runs(results):
+            kind = f" ({run_kind(test)})" if run_kind(test) else ""
+            for name in test["unstable"]:
+                said = ", ".join(str(runner.get(name)) for runner in test["runners"])
+                lines.append(
+                    f"| {cell(test['technique'])} | {cell(test['name'] + kind)} | {cell(name)} | {cell(said)} |"
+                )
     if results["dropped"]:
         lines += ["", "| Technique | Test left out | Why |", "|---|---|---|"]
         for item in results["dropped"]:

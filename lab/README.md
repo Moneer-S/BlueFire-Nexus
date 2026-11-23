@@ -364,6 +364,11 @@ rotate, and the loss control would fail a run in which it did; none has since.
 
 ## How a run works
 
+The `lab` workflow runs the whole list on three hosted runners at the same time,
+each as described in steps 1 to 4, and then gives every test one answer from
+the three (step 5). The runs described above are from before that change: each
+is one runner's answer.
+
 1. The `lab` workflow ([`.github/workflows/lab.yml`](../.github/workflows/lab.yml))
    installs the two sensors, and fetches the tests, the executor, the rules and
    the rule engine at pinned versions. Nothing of theirs is copied into this
@@ -417,7 +422,21 @@ rotate, and the loss control would fail a run in which it did; none has since.
 4. `bluefire-lab report` writes `report.html`, one file that loads nothing from
    elsewhere when it opens (it refuses to write one that would), and the same
    table for the run page.
-5. A separate job, which runs no test, compares the run with the latest
+5. A job that runs no test takes the three runners' results and gives every run
+   of a test the answer all three gave (`bluefire-lab combine`). Where they
+   differ, the answer is `unstable`: it counts in no total, and the report
+   lists every such run, of whatever kind (a test, its run with a hardening
+   change or with changed input arguments, a control run), with each runner's
+   answer. A runner that left no results fails the combination, and a test
+   that only some runners could run is unstable too. That holds for each of the three answers
+   apart: whether the technique took effect, what the pinned rules saw, and
+   what they saw with the lab's own rules. A rule of the lab's own counts as
+   accepted only when every runner accepted it, and a control passes only when
+   it passed on every runner. The report on the run page is the combined one,
+   with the first runner's events and rule matches behind each row. The
+   artifact `lab-run` holds each runner's own files and report in a folder of
+   its own (`lab-run-1`, `lab-run-2`, `lab-run-3`).
+6. A separate job, which runs no test, compares the run with the latest
    successful run on `main` (`bluefire-lab compare`) and writes to the run page
    which answers changed and what changed under them: events, rules that
    match, a rule of the lab's own accepted now and how many published
@@ -506,11 +525,14 @@ Seven controls must pass, or the run fails as a whole:
   having run. The security software discovery (T1518.001) is checked by a text
   that `ps` also prints for the test's own `grep`, so the check shows only that
   `ps` ran.
-- One runner runs the whole list in sequence (the job took 13 to 16 minutes
+- Each runner runs the whole list in sequence (the job took 13 to 16 minutes
   in the runs above), and GitHub hands out runners with different kernels
   under the same label: kernels 7.0.0-1017-azure (the run above) and
   7.0.0-1014-aws (run 44096893965, the same tests before the cron.d test's
-  change) have both been seen.
+  change) have both been seen. Three runners that agree show that an answer
+  did not depend on the timing of one run. They do not show that it holds on
+  another image or kernel, and an answer that differs once in many runs can
+  still come out the same on three.
 
 ## Not yet shown
 
@@ -526,7 +548,10 @@ only: `bluefire-lab run` refuses to start unless `RUNNER_ENVIRONMENT` is
 starting it by mistake anywhere else; it cannot stop someone who sets the
 variable on purpose.
 
-The answers can be computed again from a run's artifact, on any machine:
+The answers can be computed again from a run's artifact, on any machine. The
+first command evaluates each runner's folder in the artifact and then combines
+the three; given the folder of one runner, or the artifact of a run from before
+there were three, it evaluates that one run:
 
 ```bash
 pip install ./lab
