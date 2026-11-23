@@ -185,6 +185,21 @@ def test_the_upload_is_stored_indexed_and_then_removed_so_that_the_paths_upload_
     assert upload.commands[1].script.endswith("rm -f /srv/uploads/1.bin /srv/uploads/index.tsv")
 
 
+def test_carried_files_are_compared_in_the_order_of_their_paths_whatever_their_hashes() -> None:
+    spec = range_one()
+    attacker = spec.hosts["attacker"]
+    folder = f"atomics/{attacker.atomics_src[0]}/src"
+    # The first path has the larger hash: sorting by the whole line would swap the two.
+    locked = {f"{folder}/a.txt": "f" * 64, f"{folder}/b.txt": "0" * 64}
+
+    (carried,) = plants.carried(spec, attacker, locked)
+    listed_by_path = "".join(
+        f"{digest}  {path.removeprefix('atomics/')}\n" for path, digest in sorted(locked.items())
+    )
+
+    assert carried.judge([(0, listed_by_path)])[1] is True
+
+
 def test_a_check_fails_when_a_command_fails_even_with_the_expected_output() -> None:
     judge = plants.lines_judge(["deploy"])
 
