@@ -58,6 +58,8 @@ export interface NetworkLayout {
   height: number;
   /** True when the field holds one host. */
   single: boolean;
+  /** The lines of the step's command under a single host: one where the map is too short for two above its bottom. */
+  commandLines: 1 | 2;
   centerY: number;
   hosts: HostNode[];
   sensors: SensorNode[];
@@ -145,6 +147,13 @@ function textWidth(text: string, size = 11.5): number {
 }
 
 /**
+ * The height in pixels, from the edge of a single host's node down, that its
+ * label takes: the 10 px above it, then the name, the step's command on two
+ * lines and the host's role, at the largest sizes the page sets them.
+ */
+const SINGLE_LABEL = 102;
+
+/**
  * Lays out `network` in a box of `width` by `height` pixels.
  * Nothing but the network decides where things go, so any number of hosts uses the same code.
  */
@@ -162,14 +171,21 @@ export function layoutNetwork(network: Network, width: number, height: number): 
   const hosts = new Map<string, HostNode>();
   const sensors: SensorNode[] = [];
   let centerY: number;
+  let commandLines: 1 | 2 = 2;
   let orbit = { x: 0, y: 0 };
   let fieldHeadX: number;
 
   if (single) {
+    const r = Math.round(clamp(room * 0.13, 36, 58));
     centerY = Math.round(top + room * 0.44);
+    // The host's label under it, its name, a command of two lines and its role, ends inside the map:
+    // on a short map the host alone stands higher, never so high that its badge leaves the map.
+    const y = Math.round(Math.max(top + r + 8, Math.min(centerY, H - r - SINGLE_LABEL)));
+    // Where even that leaves too little room, the command keeps to one line.
+    if (y + r + SINGLE_LABEL > H) commandLines = 1;
     const only = field[0];
     const x = Math.round(clamp(W * 0.15, 150, 330));
-    if (only) hosts.set(only.id, { host: only, x, y: centerY, r: Math.round(clamp(room * 0.13, 36, 58)) });
+    if (only) hosts.set(only.id, { host: only, x, y, r });
     fieldHeadX = x;
   } else {
     centerY = Math.round(top + room * 0.5 - 8);
@@ -379,6 +395,7 @@ export function layoutNetwork(network: Network, width: number, height: number): 
     width: W,
     height: H,
     single,
+    commandLines,
     centerY,
     hosts: [...hosts.values()],
     sensors,

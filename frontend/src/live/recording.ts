@@ -306,10 +306,14 @@ function time(value: unknown, where: string): void {
   if (Number.isNaN(timeOf(raw))) fail(`${where} is not a time: ${JSON.stringify(raw)}.`);
 }
 
-/** The values a source field of an event may hold: text, a number, true or false, null, or a list of text. */
+/** The furthest from zero a number in an event's fields may be: the largest whole number a browser holds exactly. */
+const MAX_FIELD_NUMBER = 2 ** 53;
+
+/** The values a source field of an event may hold: text, a number no further than 2^53 from zero, true or false, null, or a list of text. */
 function fieldValue(value: unknown): boolean {
   if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
+  // However the number is written, 1e300 or 9007199254740993: past 2^53 a browser holds another number.
+  if (typeof value === "number") return Number.isFinite(value) && Math.abs(value) <= MAX_FIELD_NUMBER;
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
@@ -479,7 +483,7 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
     optionalText(event.image, `The program of ${name}`);
     if (event.fields !== undefined) {
       for (const [key, field] of Object.entries(object(event.fields, `The fields of ${name}`))) {
-        if (!fieldValue(field)) fail(`The field ${JSON.stringify(key)} of ${name} is not text, a number, true or false, null or a list of text.`);
+        if (!fieldValue(field)) fail(`The field ${JSON.stringify(key)} of ${name} is not text, a number no further than 2^53 from zero, true or false, null or a list of text.`);
       }
     }
   });
@@ -633,10 +637,12 @@ function agree(recording: Recording): void {
     if (ends.length > 0) lastWindow = { step, at: maximum(ends) };
   }
 
-  // An alert comes after the first event it names, at its moment.
+  // An alert comes after the first event it names, at its moment, on the host of those events.
   const eventTime = new Map(events.map((event) => [event.id, timeOf(event.time)]));
+  const eventHost = new Map(events.map((event) => [event.id, event.host]));
   for (const alert of alerts) {
     if (alert.events.length === 0) continue;
+    if (alert.events.some((id) => eventHost.get(id) !== alert.host)) fail(`Alert ${JSON.stringify(alert.id)} is on the host ${JSON.stringify(alert.host)}, but an event it matched is on another host: an alert is on the host of its events.`);
     const earliest = minimum(alert.events.map((id) => eventTime.get(id) ?? Number.POSITIVE_INFINITY));
     if (alertMoment(alert) < earliest) fail(`Alert ${JSON.stringify(alert.id)} is earlier than the earliest event it matched: its ${alert.raised === undefined ? "time" : "raised"}, ${alert.raised ?? alert.time}, comes before that event.`);
   }

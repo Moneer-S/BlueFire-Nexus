@@ -2,8 +2,9 @@
 // where the defense's first alert came, with one sentence that says who is winning.
 
 import type { Recording } from "./recording";
+import { rulesRanAfterTheRun } from "./recording";
 import type { FirstAlert, Frame, ScoreSoFar, Timeline } from "./playback";
-import { capital, clockTime, elapsed, falseAlertsOf, plural, span, stepLabel } from "./format";
+import { capital, clockTime, elapsed, ordinaryAlertEvents, plainMarks, plural, span, stepLabel } from "./format";
 import { firstAlertClock, firstAlertOnScreen } from "./moment";
 import type { RunFacts } from "./moment";
 
@@ -49,7 +50,7 @@ export function whoIsWinning(recording: Recording, frame: Frame, score: ScoreSoF
     const goalReal = facts.goal;
     if (goalReal !== null && goalReached(frame, facts, first)) {
       // The goal is named where it is claimed: the format refuses a goal time without a goal.
-      const goal = recording.attacker.goal === null ? "" : `: ${goalWords(recording.attacker.goal)}`;
+      const goal = recording.attacker.goal === null ? "" : `: ${plainMarks(goalWords(recording.attacker.goal))}`;
       if (!first) return `The attacker reached the goal with no alert${goal}.`;
       const gap = span(Math.abs(goalReal - first.real));
       return first.real <= goalReal ? `The defense alerted ${gap} before the attacker reached the goal${goal}.` : `The attacker reached the goal ${gap} before the first alert${goal}.`;
@@ -72,7 +73,8 @@ export function whoIsWinning(recording: Recording, frame: Frame, score: ScoreSoF
   const soFar = final ? "" : " so far";
   const through = score.seen + score.unseen;
   if (through === 0) return `Every test${soFar} raised an alert: ${score.alerted} of ${decided}.`;
-  const unseen = score.unseen > 0 ? `, ${score.unseen} not even recorded` : "";
+  // Only the count fits here: the caption, the map and analyse mode say what the recording holds of an unseen test.
+  const unseen = score.unseen > 0 ? `, ${score.unseen} unseen` : "";
   return `${through} of ${plural(decided, "test")}${soFar} got through without an alert${unseen}.`;
 }
 
@@ -104,12 +106,15 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
   const otherRoles = [...new Set(others.map((segment) => segment.step.role))].join(", ");
   const reruns = rerunsSoFar(timeline, frame, revealed);
   const startLabel = firstLeft > 0.14 || !first || !reached;
-  const otherNote = other ? (other.step.role === "canary" ? `The canary, ${stepLabel(recording, other.step)}, alerted at ${elapsed((other.real - facts.start) / 1000)} into the run, as expected: it is built to be caught.` : `The ${other.step.role} step, ${stepLabel(recording, other.step)}, alerted at ${elapsed((other.real - facts.start) / 1000)} into the run.`) : undefined;
+  const otherNote = other ? `${capital(stepLabel(recording, other.step))} alerted at ${elapsed((other.real - facts.start) / 1000)} into the run${other.step.role === "canary" ? ", as expected: it is built to be caught" : ""}.` : undefined;
   // The flagged alert itself: the counting published match that fires first.
   const firstRule = first?.alert.rule.title;
-  const firstFalse = firstRule ? falseAlertsOf(recording, firstRule) : 0;
+  const firstFalse = firstRule ? ordinaryAlertEvents(recording, firstRule) : 0;
   const firstClock = first ? firstAlertClock(recording, facts, first) : null;
   const winning = whoIsWinning(recording, frame, score, facts, reached);
+  // Rules that ran after the run have no time of their own: said once, here, where the first alert's time is shown.
+  const eventTime = rulesRanAfterTheRun(recording);
+  const eventTimeWords = "The rules ran after the run, so an alert's time is the time of the event it matched.";
   // The count of tests that got through leads the sentence, in the attacker's colour.
   const lead = winning.includes("got through") ? (/^\d[\d,]* of [\d,]+ tests?/.exec(winning)?.[0] ?? "") : "";
 
@@ -141,12 +146,13 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
           <div className="lv-head-dot" style={{ left: head }} title="The playhead" />
           {first && reached ? (
             <div
-              className={`lv-flag${firstLeft > 0.78 ? " is-end" : ""}`}
+              className={`lv-flag${firstLeft > (eventTime ? 0.6 : 0.78) ? " is-end" : ""}`}
               style={{ left: at(first.real) }}
-              title={[firstClock ? `${elapsed(firstClock.seconds)} ${firstClock.words}.` : "", `${capital(plural(first.testsBefore, "other test"))} had started when it fired.`, firstRule ? `Rule: ${firstRule}.` : "", firstFalse > 0 ? `Its rule also alerted on ${plural(firstFalse, "event")} of ordinary activity, outside every step.` : "", otherNote].filter(Boolean).join(" ")}
+              title={[firstClock ? `${elapsed(firstClock.seconds)} ${firstClock.words}.` : "", eventTime ? eventTimeWords : "", `${capital(plural(first.testsBefore, "other test"))} had started when it fired.`, firstRule ? `Rule: ${firstRule}.` : "", firstFalse > 0 ? `Its rule also alerted on ${plural(firstFalse, "event")} of ordinary activity, outside every step.` : "", otherNote].filter(Boolean).join(" ")}
             >
               <span>
                 {firstClock ? <b>{elapsed(firstClock.seconds)}</b> : null} first alert on a test &middot; {stepLabel(recording, first.step)}
+                {eventTime ? <small className="lv-flag-note"> (the time of the event it matched)</small> : null}
               </span>
               <i />
             </div>
@@ -154,7 +160,7 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
             <div className="lv-flag-wait">{frame.ended ? (testList ? "no test raised an alert" : "no alert") : testList ? "first alert on a test: not yet" : "first alert: not yet"}</div>
           )}
           {goalReal !== null && goalReached(frame, facts, reached) ? (
-            <div className="lv-flag is-goal" style={{ left: at(goalReal) }} title={recording.attacker.goal === null ? undefined : `The attacker's goal: ${recording.attacker.goal}`}>
+            <div className="lv-flag is-goal" style={{ left: at(goalReal) }} title={recording.attacker.goal === null ? undefined : `The attacker's goal: ${plainMarks(recording.attacker.goal)}`}>
               <span>
                 <b>{elapsed(goal ?? 0)}</b> goal reached
               </span>

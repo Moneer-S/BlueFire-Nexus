@@ -191,10 +191,10 @@ describe("naming a step", () => {
     kind: "attack path",
   };
 
-  it("uses the step's place, not its order", () => {
+  it("names a test by its count among the tests and any other step by its role, never by its order or its place", () => {
     const [canary, first, second] = value.steps;
     if (!canary || !first || !second) throw new Error("fixture");
-    expect(stepLabel(value, canary)).toBe("step 1");
+    expect(stepLabel(value, canary)).toBe("the canary");
     expect(stepLabel(value, first)).toBe("test 1");
     expect(stepLabel(value, second)).toBe("test 2");
     const timeline = buildTimeline(value);

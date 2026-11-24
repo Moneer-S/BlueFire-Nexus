@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FIRST_TABLE_STATE } from "../src/live/StepTable";
 import { fixHint, groupMatches, otherRuns, roleRuns, seenBreakdown, stepRows, tableRows } from "../src/live/analyse";
-import { elapsed, falseAlertsOf, ordinal, span } from "../src/live/format";
+import { elapsed, ordinal, ordinaryAlertEvents, span, stepLabel, stepShortName } from "../src/live/format";
 import { buildTimeline } from "../src/live/playback";
 import type { Recording } from "../src/live/recording";
 import { alert, event, recording, step } from "./live-fixture";
@@ -71,18 +71,27 @@ describe("a step's neighbours and its gap", () => {
     const alerted = by("4");
     const canary = by("1");
     if (!seen || !unseen || !alerted || !canary) throw new Error("fixture");
-    expect(fixHint(run, { ...unseen, technique: { id: "T9999" } })).toBe("No sensor recorded it: start with a sensor.");
+    // The hint says why a sensor is the place to start, in the recording's own words.
+    const lab = { ...unseen, technique: { id: "T9999" }, visibility: { answer: "no telemetry" as const, basis: "nothing of the test was recorded besides its launcher's start", events: 0 } };
+    expect(fixHint(run, lab)).toBe("Start with a sensor: its only record is the harness's own launch of its command, which never counts.");
+    const other = { ...lab, visibility: { ...lab.visibility, basis: "No event of the agent named the step's session." } };
+    expect(fixHint(run, other)).toBe("Start with a sensor: no event of the agent named the step's session.");
+    // Another engine's basis that names a launcher, or starts with an acronym, is still told in its own words.
+    const neither = { ...lab, visibility: { ...lab.visibility, basis: "Neither the test nor its launcher was recorded." } };
+    expect(fixHint(run, neither)).toBe("Start with a sensor: neither the test nor its launcher was recorded.");
+    const edr = { ...lab, visibility: { ...lab.visibility, basis: "EDR saw nothing of the test" } };
+    expect(fixHint(run, edr)).toBe("Start with a sensor: EDR saw nothing of the test.");
     expect(fixHint(run, seen)).toBe("Recorded, no rule at alert level: start with a rule.");
     expect(fixHint(run, alerted)).toBeNull();
     expect(fixHint(run, { ...canary, outcome: "seen" })).toBeNull();
   });
 
-  it("points a step nobody saw at the other runs of its technique that a sensor recorded", () => {
+  it("points a step nobody saw at the other runs of its technique that a sensor recorded, each by its name", () => {
     const base = run.steps.find((item) => item.id === "3");
     if (!base) throw new Error("fixture");
-    const unseen = { ...base, id: "9", order: 9, technique: { id: "T1070.003" } };
-    // Tests are named by their place among the tests, other steps by their place in the run.
-    expect(fixHint(run, unseen)).toBe("Start with a sensor: other runs of T1070.003 were recorded (step 1 alerted, test 3 alerted, test 1 seen).");
+    const unseen = { ...base, id: "9", order: 9, technique: { id: "T1070.003" }, visibility: { answer: "no telemetry" as const, basis: "nothing of the test was recorded besides its launcher's start", events: 0 } };
+    // A test by its count among the tests, any other step by its role: never by its place in the list.
+    expect(fixHint(run, unseen)).toBe("Start with a sensor: its only record is the harness's own launch of its command, which never counts. Other runs of T1070.003 were recorded: the canary alerted, test 3 alerted, test 1 seen.");
   });
 
   it("names a published rule to start from when rules already matched a seen step below alert level, with its noise on ordinary activity", () => {
@@ -97,7 +106,12 @@ describe("a step's neighbours and its gap", () => {
   });
 
   it("splits the tests seen with no alert by what the published rules made of them", () => {
-    expect(seenBreakdown(run)).toEqual({ total: 1, review: 1, launcher: 0, none: 0 });
+    expect(seenBreakdown(run)).toEqual({ total: 1, review: 1, info: 0, launcher: 0, none: 0 });
+  });
+
+  it("does not count a test whose only matches are informational as for review, as the table does not", () => {
+    const informational: Recording = { ...run, alerts: run.alerts.map((item) => (item.id === "rev" ? { ...item, rule: { ...item.rule, level: "informational" as const } } : item)) };
+    expect(seenBreakdown(informational)).toEqual({ total: 1, review: 0, info: 1, launcher: 0, none: 0 });
   });
 
   it("groups consecutive steps of one role for the brackets over the lanes", () => {
@@ -114,7 +128,7 @@ describe("numbers that could look wrong", () => {
     expect([1, 2, 3, 11, 22, 46].map(ordinal)).toEqual(["1st", "2nd", "3rd", "11th", "22nd", "46th"]);
   });
 
-  it("finds the false alerts a rule raised on ordinary activity, and nothing for a match below alert level", () => {
+  it("counts the events of ordinary activity a rule alerted on, and nothing for a match below alert level", () => {
     const withOrdinary: Recording = {
       ...run,
       ordinary: {
@@ -125,9 +139,31 @@ describe("numbers that could look wrong", () => {
         ],
       },
     };
-    expect(falseAlertsOf(withOrdinary, "Rule pub")).toBe(3);
-    expect(falseAlertsOf(withOrdinary, "Review")).toBe(0);
-    expect(falseAlertsOf(run, "Rule pub")).toBe(0);
+    expect(ordinaryAlertEvents(withOrdinary, "Rule pub")).toBe(3);
+    expect(ordinaryAlertEvents(withOrdinary, "Review")).toBe(0);
+    expect(ordinaryAlertEvents(run, "Rule pub")).toBe(0);
+  });
+});
+
+describe("the name of a step", () => {
+  it("names a test by its count among the tests, and any other step by its role and the step it reruns", () => {
+    const reruns = recording({
+      steps: [
+        step("test:aa", 1, 2, { role: "canary" }),
+        step("test:bb", 3, 4, { role: "control" }),
+        step("test:cc", 5, 6),
+        step("test:dd", 7, 8),
+        step("hardened:cc", 9, 10, { role: "hardened", compared_with: "test:cc" }),
+        step("variant:dd:1", 11, 12, { role: "variant", compared_with: "test:dd" }),
+        step("variant:dd:2", 13, 14, { role: "variant", compared_with: "test:dd" }),
+        step("canary:end", 15, 16, { role: "canary" }),
+      ],
+    });
+    const names = reruns.steps.map((item) => stepLabel(reruns, item));
+    expect(names).toEqual(["canary 1", "the control", "test 1", "test 2", "hardened rerun of test 1", "variant 1 of test 2", "variant 2 of test 2", "canary 2"]);
+    expect(reruns.steps.map((item) => stepShortName(reruns, item))).toEqual(["canary 1", "control", "test 1", "test 2", "rerun of test 1", "variant 1 of test 2", "variant 2 of test 2", "canary 2"]);
+    // Each name is one step's alone.
+    expect(new Set(names).size).toBe(names.length);
   });
 });
 

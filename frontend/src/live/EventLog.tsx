@@ -4,7 +4,7 @@
 import { memo } from "react";
 import type { Alert, Recording, RecordingEvent } from "./recording";
 import { alertMoment, timeOf } from "./recording";
-import { clockTime, count, kindRank, matchKind, middleCut, sensorWord, stepLabel, strongerKind } from "./format";
+import { capital, clockTime, count, eventMarks, kindRank, markOf, matchKind, middleCut, sensorWord, stepLabel, unseenWords } from "./format";
 import type { MatchKind } from "./format";
 import type { StepMoment } from "./moment";
 import { useSize } from "./useSize";
@@ -21,7 +21,6 @@ interface EventLogProps {
 }
 
 const LINES = 4;
-const MARK_WORDS: Record<MatchKind, string> = { alert: "alert", lab: "would alert", review: "review", launcher: "" };
 
 /** A stopped step's proof: the line where the host refused what the step tried. */
 export function refusalOf(events: readonly RecordingEvent[]): RecordingEvent | undefined {
@@ -58,12 +57,7 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
 
   // Marks come from the matches whose light has reached its rule engine, so a
   // line is marked at the moment the engine on the map shows the same match.
-  const marks = new Map<string, MatchKind>();
-  for (const { alert } of moment?.landed ?? []) {
-    const kind = matchKind(alert);
-    if (kind === "launcher") continue;
-    for (const id of alert.events) marks.set(id, strongerKind(marks.get(id) ?? null, kind));
-  }
+  const marks = eventMarks((moment?.landed ?? []).map(({ alert }) => alert));
   const refusal = moment?.step.outcome === "stopped" ? refusalOf(events) : undefined;
   // A late arrival, a match of an earlier step raised after that step ended,
   // takes a line at the foot of the log. Past the room for them, the first
@@ -77,14 +71,16 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
     return `${owner ? stepLabel(recording, owner) : alert.step}: ${alert.rule.title}`;
   };
   const lastEarlier = earlier[earlier.length - 1];
+  const earlierMark = markOf(earlier.map(({ alert }) => alert));
   const earlierLine = lastEarlier
     ? {
         text: earlier.map(({ alert }) => lateName(alert)).join(", "),
-        kind: earlier.reduce<MatchKind | null>((kind, { alert }) => strongerKind(kind, matchKind(alert)), null) ?? "launcher",
+        kind: earlierMark?.kind ?? "launcher",
+        word: earlierMark?.word ?? "",
         time: clockTime(alertMoment(lastEarlier.alert)),
       }
     : null;
-  const pinned = events.filter((event) => event === refusal || marks.has(event.id)).sort((a, b) => kindRank(marks.get(b.id) ?? "launcher") - kindRank(marks.get(a.id) ?? "launcher")).slice(0, lines - 1);
+  const pinned = events.filter((event) => event === refusal || marks.has(event.id)).sort((a, b) => kindRank(marks.get(b.id)?.kind ?? "launcher") - kindRank(marks.get(a.id)?.kind ?? "launcher")).slice(0, lines - 1);
   const rest = events.filter((event) => !pinned.includes(event));
   const shown = [...rest.slice(-(lines - pinned.length)), ...pinned].sort((a, b) => events.indexOf(a) - events.indexOf(b));
   const room = Math.max(24, Math.floor((size.width - 330) / 7.4));
@@ -127,7 +123,7 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
           const mark = marks.get(event.id);
           const refused = event === refusal;
           const text = event.text || event.image || "";
-          const classes = ["lv-log-line", mark ? `is-${mark}` : "", refused ? "is-refused" : "", !mark && !refused && index < shown.length - 1 ? "is-old" : ""].filter(Boolean).join(" ");
+          const classes = ["lv-log-line", mark ? `is-${mark.kind}` : "", refused ? "is-refused" : "", !mark && !refused && index < shown.length - 1 ? "is-old" : ""].filter(Boolean).join(" ");
           return (
             <div key={event.id} className={classes} style={{ "--rgb": colours.get(event.sensor) ?? "123,202,255" } as StyleVars}>
               <span className="lv-log-time">{clockTime(timeOf(event.time))}</span>
@@ -136,11 +132,11 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
               <span className="lv-log-text" title={text}>
                 {middleCut(text, room)}
               </span>
-              <span className="lv-log-mark">{refused ? "stopped" : mark ? MARK_WORDS[mark] : ""}</span>
+              <span className="lv-log-mark">{refused ? "stopped" : (mark?.word ?? "")}</span>
             </div>
           );
         })}
-        {moment && moment.revealed && events.length === 0 ? <div className="lv-log-none">Nothing recorded.</div> : null}
+        {moment && moment.revealed && events.length === 0 ? <div className="lv-log-none">{moment.step.outcome === "unseen" ? `${capital(unseenWords(moment.step))}.` : "Nothing recorded."}</div> : null}
         {earlierLine ? (
           <div className={`lv-log-line is-late${earlierLine.kind === "launcher" ? "" : ` is-${earlierLine.kind}`}`} style={{ "--rgb": KIND_RGB[earlierLine.kind] } as StyleVars}>
             <span className="lv-log-time">{earlierLine.time}</span>
@@ -149,7 +145,7 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
             <span className="lv-log-text" title={earlierLine.text}>
               {middleCut(earlierLine.text, room)}
             </span>
-            <span className="lv-log-mark">{MARK_WORDS[earlierLine.kind]}</span>
+            <span className="lv-log-mark">{earlierLine.word}</span>
           </div>
         ) : null}
         {late.map(({ alert }) => {
@@ -163,7 +159,7 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
               <span className="lv-log-text" title={text}>
                 {middleCut(text, room)}
               </span>
-              <span className="lv-log-mark">{MARK_WORDS[kind]}</span>
+              <span className="lv-log-mark">{markOf([alert])?.word ?? ""}</span>
             </div>
           );
         })}

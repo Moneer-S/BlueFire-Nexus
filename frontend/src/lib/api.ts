@@ -1094,9 +1094,11 @@ export const api = {
     return { summary: envelope.summary, recording: envelope.recording };
   },
   /**
-   * Imports one recording file, sent as its bytes so that the service keeps the
-   * file its engine wrote: a comparison of two runs names its recordings by the
-   * file's SHA-256. A refusal is an ApiError whose `details.problems` lists the
+   * Imports one recording file, sent as its bytes, untouched, so that the service
+   * keeps the file its engine wrote (a comparison of two runs names its
+   * recordings by the file's SHA-256) and reads exactly what the command line
+   * reads: a duplicate key, a NaN or a byte order mark is refused with the same
+   * reason. A refusal is an ApiError whose `details.problems` lists the
    * service's problems in plain words.
    */
   async importRecording(file: Uint8Array): Promise<RecordingImport> {
