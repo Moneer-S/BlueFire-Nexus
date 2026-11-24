@@ -45,6 +45,19 @@ it (`2026-11-17T17:07:23.834Z`).
 | `repository`, `commit` | string | Optional. The repository and commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
 | `run_url` | string | Optional. The CI run that made the recording. |
 | `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. |
+| `setup` | object | Optional. What a comparison of two runs needs to know was the same. See below. A recording with `setup` has stable step ids. |
+
+`setup` holds, each optional:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `atomic_commit` | string | The commit of Atomic Red Team the tests came from. |
+| `images` | object | The image each host ran on, by host id. The lab writes the runner's image name and version, such as `ubuntu24 20261116.133.1`. |
+| `kernels` | object | The kernel each host ran, by host id. GitHub hands out runners with different kernels under the same image. |
+| `sensors` | object | The SHA-256 of each sensor's settings as the sensor loaded them, by sensor id: for the lab, of the Sysmon configuration and of the audit rules with the test account's home folder filled in. |
+
+A reader treats any other key of `setup` the same way: a text, or an object of texts by id, that two
+runs must share.
 
 ## `network`
 
@@ -53,7 +66,22 @@ it (`2026-11-17T17:07:23.834Z`).
 | `hosts` | array | Each host of the run. |
 | `links` | array | Optional. Each `{ "from", "to", "label" }` between host ids: who can reach whom. |
 | `sensors` | array | Each `{ "id", "name", "host", "records" }`: a sensor, the host it runs on, and in plain words what it records. |
-| `detectors` | array | Each `{ "id", "name", "rules", "when" }`: a rule set with its engine, the number of rules evaluated, and `when` the rules ran: `live` or `after the run`. The detector `pinned` holds the published rules, and `lab` the rules written in this repository. |
+| `detectors` | array | Each `{ "id", "name", "rules", "when" }`, plus an optional `digest`: a rule set with its engine, the number of rules evaluated, `when` the rules ran: `live` or `after the run`, and the SHA-256 of its rule files. The detector `pinned` holds the published rules, and `lab` the rules written in this repository. |
+
+A rule set's `digest` is the SHA-256 of what `sha256sum` prints for its files,
+sorted by their path inside the rule set's folder, so it can be checked from a
+run's artifact: `cd rules/linux && find . -type f -printf '%P\n' | LC_ALL=C sort
+| xargs -d '\n' sha256sum | sha256sum` (and the same in `lab-rules/linux`). An
+empty folder has the digest of nothing. Two runs with the same digest evaluated
+the same rules; the lab digests every file of the folder, also its rules that a
+run did not accept.
+
+The lab's detector `lab` also has `verdicts`, optional: for each rule written
+in this repository, `{ "rule", "title", "digest", "accepted", "reason" }`, its
+id and title, the SHA-256 of the file that holds it, whether the run accepted
+it, and why. A run decides that anew each time, from ordinary activity and from
+the runs with changed input arguments, so an unchanged rule can be accepted in
+one run and not in the next.
 
 A host is `{ "id", "name", "role", "kind", "os", "addresses" }`. `kind` is one
 of `host`, `attacker`, `internet`, `defense`. `role` is plain words, such as
@@ -76,7 +104,7 @@ attack path in plain words, or null for a test list.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `id` | string | Unique in the recording. The lab writes the step's `order` as text: treat it as an opaque key. |
+| `id` | string | Unique in the recording. In a recording with `source.setup` it is also stable: the same test with the same input arguments in the same role has the same id in every run of the same list, so two recordings pair their steps by it. See below. An older recording has the step's `order` as text. Treat it as an opaque key. |
 | `order` | number | Its position among everything the run did, from 1. Steps are sorted by it. Positions that were not steps, such as ordinary administration, are skipped, so do not use it as an index or a count: use the step's place in `steps`, and `score.steps` for the total. |
 | `role` | string | `test` for a step that counts. The lab also writes `canary` (a step the defenses are known to catch), `control` (a step that must raise no alert), `hardened` (a test run again with a hardening change in place) and `variant` (a test run again with changed arguments). |
 | `title` | string | The published name of the test. |
@@ -97,6 +125,17 @@ attack path in plain words, or null for a test list.
 | `first_alert_with_lab_rules` | time | Optional. The same, when the accepted rules written in this repository count too. Written only when the run evaluated such rules and one of the two kinds alerted on the step. A step whose `outcome` is `seen` or `stopped` can carry it. |
 | `compared_with` | string | Optional. For a `hardened` or `variant` step: the id of the step it repeats. |
 | `defense` | object | Optional. For a `hardened` step: `{ "title", "why" }` of the hardening change. |
+
+The lab makes a step's id from parts joined by `:`: its `role`; the first 8
+characters of its test's GUID; when it ran with input arguments, the first 6 hex
+digits of the SHA-256 of those arguments as compact JSON with sorted keys in
+UTF-8 (`{"search_path":"~"}` gives `85163a`); for a `hardened` step, the name
+of its hardening change; and when the same id would come more than once, as the
+canary's does at the start and the end of a run, its count among them from 1.
+For example `test:46959285:85163a`, `variant:46959285:5e4f5f`,
+`hardened:2fc6c0ab:tmp-noexec` and `canary:a934276e:2`. An event's id does not
+use it: it stays the step's `order` and the event's place among the step's
+events, such as `31-4`.
 
 `command` and `output` are at most 2,000 characters, the `...` included. Each
 sensor stamps its own records, so a step's `first_event` or `first_alert` can be
@@ -253,3 +292,103 @@ follows this format and its parts agree with each other:
 These checks show that a recording agrees with itself. They do not show that
 its steps ran, where or when, which sensor recorded each event, or which step
 reached the goal: the app says so next to every imported recording.
+
+## A delta
+
+A delta says what differs between two recordings, a run before a change and a
+run after it, and whether one declared change can explain it. "Before against
+after" is a claim about a cause, so the delta is the one place where it is
+computed, and where it is refused; a view only draws what a delta says. It is
+not a recording. `bluefire-lab compare <before.json> <after.json> --out
+<folder> [--change <what>]` writes it as `delta.json`, with `delta.md`, the same
+in a few lines for a job summary (see `lab/README.md`).
+
+The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `schema` | string | `bluefire.delta/1` |
+| `claim` | string | `one pair of runs`: what every verdict rests on. |
+| `before`, `after` | object | Each recording: `{ "sha256", "id" }`, the SHA-256 of its file and its `id`, and from its `source` the `run_url`, `environment`, `commit` and `started` it has. |
+| `declared_change` | string or null | The one thing declared as changed between the runs, as a name of the setup (below): `sensors:<sensor id>` for a sensor's settings or `detectors:<detector id>` for a rule set. Null when nothing was declared. |
+| `comparable` | boolean | True when there is a verdict: `refused_because` is empty. |
+| `refused_because` | array of strings | Each reason there is no verdict, in plain words. |
+| `differences` | array | Each `{ "what", "before", "after" }`: a name of the setup whose values differ, with both values, null where a recording does not record it. |
+| `same_in_both` | array of strings | The names of the setup whose values are recorded and equal in both. |
+| `lab_code` | object | `{ "before", "after", "same" }`: each recording's `source.commit`, null where it has none, and whether both are recorded and equal. See below. |
+| `judged` | array of strings | The fields of a step the declared change can move. Empty when nothing was declared. |
+| `control` | object | `{ "fields", "same", "of", "varied" }`: the fields of a step the declared change cannot move, on how many paired steps they are the same of how many, and the ids of the steps where they are not. |
+| `counts` | object | `paired`, the number of steps paired, then how many of them have each `result`, every result with its number, 0 included, then `new` and `gone`. |
+| `unexplained` | array of strings | The ids of the steps that changed although the declared change could not have changed them (`result` `without cause` or `not attributable`). |
+| `steps` | array | Each paired step, in the order of the after recording. See below. |
+| `new`, `gone` | array | Each `{ "id", "role", "title", "technique" }`: a step only in the after recording, or only in the before recording. Listed, never counted. |
+| `race` | object | The time to the first alert of each side, `{ "before", "after" }` with each recording's `first_alert_seconds` and `goal_seconds` where it has them, only when both are attack paths with a detector that ran `live`. Otherwise `{ "why" }`: there is no race to compare, and none is made up. |
+
+**The setup.** A delta compares, by name: each key of `source.setup`, and each
+member of an object there as `<key>:<id>` (such as `images:target` or
+`sensors:auditd`); `sensors:<id>` for every sensor of the network, also when
+`setup` does not record its settings; `detectors:<id>` with the `digest` of each
+detector; and `tools:<name>` with the version of each tool of `source.tools`,
+except the tests', which are `atomic_commit`: a recording whose `setup` does not
+hold it has it from the version of its tool of role `tests`, and a recording
+that has neither does not record it. A value that is not recorded on either
+side is not known to be the same, so it is a difference, and its refusal says it
+is recorded in neither rather than that it differed.
+
+**The lab's code** is not part of the setup. Its commit differs between a pull
+request and `main`, and a change of the lab's own rules is a commit too, so a
+different commit refuses nothing. The comparison does not check what such a
+change did: when `lab_code.same` is false, a step that changed `without cause`
+or `not attributable` names run variation or a change of the lab's code, a
+`better`, `worse` or `changed` step says that the lab's code is not known to be
+the same, and `delta.md` says which commits differed.
+
+**Pairing.** When both recordings have `source.setup`, steps pair by `id`.
+Otherwise they pair by role, test GUID and hardening change, in the order they
+ran, and each such pair says `paired_by` `role, test and order`. A step left
+without a partner is new or gone.
+
+**Refusals.** There is no verdict, and the delta still lists every step and
+what differed, when a recording has no `source.setup`; when the two are not of
+the same `kind`; when they are not of the same steps in the same order (a new or
+a gone step included); when the declared change is not a sensor's settings or a
+detector's rules of these recordings, is the same in both, or is not recorded in
+both; or when any name of the setup other than the declared change differs.
+
+**A step** of a delta:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | The step's id in the after recording. `before_id` is there too when the before recording gave it another one. |
+| `role`, `title`, `technique` | string | From the after recording; `technique` is the ATT&CK id. |
+| `paired_by` | string | `id`, or `role, test and order`. |
+| `before`, `after` | object | `{ "happened", "recorded", "outcome", "outcome_with_lab_rules" }` of each side: `happened` is the step's `happened.answer`; `recorded` is `recorded` when `visibility.answer` is `alert` or `telemetry only`, `no telemetry` when it is that, and `not known` otherwise; and `outcome_with_lab_rules` is the `outcome` when the run evaluated no rules of the lab's own. |
+| `changed` | array of strings | The fields whose value differs. |
+| `underneath` | array of strings | For a changed step, what changed under it: `recorded now` or `no longer recorded` with the number of events, `matches now:` or `no longer matches:` and a rule as `<level>: <title>`. |
+| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too, or a rule of the lab's own that is the same file in both runs matched the step differently); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
+| `verdict` | string | The result in plain words. A changed step's ends with `one pair of runs`. |
+| `procedures`, `price` | object, string | On a `better` step, and in its `verdict` too: `price`, what the gain cost; and on a step of role `test` only, `procedures`, `{ "better", "of" }`, on how many of the steps of role `test` of the same technique the result is `better`. |
+
+**Like with like.** A change of the lab's rules (`detectors:lab`) is judged on
+`outcome_with_lab_rules`, and its control is `happened`, `recorded` and
+`outcome`, which such a rule cannot move. A change of another rule set is judged
+on `outcome` and `outcome_with_lab_rules`, and its control is `happened` and
+`recorded`: rules cannot make a sensor record a step. A change of a sensor's
+settings is judged on `recorded` and both outcomes, and its control is
+`happened`. With nothing declared every field is control, and a step that
+differs is run variation: what two runs of the same list differ by with nothing
+changed is the noise floor. A run decides anew whether it accepts each of the
+lab's rules, so for `detectors:lab` a step that a rule of the lab's own matched
+in one run and not in the other, while that rule's file has the same digest in
+both `verdicts`, is `not attributable`, and its verdict gives what each run
+said of that rule. A recording without `verdicts` does not say which rules
+changed, and such a step is `not attributable` too.
+
+**The price** of a gain is on the same line as the gain. For the lab's rules,
+the lab leaves a rule that matched ordinary activity out of the recording before
+it is written, so the delta says the price is not counted, and quotes both
+recordings' notes on the rules they accepted; it never writes a number that
+looks like zero. For another rule set, the published rules that alerted on ordinary
+activity (`score.false_alerts`) before and after; for a sensor, those and the
+ordinary events (`ordinary.events`) before and after. A number the recording
+does not hold is written `not recorded`.

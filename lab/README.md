@@ -187,8 +187,7 @@ root still wrote a job into `/etc/cron.d` (T1053.003 Cron - Add script to
 files (T1546.004), which the change does not cover: a command to
 `~/.bash_profile`, and to `~/.profile` the comment that test appends. So `/tmp` mounted `noexec` blocked five of the six published procedures
 it was tried on, `/etc/cron.allow` one of two, the immutable `~/.bashrc` one of
-three and the root-owned `~/.ssh` one of one, and the comparison of runs says
-the same for each change. The first four rows were first shown in
+three and the root-owned `~/.ssh` one of one. The first four rows were first shown in
 [run 44020766356](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44020766356).
 
 What the changes leave open beyond these was not tried: keys that root adds for
@@ -429,14 +428,14 @@ rotate, and the loss control would fail a run in which it did; none has since.
 5. `bluefire-lab recording` writes `recording.json`: the run as one file, made
    to be replayed step by step. It holds each step in order, the events tied to
    it and the rules that matched, taken only from `run.json` and
-   `results.json`. Its format is [`docs/RECORDING.md`](../docs/RECORDING.md).
+   `results.json`, with the digest of each rule folder of the run beside them.
+   Its format is [`docs/RECORDING.md`](../docs/RECORDING.md).
    The job writes it whenever the evaluation wrote `results.json`, also when a
    control failed, and it is part of the run's artifact.
-6. A separate job, which runs no test, compares the run with the latest
-   successful run on `main` (`bluefire-lab compare`) and writes to the run page
-   which answers changed and what changed under them: events, rules that
-   match, a rule of the lab's own accepted now and how many published
-   procedures it covers, or a hardening change that blocks now.
+6. A separate job, which runs no test, compares the run's recording with that
+   of the latest successful run on `main` (`bluefire-lab compare`, see
+   [Comparing two recordings](#comparing-two-recordings)), writes `delta.md` to
+   the run page, and keeps `delta.json` as the artifact `lab-delta`.
 
 Seven controls must pass, or the run fails as a whole:
 
@@ -892,11 +891,86 @@ bluefire-lab recording <folder of the unpacked artifact> [--run-url <address of 
 `--tests` supplies the plain sentence of each test for a run made before
 `run.json` recorded them; the recording's notes then say so.
 
-Two runs' artifacts can be compared the same way:
+Two runs' recordings can be compared the same way: see the next section.
+
+## Comparing two recordings
+
+"Before against after" is a claim about a cause: one thing changed, the same
+tests ran again, and this is what changed. `bluefire-lab compare` is where that
+claim is computed, and where it is refused:
 
 ```bash
-bluefire-lab compare <folder of the earlier run> <folder of the later run>
+bluefire-lab compare <before>/recording.json <after>/recording.json --out <folder> [--change detectors:lab]
 ```
+
+It writes `delta.json`, whose format is the section "A delta" of
+[`docs/RECORDING.md`](../docs/RECORDING.md), and `delta.md`, the same for a job
+summary. `--change` declares the one thing that changed between the two runs:
+`detectors:lab` for the rules in [`rules/linux`](rules/linux),
+`detectors:pinned` for the published rules, or `sensors:sysmon` or
+`sensors:auditd` for a sensor's settings. Left out, nothing was declared.
+
+- **What was the same.** Each recording says how it was made: `source.setup`
+  holds the tests' commit, the runner's image and kernel, and the SHA-256 of
+  each sensor's settings as loaded, and each detector the `digest` of its rule
+  files. The comparison lists every one of these, and each tool's version,
+  that differs between the two. It gives no verdict, and still lists every
+  step and what differed, when anything differs other than the declared
+  change, when the declared change is the same in both, when the two are not
+  of the same steps in the same order, or when a recording has no
+  `source.setup`, as every recording made before this format had.
+- **Pairing.** A step has the same id in every run of the same list (its role,
+  its test, a hash of its input arguments, its hardening change, and a count
+  for the canary, which runs twice), so steps pair by id. An older recording's
+  steps pair by role, test and order, and each such pair says so. A step on one
+  side only is listed as new or gone and never counted.
+- **Like with like.** A change of the lab's rules is judged on the outcome with
+  the lab's rules; the outcome by the published rules, whether a sensor
+  recorded the step and whether the test took effect, which such a rule cannot
+  change, are the control. A change of the published rules is judged on both
+  outcomes, with whether a sensor recorded the step and whether the test took
+  effect as the control. A change of a sensor's settings is judged also on
+  whether a sensor recorded the step. A step whose control moved is run
+  variation, not an effect, and is named as such. Each run decides anew which
+  of the lab's rules it accepts, so the recording keeps, for each rule, whether
+  the run accepted it and the digest of its file: a step that an unchanged rule
+  matched in one run only is not credited to the change.
+- **The control step.** The step of role `control` must raise no alert, so an
+  alert on it is worse, and named as a false alert.
+- **Its price, on the same line.** A step that got better carries what the
+  gain cost, and a test step also how many of the list's published procedures
+  of its technique got better. For the lab's rules the cost cannot be counted
+  from the recording: a rule that matched ordinary activity is not accepted,
+  and its matches are left out of the recording before it is written. The line
+  says that, and quotes both recordings' notes on which rules were accepted,
+  rather than a count that would read as zero.
+- **The lab's code.** Two runs from different commits of this repository may
+  differ because of the code, which the comparison does not check. It does not
+  refuse for that, since a pull request always differs from `main`, but every
+  verdict then says so, and `delta.md` names both commits.
+- **No race.** The rules ran after each run, so there is no time to a first
+  alert to compare, and the comparison makes none up.
+- Every verdict rests on one pair of runs, and says so.
+
+The job "compare with the latest run on main" of the `lab` workflow runs it
+with nothing declared. Until a run on `main` has a recording with
+`source.setup`, its comparison is refused for that reason, and lists the steps.
+
+**The noise floor.** Runs
+[45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)
+and [45288430599](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45288430599),
+the first of a pull request and the second on `main`, both on 23 November 2026, ran the same list with the same tests'
+commit, runner image `ubuntu24 20261116.133.1` and kernel `7.0.0-1014-aws`, the
+same sensor settings, rule sets and tool versions, from two commits of this
+repository (`cb017990` and `2ca6c9e6`). Their recordings predate
+`source.setup`, so they were written again from each run's artifact (`run.json`,
+`results.json` and the two rule folders) with `bluefire-lab recording` of this
+version and compared outside CI. That comparison found them comparable apart
+from the lab's code, which it names, and all 91 steps the same in what
+happened, in whether a sensor recorded them and in both outcomes. They do
+differ below the outcomes: the recordings hold 1,931 and 1,923 events. No CI
+run shows this comparison: it is not yet shown, and two runs are one sample of
+the noise floor, not its measure.
 
 ## Before the loop: the sensor spike
 
