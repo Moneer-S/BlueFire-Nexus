@@ -98,6 +98,17 @@ def test_every_base_image_is_pinned_and_the_agent_package_is_checked() -> None:
     assert 'APT::Snapshot "20261120T000000Z"' in stage(dockerfile, "ubuntu")
 
 
+def test_a_download_that_fails_is_tried_again_before_it_fails_the_build() -> None:
+    dockerfile = build.dockerfile(loaded())
+    ubuntu = stage(dockerfile, "ubuntu")
+
+    # The setting goes into apt's own settings folder before the first package list is fetched,
+    # and every stage that installs a package starts from this one.
+    written = ubuntu.index("echo 'Acquire::Retries \"8\";' > /etc/apt/apt.conf.d/80retries")
+    assert written < ubuntu.index("apt-get update")
+    assert "curl -fsSL --retry 5 --retry-all-errors " in stage(dockerfile, "fetch")
+
+
 def test_snoopy_is_preloaded_last_on_an_agent_host_and_the_manager_keeps_its_own_init() -> None:
     dockerfile = build.dockerfile(loaded())
     web = stage(dockerfile, "host-web").splitlines()
