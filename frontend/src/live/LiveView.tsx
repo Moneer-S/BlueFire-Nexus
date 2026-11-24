@@ -9,7 +9,7 @@ import { alertsByStep, eventsByStep } from "./recording";
 import { buildTimeline, frameAt, seekStep } from "./playback";
 import type { Timeline } from "./playback";
 import { clockTime, day, elapsed, isLabDetector, placeInRole, plural, runLink, sensorColours } from "./format";
-import { momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
+import { lateWords, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
 import { NetworkMap } from "./NetworkMap";
 import { EventLog } from "./EventLog";
 import { StepCaption } from "./StepCaption";
@@ -269,6 +269,8 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
   const stepAlerts = useMemo(() => (stepId === undefined ? [] : (byStepAlerts.get(stepId) ?? [])), [byStepAlerts, stepId]);
   const matches = useMemo(() => stepMatches(stepAlerts), [stepAlerts]);
   const moment = momentOf(timeline, frame, stepAlerts, matches);
+  const lastLate = frame.late[frame.late.length - 1];
+  const late = useMemo(() => (lastLate ? lateWords(recording, timeline, lastLate) : null), [recording, timeline, lastLate]);
   const arrival = useCallback((id: string) => timeline.arrival.get(id) ?? 0, [timeline]);
   const total = stepId === undefined ? 0 : (byStepEvents.get(stepId)?.length ?? 0);
   // Watching, the score is the score so far; analysing, it is the whole run's.
@@ -390,7 +392,7 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
             <EventLog recording={recording} moment={moment} total={total} colours={colours} onOpen={openStep} />
           </div>
           {/* Without the app, "Fix this" opens the step's detail, which says where the gap is. */}
-          <StepCaption recording={recording} moment={moment} stepAlerts={stepAlerts} total={total} onFix={onFix ?? openInAnalyse} quiet={playing && speed >= 4} onLoseFocus={focusPlay} />
+          <StepCaption recording={recording} moment={moment} stepAlerts={stepAlerts} total={total} onFix={onFix ?? openInAnalyse} quiet={playing && speed >= 4} onLoseFocus={focusPlay} late={late} />
           <footer className="lv-transport">
             <div className="lv-controls">
               <button type="button" className="lv-play" ref={playButton} aria-label={playing ? "Pause" : "Play"} onClick={togglePlay} disabled={timeline.duration <= 0}>

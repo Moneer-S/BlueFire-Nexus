@@ -28,6 +28,23 @@ goes, and the view says the run is still running.
   last match fires near its end stays on screen, its clock held at the step's
   end, until that match's light has reached the rule engine and the step's
   outcome is told.
+- **An alert raised after its step ended arrives late, and is shown when it
+  arrives.** Where the rules ran live, a match fires at its `raised` time.
+  While a step is on screen it is told as it stood at its end, so a step whose
+  alert was not raised yet is told as seen (or unseen) with no alert by the end
+  of the step. When a match of a step is raised after that step ended, on
+  whatever is on screen then (a later step, or the silence after its own
+  step), its rule engine lights, the log gets a line marked "raised late", and
+  one line under the step names it and says how long after its step ended it
+  was raised. What is on screen holds, its clock stopped, until that line has
+  been there for three seconds. From that moment the score, the race line and
+  that step's bar on the timeline count it as alerted, and not before; when it
+  fires in the silence after its own step, while that step is still on screen,
+  the step's verdict and its host's badge say alerted from then too, and its
+  sentence still says there was no alert by the end of the step. A match
+  raised after the last step ended plays in one more short silence at the end.
+  In analyse mode each such match says how long after its step ended it was
+  raised.
 - **The score is the recording's.** While watching, the score counts a step
   once the screen has told its outcome; at the end of the run it is the
   recording's `score`. False alerts, on ordinary activity outside every step,
@@ -67,7 +84,7 @@ The replay page reads where to start from its address, for example
 | Parameter | Value | Does |
 | --- | --- | --- |
 | `step` | a step's `id` | Opens at that step |
-| `at` | 0 to 1 | How far into that step; 0.6 when left out. Read only with `step`. |
+| `at` | 0 to 2 | How far into that step, 0 its start and 1 its end; from 1 to 2, how far into the silence after it, where it is still on screen. 0.6 when left out. Read only with `step`. |
 | `paused` | `1` | Opens paused |
 | `mode` | `watch` or `analyse` | Opens in that mode; analyse opens paused |
 | `select` | a step's `id` | The step whose detail analyse mode opens on |

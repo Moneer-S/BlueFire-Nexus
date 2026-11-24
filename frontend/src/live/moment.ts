@@ -1,10 +1,10 @@
 // What the watch view needs about the current step at one moment: pure.
 
 import { countsForScore, timeOf } from "./recording";
-import type { Alert, Recording, RecordingEvent, Step } from "./recording";
-import type { FirstAlert, Frame, ScoreSoFar, Segment, Timeline } from "./playback";
-import { landing, maxOf, PLAYBACK_RULE } from "./playback";
-import { matchKind, strongerKind } from "./format";
+import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recording";
+import type { Fire, FirstAlert, Frame, ScoreSoFar, Segment, Timeline } from "./playback";
+import { landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE } from "./playback";
+import { matchKind, span, stepLabel, strongerKind } from "./format";
 import type { MatchKind } from "./format";
 
 /** Screen seconds a recorded event takes to travel from its host to the rule engines. */
@@ -22,6 +22,17 @@ export interface StepMoment {
   /** Screen time at which the step's outcome is told. */
   revealAt: number;
   revealed: boolean;
+  /**
+   * The outcome the step is told with now, the one the score counts. It
+   * differs from the step's own only for a step whose first alert was raised
+   * live after it ended: until that alert fires, in the silence after the
+   * step, it is told as seen or unseen with no alert yet.
+   */
+  outcome: Outcome;
+  /** The step's outcome as it stood when the step ended, which its own sentence tells. */
+  stood: Outcome;
+  /** Late arrivals of earlier steps (or of this one, in the silence after it) that have fired while it is on screen. */
+  late: Fire[];
   /** The step's events that have arrived, in arrival order. */
   events: RecordingEvent[];
   /** The step's matches that have fired, in firing order. */
@@ -77,9 +88,11 @@ export function revealTime(timeline: Timeline, segment: Segment): number {
 function workOutReveal(timeline: Timeline, segment: Segment): number {
   const middle = segment.bodyStart + (segment.bodyEnd - segment.bodyStart) * 0.42;
   if (segment.step.outcome === "alerted") {
-    const fire = firstCountingFire(timeline, segment.step.id);
-    if (fire) return Math.max(landing(fire), segment.bodyStart);
+    const fire = timeline.byStep.get(segment.step.id)?.firstCounting;
+    // An alert raised after the step ended is not waited for: the step is told as it stood.
+    if (fire && !fire.late) return Math.max(landing(fire), segment.bodyStart);
   }
+  // The step's own fires, which leave out its late arrivals.
   const fires = timeline.byStep.get(segment.step.id)?.fires ?? [];
   const last = Math.max(middle, maxOf(fires.map(landing)));
   return Math.max(segment.bodyStart, Math.min(last, segment.end - PLAYBACK_RULE.told));
@@ -99,12 +112,12 @@ export function scoreOnScreen(timeline: Timeline, frame: Frame, moment: StepMome
     const fire = firstCountingFire(timeline, step.id);
     const counted = fire !== undefined && moment.now >= fire.at;
     if (counted && !moment.revealed) score.alerted -= 1;
-    if (!counted && moment.revealed) score.alerted += 1;
+    if (!counted && moment.revealed && moment.outcome === "alerted") score.alerted += 1;
   }
   if (!moment.revealed) return score;
   if (step.outcome === "stopped") score.stopped += 1;
-  if (test && step.outcome === "seen") score.seen += 1;
-  if (test && step.outcome === "unseen") score.unseen += 1;
+  if (test && moment.outcome === "seen") score.seen += 1;
+  if (test && moment.outcome === "unseen") score.unseen += 1;
   return score;
 }
 
@@ -118,6 +131,25 @@ export function firstAlertOnScreen(first: FirstAlert | null, time: number, segme
   return segment?.step.id === first.step.id && !revealed ? null : first;
 }
 
+const LATE_WORDS: Record<MatchKind, string> = {
+  alert: "Alert",
+  lab: "A rule written in this repository would alert",
+  review: "Match for review",
+  launcher: "Launcher line match, never counted,",
+};
+
+/**
+ * A late arrival in one plain sentence, from the recording's own times:
+ * "Alert on test 3, Discover Private SSH Keys: <rule>, raised 14.2 s after that step ended."
+ */
+export function lateWords(recording: Recording, timeline: Timeline, fire: Fire): string {
+  const segment = timeline.segments.find((item) => item.step.id === fire.alert.step);
+  const where = segment ? `${stepLabel(recording, segment.step)}, ${segment.step.title}` : fire.alert.step;
+  const ended = segment ? (segment.step.ended === undefined ? segment.realEnd : timeOf(segment.step.ended)) : Number.NaN;
+  const after = Number.isFinite(ended) ? `raised ${span(timeOf(fire.alert.raised ?? fire.alert.time) - ended)} after that step ended` : "raised after that step ended";
+  return `${LATE_WORDS[matchKind(fire.alert)]} on ${where}: ${fire.alert.rule.title}, ${after}.`;
+}
+
 export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[], matches: ReturnType<typeof stepMatches>): StepMoment | null {
   const segment = frame.segment;
   if (!segment) return null;
@@ -125,7 +157,7 @@ export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[]
   const revealAt = revealTime(timeline, segment);
   const landed: { alert: Alert; at: number }[] = [];
   for (const alert of frame.alerts) {
-    const at = landing({ alert, at: timeline.fire.get(alert.id) ?? segment.bodyStart });
+    const at = landing({ alert, at: timeline.fire.get(alert.id) ?? segment.bodyStart, late: false });
     if (at <= now || frame.ended) landed.push({ alert, at });
   }
   return {
@@ -135,6 +167,9 @@ export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[]
     running: now >= segment.bodyStart,
     revealAt,
     revealed: now >= revealAt || frame.ended,
+    outcome: outcomeAt(timeline, segment, now),
+    stood: outcomeAtEnd(timeline, segment),
+    late: frame.late,
     events: frame.events,
     fired: frame.alerts,
     all,

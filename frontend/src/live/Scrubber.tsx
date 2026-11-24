@@ -7,7 +7,7 @@ import { memo, useMemo, useRef } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 import type { Recording, StepRole } from "./recording";
 import { countsForScore } from "./recording";
-import { evenPosition, evenTime, maxOf, PLAYBACK_RULE, segmentIndexAt } from "./playback";
+import { evenPosition, evenTime, maxOf, outcomeAt, PLAYBACK_RULE, segmentIndexAt } from "./playback";
 import type { Timeline } from "./playback";
 import { capital, clockTime, elapsed, outcomeClass, outcomeWords, sensorWord, stepLabel } from "./format";
 import type { StyleVars } from "./motion";
@@ -51,19 +51,37 @@ function isCheck(role: StepRole): boolean {
   return role === "canary" || role === "control";
 }
 
-/** One bar per step. It changes only when the current step does, not on every frame. */
-const ScrubberCells = memo(function ScrubberCells({ recording, timeline, current }: { recording: Recording; timeline: Timeline; current: number }) {
-  const count = timeline.segments.length;
-  return (
-    <div className="lv-cells">
-      {timeline.segments.map((item, index) => {
-        const state = index < current ? " is-past" : index === current ? " is-now" : "";
-        const role = item.step.role === "test" ? "" : isCheck(item.step.role) ? " is-short is-check" : " is-short";
-        return <div key={item.step.id} className={`lv-cell is-${outcomeClass(item.step.outcome)}${role}${state}`} style={{ left: `${(index / Math.max(1, count)) * 100}%` }} title={`${capital(stepLabel(recording, item.step))} (${item.step.role}): ${item.step.title}`} />;
-      })}
-    </div>
-  );
-});
+interface CellsProps {
+  recording: Recording;
+  timeline: Timeline;
+  time: number;
+  current: number;
+  revealed: boolean;
+  /** How many late arrivals have fired by `time`: a step alerted by one is told so on its bar from then. */
+  lateFired: number;
+}
+
+/**
+ * One bar per step, in the outcome the screen has told so far: the current
+ * step's once it is told. It changes only when the current step, its telling
+ * or a late arrival does, not on every frame.
+ */
+const ScrubberCells = memo(
+  function ScrubberCells({ recording, timeline, time, current, revealed }: CellsProps) {
+    const count = timeline.segments.length;
+    return (
+      <div className="lv-cells">
+        {timeline.segments.map((item, index) => {
+          const state = index < current ? " is-past" : index === current ? " is-now" : "";
+          const role = item.step.role === "test" ? "" : isCheck(item.step.role) ? " is-short is-check" : " is-short";
+          const told = index < current || (index === current && revealed) ? ` is-${outcomeClass(outcomeAt(timeline, item, time))}` : "";
+          return <div key={item.step.id} className={`lv-cell${told}${role}${state}`} style={{ left: `${(index / Math.max(1, count)) * 100}%` }} title={`${capital(stepLabel(recording, item.step))} (${item.step.role}): ${item.step.title}`} />;
+        })}
+      </div>
+    );
+  },
+  (a, b) => a.recording === b.recording && a.timeline === b.timeline && a.current === b.current && a.revealed === b.revealed && a.lateFired === b.lateFired,
+);
 
 export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: ScrubberProps) {
   const track = useRef<HTMLDivElement | null>(null);
@@ -91,6 +109,8 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
   const checks = recording.steps.some((step) => isCheck(step.role));
   const noEffect = recording.steps.some((step) => !isCheck(step.role) && (step.outcome === "no effect" || step.outcome === "inconclusive"));
   const head = evenPosition(timeline, time);
+  const late = useMemo(() => timeline.fires.filter((fire) => fire.late), [timeline]);
+  const lateFired = late.filter((fire) => fire.at <= time).length;
 
   const timeAtPointer = (clientX: number): number => {
     const box = track.current?.getBoundingClientRect();
@@ -141,7 +161,7 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
         aria-valuemin={0}
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(time)}
-        aria-valuetext={segment ? `${capital(stepLabel(recording, segment.step))}, ${revealed ? outcomeWords(segment.step.outcome) : "running"}: ${segment.step.title}, ${segment.index + 1} of ${count}, ${clockTime(real)} UTC` : "No steps"}
+        aria-valuetext={segment ? `${capital(stepLabel(recording, segment.step))}, ${revealed ? outcomeWords(outcomeAt(timeline, segment, time)) : "running"}: ${segment.step.title}, ${segment.index + 1} of ${count}, ${clockTime(real)} UTC` : "No steps"}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -149,7 +169,7 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
         onKeyDown={onKeyDown}
         style={{ "--lanes-h": `${lanesHeight}px`, "--slot": pct(count > 0 ? 1 / count : 1) } as StyleVars}
       >
-        <ScrubberCells recording={recording} timeline={timeline} current={current} />
+        <ScrubberCells recording={recording} timeline={timeline} time={time} current={current} revealed={revealed} lateFired={lateFired} />
         <svg className="lv-lanes" viewBox={`0 0 ${WIDTH} ${Math.max(1, lanesHeight)}`} preserveAspectRatio="none" aria-hidden="true">
           {lanes.map((lane) => (
             <path key={lane.key} className={`lv-lane ${lane.className}`} d={lane.path} />
