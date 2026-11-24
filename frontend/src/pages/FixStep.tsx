@@ -12,7 +12,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type RecordingSummary } from "../lib/api";
 import { activeProviderKind, backPath, browserStorage, candidates, draftKey, hasStableIds, keepDraft, labRulesCommit, modelWords, notAccepted, otherRunsOf, readDraft, sensorsOf, startWith, stepMoment, tieOf, triedFor, type FileHere, type RuleMatch, type SensorFacts, type StartWith, type Tie, type Tried } from "../lib/fix-step";
-import { originWords, recordedRunPath } from "../lib/recorded-runs";
+import { originWords, recordedRunPath, RUNNING_POLL_MS } from "../lib/recorded-runs";
 import { chipField, codeSpans, isOneRun, pairChangeWords, priceLead, resultWords, verdictParts } from "../lib/recording-pairs";
 import { stepRows, type StepRow } from "../live/analyse";
 import { clockTime, comparedStep, count, outcomeClass, outcomeWords, plural, roleWords, sensorColours, stepLabel } from "../live/format";
@@ -45,6 +45,8 @@ function FixStep({ recordingId, file, stepId }: { recordingId: string; file?: st
     queryKey: file ? ["recording-file", recordingId, file] : ["recording", recordingId],
     queryFn: () => (file ? api.recordingFile(recordingId, file) : api.recording(recordingId)),
     retry: false,
+    // As on the run's own page: a recording that is still running is asked for again until it has finished.
+    refetchInterval: (query) => (query.state.data?.summary.running ? RUNNING_POLL_MS : false),
   });
   const data = entry.data;
   const reading = useMemo(() => (data ? read(data.recording) : null), [data]);

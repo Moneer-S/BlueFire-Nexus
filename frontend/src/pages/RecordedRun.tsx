@@ -8,15 +8,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type RecordingList, type RecordingSummary } from "../lib/api";
 import { fixPath } from "../lib/fix-step";
-import { addressShows, momentFromSearch, momentSearch, namesMissingStep, originWords, recordingKindWords, withSummary } from "../lib/recorded-runs";
+import { addressShows, momentFromSearch, momentSearch, namesMissingStep, originWords, recordingKindWords, RUNNING_POLL_MS, withSummary } from "../lib/recorded-runs";
 import { LiveView, type LiveMoment, type LiveViewProps } from "../live/LiveView";
 import { LiveViewBoundary } from "../live/LiveViewBoundary";
 import { RecordingError, readRecording, type Recording } from "../live/recording";
 import { ErrorState, LoadingState } from "../components/Primitives";
 import "./RecordedRun.css";
 
-/** How often a recording that is still running is asked for again. */
-const RUNNING_POLL_MS = 4_000;
 /** The address follows the viewer after this pause, so dragging the scrubber does not rewrite it on every move. */
 const ADDRESS_SETTLE_MS = 300;
 

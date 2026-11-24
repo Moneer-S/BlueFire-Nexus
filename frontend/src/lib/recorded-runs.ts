@@ -6,6 +6,9 @@ import type { Recording } from "../live/recording";
 import { count, day, plural, span } from "../live/format";
 import type { DeltaSummary, RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 
+/** How often a recording that is still running is asked for again, by every page that shows one. */
+export const RUNNING_POLL_MS = 4_000;
+
 /** Newest first, by when the run started; the service lists shipped recordings before imported ones. */
 export function newestFirst(recordings: readonly RecordingSummary[]): RecordingSummary[] {
   return [...recordings].sort((a, b) => Date.parse(b.source.started) - Date.parse(a.source.started));

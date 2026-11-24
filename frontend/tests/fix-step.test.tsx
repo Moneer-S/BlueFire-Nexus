@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { api, type Delta, type DeltaStep, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
 import { activeProviderKind, backPath, candidates, draftKey, fixPath, modelWords, tieOf, triedFor } from "../src/lib/fix-step";
+import { RUNNING_POLL_MS } from "../src/lib/recorded-runs";
 import type { Recording } from "../src/live/recording";
 import { FixStepPage } from "../src/pages/FixStep";
 import type { CatalogResponse } from "../src/types";
@@ -236,6 +237,26 @@ describe("the page for fixing a step", () => {
     const draft = await screen.findByRole("region", { name: "A draft" });
     expect(draft).toHaveTextContent("This recording is still running.");
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("asks again while the recording is running, and shows the step of the finished recording once the run has finished", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // A comparison that names the file this recording becomes once it has finished.
+      const rule = delta("0000000000000008", { id: "rec-1", sha256: SHA }, { id: "rec-1", sha256: OTHER_SHA }, [movedStep("2", "seen", "alerted", MOVED)]);
+      mount("2", { running: true, pairs: [rule] });
+      expect(await screen.findByRole("region", { name: "A draft" })).toHaveTextContent("This recording is still running.");
+      expect(screen.getByRole("region", { name: /^What was already tried/ })).toHaveTextContent("This recording is still running");
+      // The run finishes: the service's next answer names the finished file.
+      vi.mocked(api.recording).mockResolvedValue({ summary: summaryOf("rec-1"), recording: smallRecording(), sha256: SHA });
+      await act(async () => { await vi.advanceTimersByTimeAsync(RUNNING_POLL_MS); });
+      expect(await screen.findByRole("textbox", { name: "Your rule" })).toHaveValue("");
+      const tried = screen.getByRole("region", { name: /^What was already tried/ });
+      expect(tried).not.toHaveTextContent("This recording is still running");
+      expect(await within(tried).findByRole("link", { name: "Open the comparison at this step" })).toBeVisible();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps a draft per recording and step in this browser, and never fills one in", async () => {
