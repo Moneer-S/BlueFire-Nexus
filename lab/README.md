@@ -1069,7 +1069,8 @@ The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
 every plant check that uses them passed there.
 
 The path of published tests runs through the range, and a CI run shows it
-([the path](#range-one-the-path)). Not yet shown: the scoring of its steps.
+([the path](#range-one-the-path)), and what the defense made of each step
+([the score](#range-one-the-score-and-the-recording)).
 The ordinary day is scored, and shown,
 [below](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
@@ -1434,7 +1435,8 @@ could not read every file of `/etc` on `build` as `deploy`; the archive holds
 | s09 | web | T1560.001 | Data Compressed - nix - tar Folder or File | 0.031 | 0 | took effect | pass |
 | s10 | web | T1048.002 | Exfiltrate data in a file over HTTPS using wget | 0.042 | 0 | took effect | pass |
 
-Not yet shown: whether the defense saw, alerted on or stopped each step.
+Whether the defense saw or alerted on each step is the next section, from a
+later run.
 
 ## Range one: the score and the recording
 
@@ -1515,10 +1517,40 @@ bluefire-lab replay <run folder>/recording.json --template bluefire/ui/replay.ht
 
 The `range-one` job keeps `recording.json`, the three ECS files and
 `replay.html` in its artifact, and shows the path's score in its summary.
-What a run of it shows, each step's outcome, the time to the first alert and
-the time to the goal: not yet shown.
 
-<!-- CI run of the score: its link and table go here. -->
+**What a run shows.** In
+[run 45507244968](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45507244968)
+on a hosted runner (its job "range one's path, sealed and watched", and the
+artifact `range-one-run`), the stock rules raised their first alert at level
+12 or higher 61.56 s after the first step started: rule 40112, "Multiple
+authentication failures followed by a success", on `s01`. The path reached its
+goal 628.44 s after that start, so the alert came 566.88 s before the goal.
+Beside it, on the ordinary day of 11.48 minutes: 0 false alerts at level 12 or
+higher. The clock check held: 19 program starts in the steps' sessions, none
+outside its step's daemon times.
+
+| Step | Host | Recorded | By | Tied by | First alert | Outcome |
+|---|---|---|---|---|---|---|
+| s01 | attacker to web | alert, 1,857 events | web | address 1,841, account 16 | 40112, level 12 | alerted |
+| s02 | web | 4 events | web | account 1, session 3 | none | seen |
+| s03 | web | 7 events | web | account 1, session 6 | none | seen |
+| s04 | web | 3 events | web | account 1, session 2 | none | seen |
+| s05a | web to build | 1 event | build | address 1 | none | seen |
+| s05b | web to db | 1 event | db | address 1 | none | seen |
+| s06 | web | 1 event | web | session 1 | none | seen |
+| s07 | web | 3 events | web | account 1, session 2 | none | seen |
+| s08 | web to build | 19 events | web 3, build 16 | account 17, session 1, address 1 | none | seen |
+| s09 | web | 5 events | web | account 2, session 3 | none | seen |
+| s10 | web to inet | 1 event | web | session 1 | none | seen |
+
+One step alerted and ten were seen with no alert; none was unseen. **The two
+port scans are seen by one line each, and by nothing else.** On `build` it is
+sshd's line about a connection from `web`'s address that sent no SSH banner;
+on `db` it is MariaDB's line about a connection from `web`'s container that
+closed without authentication. Each is tied by the `address` rule because its
+text names `web`. The range has no network sensor, so a scan of every port
+shows only where an open port's service logs a broken connection. One run is
+one sample: how much this varies between runs is not yet shown.
 
 ## Not yet shown
 
