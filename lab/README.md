@@ -5,6 +5,18 @@ target, records what the sensors on that target saw, evaluates pinned detection
 rules over those records, and reports two answers for every test: did the
 technique take effect, and what did the defense see.
 
+In this document:
+
+- [The bench on one host](#what-it-shows-today), and what its runs show.
+- [Hardening that blocks a technique](#hardening-that-blocks-a-technique), and [the lab's own detection rules](#detection-rules-of-the-labs-own).
+- [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
+- [The range and its seal](#a-range-and-its-seal): a network of throwaway containers with no route out.
+- Range one: [its hosts](#range-one-its-hosts), [its ordinary activity](#range-one-ordinary-activity) and [its path of published tests](#range-one-the-path).
+- [Comparing two runs](#comparing-two-recordings).
+- [The defender loop](#the-defender-loop-so-far): a test nobody saw, a sensor change, then a new rule.
+- [How to run it](#how-to-run-it).
+- [Limits](#limits).
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../docs/report-dark.png">
   <img src="../docs/report-light.png" width="1280" alt="Report for run 44133154347 showing the outcome totals, runner details and first rows of the results table.">
@@ -13,6 +25,8 @@ technique take effect, and what did the defense see.
 The top of the report of
 [run 44133154347](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44133154347),
 as that run's job pictured it. The whole report is in the run's artifact.
+This is the report of an early run; the newest results are in the sections
+below.
 
 ## What it shows today
 
