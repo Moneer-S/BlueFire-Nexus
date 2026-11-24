@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { layoutNetwork } from "../src/live/networkLayout";
 import type { Network } from "../src/live/recording";
-import { buildTimeline, frameAt } from "../src/live/playback";
-import { firstAlertOnScreen, momentOf, revealTime, runFacts, scoreOnScreen, stepMatches } from "../src/live/moment";
+import { buildTimeline, frameAt, outcomeAt, PLAYBACK_RULE } from "../src/live/playback";
+import { timeOf } from "../src/live/recording";
+import { firstAlertOnScreen, lateWords, momentOf, revealTime, runFacts, scoreOnScreen, stepMatches } from "../src/live/moment";
 import { whoIsWinning } from "../src/live/RaceLine";
 import { middleCut } from "../src/live/format";
-import { alert, event, recording, step } from "./live-fixture";
+import { alert, at as atSecond, event, recording, step } from "./live-fixture";
 
 // A small range: the attacker reaches web, web reaches db, and the defense collects from both.
 const range: Network = {
@@ -141,6 +142,132 @@ describe("the watch view's words and numbers", () => {
     expect(moment?.landed.map(({ alert: item }) => item.id)).toEqual(["a"]);
     expect(scoreOnScreen(lateTimeline, frame, moment).alerted).toBe(outcome === "alerted" ? 1 : 0);
     expect(scoreOnScreen(lateTimeline, frame, moment).seen).toBe(outcome === "seen" ? 1 : 0);
+  });
+});
+
+describe("an alert raised live after its step ended", () => {
+  // Test 1 runs from 10 to 11 s and its alert is raised at `raised`; test 2 runs from `next` to `next` + 20 s.
+  const late = (raised: number, next = 20) => {
+    const value = recording({
+      when: "live",
+      steps: [step("1", 10, 11, { outcome: "alerted", visibility: { answer: "alert", basis: "rule", events: 1 } }), step("2", next, next + 20)],
+      events: [event("1-1", "1", 10.5), event("2-1", "2", next + 1)],
+      alerts: [alert("a", "1", 10.5, ["1-1"], { raised: atSecond(raised) })],
+    });
+    const timeline = buildTimeline(value);
+    const view = (screen: number) => {
+      const frame = frameAt(timeline, screen);
+      const own = value.alerts.filter((item) => item.step === frame.step?.id);
+      const moment = momentOf(timeline, frame, own, stepMatches(own));
+      return { frame, moment, score: scoreOnScreen(timeline, frame, moment), first: firstAlertOnScreen(frame.race.firstAlert, frame.time, frame.segment, moment?.revealed ?? false) };
+    };
+    const fire = timeline.fire.get("a") ?? Number.NaN;
+    return { value, timeline, view, fire };
+  };
+
+  it("tells an alert raised during its own step as that step's own, with no late line", () => {
+    const { timeline, view } = late(10.8);
+    const first = timeline.segments[0];
+    if (!first) throw new Error("test 1 should be there");
+    const end = view(first.end - 0.01);
+    expect(end.moment?.revealed).toBe(true);
+    expect(end.moment?.outcome).toBe("alerted");
+    expect(end.moment?.landed.map(({ alert: item }) => item.id)).toEqual(["a"]);
+    expect(end.frame.late).toEqual([]);
+    expect(end.score.alerted).toBe(1);
+  });
+
+  it("shows an alert raised during a later step on that step's screen, and counts it only from then", () => {
+    const { value, timeline, view, fire } = late(25);
+    const [first, second] = timeline.segments;
+    if (!first || !second) throw new Error("both tests should be there");
+    // Test 1 is told as it stood at its end: seen, with no alert yet.
+    const told = view(first.end - 0.01);
+    expect(told.moment?.revealed).toBe(true);
+    expect(told.moment?.outcome).toBe("seen");
+    expect(told.score).toMatchObject({ alerted: 0, seen: 1 });
+    expect(fire).toBeGreaterThan(second.bodyStart);
+    const before = view(fire - 0.01);
+    expect(before.frame.step?.id).toBe("2");
+    expect(before.frame.late).toEqual([]);
+    expect(before.score).toMatchObject({ alerted: 0, seen: 1 });
+    expect(before.first).toBeNull();
+    expect(outcomeAt(timeline, first, fire - 0.01)).toBe("seen");
+    const after = view(fire);
+    expect(after.frame.step?.id).toBe("2");
+    expect(after.frame.late.map(({ alert: item }) => item.id)).toEqual(["a"]);
+    expect(after.moment?.late.map(({ alert: item }) => item.id)).toEqual(["a"]);
+    const arrived = after.frame.late[0];
+    if (!arrived) throw new Error("the late alert should be on screen");
+    expect(lateWords(value, timeline, arrived)).toBe("Alert on test 1, Test 1: Rule a, raised 14 s after that step ended.");
+    expect(after.frame.alerts).toEqual([]);
+    expect(after.score).toMatchObject({ alerted: 1, seen: 0 });
+    expect(after.first?.alert.id).toBe("a");
+    expect(outcomeAt(timeline, first, fire)).toBe("alerted");
+    // It stays long enough to be read before test 2 gives way.
+    expect(second.end).toBeGreaterThanOrEqual(fire + PLAYBACK_RULE.read);
+    expect(view(fire + PLAYBACK_RULE.read - 0.01).frame.late.map(({ alert: item }) => item.id)).toEqual(["a"]);
+  });
+
+  it("shows an alert raised in the silence after its step there, held long enough to read, at its own time", () => {
+    const { timeline, view, fire } = late(15, 30);
+    const [first, second] = timeline.segments;
+    if (!first || !second) throw new Error("both tests should be there");
+    expect(view(first.end - 0.01).moment?.outcome).toBe("seen");
+    expect(fire).toBeGreaterThan(first.end);
+    const after = view(fire);
+    expect(after.frame.step?.id).toBe("1");
+    expect(after.frame.gap).not.toBeNull();
+    expect(after.frame.late.map(({ alert: item }) => item.id)).toEqual(["a"]);
+    expect(after.frame.real).toBeCloseTo(timeOf(atSecond(15)), -1);
+    expect(after.score.alerted).toBe(1);
+    expect(view(fire - 0.01).score.alerted).toBe(0);
+    expect(second.start).toBeGreaterThanOrEqual(fire + PLAYBACK_RULE.read);
+  });
+
+  it("has every part of the screen agree in the silence after a step, before and after its own late alert fires", () => {
+    const { value, timeline, view, fire } = late(15, 30);
+    const first = timeline.segments[0];
+    if (!first) throw new Error("test 1 should be there");
+    // What each part is given: the caption's verdict word and the host's badge
+    // read the moment's outcome, the caption's sentence how the step stood at
+    // its end, and the scrubber's cell and its text the step's outcome then.
+    const parts = (screen: number) => {
+      const { frame, moment, score, first: flag } = view(screen);
+      const arrived = frame.late[frame.late.length - 1];
+      return {
+        step: frame.step?.id,
+        silence: frame.gap !== null,
+        told: moment?.revealed,
+        verdict: moment?.outcome,
+        stood: moment?.stood,
+        late: arrived ? lateWords(value, timeline, arrived) : null,
+        score: { alerted: score.alerted, seen: score.seen },
+        flag: flag?.alert.id ?? null,
+        scrubber: outcomeAt(timeline, first, frame.time),
+      };
+    };
+    const shared = { step: "1", silence: true, told: true, stood: "seen" };
+    expect(parts(fire - 0.01)).toEqual({ ...shared, verdict: "seen", late: null, score: { alerted: 0, seen: 1 }, flag: null, scrubber: "seen" });
+    expect(parts(fire)).toEqual({ ...shared, verdict: "alerted", late: "Alert on test 1, Test 1: Rule a, raised 4.0 s after that step ended.", score: { alerted: 1, seen: 0 }, flag: "a", scrubber: "alerted" });
+  });
+
+  it("shows an alert raised after the last step at the end of the run, at its own time", () => {
+    const { timeline, view, fire } = late(50);
+    const second = timeline.segments[1];
+    if (!second) throw new Error("test 2 should be there");
+    expect(fire).toBeGreaterThan(second.end);
+    expect(timeline.duration).toBeGreaterThanOrEqual(fire + PLAYBACK_RULE.read);
+    expect(view(fire - 0.01).score.alerted).toBe(0);
+    const after = view(fire);
+    expect(after.frame.step?.id).toBe("2");
+    expect(after.frame.late.map(({ alert: item }) => item.id)).toEqual(["a"]);
+    expect(after.frame.real).toBeCloseTo(timeOf(atSecond(50)), -1);
+    expect(after.score.alerted).toBe(1);
+    const end = view(timeline.duration);
+    expect(end.frame.ended).toBe(true);
+    expect(end.frame.late.map(({ alert: item }) => item.id)).toEqual(["a"]);
+    expect(end.score).toMatchObject({ alerted: 1, seen: 1 });
   });
 });
 

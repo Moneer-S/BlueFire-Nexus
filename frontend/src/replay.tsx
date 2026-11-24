@@ -1,7 +1,7 @@
 // The single replay page: reads the recording held in the page itself and
 // plays it, with the note on where the recording comes from that the page
 // holds beside it. Nothing is fetched. The address can say where to start:
-// ?step=<step id>&at=<0..1>&paused=1&mode=watch|analyse&select=<step id>
+// ?step=<step id>&at=<0..2>&paused=1&mode=watch|analyse&select=<step id>
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

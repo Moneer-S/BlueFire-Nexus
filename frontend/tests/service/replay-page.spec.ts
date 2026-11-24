@@ -277,6 +277,16 @@ test("the address opens a step's detail, or a moment of a step in watch mode", a
   await expect(caption(page)).toContainText(UNSEEN);
   expect(await scrubber(page).getAttribute("aria-valuetext")).not.toContain(", running: ");
 
+  // Past 1 the address reaches into the silence after the step: still that step, its clock later than the step's end.
+  await page.goto(`${pathToFileURL(shippedPage).href}?mode=watch&step=${step.id}&at=1&paused=1`);
+  await expect(caption(page)).toContainText(UNSEEN);
+  const atEnd = await scrubber(page).getAttribute("aria-valuetext");
+  await page.goto(`${pathToFileURL(shippedPage).href}?mode=watch&step=${step.id}&at=1.9&paused=1`);
+  await expect(caption(page)).toContainText(UNSEEN);
+  const inSilence = await scrubber(page).getAttribute("aria-valuetext");
+  expect(inSilence).toContain(`, unseen: ${UNSEEN}`);
+  expect(inSilence).not.toBe(atEnd);
+
   expect(problems).toEqual([]);
   expect(requests.filter((url) => !url.startsWith(pathToFileURL(shippedPage).href))).toEqual([]);
 });

@@ -4,7 +4,7 @@
 import { memo } from "react";
 import type { Recording, RecordingEvent } from "./recording";
 import { timeOf } from "./recording";
-import { clockTime, count, kindRank, matchKind, middleCut, sensorWord, strongerKind } from "./format";
+import { clockTime, count, kindRank, matchKind, middleCut, sensorWord, stepLabel, strongerKind } from "./format";
 import type { MatchKind } from "./format";
 import type { StepMoment } from "./moment";
 import { useSize } from "./useSize";
@@ -43,8 +43,13 @@ export const EventLog = memo(
     a.moment?.step.id === b.moment?.step.id &&
     a.moment?.revealed === b.moment?.revealed &&
     a.moment?.events.length === b.moment?.events.length &&
-    a.moment?.landed.length === b.moment?.landed.length,
+    a.moment?.landed.length === b.moment?.landed.length &&
+    a.moment?.late.length === b.moment?.late.length,
 );
+
+/** At most this many late arrivals have a line of the log: the latest ones. */
+const LATE_LINES = 2;
+const KIND_RGB: Record<MatchKind, string> = { alert: "255,112,69", lab: "168,146,255", review: "255,210,125", launcher: "123,202,255" };
 
 function EventLogView({ recording, moment, total, colours, onOpen }: EventLogProps) {
   const [ref, size] = useSize<HTMLDivElement>();
@@ -60,9 +65,12 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
     for (const id of alert.events) marks.set(id, strongerKind(marks.get(id) ?? null, kind));
   }
   const refusal = moment?.step.outcome === "stopped" ? refusalOf(events) : undefined;
-  const pinned = events.filter((event) => event === refusal || marks.has(event.id)).sort((a, b) => kindRank(marks.get(b.id) ?? "launcher") - kindRank(marks.get(a.id) ?? "launcher")).slice(0, LINES - 1);
+  // A late arrival, a match of an earlier step raised after that step ended, takes a line at the foot of the log.
+  const late = (moment?.late ?? []).slice(-LATE_LINES);
+  const lines = LINES - late.length;
+  const pinned = events.filter((event) => event === refusal || marks.has(event.id)).sort((a, b) => kindRank(marks.get(b.id) ?? "launcher") - kindRank(marks.get(a.id) ?? "launcher")).slice(0, lines - 1);
   const rest = events.filter((event) => !pinned.includes(event));
-  const shown = [...rest.slice(-(LINES - pinned.length)), ...pinned].sort((a, b) => events.indexOf(a) - events.indexOf(b));
+  const shown = [...rest.slice(-(lines - pinned.length)), ...pinned].sort((a, b) => events.indexOf(a) - events.indexOf(b));
   const room = Math.max(24, Math.floor((size.width - 330) / 7.4));
 
   const visibility = moment?.step.visibility;
@@ -117,6 +125,22 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
           );
         })}
         {moment && moment.revealed && events.length === 0 ? <div className="lv-log-none">Nothing recorded.</div> : null}
+        {late.map(({ alert }) => {
+          const kind = matchKind(alert);
+          const owner = recording.steps.find((item) => item.id === alert.step);
+          const text = `${owner ? stepLabel(recording, owner) : alert.step}: ${alert.rule.title}`;
+          return (
+            <div key={`late:${alert.id}`} className={`lv-log-line is-late${kind === "launcher" ? "" : ` is-${kind}`}`} style={{ "--rgb": KIND_RGB[kind] } as StyleVars}>
+              <span className="lv-log-time">{clockTime(timeOf(alert.raised ?? alert.time))}</span>
+              <i className="lv-dot" title="Raised after its step ended" />
+              <span className="lv-log-kind">raised late</span>
+              <span className="lv-log-text" title={text}>
+                {middleCut(text, room)}
+              </span>
+              <span className="lv-log-mark">{MARK_WORDS[kind]}</span>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
