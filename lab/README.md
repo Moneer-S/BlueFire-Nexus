@@ -11,7 +11,7 @@ In this document:
 - [Hardening that blocks a technique](#hardening-that-blocks-a-technique), and [the lab's own detection rules](#detection-rules-of-the-labs-own).
 - [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
 - [The range and its seal](#a-range-and-its-seal): a network of throwaway containers with no route out.
-- Range one: [its hosts](#range-one-its-hosts), [its ordinary activity](#range-one-ordinary-activity) and [its path of published tests](#range-one-the-path).
+- Range one: [its hosts](#range-one-its-hosts), [its ordinary activity](#range-one-ordinary-activity), [its path of published tests](#range-one-the-path) and [the path's score and recording](#range-one-the-score-and-the-recording).
 - [Comparing two runs](#comparing-two-recordings).
 - [The defender loop](#the-defender-loop-so-far): a test nobody saw, a sensor change, then a new rule.
 - [How to run it](#how-to-run-it).
@@ -1455,14 +1455,14 @@ a cleanup's nor a job's is a step's only on evidence the run holds, by the
 first of: `session`, snoopy tagged the program start `step:<id>`; `account`,
 the line names an account only the path uses on its host (`webadmin` on
 `web`, `deploy` on `build`; the activity's loader refuses a job that uses
-one), on a host the step ran on or reached, inside its window; `address`, the line's own source address is
-an address of the host the step ran on, inside its window (sshd's lines on
-`web` from `attacker` in `s01`'s), or the line is on a host the step reached
-and its text names an address or the container name of the host the step ran
-on (sshd's and MariaDB's lines often carry the address only in their text);
-`content`, a file event for a path the step
-was given, or a line that names one, on a host the step ran on or reached,
-inside its window. A step's window runs from the Docker daemon's start of its
+one), on a host the step ran on or reached, inside its window; `address`, the
+line's own source address is an address of the host the step ran on, inside
+its window (sshd's lines on `web` from `attacker` in `s01`'s), or the line is
+on a host the step reached and its text names an address or the container
+name of the host the step ran on (sshd's and MariaDB's lines often carry the
+address only in their text); `content`, a file event for a path the step was
+given, or a line that names one, on a host the step ran on or reached, inside
+its window. A step's window runs from the Docker daemon's start of its
 test to 5 s after the daemon's end (a second longer, from the start of its
 second, for a line whose time is to the second). An event that only falls
 inside a window, on a host the step ran on or reached, is coincident: it
@@ -1492,10 +1492,10 @@ program start snoopy logged in a step's session, at rsyslog's time in its
 container, must fall inside its step's daemon times, and every step's times
 must be the daemon's, in order. When the check fails, the race is labelled
 "not a result" in the score, no recording is written, and the CI job fails.
-The manager's own time of a line can run seconds behind the time rsyslog wrote on it, so an alert counts
-from the manager's time of it, or from its line's time when that is later, and
-the score gives the spread it measured. Beside the race stand the ordinary
-day's false alerts and their denominators
+The manager's own time of a line can run seconds behind the time rsyslog
+wrote on it, so an alert counts from the manager's time of it, or from its
+line's time when that is later, and the score gives the spread it measured.
+Beside the race stand the ordinary day's false alerts and their denominators
 ([above](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day)).
 
 **The recording.** The seven hosts with their roles and addresses, a link

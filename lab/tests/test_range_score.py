@@ -399,18 +399,35 @@ def test_a_steps_outcome_follows_what_happened_and_what_the_defense_made_of_it(
 
 
 def test_a_step_whose_test_did_not_start_is_not_applicable(tmp_path: Path) -> None:
-    folder = small_run(tmp_path)
+    # s03 does not start; a third step, s04 on web, does, and its program start gives the clock check one to hold.
+    archive = [make() for make, _ in LINES.values()]
+    archive.append(snoopy("web", T0 + 30.05, "step:s04", "find . -name known_hosts"))
+    folder = small_run(tmp_path, archive, [])
     manifest = json.loads((folder / "manifest.json").read_text())
     s03 = manifest["path"]["steps"][1]
     for key in ("started_ns", "ended_ns", "started", "ended", "exit_code"):
         s03.pop(key)
     s03.update({"happened": "not attempted", "why": "the published prerequisite check did not pass"})
+    s04 = step_record(
+        "s04",
+        "web",
+        T0 + 30,
+        T0 + 30.2,
+        technique="T1018",
+        guid="6fc814cb-16d1-43e6-80b3-2ff2a45250d1",
+        name="Enumerate SSH Configuration",
+    )
+    manifest["path"]["planned"].append("s04")
+    manifest["path"]["steps"].append(s04)
     manifest["path"]["goal"]["passed"] = False
     (folder / "manifest.json").write_text(json.dumps(manifest))
 
-    steps = {step["id"]: step for step in score_of(folder)["score"]["path"]["steps"]}
+    steps = {step["id"]: step for step in scored(folder)["score"]["path"]["steps"]}
 
     assert (steps["s03"]["visibility"], steps["s03"]["outcome"]) == ("not applicable", "no effect")
+    made = json.loads((folder / "recording.json").read_text())
+    assert made["steps"][1]["id"] == "s03"
+    assert "started" not in made["steps"][1] and "events" not in made["steps"][1]["visibility"]
 
 
 def test_the_recording_holds_the_network_the_steps_their_events_and_the_race(tmp_path: Path) -> None:
