@@ -742,11 +742,17 @@ The `range-one` job of the `range-one` workflow runs this on a GitHub-hosted
 runner, fails unless there was no delivery gap, every agent host got its marks
 and every mark arrived, snoopy's tag was decoded, every ossec.conf is the lab's
 edits of the stock file and every plant check passed, and writes the build
-time, each image's build steps taken from the cache, the plant checks, the
+time, the plant checks, the
 ready delays, the marks, the delivery table and the seal to its summary. Each
 image has a cache scope of its own in the GitHub Actions cache, and BuildKit
-runs from its own image, pinned by digest. Not yet shown on a GitHub-hosted
-runner for the seven hosts: no run of that job is linked here yet. The same
+runs from its own image, pinned by digest.
+[Run 45281159443](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45281159443)
+shows it for the seven hosts on a GitHub-hosted runner with Docker Engine
+28.0.4 and AppArmor: the seal passed (201 checks before the start, 430 after
+it and 430 again at the end), the range was ready 35 s after its containers
+started, every plant check passed, and every line of the window was delivered
+from `web`, `db` and `build` (for example `auth.log` 43 of 43 and `snoopy.log`
+137 of 137 on `web`). The same
 defense on a smaller range, one manager and one agent host, was shown by
 [run 45262448946](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45262448946)
 on a GitHub-hosted runner with Docker Engine 28.0.4, from a build without a
@@ -838,12 +844,12 @@ command printed), `seal.json`, `seal.md`, `defense.md`, `plants.md`,
 build context) and `raw/hosts/<host>/`, which now also holds `inet`'s access
 log and uploads.
 
-Not yet shown: a run on a GitHub-hosted runner (the `range-one` job, no run
-linked yet); the services (sshd, sudo, nginx, php-fpm, MariaDB) under
-AppArmor's `docker-default` profile, which the Docker used so far did not
-apply (`manifest.json` records the daemon's security options under `docker`);
-how many of the image build's steps a warm GitHub Actions cache saves; the
-path of published tests through the range; scoring.
+The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
+`docker-default` profile on the hosted runner: run 45281159443's
+`manifest.json` records the daemon's security options under `docker`, and
+every plant check that uses them passed there.
+
+Not yet shown: the path of published tests through the range; scoring.
 
 ## Range one: ordinary activity
 
@@ -928,7 +934,7 @@ fails unless every job ran at least once and the line of at least one of its
 runs reached the archive. The delivery counts of the same run are taken with
 the jobs running, so the job's check for a delivery gap also shows whether
 every line still reaches the manager under that load. Not yet shown: a run of
-that job on a GitHub-hosted runner.
+that job with the activity on a GitHub-hosted runner.
 
 ## Range one: the path
 

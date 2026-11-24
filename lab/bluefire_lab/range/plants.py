@@ -412,12 +412,13 @@ def carried(spec: Spec, host: Host, locked: dict[str, str]) -> list[Check]:
     if not host.atomics_src:
         return []
     folders = " ".join(f"{technique}/src" for technique in host.atomics_src)
-    expected = sorted(
+    # Both sides in the order of the paths, byte by byte: the lock's entries here, `sort -k2` there.
+    expected = [
         f"{digest}  {path.removeprefix('atomics/')}"
-        for path, digest in locked.items()
+        for path, digest in sorted(locked.items())
         if any(path.startswith(f"atomics/{technique}/src/") for technique in host.atomics_src)
-    )
-    script = f"cd {atomics.ATOMICS_PATH} && find {folders} -type f -exec sha256sum {{}} + | sort -k2"
+    ]
+    script = f"cd {atomics.ATOMICS_PATH} && find {folders} -type f -exec sha256sum {{}} + | LC_ALL=C sort -k2"
     return [
         check("plant: published files", f"host {host.name}", [Command(host.name, "root", script)], expected)
     ]
