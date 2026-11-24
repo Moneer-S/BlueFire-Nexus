@@ -167,6 +167,8 @@ def test_the_shipped_lab_recording_is_listed_with_its_origin_and_read_back_whole
     detail = service.recording(entry["id"])
     assert detail["summary"] == entry
     assert detail["recording"] == json.loads(SHIPPED.read_bytes())
+    # The file a comparison would name it by.
+    assert detail["sha256"] == hashlib.sha256(SHIPPED.read_bytes()).hexdigest()
 
     shipped = json.loads(SHIPPED.read_bytes())
     again = service.import_recording({"recording": shipped})
@@ -212,6 +214,8 @@ def test_a_running_recording_grows_by_import_and_is_frozen_once_finished(
     del recording["source"]["finished"]
     service.import_recording({"recording": recording})
     running = service.recording("rec-live")["summary"]["running"]
+    # A running recording is replaced as it grows: its file has no SHA-256 to name it by yet.
+    running_file = service.recording("rec-live").get("sha256")
 
     growing = copy.deepcopy(recording)
     growing["notes"] = ["Two steps have run."]
@@ -229,7 +233,7 @@ def test_a_running_recording_grows_by_import_and_is_frozen_once_finished(
     with pytest.raises(APIError) as refused:
         service.import_recording({"recording": changed})
 
-    assert running is True
+    assert running is True and running_file is None
     assert still_running["replaced"] is True and still_running["summary"]["running"] is True
     assert other_refused.value.status == 409
     assert other_refused.value.code == "recording_id_taken"
@@ -267,6 +271,8 @@ def test_another_evaluation_of_a_finished_run_is_kept_beside_it_by_its_file(
     assert first_whole["recording"] == first
     # The list and the id's own address show the first file; the other is reached by its file.
     assert len(listed) == 1 and service.recording("rec-twice")["recording"] == first
+    # The id's own address names its first file by the SHA-256 a comparison would name it by.
+    assert service.recording("rec-twice")["sha256"] == hashlib.sha256(payload).hexdigest()
     assert unknown.value.status == 404 and unknown.value.code == "recording_file_not_found"
     assert malformed.value.status == 400 and malformed.value.code == "invalid_recording_file"
     assert sorted(service.recording_library.kept_files("rec-twice")) == sorted(
@@ -388,6 +394,11 @@ def test_every_import_that_names_a_file_ends_with_that_file_served(
     held.unlink()
     assert len(service.recording_library.kept_files("rec-finished")) < recordings.MAX_FILES_PER_ID
     assert service.recording("rec-finished")["recording"] == finished
+    # The id's own answer names its first file, whatever is kept beside it, and that file is
+    # served under the SHA-256 it names.
+    own = service.recording("rec-finished")
+    assert own["sha256"] == first_digest
+    assert service.recording_file("rec-finished", own["sha256"])["recording"] == own["recording"]
 
     # A running imported id: the latest bytes sent are its one file.
     running = small_recording("rec-running")
@@ -396,6 +407,8 @@ def test_every_import_that_names_a_file_ends_with_that_file_served(
     assert served(first_as(running))["created"] is False
     other_bytes = served(second_as(running))
     assert other_bytes["replaced"] is (first_as is not second_as)
+    # While it runs, its file is replaced as it grows, so its own answer names none.
+    assert "sha256" not in service.recording("rec-running")
     grown = copy.deepcopy(running)
     grown["notes"] = ["One step has run."]
     assert served(second_as(grown))["replaced"] is True
@@ -407,6 +420,7 @@ def test_every_import_that_names_a_file_ends_with_that_file_served(
     assert list(service.recording_library.kept_files("rec-running")) == [
         _sent_digest(first_as(finished_run))
     ]
+    assert service.recording("rec-running")["sha256"] == _sent_digest(first_as(finished_run))
 
     # A shipped id: the shipped file answers, by its own digest, or the import is refused.
     whole = json.loads(SHIPPED.read_bytes())

@@ -1337,12 +1337,21 @@ class RecordingLibrary:
         return recording, summarize(recording, _imported_origin())
 
     def detail(self, recording_id: str) -> Mapping[str, Any]:
+        """The first file kept for an id, whole, and once it is finished the SHA-256
+        of that file, by which a comparison names it. A running recording is replaced
+        as it grows, so its file has no lasting SHA-256 and none is given."""
+
         recording, summary = self.get(recording_id)
-        return {
+        entry: dict[str, Any] = {
             "schema_version": "bluefire.recording-entry.v1",
             "summary": summary,
-            "recording": recording,
         }
+        if not summary.get("running"):
+            digest, _ = self.kept_file(recording_id)
+            if digest:
+                entry["sha256"] = digest
+        entry["recording"] = recording
+        return entry
 
     @contextmanager
     def _import_lock(self) -> Iterator[None]:

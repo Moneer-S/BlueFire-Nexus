@@ -504,10 +504,13 @@ no longer follow the format, which are left out, and `omitted_count` the
 imported files after the 200th, which are not read.
 
 `GET /api/v1/recordings/{recording_id}` returns
-`{"schema_version": "bluefire.recording-entry.v1", "summary": {...}, "recording": {...}}`
+`{"schema_version": "bluefire.recording-entry.v1", "summary": {...}, "sha256": "...", "recording": {...}}`
 with the whole recording as it was shipped or imported. An id is 1 to 64
 letters, digits, `-` or `_`; any other is `400 invalid_recording_id`, and an
-unknown one `404 recording_not_found`. This is the first file kept for the id.
+unknown one `404 recording_not_found`. This is the first file kept for the id,
+and `sha256` is the SHA-256 of that file, by which a comparison names it and
+under which the next route serves the same file. Another file kept beside it is
+reached only by its own SHA-256. A recording that is still running is replaced as it grows, so it has no `sha256`.
 
 `GET /api/v1/recordings/{recording_id}/files/{sha256}` returns one kept file of
 the id by the SHA-256 of the file, the first or another evaluation of the same

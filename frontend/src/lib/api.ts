@@ -209,6 +209,8 @@ export interface RecordingList {
 export interface RecordingEntry {
   summary: RecordingSummary;
   recording: unknown;
+  /** The SHA-256 of the file, by which a comparison names it. Given once the recording is finished. */
+  sha256?: string;
 }
 
 export interface RecordingImport {
@@ -1085,13 +1087,15 @@ export const api = {
       const { shippedRecording } = await import("./demo-recordings");
       const shipped = await shippedRecording(recordingId);
       if (!shipped) throw new ApiError("Recording was not found.", "recording_not_found", undefined, 404);
-      return { summary: shipped.summary, recording: shipped.recording };
+      return { summary: shipped.summary, recording: shipped.recording, sha256: shipped.sha256 };
     }
     const envelope = jsonObject(await request<unknown>(`/recordings/${encodeURIComponent(recordingId)}`));
-    if (!envelope || envelope.schema_version !== "bluefire.recording-entry.v1" || !isRecordingSummary(envelope.summary) || envelope.summary.id !== recordingId) {
+    if (!envelope || envelope.schema_version !== "bluefire.recording-entry.v1" || !isRecordingSummary(envelope.summary) || envelope.summary.id !== recordingId
+      || (envelope.sha256 !== undefined && !(typeof envelope.sha256 === "string" && FILE_DIGEST.test(envelope.sha256)))) {
       throw new ApiError("The service returned an invalid recording.", "invalid_recording_entry");
     }
-    return { summary: envelope.summary, recording: envelope.recording };
+    const sha256 = typeof envelope.sha256 === "string" ? envelope.sha256 : undefined;
+    return { summary: envelope.summary, recording: envelope.recording, ...(sha256 ? { sha256 } : {}) };
   },
   /**
    * Imports one recording file, sent as its bytes so that the service keeps the

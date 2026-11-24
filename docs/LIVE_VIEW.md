@@ -99,14 +99,18 @@ goes, and the view says the run is still running.
 
 - **Watch** plays the run. The caption tells the current step in plain words,
   then its outcome: alerted, seen with no alert, unseen, stopped. A step that
-  got through without an alert has a "Fix this" button: it opens the step's
-  detail, which says where the gap is. Inside the app a note above the view
-  also says that BlueFire cannot make the change yet.
+  got through without an alert has a "Fix this" button. On the single replay
+  page it opens the step's detail, which says where the gap is. Inside the app
+  it opens the step's own page, the place where fixing it starts (see "Fix
+  this" in [USER_GUIDE.md](USER_GUIDE.md)), and its "Back to the run" returns
+  to the moment it was opened from.
 - **Analyse** shows the whole run on one axis, the table of every step with
   filters by role and outcome, and the chosen step's detail: how it went, its
   times, the command, the rules that matched and its events. "Watch from here"
   goes back to watch mode at that step. The table opens on the tests, or on
-  every step when the recording has no test.
+  every step when the recording has no test. Inside the app the detail of a
+  step that got through without an alert also has "Fix this", which opens the
+  same page.
 
 In a small window, or a large one zoomed in, the view grows with what it
 holds and the page scrolls; at phone width its bands stack. Nothing is cut

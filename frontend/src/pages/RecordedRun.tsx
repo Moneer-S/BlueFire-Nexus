@@ -5,8 +5,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type RecordingList, type RecordingSummary } from "../lib/api";
+import { fixPath } from "../lib/fix-step";
 import { addressShows, momentFromSearch, momentSearch, namesMissingStep, originWords, recordingKindWords, withSummary } from "../lib/recorded-runs";
 import { LiveView, type LiveMoment, type LiveViewProps } from "../live/LiveView";
 import { LiveViewBoundary } from "../live/LiveViewBoundary";
@@ -84,7 +85,7 @@ function RecordedRun({ recordingId, file }: { recordingId: string; file?: string
   return <div className="recorded-run">
     <RecordedRunBar summary={data.summary} pollError={entry.isError && data.summary.running ? entry.error : null} />
     {reading && "recording" in reading
-      ? <RecordedRunView recording={reading.recording} />
+      ? <RecordedRunView recording={reading.recording} recordingId={recordingId} file={file} />
       : <CannotPlay message={reading?.problem ?? "The recording could not be read."} />}
   </div>;
 }
@@ -123,15 +124,14 @@ function RecordedRunBar({ summary, pollError }: { summary?: RecordingSummary; po
   </header>;
 }
 
-function RecordedRunView({ recording }: { recording: Recording }) {
+function RecordedRunView({ recording, recordingId, file }: { recording: Recording; recordingId: string; file?: string }) {
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [initial, setInitial] = useState<NonNullable<LiveViewProps["initial"]>>(() => momentFromSearch(searchParams));
   const [mount, setMount] = useState(0);
-  const [fixing, setFixing] = useState<string | null>(null);
   const latest = useRef<LiveMoment | null>(null);
   const pending = useRef<number | undefined>(undefined);
-  const note = useRef<HTMLParagraphElement | null>(null);
   // The address this page last wrote, or opened with. Any other is a moment someone asked for.
   const written = useRef(searchParams.toString());
   const address = searchParams.toString();
@@ -166,36 +166,20 @@ function RecordedRunView({ recording }: { recording: Recording }) {
     window.clearTimeout(pending.current);
     written.current = address;
     opened.current = null;
-    setFixing(null);
     setInitial(momentFromSearch(new URLSearchParams(address)));
     setMount((value) => value + 1);
   }, [address]);
 
-  // "Fix this" opens the step's detail, whose hint says where the gap is. Making the change in BlueFire comes later.
+  // "Fix this" opens the step's own page. Its address keeps the moment the reader is at, so its Back returns there.
   const onFix = useCallback((stepId: string) => {
-    const now = latest.current;
-    setFixing(stepId);
-    if (now?.mode === "analyse" && now.select === stepId) return;
-    opened.current = null;
-    setInitial({ step: stepId, paused: true, mode: "analyse", select: stepId });
-    setMount((value) => value + 1);
-  }, []);
-  useEffect(() => {
-    if (fixing !== null) note.current?.focus();
-  }, [fixing, mount]);
-  const fixingTitle = fixing === null ? undefined : recording.steps.find((step) => step.id === fixing)?.title;
+    window.clearTimeout(pending.current);
+    const moment = latest.current ? momentSearch(latest.current).toString() : "";
+    navigate(`${fixPath(recordingId, file, stepId)}${moment ? `?${moment}` : ""}`);
+  }, [navigate, recordingId, file]);
 
-  return <>
-    {fixing !== null ? <div className="recorded-run-fix">
-      <p ref={note} tabIndex={-1} role="status">
-        Fix this{fixingTitle ? <>, <strong>{fixingTitle}</strong></> : null}: the hint in the step's detail says where the gap is. BlueFire cannot make the change for you yet.
-      </p>
-      <button type="button" onClick={() => setFixing(null)}>Dismiss</button>
-    </div> : null}
-    <div className="recorded-run-view">
-      <LiveViewBoundary fallback={(message) => <CannotPlay message={message} />}>
-        <LiveView key={mount} recording={recording} initial={initial} onFix={onFix} onMoment={onMoment} />
-      </LiveViewBoundary>
-    </div>
-  </>;
+  return <div className="recorded-run-view">
+    <LiveViewBoundary fallback={(message) => <CannotPlay message={message} />}>
+      <LiveView key={mount} recording={recording} initial={initial} onFix={onFix} onMoment={onMoment} />
+    </LiveViewBoundary>
+  </div>;
 }
