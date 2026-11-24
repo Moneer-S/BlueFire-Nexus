@@ -20,13 +20,15 @@ The phase "after path" repeats it all where the path ends.
 
 Hosts without a pinned image are built from the spec (see `build`). A range
 with a defense also has the engine's
-harmless marks where the path will run, and, on every exit path after the
+harmless marks before the path, and, on every exit path after the
 start, the collection of what Wazuh recorded into `raw/`, the configuration
 diff, the delivery counts and `defense.md`. A range with ordinary activity
 starts its jobs after the plant checks and lets them run a warm-up before the
 place of the path and a tail after it, then stops them; after the collection
 it counts each job's runs and archive events into the manifest and
-`activity.md`. Last, every line of the manager's archive and alerts is written
+`activity.md`. A range with a path runs its published tests after the marks,
+between the warm-up and the tail, and writes `path.md` (see `path`). Last,
+every line of the manager's archive and alerts is written
 as an ECS line, with its origin, into `events.ecs.ndjson` and
 `alerts.ecs.ndjson`, and the ordinary day is scored into the manifest and
 `score.md` (see `score`).
@@ -60,6 +62,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from . import activity, atomics, build, ossec, plants, score, seal, wazuh
+from . import path as range_path
 from .spec import Spec, SpecError, load
 
 EXIT_OK = 0
@@ -203,6 +206,8 @@ class Watch:
         self.process: subprocess.Popen | None = None
         self.counter = 0
         self.inspect = inspect
+        # Each exec on a range container, by Docker's exec ID: its command and the daemon's times.
+        self.execs: dict[str, dict] = {}
 
     def start(self, since: str) -> None:
         self.process = subprocess.Popen(
@@ -262,6 +267,36 @@ class Watch:
         del self.allowed[index]
         return True
 
+    def _record(self, event: dict) -> None:
+        """Keep the daemon's time of an exec's start and end, and its command and exit code."""
+
+        actor = event.get("Actor") or {}
+        attributes = actor.get("Attributes") or {}
+        action = event.get("Action") or ""
+        exec_id = attributes.get("execID")
+        if not exec_id or not (action.startswith("exec_start: ") or action == "exec_die"):
+            return
+        entry = self.execs.setdefault(exec_id, {"exec_id": exec_id, "container": actor.get("ID")})
+        if action == "exec_die":
+            entry["die"] = event.get("timeNano")
+            entry["exit_code"] = attributes.get("exitCode")
+        else:
+            entry["command"] = action.removeprefix("exec_start: ")
+            entry["start"] = event.get("timeNano")
+
+    def exec_of(self, container: str, command: str, claimed: set[str]) -> dict | None:
+        """The first exec on a container with this command whose start Docker reported, and not yet claimed."""
+
+        with self.lock:
+            for entry in self.execs.values():
+                if (
+                    entry["exec_id"] not in claimed
+                    and entry.get("container") == container
+                    and entry.get("command") == command
+                ):
+                    return dict(entry)
+        return None
+
     def _finding(self, event: dict, **more) -> dict:
         actor = event.get("Actor") or {}
         attributes = actor.get("Attributes") or {}
@@ -290,6 +325,7 @@ class Watch:
                         raw.write(line)
                         raw.flush()
                         self.events += 1
+                        self._record(event)
                         if not self._match(event):
                             self.findings.append(self._finding(event))
                         continue
@@ -416,6 +452,8 @@ class Run:
         # Per agent host: the nonces it logged, and the line counts of its logs read just before each.
         self.nonces: dict[str, dict[str, str]] = {}
         self.windows: dict[str, dict[str, dict[str, int]]] = {}
+        # The path of published tests, read once its technique YAMLs are fetched and checked.
+        self.plan: range_path.Plan | None = None
         self.watch = Watch(spec.prefix, out / "docker-events.ndjson")
         github = os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
         run_url = None
@@ -445,6 +483,7 @@ class Run:
             "atomic_red_team": None,
             "weaknesses": plants.weaknesses(spec),
             "plants": None,
+            "path": None,
             "result": "incomplete",
             "reason": None,
             "exit_code": None,
@@ -532,6 +571,8 @@ class Run:
             (self.out / "plants.md").write_text(plants.summary(self.manifest), encoding="utf-8")
         if self.manifest["activity"] is not None:
             (self.out / "activity.md").write_text(activity.summary(self.manifest), encoding="utf-8")
+        if self.manifest["path"] is not None:
+            (self.out / "path.md").write_text(range_path.summary(self.manifest), encoding="utf-8")
         if self.manifest["ecs"] is not None:
             (self.out / "score.md").write_text(score.summary(self.manifest), encoding="utf-8")
 
@@ -616,6 +657,8 @@ class Run:
             self.images[host.name] = {"reference": reference, "id": image["Id"], "digest": host.digest}
         if any(host.built for host in self.spec.hosts.values()):
             rendered = build.render(self.spec, self.out / "build")
+            # The path's rules, on the technique YAMLs just fetched and checked: before any container exists.
+            self.plan = range_path.load(self.spec, range_path.section(self.spec), rendered.folder / "atomics")
             if self.spec.atomics and self.spec.atomics.lock:
                 locked = atomics.read_lock(
                     atomics.lock_path(self.spec).read_text(encoding="utf-8"), self.spec
@@ -1580,8 +1623,32 @@ class Run:
             + [self.watch.check(watch_command)]
         )
 
+    def run_path(self) -> None:
+        """Run the path's published tests in the sealed range, on a range whose plants are in place.
+
+        Each `{ip:<host>@<network>}` of a check is filled in from `docker inspect` of the started containers.
+        """
+
+        record: dict = {
+            "planned": [step.id for step in self.plan.steps],
+            "steps": [],
+            "goal": None,
+            "stopped": None,
+            "notes": list(range_path.NOTES),
+        }
+        self.manifest["path"] = record
+        if not (self.manifest.get("plants") or {}).get("passed"):
+            record["skipped"] = "a plant check failed, so the range is not the one its spec describes"
+            self.write()
+            return
+        addresses = {
+            host: seal.addresses(inspect("inspect", identifier)[0], self.spec)
+            for host, identifier in self.containers.items()
+        }
+        range_path.Executor(self, self.plan, addresses).run_path()
+
     def hold_window(self) -> None:
-        """Where the path will run: keep the sealed range up, and stop at once on a finding of the watch."""
+        """After the path: keep the sealed range up for --hold seconds, and stop at once on a finding of the watch."""
 
         deadline = time.monotonic() + self.hold
         while time.monotonic() < deadline:
@@ -1800,10 +1867,12 @@ class Run:
             if self.spec.activity:
                 self.activity_go()
                 self.pause(self.spec.activity.warmup_seconds)
-            # The path of published tests runs here in a later version of the lab. Until then, a range
-            # with a defense gets the engine's harmless marks.
+            # A range with a defense gets the engine's harmless marks, so that delivery is counted on real lines.
             if self.spec.wazuh:
                 self.mark()
+            # The path of published tests, beside the ordinary activity, between the warm-up and the tail.
+            if self.plan and self.plan.steps:
+                self.run_path()
             self.hold_window()
             if self.spec.activity:
                 self.activity_tail()
