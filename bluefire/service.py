@@ -126,6 +126,7 @@ from .product_store import (
 )
 from .receiver_defense_jobs import ReceiverDefenseJobs
 from .receiver_defense_service import ReceiverDefenseServiceMixin
+from .recording_deltas import DeltaLibrary
 from .recordings import RecordingLibrary
 from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
 from .replay import ReplayError, ReplayRequest, prepare_replay
@@ -260,6 +261,7 @@ class BlueFireService(
         self.store = RunStore(runs_dir or Path.cwd() / ".bluefire-runs")
         self.recovered_runs = self.store.recover_interrupted_runs()
         self.recording_library = RecordingLibrary(self.store.root / "recordings")
+        self.delta_library = DeltaLibrary(self.recording_library)
         self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())
         self.runner_factory = runner_factory or self._managed_runner
         self._native_tool_setup_runner_factory = runner_factory
@@ -4634,6 +4636,15 @@ class BlueFireService(
 
     def import_recording(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         return self.recording_library.import_recording(request)
+
+    def recording_deltas(self) -> Mapping[str, Any]:
+        return self.delta_library.list()
+
+    def recording_delta(self, delta_id: str) -> Mapping[str, Any]:
+        return self.delta_library.detail(delta_id)
+
+    def import_recording_delta(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self.delta_library.import_delta(request)
 
     def detail(self, run_id: str) -> Mapping[str, Any]:
         try:

@@ -321,6 +321,14 @@
 .recorded-runs-refusal ul { margin: 0; padding-left: 18px; color: var(--muted-strong); }
 .recorded-runs-refusal li { overflow-wrap: anywhere; }
 .recorded-runs > .workspace-note { margin: 10px 18px 0; }
+.recorded-pairs { border-top: 1px solid var(--line); }
+.recorded-pairs > h3 { margin: 0; padding: 14px 18px 0; color: var(--text); font-size: .92rem; font-weight: 600; }
+.recorded-pairs > p { margin: 3px 18px 0; color: var(--muted); font-size: .78rem; }
+.recorded-pair-item .recorded-run-symbol { color: var(--muted-strong); }
+.recorded-pair-item.is-refused .recorded-run-symbol { border-color: color-mix(in srgb, var(--amber-soft) 45%, transparent); color: var(--amber-soft); }
+.recorded-pair-refused { color: var(--amber-soft); }
+.recorded-pair-refused code { color: inherit; font-size: .95em; }
+.recorded-run-origin.is-built { color: var(--amber-soft); }
 @keyframes recorded-run-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .recorded-run-live i { animation: none; } .recorded-run-item, .recorded-run-open svg { transition: none; } }
 @media (max-width: 640px) {

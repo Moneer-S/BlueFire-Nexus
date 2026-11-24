@@ -18,6 +18,7 @@ _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _DETECTION_ID = re.compile(r"^detection-[0-9a-f]{20}$")
 _PROPOSAL_RECORD_ID = re.compile(r"^proposal-review-[0-9a-f]{32}$")
 _RECORDING_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_DELTA_ID = re.compile(r"^[0-9a-f]{16}$")
 _MANAGEMENT_IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(0|[1-9][0-9]*)\."
@@ -513,6 +514,23 @@ class APIRoutes:
             )
             return ("", None)
         return (candidate_id, action)
+
+    def _recording_delta_request(self, path: str) -> tuple[bool, str | None] | None:
+        """Parse ``/recordings/deltas`` and ``/recordings/deltas/{id}``: (valid, id or None)."""
+        collection = f"{API_PREFIX}/recordings/deltas"
+        if path != collection and not path.startswith(collection + "/"):
+            return None
+        if not self._management_query_free():
+            return (False, None)
+        if path == collection:
+            return (True, None)
+        delta_id = path[len(collection) + 1 :]
+        if not _DELTA_ID.fullmatch(delta_id):
+            self._error(
+                HTTPStatus.BAD_REQUEST, "invalid_delta_id", "Comparison identifier is invalid."
+            )
+            return (False, None)
+        return (True, delta_id)
 
     def _recording_request(self, path: str) -> tuple[bool, str | None] | None:
         """Parse ``/recordings`` and ``/recordings/{id}``: (valid, recording id or None)."""

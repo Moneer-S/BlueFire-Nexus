@@ -21,6 +21,7 @@ bluefire = [
   "data/*.json",
   "data/*.txt",
   "data/recordings/*.json",
+  "data/recordings/deltas/*.json",
   "ui/*.css",
   "ui/*.html",
   "ui/*.js",

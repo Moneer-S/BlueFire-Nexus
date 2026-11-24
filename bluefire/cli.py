@@ -31,11 +31,10 @@ from .receiver import (
     ReceiverConfig,
     run_loopback_receiver,
 )
+from .recording_deltas import MAX_DELTA_BYTES, invalid_delta, parse_delta_bytes
 from .recordings import (
     MAX_RECORDING_BYTES,
     RecordingError,
-    invalid_recording,
-    parse_recording_bytes,
     replay_page,
 )
 from .runner_bootstrap import managed_product_root
@@ -266,6 +265,11 @@ def _parser() -> argparse.ArgumentParser:
     recording_commands.add_parser("list", help="List shipped and imported recordings")
     recording_import = recording_commands.add_parser("import", help="Import one recording file")
     recording_import.add_argument("path", type=Path)
+    delta_import = recording_commands.add_parser(
+        "import-delta",
+        help="Import one comparison of two kept recordings (delta.json of bluefire-lab compare)",
+    )
+    delta_import.add_argument("path", type=Path)
     recording_page = recording_commands.add_parser(
         "page", help="Write the single replay page of one recording to a new file"
     )
@@ -801,14 +805,21 @@ def _execute(
                 "path": str(args.out),
                 "bytes": len(page),
             }
+        if args.recording_command == "import-delta":
+            text = _bounded_utf8_text(
+                args.path, maximum_bytes=MAX_DELTA_BYTES, description="comparison"
+            )
+            try:
+                delta = parse_delta_bytes(text.encode("utf-8"))
+            except RecordingError as exc:
+                raise invalid_delta(exc) from None
+            return service.import_recording_delta({"delta": delta})
         text = _bounded_utf8_text(
             args.path, maximum_bytes=MAX_RECORDING_BYTES, description="recording"
         )
-        try:
-            recording = parse_recording_bytes(text.encode("utf-8"))
-        except RecordingError as exc:
-            raise invalid_recording(exc) from None
-        return service.import_recording({"recording": recording})
+        # The file is sent as it is, so the store keeps the bytes its engine wrote.
+        recording_file = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        return service.import_recording({"recording_file": recording_file})
     if args.command == "detections":
         if args.detection_command == "health":
             return service.detection_health()

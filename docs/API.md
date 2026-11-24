@@ -9,7 +9,7 @@ BlueFire serves one loopback JSON API under `/api/v1`. Requests and responses us
 - Host must identify the current loopback listener and port.
 - Every API request requires a valid bounded session in `X-BlueFire-Session`; cookies are not accepted as authority. The packaged UI exchanges the CLI's 384-bit one-time connection code via `X-BlueFire-Browser-Bootstrap` on `POST /api/v1/session`, receiving a no-store JSON object with one `session` value. It keeps that value in origin-and-tab-scoped session storage, sends it only to the exact API origin, omits ambient credentials and refuses redirects. The server stores only digests. An optional manual launch fragment is stripped before exchange; the desktop opener receives only the credential-free URL.
 - Every POST requires an exact same-origin `Origin` header.
-- Request bodies require one numeric `Content-Length` and are limited to 1 MiB. Only `POST /api/v1/recordings` has a limit of its own, 8 MiB and 1 KiB, the server's `max_recording_body`, because one recording is larger than the other JSON bodies.
+- Request bodies require one numeric `Content-Length` and are limited to 1 MiB. Only `POST /api/v1/recordings` and `POST /api/v1/recordings/deltas` have a limit of their own, the server's `max_recording_body`: one recording file of 8 MiB in base64, and 1 KiB, because one recording is larger than the other JSON bodies.
 - Duplicate JSON keys, non-finite numbers, transfer encoding, absolute request targets, traversal, backslashes, and NUL paths are rejected.
 - Responses use restrictive CSP, frame, referrer, permissions, and content-type headers.
 - Static UI assets are public, but the API is not. No permissive CORS or remote/multi-user authentication is provided.
@@ -77,6 +77,8 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 | POST | `/api/v1/runs/{run_id}/replays` | Create a lineage-linked replay (`201`) |
 | GET, POST | `/api/v1/recordings` | List the shipped and imported recordings, or import one (`201`) |
 | GET | `/api/v1/recordings/{recording_id}` | One whole recording with its list entry |
+| GET, POST | `/api/v1/recordings/deltas` | List the comparisons of two kept recordings, or import one (`201`) |
+| GET | `/api/v1/recordings/deltas/{delta_id}` | One whole comparison with its list entry |
 | POST | `/api/v1/comparisons` | Compare two or more runs |
 | GET | `/api/v1/comparison-snapshots` | List recent immutable run-comparison snapshots |
 | GET | `/api/v1/comparison-snapshots/{snapshot_id}` | Reopen a saved comparison and check current source-bundle integrity |
@@ -506,7 +508,11 @@ with the whole recording as it was shipped or imported. An id is 1 to 64
 letters, digits, `-` or `_`; any other is `400 invalid_recording_id`, and an
 unknown one `404 recording_not_found`.
 
-`POST /api/v1/recordings` takes `{"recording": {...}}` and returns `201` with
+`POST /api/v1/recordings` takes `{"recording_file": "<base64>"}`, the recording
+file's bytes, which are kept as they were sent, so that the kept file's SHA-256
+is the one its engine wrote; or `{"recording": {...}}`, the recording as an
+object, kept as canonical JSON. The id `deltas` is refused: it is the address
+of the comparisons. It returns `201` with
 `{"created", "replaced", "summary"}`. Sending the same recording again changes
 nothing (`created: false`). A recording that is still running may be sent again
 whole as it grows, with the same `source.engine` and `source.started`: it
@@ -518,6 +524,30 @@ whose parts disagree, is `422 recording_invalid`; `details.problems` lists up to
 one runs directory, from the server or the command line, take one lock in turn;
 when it cannot be had within five seconds the import is
 `503 recordings_busy` and nothing is stored.
+
+A delta (the section "A delta" of [RECORDING.md](RECORDING.md)) is a comparison
+of two recordings that `bluefire-lab compare` wrote. `POST
+/api/v1/recordings/deltas` takes `{"delta": {...}}` and returns `201` with
+`{"created", "summary"}`; the same delta again is `created: false`. It is
+refused with `422 delta_invalid`, `details.problems` naming each reason, unless
+it follows the format in every key the app reads, agrees with itself where the
+format ties keys together (each step's `result`, `changed` and `price`, the
+`counts`, `comparable`), and both recordings it names are kept, finished, as the
+files it was made from (`sha256` and `id`), with the `run_url`, `environment`,
+`commit` and `started` of their `source` and every step id it names. It takes
+the recordings' import lock. A delta whose recording is no longer kept as the
+file it names is left out of the list (counted in `unreadable_count`) and
+returned as `409 delta_recording_replaced`. `GET
+/api/v1/recordings/deltas` returns
+`{"schema_version": "bluefire.delta-list.v1", "deltas": [...], "unreadable_count", "omitted_count"}`;
+each entry has the delta's `id` (16 hex digits), `claim`, `declared_change`,
+`comparable`, `refused_because`, `counts`, `before`, `after`, the list entries
+of its two `recordings`, and an `origin`: `shipped` only when the delta and both
+its recordings are shipped, `imported` otherwise. `GET
+/api/v1/recordings/deltas/{id}` returns
+`{"schema_version": "bluefire.delta-entry.v1", "summary": {...}, "delta": {...}}`;
+any other id is `400 invalid_delta_id`, and an unknown one `404
+delta_not_found`. The app never computes or corrects a delta.
 
 ### Run event pages
 

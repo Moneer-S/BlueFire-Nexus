@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import { api, ApiError, type RecordingSummary } from "../src/lib/api";
+import { api, ApiError, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
 import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import { RunsPage } from "../src/pages/Runs";
 import { ProductProvider } from "../src/state/ProductContext";
@@ -35,7 +35,8 @@ function Address() {
   return <output aria-label="Address">{location.pathname}</output>;
 }
 
-function mount({ runs = demoRuns } = {}) {
+function mount({ runs = demoRuns, deltas = [] as DeltaSummary[] } = {}) {
+  vi.spyOn(api, "recordingDeltas").mockResolvedValue({ deltas, unreadable_count: 0, omitted_count: 0 });
   vi.spyOn(api, "catalog").mockResolvedValue(structuredClone(demoCatalog));
   vi.spyOn(api, "runs").mockResolvedValue({ runs: structuredClone(runs), unavailable_run_count: 0 });
   vi.spyOn(api, "scenarios").mockResolvedValue({ scenarios: [structuredClone(demoScenario)] });
@@ -85,6 +86,36 @@ describe("the Runs screen's recorded runs", () => {
     expect(await screen.findAllByRole("link", { name: /^Review run / })).toHaveLength(demoRuns.length);
   });
 
+  it("lists each pair of compared runs under its own heading: the change, the two dates and one line of the result", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [shipped], unreadable_count: 0, omitted_count: 0 });
+    const counts = { paired: 91, same: 90, better: 1, worse: 0, changed: 0, "not attributable": 0, "without cause": 0, "no verdict": 0, new: 0, gone: 0 };
+    const side = (id: string, started: string) => ({ sha256: "a".repeat(64), id, environment: "GitHub-hosted runner", started });
+    const pair: DeltaSummary = {
+      id: "0000000000000001", claim: "one pair of runs", declared_change: "sensors:auditd", comparable: true, refused_because: [], counts,
+      before: side("lab-run-1", "2026-11-23T17:25:50Z"), after: side("lab-run-2", "2026-11-24T09:00:00Z"),
+      recordings: { before: shipped, after: { ...shipped, id: "lab-run-2" } },
+      origin: { kind: "imported", note: "Imported." },
+    };
+    const refused: DeltaSummary = { ...pair, id: "0000000000000002", declared_change: null, comparable: false, refused_because: ["the before recording has no source.setup, so what it was made with is not known", "also differed: the kernel of host `target`"] };
+    mount({ deltas: [pair, refused] });
+
+    const list = await screen.findByRole("region", { name: "Before against after" });
+    const [changed, noVerdict] = within(list).getAllByRole("listitem");
+    if (!changed || !noVerdict) throw new Error("Both pairs should be listed.");
+    expect(within(changed).getByRole("link", { name: "The settings of sensor auditd" })).toHaveAttribute("href", "/runs/compared/0000000000000001");
+    expect(within(changed).getByText("Before 23 Nov 2026, after 24 Nov 2026")).toBeVisible();
+    expect(within(changed).getByText("1 better, 0 worse, 0 changed without a cause, of 91 paired steps")).toBeVisible();
+    expect(within(noVerdict).getByRole("link", { name: "Nothing declared as changed" })).toBeVisible();
+    expect(within(noVerdict).getByText("No verdict: the before recording has no source.setup, so what it was made with is not known (and 1 more reason)")).toBeVisible();
+  });
+
+  it("shows no pairs, and no heading for them, when the service keeps none", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [shipped], unreadable_count: 0, omitted_count: 0 });
+    mount();
+    await screen.findByText("3 of 60 tests alerted, 56 seen, 1 unseen");
+    expect(screen.queryByText("Before against after")).not.toBeInTheDocument();
+  });
+
   it("gives recorded runs and the older engine's runs each their own empty state", async () => {
     vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [], unreadable_count: 0, omitted_count: 0 });
     mount({ runs: [] });
@@ -107,7 +138,8 @@ describe("the Runs screen's recorded runs", () => {
     // Each problem once: the service's message repeats the first, so it is not shown beside the list.
     expect(within(refusal).getAllByText(/score\.alerted is 2, but the steps give 1\./)).toHaveLength(1);
     expect(within(refusal).getByText("score.seen is 1, but the steps give 0.")).toBeVisible();
-    expect(importing).toHaveBeenLastCalledWith({ schema: "bluefire.recording/1", id: "broken" });
+    // The file's own bytes are sent, not the recording parsed and written again.
+    expect(new TextDecoder().decode(importing.mock.lastCall?.[0])).toBe(JSON.stringify({ schema: "bluefire.recording/1", id: "broken" }));
     expect(screen.getByLabelText("Address")).toHaveTextContent("/runs");
 
     await user.upload(input, recordingFile({ schema: "bluefire.recording/1", id: "path-run-2" }));

@@ -2,11 +2,13 @@
 // each opening in the live view, and one control to import a recording file.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, FileUp, Radio, RotateCcw } from "lucide-react";
+import { ArrowRight, FileUp, GitCompareArrows, Radio, RotateCcw } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, ApiError, type RecordingSummary } from "../lib/api";
+import { api, ApiError, type DeltaSummary, type RecordingSummary } from "../lib/api";
+import { day } from "../live/format";
 import { newestFirst, originWords, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
+import { changeWords, codeSpans, pairPath, pairResultWords } from "../lib/recording-pairs";
 import { Button, ErrorState, LoadingState, Panel } from "./Primitives";
 
 /** The problems a refused import names, in the service's own words. */
@@ -18,23 +20,24 @@ function refusalProblems(error: unknown): string[] {
 
 type ImportProblem = { message: string; problems: string[] };
 
-function readText(file: File): Promise<string> {
+function readBytes(file: File): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onload = () => resolve(reader.result instanceof ArrayBuffer ? new Uint8Array(reader.result) : new Uint8Array());
     reader.onerror = () => reject(reader.error ?? new Error("the file could not be read"));
-    reader.readAsText(file);
+    reader.readAsArrayBuffer(file);
   });
 }
 
 export function RecordedRuns() {
   const recordings = useQuery({ queryKey: ["recordings"], queryFn: api.recordings });
+  const pairs = useQuery({ queryKey: ["recording-deltas"], queryFn: api.recordingDeltas });
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const input = useRef<HTMLInputElement | null>(null);
   const [problem, setProblem] = useState<ImportProblem | null>(null);
   const importing = useMutation({
-    mutationFn: (recording: unknown) => api.importRecording(recording),
+    mutationFn: (file: Uint8Array) => api.importRecording(file),
     onSuccess: async (result) => {
       setProblem(null);
       // A recording imported again under its id, a running one that grew or finished, is not shown from the cache.
@@ -49,14 +52,16 @@ export function RecordedRuns() {
     event.currentTarget.value = "";
     if (!file) return;
     setProblem(null);
-    let value: unknown;
+    let bytes: Uint8Array;
     try {
-      value = JSON.parse(await readText(file));
+      bytes = await readBytes(file);
+      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     } catch (error) {
       setProblem({ message: `${file.name} is not a JSON file, so it was not sent: ${error instanceof Error ? error.message : "it could not be read"}.`, problems: [] });
       return;
     }
-    importing.mutate(value);
+    // The file goes as it is: the service keeps the bytes the lab wrote.
+    importing.mutate(bytes);
   };
   const list = recordings.data ? newestFirst(recordings.data.recordings) : undefined;
   const unreadable = recordings.data?.unreadable_count ?? 0;
@@ -85,7 +90,31 @@ export function RecordedRuns() {
     {recordings.isPending ? <LoadingState label="Loading recorded runs" />
       : list?.length ? <ul className="recorded-run-list">{list.map((summary) => <RecordedRunItem key={summary.id} summary={summary} />)}</ul>
       : recordings.isSuccess ? <div className="inline-empty"><span>No recorded runs yet. Import a recording file made by the lab.</span></div> : null}
+    {pairs.data && pairs.data.deltas.length > 0 ? <section className="recorded-pairs" aria-labelledby="recorded-pairs-heading">
+      <h3 id="recorded-pairs-heading">Before against after</h3>
+      <p>Two recorded runs of the same tests, compared by the lab: the one declared change, and what it moved.</p>
+      <ul className="recorded-run-list">{pairs.data.deltas.map((summary) => <RecordedPairItem key={summary.id} summary={summary} />)}</ul>
+    </section> : null}
+    {pairs.data && pairs.data.unreadable_count > 0 ? <p className="workspace-note" role="status">{pairs.data.unreadable_count} imported {pairs.data.unreadable_count === 1 ? "comparison is" : "comparisons are"} not listed: a comparison is shown only while it can be read and both its recordings are still the files it names.</p> : null}
   </Panel>;
+}
+
+function RecordedPairItem({ summary }: { summary: DeltaSummary }) {
+  const dates = [summary.before.started, summary.after.started].map((started) => (started ? day(started) : "not recorded"));
+  return <li className={`recorded-run-item recorded-pair-item${summary.comparable ? "" : " is-refused"}`}>
+    <span className="recorded-run-symbol" aria-hidden="true"><GitCompareArrows /></span>
+    <div className="recorded-run-main">
+      <Link className="recorded-run-link" to={pairPath(summary.id)}>{changeWords(summary.declared_change)}</Link>
+      <p className="recorded-run-meta">
+        <span>Before {dates[0]}, after {dates[1]}</span>
+        <span className={`recorded-run-origin is-${summary.origin.kind}`}>{summary.origin.kind === "built" ? "Built for the demo" : originWords(summary.origin)}</span>
+      </p>
+      <p className="recorded-run-score">
+        <span className={summary.comparable ? undefined : "recorded-pair-refused"}>{codeSpans(pairResultWords(summary)).map((part, index) => (part.code ? <code key={index}>{part.text}</code> : part.text))}</span>
+      </p>
+    </div>
+    <span className="recorded-run-open" aria-hidden="true">Open<ArrowRight /></span>
+  </li>;
 }
 
 /** A thin bar of the score: alerted, seen and unseen, as parts of the tests that took effect. */

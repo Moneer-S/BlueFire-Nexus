@@ -32,8 +32,9 @@ from .application_errors import APIError
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_REQUEST_BODY = 1_048_576
-# One recording of up to 8 MiB (``recordings.MAX_RECORDING_BYTES``) in its import envelope.
-MAX_RECORDING_REQUEST_BODY = 8 * 1024 * 1024 + 1024
+# One recording file of up to 8 MiB (``recordings.MAX_RECORDING_BYTES``) in base64, in its
+# import envelope. The comparisons' import route reads a body this large too.
+MAX_RECORDING_REQUEST_BODY = 4 * -(-8 * 1024 * 1024 // 3) + 1024
 _REJECTION_CLOSE_SECONDS = 0.2
 _REJECTION_DISCARD_BYTES = 65_536
 _REVIEWED_T1082_INTAKE_ROUTE = f"{API_PREFIX}/research-intakes/mitre-attack-t1082-v19-2"
@@ -444,6 +445,16 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/scenarios":
             self._dispatch(lambda: self.platform_server.service.scenarios())
             return
+        delta_request = self._routes._recording_delta_request(path)
+        if delta_request is not None:
+            valid, delta_id = delta_request
+            if not valid:
+                return
+            if delta_id is None:
+                self._dispatch(lambda: self.platform_server.service.recording_deltas())
+            else:
+                self._dispatch(lambda: self.platform_server.service.recording_delta(delta_id))
+            return
         recording_request = self._routes._recording_request(path)
         if recording_request is not None:
             valid, recording_id = recording_request
@@ -728,7 +739,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         body = self._read_json_object(
             self.platform_server.max_recording_body
-            if path == f"{API_PREFIX}/recordings"
+            if path in (f"{API_PREFIX}/recordings", f"{API_PREFIX}/recordings/deltas")
             else self.platform_server.max_request_body
         )
         if body is None:
@@ -1045,6 +1056,17 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/runs/preflight":
             self._dispatch(lambda: self.platform_server.service.preflight(body))
+            return
+        delta_request = self._routes._recording_delta_request(path)
+        if delta_request is not None:
+            valid, delta_id = delta_request
+            if valid and delta_id is None:
+                self._dispatch(
+                    lambda: self.platform_server.service.import_recording_delta(body),
+                    success_status=HTTPStatus.CREATED,
+                )
+            elif valid:
+                self._method_not_allowed("GET")
             return
         recording_request = self._routes._recording_request(path)
         if recording_request is not None:

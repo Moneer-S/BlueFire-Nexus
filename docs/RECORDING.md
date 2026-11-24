@@ -300,6 +300,39 @@ These checks show that a recording agrees with itself. They do not show that
 its steps ran, where or when, which sensor recorded each event, or which step
 reached the goal: the app says so next to every imported recording.
 
+The app keeps a recording file as it was sent, so the SHA-256 of the kept file
+is the one its engine wrote, and a delta (below) can name it. The Runs screen
+and `bluefire recordings import <file>` send the file itself.
+
+**A pair of runs in the app.** The app also keeps deltas: `bluefire recordings
+import-delta <delta.json>` or `POST /api/v1/recordings/deltas` (see
+[API.md](API.md)). It takes a delta only when it follows the format below in
+every key the app reads and agrees with itself where the format ties its keys
+together, when both recordings it names are kept, finished, as the very files it
+was made from (by `sha256` and `id`), with the facts it copies from their
+`source`, and when every step id it names is a step of its recording; otherwise
+it says why, and keeps nothing. A kept recording that is finished is never
+replaced, so a delta made from another file under a kept id cannot be imported.
+A delta is shown only while both its recordings are still those files.
+The app never computes or corrects a delta. A delta whose recordings, or which
+itself, was imported is labelled as imported, with the note that the app did
+not make the comparison; a delta shipped with the app is a file under
+`bluefire/data/recordings/deltas/` (none yet).
+
+The Runs screen lists the pairs under "Before against after", each with the
+declared change, the two runs' dates and one line of the result, and opens one
+at `#/runs/compared/<id>`. That page draws the delta alone: the declared change
+with both values, or "No verdict" with every reason and every difference; what
+was recorded as the same in both and whether the lab's code was; the two runs
+side by side, each with where and when, its CI run (a link only for a recording
+shipped with the app) and a way to open it; each step the change moved as one
+line, with the before and after outcomes, the delta's verdict with its price,
+and what changed underneath; the control, the steps where it varied, named as
+run variation, and the steps that changed without a cause; new and gone steps,
+listed and not counted; and the race only when the delta has one with numbers,
+otherwise its reason. A step's title opens its detail from both recordings,
+next to each other, and the address keeps it (`?step=<id>`).
+
 ## A delta
 
 A delta says what differs between two recordings, a run before a change and a

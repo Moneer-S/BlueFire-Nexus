@@ -20,6 +20,9 @@ replaced.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
 import math
 import os
@@ -48,6 +51,8 @@ MAX_STEPS = 2_000
 MAX_EVENTS = 20_000
 MAX_ALERTS = 20_000
 MAX_LISTED = 200
+# The routes of the comparisons of two recordings live under /recordings/deltas.
+DELTAS_ADDRESS = "deltas"
 IMPORTED_NOTE = (
     "Imported. BlueFire checked that this file follows the recording format and that "
     "its score, step outcomes, events, alerts and times agree with each other. It "
@@ -100,19 +105,17 @@ class RecordingError(ValueError):
         self.problems = problems
 
 
-def _walk(value: Mapping[str, Any], check: _Checker) -> None:
+def _walk(value: Mapping[str, Any], check: _Checker, what: str = "A recording") -> None:
     """Visit every value once, without recursion: depth, numbers and characters.
 
-    Raises at once when the recording nests deeper than the format allows.
+    Raises at once when the value (``what``) nests deeper than the format allows.
     """
 
     stack: list[tuple[Any, str, int]] = [(value, "", 1)]
     while stack:
         item, where, depth = stack.pop()
         if isinstance(item, (Mapping, list)) and depth > _MAX_DEPTH:
-            raise RecordingError(
-                [f"A recording nests objects and lists at most {_MAX_DEPTH} deep."]
-            )
+            raise RecordingError([f"{what} nests objects and lists at most {_MAX_DEPTH} deep."])
         if isinstance(item, Mapping):
             if any(_CONTROL.search(key) for key in item):
                 check.fail(where or "recording", "has a key that holds control characters.")
@@ -809,6 +812,8 @@ class RecordingLibrary:
         self.root = root
         self._summaries: dict[Path, tuple[tuple[int, int, int], dict[str, Any] | None]] = {}
         self._shipped_entries: dict[str, tuple[Mapping[str, Any], dict[str, Any]]] | None = None
+        self._shipped_files: dict[str, str] = {}
+        self._file_digests: dict[Path, tuple[tuple[int, int, int], str]] = {}
 
     def _shipped_recordings(self) -> dict[str, tuple[Mapping[str, Any], dict[str, Any]]]:
         """Read the packaged recordings once; they do not change while the app runs."""
@@ -819,10 +824,45 @@ class RecordingLibrary:
             names = sorted(item.name for item in folder.iterdir()) if folder.is_dir() else []
             for name in names:
                 if name.endswith(".json"):
-                    recording, summary = _shipped(folder.joinpath(name).read_bytes())
+                    payload = folder.joinpath(name).read_bytes()
+                    recording, summary = _shipped(payload)
                     entries[recording["id"]] = (recording, summary)
+                    self._shipped_files[recording["id"]] = hashlib.sha256(payload).hexdigest()
             self._shipped_entries = entries
         return self._shipped_entries
+
+    def kept_file(self, recording_id: str) -> tuple[str, dict[str, Any]]:
+        """The SHA-256 of the file kept for a recording, as it was shipped or imported, and
+        its list entry. A recording imported as an object is kept as canonical JSON."""
+
+        shipped = self._shipped_recordings().get(recording_id)
+        if shipped is not None:
+            return self._shipped_files[recording_id], shipped[1]
+        _, summary = self.get(recording_id)
+        path = self._path(recording_id)
+        try:
+            status = path.stat()
+            key = (status.st_ino, status.st_mtime_ns, status.st_size)
+            cached = self._file_digests.get(path)
+            if cached is not None and cached[0] == key:
+                return cached[1], summary
+            with path.open("rb") as handle:
+                digest = hashlib.sha256(handle.read(MAX_RECORDING_BYTES + 1)).hexdigest()
+            self._file_digests[path] = (key, digest)
+        except OSError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "recording_unreadable",
+                "The stored recording could not be read or no longer follows the format.",
+            ) from exc
+        return digest, summary
+
+    @contextmanager
+    def import_lock(self) -> Iterator[None]:
+        """The store's import lock, for another kind of import that reads the recordings."""
+
+        with self._import_lock():
+            yield
 
     def _path(self, recording_id: Any) -> Path:
         if not isinstance(recording_id, str) or not _ID.fullmatch(recording_id):
@@ -933,24 +973,42 @@ class RecordingLibrary:
             ) from exc
 
     def import_recording(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Store a new recording, or the grown version of one that is still running."""
+        """Store a new recording, or the grown version of one that is still running.
 
-        if set(request) != {"recording"}:
+        ``recording_file`` holds the file's bytes in base64, and the file is kept as
+        it was sent, so its SHA-256 stays the one its engine wrote: a comparison of
+        two runs names its recordings by it. ``recording`` holds the recording as an
+        object, which is kept as canonical JSON.
+        """
+
+        if set(request) not in ({"recording"}, {"recording_file"}):
             raise APIError(
                 HTTPStatus.BAD_REQUEST,
                 "recording_import_invalid",
-                'Send exactly one field, "recording", holding the recording object.',
+                'Send exactly one field: "recording_file", the recording file\'s bytes in '
+                'base64, or "recording", the recording object.',
             )
         try:
-            recording = validate_recording(request["recording"])
-            try:
-                payload = canonical_json_bytes(recording) + b"\n"
-            except ValueError as exc:
-                raise RecordingError([f"The recording cannot be written as JSON: {exc}"]) from None
+            if "recording_file" in request:
+                payload = _file_bytes(request["recording_file"])
+                recording = parse_recording_bytes(payload)
+            else:
+                recording = validate_recording(request["recording"])
+                try:
+                    payload = canonical_json_bytes(recording) + b"\n"
+                except ValueError as exc:
+                    raise RecordingError(
+                        [f"The recording cannot be written as JSON: {exc}"]
+                    ) from None
             if len(payload) > MAX_RECORDING_BYTES:
                 raise RecordingError(
                     [f"A recording file is limited to {MAX_RECORDING_BYTES} bytes."]
                 )
+            if recording["id"] == DELTAS_ADDRESS:
+                raise RecordingError(
+                    [f"id {DELTAS_ADDRESS!r} is the address of the comparisons; give the "
+                     "recording another id."]
+                )  # fmt: skip
         except RecordingError as exc:
             raise invalid_recording(exc) from None
         recording_id = recording["id"]
@@ -982,6 +1040,21 @@ class RecordingLibrary:
             "replaced": replaced,
             "summary": summarize(recording, _imported_origin()),
         }
+
+
+def _file_bytes(value: Any) -> bytes:
+    """The bytes of a file sent in base64."""
+
+    limit = 4 * -(-MAX_RECORDING_BYTES // 3)
+    if not isinstance(value, str) or len(value) > limit:
+        raise RecordingError(
+            [f"recording_file must be the file's bytes in base64, at most {MAX_RECORDING_BYTES} "
+             "bytes."]
+        )  # fmt: skip
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        raise RecordingError(["recording_file is not base64."]) from None
 
 
 def _id_taken(recording_id: str) -> APIError:

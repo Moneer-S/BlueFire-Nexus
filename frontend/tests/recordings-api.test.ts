@@ -47,17 +47,21 @@ describe("the recordings in the service's client", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("imports a recording, and passes on a refusal with every problem the service named", async () => {
+  it("imports a recording file as the bytes it holds, and passes on a refusal with every problem the service named", async () => {
     const fetch = answer(201, { created: true, replaced: false, summary });
-    const result = await api.importRecording({ schema: "bluefire.recording/1", id: "lab-run-1" });
+    // As the lab writes it: indented, with a character outside ASCII, so a file that was parsed and written again would differ.
+    const file = new TextEncoder().encode('{\n "schema": "bluefire.recording/1",\n "id": "lab-run-1",\n "title": "Résumé"\n}\n');
+    const result = await api.importRecording(file);
     expect(result.summary.id).toBe("lab-run-1");
     const [url, options] = fetch.mock.calls[0] ?? [];
     expect(url).toBe("/api/v1/recordings");
     expect(options?.method).toBe("POST");
-    expect(JSON.parse(String(options?.body))).toEqual({ recording: { schema: "bluefire.recording/1", id: "lab-run-1" } });
+    const body = JSON.parse(String(options?.body)) as { recording_file: string };
+    expect(Object.keys(body)).toEqual(["recording_file"]);
+    expect(Array.from(atob(body.recording_file), (character) => character.charCodeAt(0))).toEqual(Array.from(file));
 
     answer(422, { error: { code: "recording_invalid", message: "The recording is not valid: score.alerted is 2, but the steps give 1.", details: { problems: ["score.alerted is 2, but the steps give 1.", "score.seen is 1, but the steps give 0."] } } });
-    const refusal = await api.importRecording({}).catch((error: unknown) => error);
+    const refusal = await api.importRecording(new TextEncoder().encode("{}")).catch((error: unknown) => error);
     expect(refusal).toBeInstanceOf(ApiError);
     expect(refusal).toMatchObject({ status: 422, code: "recording_invalid", message: "The recording is not valid: score.alerted is 2, but the steps give 1." });
     expect((refusal as ApiError).details).toEqual({ problems: ["score.alerted is 2, but the steps give 1.", "score.seen is 1, but the steps give 0."] });
@@ -100,7 +104,22 @@ describe("the recordings in the demo build", () => {
     const entry = await demo.recording(shipped?.id ?? "");
     expect(readRecording(entry.recording).steps).toHaveLength(91);
     await expect(demo.recording("not-shipped")).rejects.toMatchObject({ code: "recording_not_found", status: 404 });
-    await expect(demo.importRecording(entry.recording)).rejects.toMatchObject({ code: "demo_recording_import_refused" });
+    await expect(demo.importRecording(new TextEncoder().encode(JSON.stringify(entry.recording)))).rejects.toMatchObject({ code: "demo_recording_import_refused" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("gives one pair of runs, labelled as built for the demo and never as a result", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch");
+    const demo = await demoApi();
+    const { deltas } = await demo.recordingDeltas();
+    expect(deltas).toHaveLength(1);
+    const pair = deltas[0];
+    expect(pair?.origin.kind).toBe("built");
+    expect(pair?.origin.note).toMatch(/^Built for the demo, not a result\./);
+    const entry = await demo.recordingDelta(pair?.id ?? "");
+    expect(entry.delta.schema).toBe("bluefire.delta/1");
+    expect(entry.summary.origin.kind).toBe("built");
+    await expect(demo.recordingDelta("0000000000000000")).rejects.toMatchObject({ code: "delta_not_found", status: 404 });
     expect(fetch).not.toHaveBeenCalled();
   });
 });
