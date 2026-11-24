@@ -73,6 +73,7 @@ ACCEPTED_PATHS = {
     "bluefire/prepared_lab_runtime.py": (APP_LAB_HOME,),
     "docs/PREPARED_LINUX_LAB.md": (APP_LAB_HOME + b"/lab-isolation.json",),
     "lab/range/range-one.yaml": (RANGE_ONE_WEB_HOME, RANGE_ONE_CI_FILES),
+    "lab/tests/test_range_path.py": (RANGE_ONE_WEB_HOME,),
     "lab/tests/fixtures/range/activity/archive.ndjson": (RANGE_ONE_OPS_HOME,),
     "lab/tests/fixtures/range/activity/web-auth.txt": (RANGE_ONE_OPS_HOME,),
     "lab/tests/fixtures/range/ecs/archive.ndjson": (RANGE_ONE_OPS_HOME,),

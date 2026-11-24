@@ -1054,8 +1054,9 @@ The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
 `manifest.json` records the daemon's security options under `docker`, and
 every plant check that uses them passed there.
 
-Not yet shown: the path of published tests through the range, and the scoring
-of its steps. The ordinary day is scored, and shown,
+The path of published tests runs through the range, and a CI run shows it
+([the path](#range-one-the-path)). Not yet shown: the scoring of its steps.
+The ordinary day is scored, and shown,
 [below](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
 ## Range one: ordinary activity
@@ -1300,8 +1301,7 @@ first time, a frequency, a rule that follows another) have already seen the
 plant checks' logins and sudo before the go, so a rule that fires only on a
 first occurrence may not fire on the jobs: in this run the plant check's sudo
 raised 5403 "First time user executed sudo." and `admin`'s sudo only 5402.
-The path of published tests is not yet in the range, so nothing here ties an
-event to a step.
+Nothing here ties an event to a step of the path yet.
 
 ## Range one: the path
 
@@ -1318,13 +1318,104 @@ every vector that exists was identical: the attack and the cleanup of all 11
 steps (six of those cleanups are empty, `bash -c ""` or `sh -c ""`, because
 their tests publish none) and the prereq checks of the two steps that have
 one (`s01` and `s09`), 24 vectors in all. For the other nine steps the job
-checked that neither side started a prereq command. A run of the path in
-range one's hosts: not yet shown.
+checked that neither side started a prereq command.
+
+`bluefire-lab range run lab/range/range-one.yaml` runs the path inside the
+sealed range (`bluefire_lab/range/path.py`): after the seal's phases
+`static`, `no way out` and `segmentation` have passed and the plants are
+in place, between the warm-up and the tail of the ordinary activity, and
+before the seal is checked again (`after path`). The tests are the published
+ones at the pinned commit, unchanged apart from their declared input
+arguments, which the spec writes out.
+
+| Step | What the published test does here | Host, account | How the engine checks its effect |
+| --- | --- | --- | --- |
+| s01 | Tries the published list of user and password pairs over SSH against `web` | `attacker`, root | `web`'s auth.log has `Accepted password for webadmin from` `attacker`'s address |
+| s02 | Downloads a script from `inet` over HTTP and runs it | `web`, webadmin | its output has `Hello From Atomic Red Team`, and `inet`'s access log a 200 for that file from `web` |
+| s03 | Writes the system's description to `/tmp/T1082.txt` | `web`, webadmin | the file holds `Linux` |
+| s04 | Collects the `known_hosts` files under webadmin's home | `web`, webadmin | `/tmp/ssh_enum.txt` has a line that starts with `build ` |
+| s05a | Tries every TCP port of `build` | `web`, webadmin | its output has `port 22 is open` |
+| s05b | Tries every TCP port of `db` | `web`, webadmin | its output has `port 3306 is open` |
+| s06 | Searches the shop's folder for passwords | `web`, webadmin | its output has the database password |
+| s07 | Finds the private SSH keys under webadmin's home and copies them to `/tmp/creds.txt` | `web`, webadmin | the file holds a private key |
+| s08 | Logs in to `deploy@build` with the found key and copies `/etc` of `build` back as an archive | `web`, webadmin | `/tmp/stage/etc.tar.gz` lists `buildbot/signing.env` |
+| s09 | Packs `/tmp/stage` into `/tmp/loot.tar.gz` | `web`, webadmin | the archive lists `tmp/stage/etc.tar.gz` |
+| s10 | Uploads `/tmp/loot.tar.gz` to `https://inet/upload` with wget | `web`, webadmin | `inet`'s first upload came from `web`'s address and has the SHA-256 of `/tmp/loot.tar.gz` |
+
+Each step runs through `docker exec` in its container, as its account and in
+its folder, with exactly the argument vector above and without `-i`. First
+comes the test's published prerequisite check, where it has one. After the
+test and a grace of 5 s, the engine runs the effect check as root, then the
+published cleanup where the spec asks for one. What happened is one of four:
+
+- `took effect`: the test ran and its effect check passed;
+- `attempted without effect`: the test ran and the check failed;
+- `not attempted`: the prerequisite check failed, or Docker could not start
+  the test;
+- `inconclusive`: the check itself could not run, or the run was stopped
+  during the step.
+
+The path goes on after a step that failed. After the last step, the goal
+check reads files copied out of the range: `inet`'s first upload came from
+`web`, holds `tmp/stage/etc.tar.gz`, and that archive holds
+`buildbot/signing.env` byte for byte as it is on `build`. An event on the
+range that the engine did not cause stops the path and makes the run invalid.
+A run leaves `raw/steps/<id>/` (the command, its standard output and error,
+and what the prerequisite check, the effect check and the cleanup printed),
+the steps and the goal in `manifest.json`, and `path.md`.
+
+Limits:
+
+- A test's parent is the container runtime, not a login shell, and s02 to
+  s10 are started through `docker exec`, not inside the SSH session of s01.
+- Snoopy does not see the first program of an exec (the published `sh -c` or
+  `bash -c`); `raw/steps/<id>/command` records it.
+- A step's start and end are the Docker daemon's times of its exec, not the
+  engine's; where those events were not matched, the engine's own clock is
+  used and `path.md` marks it.
+- The published port scan tries every port, so s05a and s05b may run until
+  the step's timeout of 300 s. At a timeout the engine kills what the step
+  started, as the step's account, and the effect check still decides what
+  happened.
+- Before any container exists, the loader refuses a step that names a host
+  outside the spec, or one its host shares no network with, in the forms it
+  recognises: the step's `to`, a URL with a scheme, `user@host`,
+  `/dev/tcp/<host>` and `/dev/udp/<host>`. It refuses an address that
+  Python's `ipaddress` reads. It does not recognise a bare host name, nor an
+  address in a short, integer or hex form. This is an early, plain refusal of
+  mistakes; the seal is what keeps a step inside the range.
+- `blocked` cannot occur: range one configures no active response.
+
+In [run 45464907926](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45464907926),
+job "range one's path, sealed and watched" on a hosted runner, the range
+stayed sealed in every phase (static, no way out, segmentation, after path,
+teardown), every step took effect, and the goal check passed: the first
+upload `inet` stored came from `web`, and the `buildbot/signing.env` in it is
+byte for byte the file on `build`. Seconds are the Docker daemon's times of
+each step's exec. The two port scans ended by themselves before their timeout
+of 300 s, with exit code 1, and nothing was killed. s08 exits 2 because tar
+could not read every file of `/etc` on `build` as `deploy`; the archive holds
+`buildbot/signing.env`, which is what the check asks.
+
+| Step | Host | Technique | Test | Seconds | Exit code | What happened | The check |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| s01 | attacker | T1110.004 | SSH Credential Stuffing From Linux | 60.05 | 5 | took effect | pass |
+| s02 | web | T1105 | Linux Download File and Run | 0.029 | 0 | took effect | pass |
+| s03 | web | T1082 | List OS Information | 0.027 | 0 | took effect | pass |
+| s04 | web | T1018 | Enumerate SSH Configuration | 0.027 | 0 | took effect | pass |
+| s05a | web | T1046 | Port Scan | 242.124 | 1 | took effect | pass |
+| s05b | web | T1046 | Port Scan | 262.528 | 1 | took effect | pass |
+| s06 | web | T1552.001 | Extract passwords with grep | 0.024 | 0 | took effect | pass |
+| s07 | web | T1552.004 | Discover Private SSH Keys | 0.026 | 0 | took effect | pass |
+| s08 | web | T1048 | Exfiltration Over Alternative Protocol - SSH | 0.224 | 2 | took effect | pass |
+| s09 | web | T1560.001 | Data Compressed - nix - tar Folder or File | 0.031 | 0 | took effect | pass |
+| s10 | web | T1048.002 | Exfiltrate data in a file over HTTPS using wget | 0.042 | 0 | took effect | pass |
+
+Not yet shown: whether the defense saw, alerted on or stopped each step.
 
 ## Not yet shown
 
-- Tests on Windows, attack chains of several steps, and a lab on a local
-  machine.
+- Tests on Windows, and a lab on a local machine.
 
 ## How to run it
 
