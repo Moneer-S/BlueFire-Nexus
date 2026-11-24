@@ -432,8 +432,13 @@ rotate, and the loss control would fail a run in which it did; none has since.
    Its format is [`docs/RECORDING.md`](../docs/RECORDING.md).
    The job writes it whenever the evaluation wrote `results.json`, also when a
    control failed, and it is part of the run's artifact.
-6. A separate job, which runs no test, compares the run's recording with that
-   of the latest successful run on `main` (`bluefire-lab compare`, see
+6. When a pull request changes the lab's own rules or a sensor's settings, the
+   list runs twice, with the base commit's files and with the head's, and a
+   job that runs no test compares the two recordings: see
+   [A pair of runs for a change to the defense](#a-pair-of-runs-for-a-change-to-the-defense).
+   Otherwise a separate job, which runs no test either, compares the run's
+   recording with that of the latest successful run on `main`
+   (`bluefire-lab compare`, see
    [Comparing two recordings](#comparing-two-recordings)), writes `delta.md` to
    the run page, and keeps `delta.json` as the artifact `lab-delta`.
 
@@ -476,7 +481,8 @@ Seven controls must pass, or the run fails as a whole:
   matched no published test and was not accepted. While `/tmp` is bind-mounted
   for the `noexec` change, Sysmon names files under it with the folder twice
   (`/tmp/tmp/crond`).
-- auditd watches only the shell start files in
+- auditd watches only the shell start files and the test account's shell
+  history files in
   [`sensors/audit.rules`](sensors/audit.rules), for writes and for changes of
   permissions, owner and extended attributes; `chattr`'s file flags, such as
   immutable, are not among them. It records the process starts of processes
@@ -1259,7 +1265,7 @@ tests ran again, and this is what changed. `bluefire-lab compare` is where that
 claim is computed, and where it is refused:
 
 ```bash
-bluefire-lab compare <before>/recording.json <after>/recording.json --out <folder> [--change detectors:lab]
+bluefire-lab compare <before>/recording.json <after>/recording.json --out <folder> [--change detectors:lab] [--two-runners]
 ```
 
 It writes `delta.json`, whose format is the section "A delta" of
@@ -1306,7 +1312,9 @@ summary. `--change` declares the one thing that changed between the two runs:
   from the recording: a rule that matched ordinary activity is not accepted,
   and its matches are left out of the recording before it is written. The line
   says that, and quotes both recordings' notes on which rules were accepted,
-  rather than a count that would read as zero.
+  rather than a count that would read as zero. On two runners that differed
+  (below), each run counted its ordinary activity on its own runner, so the
+  line says the price is not known and gives each run's own counts.
 - **The lab's code.** Two runs from different commits of this repository may
   differ because of the code, which the comparison does not check. It does not
   refuse for that, since a pull request always differs from `main`, but every
@@ -1316,24 +1324,180 @@ summary. `--change` declares the one thing that changed between the two runs:
 - Every verdict rests on one pair of runs, and says so.
 
 The job "compare with the latest run on main" of the `lab` workflow runs it
-with nothing declared. Until a run on `main` has a recording with
-`source.setup`, its comparison is refused for that reason, and lists the steps.
+with nothing declared, on every run without a pair (next section). Until a run
+on `main` has a recording with `source.setup`, its comparison is refused for
+that reason, and lists the steps.
 
-**The noise floor.** Runs
-[45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)
-and [45288430599](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45288430599),
-the first of a pull request and the second on `main`, both on 23 November 2026, ran the same list with the same tests'
-commit, runner image `ubuntu24 20261116.133.1` and kernel `7.0.0-1014-aws`, the
-same sensor settings, rule sets and tool versions, from two commits of this
-repository (`cb017990` and `2ca6c9e6`). Their recordings predate
-`source.setup`, so they were written again from each run's artifact (`run.json`,
-`results.json` and the two rule folders) with `bluefire-lab recording` of this
-version and compared outside CI. That comparison found them comparable apart
-from the lab's code, which it names, and all 91 steps the same in what
-happened, in whether a sensor recorded them and in both outcomes. They do
-differ below the outcomes: the recordings hold 1,931 and 1,923 events. No CI
-run shows this comparison: it is not yet shown, and two runs are one sample of
-the noise floor, not its measure.
+With `--two-runners`, as the pair gives it, `delta.json` says `runners: 2` and
+`delta.md` says that the two runs were made side by side, each on a fresh
+runner of its own. With `--change sensors:<id>`, a changed step also lists what
+that sensor recorded of it in one run only, and a step whose outcome moved
+while that sensor recorded the same for it in both runs is not credited to the
+change: it is run variation. When two runners side by side got another image
+or kernel, and nothing else differs besides the declared change, a change of
+the audit rules gets a limited verdict (`limit` in `delta.json`): it is
+credited only on a step it left its own mark on, every event of the step being
+of an audit key whose every rule watches a path that no rule of the other run,
+as written, could have recorded, while the other run holds nothing of it, and
+every other step that differs is not attributable. What a run's rules watch under each key,
+each recording says from the audit rules as that run loaded them
+(`audit_watches` of its sensor `auditd`, each rule in one fixed form without its
+key, so that a watch and the system-call rule it stands for, or a rule's two
+architectures, read the same). The mark is given only where that text can
+establish it: each rule of the key names one path; no rule of the other run,
+under any key, names that path, a folder above it or a path under it, whatever
+its permission letters, nor any other path the event names (a rename or a link
+names two); and no rule of the other run without a path could record the same
+kind of event. There are two kinds: program starts, and reads, writes and
+changes of attributes as one, since the kernel matches `perm=r` and `perm=w`
+alike on an open for reading and writing. A rule with `perm=x`, or on `execve`
+or `execveat` alone, records program starts alone, so it leaves the mark
+standing; one for reads alone (`perm=r`) does not, and neither does one on
+`open`, `openat`, `truncate` or any other system call, or on every one. Where
+the text cannot establish the mark, the step is not attributable and its
+verdict says why. The text has a limit, and the verdict names it: paths are
+compared as the rules and the events write them, so a second name that a link
+gives a file (a symbolic or hard link, or a name under `/proc`) is not found
+out. A key is only a label: a key renamed, split or merged on
+rules both runs have, or one that kept an old rule beside a new one, is no
+mark, nor is a key whose rules both runs have that fired on one runner only.
+A credited step is counted under its result and again in
+`counts.by_mark`. A recording that does not say what its rules watch, one
+written by an older version, is refused on two runners that differed: write it
+again with `bluefire-lab recording` from its run's folder, or run the pair
+again. Every other change on two runners that differed is refused, with the
+advice to run the pair again. The section "Two runners that differed" of
+[`docs/RECORDING.md`](../docs/RECORDING.md) gives the rule.
+
+**The noise floor.** The job "compare with the latest run on main" of
+[run 45358678821](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45358678821),
+a pull request that changed neither rules nor sensor settings, compared its
+recording with that of
+[run 45352666265](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45352666265)
+on `main`, with nothing declared: the same tests' commit, runner image and
+kernel, sensor settings, rule sets and tool versions, from two commits of this
+repository (which the comparison names), and all 91 steps the same in what
+happened, in whether a sensor recorded them and in both outcomes. Two runs are
+one sample of the noise floor, not its measure: a pair of runs told below had
+one step that took effect on one runner and not on the other.
+
+## A pair of runs for a change to the defense
+
+A defender who changes a rule or a sensor setting wants to see what that one
+change did. A comparison with the latest run on `main` cannot show it: that run
+is days old, on another runner, from other code. So when a pull request
+changes what a run loads of the defense, the `lab` workflow makes a pair of
+fresh runs for it, in the same workflow run, where only that thing differs.
+
+- **When.** The job "decide whether the change needs a pair of runs" checks out
+  the base commit's `lab/rules/` and `lab/sensors/`, and nothing else of it,
+  and runs `bluefire-lab pair --base base/lab lab`. It compares the digests of
+  what a run loads: [`sensors/sysmon.xml`](sensors/sysmon.xml) (`sensors:sysmon`),
+  [`sensors/audit.rules`](sensors/audit.rules) (`sensors:auditd`) and the
+  folder [`rules/linux`](rules/linux) (`detectors:lab`, the same digest a
+  recording gives that detector). The paths a pull request touched do not
+  decide: a change that leaves these files as they were runs once, as does
+  every run that is not of a pull request.
+- **The two runs.** The whole list runs twice, as two jobs on two runners
+  started side by side: "attack tests on this runner, with the defense of the
+  base commit", which loads the base commit's rules and sensor settings, and
+  "attack tests on this runner", the usual run, which loads the head's. Both
+  run the head's code, list and tools, and are evaluated, reported and
+  recorded the usual way; their artifacts are `lab-run-base` and `lab-run`.
+- **Why two runners, not one after the other on one.** A run that the first
+  run's leftovers could have changed is no before or after, and the list
+  leaves some behind on purpose: it ends with tests whose changes upstream does
+  not undo (the root certificate of T1553.004 and the sudo setting of
+  T1548.003 stay until the runner is gone), and the effect checks of those
+  tests would pass on a second run whatever the test then did. The tests'
+  cleanups undo much of the rest, but nothing shows that they undo all of it.
+  A fresh runner for each side is a clean state that needs no proof. What it
+  costs: two runners can differ, and GitHub hands out different images and
+  kernels under the same label, also to two jobs started side by side (the
+  first pair, below, got two). Each recording says its runner image and
+  kernel. When they are the same, what still differs between two runners is
+  part of the run variation the control shows. When they differ, a change of
+  the audit rules is judged only where its own mark is, and any other change
+  is refused.
+- **When a pair is refused for its runners.** Run the workflow again for the
+  same commit (re-run all jobs of the run on its page): that gives two new
+  runners, which may get the same image and kernel. Nothing in the pull
+  request can choose them.
+- **The comparison.** The job "the change to the defense, before against
+  after" runs `bluefire-lab compare` on the two recordings with the one change
+  the plan declared (`--change sensors:auditd`, for example) and
+  `--two-runners`. When more than one thing changed it declares nothing, the
+  comparison gives no verdict, and the job's summary says so. `delta.md` goes
+  to the run page, and the artifact `lab-pair` holds both recordings
+  (`before/recording.json`, `after/recording.json`), `delta.json` and
+  `delta.md`. The job runs only when both runs passed their controls.
+- **The comparison with `main`** runs only on a run without a pair. There it is
+  the one comparison, and it declares nothing, so it names what varies and
+  credits nothing to a change. Beside a pair it would be a second, weaker
+  comparison that could be read as the result, so a run with a pair has none.
+- **What it says.** Under a sensor change, `delta.md` names the steps that are
+  recorded now and were recorded by no sensor before, or says that there are
+  none, and the tests unseen in both runs. Two runs of the same audit rules
+  already differ in auditd's text, by temporary file names and a password's
+  salt that are new in every run, so for `sensors:auditd` a step is credited
+  only through events of an audit key that one run's events carry and the
+  other's never do, and `delta.md` gives how many events of each such key the
+  recordings hold. That is a description: on two runners that differed it
+  also says whether each such key can carry the change's own mark, and why
+  not.
+  Each side says the commit its rules and sensor settings came from.
+- **What it costs.** One more run of the whole list: in the three pairs told
+  below it took 13.5 to 15.5 minutes of runner time, and each of the two short
+  jobs that decide and compare under half a minute. The two runs go side by
+  side, so the pull request waits about as long as for one.
+
+**The first change: auditd watches the history files.** One test of the list
+was unseen: T1070.003 Clear Bash history (echo) empties `~/.bash_history` with
+the shell's own redirect, which starts no program, and neither sensor recorded
+anything of it, so no rule could alert on it. The change is to a sensor: the
+rules in [`sensors/audit.rules`](sensors/audit.rules) now watch the test
+account's shell history files by path (`~/.bash_history`, `~/.zsh_history`,
+`~/.histfile`, `~/.sh_history`, `~/.history`) for writes and changes of
+attributes, as a defender would watch them, not the test's command. If the
+watch works, auditd records the shell opening the file to empty it, in the
+audit session of the test's attack step, and the step goes from unseen to
+seen.
+
+**The pair that shows it** is run
+[45365902367](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367)
+of the pull request that made the change (its job "the change to the defense,
+before against after", and the artifact `lab-pair`). Its two runners had the
+same image and kernel, so the comparison is like with like, with a verdict on
+every step. Before, with the old audit rules, "Clear Bash history (echo)"
+(`test:cbf506a5`) had no telemetry; after, it is seen, by one event:
+`openat: /home/bluefire-lab/.bash_history` of the audit key `shell-history`,
+the key of the new watches, written by the launcher's shell in the test's
+attack session. The comparison calls that step better, on 1 of the 4
+published procedures of T1070.003 in the list (the 3 others were seen or
+alerted before too), and gives its price: 2 published rules alerted on
+ordinary activity before and 2 after, with 8,902 ordinary events before and
+8,841 after. The 90 other steps are the same, and what happened is the same
+on all 91. One pair of runs.
+
+Two earlier pairs of the same change got two runners that differed in image
+and kernel (`ubuntu24 20261116.133.1` with `7.0.0-1014-aws`, and
+`ubuntu24 20261116.376.1` with `7.0.0-1017-azure`). Both recorded the same
+event on the same step, and both summaries were written by earlier versions of
+`compare`: run
+[45362120784](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45362120784)
+gave a limited verdict that rested on the key's name alone, and run
+[45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
+refused every pair on two runners that differed. Their recordings were written
+before a recording said what its audit rules watch under each key (those of
+run 45362120784 name the keys alone, those of run 45350480637 not even
+those), so this version of `compare` refuses both: on two runners that
+differed, a key's name is no mark. A limited verdict by this version's
+rule, on a pair of runners that differed, is not yet shown by a CI run. In run
+45350480637 one more step differed,
+`test:23b91cd2` (T1518.001 Security Software Discovery - ps): on one runner
+its output lacked the text its effect check looks for. That is what two
+runners can differ by, and why such a step is not credited to a change. Of
+these three pairs, two got runners that differed.
 
 ## Before the loop: the sensor spike
 

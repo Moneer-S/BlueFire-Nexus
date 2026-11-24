@@ -498,8 +498,12 @@ def facts(context: dict) -> tuple[dict, dict]:
         "sysmonforlinux": output_of("dpkg-query", "-W", "-f", "${Version}", "sysmonforlinux"),
         "sysinternalsebpf": output_of("dpkg-query", "-W", "-f", "${Version}", "sysinternalsebpf"),
         "auditd": output_of("dpkg-query", "-W", "-f", "${Version}", "auditd"),
-        # Where the lab's own rules come from: this repository at the commit that ran.
+        # The lab's code: this repository at the commit that ran.
         "lab": f"{os.environ.get('GITHUB_REPOSITORY', '')}@{os.environ.get('GITHUB_SHA', '')}",
+        # Where the lab's own rules and the sensors' settings come from: the commit that ran, or the
+        # base commit of a pull request for the run of a pair that loads the base's files.
+        "lab-defense": f"{os.environ.get('GITHUB_REPOSITORY', '')}@"
+        f"{os.environ.get('DEFENSE_COMMIT') or os.environ.get('GITHUB_SHA', '')}",
     }
     return target, tools
 
