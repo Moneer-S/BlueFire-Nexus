@@ -45,7 +45,7 @@ them to the millisecond.
 | `environment` | string | Plain words: `GitHub-hosted runner` or `containers on a developer machine`. |
 | `started`, `finished` | time | The run's start and end. |
 | `repository`, `commit` | string | Optional. The repository and commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
-| `defense_commit` | string | Optional. The commit of the same repository that the lab's own rules and the sensors' settings were loaded from. In the run of a pair that loads a pull request's base commit, it is that commit and not `commit`. |
+| `defense_commit` | string | Optional. The commit of the same repository that the sensors' settings were loaded from, and the lab's own rules too unless the detector `lab` has its own `commit`: that one names where the rules came from, and wins. In the run of a pair that loads a pull request's base commit, it is that commit and not `commit`. When one run is evaluated twice, both recordings have the run's `defense_commit`, and the detector `lab` of each names its rules' commit. |
 | `run_url` | string | Optional. The CI run that made the recording. A reader shows it as a link only when it is the https address of a GitHub Actions run (`https://github.com/<owner>/<repository>/actions/runs/<number>`) of the recording's own `repository` when that is given, and leaves out anything else. |
 | `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. The list is always there, and empty when the run names no pinned tool. |
 | `setup` | object | Optional. What a comparison of two runs needs to know was the same. See below. A recording with `setup` has stable step ids. |
@@ -85,6 +85,19 @@ id and title, the SHA-256 of the file that holds it, whether the run accepted
 it, and why. A run decides that anew each time, from ordinary activity and from
 the runs with changed input arguments, so an unchanged rule can be accepted in
 one run and not in the next.
+
+So that a reader can show a rule beside the step it alerted on, each verdict
+can also hold, optional, the rule itself: `file`, the path of its file in the
+repository (such as `lab/rules/linux/auditd/<name>.yml`), and `lines`, an array
+of strings, the file's text line by line, without the line breaks (no value of
+the format outside a step's own text holds a line break). Joined with a line
+break after each line, the lines give the file whose SHA-256 is `digest`, for a
+file that ends with a line break and uses no other kind, as the lab's do. The
+detector can also have `commit`, optional, the commit of this repository the
+rules came from; where it is given, it and not `source.defense_commit` says
+where the lab's rules came from. For the recording of run 45350480637, written again outside
+CI from that run's artifact, the lab's 9 rules added about 14 KB to about
+1.16 MB. A recording written before these keys has none of them.
 
 A host is `{ "id", "name", "role", "kind", "os", "addresses" }`. `kind` is one
 of `host`, `attacker`, `internet`, `defense`. `role` is plain words, such as
@@ -319,7 +332,7 @@ run after it, and whether one declared change can explain it. "Before against
 after" is a claim about a cause, so the delta is the one place where it is
 computed, and where it is refused; a view only draws what a delta says. It is
 not a recording. `bluefire-lab compare <before.json> <after.json> --out
-<folder> [--change <what>] [--two-runners]` writes it as `delta.json`, with `delta.md`, the same
+<folder> [--change <what>] [--two-runners | --one-run]` writes it as `delta.json`, with `delta.md`, the same
 in a few lines for a job summary (see `lab/README.md`).
 
 The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
@@ -327,10 +340,12 @@ The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `schema` | string | `bluefire.delta/1` |
-| `claim` | string | `one pair of runs`: what every verdict rests on. |
-| `before`, `after` | object | Each recording: `{ "sha256", "id" }`, the SHA-256 of its file and its `id`, and from its `source` the `run_url`, `environment`, `commit`, `defense_commit` and `started` it has. |
+| `claim` | string | What every verdict rests on: `one pair of runs`, or `one run evaluated with two rule sets` when `one_run` is true. |
+| `before`, `after` | object | Each recording: `{ "sha256", "id" }`, the SHA-256 of its file and its `id`, from its `source` the `run_url`, `environment`, `commit`, `defense_commit` and `started` it has, and `lab_rules_commit`, the `commit` of its detector `lab`, when it has one. |
 | `declared_change` | string or null | The one thing declared as changed between the runs, as a name of the setup (below): `sensors:<sensor id>` for a sensor's settings or `detectors:<detector id>` for a rule set. Null when nothing was declared. |
 | `runners` | number or null | `2` when the two runs were made side by side in one CI run, each on a fresh runner of its own (`--two-runners`, as the lab's pair of runs gives it), and both recordings name the same `run_url`. Null otherwise: `--two-runners` on recordings that do not name one CI run is a refusal. |
+| `one_run` | boolean | True when the two recordings were said to be one run whose telemetry was evaluated twice, with two sets of the lab's rules (`--one-run`). See One run evaluated twice. |
+| `lab_rules` | array or null | Only when the declared change is `detectors:lab`: each rule of the lab's own that is new, gone, another text or the same text in another file in the after recording, `{ "rule", "title", "change", "before", "after" }`, with `change` `new`, `gone`, `changed` or `moved` (the same text, another `file`), and each side's `{ "accepted", "reason", "file" }` from its `verdicts`, null on the side without the rule. Null when the change is another, or a recording has no `verdicts`. |
 | `comparable` | boolean | True when there is a verdict: `refused_because` is empty. With a `limit`, the verdict is limited. |
 | `limit` | object or null | Null when the verdict is like with like. Otherwise `{ "why", "differences", "credits", "credited", "not_attributable" }`: why the verdict is limited (`the two runners differed`), the names of the setup that differed for it (such as `images:target` and `kernels:target`), on which steps the change is credited, in words, how many steps were credited by the change's mark and how many are `not attributable`. See Two runners that differed. |
 | `refused_because` | array of strings | Each reason there is no verdict, in plain words. |
@@ -398,7 +413,7 @@ settings, so it refuses a declared `sensors:<id>`.
 | `records` | object | Only on a changed step, when the declared change is `sensors:<id>`: `{ "sensor", "new", "gone" }`, where `new` is what that sensor recorded of the step in the after recording and not in the before one, and `gone` the other way, each `{ "count", "lines" }` with the first 20 lines as `<kind>: <text>` of the events (`<kind>` alone when the text is empty), in time order. Only the events a recording kept count. For `sensors:auditd`, only events of an audit key that one recording's events carry and the other's never do (`audit_keys`) count, and under a `limit` also those of a key that can carry the change's own mark. Being listed here does not make an event the change's own: the step's `result` and `mark` say whether it is. |
 | `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too; for a change of rules, a rule of the lab's own that is the same file in both runs matched the step differently while its outcome with the lab's rules moved; for a sensor's settings, that sensor's `records` of the step are empty while the recordings hold events of the step; or, under a `limit`, the step does not carry the change's mark); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
 | `mark` | object | Only under a `limit`, on a step credited by the change's own mark: `{ "run", "keys", "events" }`, the run whose events carry the mark (`after` or `before`), their audit keys and their number. Under a `limit`, a `not attributable` step without one says in its verdict why it carries no mark. |
-| `verdict` | string | The result in plain words. A changed step's ends with `one pair of runs`. Under a `limit`, a credited step's starts with `<result> by the change's own mark, on two runners that differed` and says what it rests on, and a `not attributable` step's names the runners' difference. |
+| `verdict` | string | The result in plain words. A changed step's ends with the `claim`. Under a `limit`, a credited step's starts with `<result> by the change's own mark, on two runners that differed` and says what it rests on, and a `not attributable` step's names the runners' difference. |
 | `procedures`, `price` | object, string | On a `better` step, and in its `verdict` too: `price`, what the gain cost; and on a step of role `test` only, `procedures`, `{ "better", "of" }`, on how many of the steps of role `test` of the same technique the result is `better`. |
 
 **Like with like.** A change of the lab's rules (`detectors:lab`) is judged on
@@ -538,6 +553,26 @@ Any other difference, such as a tool's version, another sensor's settings,
 another rule set or the tests' commit, refuses as before, also when the
 runners differed too, and without `--two-runners` a runner's difference
 refuses as any other.
+
+**One run evaluated twice.** Rules evaluated after a run read only the
+telemetry it recorded, so a change of the lab's rules can be shown on one run:
+its folder evaluated once with the base's rules and once with the head's, each
+into a folder of its own, gives two recordings of the same run. With
+`--one-run`, the declared change must be `detectors:lab`, and the comparison
+is refused unless everything else is the same, not only alike: both recordings
+have the same `id` and `run_url`; the same steps in the same order, each with
+the same `happened`, `recorded` and `outcome`, `visibility.events`,
+`first_event`, `first_alert`, `started` and `ended`; the same events, where an
+event only one recording holds must be one that an alert of the lab's rules
+there rests on (a recording keeps every event a rule matched beyond the first
+few hundred of a step); the same alerts of the published rules; the same
+`ordinary`; and every rule of the lab's own whose file has the same digest in
+both judged the same way (`accepted` and `reason`) and matching the same
+steps. The last holds by construction too, since a run's verdict on a rule
+reads only that run's tests, variants and ordinary activity, so a difference
+there means the evaluations were not of one run. There is no run variation and
+no difference of runners, the `claim` is `one run evaluated with two rule sets`,
+and `delta.md` says that the list ran once and what was checked.
 
 **The price** of a gain is on the same line as the gain. For the lab's rules,
 the lab leaves a rule that matched ordinary activity out of the recording before
