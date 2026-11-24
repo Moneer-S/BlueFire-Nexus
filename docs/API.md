@@ -522,17 +522,25 @@ is the one its engine wrote; or `{"recording": {...}}`, the recording as an
 object, kept as canonical JSON. The id `deltas` is refused: it is the address
 of the comparisons. It returns `201` with
 `{"created", "replaced", "another_evaluation", "sha256", "summary"}`, `sha256`
-being the kept file's. Sending the same recording again changes
-nothing (`created: false`). A recording that is still running may be sent again
+being the kept file's: `GET /api/v1/recordings/{recording_id}/files/{sha256}`
+returns it. Under an imported id it is the SHA-256 of the file sent (of the
+canonical JSON for an object). Sending the same bytes again changes nothing
+(`created: false`). A recording that is still running may be sent again
 whole as it grows, with the same `source.engine` and `source.started`: it
-replaces the stored file in one step (`replaced: true`). Once stored with its
-end time, or when shipped, a recording is frozen. A different finished file
-under its id whose `source` is the same in every key is another evaluation of
-the same run (the lab writes one per set of rules it evaluates a run with): it
-is kept beside the first, under its SHA-256 (`another_evaluation: true`), up to
-8 files for one id, and more is `409 recording_files_full`. Any other different
-one under its id is `409 recording_id_taken`, and so is any different file under
-the id of a recording shipped with BlueFire. A recording that does not follow the format, or
+replaces the stored file in one step (`replaced: true`), and so does the same
+recording in other bytes. Once stored with its end time, or when shipped, a
+recording is frozen. A different finished file under its id whose `source` is
+the same in every key is kept beside the first, under its SHA-256
+(`another_evaluation: true`): another evaluation of the same run (the lab writes
+one per set of rules it evaluates a run with), or the same recording in other
+bytes, such as its original file after it was sent as an object, so that a delta
+can name either file. Up to 8 files are kept for one id, and more is `409
+recording_files_full`. Any other different one under its id is `409
+recording_id_taken`, and so is any different recording under the id of a
+recording shipped with BlueFire; the shipped recording sent in other bytes is
+answered by the shipped file (`created: false`, `sha256` the shipped file's). A
+name the new file would take that is held by something else is `409
+recording_unreadable`. A recording that does not follow the format, or
 whose parts disagree, is `422 recording_invalid`; `details.problems` lists up to
 20 problems in plain words, and the message starts with the first. Imports into
 one runs directory, from the server or the command line, take one lock in turn;

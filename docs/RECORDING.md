@@ -334,9 +334,14 @@ with two sets of its rules and writes two recordings with the run's one `id`
 (see One run evaluated twice, below). A finished file whose `id` is kept, when
 the kept file is finished too and the two `source` objects are the same in every
 key, is kept beside it as another evaluation of that run, under the SHA-256 of
-its file; at most 8 files are kept for one `id`. Any other file under a kept
-`id` is refused, and so is every file under the `id` of a recording shipped
-with BlueFire: what was shipped stands alone. The list shows the first file of each `id`, and
+its file. So is the same recording in other bytes, such as its original file
+sent after the recording was sent as an object and kept as canonical JSON: a
+delta names its recordings by the SHA-256 of their files, and can name either.
+At most 8 files are kept for one `id`. Any other file under a kept `id` is
+refused, and so is every other recording under the `id` of a recording shipped
+with BlueFire: what was shipped stands alone, and the shipped recording sent in
+other bytes is answered by the shipped file. Every import that is not refused
+names, by its `sha256`, a kept file that is returned by it. The list shows the first file of each `id`, and
 `GET /api/v1/recordings/<id>` returns it; every kept file, the first included,
 is returned by its `id` and SHA-256 (see [API.md](API.md)). Whether two such
 files really are one run, in their steps and events, is checked when a delta
@@ -352,7 +357,8 @@ was made from (by `sha256` and `id`), with the facts it copies from their
 `lab`), and when every step id it names is a step of its recording; otherwise
 it says why, and keeps nothing. A kept recording that is finished is never
 replaced, so a delta made from another file under a kept id cannot be imported
-unless that file can be kept beside it as another evaluation of the same run.
+unless that file can be kept beside it, as another evaluation of the same run or
+as the same recording in other bytes.
 A delta is shown only while both its recordings are still those files.
 The app never computes or corrects a delta. A delta whose recordings, or which
 itself, was imported is labelled as imported, with the note that the app did

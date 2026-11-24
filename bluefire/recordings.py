@@ -21,7 +21,9 @@ One run can be evaluated more than once: rules that run after a run read only
 its telemetry, so the lab evaluates one run with two rule sets and writes two
 recordings of it, with the run's one id. A finished file whose id is kept, whose
 ``source`` is the same in every key as the kept file's, is kept beside it as
-another evaluation of that run, under the SHA-256 of its file. The list shows
+another evaluation of that run, under the SHA-256 of its file, and so is the same
+recording in other bytes (its original file and the canonical copy of it sent as
+an object), so that a comparison can name either. The list shows
 the first file of each id; every kept file is returned by its id and SHA-256. A
 comparison of one run evaluated twice names both, and its import checks that
 they are one run.
@@ -1241,9 +1243,12 @@ class RecordingLibrary:
             target = self._path(recording_id)
             if target.exists() or recording_id in self._shipped_recordings():
                 existing, summary = self.get(recording_id)
-                if content_hash(existing) == content_hash(recording):
-                    return {"created": False, "replaced": False, "another_evaluation": False,
-                            "sha256": self.kept_file(recording_id)[0], "summary": summary}  # fmt: skip
+                files = self.kept_files(recording_id)
+                if digest in files:
+                    # These very bytes are kept: the answer names the file that is served.
+                    return {"created": False, "replaced": False,
+                            "another_evaluation": digest != next(iter(files)),
+                            "sha256": digest, "summary": files[digest]}  # fmt: skip
                 same_run = all(
                     existing["source"].get(key) == recording["source"].get(key)
                     for key in ("engine", "started")
@@ -1273,20 +1278,25 @@ class RecordingLibrary:
         existing: Mapping[str, Any],
         summary: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        """Keep a finished file whose id is kept as another evaluation of the same run, when
-        the kept file is finished too and both say the same of the run in every key of their
-        ``source``. Whether the two are one run in their steps and events is checked when a
-        comparison of one run evaluated twice names them. Under the import lock."""
+        """Keep a finished file whose id is kept beside the first file of that id, when the
+        kept file is finished too and both say the same of the run in every key of their
+        ``source``: another evaluation of the same run, or the same recording in other bytes
+        (the original file and the canonical copy of an object), which a comparison can name
+        by either SHA-256. Whether the files are one run in their steps and events is checked
+        when a comparison of one run evaluated twice names them. Under the import lock, and
+        never with these very bytes already kept."""
 
         recording_id = recording["id"]
         files = self.kept_files(recording_id)
-        for kept, entry in files.items():
-            if kept == digest or entry.get("digest") == content_hash(recording):
-                return {"created": False, "replaced": False, "another_evaluation": True,
-                        "sha256": kept, "summary": entry}  # fmt: skip
         if recording_id in self._shipped_recordings():
             # What BlueFire shipped stands alone: no imported file is kept under its id, where
-            # it could be taken for a part of what was shipped.
+            # it could be taken for a part of what was shipped. The same recording in other
+            # bytes is answered by the shipped file, which is what is served.
+            for kept, entry in files.items():
+                if entry.get("digest") == content_hash(recording):
+                    return {"created": False, "replaced": False,
+                            "another_evaluation": kept != next(iter(files)),
+                            "sha256": kept, "summary": entry}  # fmt: skip
             raise APIError(
                 HTTPStatus.CONFLICT,
                 "recording_id_taken",
@@ -1310,11 +1320,16 @@ class RecordingLibrary:
             _write_atomically(
                 self.root, self.root / f"{recording_id}.{digest}.json", payload, replace=False
             )
-            created = True
         except FileExistsError:
-            created = False
+            # Something not kept holds the file's name: a file that is not these bytes, or not
+            # a file. The answer never names a SHA-256 that is not served.
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "recording_unreadable",
+                "The stored recording could not be read or no longer follows the format.",
+            ) from None
         return {
-            "created": created,
+            "created": True,
             "replaced": False,
             "another_evaluation": True,
             "sha256": digest,

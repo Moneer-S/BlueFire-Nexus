@@ -14,6 +14,7 @@ from bluefire import cli, recordings
 from bluefire.api import generate_browser_bootstrap_capability
 from bluefire.application_errors import APIError
 from bluefire.service import BlueFireService
+from bluefire.util import canonical_json_bytes
 from tests_platform.test_api import json_body, request, running_server
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -286,6 +287,129 @@ def test_no_imported_file_is_kept_under_the_id_of_a_shipped_recording(
     assert again["created"] is False
     assert sorted(service.recording_library.kept_files(shipped["id"])) == files_before
     assert service.recording(shipped["id"])["recording"] == whole
+
+
+def _as_file(recording: dict[str, Any]) -> dict[str, str]:
+    """The recording as the lab writes its file: indented, not canonical."""
+
+    payload = (json.dumps(recording, indent=1) + "\n").encode("utf-8")
+    return {"recording_file": base64.b64encode(payload).decode("ascii")}
+
+
+def _as_object(recording: dict[str, Any]) -> dict[str, Any]:
+    return {"recording": copy.deepcopy(recording)}
+
+
+def _sent_digest(request: dict[str, Any]) -> str:
+    """The SHA-256 of the file the store keeps for an import: the bytes sent, or the canonical
+    JSON of an object."""
+
+    if "recording_file" in request:
+        return hashlib.sha256(base64.b64decode(request["recording_file"])).hexdigest()
+    return hashlib.sha256(canonical_json_bytes(request["recording"]) + b"\n").hexdigest()
+
+
+def _sent_recording(request: dict[str, Any]) -> Any:
+    if "recording_file" in request:
+        return json.loads(base64.b64decode(request["recording_file"]))
+    return request["recording"]
+
+
+@pytest.mark.parametrize("first_as", [_as_file, _as_object], ids=["file first", "object first"])
+@pytest.mark.parametrize("second_as", [_as_file, _as_object], ids=["file second", "object second"])
+def test_every_import_that_names_a_file_ends_with_that_file_served(
+    service: BlueFireService,
+    first_as: Any,
+    second_as: Any,
+) -> None:
+    """Each path through an import, as in the table of paths: an answer that names a SHA-256
+    names a file served under it, holding what was sent; under an imported id it is the very
+    file sent, and under a shipped id a shipped file."""
+
+    def served(request: dict[str, Any], *, shipped: bool = False) -> dict[str, Any]:
+        answer = service.import_recording(request)
+        recording_id = _sent_recording(request)["id"]
+        whole = service.recording_file(recording_id, answer["sha256"])
+        assert whole["recording"] == _sent_recording(request)
+        if not shipped:
+            assert answer["sha256"] == _sent_digest(request)
+        assert answer["sha256"] in service.recording_library.kept_files(recording_id)
+        return dict(answer)
+
+    def refused(request: dict[str, Any]) -> str:
+        recording_id = _sent_recording(request)["id"]
+        before = sorted(service.recording_library.kept_files(recording_id))
+        with pytest.raises(APIError) as refusal:
+            service.import_recording(request)
+        assert refusal.value.status == 409
+        assert sorted(service.recording_library.kept_files(recording_id)) == before
+        return refusal.value.code
+
+    # A finished imported id.
+    finished = small_recording("rec-finished")
+    first = served(first_as(finished))
+    first_digest = first["sha256"]
+    assert first["created"] is True and first["another_evaluation"] is False
+    same_bytes = served(first_as(finished))
+    assert same_bytes["created"] is False and same_bytes["another_evaluation"] is False
+    other_bytes = served(second_as(finished))
+    if first_as is second_as:
+        assert other_bytes["created"] is False
+    else:
+        # The same recording in other bytes is kept beside the first, which stays served.
+        assert other_bytes["created"] is True and other_bytes["another_evaluation"] is True
+        assert service.recording_file("rec-finished", first_digest)["recording"] == finished
+    evaluation = copy.deepcopy(finished)
+    evaluation["notes"] = ["Evaluated with other rules."]
+    kept = served(second_as(evaluation))
+    assert kept["created"] is True and kept["another_evaluation"] is True
+    assert served(second_as(evaluation))["created"] is False
+    other_run = copy.deepcopy(finished)
+    other_run["source"]["started"] = "2026-11-17T17:07:19Z"
+    assert refused(second_as(other_run)) == "recording_id_taken"
+    still_running = copy.deepcopy(evaluation)
+    del still_running["source"]["finished"]
+    assert refused(second_as(still_running)) == "recording_id_taken"
+    # The name a new file would take is held by a file that is not those bytes.
+    third = copy.deepcopy(finished)
+    third["notes"] = ["A third evaluation."]
+    held = service.recording_library.root / f"rec-finished.{_sent_digest(second_as(third))}.json"
+    held.write_bytes(b"{}")
+    assert refused(second_as(third)) == "recording_unreadable"
+    held.unlink()
+    assert len(service.recording_library.kept_files("rec-finished")) < recordings.MAX_FILES_PER_ID
+    assert service.recording("rec-finished")["recording"] == finished
+
+    # A running imported id: the latest bytes sent are its one file.
+    running = small_recording("rec-running")
+    del running["source"]["finished"]
+    served(first_as(running))
+    assert served(first_as(running))["created"] is False
+    other_bytes = served(second_as(running))
+    assert other_bytes["replaced"] is (first_as is not second_as)
+    grown = copy.deepcopy(running)
+    grown["notes"] = ["One step has run."]
+    assert served(second_as(grown))["replaced"] is True
+    other_start = copy.deepcopy(grown)
+    other_start["source"]["started"] = "2026-11-17T17:07:19Z"
+    assert refused(second_as(other_start)) == "recording_id_taken"
+    finished_run = small_recording("rec-running")
+    assert served(first_as(finished_run))["replaced"] is True
+    assert list(service.recording_library.kept_files("rec-running")) == [
+        _sent_digest(first_as(finished_run))
+    ]
+
+    # A shipped id: the shipped file answers, by its own digest, or the import is refused.
+    whole = json.loads(SHIPPED.read_bytes())
+    shipped_files = sorted(service.recording_library.kept_files(whole["id"]))
+    exact = served({"recording_file": base64.b64encode(SHIPPED.read_bytes()).decode("ascii")})
+    assert exact["created"] is False and exact["sha256"] == hashlib.sha256(SHIPPED.read_bytes()).hexdigest()
+    in_other_bytes = served(second_as(whole), shipped=True)
+    assert in_other_bytes["created"] is False and in_other_bytes["sha256"] == exact["sha256"]
+    shipped_evaluation = copy.deepcopy(whole)
+    shipped_evaluation["notes"] = [*whole.get("notes", []), "Evaluated again."]
+    assert refused(second_as(shipped_evaluation)) == "recording_id_taken"
+    assert sorted(service.recording_library.kept_files(whole["id"])) == shipped_files
 
 
 def test_another_evaluation_is_refused_when_either_run_is_running_or_the_source_differs(

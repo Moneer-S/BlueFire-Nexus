@@ -1082,8 +1082,9 @@ class DeltaLibrary:
                     f"the {side} recording {named['id']!r} is kept here from another file than "
                     f"the one this comparison was made from ({how}): {digests}, the comparison "
                     f"names {named['sha256']}. A kept recording that is finished is never "
-                    "replaced, and another file of its id is kept beside it only as another "
-                    "evaluation of the same run, with the same source."
+                    "replaced, and another file of its id is kept beside it only with the same "
+                    "source: another evaluation of the same run, or the same recording in other "
+                    "bytes."
                 )
                 continue
             if summary["running"]:

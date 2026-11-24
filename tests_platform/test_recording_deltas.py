@@ -217,10 +217,10 @@ def test_a_delta_is_refused_for_each_reason_with_a_plain_one(service: BlueFireSe
         f"{hashlib.sha256(before).hexdigest()}"
     )
     # The refusal names the ways that exist: a kept finished recording is never replaced, and
-    # another file of its id is kept only as another evaluation of the same run.
+    # another file of its id is kept only with the same source.
     assert other_file_problems[0].endswith(
-        "never replaced, and another file of its id is kept beside it only as another "
-        "evaluation of the same run, with the same source."
+        "never replaced, and another file of its id is kept beside it only with the same "
+        "source: another evaluation of the same run, or the same recording in other bytes."
     )
     # A recording imported as an object is kept as canonical JSON, not as the lab's file.
     assert canonical_problems[0].startswith(
@@ -984,6 +984,28 @@ def test_one_run_evaluated_twice_is_imported_with_its_two_files_of_one_id(unship
     assert summary["recordings"]["before"]["score"]["alerted_with_lab_rules"] == 17
     # One run is one entry of the list of recordings, by its first file.
     assert [item["id"] for item in service.recordings()["recordings"]].count("b2666c50") == 1
+
+
+@pytest.mark.parametrize("object_first", [True, False], ids=["object first", "file first"])
+def test_a_delta_naming_the_lab_s_files_is_imported_after_its_recordings_came_as_objects_too(
+    unshipped: BlueFireService, object_first: bool
+) -> None:
+    service = unshipped
+    for path in (RULE_BASE, RULE_HEAD):
+        as_object = {"recording": json.loads(path.read_bytes())}
+        as_file = sent(path.read_bytes())
+        for import_request in (as_object, as_file) if object_first else (as_file, as_object):
+            answer = service.import_recording(import_request)
+            assert service.recording_file("b2666c50", answer["sha256"])["sha256"] == answer["sha256"]
+
+    imported = service.import_recording_delta({"delta": json.loads(RULE_DELTA.read_bytes())})
+
+    assert imported["created"] is True
+    # Both lab files and both canonical copies are kept under the run's one id.
+    assert len(service.recording_library.kept_files("b2666c50")) == 4
+    for path in (RULE_BASE, RULE_HEAD):
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert digest in service.recording_library.kept_files("b2666c50")
 
 
 def test_a_delta_that_claims_one_run_and_does_not_hold_one_is_refused_with_why(
