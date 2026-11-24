@@ -6,7 +6,7 @@ import { profileChoiceLabel, scopeLabel } from "../lib/run-review-labels";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Boxes, CircleDot, GitBranch, GitCompareArrows, Network, Play, Radio, RotateCcw, ScanLine, Server } from "lucide-react";
 import { newestListed, originWords, recordedRunPath, recordedScoreWords } from "../lib/recorded-runs";
-import { changeWords, pairPath, pairResultWords } from "../lib/recording-pairs";
+import { movedWords, pairChangeWords, pairPath, pairResultWords } from "../lib/recording-pairs";
 import { Link } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
 import { useProduct } from "../state/ProductContext";
@@ -72,7 +72,7 @@ export function OverviewPage() {
       <section className="work-section overview-recent-work" aria-labelledby="recent-work-heading">
         <header className="work-section-heading"><h2 id="recent-work-heading">Recent outcomes</h2><div className="work-section-actions"><Link to="/runs">View all<ArrowRight aria-hidden="true"/></Link><Button variant="ghost" size="small" aria-label="Refresh runs" disabled={runs.isFetching} onClick={() => { void runs.refetch(); }}><RotateCcw aria-hidden="true"/><span className="sr-only">{runs.isFetching ? "Refreshing" : "Refresh runs"}</span></Button></div></header>
         {newestRecorded && "run" in newestRecorded ? <Link className="overview-recorded" to={recordedRunPath(newestRecorded.run.id)}><Radio aria-hidden="true"/><span>Watch the newest recorded run: <strong>{newestRecorded.run.title}</strong><small>{originWords(newestRecorded.run.origin)} · {recordedScoreWords(newestRecorded.run)}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
-        {newestRecorded && "pair" in newestRecorded ? <Link className="overview-recorded" to={pairPath(newestRecorded.pair.id)}><GitCompareArrows aria-hidden="true"/><span>Compare the newest recorded runs, before against after: <strong>{changeWords(newestRecorded.pair.declared_change)}</strong><small>{originWords(newestRecorded.pair.origin)} · {pairResultWords(newestRecorded.pair).replaceAll("`", "")}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
+        {newestRecorded && "pair" in newestRecorded ? <Link className="overview-recorded" to={pairPath(newestRecorded.pair.id)}><GitCompareArrows aria-hidden="true"/><span>See the newest change to the defense, before against after: <strong>{pairChangeWords(newestRecorded.pair)}</strong><small>{originWords(newestRecorded.pair.origin)} · {(newestRecorded.pair.comparable ? movedWords(newestRecorded.pair) : null) ?? pairResultWords(newestRecorded.pair).replaceAll("`", "")}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
         {runs.isError ? <><ErrorState title="Run history unavailable" error={runs.error} retry={() => runs.refetch()}/>{recent ? <p className="workspace-note">Showing previously loaded runs. Their current state could not be checked.</p> : null}</> : null}
         {unavailable > 0 ? <p className="workspace-note" role="status">{unavailable} run {unavailable === 1 ? "record is" : "records are"} unavailable. Only readable records are shown.</p> : null}
         {runs.isPending ? <LoadingState label="Loading run history"/> : recent?.length ? <div className="table-scroll"><table className="recent-work-table"><thead><tr><th>Run</th><th>Created</th><th>Outcome</th></tr></thead><tbody>{recent.map(run => {

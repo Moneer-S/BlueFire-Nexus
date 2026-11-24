@@ -47,3 +47,26 @@ test("the shipped pair opens from Runs, reads as a claim with its price, opens a
   await expect(pairs).toBeVisible();
   expect(problems).toEqual([]);
 });
+
+test("the run evaluated with two rule sets opens from Runs as one run, with its rule's text and the steps it moved", async ({ page }) => {
+  const problems: string[] = [];
+  page.on("pageerror", (error) => problems.push(String(error)));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("./#/runs");
+
+  const pairs = page.getByRole("region", { name: "Before against after" });
+  // In the order the loop went: the watch, then the rule.
+  await expect(pairs.getByRole("listitem")).toHaveText([/^The settings of sensor auditd/, /^A new rule: Shell History File Truncated In Place/]);
+  const pair = pairs.getByRole("listitem").filter({ hasText: "A new rule" });
+  await expect(pair.getByText("One run evaluated with two rule sets, 24 Nov 2026")).toBeVisible();
+  await pair.getByRole("link", { name: "A new rule: Shell History File Truncated In Place" }).click();
+
+  await expect(page.getByRole("heading", { level: 1, name: "A new rule: Shell History File Truncated In Place" })).toBeVisible();
+  await expect(page.getByLabel("The text of the rule Shell History File Truncated In Place")).toContainText("title: Shell History File Truncated In Place");
+  const moved = page.getByRole("region", { name: /^What the change moved/ });
+  await expect(moved.locator(".cmp-step")).toHaveCount(4);
+  await expect(moved.getByText("auditd openat: /home/bluefire-lab/.sh_history")).toBeVisible();
+  const pagePart = await new AxeBuilder({ page }).include(".compared").analyze();
+  expect(pagePart.violations.filter((item) => ["serious", "critical"].includes(item.impact ?? ""))).toEqual([]);
+  expect(problems).toEqual([]);
+});

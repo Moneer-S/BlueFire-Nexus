@@ -22,6 +22,8 @@ const pair: Delta = JSON.parse(readFileSync(pairFile, "utf-8"));
 const MOVED = "Clear Bash history (echo)";
 let workspace = "";
 let service: Awaited<ReturnType<typeof launchService>> | undefined;
+// A connection code opens one browser once: the run evaluated twice is read through a service of its own.
+let ruleService: Awaited<ReturnType<typeof launchService>> | undefined;
 let refused: Delta;
 
 function bluefireLab(...args: string[]): void {
@@ -33,6 +35,7 @@ test.beforeAll(async () => {
   test.setTimeout(120_000);
   // A service of its own: the shared one's connection code opens one browser only, the screens test's.
   service = await launchService(8766);
+  ruleService = await launchService(8767);
   workspace = mkdtempSync(join(tmpdir(), "bluefire-pairs-"));
   bluefireLab("compare", shippedFile, shippedFile, "--out", join(workspace, "refused"));
   refused = JSON.parse(readFileSync(join(workspace, "refused", "delta.json"), "utf-8"));
@@ -41,6 +44,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   if (workspace) rmSync(workspace, { recursive: true, force: true });
   await service?.stop();
+  await ruleService?.stop();
 });
 
 /** Sends a delta to the service's route from the page, with the page's own session. */
@@ -75,7 +79,10 @@ test("the pair shipped with the app is listed on Runs and read on its own page a
   await expect(item.getByRole("link", { name: /^Play the before run/ })).toBeVisible();
   await expect(item.getByRole("link", { name: /^Play the after run/ })).toBeVisible();
   await expect(recorded.getByRole("link", { name: "60 published tests on one Linux host", exact: true })).toHaveCount(1);
-  await expect(recorded.getByText("2 more recorded runs are listed with their pair under Before against after.")).toBeVisible();
+  // The pair's two runs and the run evaluated twice, which is one run.
+  await expect(recorded.getByText("3 more recorded runs are listed with their pairs under Before against after.")).toBeVisible();
+  // The pairs in the order the loop went: the watch, then the rule drafted from what it saw.
+  await expect(pairs.getByRole("listitem")).toHaveText([/^The settings of sensor auditd/, /^A new rule: Shell History File Truncated In Place/]);
 
   await item.getByRole("link", { name: "The settings of sensor auditd" }).click();
   await expect(page).toHaveURL(/#\/runs\/compared\/[0-9a-f]{16}$/);
@@ -125,5 +132,62 @@ test("the pair shipped with the app is listed on Runs and read on its own page a
   await expect(page.getByRole("heading", { level: 1, name: "No verdict" })).toBeVisible();
   // The lab's code spans read as code, without their backticks.
   for (const reason of refused.refused_because) await expect(page.getByText(reason.replaceAll("`", ""), { exact: true })).toBeVisible();
+  expect(problems).toEqual([]);
+});
+
+const ruleFile = join(repository, "bluefire/data/recordings/deltas/lab-rule-history-truncated.json");
+const RULE = "Shell History File Truncated In Place";
+
+test("the run evaluated with two rule sets shipped with the app reads as one run, with its rule, the steps it moved and the event each alert rests on", async ({ page }) => {
+  test.setTimeout(120_000);
+  const rulePair: Delta & { after: { id: string; sha256: string; run_url: string } } = JSON.parse(readFileSync(ruleFile, "utf-8"));
+  const problems: string[] = [];
+  page.on("pageerror", (error) => problems.push(String(error)));
+  page.on("response", (response) => {
+    if (response.status() >= 400) problems.push(`${response.status()} ${response.url()}`);
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(ruleService?.url ?? "");
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Runs", exact: true }).click();
+
+  const item = page.getByRole("region", { name: "Before against after" }).getByRole("listitem").filter({ hasText: RULE });
+  await expect(item.getByText("One run evaluated with two rule sets, 24 Nov 2026")).toBeVisible();
+  await expect(item.getByText("Clear Bash history (echo) and Clear Bash history (cat dev/null), each also with changed input arguments: seen to alerted with the lab's rules")).toBeVisible();
+  await item.getByRole("link", { name: `A new rule: ${RULE}` }).click();
+
+  await expect(page.getByRole("heading", { level: 1, name: `A new rule: ${RULE}` })).toBeVisible();
+  await expect(page.getByText(/^One run, evaluated twice: the list ran once, on one runner/)).toBeVisible();
+  await expect(page.getByRole("region", { name: "The two runs" })).toHaveCount(0);
+  const bar = page.getByRole("navigation", { name: "Compared runs" });
+  await expect(bar.getByRole("link", { name: "run 45395673682" })).toHaveAttribute("href", rulePair.after.run_url);
+
+  // The rule: where its file is, how each evaluation judged it, and its text from the after recording.
+  const rule = page.getByRole("article", { name: RULE });
+  await expect(rule.getByText("lab/rules/linux/auditd/lnx_auditd_history_file_truncated_in_place.yml")).toBeVisible();
+  await expect(rule.getByLabel("How each evaluation judged it")).toContainText("Beforenot there");
+  await expect(rule.getByLabel("How each evaluation judged it")).toContainText("it alerted on every run with changed input arguments and on no ordinary activity");
+  await expect(rule.getByLabel(`The text of the rule ${RULE}`)).toContainText("key: shell-history");
+
+  // The steps it moved, each with the event its alert rests on, and the price said once.
+  const moved = page.getByRole("region", { name: /^What the change moved/ });
+  await expect(moved.locator(".cmp-step")).toHaveCount(4);
+  await expect(moved.getByText("auditd openat: /home/bluefire-lab/.bash_history")).toHaveCount(2);
+  await expect(moved.getByText("auditd openat: /home/bluefire-lab/.zsh_history")).toBeVisible();
+  await expect(moved.getByRole("heading", { name: /^The price/ })).toBeVisible();
+  await expect(page.getByText(`All of this rests on one run evaluated with two rule sets.`)).toBeVisible();
+
+  // A step's detail from both evaluations, each by its own file.
+  await moved.locator(".cmp-step").first().getByRole("button", { name: /Clear Bash history \(echo\)/ }).click();
+  const detail = page.getByRole("region", { name: "Clear Bash history (echo), before and after" });
+  await expect(detail.getByRole("article")).toHaveCount(2);
+  await expect(detail.getByRole("article").last()).toContainText(RULE);
+
+  // The run opens with the head's rules by its own file.
+  await page.getByRole("region", { name: "The run" }).getByRole("link", { name: /Open with the rules after/ }).click();
+  await expect(page).toHaveURL(new RegExp(`#/runs/recorded/${rulePair.after.id}/${rulePair.after.sha256}`));
+  // The pair's page, whose step detail and price name the same rules, is gone before the run's page is read.
+  await expect(page.getByRole("region", { name: "The run" })).toHaveCount(0);
+  await expect(page.getByText("Rules written in this repository")).toBeVisible();
   expect(problems).toEqual([]);
 });

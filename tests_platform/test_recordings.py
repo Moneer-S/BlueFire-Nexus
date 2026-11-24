@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -133,8 +135,9 @@ def test_the_shipped_lab_recording_is_listed_with_its_origin_and_read_back_whole
     listed = service.recordings()
 
     assert listed["unreadable_count"] == 0
-    # The example, and the two runs of the pair shipped with the app, all shipped.
-    assert [item["origin"]["kind"] for item in listed["recordings"]] == ["shipped"] * 3
+    # The example, the two runs of the pair shipped with the app, and the run evaluated twice,
+    # listed once by its first file: all shipped.
+    assert [item["origin"]["kind"] for item in listed["recordings"]] == ["shipped"] * 4
     [entry] = [item for item in listed["recordings"] if item["id"] == json.loads(SHIPPED.read_bytes())["id"]]
     assert entry["origin"] == {
         "kind": "shipped",
@@ -157,7 +160,8 @@ def test_the_shipped_lab_recording_is_listed_with_its_origin_and_read_back_whole
 
     shipped = json.loads(SHIPPED.read_bytes())
     again = service.import_recording({"recording": shipped})
-    shipped["title"] = "Something else"
+    # Another run under the shipped id: a source of its own, so not another evaluation of it.
+    shipped["source"]["commit"] = "f" * 40
     with pytest.raises(APIError) as refused:
         service.import_recording({"recording": shipped})
     assert again["created"] is False and again["summary"]["origin"]["kind"] == "shipped"
@@ -211,7 +215,7 @@ def test_a_running_recording_grows_by_import_and_is_frozen_once_finished(
     grown["notes"] = ["The run has ended."]
     replaced = service.import_recording({"recording": grown})
     changed = small_recording("rec-live")
-    changed["title"] = "Something else"
+    changed["source"]["commit"] = "f" * 40
     with pytest.raises(APIError) as refused:
         service.import_recording({"recording": changed})
 
@@ -222,6 +226,102 @@ def test_a_running_recording_grows_by_import_and_is_frozen_once_finished(
     assert replaced["replaced"] is True and replaced["summary"]["running"] is False
     assert refused.value.status == 409 and refused.value.code == "recording_id_taken"
     assert service.recording("rec-live")["recording"] == grown
+
+
+def test_another_evaluation_of_a_finished_run_is_kept_beside_it_by_its_file(
+    service: BlueFireService,
+) -> None:
+    first = small_recording("rec-twice")
+    payload = json.dumps(first, indent=1).encode("utf-8")
+    service.import_recording({"recording_file": base64.b64encode(payload).decode("ascii")})
+    # The same run, its telemetry evaluated with other rules: the same source, other notes.
+    other = copy.deepcopy(first)
+    other["notes"] = ["Evaluated with the head commit's rules."]
+    other_payload = json.dumps(other, indent=1).encode("utf-8")
+    sent = {"recording_file": base64.b64encode(other_payload).decode("ascii")}
+
+    kept = service.import_recording(sent)
+    again = service.import_recording(sent)
+    whole = service.recording_file("rec-twice", hashlib.sha256(other_payload).hexdigest())
+    first_whole = service.recording_file("rec-twice", hashlib.sha256(payload).hexdigest())
+    listed = [item for item in service.recordings()["recordings"] if item["id"] == "rec-twice"]
+    with pytest.raises(APIError) as unknown:
+        service.recording_file("rec-twice", "0" * 64)
+    with pytest.raises(APIError) as malformed:
+        service.recording_file("rec-twice", "not-a-digest")
+
+    assert kept["created"] is True and kept["another_evaluation"] is True
+    assert kept["sha256"] == hashlib.sha256(other_payload).hexdigest()
+    assert again["created"] is False and again["another_evaluation"] is True
+    assert whole["recording"] == other and whole["sha256"] == kept["sha256"]
+    assert first_whole["recording"] == first
+    # The list and the id's own address show the first file; the other is reached by its file.
+    assert len(listed) == 1 and service.recording("rec-twice")["recording"] == first
+    assert unknown.value.status == 404 and unknown.value.code == "recording_file_not_found"
+    assert malformed.value.status == 400 and malformed.value.code == "invalid_recording_file"
+    assert sorted(service.recording_library.kept_files("rec-twice")) == sorted(
+        [hashlib.sha256(payload).hexdigest(), kept["sha256"]]
+    )
+
+
+def test_no_imported_file_is_kept_under_the_id_of_a_shipped_recording(
+    service: BlueFireService,
+) -> None:
+    shipped = next(
+        item for item in service.recordings()["recordings"] if item["origin"]["kind"] == "shipped"
+    )
+    whole = service.recording(shipped["id"])["recording"]
+    files_before = sorted(service.recording_library.kept_files(shipped["id"]))
+    # The same run by its source, with other bytes: what would be another evaluation of it.
+    other = copy.deepcopy(whole)
+    other["notes"] = [*other.get("notes", []), "Evaluated again by someone else."]
+
+    with pytest.raises(APIError) as refused:
+        service.import_recording({"recording": other})
+    # The shipped file itself, sent again, is still answered as already kept.
+    again = service.import_recording({"recording": whole})
+
+    assert refused.value.status == 409 and refused.value.code == "recording_id_taken"
+    assert "shipped with BlueFire" in refused.value.message
+    assert again["created"] is False
+    assert sorted(service.recording_library.kept_files(shipped["id"])) == files_before
+    assert service.recording(shipped["id"])["recording"] == whole
+
+
+def test_another_evaluation_is_refused_when_either_run_is_running_or_the_source_differs(
+    service: BlueFireService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = small_recording("rec-running")
+    del running["source"]["finished"]
+    service.import_recording({"recording": running})
+    finished = small_recording("rec-done")
+    service.import_recording({"recording": finished})
+
+    def refused(recording: dict[str, Any]) -> str:
+        with pytest.raises(APIError) as refusal:
+            service.import_recording({"recording": recording})
+        assert refusal.value.status == 409
+        return refusal.value.code
+
+    of_a_running_run = small_recording("rec-running")
+    still_running = copy.deepcopy(finished)
+    del still_running["source"]["finished"]
+    still_running["notes"] = ["Another evaluation."]
+    other_source = copy.deepcopy(finished)
+    other_source["source"]["started"] = "2026-11-17T17:07:19Z"
+    other_source["notes"] = ["Another run."]
+    monkeypatch.setattr(recordings, "MAX_FILES_PER_ID", 2)
+    second = copy.deepcopy(finished)
+    second["notes"] = ["A second evaluation."]
+    service.import_recording({"recording": second})
+    third = copy.deepcopy(finished)
+    third["notes"] = ["A third evaluation."]
+
+    # A running recording that finished is the grown version of it, not another evaluation.
+    assert service.import_recording({"recording": of_a_running_run})["replaced"] is True
+    assert refused(still_running) == "recording_id_taken"
+    assert refused(other_source) == "recording_id_taken"
+    assert refused(third) == "recording_files_full"
 
 
 def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFireService) -> None:
@@ -767,6 +867,7 @@ def test_the_command_line_imports_and_lists_a_recording_file(
         "shipped",
         "shipped",
         "shipped",
+        "shipped",
         "imported",
     ]
-    assert listed_output["recordings"][3]["id"] == "rec-small"
+    assert listed_output["recordings"][4]["id"] == "rec-small"

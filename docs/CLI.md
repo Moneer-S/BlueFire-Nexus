@@ -100,14 +100,16 @@ bluefire --runs-dir .bluefire-runs recordings page RECORDING_ID --out replay.htm
 runs directory, in the shape of `GET /api/v1/recordings` (see [API.md](API.md)).
 `import` reads one recording file of at most 8 MiB in the format of
 [RECORDING.md](RECORDING.md), checks it as the import route does, and stores the
-file as it is under `<runs-dir>/recordings/`. A refused file exits with status 2 and prints
-`recording_invalid` with each problem, `recording_id_taken`, or
+file as it is under `<runs-dir>/recordings/`; a second evaluation of a kept run,
+with the same `source`, is kept beside the first (`another_evaluation`). A
+refused file exits with status 2 and prints `recording_invalid` with each
+problem, `recording_id_taken`, `recording_files_full`, or
 `recordings_busy` when a server importing into the same runs directory holds the
 import lock for more than five seconds.
 
 `import-delta` reads one `delta.json` that `bluefire-lab compare` wrote, checks
 it as `POST /api/v1/recordings/deltas` does, and keeps it: import its two
-recording files first. A refused delta exits with status 2 and prints
+recording files first, both of them also for one run evaluated twice. A refused delta exits with status 2 and prints
 `delta_invalid` with each reason.
 
 `page` writes the single replay page of one recording, shipped or imported, to

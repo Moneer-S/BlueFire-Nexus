@@ -650,6 +650,195 @@
   max-height: min(78vh, 900px);
 }
 
+/* ---------- one run evaluated twice ---------- */
+
+.cmp-runs.is-one { grid-template-columns: minmax(0, 1fr); }
+.cmp-one-run .cmp-run-facts { max-width: 760px; }
+
+.cmp-opens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 2px 0 0;
+}
+
+/* ---------- the lab's rules that differ ---------- */
+
+.cmp-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border-radius: 8px;
+  background: rgba(8, 26, 42, 0.7);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+.cmp-rule header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+}
+
+.cmp-rule-change {
+  flex-basis: 100%;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-violet);
+}
+
+.cmp-rule h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  text-transform: none;
+  color: var(--lv-text);
+}
+
+.cmp-rule-file {
+  font-family: var(--lv-mono);
+  font-size: 12.5px;
+  color: var(--lv-muted-strong);
+  overflow-wrap: anywhere;
+}
+
+.cmp-rule-judged {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.cmp-rule-judged > div { display: contents; }
+.cmp-rule-judged dt { color: var(--lv-muted); }
+.cmp-rule-judged dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0; color: var(--lv-text-soft); }
+
+.cmp-judged {
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lv-muted-strong);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+}
+
+.cmp-judged.is-accepted { color: var(--lv-green); box-shadow: inset 0 0 0 1px rgba(40, 217, 176, 0.5); }
+.cmp-judged.is-not-accepted { color: var(--lv-amber-soft); box-shadow: inset 0 0 0 1px rgba(255, 210, 125, 0.45); }
+.cmp-judged-why { color: var(--lv-muted-strong); }
+
+.cmp-rule-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.cmp-rule-text figcaption {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.cmp-rule-text pre {
+  max-height: 15rem;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border-radius: 6px;
+  background: rgba(3, 14, 24, 0.75);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+  font-family: var(--lv-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--lv-text-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.cmp-rule-text pre:focus-visible { outline: 2px solid var(--lv-blue-soft); outline-offset: 2px; }
+
+/* What an alert of a changed rule rests on, under the step it moved. */
+.cmp-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.cmp-evidence ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  color: var(--lv-muted-strong);
+}
+
+.cmp-evidence-rule { color: var(--lv-text-soft); font-weight: 600; }
+.cmp-evidence-level { color: var(--lv-violet); }
+
+.cmp-evidence-event {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin-left: 6px;
+}
+
+.cmp-evidence-event code,
+.cmp-price-said code {
+  font-family: var(--lv-mono);
+  font-size: 12px;
+  color: var(--lv-text-soft);
+  overflow-wrap: anywhere;
+}
+
+.cmp-evidence-event small { font-size: 12px; color: var(--lv-muted); }
+
+.cmp-price-said {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 78em;
+}
+
+.cmp-price-said h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-muted-strong);
+}
+
+.cmp-price-said h3 span {
+  font-size: 12.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--lv-muted);
+}
+
+.cmp-price-said p { margin: 0; font-size: 13.5px; line-height: 1.55; }
+.cmp-price-quoted { color: var(--lv-muted-strong); }
+.cmp-runs.is-one { padding-top: 18px; border-top: 1px solid var(--lv-line); }
+
 @media (max-width: 900px) {
   .cmp-runs,
   .cmp-detail-sides { grid-template-columns: minmax(0, 1fr); }

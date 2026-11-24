@@ -96,9 +96,18 @@ export function withSummary(list: RecordingList, summary: RecordingSummary): Rec
   return { ...list, recordings: list.recordings.map((entry) => (entry.id === summary.id ? summary : entry)) };
 }
 
-/** The path of a recorded run's page inside the app. */
-export function recordedRunPath(id: string): string {
-  return `/runs/recorded/${encodeURIComponent(id)}`;
+/**
+ * The path of a recorded run's page inside the app: of the first file kept for
+ * its id, or, with `sha256`, of that file, which a run evaluated more than once
+ * needs to tell its evaluations apart.
+ */
+export function recordedRunPath(id: string, sha256?: string): string {
+  return `/runs/recorded/${encodeURIComponent(id)}${sha256 ? `/${sha256}` : ""}`;
+}
+
+/** The pairs as the Runs screen lists them: in the order they happened, by when the later of their runs started. */
+export function pairsInOrder(pairs: readonly DeltaSummary[]): DeltaSummary[] {
+  return [...pairs].sort((a, b) => pairStarted(a) - pairStarted(b));
 }
 
 /**

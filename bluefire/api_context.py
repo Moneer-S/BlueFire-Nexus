@@ -458,6 +458,9 @@ class PlatformService(Protocol):
     def import_recording(self, request: JsonObject) -> JsonResult:
         """Store a recording, or the grown version of one that is still running."""
 
+    def recording_file(self, recording_id: str, digest: str) -> JsonResult:
+        """Return one kept file of a recording by its SHA-256: the first or another evaluation."""
+
     def recording_deltas(self) -> JsonResult:
         """List the comparisons of two kept recordings, each with where it came from."""
 

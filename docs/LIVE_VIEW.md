@@ -157,16 +157,18 @@ and takes pictures of it, paused at moments it finds by the steps' outcomes:
 the first alert on a test, the unseen test, a test seen with no alert, a
 hardened rerun that was stopped, analyse mode with the whole run and with the
 unseen test's detail, and the first alert again at 1920 by 1080. Inside the app
-it takes the Runs screen, the Runs screen at the pair of runs shipped with the
-app, that pair's page, and the recorded run's page on the first alert, at
-1920 by 1080 so that every rule title fits. It fails if a page prints an error,
+it takes the Runs screen, the Runs screen at the pairs shipped with the app,
+the page of the pair of runs (`app-pair.png`), the page of the run evaluated
+with two rule sets with its rule's text loaded (`app-rule-pair.png`), and the
+recorded run's page on the first alert, at 1920 by 1080 so that every rule
+title fits. It fails if a page prints an error,
 if the replay page asks for anything beyond its own file or the app for
 anything beyond the service, or if a picture would show a rule title cut short.
 
 The run keeps them for 90 days as the artifact `live-view-pictures`: the
 pictures, the page `replay.html` they show, and `SOURCE.txt`, which names the
-recording, the CI run that recorded it, the pair and the CI run that made it,
-and the commit the pictures were made from.
+recording, the CI run that recorded it, each shipped pair and the CI run that
+made it, and the commit the pictures were made from.
 
 The browser test `frontend/tests/service/replay-page.spec.ts`, run by the app
 workflow, makes this page for the shipped recording and checks what a person

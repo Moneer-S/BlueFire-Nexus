@@ -1,14 +1,20 @@
-// The demo build's pair of runs: the real one that ships with BlueFire, the
-// delta under bluefire/data/recordings/deltas/ with its two recordings, read
+// The demo build's pairs of runs: the real ones that ship with BlueFire, the
+// deltas under bluefire/data/recordings/deltas/ with their recordings, read
 // from the same files the service ships and labelled the way the service labels
-// it. Only the demo build loads this module, as a file of its own.
+// them. Only the demo build loads this module, as a file of its own.
 
-import deltaText from "../../../bluefire/data/recordings/deltas/lab-pair-history-watch.json?raw";
-import { readDelta, type Delta, type DeltaEntry } from "./api";
-import { shippedSummaries } from "./demo-recordings";
+import { readDelta, type Delta, type DeltaEntry, type DeltaSummary } from "./api";
+import { shippedFileSummary } from "./demo-recordings";
 
-/** The service's note for a pair of two runs side by side in one CI run (`SHIPPED_PAIR_NOTE` in bluefire/recording_deltas.py). */
+/** The service's notes for a shipped pair (`SHIPPED_PAIR_NOTE` and `SHIPPED_ONE_RUN_NOTE` in bluefire/recording_deltas.py). */
 const SHIPPED_PAIR_NOTE = "Shipped with BlueFire, with both of its recordings. This repository's lab workflow made the two runs side by side, and this comparison of them, in the CI run at {run_url}. BlueFire checked that the comparison follows the delta format and names both recordings by the SHA-256 of their files, with every step it lists. It did not make the comparison: bluefire-lab compare did.";
+const SHIPPED_ONE_RUN_NOTE = "Shipped with BlueFire, with both of its recordings. This repository's lab workflow ran the list once, evaluated its telemetry with two sets of the lab's rules, and compared the two, in the CI run at {run_url}. BlueFire checked that the comparison follows the delta format, names both recordings by the SHA-256 of their files with every step it lists, and that the two are one run. It did not make the comparison: bluefire-lab compare did.";
+/** The service lists at most this many of the steps a pair moved (`moved` in bluefire/recording_deltas.py). */
+const MOVED_LISTED = 20;
+
+/** The shipped deltas, each loaded on demand, in the order of their file names, as the service lists them. */
+const DELTAS = Object.entries(import.meta.glob<string>("../../../bluefire/data/recordings/deltas/*.json", { query: "?raw", import: "default" }))
+  .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 
 /**
  * JSON with sorted keys and no spaces, as the service writes it to name a
@@ -30,16 +36,21 @@ async function deltaId(delta: Delta): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 16);
 }
 
-async function load(): Promise<DeltaEntry> {
-  const delta = readDelta(JSON.parse(deltaText));
-  // The list entries of its two recordings: neither recording is loaded until a step's detail asks for it.
-  const summaries = shippedSummaries();
-  const before = summaries.find((summary) => summary.id === delta.before.id);
-  const after = summaries.find((summary) => summary.id === delta.after.id);
-  if (!before || !after) throw new Error("The shipped pair names a recording that is not shipped.");
+/** Where a shipped pair comes from, as the service says it: the one CI run that made both recordings and compared them. */
+function origin(delta: Delta, runUrl: string): DeltaSummary["origin"] {
+  if (delta.one_run === true) return { kind: "shipped", run_url: runUrl, note: SHIPPED_ONE_RUN_NOTE.replace("{run_url}", runUrl) };
+  if (delta.runners === 2) return { kind: "shipped", run_url: runUrl, note: SHIPPED_PAIR_NOTE.replace("{run_url}", runUrl) };
+  throw new Error("A shipped pair is two runs side by side in one CI run, or one run evaluated twice.");
+}
+
+async function load(file: string, text: string): Promise<DeltaEntry> {
+  const delta = readDelta(JSON.parse(text));
+  // The list entries of its two recordings, by the very files it names: neither is loaded until a step's detail asks for it.
+  const before = shippedFileSummary(delta.before.id, delta.before.sha256);
+  const after = shippedFileSummary(delta.after.id, delta.after.sha256);
+  if (!before || !after) throw new Error(`The shipped pair ${file} names a recording file that is not shipped.`);
   const runUrl = before.source.run_url;
-  // The shipped pair is two runs side by side in one CI run, which the service names.
-  if (delta.runners !== 2 || runUrl === undefined || runUrl !== after.source.run_url) throw new Error("The shipped pair is not two runs side by side in one CI run.");
+  if (runUrl === undefined || runUrl !== after.source.run_url) throw new Error(`The shipped pair ${file} is not of one CI run.`);
   return {
     delta,
     summary: {
@@ -47,22 +58,28 @@ async function load(): Promise<DeltaEntry> {
       claim: delta.claim,
       declared_change: delta.declared_change,
       runners: delta.runners ?? null,
+      one_run: delta.one_run === true,
       comparable: delta.comparable,
       limit: delta.limit ?? null,
+      lab_rules: delta.lab_rules ?? null,
       refused_because: delta.refused_because,
       counts: delta.counts,
+      moved: delta.steps
+        .filter((step) => step.result === "better" || step.result === "worse" || step.result === "changed")
+        .slice(0, MOVED_LISTED)
+        .map(({ id, role, title, technique, result, before: was, after: now }) => ({ id, role, title, technique, result, before: was, after: now })),
       before: delta.before,
       after: delta.after,
       recordings: { before, after },
-      origin: { kind: "shipped", run_url: runUrl, note: SHIPPED_PAIR_NOTE.replace("{run_url}", runUrl) },
+      origin: origin(delta, runUrl),
     },
   };
 }
 
-let pair: Promise<DeltaEntry> | undefined;
+let pairs: Promise<DeltaEntry[]> | undefined;
 
-/** The shipped pair with its list entry, loaded once when it is first asked for. */
-export function shippedPair(): Promise<DeltaEntry> {
-  if (!pair) pair = load();
-  return pair;
+/** The shipped pairs with their list entries, loaded once when they are first asked for. */
+export function shippedPairs(): Promise<DeltaEntry[]> {
+  if (!pairs) pairs = Promise.all(DELTAS.map(async ([path, read]) => load(path, await read())));
+  return pairs;
 }

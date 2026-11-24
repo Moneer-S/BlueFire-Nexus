@@ -244,6 +244,23 @@ https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367, unchanged:
 too, and what follows holds for them as it does for the example: the same tests at the
 same commit, and the same published rules, all of them in the table below.
 
+The run evaluated with two rule sets shipped with the app comes from the artifact
+`lab-rules-twice` of the run
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682, unchanged:
+`bluefire/data/recordings/lab-rule-history-truncated-base.json` (its
+`before/recording.json`, 1,196,140 bytes, SHA-256
+`3be33c4987e190a1329bd74d70984707a4d8473a39b4d827dd1a54c170587118`),
+`bluefire/data/recordings/lab-rule-history-truncated-head.json` (its
+`after/recording.json`, 1,201,217 bytes, SHA-256
+`4802adcbec733a0e96048aa7463dea0d07b401d24c7e4768cc021c15c9e5f828`) and
+`bluefire/data/recordings/deltas/lab-rule-history-truncated.json` (its `delta.json`,
+59,666 bytes, SHA-256
+`51ad6e80f43f6e84f7551878db0903b4856804543fc83beb459ca058ddfd2ddc`). They are data
+too, and what follows holds for them as it does for the example: the same tests at the
+same commit, and the same published rules, all of them in the table below. These two
+recordings also hold the text of the rules written in this repository (`lab/rules/`),
+which are this repository's own work under its license.
+
 - It quotes the commands and the printed output of published Atomic Red Team tests
   at commit `a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6`, and their names and GUIDs.
   Atomic Red Team is MIT, Copyright (c) 2018 Red Canary, Inc.; the complete license

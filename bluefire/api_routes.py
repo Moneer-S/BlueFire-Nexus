@@ -19,6 +19,7 @@ _DETECTION_ID = re.compile(r"^detection-[0-9a-f]{20}$")
 _PROPOSAL_RECORD_ID = re.compile(r"^proposal-review-[0-9a-f]{32}$")
 _RECORDING_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _DELTA_ID = re.compile(r"^[0-9a-f]{16}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MANAGEMENT_IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(0|[1-9][0-9]*)\."
@@ -531,6 +532,28 @@ class APIRoutes:
             )
             return (False, None)
         return (True, delta_id)
+
+    def _recording_file_request(self, path: str) -> tuple[bool, str, str] | None:
+        """Parse ``/recordings/{id}/files/{sha256}``: (valid, recording id, SHA-256)."""
+        collection = f"{API_PREFIX}/recordings/"
+        if not path.startswith(collection) or "/files/" not in path[len(collection) :]:
+            return None
+        if not self._management_query_free():
+            return (False, "", "")
+        recording_id, _, digest = path[len(collection) :].partition("/files/")
+        if not _RECORDING_ID.fullmatch(recording_id):
+            self._error(
+                HTTPStatus.BAD_REQUEST, "invalid_recording_id", "Recording identifier is invalid."
+            )
+            return (False, "", "")
+        if not _SHA256.fullmatch(digest):
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_recording_file",
+                "A recording's file is named by its SHA-256, 64 hex digits.",
+            )
+            return (False, "", "")
+        return (True, recording_id, digest)
 
     def _recording_request(self, path: str) -> tuple[bool, str | None] | None:
         """Parse ``/recordings`` and ``/recordings/{id}``: (valid, recording id or None)."""

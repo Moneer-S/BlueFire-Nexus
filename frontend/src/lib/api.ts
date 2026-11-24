@@ -214,11 +214,44 @@ export interface RecordingEntry {
 export interface RecordingImport {
   created: boolean;
   replaced: boolean;
+  /** True when the file was kept beside the first file of its id, as another evaluation of the same run. */
+  anotherEvaluation?: boolean;
+  /** The SHA-256 of the kept file, by which a run evaluated more than once names each of its files. */
+  sha256?: string;
   summary: RecordingSummary;
 }
 
 /** A recording id as the service accepts it. */
 const RECORDING_ID = /^[A-Za-z0-9_-]{1,64}$/;
+/** A kept file of a recording, named by its SHA-256. */
+const FILE_DIGEST = /^[0-9a-f]{64}$/;
+
+/** How one evaluation judged a rule of the lab's own: accepted or not, why, and the rule's file. */
+export interface DeltaJudged {
+  accepted: boolean;
+  reason?: string;
+  file?: string;
+}
+
+/** A rule of the lab's own that differs between the two evaluations, as the delta lists it. */
+export interface DeltaLabRule {
+  rule: string;
+  title: string;
+  change: "new" | "gone" | "changed" | "moved";
+  before: DeltaJudged | null;
+  after: DeltaJudged | null;
+}
+
+/** A step the change is credited with, as a list of pairs shows it without loading the delta. */
+export interface DeltaMoved {
+  id: string;
+  role: string;
+  title: string;
+  technique: string;
+  result: DeltaResult;
+  before: DeltaStepSide;
+  after: DeltaStepSide;
+}
 
 /** The fields of a step that a delta compares. */
 export type DeltaField = "happened" | "recorded" | "outcome" | "outcome_with_lab_rules";
@@ -233,6 +266,8 @@ export interface DeltaSide {
   commit?: string;
   /** The commit the lab's own rules and the sensors' settings were loaded from, when it is not `commit`'s. */
   defense_commit?: string;
+  /** The commit the lab's own rules came from, when the recording names it: it wins over `defense_commit` for them. */
+  lab_rules_commit?: string;
   started?: string;
 }
 
@@ -317,6 +352,10 @@ export interface Delta {
   declared_change: string | null;
   /** 2 when the runs were made side by side in one CI run, each on a fresh runner; absent or null otherwise. */
   runners?: 2 | null;
+  /** True when the two recordings are one run, its telemetry evaluated with two sets of the lab's rules. */
+  one_run?: boolean;
+  /** For a change of the lab's rules: each rule that differs, with how each evaluation judged it. */
+  lab_rules?: DeltaLabRule[] | null;
   comparable: boolean;
   /** Set when the verdict is limited: the two runners differed, and only a step with the change's own mark is credited. */
   limit?: DeltaLimit | null;
@@ -348,10 +387,14 @@ export interface DeltaSummary {
   claim: string;
   declared_change: string | null;
   runners?: 2 | null;
+  one_run?: boolean;
+  lab_rules?: DeltaLabRule[] | null;
   comparable: boolean;
   limit?: DeltaLimit | null;
   refused_because: string[];
   counts: DeltaCounts;
+  /** The steps the change is credited with, at most 20, for a list. */
+  moved?: DeltaMoved[];
   before: DeltaSide;
   after: DeltaSide;
   /** The list entries of the two recordings, as the service keeps them. */
@@ -393,11 +436,45 @@ function isLimitOrNone(value: unknown): boolean {
     && typeof limit.credited === "number" && typeof limit.not_attributable === "number";
 }
 
+function isJudgedOrNone(value: unknown): boolean {
+  if (value === null) return true;
+  const judged = jsonObject(value);
+  return judged !== null && typeof judged.accepted === "boolean"
+    && (judged.reason === undefined || typeof judged.reason === "string")
+    && (judged.file === undefined || typeof judged.file === "string");
+}
+
+/** No list of the lab's rules, or one in the shape the page reads. */
+function isLabRulesOrNone(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  return Array.isArray(value) && value.every((item) => {
+    const row = jsonObject(item);
+    return row !== null && typeof row.rule === "string" && typeof row.title === "string"
+      && (row.change === "new" || row.change === "gone" || row.change === "changed" || row.change === "moved")
+      && isJudgedOrNone(row.before) && isJudgedOrNone(row.after);
+  });
+}
+
+function isStepSide(value: unknown): boolean {
+  const side = jsonObject(value);
+  return side !== null && typeof side.outcome === "string" && typeof side.outcome_with_lab_rules === "string";
+}
+
+function isMovedOrNone(value: unknown): boolean {
+  if (value === undefined) return true;
+  return Array.isArray(value) && value.every((item) => {
+    const step = jsonObject(item);
+    return step !== null && typeof step.id === "string" && typeof step.title === "string" && typeof step.role === "string"
+      && typeof step.technique === "string" && typeof step.result === "string" && isStepSide(step.before) && isStepSide(step.after);
+  });
+}
+
 function isDeltaSummary(value: unknown): value is DeltaSummary {
   const entry = jsonObject(value);
   if (!entry) return false;
   const recordings = jsonObject(entry.recordings), counts = jsonObject(entry.counts), origin = jsonObject(entry.origin);
   return typeof entry.id === "string" && DELTA_ID.test(entry.id)
+    && (entry.one_run === undefined || typeof entry.one_run === "boolean") && isLabRulesOrNone(entry.lab_rules) && isMovedOrNone(entry.moved)
     && typeof entry.comparable === "boolean" && isLimitOrNone(entry.limit)
     && (entry.declared_change === null || typeof entry.declared_change === "string")
     && Array.isArray(entry.refused_because) && entry.refused_because.every((item) => typeof item === "string")
@@ -418,6 +495,7 @@ function isDelta(value: unknown): value is Delta {
     && Array.isArray(delta.steps) && Array.isArray(delta.differences) && Array.isArray(delta.same_in_both)
     && Array.isArray(delta.new) && Array.isArray(delta.gone) && Array.isArray(delta.unexplained)
     && Array.isArray(delta.refused_because) && typeof delta.comparable === "boolean" && isLimitOrNone(delta.limit)
+    && (delta.one_run === undefined || typeof delta.one_run === "boolean") && isLabRulesOrNone(delta.lab_rules)
     && control !== null && Array.isArray(control.fields) && Array.isArray(control.varied)
     && code !== null && typeof code.same === "boolean"
     && race !== null && (typeof race.why === "string" || (jsonObject(race.before) !== null && jsonObject(race.after) !== null));
@@ -1023,22 +1101,42 @@ export const api = {
     if (!envelope || typeof envelope.created !== "boolean" || typeof envelope.replaced !== "boolean" || !isRecordingSummary(envelope.summary)) {
       throw new ApiError("The service's answer to the import could not be read. Refresh the list to see whether the recording is there.", "invalid_recording_import");
     }
-    return { created: envelope.created, replaced: envelope.replaced, summary: envelope.summary };
+    const sha256 = typeof envelope.sha256 === "string" && FILE_DIGEST.test(envelope.sha256) ? envelope.sha256 : undefined;
+    return { created: envelope.created, replaced: envelope.replaced, anotherEvaluation: envelope.another_evaluation === true, ...(sha256 ? { sha256 } : {}), summary: envelope.summary };
+  },
+  /**
+   * One kept file of a recording, by its id and the SHA-256 of the file: a run
+   * evaluated more than once keeps a file for each evaluation under its one id.
+   */
+  async recordingFile(recordingId: string, sha256: string): Promise<{ summary: RecordingSummary; recording: unknown }> {
+    if (!RECORDING_ID.test(recordingId)) throw new ApiError("Recording identifier is invalid.", "invalid_recording_id", undefined, 400);
+    if (!FILE_DIGEST.test(sha256)) throw new ApiError("A recording's file is named by its SHA-256, 64 hex digits.", "invalid_recording_file", undefined, 400);
+    if (DEMO_MODE) {
+      const { shippedFile } = await import("./demo-recordings");
+      const shipped = await shippedFile(recordingId, sha256);
+      if (!shipped) throw new ApiError("No file with this SHA-256 is kept for this recording.", "recording_file_not_found", undefined, 404);
+      return { summary: shipped.summary, recording: shipped.recording };
+    }
+    const envelope = jsonObject(await request<unknown>(`/recordings/${encodeURIComponent(recordingId)}/files/${sha256}`));
+    if (!envelope || envelope.schema_version !== "bluefire.recording-entry.v1" || envelope.sha256 !== sha256 || !isRecordingSummary(envelope.summary) || envelope.summary.id !== recordingId || !("recording" in envelope)) {
+      throw new ApiError("The service returned an invalid recording.", "invalid_recording_entry");
+    }
+    return { summary: envelope.summary, recording: envelope.recording };
   },
   /** The comparisons of two kept recordings, each as `bluefire-lab compare` wrote it. */
   async recordingDeltas(): Promise<DeltaList> {
     if (DEMO_MODE) {
-      const { shippedPair } = await import("./demo-pair");
-      return { deltas: [(await shippedPair()).summary], unreadable_count: 0, omitted_count: 0 };
+      const { shippedPairs } = await import("./demo-pair");
+      return { deltas: (await shippedPairs()).map((pair) => pair.summary), unreadable_count: 0, omitted_count: 0 };
     }
     return deltaList(await request<unknown>("/recordings/deltas"));
   },
   async recordingDelta(deltaId: string): Promise<DeltaEntry> {
     if (!DELTA_ID.test(deltaId)) throw new ApiError("Comparison identifier is invalid.", "invalid_delta_id", undefined, 400);
     if (DEMO_MODE) {
-      const { shippedPair } = await import("./demo-pair");
-      const shipped = await shippedPair();
-      if (shipped.summary.id !== deltaId) throw new ApiError("Comparison was not found.", "delta_not_found", undefined, 404);
+      const { shippedPairs } = await import("./demo-pair");
+      const shipped = (await shippedPairs()).find((pair) => pair.summary.id === deltaId);
+      if (!shipped) throw new ApiError("Comparison was not found.", "delta_not_found", undefined, 404);
       return shipped;
     }
     const envelope = jsonObject(await request<unknown>(`/recordings/deltas/${encodeURIComponent(deltaId)}`));

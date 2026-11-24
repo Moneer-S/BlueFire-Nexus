@@ -5,6 +5,7 @@
 // interface does not read. The demo loads a recording itself only when it is
 // opened, and reads it then as the live view reads every recording.
 
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
@@ -52,12 +53,19 @@ function summary(file: string, text: string): Json {
   };
 }
 
-/** Every shipped recording's list entry with its file's name, in the order of the names, as the service lists them. */
-export function shippedSummaries(): { file: string; summary: Json }[] {
+/**
+ * Every shipped file's list entry with its file's name and SHA-256, in the order
+ * of the names. The service lists the first file of each id; a later file of the
+ * same id is another evaluation of that run, returned by its SHA-256.
+ */
+export function shippedSummaries(): { file: string; sha256: string; summary: Json }[] {
   return readdirSync(FOLDER)
     .filter((name) => name.endsWith(".json"))
     .sort()
-    .map((file) => ({ file, summary: summary(file, readFileSync(`${FOLDER}${file}`, "utf-8")) }));
+    .map((file) => {
+      const bytes = readFileSync(`${FOLDER}${file}`);
+      return { file, sha256: createHash("sha256").update(bytes).digest("hex"), summary: summary(file, bytes.toString("utf-8")) };
+    });
 }
 
 /** Gives `virtual:shipped-recording-summaries`: the entries of shippedSummaries(), worked out once per build. */

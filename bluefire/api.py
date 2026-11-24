@@ -455,6 +455,16 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             else:
                 self._dispatch(lambda: self.platform_server.service.recording_delta(delta_id))
             return
+        file_request = self._routes._recording_file_request(path)
+        if file_request is not None:
+            valid, file_recording, file_digest = file_request
+            if valid:
+                self._dispatch(
+                    lambda: self.platform_server.service.recording_file(
+                        file_recording, file_digest
+                    )
+                )
+            return
         recording_request = self._routes._recording_request(path)
         if recording_request is not None:
             valid, recording_id = recording_request
@@ -1066,6 +1076,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     success_status=HTTPStatus.CREATED,
                 )
             elif valid:
+                self._method_not_allowed("GET")
+            return
+        file_request = self._routes._recording_file_request(path)
+        if file_request is not None:
+            if file_request[0]:
                 self._method_not_allowed("GET")
             return
         recording_request = self._routes._recording_request(path)

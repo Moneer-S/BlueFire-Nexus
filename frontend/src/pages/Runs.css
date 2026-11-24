@@ -333,6 +333,7 @@
 .recorded-pair-runs a:hover { text-decoration: underline; }
 .recorded-pair-runs a:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 2px; border-radius: 2px; }
 .recorded-pairs-note { margin: 0; padding: 0 18px 12px; color: var(--muted); font-size: .78rem; }
+.recorded-pair-moved { margin: 0; color: var(--text-soft); font-size: .84rem; }
 .recorded-pair-refused { color: var(--amber-soft); }
 .recorded-pair-refused code { color: inherit; font-size: .95em; }
 @keyframes recorded-run-pulse { 50% { opacity: .35; } }

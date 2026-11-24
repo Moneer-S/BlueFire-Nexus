@@ -39,22 +39,27 @@ function read(value: unknown, summary: RecordingSummary): { recording: Recording
 }
 
 export function RecordedRunPage() {
-  const { recordingId = "" } = useParams<{ recordingId: string }>();
-  // A different recording is a fresh page, with its own moment.
-  return <RecordedRun key={recordingId} recordingId={recordingId} />;
+  const { recordingId = "", file } = useParams<{ recordingId: string; file?: string }>();
+  // A different recording, or another file of it, is a fresh page, with its own moment.
+  return <RecordedRun key={`${recordingId}/${file ?? ""}`} recordingId={recordingId} file={file} />;
 }
 
-function RecordedRun({ recordingId }: { recordingId: string }) {
+/**
+ * One recording: the first file kept for its id, or, with `file`, the kept file
+ * with that SHA-256, as a run evaluated more than once keeps one per evaluation.
+ */
+function RecordedRun({ recordingId, file }: { recordingId: string; file?: string }) {
   const entry = useQuery({
-    queryKey: ["recording", recordingId],
-    queryFn: () => api.recording(recordingId),
+    queryKey: file ? ["recording-file", recordingId, file] : ["recording", recordingId],
+    queryFn: () => (file ? api.recordingFile(recordingId, file) : api.recording(recordingId)),
     retry: false,
     refetchInterval: (query) => (query.state.data?.summary.running ? RUNNING_POLL_MS : false),
   });
   const data = entry.data;
   const reading = useMemo(() => (data ? read(data.recording, data.summary) : null), [data]);
   const queryClient = useQueryClient();
-  const summary = data?.summary;
+  // The list shows the first file of each id, so only that file's answer is put in it.
+  const summary = file ? undefined : data?.summary;
   // The list of recorded runs, kept from the last visit to Runs, can hold an
   // older version of this run, from before it grew or finished: this page's
   // answer is newer, so the list shows it too.

@@ -53,7 +53,8 @@
       "linux-raw-sys 0.12.1 notice",
       "Tomli 2.4.1 notice",
       "Recordings shipped with the app",
-      "The pair of runs shipped with the app"
+      "The pair of runs shipped with the app",
+      "The run evaluated with two rule sets shipped with the app"
     ]
   },
   "python": {
@@ -446,9 +447,12 @@
       ],
       "lab-recording-quoting-atomic-red-team-mit-and-naming-sigma-drl-rules": [
         "bluefire/data/recordings/deltas/lab-pair-history-watch.json",
+        "bluefire/data/recordings/deltas/lab-rule-history-truncated.json",
         "bluefire/data/recordings/lab-linux-host.json",
         "bluefire/data/recordings/lab-pair-history-watch-after.json",
-        "bluefire/data/recordings/lab-pair-history-watch-before.json"
+        "bluefire/data/recordings/lab-pair-history-watch-before.json",
+        "bluefire/data/recordings/lab-rule-history-truncated-base.json",
+        "bluefire/data/recordings/lab-rule-history-truncated-head.json"
       ]
     },
     "third_party_integrity": {
@@ -460,7 +464,10 @@
       "bluefire/data/recordings/lab-linux-host.json": "d8056aa091bd8ab74bd604d540053d4eb0674741b32ebe76cc7c0cb009dc3595",
       "bluefire/data/recordings/lab-pair-history-watch-before.json": "24a4f0138307091f61330615df74653480107fdb1861b109d24a794cdd652960",
       "bluefire/data/recordings/lab-pair-history-watch-after.json": "a4d802c2658780cea95d8a82dec4ba5b51e1fcedea9ee78f5d379930ff129d5e",
-      "bluefire/data/recordings/deltas/lab-pair-history-watch.json": "4470d56391eafa38a005ef003b36526a1afeba989251545725b343de9fc62646"
+      "bluefire/data/recordings/deltas/lab-pair-history-watch.json": "4470d56391eafa38a005ef003b36526a1afeba989251545725b343de9fc62646",
+      "bluefire/data/recordings/lab-rule-history-truncated-base.json": "3be33c4987e190a1329bd74d70984707a4d8473a39b4d827dd1a54c170587118",
+      "bluefire/data/recordings/lab-rule-history-truncated-head.json": "4802adcbec733a0e96048aa7463dea0d07b401d24c7e4768cc021c15c9e5f828",
+      "bluefire/data/recordings/deltas/lab-rule-history-truncated.json": "51ad6e80f43f6e84f7551878db0903b4856804543fc83beb459ca058ddfd2ddc"
     },
     "third_party_binary_integrity": {
       "frontend/public/fonts/InterVariable.woff2": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3",

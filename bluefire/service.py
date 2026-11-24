@@ -4637,6 +4637,9 @@ class BlueFireService(
     def import_recording(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         return self.recording_library.import_recording(request)
 
+    def recording_file(self, recording_id: str, digest: str) -> Mapping[str, Any]:
+        return self.recording_library.file(recording_id, digest)
+
     def recording_deltas(self) -> Mapping[str, Any]:
         return self.delta_library.list()
 

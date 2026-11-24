@@ -769,6 +769,10 @@ class StubService:
         self.calls.append(("import_recording", request))
         return {"created": True}
 
+    def recording_file(self, recording_id: str, digest: str) -> Mapping[str, Any]:
+        self.calls.append(("recording_file", recording_id, digest))
+        return {"recording": {"id": recording_id}, "sha256": digest}
+
     def recording_deltas(self) -> Mapping[str, Any]:
         self.calls.append(("recording_deltas",))
         return {"deltas": []}

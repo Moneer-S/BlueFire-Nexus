@@ -159,15 +159,25 @@ when it was recorded, whether it shipped with BlueFire or was imported, its
 score in words, and "Still running" while its engine is still sending it. The
 runs of experiments from Build follow under **Experiment runs**.
 
-Under **Before against after** come pairs of recorded runs that the lab compared:
-the one declared change, when the two runs were made, and one line of the
-result. BlueFire ships one real pair, made in CI, in which an audit watch on the
-test account's shell history files makes the one test that no sensor recorded
-seen. Each pair opens its two runs too, and they are not listed again among
-the recorded runs. Select a pair to read it at `#/runs/compared/<id>`: the
-change, the two runs, each step it moved with the price, and what merely
-varied. When the two runs were made on two runners that differed, the page
-says at the top that the verdict is limited, why, and what alone it credits
+Under **Before against after** come the changes to the defense that the lab
+compared, in the order they were made: what changed, how the runs were made, in
+one line what the change moved, and one line of the result. A pair is of one of
+two kinds. Two runs, side by side in one CI run, before and after a change of a
+sensor's settings; or one run evaluated with two rule sets, after a change of
+the lab's own rules, which read only the telemetry a run recorded. BlueFire
+ships one of each, made in CI, and together they tell the loop: an audit watch
+on the test account's shell history files makes the one test that no sensor
+recorded seen; then a rule drafted from that event, "Shell History File
+Truncated In Place", makes that test and one more alert with the lab's rules,
+with a run of each with changed input arguments. Each pair opens its runs too,
+and they are not listed again among the recorded runs. Select a pair to read it
+at `#/runs/compared/<id>`: the change, the runs, each step it moved with the
+price, and what merely varied. When the two runs were made on two runners that
+differed, the page says at the top that the verdict is limited, why, and what
+alone it credits. For one run evaluated twice, it says at the top that this is
+one run and not a pair of runs, then shows the rule (its title, its file, how
+each evaluation judged it and its text), the steps it moved with the event each
+alert rests on, and the price in the lab's words
 ([Recordings](RECORDING.md#in-the-app)).
 
 Select a recorded run to play it in the live view at `#/runs/recorded/<id>`.

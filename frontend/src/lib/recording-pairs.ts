@@ -4,7 +4,121 @@
 // the delta's own, and these functions only put its names into words.
 
 import { count, day, plural } from "../live/format";
-import type { Delta, DeltaField, DeltaLimit, DeltaResult, DeltaSide, DeltaStep, DeltaSummary, RaceTimes } from "./api";
+import type { Recording, RecordingEvent } from "../live/recording";
+import type { Delta, DeltaField, DeltaJudged, DeltaLabRule, DeltaLimit, DeltaResult, DeltaSide, DeltaStep, DeltaSummary, RaceTimes } from "./api";
+
+/** The declared change of the lab's own rules, the one a single run can be evaluated twice for. */
+export const LAB_RULES = "detectors:lab";
+
+/** How a rule of the lab's own differs, as the lead of a title. */
+const RULE_CHANGE: Record<DeltaLabRule["change"], string> = {
+  new: "A new rule",
+  gone: "A rule taken out",
+  changed: "A changed rule",
+  moved: "A rule moved to another file",
+};
+
+/** The words for one rule's change: "A new rule". */
+export function ruleChangeWords(change: DeltaLabRule["change"]): string {
+  return RULE_CHANGE[change];
+}
+
+/**
+ * What changed, in the words a list and a page lead with: for a change of the
+ * lab's rules that the delta names one by one, the rule ("A new rule: Shell
+ * History File Truncated In Place"); otherwise the declared change.
+ */
+export function pairChangeWords(pair: Pick<Delta, "declared_change" | "lab_rules">): string {
+  const rules = pair.declared_change === LAB_RULES ? pair.lab_rules ?? [] : [];
+  const [only] = rules;
+  if (rules.length === 1 && only) return `${ruleChangeWords(only.change)}: ${only.title}`;
+  if (rules.length > 1) return `${count(rules.length)} of the lab's rules changed`;
+  return changeWords(pair.declared_change);
+}
+
+/** True when the delta is one run whose telemetry was evaluated with two sets of the lab's rules. */
+export function isOneRun(pair: Pick<Delta, "one_run">): boolean {
+  return pair.one_run === true;
+}
+
+/** How one evaluation judged a rule: "not there", or accepted or not, with the lab's reason. */
+export function judgedWords(judged: DeltaJudged | null): { word: string; reason: string | null } {
+  if (judged === null) return { word: "not there", reason: null };
+  return { word: judged.accepted ? "accepted" : "not accepted", reason: judged.reason ?? null };
+}
+
+/** The field a pair's moves are told in: the outcome with the lab's rules for a change of them, else the published rules'. */
+function movedField(declared: string | null): "outcome" | "outcome_with_lab_rules" {
+  return declared === LAB_RULES ? "outcome_with_lab_rules" : "outcome";
+}
+
+function listWords(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1] ?? ""}`;
+}
+
+/**
+ * What a pair moved, in one line for a list, from the steps its delta credits
+ * to the change: "Clear Bash history (echo): unseen to seen", or "Clear Bash
+ * history (echo) and Clear Bash history (cat dev/null), each also with changed
+ * input arguments: seen to alerted with the lab's rules". Null when it moved
+ * nothing, or the list does not say.
+ */
+export function movedWords(pair: Pick<DeltaSummary, "declared_change" | "moved">): string | null {
+  const moved = pair.moved ?? [];
+  if (moved.length === 0) return null;
+  const field = movedField(pair.declared_change);
+  const tests = [...new Set(moved.filter((step) => step.role === "test").map((step) => step.title))];
+  const others = moved.filter((step) => step.role !== "test");
+  // A run with changed input arguments of a test is a variant of it, under the test's title.
+  const variantsOfEach = others.length === tests.length && others.every((step) => step.role === "variant" && tests.includes(step.title));
+  const named = tests.length === 0 ? plural(moved.length, "step") : tests.length <= 3 ? listWords(tests) : plural(tests.length, "test");
+  const rest = tests.length === 0 || others.length === 0 ? ""
+    : variantsOfEach ? `, ${tests.length === 1 ? "also" : "each also"} with changed input arguments`
+    : `, and ${plural(others.length, "other step")}`;
+  const moves = [...new Set(moved.map((step) => `${step.before[field]} to ${step.after[field]}`))];
+  const how = moves.length === 1 ? `${moves[0] ?? ""}${field === "outcome_with_lab_rules" ? " with the lab's rules" : ""}` : "moved";
+  return `${named}${rest}: ${how}`;
+}
+
+/** The text of a rule of the lab's own as a recording carries it, with its file, or null when it does not. */
+export function ruleText(recording: Recording, rule: string): { lines: string[]; file: string | null } | null {
+  const lab = recording.network.detectors.find((detector) => detector.id === "lab");
+  const verdict = lab?.verdicts?.find((item) => item.rule === rule);
+  if (!verdict?.lines) return null;
+  return { lines: verdict.lines, file: verdict.file ?? null };
+}
+
+/** The alerts of these rules of the lab's own on one step of a recording, each with the events it rests on. */
+export function ruleAlerts(recording: Recording, rules: ReadonlySet<string>, stepId: string): { id: string; title: string; level: string; events: RecordingEvent[] }[] {
+  const events = new Map(recording.events.map((event) => [event.id, event]));
+  return recording.alerts
+    .filter((alert) => alert.step === stepId && alert.rule.origin === "lab" && rules.has(alert.rule.id) && alert.launcher_only !== true)
+    .map((alert) => ({
+      id: alert.id,
+      title: alert.rule.title,
+      level: alert.rule.level,
+      events: alert.events.map((id) => events.get(id)).filter((event): event is RecordingEvent => event !== undefined),
+    }));
+}
+
+/**
+ * A price cut at its first parenthesis: the lab's lead, and what it quotes in
+ * the parenthesis, so that a price every moved step shares is said once in
+ * full and each step carries its lead.
+ */
+export function priceLead(price: string): { lead: string; quoted: string | null } {
+  const at = price.indexOf(" (");
+  if (at < 0 || !price.endsWith(")")) return { lead: price, quoted: null };
+  return { lead: price.slice(0, at), quoted: price.slice(at + 2, -1) };
+}
+
+/** The one price every moved step of a delta shares, or null when they differ or have none. */
+export function sharedPrice(steps: readonly Pick<DeltaStep, "price">[]): string | null {
+  const prices = new Set(steps.flatMap((step) => (step.price ? [step.price] : [])));
+  const [only] = prices;
+  return prices.size === 1 && only ? only : null;
+}
 
 /** The setup's groups in words, as the lab's `delta.md` names them. */
 const GROUPS: Record<string, string> = {
@@ -95,7 +209,10 @@ export function creditsWords(limit: DeltaLimit): { lead: string; rest: string } 
 }
 
 /** The sentence under the claim: the setup the two runs shared, as far as the delta says. */
-export function setupLede(delta: Pick<Delta, "declared_change" | "runners" | "limit" | "lab_code">): string {
+export function setupLede(delta: Pick<Delta, "declared_change" | "runners" | "limit" | "lab_code" | "one_run">): string {
+  if (isOneRun(delta)) {
+    return "One run, evaluated twice: the list ran once, on one runner, and its telemetry was read with the lab's rules as they were before the change and after it. Not a pair of runs, so no second runner and no run variation: its steps, events, published rules' alerts and ordinary activity are the same in both evaluations, as the lab and BlueFire checked.";
+  }
   if (delta.declared_change === null) return `The same steps, made with the same setup. Nothing was declared as changed, so a step that differs is ${variationWords(delta)}, not an effect.`;
   // The limit's own box, right below, says in what the runners differed.
   if (limitOf(delta)) return "The same steps, made side by side in one CI run on two fresh runners.";

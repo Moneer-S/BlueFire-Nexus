@@ -107,9 +107,9 @@ describe("the Runs screen's recorded runs", () => {
     expect(within(changed).getByText("1 better, 0 worse, 0 changed without a cause, of 91 paired steps")).toBeVisible();
     expect(within(noVerdict).getByRole("link", { name: "Nothing declared as changed" })).toBeVisible();
     expect(within(noVerdict).getByText("No verdict: the before recording has no source.setup, so what it was made with is not known (and 1 more reason)")).toBeVisible();
-    // Each run of a pair opens from its pair, and is not listed again as a run of its own.
-    expect(within(changed).getByRole("link", { name: /^Play the before run/ })).toHaveAttribute("href", "/runs/recorded/lab-run-1");
-    expect(within(changed).getByRole("link", { name: /^Play the after run/ })).toHaveAttribute("href", "/runs/recorded/lab-run-2");
+    // Each run of a pair opens from its pair, by the file the pair names, and is not listed again as a run of its own.
+    expect(within(changed).getByRole("link", { name: /^Play the before run/ })).toHaveAttribute("href", `/runs/recorded/lab-run-1/${"a".repeat(64)}`);
+    expect(within(changed).getByRole("link", { name: /^Play the after run/ })).toHaveAttribute("href", `/runs/recorded/lab-run-2/${"a".repeat(64)}`);
     const recorded = screen.getByRole("region", { name: "Recorded runs" });
     expect(within(recorded).queryByRole("link", { name: "60 published tests on one Linux host" })).not.toBeInTheDocument();
     expect(within(recorded).getByText("1 more recorded run is listed with its pairs under Before against after.")).toBeVisible();
@@ -135,6 +135,43 @@ describe("the Runs screen's recorded runs", () => {
     expect(within(item).getByText("Two runs side by side, 24 Nov 2026")).toBeVisible();
     expect(within(item).getByText("Limited verdict, the runners differed: 1 better, 0 worse, 1 of them by the change's own mark alone; 0 not attributable; of 91 paired steps")).toBeVisible();
     expect(within(item).queryByText(/^1 better/)).not.toBeInTheDocument();
+  });
+
+  it("lists pairs in the order they happened, each saying in a line what changed and what it moved, a run evaluated twice as one run", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [shipped], unreadable_count: 0, omitted_count: 0 });
+    const counts = { paired: 93, same: 89, better: 4, worse: 0, changed: 0, "not attributable": 0, "without cause": 0, "no verdict": 0, new: 0, gone: 0 };
+    const run = "https://github.com/example/bluefire/actions/runs/8";
+    const side = (sha: string, started: string) => ({ sha256: sha.repeat(64), id: "rule-run", environment: "GitHub-hosted runner", run_url: run, started });
+    const outcome = (value: "seen" | "alerted") => ({ happened: "took effect", recorded: "recorded", outcome: "seen", outcome_with_lab_rules: value } as const);
+    const movedStep = (role: string, title: string) => ({ id: `${role}:${title}`, role, title, technique: "T1070.003", result: "better" as const, before: outcome("seen"), after: outcome("alerted") });
+    const later: DeltaSummary = {
+      id: "0000000000000005", claim: "one run evaluated with two rule sets", declared_change: "detectors:lab", runners: null, one_run: true, comparable: true, refused_because: [], counts,
+      lab_rules: [{ rule: "r1", title: "Shell History File Truncated In Place", change: "new", before: null, after: { accepted: true, reason: "it alerted on every run" } }],
+      moved: [movedStep("test", "Clear Bash history (echo)"), movedStep("variant", "Clear Bash history (echo)")],
+      before: side("b", "2026-11-24T12:42:13Z"), after: side("c", "2026-11-24T12:42:13Z"),
+      recordings: { before: { ...shipped, id: "rule-run", source: { ...shipped.source, started: "2026-11-24T12:42:13Z" } }, after: { ...shipped, id: "rule-run", source: { ...shipped.source, started: "2026-11-24T12:42:13Z" } } },
+      origin: { kind: "imported", note: "Imported." },
+    };
+    const earlier: DeltaSummary = {
+      ...later, id: "0000000000000004", claim: "one pair of runs", declared_change: "sensors:auditd", one_run: false, runners: 2, lab_rules: null,
+      moved: [{ ...movedStep("test", "Clear Bash history (echo)"), before: { ...outcome("seen"), outcome: "unseen" }, after: outcome("seen") }],
+      before: { ...side("d", "2026-11-24T09:32:51Z"), id: "watch-before" }, after: { ...side("e", "2026-11-24T09:32:09Z"), id: "watch-after" },
+      recordings: { before: { ...shipped, id: "watch-before", source: { ...shipped.source, started: "2026-11-24T09:32:51Z" } }, after: { ...shipped, id: "watch-after", source: { ...shipped.source, started: "2026-11-24T09:32:09Z" } } },
+    };
+    // The service lists the later pair first; the screen tells them in the order they happened.
+    mount({ deltas: [later, earlier] });
+
+    const list = await screen.findByRole("region", { name: "Before against after" });
+    const items = within(list).getAllByRole("listitem");
+    expect(items.map((item) => within(item).getAllByRole("link")[0]?.textContent)).toEqual(["The settings of sensor auditd", "A new rule: Shell History File Truncated In Place"]);
+    const [watch, rule] = items;
+    if (!watch || !rule) throw new Error("Both pairs should be listed.");
+    expect(within(watch).getByText("Clear Bash history (echo): unseen to seen")).toBeVisible();
+    expect(within(rule).getByText("One run evaluated with two rule sets, 24 Nov 2026")).toBeVisible();
+    expect(within(rule).getByText("Clear Bash history (echo), also with changed input arguments: seen to alerted with the lab's rules")).toBeVisible();
+    // The run evaluated twice opens with either set of rules, each by its own file.
+    expect(within(rule).getByRole("link", { name: /^Play with the rules before/ })).toHaveAttribute("href", `/runs/recorded/rule-run/${"b".repeat(64)}`);
+    expect(within(rule).getByRole("link", { name: /^Play with the rules after/ })).toHaveAttribute("href", `/runs/recorded/rule-run/${"c".repeat(64)}`);
   });
 
   it("shows no pairs, and no heading for them, when the service keeps none", async () => {

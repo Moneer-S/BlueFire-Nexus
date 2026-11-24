@@ -216,8 +216,12 @@ def test_a_delta_is_refused_for_each_reason_with_a_plain_one(service: BlueFireSe
         "comparison was made from (imported earlier): the kept file's SHA-256 is "
         f"{hashlib.sha256(before).hexdigest()}"
     )
-    # The refusal names a way out that exists: a kept finished recording is never replaced.
-    assert other_file_problems[0].endswith("cannot be imported while that id holds the other file.")
+    # The refusal names the ways that exist: a kept finished recording is never replaced, and
+    # another file of its id is kept only as another evaluation of the same run.
+    assert other_file_problems[0].endswith(
+        "never replaced, and another file of its id is kept beside it only as another "
+        "evaluation of the same run, with the same source."
+    )
     # A recording imported as an object is kept as canonical JSON, not as the lab's file.
     assert canonical_problems[0].startswith(
         "the before recording 'rec-object' is kept here from another file"
@@ -292,7 +296,9 @@ def test_a_delta_that_disagrees_with_itself_is_refused(service: BlueFireService)
         "race.before must be an object.",
         "race.after must be an object.",
     ]
-    assert changed(other_claim) == ["delta.claim must be one of: one pair of runs."]
+    assert changed(other_claim) == [
+        "delta.claim must be one of: one pair of runs, one run evaluated with two rule sets."
+    ]
     assert changed(nested) == ["A delta nests objects and lists at most 8 deep."]
 
 
@@ -485,7 +491,9 @@ def test_the_shipped_pair_is_listed_and_returned_whole_as_the_lab_made_it(
 ) -> None:
     delta = json.loads(PAIR_DELTA.read_bytes())
 
-    [entry] = [item for item in service.recording_deltas()["deltas"] if item["origin"]["kind"] == "shipped"]
+    [entry] = [
+        item for item in service.recording_deltas()["deltas"] if item["origin"].get("run_url") == PAIR_RUN
+    ]
     detail = service.recording_delta(entry["id"])
 
     assert entry["id"] == recording_deltas.delta_id(delta)
@@ -885,4 +893,232 @@ def test_a_limited_verdict_rests_on_what_the_rules_watch_and_not_on_the_lab_s_wo
         "name alone is no mark. The recording is written again from its run's folder by "
         "bluefire-lab recording, or the pair is run again."
         for side in ("before", "after")
+    ]
+
+
+# One run evaluated with two sets of the lab's rules: the real pair of CI run 45395673682.
+RULE_FOLDER = ROOT / "bluefire" / "data" / "recordings"
+RULE_BASE = RULE_FOLDER / "lab-rule-history-truncated-base.json"
+RULE_HEAD = RULE_FOLDER / "lab-rule-history-truncated-head.json"
+RULE_DELTA = RULE_FOLDER / "deltas" / "lab-rule-history-truncated.json"
+RULE_RUN = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682"
+
+
+def test_the_shipped_run_evaluated_twice_is_listed_and_both_its_files_are_returned(
+    service: BlueFireService,
+) -> None:
+    delta = json.loads(RULE_DELTA.read_bytes())
+
+    [entry] = [item for item in service.recording_deltas()["deltas"] if item["one_run"]]
+    detail = service.recording_delta(entry["id"])
+    with running_server(service, bootstrap_capability=generate_browser_bootstrap_capability()) as (  # type: ignore[arg-type]
+        server,
+        _,
+    ):
+        files = [
+            request(server, "GET", f"/api/v1/recordings/{delta[side]['id']}/files/{delta[side]['sha256']}")
+            for side in ("before", "after")
+        ]
+        malformed = request(server, "GET", f"/api/v1/recordings/{delta['after']['id']}/files/abc")
+        posted = request(server, "POST", f"/api/v1/recordings/{delta['after']['id']}/files/{'0' * 64}", body={})
+
+    assert entry["id"] == recording_deltas.delta_id(delta) and detail["delta"] == delta
+    assert entry["claim"] == "one run evaluated with two rule sets" and entry["runners"] is None
+    # The list run once, its telemetry evaluated twice and compared, all in one CI run.
+    assert entry["origin"] == {
+        "kind": "shipped",
+        "run_url": RULE_RUN,
+        "note": recording_deltas.SHIPPED_ONE_RUN_NOTE.format(run_url=RULE_RUN),
+    }
+    assert [row["title"] for row in entry["lab_rules"]] == ["Shell History File Truncated In Place"]
+    assert [(step["title"], step["role"], step["result"]) for step in entry["moved"]] == [
+        ("Clear Bash history (echo)", "test", "better"),
+        ("Clear Bash history (cat dev/null)", "test", "better"),
+        ("Clear Bash history (echo)", "variant", "better"),
+        ("Clear Bash history (cat dev/null)", "variant", "better"),
+    ]
+    for side, path, (status, _, body) in zip(("before", "after"), (RULE_BASE, RULE_HEAD), files, strict=True):
+        assert status == 200
+        whole = json_body(body)
+        assert whole["sha256"] == delta[side]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert whole["recording"] == json.loads(path.read_bytes())
+        assert entry["recordings"][side]["origin"]["kind"] == "shipped"
+    assert malformed[0] == 400 and json_body(malformed[2])["error"]["code"] == "invalid_recording_file"
+    assert posted[0] == 405
+
+
+@pytest.fixture
+def unshipped(service: BlueFireService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> BlueFireService:
+    """The service with nothing shipped, so that the real files of one run are imported."""
+
+    empty = tmp_path / "no-deltas"
+    empty.mkdir()
+    monkeypatch.setattr(service.recording_library, "_shipped_entries", {})
+    monkeypatch.setattr(recording_deltas, "_shipped_folder", lambda: empty)
+    return service
+
+
+def evaluation(service: BlueFireService, recording: dict[str, Any], delta: dict[str, Any]) -> None:
+    """Import an altered after recording as another evaluation, and point the delta at it."""
+
+    payload = json.dumps(recording, indent=1).encode("utf-8")
+    service.import_recording(sent(payload))
+    delta["after"]["sha256"] = hashlib.sha256(payload).hexdigest()
+
+
+def test_one_run_evaluated_twice_is_imported_with_its_two_files_of_one_id(unshipped: BlueFireService) -> None:
+    service = unshipped
+    first = service.import_recording(sent(RULE_BASE.read_bytes()))
+    second = service.import_recording(sent(RULE_HEAD.read_bytes()))
+    delta = json.loads(RULE_DELTA.read_bytes())
+
+    imported = service.import_recording_delta({"delta": delta})
+
+    assert first["another_evaluation"] is False and second["another_evaluation"] is True
+    assert imported["created"] is True
+    summary = imported["summary"]
+    assert summary["one_run"] is True and summary["comparable"] is True
+    assert summary["origin"] == {"kind": "imported", "note": recording_deltas.IMPORTED_DELTA_NOTE}
+    assert summary["recordings"]["before"]["id"] == summary["recordings"]["after"]["id"] == "b2666c50"
+    assert summary["recordings"]["after"]["score"]["alerted_with_lab_rules"] == 19
+    assert summary["recordings"]["before"]["score"]["alerted_with_lab_rules"] == 17
+    # One run is one entry of the list of recordings, by its first file.
+    assert [item["id"] for item in service.recordings()["recordings"]].count("b2666c50") == 1
+
+
+def test_a_delta_that_claims_one_run_and_does_not_hold_one_is_refused_with_why(
+    unshipped: BlueFireService,
+) -> None:
+    service = unshipped
+    service.import_recording(sent(RULE_BASE.read_bytes()))
+    service.import_recording(sent(RULE_HEAD.read_bytes()))
+    good = json.loads(RULE_DELTA.read_bytes())
+    head = json.loads(RULE_HEAD.read_bytes())
+    lead = "one run evaluated twice: "
+
+    def edited(edit: Any) -> list[str]:
+        delta = copy.deepcopy(good)
+        edit(delta)
+        return refused(service, delta)
+
+    def recording_edited(edit: Any) -> list[str]:
+        recording, delta = copy.deepcopy(head), copy.deepcopy(good)
+        edit(recording)
+        evaluation(service, recording, delta)
+        return refused(service, delta)
+
+    def a_step_ended_otherwise(recording: dict[str, Any]) -> None:
+        step = next(item for item in recording["steps"] if item["id"] == "test:cccb070c")
+        step["ended"] = step["started"]
+
+    def an_event_missing(recording: dict[str, Any]) -> None:
+        step = next(item for item in recording["steps"] if item["id"] == "test:d2b95631")
+        step["visibility"]["kept"] -= 1
+        recording["events"] = [event for event in recording["events"] if event["id"] != "29-300"]
+
+    def a_published_alert_on_one_side(recording: dict[str, Any]) -> None:
+        recording["alerts"] = [alert for alert in recording["alerts"] if alert["id"] != "alert-2"]
+
+    def other_ordinary_activity(recording: dict[str, Any]) -> None:
+        recording["ordinary"]["events"] += 1
+
+    def the_new_rule_not_accepted(recording: dict[str, Any]) -> None:
+        [lab] = [item for item in recording["network"]["detectors"] if item["id"] == "lab"]
+        [verdict] = [item for item in lab["verdicts"] if item["title"] == "Shell History File Truncated In Place"]
+        verdict.update(accepted=False, reason="it matched ordinary activity")
+
+    def an_unchanged_rule_judged_otherwise(recording: dict[str, Any]) -> None:
+        [lab] = [item for item in recording["network"]["detectors"] if item["id"] == "lab"]
+        [verdict] = [item for item in lab["verdicts"] if item["title"] == "Shell History File Emptied"]
+        verdict["reason"] = "another reason"
+
+    def two_ci_runs(delta: dict[str, Any]) -> None:
+        delta["after"]["run_url"] = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/1"
+
+    def the_claim_of_a_pair(delta: dict[str, Any]) -> None:
+        delta["claim"] = "one pair of runs"
+
+    def a_pair_that_claims_one_run(delta: dict[str, Any]) -> None:
+        delta["one_run"] = False
+
+    def one_run_left_out(delta: dict[str, Any]) -> None:
+        del delta["one_run"]
+
+    def two_runners(delta: dict[str, Any]) -> None:
+        delta["runners"] = 2
+
+    def two_ids(delta: dict[str, Any]) -> None:
+        delta["after"]["id"] = "f9f91ac9"
+
+    def no_rule_listed(delta: dict[str, Any]) -> None:
+        delta["lab_rules"] = []
+
+    def a_rule_said_to_be_there_before(delta: dict[str, Any]) -> None:
+        delta["lab_rules"][0].update(change="changed", before={"accepted": True, "reason": "x"})
+
+    def a_same_step_said_alerted(delta: dict[str, Any]) -> None:
+        step = next(item for item in delta["steps"] if item["id"] == "test:cccb070c")
+        step["before"]["outcome_with_lab_rules"] = step["after"]["outcome_with_lab_rules"] = "alerted"
+
+    def the_rules_commit_of_another(delta: dict[str, Any]) -> None:
+        delta["before"]["lab_rules_commit"] = delta["after"]["lab_rules_commit"]
+
+    assert recording_edited(a_step_ended_otherwise) == [f"{lead}step 'test:cccb070c' differs in ended."]
+    assert recording_edited(an_event_missing) == [
+        f"{lead}the events differ: 0 held by both differ, and 1 held by one only are not kept for "
+        "an alert of the lab's rules."
+    ]
+    assert recording_edited(a_published_alert_on_one_side) == [f"{lead}the published rules' alerts differ."]
+    assert recording_edited(other_ordinary_activity) == [
+        f"{lead}the ordinary activity, or what the published rules matched in it, differs."
+    ]
+    assert recording_edited(the_new_rule_not_accepted) == [
+        f"{lead}lab_rules[0].after.accepted is True, but the after recording says False.",
+        f"{lead}lab_rules[0].after.reason is 'it alerted on every run with changed input arguments "
+        "and on no ordinary activity', but the after recording says 'it matched ordinary activity'.",
+    ]
+    assert recording_edited(an_unchanged_rule_judged_otherwise) == [
+        f"{lead}the lab's rule 'Shell History File Emptied' is the same file in both recordings and "
+        "was judged differently."
+    ]
+    assert edited(two_ci_runs) == [
+        "after.run_url must name the CI run the before recording names: one run was made in one CI run.",
+    ]
+    assert edited(the_claim_of_a_pair) == [
+        "claim must be 'one run evaluated with two rule sets' exactly when one_run is true, and "
+        "'one pair of runs' otherwise.",
+    ]
+    assert "claim must be 'one run evaluated with two rule sets' exactly when one_run is true, and " \
+        "'one pair of runs' otherwise." in edited(a_pair_that_claims_one_run)
+    # Without one_run the delta reads as a pair, so the one run's checks would not run.
+    assert "claim must be 'one run evaluated with two rule sets' exactly when one_run is true, and " \
+        "'one pair of runs' otherwise." in edited(one_run_left_out)
+    assert edited(two_runners)[0] == (
+        "runners is not given for one run evaluated twice: it ran on one runner, with one set of "
+        "audit rules."
+    )
+    assert edited(two_ids)[0] == "after.id must be the before recording's id: one run has one id."
+    assert edited(no_rule_listed) == [
+        f"{lead}the lab's rule 'Shell History File Truncated In Place' differs between the two "
+        "recordings and lab_rules does not list it.",
+        *[
+            f"{lead}steps[{index}] is better, but no rule that lab_rules lists matched it in one "
+            "evaluation only."
+            for index, step in enumerate(good["steps"])
+            if step["result"] == "better"
+        ],
+    ]
+    assert edited(a_rule_said_to_be_there_before) == [
+        f"{lead}lab_rules[0].before says the rule is in the before evaluation, but the before "
+        "recording does not have it."
+    ]
+    assert edited(a_same_step_said_alerted) == [
+        f"steps[{index}].{side}.outcome_with_lab_rules is 'alerted', but the {side} recording's step "
+        "'test:cccb070c' says 'seen'."
+        for index, step in enumerate(good["steps"])
+        if step["id"] == "test:cccb070c"
+        for side in ("before", "after")
+    ]
+    assert edited(the_rules_commit_of_another) == [
+        "before.lab_rules_commit is not the commit of the before recording's detector lab."
     ]

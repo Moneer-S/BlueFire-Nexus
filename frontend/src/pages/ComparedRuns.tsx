@@ -1,21 +1,22 @@
 // One pair of recorded runs, before against after, drawn from the delta that
 // `bluefire-lab compare` wrote and nothing else: the declared change, what it
 // moved and at what price, the control, and what was refused. No difference is
-// worked out here. The two recordings are fetched only to open a step's detail
-// for both sides, next to each other.
+// worked out here. The recordings are fetched only to show what the delta names
+// in them: a step's detail for both sides, next to each other, and, for a
+// change of the lab's rules, each rule's text and the events its alerts rest on.
 
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, type Delta, type DeltaLimit, type DeltaSide, type DeltaStep, type DeltaSummary } from "../lib/api";
+import { api, type Delta, type DeltaLabRule, type DeltaLimit, type DeltaSide, type DeltaStep, type DeltaSummary } from "../lib/api";
 import { originWords, recordedRunPath } from "../lib/recorded-runs";
-import { changeWords, chipField, codeSpans, controlWords, creditsWords, isCredited, isDigest, limitOf, movedSteps, noMarkKeys, raceWords, recordsParts, resultWords, runnerDifferences, setupLede, setupWords, shortValue, sideWhere, variationWords, verdictParts } from "../lib/recording-pairs";
+import { chipField, codeSpans, controlWords, creditsWords, isCredited, isDigest, isOneRun, judgedWords, limitOf, movedSteps, noMarkKeys, pairChangeWords, priceLead, raceWords, recordsParts, resultWords, ruleAlerts, ruleChangeWords, ruleText, runnerDifferences, setupLede, setupWords, sharedPrice, shortValue, sideWhere, variationWords, verdictParts } from "../lib/recording-pairs";
 import { stepRows } from "../live/analyse";
 import { outcomeClass, outcomeWords, plural, runLink, sensorColours, testNumbers } from "../live/format";
 import { runFacts } from "../live/moment";
 import { buildTimeline } from "../live/playback";
-import { readRecording, RecordingError, type Recording } from "../live/recording";
+import { readRecording, RecordingError, type Recording, type RecordingEvent } from "../live/recording";
 import { StepDetail } from "../live/StepDetail";
 import { ErrorState, LoadingState } from "../components/Primitives";
 import "../live/live.css";
@@ -47,16 +48,17 @@ function ComparedRuns({ deltaId }: { deltaId: string }) {
 
 /** The quiet line under the app's header: back to Runs, what this page is, and where the pair comes from. */
 function ComparedBar({ summary }: { summary?: DeltaSummary }) {
-  // A shipped pair of two runs side by side names the one CI run that made both and compared them.
+  // A shipped pair of two runs side by side, or of one run evaluated twice, names the one CI run that made it all.
   const pairRun = summary?.origin.kind === "shipped" && summary.origin.run_url ? runLink({ run_url: summary.origin.run_url }) : null;
+  const made = summary && isOneRun(summary) ? "The run, both evaluations and this comparison made in CI" : "Both runs and this comparison made in CI";
   return <header className="recorded-run-bar">
     <nav className="recorded-run-line" aria-label="Compared runs">
       <Link className="recorded-run-back" to="/runs"><ArrowLeft aria-hidden="true" />Runs</Link>
       {summary ? <p className="recorded-run-facts">
         <span className="recorded-run-title">Before against after</span>
-        <span>{changeWords(summary.declared_change)}</span>
+        <span>{pairChangeWords(summary)}</span>
         <span className={`recorded-run-origin is-${summary.origin.kind}`}>{originWords(summary.origin)}</span>
-        {pairRun ? <span>Both runs and this comparison made in CI <a href={pairRun} target="_blank" rel="noreferrer">{pairRun.replace(/^.*\/runs\//, "run ")}</a></span> : null}
+        {pairRun ? <span>{made} <a href={pairRun} target="_blank" rel="noreferrer">{pairRun.replace(/^.*\/runs\//, "run ")}</a></span> : null}
       </p> : null}
     </nav>
     {summary && summary.origin.kind !== "shipped" ? <p className="recorded-run-note">{summary.origin.note}</p> : null}
@@ -70,6 +72,11 @@ function PairView({ delta, summary }: { delta: Delta; summary: DeltaSummary }) {
   const byId = useMemo(() => new Map(delta.steps.map((step) => [step.id, step])), [delta]);
   const unexplained = delta.unexplained.map((id) => byId.get(id)).filter((step): step is DeltaStep => step !== undefined);
   const race = raceWords(delta.race);
+  const rules = delta.lab_rules ?? [];
+  // The recordings that hold what the delta names of the lab's rules: their text, and the alerts a moved step rests on.
+  const rulesOf = useRuleRecordings(delta, rules);
+  // A price every moved step shares is said once, in full, under the steps, and each step carries its lead.
+  const price = moved.length > 1 ? sharedPrice(moved) : null;
   const choose = (stepId: string | null) => {
     const next = new URLSearchParams(params);
     if (stepId === null) next.delete("step");
@@ -77,21 +84,27 @@ function PairView({ delta, summary }: { delta: Delta; summary: DeltaSummary }) {
     // A step's detail is a place of its own: Back closes it.
     setParams(next, { preventScrollReset: true });
   };
-  const line = (step: DeltaStep) => <StepLine key={step.id} delta={delta} step={step} open={open === step.id} onToggle={() => choose(open === step.id ? null : step.id)} />;
+  const line = (step: DeltaStep) => <StepLine key={step.id} delta={delta} step={step} open={open === step.id} onToggle={() => choose(open === step.id ? null : step.id)} sharedPrice={price} evidence={rulesOf.evidence(step)} />;
 
   return <div className="lv compared-view">
     <div className="cmp-page">
       <Claim delta={delta} />
-      <section className="cmp-runs" aria-label="The two runs">
+      {rules.length ? <RuleSection rules={rules} text={rulesOf.text} /> : null}
+      {isOneRun(delta) ? null : <section className="cmp-runs" aria-label="The two runs">
         {SIDES.map((side) => <RunCard key={side} side={side} facts={delta[side]} summary={summary} />)}
         {sharedNote(summary) ? <p className="cmp-run-note cmp-runs-note">Both recordings: {sharedNote(summary)}</p> : null}
-      </section>
+      </section>}
 
       <section className="cmp-sec" aria-labelledby="cmp-moved">
         <h2 id="cmp-moved">{!delta.comparable ? "Steps that differ, with no verdict" : delta.declared_change === null ? "Steps credited to a change" : "What the change moved"}<span>{plural(moved.length, "step")} of {plural(delta.counts.paired, "paired step")}{delta.limit ? ", each credited by the change's own mark only" : ""}</span></h2>
         {moved.length ? <ol className="cmp-steps">{moved.map(line)}</ol>
           : <p className="cmp-empty">{delta.declared_change === null ? "Nothing was declared as changed, so no step is credited to a change." : "No step moved in what this change can move."}</p>}
+        {price ? <PriceSaid price={price} /> : null}
       </section>
+      {/* One run evaluated twice has no second run to set beside it: its one run comes after what the rule moved. */}
+      {isOneRun(delta) ? <section className="cmp-runs is-one" aria-label="The run">
+        <OneRunCard delta={delta} summary={summary} />
+      </section> : null}
 
       <section className="cmp-sec" aria-labelledby="cmp-control">
         <h2 id="cmp-control">The control<span>what this change cannot move</span></h2>
@@ -139,7 +152,7 @@ function Claim({ delta }: { delta: Delta }) {
   return <header className={`cmp-claim${delta.comparable ? "" : " is-refused"}${limit ? " is-limited" : ""}`}>
     <p className="cmp-kicker">Before against after<span>{delta.claim}</span>{limit ? <span className="is-limit">limited verdict</span> : null}</p>
     {delta.comparable ? <>
-      <h1>{declared === null ? "Nothing declared as changed" : <>{limit ? "Declared change" : "One change"}: {setupWords(declared)}</>}</h1>
+      <h1>{declared === null ? "Nothing declared as changed" : delta.lab_rules?.length ? pairChangeWords(delta) : <>{limit ? "Declared change" : "One change"}: {setupWords(declared)}</>}</h1>
       {change ? <p className="cmp-change">
         <span className="cmp-side-word">Before</span><Value value={change.before} />
         <ArrowRight className="cmp-arrow" aria-hidden="true" />
@@ -230,7 +243,132 @@ function RunCard({ side, facts, summary }: { side: Side; facts: DeltaSide; summa
         : "not recorded"}</dd></div>
     </dl>
     {note ? <p className="cmp-run-note">{note}</p> : null}
-    <Link className="cmp-open" to={recordedRunPath(facts.id)}>Open<span className="lv-sr"> the {side} run</span><ArrowRight aria-hidden="true" /></Link>
+    <Link className="cmp-open" to={recordedRunPath(facts.id, facts.sha256)}>Open<span className="lv-sr"> the {side} run</span><ArrowRight aria-hidden="true" /></Link>
+  </article>;
+}
+
+/**
+ * One run evaluated twice: one card for the one run, where and when it ran and
+ * in which CI run, the commit each evaluation took the lab's rules from, and a
+ * way to open the run with either set of rules.
+ */
+function OneRunCard({ delta, summary }: { delta: Delta; summary: DeltaSummary }) {
+  const facts = delta.after;
+  const recording = summary.recordings.after;
+  const note = sharedNote(summary);
+  const link = recording.origin.kind === "shipped" ? runLink({ run_url: facts.run_url }) : null;
+  const rulesFrom = (side: Side) => delta[side].lab_rules_commit ?? delta[side].defense_commit;
+  return <article className="cmp-run cmp-one-run" aria-labelledby="cmp-run-one">
+    <header>
+      <h2 id="cmp-run-one">The run</h2>
+      <span className={`recorded-run-origin is-${recording.origin.kind}`}>{originWords(recording.origin)}</span>
+    </header>
+    <p className="cmp-run-title">{recording.title}</p>
+    <dl className="cmp-run-facts">
+      <div><dt>Where and when</dt><dd>{sideWhere(facts)}, one runner</dd></div>
+      <div><dt>Lab's commit</dt><dd>{facts.commit ? <code>{facts.commit.slice(0, 8)}</code> : "not recorded"}</dd></div>
+      {facts.defense_commit ? <div><dt>Sensor settings</dt><dd>from commit <code>{facts.defense_commit.slice(0, 8)}</code>{facts.defense_commit === facts.commit ? " (the lab's commit)" : null}</dd></div> : null}
+      <div><dt>The lab's rules</dt><dd>{SIDES.map((side, index) => {
+        const commit = rulesFrom(side);
+        return <span key={side}>{index ? "; " : ""}{side} from commit {commit ? <code>{commit.slice(0, 8)}</code> : "not recorded"}</span>;
+      })}</dd></div>
+      <div><dt>CI run</dt><dd>{link ? <a href={link} target="_blank" rel="noreferrer">{link.replace(/^.*\/runs\//, "run ")}</a>
+        : facts.run_url ? <span className="cmp-claimed" title="The file names this CI run, which BlueFire cannot confirm">{facts.run_url} <small>(named by the file, not confirmed)</small></span>
+        : "not recorded"}</dd></div>
+    </dl>
+    {note ? <p className="cmp-run-note">{note}</p> : null}
+    <p className="cmp-opens">
+      {SIDES.map((side) => <Link key={side} className="cmp-open" to={recordedRunPath(delta[side].id, delta[side].sha256)}>Open with the rules {side}<ArrowRight aria-hidden="true" /></Link>)}
+    </p>
+  </article>;
+}
+
+/** A rule's text as a recording carries it, or that it is still loading, or that the recording does not carry it. */
+type RuleTextState = { side: Side; lines: string[] } | "loading" | "missing";
+type RuleTexts = Map<string, RuleTextState>;
+
+/**
+ * The recordings that hold what a delta says of the lab's rules: the after one
+ * for a rule that is there after, the before one for a rule taken out. Each is
+ * loaded once, by its file, and shared with a step's detail.
+ */
+function useRuleRecordings(delta: Delta, rules: readonly DeltaLabRule[]) {
+  const wanted = (side: Side) => rules.some((row) => (side === "after" ? row.after !== null : row.after === null));
+  const load = (side: Side) => ({
+    queryKey: ["recording-file", delta[side].id, delta[side].sha256],
+    queryFn: () => api.recordingFile(delta[side].id, delta[side].sha256),
+    enabled: wanted(side),
+    retry: false,
+  });
+  const before = useQuery(load("before"));
+  const after = useQuery(load("after"));
+  const recordings = useMemo(() => {
+    const found: Partial<Record<Side, Recording>> = {};
+    for (const [side, entry] of [["before", before.data], ["after", after.data]] as const) {
+      const reading = entry ? read(entry.recording) : null;
+      if (reading && "recording" in reading) found[side] = reading.recording;
+    }
+    return found;
+  }, [before.data, after.data]);
+  const pending = { before: before.isPending && wanted("before"), after: after.isPending && wanted("after") };
+  const text: RuleTexts = new Map();
+  for (const row of rules) {
+    const side: Side = row.after !== null ? "after" : "before";
+    const recording = recordings[side];
+    const found = recording ? ruleText(recording, row.rule) : null;
+    text.set(row.rule, found ? { side, lines: found.lines } : pending[side] ? "loading" : "missing");
+  }
+  const changed = new Set(rules.map((row) => row.rule));
+  return {
+    text,
+    /** For a step the change moved: the alerts of a rule that differs on it, with their events, from the evaluation that has them. */
+    evidence(step: DeltaStep): Evidence | null {
+      if (!isCredited(step.result) || changed.size === 0) return null;
+      for (const side of ["after", "before"] as const) {
+        const recording = recordings[side];
+        const stepId = side === "before" ? step.before_id ?? step.id : step.id;
+        const alerts = recording ? ruleAlerts(recording, changed, stepId) : [];
+        if (alerts.length) return { side, alerts };
+      }
+      return null;
+    },
+  };
+}
+
+type Evidence = { side: Side; alerts: ReturnType<typeof ruleAlerts> };
+
+/** The rules of the lab's own that differ: each with its file, how each evaluation judged it and its text. */
+function RuleSection({ rules, text }: { rules: readonly DeltaLabRule[]; text: RuleTexts }) {
+  return <section className="cmp-sec cmp-rules" aria-labelledby="cmp-rules">
+    <h2 id="cmp-rules">{rules.length === 1 ? "The rule" : "The rules"}<span>{rules.length === 1 ? "the one rule of the lab's own that differs" : `${plural(rules.length, "rule")} of the lab's own differ`}</span></h2>
+    {rules.map((row) => <RuleCard key={row.rule} row={row} text={text.get(row.rule) ?? "missing"} />)}
+  </section>;
+}
+
+function RuleCard({ row, text }: { row: DeltaLabRule; text: RuleTextState }) {
+  const file = row.after?.file ?? row.before?.file;
+  const heading = `cmp-rule-${row.rule.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  return <article className="cmp-rule" aria-labelledby={heading}>
+    <header>
+      <span className="cmp-rule-change">{ruleChangeWords(row.change)}</span>
+      <h3 id={heading}>{row.title}</h3>
+      {file ? <code className="cmp-rule-file">{file}</code> : null}
+    </header>
+    <dl className="cmp-rule-judged" aria-label="How each evaluation judged it">
+      {SIDES.map((side) => {
+        const said = judgedWords(row[side]);
+        return <div key={side}>
+          <dt>{side === "before" ? "Before" : "After"}</dt>
+          <dd><span className={`cmp-judged is-${said.word.replace(/\s+/g, "-")}`}>{said.word}</span>{said.reason ? <span className="cmp-judged-why"><LabText text={said.reason} /></span> : null}</dd>
+        </div>;
+      })}
+    </dl>
+    {text === "loading" ? <p className="cmp-empty">Loading the rule's text from the recording.</p>
+      : text === "missing" ? <p className="cmp-empty">The recording does not carry the rule's text.</p>
+      : <figure className="cmp-rule-text">
+        <figcaption>The rule's text, as the {text.side} recording carries it</figcaption>
+        <pre tabIndex={0} aria-label={`The text of the rule ${row.title}`}>{text.lines.join("\n")}</pre>
+      </figure>}
   </article>;
 }
 
@@ -246,9 +384,11 @@ function Chip({ value }: { value: DeltaStep["before"]["outcome"] }) {
   return <span className={`lv-word is-${outcomeClass(value)}`}>{outcomeWords(value)}</span>;
 }
 
-function StepLine({ delta, step, open, onToggle }: { delta: Delta; step: DeltaStep; open: boolean; onToggle: () => void }) {
+function StepLine({ delta, step, open, onToggle, sharedPrice: shared = null, evidence = null }: { delta: Delta; step: DeltaStep; open: boolean; onToggle: () => void; sharedPrice?: string | null; evidence?: Evidence | null }) {
   const field = chipField(delta);
   const parts = verdictParts(step);
+  // A price the moved steps share is said once in full under them; the step carries the lab's lead of it.
+  const price = parts.price && parts.price === shared ? priceLead(parts.price).lead : parts.price;
   const result = step.result.replace(/\s+/g, "-");
   // Only a result the delta credits to the change is drawn as a move; any other difference is shown flat, before and after.
   const credited = isCredited(step.result);
@@ -276,10 +416,18 @@ function StepLine({ delta, step, open, onToggle }: { delta: Delta; step: DeltaSt
       {step.mark ? <> <span className="cmp-result is-mark">by the change's own mark<span className="lv-sr">, on two runners that differed</span></span></> : null}
       <span className="lv-sr">: </span>
       <LabText text={parts.before} />
-      {parts.price ? <span className={`cmp-price${parts.price.startsWith("price not known") ? " is-unknown" : ""}`}><LabText text={parts.price} /></span> : null}
+      {price ? <span className={`cmp-price${price.startsWith("price not known") ? " is-unknown" : ""}`}><LabText text={price} />{price !== parts.price ? <span className="lv-sr"> (the whole price is said under the steps)</span> : null}</span> : null}
       <LabText text={parts.after} />
     </p>
     {step.underneath.length ? <ul className={`cmp-under${step.result === "better" ? " is-better" : ""}`} aria-label="What changed underneath">{step.underneath.map((item) => <li key={item}>{item}</li>)}</ul> : null}
+    {evidence ? <div className="cmp-evidence">
+      <p className="cmp-side-word">What the alert rests on, in the {evidence.side} evaluation</p>
+      <ul>{evidence.alerts.map((alert) => <li key={alert.id}>
+        <span className="cmp-evidence-rule">{alert.title}</span> <span className="cmp-evidence-level">{alert.level}</span>
+        {alert.events.length ? <> on {plural(alert.events.length, "event")}:</> : null}
+        {alert.events.map((event) => <EvidenceEvent key={event.id} event={event} />)}
+      </li>)}</ul>
+    </div> : null}
     {step.records ? <Records records={step.records} /> : null}
     {step.result === "not attributable" ? noMarkKeys(delta, step).map((item) => <p key={`${item.run}-${item.key}`} className="cmp-nomark">
       No mark of the change's own from the audit key <code>{item.key}</code>, only in the {item.run} run's events: <LabText text={item.why} />.
@@ -287,6 +435,29 @@ function StepLine({ delta, step, open, onToggle }: { delta: Delta; step: DeltaSt
     {step.paired_by !== "id" ? <p className="cmp-paired">Paired by {step.paired_by}.</p> : null}
     {open ? <PairDetail id={detail} delta={delta} step={step} onClose={onToggle} /> : null}
   </li>;
+}
+
+/** The price every moved step shares, once and whole, in the lab's words: its lead as on each step, then what it quotes. */
+function PriceSaid({ price }: { price: string }) {
+  const { lead, quoted } = priceLead(price);
+  return <div className="cmp-price-said">
+    <h3>The price<span>the same for each step above, in the lab's words</span></h3>
+    <p>
+      <span className={`cmp-price${lead.startsWith("price not known") ? " is-unknown" : ""}`}><LabText text={lead} /></span>
+      {quoted ? <span className="cmp-price-quoted"> (<LabText text={quoted} />)</span> : null}
+    </p>
+  </div>;
+}
+
+/** One event an alert rests on: what the sensor recorded, the command it names and its audit key, as text. */
+function EvidenceEvent({ event }: { event: RecordingEvent }) {
+  const command = event.fields?.command;
+  const key = event.fields?.key;
+  return <span className="cmp-evidence-event">
+    <code>{event.sensor} {event.kind}{event.text ? `: ${event.text}` : ""}</code>
+    {typeof command === "string" ? <small>by <code>{command}</code></small> : null}
+    {typeof key === "string" ? <small>audit key <code>{key}</code></small> : null}
+  </span>;
 }
 
 /** What the declared sensor recorded of a step in one run only, with the first lines the delta gives. */
@@ -315,7 +486,7 @@ function PairDetail({ id, delta, step, onClose }: { id: string; delta: Delta; st
       <button type="button" className="lv-button is-close" onClick={onClose} aria-label="Close the step's detail">Close</button>
     </div>
     <div className="cmp-detail-sides">
-      {SIDES.map((side) => <SideDetail key={side} side={side} recordingId={delta[side].id} stepId={side === "before" ? (step.before_id ?? step.id) : step.id} />)}
+      {SIDES.map((side) => <SideDetail key={side} side={side} recordingId={delta[side].id} sha256={delta[side].sha256} stepId={side === "before" ? (step.before_id ?? step.id) : step.id} />)}
     </div>
   </section>;
 }
@@ -328,9 +499,10 @@ function read(value: unknown): { recording: Recording } | { problem: string } {
   }
 }
 
-function SideDetail({ side, recordingId, stepId }: { side: Side; recordingId: string; stepId: string }) {
+function SideDetail({ side, recordingId, sha256, stepId }: { side: Side; recordingId: string; sha256: string; stepId: string }) {
   const navigate = useNavigate();
-  const entry = useQuery({ queryKey: ["recording", recordingId], queryFn: () => api.recording(recordingId), retry: false });
+  // By its file: one run evaluated twice keeps two files under its one id.
+  const entry = useQuery({ queryKey: ["recording-file", recordingId, sha256], queryFn: () => api.recordingFile(recordingId, sha256), retry: false });
   const reading = useMemo(() => (entry.data ? read(entry.data.recording) : null), [entry.data]);
   const recording = reading && "recording" in reading ? reading.recording : null;
   const view = useMemo(() => {
@@ -355,7 +527,7 @@ function SideDetail({ side, recordingId, stepId }: { side: Side; recordingId: st
     testNumber={view.number}
     testsTotal={view.tests}
     origin={view.origin}
-    onSelect={(other) => navigate(`${recordedRunPath(recordingId)}?mode=analyse&select=${encodeURIComponent(other)}`)}
+    onSelect={(other) => navigate(`${recordedRunPath(recordingId, sha256)}?mode=analyse&select=${encodeURIComponent(other)}`)}
     takeFocus={false}
   />;
   return <div className={`cmp-detail-side is-${side}`}>

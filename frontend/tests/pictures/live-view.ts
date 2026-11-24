@@ -39,12 +39,15 @@ const RECORDING = "bluefire/data/recordings/lab-linux-host.json";
 const shipped: Shipped = JSON.parse(readFileSync(join(repository, RECORDING), "utf-8"));
 const PAIR = "bluefire/data/recordings/deltas/lab-pair-history-watch.json";
 const pairRun: string = (JSON.parse(readFileSync(join(repository, PAIR), "utf-8")) as { after: { run_url?: string } }).after.run_url ?? "not named in the comparison";
+const RULE_PAIR = "bluefire/data/recordings/deltas/lab-rule-history-truncated.json";
+const rulePairRun: string = (JSON.parse(readFileSync(join(repository, RULE_PAIR), "utf-8")) as { after: { run_url?: string } }).after.run_url ?? "not named in the comparison";
 const FILES = [
   "SOURCE.txt",
   "analyse-unseen.png",
   "analyse.png",
   "app-pair.png",
   "app-recorded-run.png",
+  "app-rule-pair.png",
   "app-runs-pair.png",
   "app-runs.png",
   "replay.html",
@@ -275,6 +278,14 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   await expect(link).toBeVisible();
 
+  // The run evaluated with two rule sets, the rule drafted from what the watch saw: its own page, with the rule's text loaded.
+  await pairs.getByRole("link", { name: "A new rule: Shell History File Truncated In Place", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "A new rule: Shell History File Truncated In Place" })).toBeVisible();
+  await expect(page.getByLabel("The text of the rule Shell History File Truncated In Place")).toBeVisible();
+  await picture(page, folder, "app-rule-pair.png");
+  await page.getByRole("link", { name: "Runs", exact: true }).first().click();
+  await expect(link).toBeVisible();
+
   const path = await link.getAttribute("href");
   if (!path?.startsWith("#/")) throw new Error(`The recorded run's link is ${path}.`);
   // Inside the app the live view shares the width with the app's own rail: the wide size keeps every rule title whole.
@@ -289,10 +300,11 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
     join(folder, "SOURCE.txt"),
     [
       "Pictures of the live view and its single replay page, made from the recording shipped with BlueFire,",
-      "and of the Runs screen and the page of the pair of runs shipped with it.",
+      "and of the Runs screen and the pages of the pair of runs and the run evaluated twice shipped with it.",
       `Recording: ${shipped.id} (${RECORDING})`,
       `Recorded in the CI run: ${shipped.source.run_url ?? "not named in the recording"}`,
       `Pair: ${PAIR} (made in the CI run ${pairRun})`,
+      `Run evaluated twice: ${RULE_PAIR} (made in the CI run ${rulePairRun})`,
       `Made from the commit: ${process.env.GITHUB_SHA ?? "not known: made outside CI"}`,
       "",
     ].join("\n"),

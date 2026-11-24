@@ -7,8 +7,8 @@ import { useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, type DeltaSummary, type RecordingSummary } from "../lib/api";
 import { day } from "../live/format";
-import { originWords, ownRuns, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
-import { changeWords, codeSpans, pairPath, pairResultWords } from "../lib/recording-pairs";
+import { originWords, ownRuns, pairsInOrder, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
+import { codeSpans, isOneRun, movedWords, pairChangeWords, pairPath, pairResultWords } from "../lib/recording-pairs";
 import { Button, ErrorState, LoadingState, Panel } from "./Primitives";
 
 /** The problems a refused import names, in the service's own words. */
@@ -43,7 +43,8 @@ export function RecordedRuns() {
       // A recording imported again under its id, a running one that grew or finished, is not shown from the cache.
       queryClient.removeQueries({ queryKey: ["recording", result.summary.id] });
       await queryClient.invalidateQueries({ queryKey: ["recordings"] });
-      navigate(recordedRunPath(result.summary.id));
+      // Another evaluation of a kept run is opened by its file: the run's id opens its first file.
+      navigate(recordedRunPath(result.summary.id, result.anotherEvaluation ? result.sha256 : undefined));
     },
     onError: (error) => {
       setProblem({ message: error instanceof Error ? error.message : "The import failed.", problems: refusalProblems(error) });
@@ -69,7 +70,8 @@ export function RecordedRuns() {
   };
   // A recording that is one side of a listed pair is listed with its pair, not again on its own:
   // two near-identical rows of one list would read as two unrelated runs.
-  const pairList = pairs.data?.deltas ?? [];
+  // The pairs in the order they happened, so that the list tells the defender's loop as it went.
+  const pairList = pairsInOrder(pairs.data?.deltas ?? []);
   const all = recordings.data && !pairs.isPending ? recordings.data.recordings : undefined;
   const list = all ? ownRuns(all, pairList) : undefined;
   const inPairs = (all?.length ?? 0) - (list?.length ?? 0);
@@ -102,7 +104,7 @@ export function RecordedRuns() {
     {inPairs > 0 ? <p className="recorded-pairs-note">{inPairs === 1 ? "1 more recorded run is listed with its" : `${inPairs} more recorded runs are listed with their`} {pairList.length === 1 ? "pair" : "pairs"} under Before against after.</p> : null}
     {pairList.length > 0 ? <section className="recorded-pairs" aria-labelledby="recorded-pairs-heading">
       <h3 id="recorded-pairs-heading">Before against after</h3>
-      <p>Two recorded runs of the same tests, compared by the lab: the one declared change, and what it moved.</p>
+      <p>A change to the defense, compared by the lab in the order the changes were made: what changed, and what it moved.</p>
       <ul className="recorded-run-list">{pairList.map((summary) => <RecordedPairItem key={summary.id} summary={summary} />)}</ul>
     </section> : null}
     {pairs.data && pairs.data.unreadable_count > 0 ? <p className="workspace-note" role="status">{pairs.data.unreadable_count} imported {pairs.data.unreadable_count === 1 ? "comparison is" : "comparisons are"} not listed: a comparison is shown only while it can be read and both its recordings are still the files it names.</p> : null}
@@ -111,20 +113,25 @@ export function RecordedRuns() {
 
 function RecordedPairItem({ summary }: { summary: DeltaSummary }) {
   const dates = [summary.before.started, summary.after.started].map((started) => (started ? day(started) : "not recorded"));
-  const sideBySide = summary.runners === 2;
+  const oneRun = isOneRun(summary);
+  const how = oneRun ? `One run evaluated with two rule sets, ${dates[0]}`
+    : summary.runners === 2 ? `Two runs side by side, ${dates[1] === dates[0] ? dates[0] : `${dates[0]} and ${dates[1]}`}`
+    : `Before ${dates[0]}, after ${dates[1]}`;
+  const moved = summary.comparable ? movedWords(summary) : null;
   return <li className={`recorded-run-item recorded-pair-item${summary.comparable ? "" : " is-refused"}${summary.limit ? " is-limited" : ""}`}>
     <span className="recorded-run-symbol" aria-hidden="true"><GitCompareArrows /></span>
     <div className="recorded-run-main">
-      <Link className="recorded-run-link" to={pairPath(summary.id)}>{changeWords(summary.declared_change)}</Link>
+      <Link className="recorded-run-link" to={pairPath(summary.id)}>{pairChangeWords(summary)}</Link>
       <p className="recorded-run-meta">
-        <span>{sideBySide ? `Two runs side by side, ${dates[1] === dates[0] ? dates[0] : `${dates[0]} and ${dates[1]}`}` : `Before ${dates[0]}, after ${dates[1]}`}</span>
+        <span>{how}</span>
         <span className={`recorded-run-origin is-${summary.origin.kind}`}>{originWords(summary.origin)}</span>
       </p>
+      {moved ? <p className="recorded-pair-moved">{moved}</p> : null}
       <p className="recorded-run-score">
         <span className={summary.comparable && !summary.limit ? undefined : "recorded-pair-refused"}>{codeSpans(pairResultWords(summary)).map((part, index) => (part.code ? <code key={index}>{part.text}</code> : part.text))}</span>
       </p>
       <p className="recorded-pair-runs">
-        {(["before", "after"] as const).map((side) => <Link key={side} to={recordedRunPath(summary[side].id)}>Play the {side} run<span className="sr-only">, {recordedWhere(summary.recordings[side])}</span></Link>)}
+        {(["before", "after"] as const).map((side) => <Link key={side} to={recordedRunPath(summary[side].id, summary[side].sha256)}>{oneRun ? `Play with the rules ${side}` : `Play the ${side} run`}<span className="sr-only">, {recordedWhere(summary.recordings[side])}</span></Link>)}
       </p>
     </div>
     <span className="recorded-run-open" aria-hidden="true">Compare<ArrowRight /></span>

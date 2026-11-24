@@ -36,6 +36,7 @@ export default function App() {
         <Route path="runs" element={<RunsPage />} />
         <Route path="runs/:runId" element={<RunsPage />} />
         <Route path="runs/recorded/:recordingId" element={<RecordedRunPage />} />
+        <Route path="runs/recorded/:recordingId/:file" element={<RecordedRunPage />} />
         <Route path="runs/compared/:deltaId" element={<ComparedRunsPage />} />
         <Route path="compare" element={<ComparePage />} />
         <Route path="composition" element={<CompositionPage />} />

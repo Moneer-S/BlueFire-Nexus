@@ -16,6 +16,15 @@ without ``source.finished`` is still running: its engine sends it again, whole,
 as it grows, and each import replaces the stored file in one step, so a reader
 never sees half a file. Once a recording has its end time it can no longer be
 replaced.
+
+One run can be evaluated more than once: rules that run after a run read only
+its telemetry, so the lab evaluates one run with two rule sets and writes two
+recordings of it, with the run's one id. A finished file whose id is kept, whose
+``source`` is the same in every key as the kept file's, is kept beside it as
+another evaluation of that run, under the SHA-256 of its file. The list shows
+the first file of each id; every kept file is returned by its id and SHA-256. A
+comparison of one run evaluated twice names both, and its import checks that
+they are one run.
 """
 
 from __future__ import annotations
@@ -51,6 +60,8 @@ MAX_STEPS = 2_000
 MAX_EVENTS = 20_000
 MAX_ALERTS = 20_000
 MAX_LISTED = 200
+# The files kept for one id: the first, and the other evaluations of the same run.
+MAX_FILES_PER_ID = 8
 # The routes of the comparisons of two recordings live under /recordings/deltas.
 DELTAS_ADDRESS = "deltas"
 IMPORTED_NOTE = (
@@ -67,6 +78,7 @@ SHIPPED_NOTE = (
 )
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 # Half of a character pair on its own: JSON can escape it, UTF-8 cannot write it.
@@ -92,6 +104,7 @@ _MAX_FIELD = 300
 _MAX_FIELDS = 64
 _MAX_COUNT = 1_000_000_000
 _MAX_DEPTH = 8
+_MAX_RULE_LINES = 2_000
 _MAX_PROBLEMS = 20
 # Every import takes this file's lock; it is not a recording, so the list skips it.
 _IMPORT_LOCK = ".import.lock"
@@ -301,6 +314,35 @@ class _Checker:
         return seen
 
 
+def _verdicts(check: _Checker, value: Any, where: str) -> None:
+    """How a run judged each rule of the lab's own, and, optionally, the rule itself: its
+    file's path and its text line by line, which the app shows as text."""
+
+    rules: set[str] = set()
+    for index, verdict in enumerate(check.items(value, where, 1_000)):
+        at = f"{where}[{index}]"
+        rule = check.text(verdict, "rule", at)
+        if rule is not None and rule in rules:
+            check.fail(f"{at}.rule", f"repeats the rule {rule!r}.")
+        rules.add(rule or "")
+        check.text(verdict, "title", at, limit=_MAX_LINE)
+        digest = check.text(verdict, "digest", at, required=False)
+        if digest is not None and not _SHA256.fullmatch(digest):
+            check.fail(f"{at}.digest", "must be the SHA-256 of the rule's file, 64 hex digits.")
+        check.flag(verdict, "accepted", at, required=True)
+        check.text(verdict, "reason", at, required=False, limit=_MAX_LINE)
+        check.text(verdict, "file", at, required=False, limit=_MAX_LINE)
+        if check.present(verdict, "lines", at, required=False):
+            lines = verdict["lines"]
+            if (
+                not isinstance(lines, list)
+                or len(lines) > _MAX_RULE_LINES
+                or any(not isinstance(line, str) or len(line) > _MAX_LINE for line in lines)
+            ):
+                check.fail(f"{at}.lines", f"must be a list of at most {_MAX_RULE_LINES} lines of "
+                           f"at most {_MAX_LINE} characters.")  # fmt: skip
+
+
 def validate_recording(value: Any) -> Mapping[str, Any]:
     """Return the recording unchanged, or raise ``RecordingError`` naming each problem."""
 
@@ -361,6 +403,9 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
         check.text(detector, "name", where)
         check.count(detector, "rules", where, required=True)
         check.text(detector, "when", where, choices=("live", "after the run"))
+        check.text(detector, "commit", where, required=False, limit=_MAX_LINE)
+        if "verdicts" in detector:
+            _verdicts(check, detector["verdicts"], f"{where}.verdicts")
 
     attacker = check.obj(value.get("attacker"), "attacker")
     check.text(attacker, "kind", "attacker", choices=("scripted", "agent"))
@@ -893,50 +938,143 @@ class RecordingLibrary:
         self.root = root
         self._summaries: dict[Path, tuple[tuple[int, int, int], dict[str, Any] | None]] = {}
         self._shipped_entries: dict[str, tuple[Mapping[str, Any], dict[str, Any]]] | None = None
-        self._shipped_files: dict[str, str] = {}
+        # Every shipped file by its id and then its SHA-256: the first of an id, and the
+        # other evaluations of that run.
+        self._shipped_files: dict[str, dict[str, tuple[Mapping[str, Any], dict[str, Any]]]] = {}
         self._file_digests: dict[Path, tuple[tuple[int, int, int], str]] = {}
 
     def _shipped_recordings(self) -> dict[str, tuple[Mapping[str, Any], dict[str, Any]]]:
-        """Read the packaged recordings once; they do not change while the app runs."""
+        """Read the packaged recordings once; they do not change while the app runs. The
+        first file of an id, by file name, is the one listed; a later one must be another
+        evaluation of the same run."""
 
         if self._shipped_entries is None:
             folder = resources.files("bluefire.data").joinpath("recordings")
             entries: dict[str, tuple[Mapping[str, Any], dict[str, Any]]] = {}
+            files: dict[str, dict[str, tuple[Mapping[str, Any], dict[str, Any]]]] = {}
             names = sorted(item.name for item in folder.iterdir()) if folder.is_dir() else []
             for name in names:
                 if name.endswith(".json"):
                     payload = folder.joinpath(name).read_bytes()
                     recording, summary = _shipped(payload)
-                    entries[recording["id"]] = (recording, summary)
-                    self._shipped_files[recording["id"]] = hashlib.sha256(payload).hexdigest()
+                    first = entries.setdefault(recording["id"], (recording, summary))
+                    if first[0]["source"] != recording["source"]:
+                        raise RecordingError(
+                            [f"The shipped recording {name} has the id of another shipped "
+                             "recording and is not an evaluation of the same run."]
+                        )  # fmt: skip
+                    digest = hashlib.sha256(payload).hexdigest()
+                    files.setdefault(recording["id"], {})[digest] = (recording, summary)
+            self._shipped_files = files
             self._shipped_entries = entries
         return self._shipped_entries
 
-    def kept_file(self, recording_id: str) -> tuple[str, dict[str, Any]]:
-        """The SHA-256 of the file kept for a recording, as it was shipped or imported, and
-        its list entry. A recording imported as an object is kept as canonical JSON."""
+    def _digest(self, path: Path) -> str:
+        """The SHA-256 of a kept file, read again only once the file is replaced."""
 
-        shipped = self._shipped_recordings().get(recording_id)
-        if shipped is not None:
-            return self._shipped_files[recording_id], shipped[1]
-        _, summary = self.get(recording_id)
-        path = self._path(recording_id)
+        status = path.stat()
+        key = (status.st_ino, status.st_mtime_ns, status.st_size)
+        cached = self._file_digests.get(path)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        with path.open("rb") as handle:
+            digest = hashlib.sha256(handle.read(MAX_RECORDING_BYTES + 1)).hexdigest()
+        self._file_digests[path] = (key, digest)
+        return digest
+
+    def _evaluation_paths(self, recording_id: str) -> list[Path]:
+        """The imported files of other evaluations of a kept run, named by their SHA-256."""
+
+        if not self.root.is_dir():
+            return []
+        return [
+            path
+            for path in sorted(self.root.glob(f"{recording_id}.*.json"))
+            if _SHA256.fullmatch(path.stem[len(recording_id) + 1 :])
+            and not path.is_symlink()
+            and path.is_file()
+        ]
+
+    def kept_files(self, recording_id: str) -> dict[str, dict[str, Any]]:
+        """Every file kept for a recording id, by the SHA-256 of the file as it was shipped
+        or imported, each with its list entry: the first, and each other evaluation of the
+        same run. Empty when the id is not kept. A recording imported as an object is kept
+        as canonical JSON."""
+
+        self._path(recording_id)
+        self._shipped_recordings()
+        if recording_id in self._shipped_files:
+            return {digest: entry[1] for digest, entry in self._shipped_files[recording_id].items()}
         try:
-            status = path.stat()
-            key = (status.st_ino, status.st_mtime_ns, status.st_size)
-            cached = self._file_digests.get(path)
-            if cached is not None and cached[0] == key:
-                return cached[1], summary
-            with path.open("rb") as handle:
-                digest = hashlib.sha256(handle.read(MAX_RECORDING_BYTES + 1)).hexdigest()
-            self._file_digests[path] = (key, digest)
+            _, summary = self.get(recording_id)
+        except APIError as exc:
+            if exc.code == "recording_not_found":
+                return {}
+            raise
+        found: dict[str, dict[str, Any]] = {}
+        try:
+            found[self._digest(self._path(recording_id))] = summary
+            for path in self._evaluation_paths(recording_id):
+                digest = self._digest(path)
+                other = self._summary(path, recording_id)
+                # A file renamed or changed after it was kept is not the file its name says.
+                if other is not None and path.stem.endswith(digest):
+                    found.setdefault(digest, other)
         except OSError as exc:
             raise APIError(
                 HTTPStatus.CONFLICT,
                 "recording_unreadable",
                 "The stored recording could not be read or no longer follows the format.",
             ) from exc
-        return digest, summary
+        return found
+
+    def kept_file(self, recording_id: str) -> tuple[str, dict[str, Any]]:
+        """The SHA-256 of the first file kept for a recording, and its list entry."""
+
+        _, summary = self.get(recording_id)
+        for digest, entry in self.kept_files(recording_id).items():
+            return digest, entry
+        return "", summary
+
+    def file(self, recording_id: str, digest: str) -> Mapping[str, Any]:
+        """One kept file of a recording id, by its SHA-256: the first or another evaluation."""
+
+        if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_recording_file",
+                "A recording's file is named by its SHA-256, 64 hex digits.",
+            )
+        files = self.kept_files(recording_id)
+        if digest not in files:
+            raise APIError(
+                HTTPStatus.NOT_FOUND,
+                "recording_file_not_found",
+                "No file with this SHA-256 is kept for this recording.",
+            )
+        shipped = self._shipped_files.get(recording_id)
+        if shipped is not None:
+            recording, summary = shipped[digest]
+        else:
+            primary = self._path(recording_id)
+            path = primary if self._digest(primary) == digest else (
+                self.root / f"{recording_id}.{digest}.json"
+            )
+            try:
+                recording = self._read(path, recording_id)
+            except (OSError, RecordingError) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "recording_unreadable",
+                    "The stored recording could not be read or no longer follows the format.",
+                ) from exc
+            summary = files[digest]
+        return {
+            "schema_version": "bluefire.recording-entry.v1",
+            "summary": summary,
+            "sha256": digest,
+            "recording": recording,
+        }
 
     @contextmanager
     def import_lock(self) -> Iterator[None]:
@@ -953,15 +1091,17 @@ class RecordingLibrary:
         return self.root / f"{recording_id}.json"
 
     @staticmethod
-    def _read(path: Path) -> Mapping[str, Any]:
+    def _read(path: Path, recording_id: str | None = None) -> Mapping[str, Any]:
+        """A kept file, whose recording has the id its name starts with."""
+
         with path.open("rb") as handle:
             payload = handle.read(MAX_RECORDING_BYTES + 1)
         recording = parse_recording_bytes(payload)
-        if recording["id"] != path.stem:
+        if recording["id"] != (path.stem if recording_id is None else recording_id):
             raise RecordingError(["The recording's id does not match its file name."])
         return recording
 
-    def _summary(self, path: Path) -> dict[str, Any] | None:
+    def _summary(self, path: Path, recording_id: str | None = None) -> dict[str, Any] | None:
         """A file's list entry, or None when it is unreadable; read again only once replaced."""
 
         try:
@@ -973,7 +1113,9 @@ class RecordingLibrary:
         if cached is not None and cached[0] == key:
             return cached[1]
         try:
-            summary: dict[str, Any] | None = summarize(self._read(path), _imported_origin())
+            summary: dict[str, Any] | None = summarize(
+                self._read(path, recording_id), _imported_origin()
+            )
         except (OSError, RecordingError):
             summary = None
         self._summaries[path] = (key, summary)
@@ -1093,24 +1235,23 @@ class RecordingLibrary:
         except RecordingError as exc:
             raise invalid_recording(exc) from None
         recording_id = recording["id"]
+        digest = hashlib.sha256(payload).hexdigest()
         replaced = False
         with self._import_lock():
             target = self._path(recording_id)
             if target.exists() or recording_id in self._shipped_recordings():
                 existing, summary = self.get(recording_id)
                 if content_hash(existing) == content_hash(recording):
-                    return {"created": False, "replaced": False, "summary": summary}
+                    return {"created": False, "replaced": False, "another_evaluation": False,
+                            "sha256": self.kept_file(recording_id)[0], "summary": summary}  # fmt: skip
                 same_run = all(
                     existing["source"].get(key) == recording["source"].get(key)
                     for key in ("engine", "started")
                 )
-                if (
-                    summary["origin"]["kind"] != "imported"
-                    or not summary["running"]
-                    or not same_run
-                ):
-                    raise _id_taken(recording_id)
-                replaced = True
+                if summary["origin"]["kind"] == "imported" and summary["running"] and same_run:
+                    replaced = True
+                else:
+                    return self._keep_evaluation(recording, payload, digest, existing, summary)
             try:
                 _write_atomically(self.root, target, payload, replace=replaced)
             except FileExistsError:
@@ -1119,6 +1260,64 @@ class RecordingLibrary:
         return {
             "created": not replaced,
             "replaced": replaced,
+            "another_evaluation": False,
+            "sha256": digest,
+            "summary": summarize(recording, _imported_origin()),
+        }
+
+    def _keep_evaluation(
+        self,
+        recording: Mapping[str, Any],
+        payload: bytes,
+        digest: str,
+        existing: Mapping[str, Any],
+        summary: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Keep a finished file whose id is kept as another evaluation of the same run, when
+        the kept file is finished too and both say the same of the run in every key of their
+        ``source``. Whether the two are one run in their steps and events is checked when a
+        comparison of one run evaluated twice names them. Under the import lock."""
+
+        recording_id = recording["id"]
+        files = self.kept_files(recording_id)
+        for kept, entry in files.items():
+            if kept == digest or entry.get("digest") == content_hash(recording):
+                return {"created": False, "replaced": False, "another_evaluation": True,
+                        "sha256": kept, "summary": entry}  # fmt: skip
+        if recording_id in self._shipped_recordings():
+            # What BlueFire shipped stands alone: no imported file is kept under its id, where
+            # it could be taken for a part of what was shipped.
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "recording_id_taken",
+                f"The recording {recording_id!r} is shipped with BlueFire, and no imported file "
+                "is kept under its id. Give the file another id to import it.",
+            )
+        if (
+            summary["running"]
+            or "finished" not in recording["source"]
+            or existing["source"] != recording["source"]
+        ):
+            raise _id_taken(recording_id)
+        if len(files) >= MAX_FILES_PER_ID:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "recording_files_full",
+                f"{MAX_FILES_PER_ID} files are already kept for the recording {recording_id!r}, "
+                "the first and other evaluations of the same run.",
+            )
+        try:
+            _write_atomically(
+                self.root, self.root / f"{recording_id}.{digest}.json", payload, replace=False
+            )
+            created = True
+        except FileExistsError:
+            created = False
+        return {
+            "created": created,
+            "replaced": False,
+            "another_evaluation": True,
+            "sha256": digest,
             "summary": summarize(recording, _imported_origin()),
         }
 
@@ -1144,7 +1343,8 @@ def _id_taken(recording_id: str) -> APIError:
         "recording_id_taken",
         f"A different recording with the id {recording_id!r} is already kept. Only a "
         "recording that is still running can be sent again, with the same engine and "
-        "start time.",
+        "start time, or, once both are finished, another evaluation of the same run, "
+        "whose source is the same in every key.",
     )
 
 

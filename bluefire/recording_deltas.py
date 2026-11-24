@@ -9,7 +9,10 @@ follows the format in every key the app reads, that both recordings it names are
 kept here as the very files it was made from (by their SHA-256 and id), finished,
 with the facts it copies from their source, and that every step id it names is a
 step of its recording. A delta is served only while both files are still the ones
-it names. A delta of two runners that differed carries a ``limit``: its verdict
+it names. A delta of one run evaluated twice names two files of one recording id,
+and the checks hold its recordings to one run: the same source, steps, events,
+published rules' alerts and ordinary activity, and the lab's rules said to differ
+as the recordings judged them. A delta of two runners that differed carries a ``limit``: its verdict
 credits only the steps that carry the change's own ``mark``, and the checks
 refuse a delta whose limit, marks, audit keys, counts and differences do not
 agree, or whose recordings do not say what their audit rules watch. The checks
@@ -49,6 +52,8 @@ from .util import canonical_json_bytes
 
 DELTA_SCHEMA = "bluefire.delta/1"
 CLAIM = "one pair of runs"
+ONE_RUN = "one run evaluated with two rule sets"
+LAB_RULES = "detectors:lab"
 MAX_DELTA_BYTES = 8 * 1024 * 1024
 MAX_LISTED = 200
 FIELDS = ("happened", "recorded", "outcome", "outcome_with_lab_rules")
@@ -62,9 +67,10 @@ _TOP_LEVEL = {
     "differences", "same_in_both", "lab_code", "judged", "control", "counts", "unexplained",
     "steps", "new", "gone", "race",
 }  # fmt: skip
-# Keys a delta of two runners side by side, or of a change of the audit rules, adds; a delta
-# without them reads as one of two alike runs.
-_OPTIONAL = {"runners", "limit", "audit_keys"}
+# Keys a delta of two runners side by side, of a change of the audit rules or of one run
+# evaluated twice adds; a delta without them reads as one of two alike runs.
+_OPTIONAL = {"runners", "limit", "audit_keys", "one_run", "lab_rules"}
+_LAB_RULE_CHANGES = ("new", "gone", "changed", "moved")
 _LINE = 2_000
 _LIST = 2_000
 _RECORDS_LINES = 20
@@ -89,6 +95,14 @@ SHIPPED_DELTA_NOTE = (
     "Shipped with BlueFire, with both of its recordings. BlueFire checked that this "
     "comparison follows the delta format and names both recordings by the SHA-256 of their "
     "files, with every step it lists. It did not make the comparison: bluefire-lab compare did."
+)
+SHIPPED_ONE_RUN_NOTE = (
+    "Shipped with BlueFire, with both of its recordings. This repository's lab workflow ran "
+    "the list once, evaluated its telemetry with two sets of the lab's rules, and compared "
+    "the two, in the CI run at {run_url}. BlueFire checked that the comparison follows the "
+    "delta format, names both recordings by the SHA-256 of their files with every step it "
+    "lists, and that the two are one run. It did not make the comparison: bluefire-lab "
+    "compare did."
 )
 SHIPPED_PAIR_NOTE = (
     "Shipped with BlueFire, with both of its recordings. This repository's lab workflow made "
@@ -128,7 +142,7 @@ def _side(check: _Checker, value: Any, where: str) -> None:
         check.fail(f"{where}.sha256", "must be the SHA-256 of the recording's file, 64 hex digits.")
     if not isinstance(side.get("id"), str) or not _ID.fullmatch(side["id"]):
         check.fail(f"{where}.id", "must be 1 to 64 letters, digits, '-' or '_'.")
-    for key in ("run_url", "environment", "commit", "defense_commit"):
+    for key in ("run_url", "environment", "commit", "defense_commit", "lab_rules_commit"):
         check.text(side, key, where, required=False, limit=_LINE)
     check.time(side, "started", where, required=False)
 
@@ -223,6 +237,114 @@ def _audit_keys(check: _Checker, value: Any, limited: bool) -> None:
                 check.fail(f"{where}.no_mark", "is given only when mark is false.")
 
 
+def _judged(declared: Any) -> tuple[str, ...]:
+    """The fields a declared change can move, as the format gives them; the rest is control."""
+
+    if not isinstance(declared, str):
+        return ()
+    if declared == LAB_RULES:
+        return ("outcome_with_lab_rules",)
+    if declared.startswith("detectors:"):
+        return ("outcome", "outcome_with_lab_rules")
+    return ("recorded", "outcome", "outcome_with_lab_rules")
+
+
+def _lab_rules(check: _Checker, value: Mapping[str, Any]) -> None:
+    """The lab's rules that differ, each with how each evaluation judged it: only for a
+    change of the lab's rules, each side as its recording's verdicts give it."""
+
+    rows = value.get("lab_rules")
+    if rows is None:
+        return
+    if value.get("declared_change") != LAB_RULES:
+        check.fail("lab_rules", f"is given only when the declared change is {LAB_RULES}.")
+    seen: set[str] = set()
+    for index, row in enumerate(check.items(rows, "lab_rules", 500)):
+        where = f"lab_rules[{index}]"
+        rule = check.text(row, "rule", where, limit=500)
+        check.text(row, "title", where, limit=500)
+        change = check.text(row, "change", where, choices=_LAB_RULE_CHANGES)
+        if rule is not None:
+            if rule in seen:
+                check.fail(f"{where}.rule", "names a rule another row names.")
+            seen.add(rule)
+        sides: dict[str, Mapping[str, Any] | None] = {}
+        for side in ("before", "after"):
+            if side not in row:
+                check.fail(f"{where}.{side}", "is missing.")
+                continue
+            if row[side] is None:
+                sides[side] = None
+                continue
+            judged = check.obj(row[side], f"{where}.{side}")
+            check.flag(judged, "accepted", f"{where}.{side}", required=True)
+            check.text(judged, "reason", f"{where}.{side}", required=False, limit=_LINE)
+            check.text(judged, "file", f"{where}.{side}", required=False, limit=500)
+            for name in sorted(set(judged) - {"accepted", "reason", "file"}):
+                check.fail(f"{where}.{side}.{name[:80]}", "is not a key of how a run judged a rule.")
+            sides[side] = judged
+        if len(sides) < 2 or change is None:
+            continue
+        there = {side: sides[side] is not None for side in sides}
+        expected = {"new": (False, True), "gone": (True, False)}.get(change, (True, True))
+        if (there["before"], there["after"]) != expected:
+            check.fail(where, f"is {change}, so the rule must be in "
+                       + {(False, True): "the after evaluation only", (True, False):
+                          "the before evaluation only"}.get(expected, "both evaluations")
+                       + ".")  # fmt: skip
+        before, after = sides["before"], sides["after"]
+        if change == "moved" and before is not None and after is not None:
+            if before.get("file") is None or before.get("file") == after.get("file"):
+                check.fail(where, "is moved, so the rule's file must differ between the two.")
+
+
+def _one_run(check: _Checker, value: Mapping[str, Any]) -> None:
+    """What one run evaluated twice promises of a delta's own keys. The recordings are
+    checked against it on import (``one_run_problems``)."""
+
+    once = value.get("one_run")
+    claim = value.get("claim")
+    # A delta without one_run is of a pair of runs, as the lab wrote before it knew one run.
+    if isinstance(claim, str) and (claim == ONE_RUN) != (once is True):
+        check.fail("claim", f"must be {ONE_RUN!r} exactly when one_run is true, and {CLAIM!r} "
+                   "otherwise.")  # fmt: skip
+    if once is not True:
+        return
+    if value.get("declared_change") != LAB_RULES:
+        check.fail("one_run", f"is true only for a change of the lab's rules ({LAB_RULES}): only "
+                   "rules run after a run can evaluate its telemetry again.")  # fmt: skip
+    for key in ("runners", "limit", "audit_keys"):
+        if value.get(key) is not None:
+            check.fail(key, "is not given for one run evaluated twice: it ran on one runner, "
+                       "with one set of audit rules.")  # fmt: skip
+    sides: list[Mapping[str, Any]] = [
+        part if isinstance(part, Mapping) else {}
+        for part in (value.get("before"), value.get("after"))
+    ]
+    if sides[0].get("id") != sides[1].get("id"):
+        check.fail("after.id", "must be the before recording's id: one run has one id.")
+    if not sides[0].get("run_url") or sides[0].get("run_url") != sides[1].get("run_url"):
+        check.fail("after.run_url", "must name the CI run the before recording names: one run "
+                   "was made in one CI run.")  # fmt: skip
+    if sides[0].get("sha256") is not None and sides[0].get("sha256") == sides[1].get("sha256"):
+        check.fail("after.sha256", "names the before recording's file: one run evaluated twice "
+                   "is two files.")  # fmt: skip
+    if value.get("comparable") is True:
+        control = value.get("control")
+        if isinstance(control, Mapping) and control.get("varied"):
+            check.fail("control.varied", "must be empty: one run evaluated twice has no run "
+                       "variation, and a step whose control moved means two runs.")  # fmt: skip
+        counts = value.get("counts")
+        for result in ("without cause", "not attributable"):
+            if isinstance(counts, Mapping) and counts.get(result):
+                check.fail(f"counts.{result}", "must be 0: one run evaluated twice has no run "
+                           "variation, and every lab rule whose file is the same in both is "
+                           "judged the same.")  # fmt: skip
+        if value.get("lab_rules") is None:
+            check.fail("lab_rules", "must list the lab's rules that differ: one run evaluated "
+                       "twice is compared only when both recordings say how they judged them.")  # fmt: skip
+
+
 def validate_delta(value: Any) -> Mapping[str, Any]:
     """Return the delta unchanged, or raise ``RecordingError`` naming each problem.
 
@@ -242,10 +364,13 @@ def validate_delta(value: Any) -> Mapping[str, Any]:
         check.fail(key, "is not a key of the delta format.")
     for key in sorted(_TOP_LEVEL - set(value)):
         check.fail(key, "is missing.")
-    check.text(value, "claim", "delta", choices=(CLAIM,))
+    check.text(value, "claim", "delta", choices=(CLAIM, ONE_RUN))
     _side(check, value.get("before"), "before")
     _side(check, value.get("after"), "after")
     check.text(value, "declared_change", "delta", required=False, null=True)
+    check.flag(value, "one_run", "delta", required=False)
+    _lab_rules(check, value)
+    _one_run(check, value)
     runners = value.get("runners")
     if runners is not None and (isinstance(runners, bool) or runners != 2):
         check.fail("runners", "must be 2 or null.")
@@ -276,6 +401,15 @@ def validate_delta(value: Any) -> Mapping[str, Any]:
     _fields(check, value, "judged", "")
     control = check.obj(value.get("control"), "control")
     _fields(check, control, "fields", "control")
+    # What a declared change can move is the format's, not the delta's to choose.
+    judged = _judged(value.get("declared_change"))
+    if isinstance(value.get("judged"), list) and value["judged"] != list(judged):
+        check.fail("judged", "must be the fields the declared change can move: "
+                   + (", ".join(judged) or "none, since nothing was declared") + ".")  # fmt: skip
+    rest = [field for field in FIELDS if field not in judged]
+    if isinstance(control.get("fields"), list) and control["fields"] != rest:
+        check.fail("control.fields", "must be the fields the declared change cannot move: "
+                   + ", ".join(rest) + ".")  # fmt: skip
     check.count(control, "same", "control", required=True)
     check.count(control, "of", "control", required=True)
     _texts(check, control, "varied", "control")
@@ -615,6 +749,191 @@ def _watched_keys(delta: Mapping[str, Any], kept: Mapping[str, Mapping[str, Any]
     return problems
 
 
+def _value(step: Mapping[str, Any], field: str) -> Any:
+    """A step's value of one field a delta compares, as the format defines it."""
+
+    if field == "happened":
+        return step["happened"]["answer"]
+    if field == "recorded":
+        answer = step["visibility"]["answer"]
+        if answer == "no telemetry":
+            return answer
+        return "recorded" if answer in ("alert", "telemetry only") else "not known"
+    return step.get(field, step["outcome"])
+
+
+def _steps_agree(delta: Mapping[str, Any], kept: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """Each step's values in the delta are those of its step in each recording."""
+
+    problems: list[str] = []
+    steps = {side: {step["id"]: step for step in kept[side]["steps"]} for side in kept}
+    for index, row in enumerate(delta["steps"]):
+        for side, step_id in (("before", row.get("before_id", row["id"])), ("after", row["id"])):
+            step = steps[side].get(step_id)
+            if step is None:
+                continue
+            for field in FIELDS:
+                said, there = row[side][field], _value(step, field)
+                if said != there and len(problems) < 20:
+                    problems.append(
+                        f"steps[{index}].{side}.{field} is {said!r}, but the {side} recording's "
+                        f"step {step_id!r} says {there!r}."
+                    )
+    return problems
+
+
+def _lab(recording: Mapping[str, Any]) -> Mapping[str, Any]:
+    found: Mapping[str, Any] = next(
+        (detector for detector in recording["network"]["detectors"] if detector["id"] == "lab"), {}
+    )
+    return found
+
+
+def _verdicts(recording: Mapping[str, Any]) -> dict[str, Mapping[str, Any]] | None:
+    """How the run judged each of the lab's rules, by rule id; None when it does not say."""
+
+    lab = _lab(recording)
+    return {item["rule"]: item for item in lab["verdicts"]} if "verdicts" in lab else None
+
+
+def _lab_matches(recording: Mapping[str, Any]) -> dict[str, set[str]]:
+    """The steps each rule of the lab's own matched, a match on the launcher's start left out."""
+
+    found: dict[str, set[str]] = {}
+    for alert in recording["alerts"]:
+        if alert["rule"]["origin"] == "lab" and not alert.get("launcher_only"):
+            found.setdefault(alert["rule"]["id"], set()).add(alert["step"])
+    return found
+
+
+def one_run_problems(delta: Mapping[str, Any], kept: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """Why the two kept recordings of a delta of one run evaluated twice are not one run, or
+    do not say what the delta says of the lab's rules: empty when they are and do. Everything a
+    change of the lab's rules cannot move must be the same, not only alike, as
+    ``bluefire-lab compare --one-run`` checked before it wrote the delta: the run's source, its
+    steps with what happened, whether a sensor recorded each and the published rules' outcome,
+    its events, the published rules' alerts and the ordinary activity, and the judgement and
+    matches of every lab rule whose file is the same in both."""
+
+    before, after = kept["before"], kept["after"]
+    problems: list[str] = []
+
+    def say(text: str) -> None:
+        if len(problems) < 20:
+            problems.append(f"one run evaluated twice: {text}")
+
+    if before["source"] != after["source"]:
+        say("the two recordings' source differ, so they are not of one run.")
+    old_steps, new_steps = before["steps"], after["steps"]
+    if [step["id"] for step in old_steps] != [step["id"] for step in new_steps]:
+        say("the two recordings do not hold the same steps in the same order.")
+    else:
+        for old, new in zip(old_steps, new_steps, strict=True):
+            fields = [field for field in ("happened", "recorded", "outcome") if _value(old, field) != _value(new, field)]
+            fields += [
+                key
+                for key in ("first_event", "first_alert", "started", "ended")
+                if old.get(key) != new.get(key)
+            ]
+            if old["visibility"].get("events") != new["visibility"].get("events"):
+                fields.append("visibility.events")
+            if fields:
+                say(f"step {new['id']!r} differs in {', '.join(fields)}.")
+    events = [{event["id"]: event for event in recording["events"]} for recording in (before, after)]
+    cited = [
+        {found for alert in recording["alerts"] if alert["rule"]["origin"] == "lab" for found in alert.get("events", [])}
+        for recording in (before, after)
+    ]
+    unlike = [name for name in events[0].keys() & events[1].keys() if events[0][name] != events[1][name]]
+    alone = [
+        name
+        for number in (0, 1)
+        for name in events[number].keys() - events[1 - number].keys()
+        if name not in cited[number]
+    ]
+    if unlike or alone:
+        say(f"the events differ: {len(unlike)} held by both differ, and {len(alone)} held by one "
+            "only are not kept for an alert of the lab's rules.")  # fmt: skip
+
+    def published(recording: Mapping[str, Any]) -> list[tuple[Any, ...]]:
+        return sorted(
+            (
+                alert["step"],
+                alert["rule"]["id"],
+                alert.get("time", ""),
+                tuple(alert.get("events", [])),
+                bool(alert.get("launcher_only")),
+            )
+            for alert in recording["alerts"]
+            if alert["rule"]["origin"] != "lab"
+        )
+
+    if published(before) != published(after):
+        say("the published rules' alerts differ.")
+    if before.get("ordinary") != after.get("ordinary"):
+        say("the ordinary activity, or what the published rules matched in it, differs.")
+    judged_before, judged_after = _verdicts(before), _verdicts(after)
+    if judged_before is None or judged_after is None:
+        say("a recording does not say how its run judged each of the lab's rules (verdicts of "
+            "its detector lab).")  # fmt: skip
+        return problems
+    verdicts = (judged_before, judged_after)
+    matched = (_lab_matches(before), _lab_matches(after))
+    differing: set[str] = set()
+    for rule in judged_before.keys() | judged_after.keys():
+        old, new = judged_before.get(rule), judged_after.get(rule)
+        if old is None or new is None or old.get("digest") is None or old.get("digest") != new.get("digest"):
+            differing.add(rule)
+            continue
+        if old.get("file") != new.get("file"):
+            differing.add(rule)
+        if (old["accepted"], old.get("reason")) != (new["accepted"], new.get("reason")):
+            say(f"the lab's rule {new['title']!r} is the same file in both recordings and was "
+                "judged differently.")  # fmt: skip
+        elif matched[0].get(rule, set()) != matched[1].get(rule, set()):
+            say(f"the lab's rule {new['title']!r} is the same file in both recordings and "
+                "matched other steps.")  # fmt: skip
+    rows = delta.get("lab_rules") or []
+    listed = {row["rule"] for row in rows}
+    for name in sorted(differing - listed):
+        title = (verdicts[1].get(name) or verdicts[0].get(name) or {}).get("title", name)
+        say(f"the lab's rule {title!r} differs between the two recordings and lab_rules does not "
+            "list it.")  # fmt: skip
+    for index, row in enumerate(rows):
+        where = f"lab_rules[{index}]"
+        if row["rule"] not in differing:
+            say(f"{where} lists the rule {row['title']!r}, which is the same file in both recordings.")
+        for number, side in enumerate(("before", "after")):
+            verdict, said = verdicts[number].get(row["rule"]), row[side]
+            if (verdict is None) != (said is None):
+                say(f"{where}.{side} says the rule is {'not ' if said is None else ''}in the {side} "
+                    f"evaluation, but the {side} recording {'has' if verdict is not None else 'does not have'} "
+                    "it.")  # fmt: skip
+            elif verdict is not None and said is not None:
+                for key in ("accepted", "reason", "file"):
+                    if said.get(key) != verdict.get(key):
+                        say(f"{where}.{side}.{key} is {said.get(key)!r}, but the {side} recording "
+                            f"says {verdict.get(key)!r}.")  # fmt: skip
+        if row["change"] == "changed" and all(row[side] is not None for side in ("before", "after")):
+            old, new = verdicts[0].get(row["rule"]), verdicts[1].get(row["rule"])
+            if old is not None and new is not None and old.get("digest") is not None and old.get("digest") == new.get("digest"):
+                say(f"{where} says the rule's text changed, but both recordings give its file the same digest.")
+    # A step credited to the change moved because a rule that changed matched it in one
+    # evaluation only: the lab's own rules are all that differ.
+    for index, row in enumerate(delta["steps"]):
+        if row.get("result") not in _CREDITED:
+            continue
+        touched = {
+            rule
+            for rule in matched[0].keys() | matched[1].keys()
+            if (row["id"] in matched[0].get(rule, set())) != (row["id"] in matched[1].get(rule, set()))
+        }
+        if not touched & listed:
+            say(f"steps[{index}] is {row['result']}, but no rule that lab_rules lists matched it in "
+                "one evaluation only.")  # fmt: skip
+    return problems
+
+
 def parse_delta_bytes(payload: bytes) -> Mapping[str, Any]:
     """Parse and check one delta file's bytes."""
 
@@ -661,38 +980,27 @@ class DeltaLibrary:
         self._shipped_entries: dict[str, Mapping[str, Any]] | None = None
         self._read_files: dict[Path, tuple[tuple[int, int, int], Mapping[str, Any] | None]] = {}
 
-    def _recording_entries(
-        self, delta: Mapping[str, Any], listed: Mapping[str, Mapping[str, Any]]
-    ) -> dict[str, Mapping[str, Any]]:
-        """The list entries of the delta's two recordings, by side; checked at import."""
+    def _recording_entries(self, delta: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+        """The list entries of the delta's two recordings, by side, each of the very file the
+        delta names: a run evaluated twice keeps two files under its one id. Checked at
+        import, and again whenever it is served: a later release may ship another file under
+        the same id."""
 
-        return {
-            side: listed.get(delta[side]["id"]) or self.recordings.get(delta[side]["id"])[1]
-            for side in ("before", "after")
-        }
-
-    def _listed_recordings(self) -> dict[str, Mapping[str, Any]]:
-        return {entry["id"]: entry for entry in self.recordings.list()["recordings"]}
-
-    def _summary(
-        self,
-        delta: Mapping[str, Any],
-        shipped: bool,
-        listed: Mapping[str, Mapping[str, Any]] | None = None,
-    ) -> dict[str, Any]:
+        entries: dict[str, Mapping[str, Any]] = {}
         for side in ("before", "after"):
-            # Checked at import, and again whenever it is served: a later release may ship
-            # another file under the same id.
-            if self.recordings.kept_file(delta[side]["id"])[0] != delta[side]["sha256"]:
+            entry = self.recordings.kept_files(delta[side]["id"]).get(delta[side]["sha256"])
+            if entry is None:
                 raise APIError(
                     HTTPStatus.CONFLICT,
                     "delta_recording_replaced",
                     f"The {side} recording of this comparison is no longer kept as the file it "
                     "was made from, so the comparison is not shown.",
                 )
-        recordings = self._recording_entries(
-            delta, self._listed_recordings() if listed is None else listed
-        )
+            entries[side] = entry
+        return entries
+
+    def _summary(self, delta: Mapping[str, Any], shipped: bool) -> dict[str, Any]:
+        recordings = self._recording_entries(delta)
         weaker = not shipped or any(
             entry["origin"]["kind"] != "shipped" for entry in recordings.values()
         )
@@ -700,9 +1008,16 @@ class DeltaLibrary:
         if not weaker:
             origin = {"kind": "shipped", "note": SHIPPED_DELTA_NOTE}
             runs = {entry["origin"]["run_url"] for entry in recordings.values()}
-            # Two runs side by side in one CI run: the lab compared them in that run too.
-            if delta.get("runners") == 2 and len(runs) == 1:
-                [run_url] = runs
+            [run_url] = runs if len(runs) == 1 else [None]
+            # Two runs side by side in one CI run, or one run evaluated twice: the lab compared
+            # them in that run too.
+            if run_url is not None and delta.get("one_run") is True:
+                origin = {
+                    "kind": "shipped",
+                    "run_url": run_url,
+                    "note": SHIPPED_ONE_RUN_NOTE.format(run_url=run_url),
+                }
+            elif run_url is not None and delta.get("runners") == 2:
                 origin = {
                     "kind": "shipped",
                     "run_url": run_url,
@@ -713,10 +1028,20 @@ class DeltaLibrary:
             "claim": delta["claim"],
             "declared_change": delta["declared_change"],
             "runners": delta.get("runners"),
+            "one_run": delta.get("one_run") is True,
             "comparable": delta["comparable"],
             "limit": dict(delta["limit"]) if delta.get("limit") is not None else None,
+            "lab_rules": [dict(row) for row in delta["lab_rules"]]
+            if delta.get("lab_rules") is not None
+            else None,
             "refused_because": list(delta["refused_because"]),
             "counts": dict(delta["counts"]),
+            # What the change moved, for a list: each step it is credited with, at most 20.
+            "moved": [
+                {key: step[key] for key in ("id", "role", "title", "technique", "result", "before", "after")}
+                for step in delta["steps"]
+                if step["result"] in _CREDITED
+            ][:20],
             "before": dict(delta["before"]),
             "after": dict(delta["after"]),
             "recordings": recordings,
@@ -731,27 +1056,34 @@ class DeltaLibrary:
         for side in ("before", "after"):
             named = delta[side]
             try:
-                digest, summary = self.recordings.kept_file(named["id"])
+                files = self.recordings.kept_files(named["id"])
             except APIError as exc:
-                if exc.code == "recording_not_found":
-                    problems.append(
-                        f"the {side} recording {named['id']!r} is not kept here: import it first."
-                    )
-                else:
-                    problems.append(f"the {side} recording {named['id']!r}: {exc.message}")
+                problems.append(f"the {side} recording {named['id']!r}: {exc.message}")
                 continue
-            if digest != named["sha256"]:
+            if not files:
+                problems.append(
+                    f"the {side} recording {named['id']!r} is not kept here: import it first."
+                )
+                continue
+            summary = files.get(named["sha256"])
+            if summary is None:
+                first = next(iter(files.values()))
                 how = (
                     "shipped with BlueFire"
-                    if summary["origin"]["kind"] == "shipped"
+                    if first["origin"]["kind"] == "shipped"
                     else "imported earlier"
+                )
+                digests = (
+                    f"the kept file's SHA-256 is {next(iter(files))}"
+                    if len(files) == 1
+                    else f"the kept files' SHA-256 are {', '.join(files)}"
                 )
                 problems.append(
                     f"the {side} recording {named['id']!r} is kept here from another file than "
-                    f"the one this comparison was made from ({how}): the kept file's SHA-256 is "
-                    f"{digest}, the comparison names {named['sha256']}. A kept recording that "
-                    "is finished is never replaced, so this comparison cannot be imported while "
-                    "that id holds the other file."
+                    f"the one this comparison was made from ({how}): {digests}, the comparison "
+                    f"names {named['sha256']}. A kept recording that is finished is never "
+                    "replaced, and another file of its id is kept beside it only as another "
+                    "evaluation of the same run, with the same source."
                 )
                 continue
             if summary["running"]:
@@ -760,12 +1092,17 @@ class DeltaLibrary:
                     "made of two finished runs."
                 )
                 continue
-            recording = self.recordings.get(named["id"])[0]
+            recording = self.recordings.file(named["id"], named["sha256"])["recording"]
             for key in _SOURCE_FACTS:
                 if named.get(key) != recording["source"].get(key):
                     problems.append(
                         f"{side}.{key} is not the {key} of the {side} recording's source."
                     )
+            if named.get("lab_rules_commit") != _lab(recording).get("commit"):
+                problems.append(
+                    f"{side}.lab_rules_commit is not the commit of the {side} recording's "
+                    "detector lab."
+                )
             kept[side] = recording
         if len(kept) == 2:
             ids = {side: {step["id"] for step in kept[side]["steps"]} for side in kept}
@@ -793,6 +1130,8 @@ class DeltaLibrary:
                         has(side, step_id, f"audit_keys.{part}.{key}.steps[{index}]")
             if delta.get("limit") is not None:
                 problems += _watched_keys(delta, kept)
+            if delta.get("one_run") is True:
+                problems += _steps_agree(delta, kept) + one_run_problems(delta, kept)
         if problems:
             raise RecordingError(problems)
 
@@ -845,7 +1184,6 @@ class DeltaLibrary:
 
     def list(self) -> Mapping[str, Any]:
         shipped = self._shipped()
-        listed = self._listed_recordings()
         paths = [path for path in self._imported_paths() if path.stem not in shipped]
         found: list[tuple[Mapping[str, Any] | None, bool]] = [
             (delta, True) for delta in shipped.values()
@@ -856,7 +1194,7 @@ class DeltaLibrary:
         for delta, is_shipped in found:
             try:
                 if delta is not None:
-                    entries.append(self._summary(delta, is_shipped, listed))
+                    entries.append(self._summary(delta, is_shipped))
                     continue
             except APIError:
                 # A recording it names can no longer be read, or is now another file.
