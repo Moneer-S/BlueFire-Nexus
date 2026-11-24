@@ -235,7 +235,9 @@ jobs:
   # until the defense is ready, checks that each plant is in place with single uses of what
   # is planted, starts the shop's ordinary activity, makes a few harmless marks on the three
   # agent hosts, counts how many lines of each watched log reached the manager and how often
-  # each job of the activity ran and was seen. No published test runs in this job.
+  # each job of the activity ran and was seen, writes every archived event and alert as an
+  # ECS line with its origin, and scores the alerts the stock rules raised on the shop's own
+  # work. No published test runs in this job.
   range-one:
     name: range one's hosts, sealed and watched
     runs-on: ubuntu-24.04
@@ -343,6 +345,25 @@ jobs:
             exit 1
           fi
 
+      # Every line of the manager's archive and alerts is in events.ecs.ndjson and alerts.ecs.ndjson,
+      # one ECS line for each, and the ordinary day was scored. When the conversion fails the run
+      # is invalid, "Run the range" exits 4 and this step does not run; the summary's score.md
+      # gives the reason. This step checks the counts of a run that ended sealed.
+      - name: Every archived event and alert is an ECS line, and the ordinary day is scored
+        run: |
+          if ! jq -e '
+            .ecs.error == null
+            and (.ecs.files | length) == 2
+            and (.ecs.files | all(."raw lines" == ."ECS lines" and ."raw lines" > 0))
+            and .score.scored == true
+          ' "$OUT/run/manifest.json" > /dev/null; then
+            jq '{ecs, score: (.score | {scored, "not scored"})}' "$OUT/run/manifest.json"
+            exit 1
+          fi
+          for file in events.ecs.ndjson alerts.ecs.ndjson; do
+            echo "$file: $(wc -l < "$OUT/run/$file") lines"
+          done
+
       - name: Summary
         if: always()
         run: |
@@ -350,7 +371,7 @@ jobs:
             echo "Image build, from the end of the builder's set-up: ${BUILD_SECONDS:-?} s."
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          for part in plants activity defense seal; do
+          for part in plants activity score defense seal; do
             if [ -f "$OUT/run/$part.md" ]; then cat "$OUT/run/$part.md" >> "$GITHUB_STEP_SUMMARY"; fi
           done
 

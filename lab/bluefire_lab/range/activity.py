@@ -707,14 +707,35 @@ CRON_SESSION = re.compile(r"\(cron:session\): session (?:opened|closed) for user
 # A sudo session's close names neither the account nor the address, so it is the job's when it comes this
 # many seconds at most after a sudo session the job opened.
 SUDO_PAIR = 2
+# The source `attribute` gives a cron session line of a cron job's account.
+CRON_SESSION_SOURCE = "cron session of the account"
+
+
+def cron_session(job: Job, event: dict) -> bool:
+    """True for cron's session line of a cron job's account on the job's host.
+
+    Cron opens one for each entry of the account every minute, the job's own
+    gate included, so the line does not tell one entry of the account from another.
+    """
+
+    session = CRON_SESSION.search(event.get("full_log") or "")
+    return (
+        job.do == "cron"
+        and session is not None
+        and session.group(1) == job.account
+        and event.get("location") == AUTH_LOG
+        and (event.get("agent") or {}).get("name") == job.host
+    )
 
 
 def source(job: Job, event: dict, addresses: list[str]) -> str | None:
     """The source by which an archive event is the job's, or None when it is not.
 
-    Cron's session lines are not any one job's: cron opens one for every entry
-    of an account each minute, the job's own before the go too, and for root's
-    stock entries; `count` counts them apart.
+    A program start that carries another job's tag or the engine's is not this
+    job's, even when it runs as the account the job logs in as. Cron's session
+    lines are not any one job's: cron opens one for every entry of an account
+    each minute, the job's own before the go too, and for root's stock
+    entries; `count` counts them apart.
     """
 
     if (event.get("agent") or {}).get("name") != job.acts_on:
@@ -722,8 +743,12 @@ def source(job: Job, event: dict, addresses: list[str]) -> str | None:
     location = event.get("location") or ""
     data = event.get("data") or {}
     log = event.get("full_log") or ""
-    if location == SNOOPY_LOG and data.get("tag") == job.tag:
+    tag = str(data.get("tag") or "") if location == SNOOPY_LOG else ""
+    if tag == job.tag:
         return "snoopy, by tag"
+    if tag.startswith(("job:", "engine:")):
+        # The program start of another job or of the engine, whatever account or address it shares.
+        return None
     if job.do == "ssh" and location == SNOOPY_LOG:
         # The remote shell itself, started before the command sets the tag: by the SSH connection it runs in.
         if (data.get("ssh") or "").split(" ")[0] in addresses:
@@ -748,6 +773,76 @@ def source(job: Job, event: dict, addresses: list[str]) -> str | None:
     return None
 
 
+def written_before(event: dict, start: float) -> bool:
+    """True for a file integrity event of a file added or changed before `start`, by the file's own time.
+
+    A file integrity event has no time of its source, and the manager's can
+    come seconds after the write: the file's modification time, to the second
+    and in UTC as the containers keep it, tells a file the engine's plant
+    checks made just before the go from a job's.
+    """
+
+    syscheck = event.get("syscheck") or {}
+    if event.get("location") != "syscheck" or syscheck.get("event") not in ("added", "modified"):
+        return False
+    try:
+        moment = datetime.fromisoformat(str(syscheck.get("mtime_after")))
+    except ValueError:
+        return False
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp() < math.floor(start)
+
+
+def attribute(
+    activity: Activity,
+    events: list[dict],
+    addresses: dict[str, list[str]],
+    go: dict[str, float],
+    stop: dict[str, float],
+) -> dict[int, tuple[str, str]]:
+    """The events that are a job's: for the index of each in `events`, the job's name and the source.
+
+    An event is the first job's whose rules (`source`) it meets, from the go
+    of the job's host to `GRACE` seconds after its stop, taken in the order of
+    the events' times, and never a file written before the go (`written_before`);
+    a sudo session's close is the job's that opened a sudo session just before
+    it. Cron's session line of a cron job's account in
+    that window gets the source `CRON_SESSION_SOURCE`.
+    """
+
+    found: dict[int, tuple[str, str]] = {}
+    timed = sorted(
+        (
+            (when, index, event)
+            for index, event in enumerate(events)
+            if (when := event_time(event)) is not None
+        ),
+        key=lambda item: item[0],
+    )
+    sudo_opened: dict[str, float] = {}
+    for when, index, event in timed:
+        log = event.get("full_log") or ""
+        for job in activity.jobs:
+            start, end = go.get(job.host), stop.get(job.host, math.inf)
+            if start is None or not start <= when <= end + GRACE or written_before(event, start):
+                continue
+            how = source(job, event, addresses.get(job.host, []))
+            if how is None and job.do == "ssh" and SUDO_CLOSED.search(log):
+                if (event.get("agent") or {}).get("name") == job.acts_on and job.name in sudo_opened:
+                    if when - sudo_opened.pop(job.name) <= SUDO_PAIR:
+                        how = f"{AUTH_LOG}, by the sudo session it closes"
+            if how:
+                if SUDO_OPENED.search(log):
+                    sudo_opened[job.name] = when
+                found[index] = (job.name, how)
+                break
+            if cron_session(job, event):
+                found[index] = (job.name, CRON_SESSION_SOURCE)
+                break
+    return found
+
+
 def count(
     activity: Activity,
     logs: dict[tuple[str, str], list[str] | None],
@@ -759,23 +854,20 @@ def count(
     """Each job's runs and its events in the archive, between the go and the stop of its host.
 
     `logs` holds the copied lines of each (host, log) that `counted_from`
-    names, `addresses` each host's addresses in the range. An event counts for
-    the first job whose rules it meets, within the job's window and `GRACE`
-    seconds after it. "archived runs" counts the runs again, from the lines of
-    the same log that reached the archive: the proof that a run itself was seen.
-    Cron's session lines of a cron job's account are counted apart, since they
-    do not tell one entry of the account from another.
+    names, `addresses` each host's addresses in the range. The events are
+    sorted to jobs by `attribute`. "archived runs" counts the runs again, from
+    the lines of the same log that reached the archive: the proof that a run
+    itself was seen. Cron's session lines of a cron job's account are counted
+    apart, since they do not tell one entry of the account from another.
     """
 
     found = {}
-    windows = {}
     timed = sorted(
         ((when, event) for event in events if (when := event_time(event)) is not None),
         key=lambda pair: pair[0],
     )
     for job in activity.jobs:
         start, end = go.get(job.host), stop.get(job.host, math.inf)
-        windows[job.name] = (start, end)
         host, log = counted_from(job)
         lines = logs.get((host, log))
         entry: dict = {
@@ -804,35 +896,13 @@ def count(
             ]
             entry["archived runs"] = runs(job, archived, own, start, end)
         found[job.name] = entry
-    sudo_opened: dict[str, float] = {}
-    for when, event in timed:
-        log = event.get("full_log") or ""
-        for job in activity.jobs:
-            start, end = windows[job.name]
-            if start is None or not start <= when <= end + GRACE:
-                continue
-            entry = found[job.name]
-            how = source(job, event, addresses.get(job.host, []))
-            if how is None and job.do == "ssh" and SUDO_CLOSED.search(log):
-                if (event.get("agent") or {}).get("name") == job.acts_on and job.name in sudo_opened:
-                    if when - sudo_opened.pop(job.name) <= SUDO_PAIR:
-                        how = f"{AUTH_LOG}, by the sudo session it closes"
-            if how:
-                if SUDO_OPENED.search(log):
-                    sudo_opened[job.name] = when
-                entry["archive events"] += 1
-                entry["archive events by source"][how] = entry["archive events by source"].get(how, 0) + 1
-                break
-            session = CRON_SESSION.search(log)
-            if (
-                job.do == "cron"
-                and session
-                and session.group(1) == job.account
-                and event.get("location") == AUTH_LOG
-                and (event.get("agent") or {}).get("name") == job.host
-            ):
-                entry["cron sessions of the account"] += 1
-                break
+    for name, how in attribute(activity, events, addresses, go, stop).values():
+        entry = found[name]
+        if how == CRON_SESSION_SOURCE:
+            entry["cron sessions of the account"] += 1
+            continue
+        entry["archive events"] += 1
+        entry["archive events by source"][how] = entry["archive events by source"].get(how, 0) + 1
     return found
 
 

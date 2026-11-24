@@ -333,6 +333,19 @@ that the pinned agent package and manager image install (Wazuh, GPL-2.0), as tes
 lab's edits of them, and lines and events trimmed from one run of a range with one agent host.
 The small range in `lab/tests/fixtures/range/small/` stands in for published files with contents
 of its own, at a stand-in commit; it copies nothing from Atomic Red Team.
+
+`lab/tests/fixtures/range/ecs/ecs-8.17.0-fields.yml` is taken from the
+[Elastic Common Schema](https://github.com/elastic/ecs) (Apache-2.0, Copyright Elasticsearch B.V.),
+tag `v8.17.0`, commit `e3103a213a4e84cbcd3ef36da7001483ddc60230`, file `generated/ecs/ecs_flat.yml`
+(SHA-256 `4c72bf4d0fa7b79a101ac86c5d175092557a8ed318c29db817bd85186db207f0`): the name and type of
+each of its 1692 fields, the allowed values of `event.kind`, `event.category`, `event.type` and
+`event.outcome`, and the event types ECS expects with each category, and nothing else. A test checks
+every field the lab's ECS mapper (`lab/bluefire_lab/range/ecs.py`) can write against it. The mapper
+itself is the lab's own: no maintained mapping of Wazuh 4.x output to ECS was found to follow (Wazuh's
+own Filebeat module keeps Wazuh's field names, and the Wazuh Common Schema of Wazuh 5 describes the
+output of Wazuh 5's engine), so it copies none.
+The lines in `lab/tests/fixtures/range/ecs/` are trimmed from one run of range one, with each
+hash and key fingerprint replaced by a stand-in.
 The workflow's image build uses [docker/setup-buildx-action](https://github.com/docker/setup-buildx-action)
 and [docker/bake-action](https://github.com/docker/bake-action) (Apache-2.0), pinned to a commit,
 and runs [BuildKit](https://github.com/moby/buildkit) (Apache-2.0) from the image

@@ -942,8 +942,8 @@ things that write to the watched logs and folders. The `activity` section of
 
 The expected rules are a prediction, from the stock ruleset and a run on a
 developer machine, all below level 12: which rules each job matches on a
-GitHub-hosted runner is not yet shown. Scoring them, as false alerts or not,
-comes with the score.
+GitHub-hosted runner is not yet shown. What the stock rules raised on them is
+scored in [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
 - **Apart from the path.** The score will tell the path from ordinary activity
   by account and address, so the loader refuses a job that runs as, or logs
@@ -997,7 +997,8 @@ comes with the score.
   lines of its sessions (sshd's motd scripts and what sudo starts without the
   tag) and in PAM's, sshd's and sudo's lines, the close of a sudo session the
   job opened, and the files the job writes (`writes` in the spec) for file
-  integrity events. An event counts
+  integrity events. A snoopy line with another job's tag or the engine's is
+  never this job's, by address or by account. An event counts
   for one job at most, and the engine's mark files, one of which is in PHP's
   session folder, for none. Cron's session lines of a cron job's account are
   counted apart, as "cron sessions of the account": cron opens one for every
@@ -1019,6 +1020,136 @@ on a GitHub-hosted runner the range was sealed and every job ran in the 2.4
 minutes from the first go to the last stop: `browse` 15 times, `admin` twice,
 `cache` and `build` three times each and `backup` once. The line of every one
 of those runs reached the manager's archive, and the run had no delivery gap.
+
+## Range one: what the defense recorded, in ECS, and the ordinary day
+
+After the collection, every run of a range with a defense writes two files
+next to `manifest.json`: `events.ecs.ndjson`, one line for each event of the
+manager's archive, and `alerts.ecs.ndjson`, one line for each alert, in the
+[Elastic Common Schema](https://www.elastic.co/guide/en/ecs/8.17/index.html)
+8.17, so that the run can be loaded into other tools. Nothing is dropped or
+merged, and the raw files stay in `raw/` so that the mapping can be checked
+against them. The run is invalid (exit code 4, with the reason) when a raw
+line cannot be parsed, when a file has another number of ECS lines than raw
+lines, or when a line would lack `@timestamp`, `event.kind` or `labels.origin`.
+
+Each ECS line keeps the manager's line whole under `wazuh.*`, less its
+`full_log` and `timestamp`. The ECS fields beside it are copies where ECS has a
+clear home (`lab/bluefire_lab/range/ecs.py` lists every field it can write, and
+a test checks each against the field list of ECS 8.17.0):
+
+| Wazuh field | ECS field |
+| --- | --- |
+| `full_log` | `event.original`; `message` on an event |
+| `timestamp` (the manager's time) | `event.ingested` on an event; `@timestamp` and `event.created` on an alert |
+| `agent.id`, `agent.name`, `agent.ip` | `agent.id`, `agent.name`, `host.name`, `host.ip`; `agent.type` is `wazuh` |
+| `manager.name` | `observer.name`; `observer.vendor` is `Wazuh` |
+| `location`, when it is a file | `log.file.path` |
+| `predecoder.program_name` | `event.provider` |
+| `data.srcip`, `data.srcport` | `source.ip`, `source.port` |
+| `data.dstuser`, when the line has no `data.srcuser` | `user.name` |
+| `data.srcuser`, `data.dstuser` (sudo, PAM) | `user.name` (who ran sudo or opened the session), `user.effective.name` when it is another account |
+| snoopy's `data.command`, `data.cwd`, `data.uid`, `data.euid` | `process.command_line`, `process.working_directory`, `user.id`, `user.effective.id`; `event.category` `process`, `event.type` `start` |
+| nginx's `data.protocol`, `data.url`, `data.id` | `http.request.method`, `url.original`, `http.response.status_code`; `event.category` `web`, `event.type` `access` |
+| `syscheck.path`, `uname_after`, `gname_after`, `uid_after`, `gid_after`, `inode_after`, `size_after`, `md5_after`, `sha1_after`, `sha256_after` | `file.path`, `file.owner`, `file.group`, `file.uid`, `file.gid`, `file.inode`, `file.size`, `file.hash.*`; `event.category` `file`, `event.type` `creation`, `change` or `deletion` |
+| `rule.id`, `rule.description`, `rule.level` | `rule.id`, `rule.description`, `event.severity`; `message` on an alert |
+| `rule.groups` with `authentication_success` or `authentication_failed` | `event.category` `authentication`, `event.type` `info`, `event.outcome` |
+| `rule.mitre.id`, `rule.mitre.tactic` | `threat.technique.id` (T1548), `threat.technique.subtechnique.id` (T1548.003), `threat.tactic.name`; `threat.framework` is `MITRE ATT&CK` |
+
+`event.kind` is `event` or `alert`, `event.dataset` `wazuh.archives` or
+`wazuh.alerts`, `event.module` `wazuh`. A categorization field is set only
+where the line says so. `labels.*` holds keyword values only:
+
+- `labels.time_source` says where `@timestamp` comes from: `rsyslog`, the
+  microsecond time rsyslog wrote on the line (`predecoder.timestamp`);
+  `log-second`, a time to the second that the program wrote at the start of
+  the line (nginx, dpkg, MariaDB; a time without a zone is the container's,
+  which is UTC); `manager`, the manager's own time, for lines with no time of
+  their source, such as file integrity events. An alert's `@timestamp` is
+  always the time the manager raised it.
+- `labels.origin`, and `labels.job` for an ordinary line, by the first rule
+  that holds (`lab/bluefire_lab/range/score.py`): `engine` when snoopy tagged
+  the program start `engine:*` or the line holds the run's ID, which every
+  nonce and mark of the engine and the name of every mark file it makes carry
+  (what the plant checks and the seal's probes leave behind, such as a login's
+  session lines or a PHP session file, carries no ID); `ordinary` when the
+  line is a job's as the [activity's counts](#range-one-ordinary-activity)
+  sort it (tag, address, the path of a request, account, the files the job
+  writes, inside the job's window), or when snoopy tagged it `job:<name>`; a
+  program start with a job's tag is that job's and no other's, whatever
+  account it runs as, and an nginx line from `client` for a path that no job
+  fetches is no job's, so it is `unattributed`; cron's session lines of a
+  cron job's account inside the job's window are `ordinary` with no
+  `labels.job`, since they do not tell one cron entry of the account from
+  another; `unattributed` for everything else, which is counted and listed
+  and never called ordinary. An alert takes the origin of its event in the archive (the
+  same agent, location, line and manager time).
+
+Loading them into a tool, here [DuckDB](https://duckdb.org/) 1.4.1 from PyPI,
+run in a run folder (on the files of the run below it lists `ordinary`,
+`build`, rule 554, 26 alerts first):
+
+```python
+import duckdb
+
+duckdb.sql("""
+    SELECT labels.origin, labels.job, rule.id, any_value(rule.description), count(*) AS alerts
+    FROM read_json_auto('alerts.ecs.ndjson')
+    GROUP BY ALL ORDER BY alerts DESC
+""").show()
+```
+
+**The ordinary day.** From the same lines the run scores what the stock rules
+said about the shop's own work, into `manifest.json` (`score`) and `score.md`:
+per origin, the events and the alerts by level band; the *false alerts*, the
+distinct stock rules at the range's `alert_level` (12) or higher among alerts
+on ordinary events, each with its description, level, count and the job it
+fell on; the rules from level 7 to 11 on ordinary work, *for review*, a second
+number never added to the first; and the alerts at level 12 or higher on the
+engine's work and on unattributed events, listed apart, since the bench's own
+noise is not the shop's. Every number stands next to its denominators: the
+minutes of activity, the runs of each job (in the host's log and in the
+archive) and the events of each origin; without them, or when a job has no
+run in the archive, the score says "not scored" and gives no number. The
+engine starts the seal's probes after the stop only once every job's window
+has closed, and a file whose modification time is before the go is no job's.
+A file a job links rather than writes keeps its older time: the first clone
+of `build` hard-links git's objects from the server's repository, so those
+file events count as unattributed. The `range-one` job shows `score.md` in
+its summary, keeps both ECS files in its artifact, and fails when the
+conversion fails or the day was not scored. The score also lists what the
+jobs do, which is all it prices: a rule that fires only on something else,
+such as a password login or a failed login, is not priced by it.
+
+[Run 45358678900](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45358678900)
+of the `range-one` job on a GitHub-hosted runner, with the range held 90 s:
+2.44 minutes of activity, with `browse` 15 runs, `admin` 2, `cache` 3,
+`build` 3 and `backup` 1, each run also counted in the archive. Its archive
+held 647 events and its alerts 128, and both ECS files had as many lines:
+
+| Origin | Events | Alerts 0 to 3 | Alerts 4 to 6 | Alerts 7 to 11 | Alerts 12 to 14 | Alerts 15 |
+| --- | --- | --- | --- | --- | --- | --- |
+| engine | 283 | 0 | 18 | 18 | 0 | 0 |
+| ordinary | 172 | 12 | 44 | 8 | 0 | 0 |
+| unattributed | 192 | 15 | 13 | 0 | 0 | 0 |
+
+False alerts: 0 rules at level 12 or higher. For review: 550 "Integrity
+checksum changed." (level 7) 6 times, all on `build`, and 553 "File
+deleted." (level 7) twice on `cache`'s files. No alert at level 12 or higher
+on the engine's work or on unattributed events. The one nginx line from
+`client` that is unattributed is a plant check's request, just before the go.
+Zero false alerts here is a result about those 2.44 minutes and that work
+only.
+
+The engine's own seal probes and plant checks before the go and after the
+stop are not marked by the engine's tag or the run's ID, so they count as
+unattributed, as do the hosts' own start-up lines. Wazuh's stateful rules (a
+first time, a frequency, a rule that follows another) have already seen the
+plant checks' logins and sudo before the go, so a rule that fires only on a
+first occurrence may not fire on the jobs: in this run the plant check's sudo
+raised 5403 "First time user executed sudo." and `admin`'s sudo only 5402.
+The path of published tests is not yet in the range, so nothing here ties an
+event to a step.
 
 ## Range one: the path
 
@@ -1141,33 +1272,49 @@ change: it is run variation. When two runners side by side got another image
 or kernel, and nothing else differs besides the declared change, a change of
 the audit rules gets a limited verdict (`limit` in `delta.json`): it is
 credited only on a step it left its own mark on, every event of the step being
-of an audit key that only one run's rules define while the other run holds
-nothing of it, and every other step that differs is not attributable. Which
-keys a run's rules define, each recording says from the audit rules as that
-run loaded them (`audit_keys` of its sensor `auditd`); a key both rule sets
-define is no mark, also when it fired on one runner only. A credited step is
-counted under its result and again in `counts.by_mark`. A recording that does
-not say its keys, one written by an older version, is refused on two runners
-that differed: write it again with `bluefire-lab recording` from its run's
-folder. Every other change on two runners that differed is refused, with the
+of an audit key whose every rule watches a path that no rule of the other run,
+as written, could have recorded, while the other run holds nothing of it, and
+every other step that differs is not attributable. What a run's rules watch under each key,
+each recording says from the audit rules as that run loaded them
+(`audit_watches` of its sensor `auditd`, each rule in one fixed form without its
+key, so that a watch and the system-call rule it stands for, or a rule's two
+architectures, read the same). The mark is given only where that text can
+establish it: each rule of the key names one path; no rule of the other run,
+under any key, names that path, a folder above it or a path under it, whatever
+its permission letters, nor any other path the event names (a rename or a link
+names two); and no rule of the other run without a path could record the same
+kind of event. There are two kinds: program starts, and reads, writes and
+changes of attributes as one, since the kernel matches `perm=r` and `perm=w`
+alike on an open for reading and writing. A rule with `perm=x`, or on `execve`
+or `execveat` alone, records program starts alone, so it leaves the mark
+standing; one for reads alone (`perm=r`) does not, and neither does one on
+`open`, `openat`, `truncate` or any other system call, or on every one. Where
+the text cannot establish the mark, the step is not attributable and its
+verdict says why. The text has a limit, and the verdict names it: paths are
+compared as the rules and the events write them, so a second name that a link
+gives a file (a symbolic or hard link, or a name under `/proc`) is not found
+out. A key is only a label: a key renamed, split or merged on
+rules both runs have, or one that kept an old rule beside a new one, is no
+mark, nor is a key whose rules both runs have that fired on one runner only.
+A credited step is counted under its result and again in
+`counts.by_mark`. A recording that does not say what its rules watch, one
+written by an older version, is refused on two runners that differed: write it
+again with `bluefire-lab recording` from its run's folder, or run the pair
+again. Every other change on two runners that differed is refused, with the
 advice to run the pair again. The section "Two runners that differed" of
 [`docs/RECORDING.md`](../docs/RECORDING.md) gives the rule.
 
-**The noise floor.** Runs
-[45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)
-and [45288430599](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45288430599),
-the first of a pull request and the second on `main`, both on 23 November 2026, ran the same list with the same tests'
-commit, runner image `ubuntu24 20261116.133.1` and kernel `7.0.0-1014-aws`, the
-same sensor settings, rule sets and tool versions, from two commits of this
-repository (`cb017990` and `2ca6c9e6`). Their recordings predate
-`source.setup`, so they were written again from each run's artifact (`run.json`,
-`results.json` and the two rule folders) with `bluefire-lab recording` of this
-version and compared outside CI. That comparison found them comparable apart
-from the lab's code, which it names, and all 91 steps the same in what
-happened, in whether a sensor recorded them and in both outcomes. They do
-differ below the outcomes: the recordings hold 1,931 and 1,923 events. No CI
-run shows this comparison: it is not yet shown, and two runs are one sample of
-the noise floor, not its measure.
+**The noise floor.** The job "compare with the latest run on main" of
+[run 45358678821](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45358678821),
+a pull request that changed neither rules nor sensor settings, compared its
+recording with that of
+[run 45352666265](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45352666265)
+on `main`, with nothing declared: the same tests' commit, runner image and
+kernel, sensor settings, rule sets and tool versions, from two commits of this
+repository (which the comparison names), and all 91 steps the same in what
+happened, in whether a sensor recorded them and in both outcomes. Two runs are
+one sample of the noise floor, not its measure: a pair of runs told below had
+one step that took effect on one runner and not on the other.
 
 ## A pair of runs for a change to the defense
 
@@ -1234,14 +1381,16 @@ change of the lab's own rules alone needs no second run: see the next section.
   none, and the tests unseen in both runs. Two runs of the same audit rules
   already differ in auditd's text, by temporary file names and a password's
   salt that are new in every run, so for `sensors:auditd` a step is credited
-  only through events of an audit key that one run has and the other lacks,
-  and `delta.md` gives how many events of each such key the recordings hold.
+  only through events of an audit key that one run's events carry and the
+  other's never do, and `delta.md` gives how many events of each such key the
+  recordings hold. That is a description: on two runners that differed it
+  also says whether each such key can carry the change's own mark, and why
+  not.
   Each side says the commit its rules and sensor settings came from.
-- **What it costs** (an estimate: not yet measured for a pair). One more run of
-  the whole list, which took 13 to 16 minutes of runner time in the runs that
-  the item on runners under [Limits](#limits) names, and a few minutes for the
-  two short jobs that decide and compare. The two runs go side by side, so the
-  pull request should wait about as long as for one.
+- **What it costs.** One more run of the whole list: in the three pairs told
+  below it took 13.5 to 15.5 minutes of runner time, and each of the two short
+  jobs that decide and compare under half a minute. The two runs go side by
+  side, so the pull request waits about as long as for one.
 
 **The first change: auditd watches the history files.** One test of the list
 was unseen: T1070.003 Clear Bash history (echo) empties `~/.bash_history` with
@@ -1255,37 +1404,41 @@ watch works, auditd records the shell opening the file to empty it, in the
 audit session of the test's attack step, and the step goes from unseen to
 seen.
 
-**Its first pair**, run
-[45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
-of the pull request that made the change, shows that the watch records the
-test. Before, with the old audit rules, "Clear Bash history (echo)"
+**The pair that shows it** is run
+[45365902367](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367)
+of the pull request that made the change (its job "the change to the defense,
+before against after", and the artifact `lab-pair`). Its two runners had the
+same image and kernel, so the comparison is like with like, with a verdict on
+every step. Before, with the old audit rules, "Clear Bash history (echo)"
 (`test:cbf506a5`) had no telemetry; after, it is seen, by one event:
 `openat: /home/bluefire-lab/.bash_history` of the audit key `shell-history`,
-which only the changed rules define, written by the launcher's shell in the
-test's attack session. In all the after run holds 9 events of that key, one
-each on 9 steps, all of T1070.003; the 8 others were seen or alerted before
-too, and stayed so. The two runners differed: image `ubuntu24 20261116.133.1`
-and kernel `7.0.0-1014-aws` before, `ubuntu24 20261116.376.1` and
-`7.0.0-1017-azure` after. The run's own summary was written by an earlier
-version of `compare`, which refused every pair on two runners that differed,
-and gave no verdict. Its recordings do not say which audit keys their rules
-define, so this version refuses them too, with that reason. Written again with
-`bluefire-lab recording` of this version from each side's run folder in the
-artifacts `lab-run-base` and `lab-run` (the same recordings apart from the new
-`audit_keys`: `bluefire-lab-probe`, `process-start` and `shell-start` before,
-and `shell-history` as well after, as each run's loaded `audit-rules.txt`
-defines them) and compared outside CI with this version
-(`bluefire-lab compare --change sensors:auditd --two-runners`), they give a
-limited verdict: `test:cbf506a5` is better by the change's own mark, on two
-runners that differed, resting on that one event; its price is not known,
-since each run counted its ordinary activity on its own runner (8,858 ordinary
-events before and 8,779 after, 2 published rules that alerted on it in each);
-`test:23b91cd2` (T1518.001 Security Software Discovery - ps) is not
-attributable, since what happened differed too (on the after runner its
-output lacked the text its effect check looks for, so it took effect before
-and not after); the 89 other steps are the same. No CI run has yet written
-that verdict itself: not yet shown. Nor has a pair shown it on two runners of
-the same image and kernel: not yet shown.
+the key of the new watches, written by the launcher's shell in the test's
+attack session. The comparison calls that step better, on 1 of the 4
+published procedures of T1070.003 in the list (the 3 others were seen or
+alerted before too), and gives its price: 2 published rules alerted on
+ordinary activity before and 2 after, with 8,902 ordinary events before and
+8,841 after. The 90 other steps are the same, and what happened is the same
+on all 91. One pair of runs.
+
+Two earlier pairs of the same change got two runners that differed in image
+and kernel (`ubuntu24 20261116.133.1` with `7.0.0-1014-aws`, and
+`ubuntu24 20261116.376.1` with `7.0.0-1017-azure`). Both recorded the same
+event on the same step, and both summaries were written by earlier versions of
+`compare`: run
+[45362120784](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45362120784)
+gave a limited verdict that rested on the key's name alone, and run
+[45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
+refused every pair on two runners that differed. Their recordings were written
+before a recording said what its audit rules watch under each key (those of
+run 45362120784 name the keys alone, those of run 45350480637 not even
+those), so this version of `compare` refuses both: on two runners that
+differed, a key's name is no mark. A limited verdict by this version's
+rule, on a pair of runners that differed, is not yet shown by a CI run. In run
+45350480637 one more step differed,
+`test:23b91cd2` (T1518.001 Security Software Discovery - ps): on one runner
+its output lacked the text its effect check looks for. That is what two
+runners can differ by, and why such a step is not credited to a change. Of
+these three pairs, two got runners that differed.
 
 ## A change of the lab's rules: one run, evaluated twice
 

@@ -75,6 +75,8 @@ ACCEPTED_PATHS = {
     "lab/range/range-one.yaml": (RANGE_ONE_WEB_HOME, RANGE_ONE_CI_FILES),
     "lab/tests/fixtures/range/activity/archive.ndjson": (RANGE_ONE_OPS_HOME,),
     "lab/tests/fixtures/range/activity/web-auth.txt": (RANGE_ONE_OPS_HOME,),
+    "lab/tests/fixtures/range/ecs/archive.ndjson": (RANGE_ONE_OPS_HOME,),
+    "lab/tests/fixtures/range/ecs/alerts.ndjson": (RANGE_ONE_OPS_HOME,),
 }
 
 ADVICE = {
