@@ -15,13 +15,16 @@ diff, the delivery counts and `defense.md`. A range with ordinary activity
 starts its jobs after the plant checks and lets them run a warm-up before the
 place of the path and a tail after it, then stops them; after the collection
 it counts each job's runs and archive events into the manifest and
-`activity.md`.
+`activity.md`. Last, every line of the manager's archive and alerts is written
+as an ECS line, with its origin, into `events.ecs.ndjson` and
+`alerts.ecs.ndjson`, and the ordinary day is scored into the manifest and
+`score.md` (see `score`).
 
 Exit codes: 0 the range was sealed and still was at the end; 1 refused before
 anything was created, an engine error, or a range that was not ready in time;
 3 the seal failed and nothing ran in the range; 4 the run was made invalid (the
-seal failed after the point where the path runs, or something the engine did
-not do happened to the range).
+seal failed after the point where the path runs, something the engine did not
+do happened to the range, or the conversion to ECS failed).
 """
 
 from __future__ import annotations
@@ -42,7 +45,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from . import activity, atomics, build, ossec, plants, seal, wazuh
+from . import activity, atomics, build, ossec, plants, score, seal, wazuh
 from .spec import Spec, SpecError, load
 
 EXIT_OK = 0
@@ -459,6 +462,9 @@ class Run:
                     "note": "followed while the run lasts, for a live view; no result is computed from them",
                 },
             }
+        # The archive and alerts as ECS lines, and the ordinary day's score: written after the collection.
+        self.manifest["ecs"] = None
+        self.manifest["score"] = None
         self.manifest["activity"] = None
         if spec.activity:
             self.manifest["activity"] = {
@@ -505,6 +511,8 @@ class Run:
             (self.out / "plants.md").write_text(plants.summary(self.manifest), encoding="utf-8")
         if self.manifest["activity"] is not None:
             (self.out / "activity.md").write_text(activity.summary(self.manifest), encoding="utf-8")
+        if self.manifest["ecs"] is not None:
+            (self.out / "score.md").write_text(score.summary(self.manifest), encoding="utf-8")
 
     def phase(self, name: str, checks: list[dict]) -> bool:
         self.phases.append({"phase": name, "passed": seal.passed(checks), "checks": checks})
@@ -1587,6 +1595,9 @@ class Run:
             record["stop"][host] = float(done.stdout.strip())
         record["minutes"] = activity.minutes(record["go"], record["stop"])
         self.write()
+        # A job's window runs to GRACE seconds after its stop: what the engine does next (the seal's
+        # probes) starts after every window has closed, so that none of it can be sorted to a job.
+        self.pause(activity.GRACE)
 
     def count_activity(self) -> None:
         """Each job's runs and its events in the archive, from the files copied out of the range."""
@@ -1604,12 +1615,31 @@ class Run:
             )
         archive = raw / self.spec.manager / "var" / "ossec" / "logs" / "archives"
         found = wazuh.events(wazuh.daily_files(archive)) if archive.exists() else []
-        addresses = {
+        record["jobs"] = activity.count(
+            self.spec.activity, logs, found, self.addresses(), record["go"], record["stop"]
+        )
+        self.write()
+
+    def addresses(self) -> dict[str, list[str]]:
+        """Each host's addresses in the range, as the dynamic seal read them."""
+
+        return {
             host: list((entry.get("addresses") or {}).values())
             for host, entry in self.manifest["containers"].items()
         }
-        record["jobs"] = activity.count(
-            self.spec.activity, logs, found, addresses, record["go"], record["stop"]
+
+    def record_ecs(self) -> None:
+        """Write the manager's archive and alerts as ECS lines with their origins, and score the ordinary day."""
+
+        logs = self.out / "raw" / "hosts" / self.spec.manager / "var" / "ossec" / "logs"
+        self.manifest["ecs"], self.manifest["score"] = score.record(
+            self.out,
+            logs,
+            self.run_id,
+            self.spec.wazuh.alert_level,
+            self.spec.activity,
+            self.manifest["activity"],
+            self.addresses(),
         )
         self.write()
 
@@ -1770,6 +1800,13 @@ class Run:
                         self.analyse()
                     except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
                         self.manifest["defense"]["collect_error"] = f"{type(error).__name__}: {error}"[:500]
+                    try:
+                        self.record_ecs()
+                    except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
+                        self.manifest["ecs"] = {
+                            "error": f"{type(error).__name__}: {error}"[:500],
+                            "files": {},
+                        }
                 if self.created:
                     try:
                         complete = self.teardown()
@@ -1792,7 +1829,11 @@ class Run:
                     if self.phases:
                         self.phases.append({"phase": "teardown", "passed": final["pass"], "checks": [final]})
                 code, result, reason = outcome(
-                    (code, result, reason), complete, watched, self.manifest.get("plants")
+                    (code, result, reason),
+                    complete,
+                    watched,
+                    self.manifest.get("plants"),
+                    (self.manifest.get("ecs") or {}).get("error"),
                 )
                 self.manifest.update({"result": result, "reason": reason, "exit_code": code})
                 self.manifest["engine_clock"]["ended"] = now()
@@ -1807,14 +1848,16 @@ def outcome(
     teardown_complete: bool,
     watch_passed: bool | None,
     planted: dict | None,
+    conversion_error: str | None = None,
 ) -> tuple[int, str, str | None]:
     """A run's exit code, result and reason once its teardown is over.
 
     `reached` is what the run had reached before the teardown. Only a run that
     ended sealed changes here: a teardown that left objects behind makes it an
-    engine error, a failed event watch during the teardown makes it invalid, and
-    only then failed plant checks make it "plants not in place", so that this
-    softer result never hides one of the others.
+    engine error, a failed event watch during the teardown or a failed
+    conversion of the archive and alerts to ECS makes it invalid, and only then
+    failed plant checks make it "plants not in place", so that this softer
+    result never hides one of the others.
     """
 
     code, result, reason = reached
@@ -1824,6 +1867,8 @@ def outcome(
         return EXIT_REFUSED, "engine error", "the teardown left objects behind: see teardown in manifest.json"
     if watch_passed is False:
         return EXIT_INVALID, "invalid", "the event watch failed during the teardown: see seal.json"
+    if conversion_error:
+        return EXIT_INVALID, "invalid", f"the conversion to ECS failed: {conversion_error}"
     if planted and not planted.get("passed"):
         # The range was sealed, and not the range its spec describes: the path could not run in it.
         failed = [
