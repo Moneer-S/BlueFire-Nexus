@@ -25,6 +25,25 @@ HOST = "target"
 KEPT_EVENTS = 300
 # The longest command, output and event text, and the longest value of a field, in characters.
 KEPT_TEXT, KEPT_FIELD = 2000, 300
+# Where the lab cuts a text, to how many characters, and whether the cut keeps its end rather than its start.
+CUTS = (
+    (re.compile(r"steps\[\d+\]\.command"), KEPT_TEXT, False),
+    (re.compile(r"steps\[\d+\]\.output"), KEPT_TEXT, True),
+    (re.compile(r"events\[\d+\]\.text"), KEPT_TEXT, False),
+    (re.compile(r"events\[\d+\]\.fields\.[^.\[]+"), KEPT_FIELD, False),
+)
+# The texts that may hold control characters, as docs/RECORDING.md lists them: what a step ran and
+# printed, and sentences. No text or key holds NUL or half of a character pair, and no other text and
+# no key holds the other controls: C0, DEL and C1, the direction marks, embeddings, overrides and
+# isolates, and the line and paragraph separators.
+FREE = re.compile(r"notes\[\d+\]|attacker\.(?:description|goal)|steps\[\d+\]\.(?:command|output|plain)")
+NOWHERE = "\x00\ud800-\udfff"
+CONTROLS = "\x01-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069"
+# What a writer shows in place of such a character, and of a backslash that would read as that form.
+HIDDEN = re.compile("[" + NOWHERE + CONTROLS + r"]|\\(?=u\{)")
+HIDDEN_IN_FREE = re.compile("[" + NOWHERE + r"]|\\(?=u\{)")
+# A character of a shown text: a shown one is kept whole by a cut.
+UNIT = re.compile(r"\\u\{[0-9A-F]+\}|.", re.DOTALL)
 # The fields of a record that go with its event, under the sensors' own names: Sysmon's, then auditd's.
 FIELDS = (
     "EventRecordID", "ProcessId", "ParentProcessId", "ParentImage", "ParentCommandLine", "TargetFilename",
@@ -52,10 +71,47 @@ def seconds(start: str, end: str) -> float:
     return (second - first).total_seconds()
 
 
-def cut(text: str, limit: int) -> str:
-    """The text, or its start and three dots when it is longer than the limit."""
+def shown(text: str, free: bool = False) -> str:
+    """The text with each character the format refuses in it written as \\u{<its code point in hex>},
+    such as \\u{9} for a tab and \\u{202E} for a right-to-left override, and a backslash that comes
+    before u{ written \\u{5C}, so that the form never stands for anything but such a character. A free
+    text keeps its controls; it can hold no NUL and no half of a character pair."""
 
-    return text if len(text) <= limit else text[: limit - 3] + "..."
+    return (HIDDEN_IN_FREE if free else HIDDEN).sub(lambda found: f"\\u{{{ord(found.group()):X}}}", text)
+
+
+def cut(text: str, limit: int, end: bool = False) -> str:
+    """The text, or when it is longer than the limit its start and three dots (with end: three dots and
+    its end). A character shown as \\u{...} is kept whole or left out."""
+
+    if len(text) <= limit:
+        return text
+    units, size, kept = UNIT.findall(text), 0, []
+    for unit in reversed(units) if end else units:
+        if size + len(unit) > limit - 3:
+            break
+        size += len(unit)
+        kept.append(unit)
+    return "..." + "".join(reversed(kept)) if end else "".join(kept) + "..."
+
+
+def visible(value: object, where: str = "") -> object:
+    """A recording as the format takes it: every text and key shown, then cut where the lab cuts it.
+    where is the place of the value, as the app names it (steps[3].command)."""
+
+    if isinstance(value, dict):
+        return {
+            shown(key): visible(child, f"{where}.{key}" if where else key) for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [visible(child, f"{where}[{index}]") for index, child in enumerate(value)]
+    if not isinstance(value, str):
+        return value
+    text = shown(value, free=FREE.fullmatch(where) is not None)
+    for place, limit, end in CUTS:
+        if place.fullmatch(where):
+            return cut(text, limit, end)
+    return text
 
 
 def known(**values: object) -> dict:
@@ -132,11 +188,11 @@ def outcome(happened: str, seen: str) -> str:
 def event(found: dict, step: str, number: int, order: int | None = None) -> dict:
     """One event of a step as a recording holds it: a few fields of its record, never all of it.
     Its id is the step's order (or else its id) and its place among the step's events, whether
-    or not all are kept."""
+    or not all are kept. Its texts are as the sensor gave them: visible() shows and cuts them."""
 
     audit = isinstance(found["record"], str)  # "audit <seconds>.<ms>:<serial>"; Sysmon numbers its records
     fields = {
-        name: cut(str(value), KEPT_FIELD)
+        name: str(value)
         for name, value in found["fields"].items()
         if name in FIELDS and value not in ("", None)
     }
@@ -154,7 +210,7 @@ def event(found: dict, step: str, number: int, order: int | None = None) -> dict
         "host": HOST,
         "sensor": "auditd" if audit else "sysmon",
         "kind": kind,
-        "text": cut(" ".join(text.splitlines()), KEPT_TEXT),
+        "text": text,
         "step": step,
         "tied_by": found["why"],
         # Sysmon writes "-" for a user it does not know.
@@ -370,6 +426,27 @@ def setup(results: dict) -> dict | None:
     )
 
 
+def ordinary_matches(rules: list[dict]) -> list[dict]:
+    """The published rules that matched ordinary activity, each once: by its id, as an alert names its
+    rule, and its title. Two published rules can share a title, so where they do, each one's title is
+    followed by its id in parentheses, and no two are listed under one name. The engine lists a rule once;
+    were it listed again, the first is kept."""
+
+    by_id: dict[str, dict] = {}
+    for rule in rules:
+        by_id.setdefault(str(rule["id"]), rule)
+    titles = collections.Counter(rule["title"] for rule in by_id.values())
+    return [
+        {
+            "rule": rule["title"] if titles[rule["title"]] == 1 else f"{rule['title']} ({rule_id})",
+            "id": rule_id,
+            "level": rule["level"],
+            "count": rule["events"],
+        }
+        for rule_id, rule in by_id.items()
+    ]
+
+
 def score(steps: list[dict], ordinary: dict | None, results: dict) -> dict:
     """The totals: the steps of role "test" by outcome, what was stopped, and the false alerts. A test
     list has no time to the first alert, since its steps do not build on each other: each step has its own."""
@@ -474,9 +551,8 @@ def build(
     for test in run["tests"]:
         attack = step_of(test, "attack")
         if attack:
-            # The end of what a test printed says how it went: a cut output keeps its end and starts with "...".
-            text = (attack["output"] + attack["error"]).strip()
-            printed[test["order"]] = text if len(text) <= KEPT_TEXT else "..." + text[-(KEPT_TEXT - 3) :]
+            # The end of what a test printed says how it went: visible() cuts it to its end.
+            printed[test["order"]] = (attack["output"] + attack["error"]).strip()
 
     steps, events, alerts = [], [], []
     for test in results["tests"]:
@@ -540,7 +616,7 @@ def build(
                 host=HOST,
                 started=utc(launcher["time"]) if timed else None,
                 ended=utc(window[1]) if timed else None,
-                command=cut(launcher["detail"], KEPT_TEXT) if launcher else None,
+                command=launcher["detail"] if launcher else None,
                 output=printed.get(test["order"]),
                 happened={"answer": done["answer"], "basis": done["basis"]},
                 visibility=known(
@@ -568,13 +644,10 @@ def build(
         activity = results["ordinary_activity"]
         ordinary = {
             "events": activity["baseline_events"] + activity["system_events"],
-            "matches": [
-                {"rule": rule["title"], "level": rule["level"], "count": rule["events"]}
-                for rule in activity["pinned_rules"]
-            ],
+            "matches": ordinary_matches(activity["pinned_rules"]),
         }
     account = results["run"].get("account")
-    return known(
+    made = known(
         schema="bluefire.recording/1",
         id=results["run"]["id"],
         title=f"{count(sum(1 for step in steps if step['role'] == 'test'), 'published test')} on one Linux host",
@@ -595,6 +668,7 @@ def build(
         score=score(steps, ordinary, results),
         notes=notes(run, results, steps, events, listed),
     )
+    return visible(made)
 
 
 def main(folder: Path, run_url: str | None = None, tests: Path | None = None) -> int:

@@ -1648,13 +1648,19 @@ A step nobody saw, its telemetry, a rule drafted from it, and before against
 after, each turn shown by a CI run of the `lab` workflow:
 
 1. **The watch.** T1070.003 Clear Bash history (echo) was unseen. The audit
-   rules now watch the test account's history files, and the pair of runs of
-   [run 45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
-   recorded the step for the first time, as one audit event: it is seen, and
-   no rule alerts on it. See
+   rules now watch the test account's history files. The pair of runs of
+   [run 45365902367](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367),
+   on two runners with the same image and kernel, gives the verdict: the step
+   went from unseen to seen, by one audit event, `openat` of
+   `~/.bash_history` under the watch's key `shell-history`, and no rule alerts
+   on it. The 90 other steps are the same. An earlier pair,
+   [run 45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637),
+   recorded the same event, but its two runners differed and the comparison
+   of that day refused the pair. See
    [A pair of runs for a change to the defense](#a-pair-of-runs-for-a-change-to-the-defense).
 2. **The rule.** [Shell History File Truncated In Place](#a-rule-on-auditds-records-a-history-file-truncated-in-place),
-   drafted from that event, shown as one run evaluated twice in
+   drafted from that event as run 45350480637 recorded it, shown as one run
+   evaluated twice in
    [run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682):
    the run accepted the rule, and the step went from seen to alerted with the
    lab's rules, as did T1070.003 Clear Bash history (cat dev/null). See

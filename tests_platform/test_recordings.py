@@ -888,3 +888,112 @@ def test_the_command_line_imports_and_lists_a_recording_file(
         "imported",
     ]
     assert listed_output["recordings"][1]["id"] == "rec-small"
+
+
+# Each kind of character the format refuses outside free text, then NUL and half of a pair.
+ODD = (
+    "\t\n\r\x1b\x7f\x85\x9b\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+    "\u2028\u2029\x00\ud800"
+)
+
+
+def test_a_recording_the_lab_writes_from_telemetry_with_control_characters_is_imported(
+    service: BlueFireService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The lab's writer from this checkout, as the browser tests run the lab's command line with the
+    # app's own Python (frontend/tests/service/replay-page.spec.ts).
+    monkeypatch.syspath_prepend(str(ROOT / "lab"))
+    from bluefire_lab import recording as lab_recording
+
+    renamed = "/tmp/lab/\u202ehs.gpj"  # a file name as ATT&CK T1036.002 makes one
+    rule = {"id": "rule-1", "title": "Deletion\t" + ODD, "level": "high", "origin": "pinned"}
+    event = {
+        "record": 7,
+        "time": "2026-11-16 04:04:03.100",
+        "kind": "file created",
+        "user": "lab",
+        "image": "/usr/bin/touch",
+        "detail": renamed,
+        "why": "session",
+        "fields": {"ProcessId": "41", "ParentCommandLine": "sh -c 'touch a\tb'\n" + ODD},
+    }
+    launcher = {**event, "record": 6, "time": "2026-11-16 04:04:03.000", "kind": "process start"}
+    test = {
+        "order": 4,
+        "role": "test",
+        "technique": "T1036.002",
+        "technique_name": "Right-to-Left Override\u2028",
+        "guid": "guid-4",
+        "name": "Test\u202e 4",
+        "executor": "sh",
+        "elevated": False,
+        "execution": {"answer": "took effect", "basis": "the effect check exited with 0"},
+        "visibility": {
+            "answer": "alert",
+            "basis": "a rule matched",
+            "window": ["2026-11-16 04:04:01.000", "2026-11-16 04:04:06.000"],
+            "events": 1,
+            "rules": [{**rule, "records": [7], "alert": True}],
+            "launcher": {**launcher, "detail": "sh -c 'touch a\tb'\n" + ODD, "why": "launcher"},
+            "launcher_only_rules": [],
+        },
+        "events": [{**event, "detail": "touch a\tb\n" + ODD}, {**event, "record": 8}],
+    }
+    test["visibility"]["events"] = 2
+    shared = {"title": "Same Title" + ODD, "level": "high"}
+    results = {
+        "run": {
+            "id": "r1",
+            "started": "2026-11-16T04:00:00Z",
+            "finished": "2026-11-16T04:30:00Z",
+            "target": {"os": "Ubuntu\u2069 24.04", "kernel": "7.0\t"},
+            "tools": {
+                "atomic-red-team": "a" * 40,
+                "invoke-atomicredteam": "b" * 40,
+                "lab": "example/lab@" + "c" * 40,
+            },
+        },
+        "sensor": {"name": "Sysmon\u200f for Linux", "version": "1.6.0\x1b[0m"},
+        "rules": {
+            "source": "SigmaHQ/sigma@" + "d" * 40,
+            "evaluated": {"file_event": 1},
+            "alert_levels": ["high"],
+        },
+        "ordinary_activity": {
+            "baseline_events": 4,
+            "system_events": 9,
+            "pinned_rules": [
+                {**shared, "id": "rule-a", "events": 1},
+                {**shared, "id": "rule-b", "events": 2},
+            ],
+        },
+        "engine": {"name": "Zircolite", "version": "4.7.1"},
+        "tests": [test],
+    }
+    run = {
+        "tests": [
+            {
+                "order": 4,
+                "role": "test",
+                "steps": [{"label": "attack", "output": "a\tb\n" + ODD, "error": ""}],
+            }
+        ]
+    }
+    (tmp_path / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    (tmp_path / "results.json").write_text(json.dumps(results), encoding="utf-8")
+    assert lab_recording.main(tmp_path) == 0
+
+    written = recordings.parse_recording_bytes((tmp_path / "recording.json").read_bytes())
+    stored = service.import_recording({"recording": written})
+
+    assert stored["created"] is True
+    kept = service.recording("r1")["recording"]
+    # What the sensor recorded can be read back from the shown form: \u{<hex>} for each character.
+    assert kept["events"][0]["text"] == "touch a\\u{9}b\\u{A}" + "".join(
+        f"\\u{{{ord(odd):X}}}" for odd in ODD
+    )
+    assert kept["events"][1]["text"] == "/tmp/lab/\\u{202E}hs.gpj"
+    assert kept["steps"][0]["title"] == "Test\\u{202E} 4"
+    assert kept["steps"][0]["command"] == "sh -c 'touch a\tb'\n" + ODD[:-2] + "\\u{0}\\u{D800}"
+    assert [match["id"] for match in kept["ordinary"]["matches"]] == ["rule-a", "rule-b"]
+    assert len({match["rule"] for match in kept["ordinary"]["matches"]}) == 2
