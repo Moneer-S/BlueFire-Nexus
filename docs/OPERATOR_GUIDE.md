@@ -1,5 +1,7 @@
 # Operator guide
 
+This guide takes one experiment in the workspace from its first edit to a Simulate run, an Execute run, a detection and a replay, step by step.
+
 An **experiment** is a saved test procedure. **Build** edits a working copy; a **run** records
 one attempt using a particular version and configuration. Editing the working copy does not
 change earlier runs. Start with [Installation](INSTALLATION.md), then use the same run directory

@@ -1,5 +1,7 @@
 # User guide
 
+How to use each screen of the app: starting it, building and running experiments, [watching recorded runs](#recorded-runs), comparing runs and working on detections.
+
 This guide covers normal local operation. Begin with Simulate. Use Execute only after reading [Runner deployment](RUNNER_DEPLOYMENT.md), [Runner profiles](RUNNER_PROFILES.md), and [Responsible use](RESPONSIBLE_USE.md). For exact command syntax and JSON request-file contracts, see the [command-line reference](CLI.md).
 
 ## Start the application
