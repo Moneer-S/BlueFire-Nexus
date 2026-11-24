@@ -11,6 +11,7 @@ from __future__ import annotations
 import collections
 import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -32,7 +33,7 @@ FIELDS = (
 # What each sensor records under the configuration in lab/sensors.
 RECORDS = {
     "sysmon": "process starts and ends, network connections, and files created and deleted",
-    "auditd": "program starts with their arguments, changes to shell start files, and what programs "
+    "auditd": "program starts with their arguments, changes to the files its rules watch, and what programs "
     "such as sudo and useradd report about themselves",
 }
 
@@ -172,6 +173,73 @@ def rule_matches(seen: dict, accepted: set[str]) -> list[tuple[dict, bool]]:
     return [(rule, only) for rule, only in matches if rule.get("origin") != "lab" or rule["id"] in accepted]
 
 
+def watched(words: list[str]) -> tuple[str, list[str]]:
+    """What one audit rule watches, in one fixed form, and its keys. A watch `-w <path> -p <perms>` is
+    written as the rule auditctl makes of it, `-a always,exit -F path=<path> -F perm=<perms>`, and a
+    directory's `dir=` as `path=`, since the text does not say whether a watched path is a directory.
+    The list and action, the system calls, the fields and the letters of perm are sorted, `-k` and
+    `key=` are taken out, and so is `arch=`: a rule for b32 and the same one for b64 are one form. An
+    unset login uid is written `unset` however it was spelled."""
+
+    pairs = list(zip(words[::2], words[1::2], strict=False))
+    listed, syscalls, fields, comparisons, keys = "always,exit", set(), set(), set(), []
+    for option, then in pairs:
+        if option in ("-a", "-A", "-d"):
+            listed = ",".join(sorted(then.split(",")))
+        elif option in ("-w", "-W"):
+            fields.add(f"path={then}")
+            if not any(word == "-p" for word, _ in pairs):
+                fields.add("perm=arwx")
+        elif option == "-p":
+            fields.add("perm=" + "".join(sorted(then)))
+        elif option == "-S":
+            syscalls.update(then.split(","))
+        elif option == "-C":
+            comparisons.add(then)
+        elif option == "-k":
+            keys.append(then)
+        elif option == "-F":
+            name, operator, field = re.match(r"([^!=<>&]*)(!=|>=|<=|&=|=|>|<|&)?(.*)", then).groups()
+            if name == "key":
+                keys.append(field)
+            elif name != "arch":
+                if name in ("auid", "loginuid") and field in ("-1", "4294967295"):
+                    field = "unset"
+                if name == "perm":
+                    field = "".join(sorted(field))
+                fields.add(f"{'path' if name == 'dir' else name}{operator or ''}{field}")
+        else:
+            fields.add(f"{option} {then}")
+    form = f"-a {listed}" + (f" -S {','.join(sorted(syscalls))}" if syscalls else "")
+    form += "".join(f" -F {field}" for field in sorted(fields))
+    form += "".join(f" -C {comparison}" for comparison in sorted(comparisons))
+    return form, keys
+
+
+def audit_watches(rules: str) -> dict[str, list[str]]:
+    """What audit rules watch, for each of their audit keys, as auditctl loads them in order: each rule
+    in the fixed form of watched(), under each of its keys, and a rule without a key under "". A line
+    that starts with # is a comment; -D removes the rules loaded before it (of its key, with -k), and
+    -d and -W the one rule they name. Other lines set auditd itself and watch nothing."""
+
+    loaded: list[tuple[str, str]] = []
+    for line in rules.splitlines():
+        words = [] if line.lstrip().startswith("#") else line.split()
+        if not words or words[0] not in ("-a", "-A", "-w", "-d", "-W", "-D"):
+            continue
+        form, keys = watched(words) if words[0] != "-D" else ("", words[2:3])
+        if words[0] == "-D":
+            loaded = [(key, kept) for key, kept in loaded if keys and key not in keys]
+        elif words[0] in ("-d", "-W"):
+            loaded = [(key, kept) for key, kept in loaded if kept != form or key not in (keys or [""])]
+        else:
+            loaded += [(key, form) for key in keys or [""]]
+    found: dict[str, set[str]] = collections.defaultdict(set)
+    for key, form in loaded:
+        found[key].add(form)
+    return {key: sorted(forms) for key, forms in sorted(found.items())}
+
+
 def network(results: dict, digests: dict[str, str | None]) -> dict:
     """The one host the tests ran on, its sensors, and the rule sets that read their records,
     each with the digest of its files when the run's folder holds them."""
@@ -234,6 +302,12 @@ def network(results: dict, digests: dict[str, str | None]) -> dict:
                 "name": named(sensor["name"], sensor.get("version")),
                 "host": HOST,
                 "records": RECORDS[sensor_id],
+                # What the audit rules watch under each audit key, from the rules as the run loaded them.
+                **(
+                    {"audit_watches": audit_watches(sensor["rules_text"])}
+                    if sensor_id == "auditd" and "rules_text" in sensor
+                    else {}
+                ),
             }
             for sensor_id, sensor in sensors.items()
         ],
@@ -246,6 +320,7 @@ def source(results: dict, run_url: str | None) -> dict:
 
     run, pins, audit = results["run"], results["run"]["tools"], results.get("audit")
     repository, _, commit = (pins.get("lab") or "").partition("@")
+    defense_commit = (pins.get("lab-defense") or "").partition("@")[2]
     rules, _, rules_commit = results["rules"]["source"].partition("@")
     tools = [
         ("Atomic Red Team", pins.get("atomic-red-team"), "tests"),
@@ -262,6 +337,8 @@ def source(results: dict, run_url: str | None) -> dict:
         finished=run.get("finished"),
         repository=repository if commit else None,
         commit=commit if repository else None,
+        # The commit the lab's own rules and the sensors' settings came from, when the run says.
+        defense_commit=defense_commit or None,
         run_url=run_url,
         tools=[known(name=name, version=version, role=role) for name, version, role in tools],
         setup=setup(results),

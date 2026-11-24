@@ -189,7 +189,9 @@ LEVELS = ["critical", "high", "medium", "low", "informational"]
 
 def rule_link(rule: dict, results: dict) -> str:
     if rule.get("origin") == "lab":
-        repository, _, commit = results["run"]["tools"].get("lab", "@").partition("@")
+        # The commit the rule files came from, which for one run of a pair is not the commit that ran.
+        tools = results["run"]["tools"]
+        repository, _, commit = (tools.get("lab-defense") or tools.get("lab", "@")).partition("@")
         return f"https://github.com/{repository}/blob/{commit}/lab/rules/{rule['file']}" if commit else "#"
     repository, _, commit = results["rules"]["source"].partition("@")
     return f"https://github.com/{repository}/blob/{commit}/rules/{rule['file']}"

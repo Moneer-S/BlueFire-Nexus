@@ -43,7 +43,7 @@ import hashlib
 import json
 import shlex
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import activity, atomics, inet_server, ossec
 from .spec import REPOS, Host, Spec, SpecError, home
@@ -342,26 +342,53 @@ wait
     return {"mariadb.cnf": settings.encode(), "db-init.sql": sql.encode(), "db-init.sh": script.encode()}
 
 
-def beside(spec: Spec, relative: str) -> bytes:
-    """A file the spec names by its path beside the spec."""
+def in_folder(spec: Spec, relative: str) -> Path:
+    """The path of `relative` in the spec's folder, refused when it or a folder on the way is a link.
+
+    What the build copies into an image is only ever what lies in the spec's
+    folder: a link there could point anywhere the user can read.
+    """
 
     if spec.folder is None:
         raise SpecError(f"the spec names {relative}, and was not read from a file")
-    path = spec.folder / relative
+    path = spec.folder
+    for part in PurePosixPath(relative).parts:
+        path = path / part
+        if path.is_symlink():
+            raise SpecError(
+                f"the spec names {relative}, and {path.relative_to(spec.folder).as_posix()} beside it is a link: "
+                "a file the spec names must be a regular file inside the spec's folder"
+            )
+    if not path.resolve().is_relative_to(spec.folder.resolve()):
+        raise SpecError(f"the spec names {relative}, which is not inside the spec's folder")
+    return path
+
+
+def beside(spec: Spec, relative: str) -> bytes:
+    """A file the spec names by its path beside the spec: a regular file inside the spec's folder."""
+
+    path = in_folder(spec, relative)
     if not path.is_file():
         raise SpecError(f"the spec names {relative}, and there is no such file beside it")
     return path.read_bytes()
 
 
 def repo_files(spec: Spec, name: str) -> dict[str, bytes]:
-    folder = (spec.folder / REPOS / name) if spec.folder else None
+    """The files of a git repository beside the spec: folders and regular files only, no link."""
+
+    folder = in_folder(spec, f"{REPOS}/{name}") if spec.folder else None
     if folder is None or not folder.is_dir():
         raise SpecError(f"the spec names repo:{name}, and there is no folder {REPOS}/{name} beside it")
-    found = {
-        path.relative_to(folder).as_posix(): path.read_bytes()
-        for path in sorted(folder.rglob("*"))
-        if path.is_file()
-    }
+    found = {}
+    for path in sorted(folder.rglob("*")):
+        relative = path.relative_to(folder).as_posix()
+        if path.is_symlink() or not (path.is_dir() or path.is_file()):
+            raise SpecError(
+                f"{REPOS}/{name}/{relative} beside the spec is a link or not a regular file: "
+                "a repository the spec names holds folders and regular files only"
+            )
+        if path.is_file():
+            found[relative] = path.read_bytes()
     if not found:
         raise SpecError(f"the folder {REPOS}/{name} beside the spec holds no file")
     return found

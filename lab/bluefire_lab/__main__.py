@@ -1,4 +1,4 @@
-"""Command line of the lab: run, evaluate, report, recording, compare, atomic, range."""
+"""Command line of the lab: run, evaluate, report, recording, compare, pair, atomic, range."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import atomic, compare, evaluate, recording, report, run
+from . import atomic, compare, evaluate, pair, recording, report, run
 from .range import engine as range_engine
 
 
@@ -49,8 +49,26 @@ def main(arguments: list[str] | None = None) -> int:
     comparing.add_argument(
         "--change",
         help="the one thing changed between the runs: sensors:<sensor id> for a sensor's settings, "
-        "or detectors:<detector id> for a rule set, such as detectors:lab; leave out when nothing was",
+        "or detectors:<detector id> for a rule set, such as detectors:lab; leave out, or give it empty, "
+        "when nothing was",
     )
+    comparing.add_argument(
+        "--two-runners",
+        action="store_true",
+        help="the two runs were made side by side in one CI run, each on a fresh runner of its own",
+    )
+
+    pairing = commands.add_parser(
+        "pair",
+        help="say whether the defense a run loads differs from the base commit's: pair=yes or no, "
+        "the sides to run and the one change to declare, as name=value lines",
+    )
+    pairing.add_argument(
+        "--base",
+        type=Path,
+        help="the lab folder of a checkout of the base commit; leave out when there is none",
+    )
+    pairing.add_argument("head", type=Path, help="the lab folder of the commit under test")
 
     atomic_tests = commands.add_parser("atomic", help="read published Atomic Red Team tests as upstream does")
     atomic_commands = atomic_tests.add_subparsers(dest="atomic_command", required=True)
@@ -133,7 +151,11 @@ def main(arguments: list[str] | None = None) -> int:
     if options.command == "evaluate":
         return evaluate.main(options.folder, options.engine)
     if options.command == "compare":
-        return compare.main(options.before, options.after, options.out, options.change)
+        return compare.main(
+            options.before, options.after, options.out, options.change or None, options.two_runners
+        )
+    if options.command == "pair":
+        return pair.main(options.base, options.head)
     if options.command == "recording":
         return recording.main(options.folder, options.run_url, options.tests)
     return report.main(options.folder)

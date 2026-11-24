@@ -320,8 +320,10 @@ function known(ids: Set<string>, value: unknown, where: string, what: string): v
 /**
  * Checks that `value` is a recording of `bluefire.recording/1` and returns it typed.
  * Refuses anything else with a `RecordingError` whose message says what is wrong.
+ * A recording that is still running, with no end time yet, is read only with
+ * `running`: the app follows one as it grows, and a replay page is of a finished run.
  */
-export function readRecording(value: unknown): Recording {
+export function readRecording(value: unknown, options: { running?: boolean } = {}): Recording {
   if (value === null || value === undefined) fail("There is no recording here.");
   const top = object(value, "The recording");
   if (top.schema !== RECORDING_SCHEMA) {
@@ -335,6 +337,9 @@ export function readRecording(value: unknown): Recording {
   text(source.engine, "The source's engine");
   text(source.environment, "The source's environment");
   time(source.started, "The source's start");
+  // The service keeps a recording that is still running, and makes a page of a finished one only.
+  // The app's own view follows a running one as it grows, and asks for it with `running`.
+  if (source.finished === undefined && options.running !== true) fail("This recording is still running: it has no end time yet, and a replay is made of a finished run.");
   optionalTime(source.finished, "The source's end");
   optionalText(source.repository, "The source's repository");
   optionalText(source.commit, "The source's commit");

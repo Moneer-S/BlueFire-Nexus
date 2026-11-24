@@ -3,7 +3,9 @@ name: lab
 # Runs published attack tests on a hosted runner, records what a sensor on the
 # runner saw, has a rule engine evaluate pinned detection rules over those
 # records, and publishes a report. The runner is thrown away after the job.
-# The jobs hold no secrets and a read-only token.
+# A pull request that changes the lab's own rules or the sensors' settings runs
+# the tests twice, with the base commit's files and with its own, and compares
+# the two recordings. The jobs hold no secrets and a read-only token.
 
 on:
   pull_request:
@@ -69,15 +71,84 @@ jobs:
       - name: Test
         run: '"$RUNNER_TEMP/venv/bin/pytest" --rootdir lab -c lab/pyproject.toml lab/tests'
 
-  loop:
-    name: attack tests on this runner
+  # A pull request that changes what a run loads of the defense (the lab's own rules, the sensors'
+  # settings) is shown as a pair of fresh runs: the whole list with the base commit's files, and again
+  # with the head's, each on a runner of its own. The digests of those files decide, not the paths.
+  plan:
+    name: decide whether the change needs a pair of runs
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
+    outputs:
+      pair: ${{ steps.decide.outputs.pair }}
+      sides: ${{ steps.decide.outputs.sides }}
+      change: ${{ steps.decide.outputs.change }}
+      said: ${{ steps.decide.outputs.said }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+
+      # Only the files a run loads of the defense, nothing else of the base commit.
+      - name: Take the rules and sensor settings of the base commit
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: |
+            /lab/rules/
+            /lab/sensors/
+          sparse-checkout-cone-mode: false
+
+      - name: Install the lab
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
+
+      - name: Decide
+        id: decide
+        run: '"$RUNNER_TEMP/venv/bin/bluefire-lab" pair --base base/lab lab | tee -a "$GITHUB_OUTPUT"'
+
+      - name: Say what was decided
+        env:
+          SAID: ${{ steps.decide.outputs.said }}
+        run: echo "$SAID" >> "$GITHUB_STEP_SUMMARY"
+
+  loop:
+    # The head's run keeps the name it always had; the base's says what it is.
+    name: ${{ matrix.side == 'base' && 'attack tests on this runner, with the defense of the base commit' || 'attack tests on this runner' }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        side: ${{ fromJSON(needs.plan.outputs.sides) }}
+    env:
+      SIDE: ${{ matrix.side }}
+      # Where the run takes the lab's own rules and the sensors' settings from.
+      DEFENSE: ${{ matrix.side == 'base' && 'base/lab' || 'lab' }}
+      # The commit those files are of: the run records it, and the report links the lab's rules there.
+      DEFENSE_COMMIT: ${{ matrix.side == 'base' && github.event.pull_request.base.sha || github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Take the rules and sensor settings of the base commit
+        if: matrix.side == 'base'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: |
+            /lab/rules/
+            /lab/sensors/
+          sparse-checkout-cone-mode: false
 
       - name: Install the sensor, the executor's dependency and the lab
         run: |
@@ -137,7 +208,7 @@ jobs:
           echo "${SIGMA%@*}@$(git -C /opt/bluefire-lab/sigma rev-parse HEAD)" > "$RUN/rules/SOURCE"
           # The lab's own rules travel beside them, apart, so that the report can tell them apart.
           mkdir -p "$RUN/lab-rules"
-          cp -r lab/rules/linux "$RUN/lab-rules/linux"
+          cp -r "$DEFENSE/rules/linux" "$RUN/lab-rules/linux"
 
       - name: Create the test account and reject its outbound traffic
         run: |
@@ -197,8 +268,8 @@ jobs:
             --tests lab/pinned-tests.yaml \
             --atomics /opt/bluefire-lab/atomic-red-team/atomics \
             --executor /opt/bluefire-lab/invoke-atomicredteam \
-            --sensor-config lab/sensors/sysmon.xml \
-            --audit-rules lab/sensors/audit.rules \
+            --sensor-config "$DEFENSE/sensors/sysmon.xml" \
+            --audit-rules "$DEFENSE/sensors/audit.rules" \
             --out "$RUN"
 
       - name: Evaluate the rules and compute the answers
@@ -211,6 +282,9 @@ jobs:
         if: always()
         run: |
           "$RUNNER_TEMP/venv/bin/bluefire-lab" report "$RUN"
+          if [ "$SIDE" = base ]; then
+            echo "This run loaded the lab's own rules and the sensors' settings of the base commit, $DEFENSE_COMMIT." >> "$GITHUB_STEP_SUMMARY"
+          fi
           cat "$RUN/summary.md" >> "$GITHUB_STEP_SUMMARY"
           if grep -n $'\xe2\x80\x94' "$RUN/report.html" "$RUN/summary.md"; then echo "the report must not use the em dash"; exit 1; fi
 
@@ -248,16 +322,72 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: lab-run
+          name: ${{ matrix.side == 'base' && 'lab-run-base' || 'lab-run' }}
           path: ${{ runner.temp }}/lab-run
           retention-days: 90
           if-no-files-found: error
 
-  # Apart from the attack tests: this job only reads the two runs' recordings. Nothing is declared as
-  # changed, so whatever differs is named, and a step that differs is run variation, not an effect.
+  # Runs no test: it reads the two recordings of the pair, with the one change the plan declared.
+  # A run that the first run's leftovers could have changed is no before or after, and the list ends
+  # with tests whose changes upstream does not undo, so each side had a fresh runner of its own.
+  pair:
+    name: the change to the defense, before against after
+    needs: [plan, loop]
+    if: needs.plan.outputs.pair == 'yes'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the lab
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
+
+      - name: Download the run with the base commit's defense
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lab-run-base
+          path: ${{ runner.temp }}/base
+
+      - name: Download the run with the head's defense
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lab-run
+          path: ${{ runner.temp }}/head
+
+      # delta.md goes to the run page; the artifact lab-pair holds both recordings, delta.json and delta.md.
+      - name: Compare
+        env:
+          CHANGE: ${{ needs.plan.outputs.change }}
+          SAID: ${{ needs.plan.outputs.said }}
+        run: |
+          pair="$RUNNER_TEMP/pair"
+          mkdir -p "$pair/before" "$pair/after"
+          cp "$RUNNER_TEMP/base/recording.json" "$pair/before/recording.json"
+          cp "$RUNNER_TEMP/head/recording.json" "$pair/after/recording.json"
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" compare "$pair/before/recording.json" "$pair/after/recording.json" \
+            --out "$pair" --change "$CHANGE" --two-runners
+          { echo "$SAID"; echo; cat "$pair/delta.md"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the pair
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lab-pair
+          path: ${{ runner.temp }}/pair
+          retention-days: 90
+          if-no-files-found: error
+
+  # Only for a run without a pair: then it is the one comparison, across two runners and two days, and
+  # it declares nothing, so whatever differs is named and a step that differs is run variation, not an
+  # effect. Beside a pair it would be a second, weaker comparison that could be read as the result.
   compare:
     name: compare with the latest run on main
-    needs: loop
+    needs: [plan, loop]
+    if: needs.plan.outputs.pair != 'yes'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

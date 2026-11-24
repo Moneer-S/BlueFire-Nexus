@@ -68,6 +68,7 @@ def small_recording(recording_id: str = "rec-small") -> dict[str, Any]:
             "environment": "GitHub-hosted runner",
             "started": "2026-11-17T17:07:20Z",
             "finished": "2026-11-17T17:08:14Z",
+            "tools": [{"name": "Sysmon for Linux", "version": "1.6.0", "role": "sensor"}],
         },
         "network": {
             "hosts": [{"id": "target", "name": "runner", "role": "Linux host under test", "kind": "host"}],
@@ -224,7 +225,12 @@ def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFire
     recording["steps"][0]["title"] = "Clear\x07history"
     recording["steps"][0]["extra"] = float("inf")
     recording["steps"][1]["outcome"] = "maybe"
-    recording["steps"][1]["test"] = {"guid": "a\x00b"}
+    recording["steps"][1]["test"] = {
+        "project": "Atomic Red Team",
+        "guid": "a\x00b",
+        "executor": "sh",
+        "elevated": False,
+    }
     recording["events"][0]["step"] = "9"
     recording["events"][1]["host"] = ["target"]
     recording["events"][2]["time"] = "2026-99-99T99:99:99Z"
@@ -420,6 +426,74 @@ def test_a_null_in_place_of_a_left_out_value_is_refused(service: BlueFireService
         "steps[0].started is null; a value that is not known is left out.",
         "alerts[0].raised is null; a value that is not known is left out.",
     ]
+
+
+_LEFT_OUT = object()
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "problem"),
+    [
+        (("source", "tools"), _LEFT_OUT, "source.tools is missing."),
+        (("source", "tools", 0, "role"), "camera",
+         "source.tools[0].role must be one of: tests, executor, sensor, rules, rule engine."),
+        (("network", "hosts", 0, "addresses"), "10.0.0.1",
+         "network.hosts[0].addresses must be a list of at most 100 texts of at most 200 "
+         "characters."),
+        (("network", "links"), [{"from": "target", "to": "target"}],
+         "network.links[0].label is missing."),
+        (("network", "sensors", 0, "records"), _LEFT_OUT,
+         "network.sensors[0].records is missing."),
+        (("attacker", "goal"), _LEFT_OUT,
+         "attacker.goal is missing; it is null when the run has no goal."),
+        (("steps", 0, "technique", "name"), 5,
+         "steps[0].technique.name must be non-empty text."),
+        (("steps", 0, "test"), {"project": "Atomic Red Team", "guid": "g", "executor": "sh",
+                                "elevated": "yes"},
+         "steps[0].test.elevated must be true or false."),
+        (("steps", 0, "test"), "Atomic Red Team", "steps[0].test must be an object."),
+        (("steps", 0, "happened", "basis"), _LEFT_OUT, "steps[0].happened.basis is missing."),
+        (("steps", 0, "visibility", "basis"), 3,
+         "steps[0].visibility.basis must be non-empty text."),
+        (("steps", 0, "defense"), {"title": "Mount /tmp noexec"},
+         "steps[0].defense.why is missing."),
+        (("events", 0, "tied_by"), _LEFT_OUT, "events[0].tied_by is missing."),
+        (("events", 0, "tied_by"), "guess",
+         "events[0].tied_by must be one of: session, launcher, account, systemd, window."),
+        (("events", 0, "fields"), {"inode": 10**400},
+         "events[0].fields must hold at most 64 plain values: text of at most 300 characters, "
+         "a number no further than 9007199254740992 from zero, true, false or null."),
+        (("alerts", 0, "rule", "id"), _LEFT_OUT, "alerts[0].rule.id is missing."),
+        (("ordinary",), {"events": 3}, "ordinary.matches is missing."),
+    ],
+)  # fmt: skip
+def test_a_value_the_replay_page_cannot_show_is_refused_on_import(
+    service: BlueFireService, path: tuple[Any, ...], value: Any, problem: str
+) -> None:
+    """Each of these was once kept by the import and then refused by the replay page."""
+
+    recording = small_recording()
+    holder: Any = recording
+    for key in path[:-1]:
+        holder = holder[key]
+    if value is _LEFT_OUT:
+        del holder[path[-1]]
+    else:
+        holder[path[-1]] = value
+
+    _, problems = refusal(service, recording)
+
+    assert problems == [problem]
+
+
+def test_a_step_role_the_format_does_not_name_is_refused(service: BlueFireService) -> None:
+    recording = small_recording()
+    recording["steps"][1]["role"] = "baseline"
+    recording["score"].update(steps=1, took_effect=1, seen=0)
+
+    _, problems = refusal(service, recording)
+
+    assert problems == ["steps[1].role must be one of: test, canary, control, hardened, variant."]
 
 
 def test_a_finished_recording_is_not_overwritten_by_an_older_import_from_another_library(
