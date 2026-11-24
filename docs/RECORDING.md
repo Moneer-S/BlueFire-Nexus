@@ -313,9 +313,10 @@ The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
 | `before`, `after` | object | Each recording: `{ "sha256", "id" }`, the SHA-256 of its file and its `id`, and from its `source` the `run_url`, `environment`, `commit`, `defense_commit` and `started` it has. |
 | `declared_change` | string or null | The one thing declared as changed between the runs, as a name of the setup (below): `sensors:<sensor id>` for a sensor's settings or `detectors:<detector id>` for a rule set. Null when nothing was declared. |
 | `runners` | number or null | `2` when the two runs were made side by side in one CI run, each on a fresh runner of its own (`--two-runners`, as the lab's pair of runs gives it), and both recordings name the same `run_url`. Null otherwise: `--two-runners` on recordings that do not name one CI run is a refusal. |
-| `comparable` | boolean | True when there is a verdict: `refused_because` is empty. |
+| `comparable` | boolean | True when there is a verdict: `refused_because` is empty. With a `limit`, the verdict is limited. |
+| `limit` | object or null | Null when the verdict is like with like. Otherwise `{ "why", "differences", "credits", "credited", "not_attributable" }`: why the verdict is limited (`the two runners differed`), the names of the setup that differed for it (such as `images:target` and `kernels:target`), on which steps the change is credited, in words, how many steps were credited by the change's mark and how many are `not attributable`. See Two runners that differed. |
 | `refused_because` | array of strings | Each reason there is no verdict, in plain words. |
-| `differences` | array | Each `{ "what", "before", "after" }`: a name of the setup whose values differ, with both values, null where a recording does not record it. |
+| `differences` | array | Each `{ "what", "before", "after" }`: a name of the setup whose values differ, with both values, null where a recording does not record it, and `"declared": true` on the declared change and on a name that is part of it (see Refusals). |
 | `same_in_both` | array of strings | The names of the setup whose values are recorded and equal in both. |
 | `lab_code` | object | `{ "before", "after", "same" }`: each recording's `source.commit`, null where it has none, and whether both are recorded and equal. See below. |
 | `judged` | array of strings | The fields of a step the declared change can move. Empty when nothing was declared. |
@@ -356,9 +357,15 @@ what differed, when a recording has no `source.setup`; when the two are not of
 the same `kind`; when they are not of the same steps in the same order (a new or
 a gone step included); when the declared change is not a sensor's settings or a
 detector's rules of these recordings, is the same in both, or is not recorded in
-both; when any name of the setup other than the declared change differs; or
-when `--two-runners` says the runs were made side by side in one CI run and the
-two recordings do not name the same `run_url`.
+both; when any name of the setup other than the declared change differs (but
+see Two runners that differed, below); or when `--two-runners` says the runs
+were made side by side in one CI run and the two recordings do not name the
+same `run_url`. The published rules' pin, the version of the tool of role
+`rules`, is the commit their files come from, so it is part of a declared
+`detectors:pinned`; no other tool version is part of a declared change. The
+rule engine's version is not part of either rule set, and a sensor's program
+version is not its settings: a new version can record otherwise under the same
+settings, so it refuses a declared `sensors:<id>`.
 
 **A step** of a delta:
 
@@ -371,8 +378,9 @@ two recordings do not name the same `run_url`.
 | `changed` | array of strings | The fields whose value differs. |
 | `underneath` | array of strings | For a changed step, what changed under it: `recorded now` or `no longer recorded` with the number of events, `matches now:` or `no longer matches:` and a rule as `<level>: <title>`. |
 | `records` | object | Only on a changed step, when the declared change is `sensors:<id>`: `{ "sensor", "new", "gone" }`, where `new` is what that sensor recorded of the step in the after recording and not in the before one, and `gone` the other way, each `{ "count", "lines" }` with the first 20 lines as `<kind>: <text>` of the events (`<kind>` alone when the text is empty), in time order. Only the events a recording kept count. For `sensors:auditd`, only events of an audit key that one recording has and the other lacks (`audit_keys`) count. |
-| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too, a rule of the lab's own that is the same file in both runs matched the step differently, or, for a sensor's settings, that sensor's `records` of the step are empty while the recordings hold events of the step); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
-| `verdict` | string | The result in plain words. A changed step's ends with `one pair of runs`. |
+| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too; for a change of rules, a rule of the lab's own that is the same file in both runs matched the step differently while its outcome with the lab's rules moved; for a sensor's settings, that sensor's `records` of the step are empty while the recordings hold events of the step; or, under a `limit`, the step does not carry the change's mark); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
+| `mark` | object | Only under a `limit`, on a step credited by the change's own mark: `{ "run", "keys", "events" }`, the run whose events carry the mark (`after` or `before`), their audit keys and their number. |
+| `verdict` | string | The result in plain words. A changed step's ends with `one pair of runs`. Under a `limit`, a credited step's starts with `<result> by the change's own mark, on two runners that differed` and says what it rests on, and a `not attributable` step's names the runners' difference. |
 | `procedures`, `price` | object, string | On a `better` step, and in its `verdict` too: `price`, what the gain cost; and on a step of role `test` only, `procedures`, `{ "better", "of" }`, on how many of the steps of role `test` of the same technique the result is `better`. |
 
 **Like with like.** A change of the lab's rules (`detectors:lab`) is judged on
@@ -388,9 +396,15 @@ lab's rules, so for `detectors:lab` a step that a rule of the lab's own matched
 in one run and not in the other, while that rule's file has the same digest in
 both `verdicts`, is `not attributable`, and its verdict gives what each run
 said of that rule. A recording without `verdicts` does not say which rules
-changed, and such a step is `not attributable` too. A sensor's settings change a
-step only through what that sensor records of it, so for `sensors:<id>` a step
-whose judged fields moved while that sensor's events of it are the same in both
+changed, and such a step is `not attributable` too. A change of the published
+rules cannot make a rule of the lab's own match at all, so for
+`detectors:pinned` a step whose `outcome_with_lab_rules` moved while a rule of
+the lab's own matched it in one run only is `not attributable`. A change of a
+sensor's settings can make an unchanged rule of the lab's own match new
+telemetry, and that is its effect, so for `sensors:<id>` it is credited, but
+only through what that sensor recorded: a sensor's settings change a step only
+through what that sensor records of it, so for `sensors:<id>` a step whose
+judged fields moved while that sensor's events of it are the same in both
 recordings is `not attributable`, and its verdict says the sensor recorded the
 same. Two runs of the same audit rules already differ in auditd's text, by
 temporary file names and a password's salt that are new in every run, so for
@@ -400,6 +414,36 @@ attributable`. Under a sensor change, `delta.md` also names the steps recorded
 now and by no sensor before, or says there are none, the steps of role `test`
 unseen in both runs, and for auditd the events of each audit key only one run
 has.
+
+**Two runners that differed.** The two runs of `--two-runners` run on two
+fresh runners, and GitHub can hand out two images and kernels to two jobs
+started side by side. When the runner's image and kernel (`images:<host>`,
+`kernels:<host>`, both recorded) are all that differ besides the declared
+change, and nothing else refuses, then:
+
+- For `sensors:auditd`, the comparison is not refused. It is limited, and
+  `limit` says so. The change is credited only on a step that carries its own
+  mark: one run holds no event and no alert of the step (a rule that matched
+  only the launcher's start left out) and says it was not recorded, every
+  event the other run holds of it is auditd's, under an audit key that only
+  that run's rules define, the step's `visibility.events` equals the events
+  kept, and every alert on the step rests on those events alone. Without
+  those events that run too would hold nothing of the step, so its move is
+  the change's and not the runners'. Such a step has `mark`, and its
+  verdict says what it rests on. Every other step that differs is `not
+  attributable`, with the runners' difference as the reason, also one that
+  only the control moved for, and also one whose new alert rests on a marked
+  event while it has other events too: those other events were recorded on
+  another runner, and could have moved it as well.
+- For any other declared change (another sensor's settings, which leave no
+  mark of their own, or a rule set) the comparison is refused, and a reason
+  says that the runners differed and to run the pair again, which gives two
+  new runners.
+
+Any other difference, such as a tool's version, another sensor's settings,
+another rule set or the tests' commit, refuses as before, also when the
+runners differed too, and without `--two-runners` a runner's difference
+refuses as any other.
 
 **The price** of a gain is on the same line as the gain. For the lab's rules,
 the lab leaves a rule that matched ordinary activity out of the recording before

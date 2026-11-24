@@ -2,7 +2,9 @@
 
 The events have the shape Sysmon for Linux gave in the sensor spike: the
 executor's children carry no parent GUID and the id of the executor's thread as
-parent, and a detached child has parent 1. They are constructed, not recorded.
+parent, and a detached child has parent 1. They are constructed, not recorded,
+except the audit lines of the history-file write, which a CI run recorded: that
+test says which.
 """
 
 from __future__ import annotations
@@ -231,39 +233,57 @@ def test_a_write_auditd_recorded_in_the_attack_session_is_the_tests_telemetry() 
 
 
 def test_the_shells_own_write_to_the_history_file_is_the_tests_telemetry(tmp_path: Path) -> None:
-    # Built by the audit format's rules, not recorded: the records auditd writes when the watch on
-    # ~/.bash_history sees the launcher's shell itself open the file to empty it, as
-    # sh -c 'echo "" > ~/.bash_history' does without starting a program (flags O_WRONLY|O_CREAT|O_TRUNC).
-    stamp = "msg=audit(1794802705.120:178):"
-    title = b'sh\0-c\0echo "" > ~/.bash_history'.hex().upper()
+    # Recorded: the four records of one event in audit.txt of the head side of CI run 45350480637
+    # (https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637), on a GitHub-hosted runner,
+    # as they are there, separators included. The watch on ~/.bash_history saw the launcher's shell itself,
+    # process 9217 in session 226, open the file to empty it, as sh -c 'echo "" > ~/.bash_history' does
+    # without starting a program (flags O_WRONLY|O_CREAT|O_TRUNC).
     lines = [
-        f"type=SYSCALL {stamp} arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=55d0c3a1b2c0 "
-        "a2=241 a3=1b6 items=2 ppid=105 pid=120 auid=1001 uid=1001 gid=1001 euid=1001 tty=(none) ses=11 "
-        f'comm="sh" exe="/usr/bin/dash" subj=unconfined key="shell-history"\x1dARCH=x86_64 SYSCALL=openat '
-        'AUID="bluefire-lab" UID="bluefire-lab"',
-        f'type=CWD {stamp} cwd="/home/bluefire-lab"',
-        f'type=PATH {stamp} item=0 name="/home/bluefire-lab/" inode=2 dev=fc:00 mode=040750 ouid=1001 '
-        "ogid=1001 nametype=PARENT",
-        f'type=PATH {stamp} item=1 name="/home/bluefire-lab/.bash_history" inode=7 dev=fc:00 mode=0100600 '
-        "ouid=1001 ogid=1001 nametype=NORMAL",
-        f"type=PROCTITLE {stamp} proctitle={title}",
+        "type=SYSCALL msg=audit(1795506722.104:6375): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c "
+        "a1=5575b03c55e0 a2=241 a3=1b6 items=1 ppid=9191 pid=9217 auid=1002 uid=1002 gid=1002 euid=1002 "
+        'suid=1002 fsuid=1002 egid=1002 sgid=1002 fsgid=1002 tty=(none) ses=226 comm="sh" exe="/usr/bin/dash" '
+        'subj=unconfined key="shell-history"\x1dARCH=x86_64 SYSCALL=openat AUID="bluefire-lab" UID="bluefire-lab" '
+        'GID="bluefire-lab" EUID="bluefire-lab" SUID="bluefire-lab" FSUID="bluefire-lab" EGID="bluefire-lab" '
+        'SGID="bluefire-lab" FSGID="bluefire-lab"',
+        'type=CWD msg=audit(1795506722.104:6375): cwd="/tmp"',
+        'type=PATH msg=audit(1795506722.104:6375): item=0 name="/home/bluefire-lab/.bash_history" inode=9441009 '
+        "dev=08:01 mode=0100600 ouid=1002 ogid=1002 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 "
+        'cap_fver=0 cap_frootid=0\x1dOUID="bluefire-lab" OGID="bluefire-lab"',
+        "type=PROCTITLE msg=audit(1795506722.104:6375): "
+        "proctitle=7368002D63006563686F202222203E207E2F2E626173685F686973746F7279",
     ]
     path = tmp_path / "audit.txt"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     audit = auditd.events(auditd.read(path))
-    # Sysmon saw nothing of the test but its launcher's start and end.
+    # Sysmon saw nothing of the test but its launcher's start and end. These events are built, and moved
+    # to that run's attack session and launcher process so that the recorded lines can be the test's.
+    sessions = {"10": "225", "11": "226", "12": "227"}
     events = [
-        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+        {
+            **event,
+            "ProcessId": "9217" if event["ProcessId"] == "120" else event["ProcessId"],
+            **(
+                {"TerminalSessionId": sessions[event["TerminalSessionId"]]}
+                if event.get("TerminalSessionId") in sessions
+                else {}
+            ),
+        }
+        for event in telemetry()
+        if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
     ]
+    test = a_test(
+        launcher_pid=9217,
+        steps=[step("marker-start", 225), step("attack", 226), step("marker-end", 227), step("effect", 228)],
+    )
 
-    without, _ = see(a_test(), events)
-    answer, mine = see(a_test(), events, audit=audit)
+    without, _ = see(test, events)
+    answer, mine = see(test, events, audit=audit)
 
     assert without["answer"] == "no telemetry"
     assert answer["answer"] == "telemetry only"
     assert [(event["record"], event["kind"], event["why"], event["detail"]) for event in mine] == [
         (
-            "audit 1794802705.120:178",
+            "audit 1795506722.104:6375",
             "openat (auditd)",
             "session",
             '/home/bluefire-lab/.bash_history by sh -c echo "" > ~/.bash_history',

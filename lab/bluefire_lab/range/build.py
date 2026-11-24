@@ -29,7 +29,8 @@ Stages:
 - `host-<name>`: one per host built from base, with its packages, then what
   the spec plants in it (accounts, sshd settings, keys, known hosts, folders,
   files, the database, served files, the published `src` folders it carries),
-  its ossec.conf, its start script and, last, snoopy in /etc/ld.so.preload.
+  the jobs of the ordinary activity that run on it (see `activity`), its
+  ossec.conf, its start script and, last, snoopy in /etc/ld.so.preload.
   No step runs published text: the published files are copied in as data.
 - `host-<manager>`: the pinned manager image, with the lab's configuration
   under /wazuh-config-mount/, which the image's own start copies into
@@ -44,7 +45,7 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import atomics, inet_server, ossec
+from . import activity, atomics, inet_server, ossec
 from .spec import REPOS, Host, Spec, SpecError, home
 
 DOCKERFILE = "Dockerfile"
@@ -232,6 +233,7 @@ def start_script(spec: Spec, host: str) -> str:
             f'for log in {logs}; do [ -e "$log" ] || : > "$log"; done',
             "/var/ossec/bin/wazuh-control start",
         ]
+    lines += activity.start_lines(spec.activity, host)
     lines.append("exec sleep infinity")
     return "\n".join(lines) + "\n"
 
@@ -542,6 +544,7 @@ def host_files(spec: Spec, host: Host) -> dict[str, bytes]:
         found["files/inet-server"] = Path(inet_server.__file__).read_bytes()
     if host.atomics_src:
         found["files/COMMIT"] = (spec.atomics.commit + "\n").encode()
+    found.update(activity.files(spec.activity, name))
     return found
 
 
@@ -567,6 +570,9 @@ def _run(*commands: str) -> str:
 
 APT_INSTALL = "apt-get update && apt-get install -y --no-install-recommends "
 APT_CLEAN = "rm -rf /var/lib/apt/lists/*"
+# apt's setting for a server that answers with an error now and then: each download is tried
+# again up to eight times, with apt's growing wait between the tries.
+APT_RETRIES = 'Acquire::Retries "8";'
 
 
 def dockerfile(spec: Spec) -> str:
@@ -583,8 +589,11 @@ def dockerfile(spec: Spec) -> str:
             "ARG DEBIAN_FRONTEND=noninteractive",
             "# Packages come from the Ubuntu archive as it was at the snapshot. The snapshot service is",
             "# reached over HTTPS, so the certificate store (ca-certificates and openssl) comes first, from",
-            "# the archive of the day: the only packages that do not come from the snapshot.",
+            "# the archive of the day: the only packages that do not come from the snapshot. A download",
+            "# that fails is tried again with a growing wait, so that a short outage of either service",
+            "# does not fail the build.",
             _run(
+                f"echo '{APT_RETRIES}' > /etc/apt/apt.conf.d/80retries",
                 APT_INSTALL + "ca-certificates",
                 APT_CLEAN,
                 f"echo 'APT::Snapshot \"{spec.base.apt_snapshot}\";' > /etc/apt/apt.conf.d/50snapshot",
@@ -604,7 +613,7 @@ def dockerfile(spec: Spec) -> str:
                 _run(APT_INSTALL + "curl", APT_CLEAN),
                 "# The Wazuh agent package, checked against the SHA-512 the spec pins.",
                 _run(
-                    f"curl -fsSL --proto '=https' -o /wazuh-agent.deb {url}",
+                    f"curl -fsSL --retry 5 --retry-all-errors --proto '=https' -o /wazuh-agent.deb {url}",
                     f'echo "{wazuh.agent_sha512}  /wazuh-agent.deb" | sha512sum -c -',
                 ),
             ]
@@ -657,6 +666,7 @@ def dockerfile(spec: Spec) -> str:
                 "/etc/pam.d/*",
             ]
         parts += plant_lines(spec, host)
+        parts += activity.dockerfile_lines(spec.activity, host.name)
         if host.agent:
             parts.append(
                 f"COPY --from=conf --chown=root:wazuh --chmod=0660 /out/{host.name}/ossec.conf {OSSEC_CONF}"

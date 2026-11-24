@@ -779,7 +779,7 @@ range too.
 | --- | --- | --- | --- |
 | `attacker` | edge | nothing | The `src` folder of T1110.004 (its published password lists) under `/opt/atomics`, and `sshpass`, which that test's prerequisite would fetch: the first step guesses web's SSH password from there. |
 | `inet` | edge | 80, 443 | The stand-in internet: a small server of the lab's own ([`inet_server.py`](bluefire_lab/range/inet_server.py)) that serves the published `atomic.sh` of T1105, which a step downloads, stores every `POST /upload` with its SHA-256, which the last step uses to send the stolen file out, and logs each request. Its certificate is made when the image is built. |
-| `client` | edge | nothing | The shop's customers and its administrator's laptop: the account `ops`, whose SSH key `web` accepts. For the ordinary activity, which comes later. |
+| `client` | edge | nothing | The shop's customers and its administrator's laptop: the account `ops`, whose SSH key `web` accepts, for the [ordinary activity](#range-one-ordinary-activity). |
 | `web` | edge, inside, mgmt | 22, 80 | The shop (nginx, PHP, one page that keeps a session and reads the database). The account `webadmin` with the password `webadmin`, which is on line 475 of the published list (the build checks that line). SSH with passwords, and `pam_unix` with `nodelay`, so that a failed password is answered without the usual pause of about 3 s, which over the 482 tries of the list would come to roughly 24 minutes (an estimate: not yet measured). In `webadmin`'s `~/.ssh`, a deploy key without a passphrase (`id_rsa`), which a step finds and the next uses, and a `known_hosts` entry for `build`, which a step reads and without which that `ssh` would stop. The database password in `/var/www/app/config.php`, which a step finds. `/tmp/stage`, owned by `webadmin`, where a step writes what it pulls from `build`. `ops` may run `nginx -t` with sudo. |
 | `db` | inside, mgmt | 3306 | MariaDB with the shop's table, made when the image is built, and the user `shop`, allowed from any address with the password in `config.php`. |
 | `build` | inside, mgmt | 22 | The account `deploy`, which accepts the deploy key, and `/etc/buildbot/signing.env`, readable by the group `deploy`: the path's goal is to get this file out to `inet`. A git repository of the shop, owned by `ci`, for the ordinary activity. |
@@ -854,8 +854,103 @@ The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
 `manifest.json` records the daemon's security options under `docker`, and
 every plant check that uses them passed there.
 
-Not yet shown: the path of published tests through the range; ordinary
-activity; scoring.
+Not yet shown: the path of published tests through the range; scoring.
+
+## Range one: ordinary activity
+
+A defense that raises an alert on everything catches every step. So while the
+path runs, the shop's people and machines do their ordinary work: an alert on
+that work counts as a false alert, and the path's steps are not the only
+things that write to the watched logs and folders. The `activity` section of
+[`range/range-one.yaml`](range/range-one.yaml) lists five jobs:
+
+| Job | Who | Where, and what | How often | What it leaves, and where | Wazuh rules expected |
+| --- | --- | --- | --- | --- | --- |
+| `browse` | `ops` on `client` | Fetches a page of the shop on `web` with curl, in turn `/`, `/?item=1`, `/?item=2`, `/?item=3`, `/cart` and `/missing` (the last two answer 404) | every 5 to 15 s | `web`: a line in nginx's access log; for the four PHP pages, a new PHP session file in `/var/lib/php/sessions`, watched in real time, and a query of the database on `db`. | 31101 (a 404), 554, 550 |
+| `admin` | `ops` on `client` | Logs in to `ops@web` with its SSH key and runs `uptime; df -h /; ls -l /var/www/app; sudo -n /usr/sbin/nginx -t` | every 90 to 150 s | `web`: sshd's login, PAM's session and sudo's lines in `auth.log`; snoopy's program starts. | 5715, 5501, 5502, 5402 |
+| `cache` | `www-data` on `web`, from cron | `php /var/www/app/cron.php`: writes the shop's items to `/tmp/shop-cache-<minute>.json` and removes the older files | every minute | `web`: files added and removed in `/tmp`, the folder the path writes to, watched in real time; snoopy's program starts; cron's PAM session in `auth.log`. | 554, 553 |
+| `build` | `ci` on `build`, from cron | Clones `/srv/git/shop.git` into `shop` in `ci`'s home folder on its first run, then `git pull` and `make -s -B` there | every minute | `build`: files in `ci`'s home folder, watched in real time; snoopy's program starts; cron's PAM session. | 554, 550 |
+| `backup` | `root` on `db`, from cron | `mariadb-dump shop > /var/backups/shop.sql` | every 5 minutes | `db`: snoopy's program starts; cron's PAM session. `/var/backups` is not watched. | none |
+
+The expected rules are a prediction, from the stock ruleset and a run on a
+developer machine, all below level 12: which rules each job matches on a
+GitHub-hosted runner is not yet shown. Scoring them, as false alerts or not,
+comes with the score.
+
+- **Apart from the path.** The score will tell the path from ordinary activity
+  by account and address, so the loader refuses a job that runs as, or logs
+  in as, an account the path uses (`webadmin` on `web`, and `deploy`, which a
+  step's arguments name), and a job on or toward `attacker`, the host the path
+  starts from. It also refuses a job its host cannot run (an account the host
+  lacks, a cron job on a host without cron, a fetch without curl, a login
+  without a key the target accepts or a `known_hosts` entry for it), and a job
+  that acts on a host without an agent, since a job's runs and events are
+  counted from the logs of the watched host it acts on. For the same reason it
+  refuses two jobs whose lines could not be told apart: two `http` jobs from
+  one host to one server with a path in common, two `ssh` jobs from one host
+  to one other host, a job that runs or logs in as the account an `ssh` job
+  logs in as on the same host (PAM's, sudo's and cron's lines name the
+  account, not the job), and two jobs on one host whose `writes` patterns can
+  match the same file. Cron jobs are told apart by their tags.
+- **Baked into the images.** A cron job is an entry in `/etc/cron.d` and a
+  script in `/usr/local/lib/bluefire`. Cron starts the entry every minute,
+  and both start with `test -e /run/bluefire/go || exit 0`: the job's script
+  and its command start only after the engine writes that file. Before the
+  go and after the stop, cron still opens and closes a session for the job's
+  account each minute (two lines in `auth.log`), ordinary events outside the
+  activity's minutes. The `http` and `ssh` jobs (`browse` and `admin`) are
+  one loop script on the host they run from, `client`, since their waits are
+  counted in seconds and `client` runs no cron; its start script runs the
+  loop once for each job as the job's account, and the loop waits for the
+  same file. Every program a job starts after the go carries
+  `BLUEFIRE_TAG=job:<name>`; an `ssh` job sets it in the command it sends.
+- **A schedule from the seed.** Each wait between two runs is drawn from the
+  spec's `seed`, the job's name and the run's number (a SHA-256), inside the
+  job's `every`, whole minutes for a cron job, for the first hour of a run;
+  after that the waits start again. The same spec gives the same schedule,
+  and the schedule is in `manifest.json`. A loop job runs at once when the go
+  appears; cron starts a cron job at its next minute.
+- **The engine.** After the dynamic seal and the plant checks, the engine
+  writes `/run/bluefire/go` on each host that runs a job (tag `engine:go`) and
+  waits `warmup_seconds` (30). Then comes the place of the path. After it, the
+  jobs run `tail_seconds` (15) more and the engine removes the file again (tag
+  `engine:stop`), so the activity has an end; then the seal is checked again.
+  `manifest.json` records each host's go and stop in the container's clock.
+- **What was done, and what was seen.** After the collection, for each job:
+  how many times it ran, from the host it acts on (for a cron job, snoopy's
+  line of the run's own `/bin/bash -c <command>` with the job's tag; for
+  `browse`, nginx's access log lines of its paths from `client`'s address;
+  for `admin`, sshd's key logins of `ops` from `client`'s address), between
+  its host's go and stop; the same runs again from those lines that reached
+  the manager's archive ("archived runs"); and how many events of it reached
+  the archive in that time and 5 s after, by the job's tag on snoopy's lines,
+  `client`'s address on nginx's lines of the job's paths, on sshd's lines and
+  on snoopy's lines of an SSH session, the target account `ops` on snoopy's
+  lines of its sessions (sshd's motd scripts and what sudo starts without the
+  tag) and in PAM's, sshd's and sudo's lines, the close of a sudo session the
+  job opened, and the files the job writes (`writes` in the spec) for file
+  integrity events. An event counts
+  for one job at most, and the engine's mark files, one of which is in PHP's
+  session folder, for none. Cron's session lines of a cron job's account are
+  counted apart, as "cron sessions of the account": cron opens one for every
+  entry of an account, so on `db` root's stock entries in `/etc/crontab` (such
+  as `cron.hourly` at minute 17) give the same lines as `backup`'s entry. The
+  counts go into `manifest.json` and `activity.md`, next to the minutes from
+  the first go to the last stop. Each job's last output and its own state are
+  copied out of `/run/bluefire` into `raw/hosts/<host>/`.
+
+The `range-one` job holds the range 90 s where the path will run, since no
+path runs yet, so that the activity lasts more than two minutes and cron
+starts each cron job at least once. It shows `activity.md` in its summary and
+fails unless every job ran at least once and the line of at least one of its
+runs reached the archive. The delivery counts of the same run are taken with
+the jobs running, so the job's check for a delivery gap also shows whether
+every line still reaches the manager under that load. In
+[run 45337096555](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45337096555)
+on a GitHub-hosted runner the range was sealed and every job ran in the 2.4
+minutes from the first go to the last stop: `browse` 15 times, `admin` twice,
+`cache` and `build` three times each and `backup` once. The line of every one
+of those runs reached the manager's archive, and the run had no delivery gap.
 
 ## Range one: the path
 
@@ -906,7 +1001,7 @@ tests ran again, and this is what changed. `bluefire-lab compare` is where that
 claim is computed, and where it is refused:
 
 ```bash
-bluefire-lab compare <before>/recording.json <after>/recording.json --out <folder> [--change detectors:lab]
+bluefire-lab compare <before>/recording.json <after>/recording.json --out <folder> [--change detectors:lab] [--two-runners]
 ```
 
 It writes `delta.json`, whose format is the section "A delta" of
@@ -922,7 +1017,9 @@ summary. `--change` declares the one thing that changed between the two runs:
   files. The comparison lists every one of these, and each tool's version,
   that differs between the two. It gives no verdict, and still lists every
   step and what differed, when anything differs other than the declared
-  change, when the declared change is the same in both, when the two are not
+  change (the published rules' pinned commit is part of a change of the
+  published rules; a sensor's program version is not part of a change of its
+  settings), when the declared change is the same in both, when the two are not
   of the same steps in the same order, or when a recording has no
   `source.setup`, as every recording made before this format had.
 - **Pairing.** A step has the same id in every run of the same list (its role,
@@ -940,7 +1037,9 @@ summary. `--change` declares the one thing that changed between the two runs:
   variation, not an effect, and is named as such. Each run decides anew which
   of the lab's rules it accepts, so the recording keeps, for each rule, whether
   the run accepted it and the digest of its file: a step that an unchanged rule
-  matched in one run only is not credited to the change.
+  matched in one run only is not credited to a change of rules, the lab's or
+  the published ones. It is credited to a change of a sensor's settings, whose
+  new telemetry can make an unchanged rule match.
 - **The control step.** The step of role `control` must raise no alert, so an
   alert on it is worse, and named as a false alert.
 - **Its price, on the same line.** A step that got better carries what the
@@ -968,7 +1067,15 @@ With `--two-runners`, as the pair gives it, `delta.json` says `runners: 2` and
 runner of its own. With `--change sensors:<id>`, a changed step also lists what
 that sensor recorded of it in one run only, and a step whose outcome moved
 while that sensor recorded the same for it in both runs is not credited to the
-change: it is run variation.
+change: it is run variation. When two runners side by side got another image
+or kernel, and nothing else differs besides the declared change, a change of
+the audit rules gets a limited verdict (`limit` in `delta.json`): it is
+credited only on a step it left its own mark on, every event of the step being
+of an audit key that only one run's rules define while the other run holds
+nothing of it, and every other step that differs is not attributable. Every
+other change on two runners that differed is refused, with the advice to run
+the pair again. The section "Two runners that differed" of
+[`docs/RECORDING.md`](../docs/RECORDING.md) gives the rule.
 
 **The noise floor.** Runs
 [45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)
@@ -1017,11 +1124,17 @@ fresh runs for it, in the same workflow run, where only that thing differs.
   tests would pass on a second run whatever the test then did. The tests'
   cleanups undo much of the rest, but nothing shows that they undo all of it.
   A fresh runner for each side is a clean state that needs no proof. What it
-  costs: two runners can differ, and GitHub hands out different kernels under
-  the same label. Each recording says its runner image and kernel, and the
-  comparison refuses a verdict when they differ; when they are the same, what
-  still differs between two runners is part of the run variation the control
-  shows.
+  costs: two runners can differ, and GitHub hands out different images and
+  kernels under the same label, also to two jobs started side by side (the
+  first pair, below, got two). Each recording says its runner image and
+  kernel. When they are the same, what still differs between two runners is
+  part of the run variation the control shows. When they differ, a change of
+  the audit rules is judged only where its own mark is, and any other change
+  is refused.
+- **When a pair is refused for its runners.** Run the workflow again for the
+  same commit (re-run all jobs of the run on its page): that gives two new
+  runners, which may get the same image and kernel. Nothing in the pull
+  request can choose them.
 - **The comparison.** The job "the change to the defense, before against
   after" runs `bluefire-lab compare` on the two recordings with the one change
   the plan declared (`--change sensors:auditd`, for example) and
@@ -1058,9 +1171,32 @@ account's shell history files by path (`~/.bash_history`, `~/.zsh_history`,
 attributes, as a defender would watch them, not the test's command. If the
 watch works, auditd records the shell opening the file to empty it, in the
 audit session of the test's attack step, and the step goes from unseen to
-seen. The other history tests of the list write the same files, so they may
-get these records too (an expectation: not yet shown). The pair of the pull
-request that made this change is its proof: not yet shown.
+seen.
+
+**Its first pair**, run
+[45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
+of the pull request that made the change, shows that the watch records the
+test. Before, with the old audit rules, "Clear Bash history (echo)"
+(`test:cbf506a5`) had no telemetry; after, it is seen, by one event:
+`openat: /home/bluefire-lab/.bash_history` of the audit key `shell-history`,
+which only the changed rules define, written by the launcher's shell in the
+test's attack session. In all the after run holds 9 events of that key, one
+each on 9 steps, all of T1070.003; the 8 others were seen or alerted before
+too, and stayed so. The two runners differed: image `ubuntu24 20261116.133.1`
+and kernel `7.0.0-1014-aws` before, `ubuntu24 20261116.376.1` and
+`7.0.0-1017-azure` after. The run's own summary was written by an earlier
+version of `compare`, which refused every pair on two runners that differed,
+and gave no verdict. The same two recordings from that run's artifact
+`lab-pair`, compared outside CI with this version
+(`bluefire-lab compare --change sensors:auditd --two-runners`), give a limited
+verdict: `test:cbf506a5` is better by the change's own mark, on two runners
+that differed, resting on that one event; `test:23b91cd2` (T1518.001 Security
+Software Discovery - ps) is not attributable, since what happened differed
+too (on the after runner its output lacked the text its effect check looks
+for, so it took effect before and not after); the 89
+other steps are the same. No CI run has yet written that verdict itself: not
+yet shown. Nor has a pair shown it on two runners of the same image and
+kernel: not yet shown.
 
 ## Before the loop: the sensor spike
 

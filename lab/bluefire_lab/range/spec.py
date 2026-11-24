@@ -5,9 +5,10 @@ This reads the parts that bring a range up: `range`, `version`, `prefix`,
 hosts without an image of their own are built from, the `defense` (a Wazuh
 manager and the agents baked into the hosts), and the pin of Atomic Red Team
 whose files the hosts carry. Of the `path` it reads only which techniques and
-hosts its steps name. The other sections (the sentence, the executor, the
-activity, and the rest of the path) are accepted here and read by the parts of
-the lab that use them.
+hosts its steps name. The `activity` is read by the module `activity`, which
+also reads which accounts and addresses the path uses. The other sections (the
+sentence, the executor and the rest of the path) are accepted here and read by
+the parts of the lab that use them.
 
 What a host may have planted in it is a closed list: accounts, keys,
 known_hosts, dirs, files, database, sshd, packages, services, serve and
@@ -25,8 +26,8 @@ from pathlib import Path
 import yaml
 
 KEYS = {"range", "version", "prefix", "docker", "networks", "hosts"}
-READ_KEYS = {"base", "defense", "atomic_red_team", "path"}
-LATER_KEYS = {"sentence", "executor", "activity"}
+READ_KEYS = {"base", "defense", "atomic_red_team", "path", "activity"}
+LATER_KEYS = {"sentence", "executor"}
 HOST_KEYS = {"kind", "role", "networks", "listens", "image", "agent", "watch", "packages", "services"}
 PLANT_KEYS = {
     "accounts",
@@ -307,6 +308,8 @@ class Spec:
     steps: tuple[tuple[str, str], ...] = ()
     # The folder that holds the spec, beside which its files, repositories and lock are.
     folder: Path | None = None
+    # The ordinary activity beside the path (see `activity`), when the spec has one.
+    activity: object = None
 
     @property
     def path_hosts(self) -> set[str]:
@@ -470,6 +473,11 @@ def parse(data: object, text: str = "", folder: Path | None = None) -> Spec:
     spec = Spec(
         name, 1, prefix, min_engine, tuple(networks), hosts, text, base, wazuh, watch, atomics, steps, folder
     )
+    if "activity" in data:
+        # Imported here, since that module reads this one's types.
+        from .activity import parse as parse_activity
+
+        spec = replace(spec, activity=parse_activity(data["activity"], hosts, data.get("path"), watch))
     _plants_across(spec)
     for host in hosts:
         if not any(probe.source == host and probe.must == "connect" for probe in matrix(spec)):
