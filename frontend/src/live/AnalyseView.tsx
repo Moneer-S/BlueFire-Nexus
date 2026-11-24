@@ -27,7 +27,7 @@ interface AnalyseViewProps {
 }
 
 export function AnalyseView({ recording, timeline, facts, colours, select, focusSelected = false, onSelect, onWatch, onFix }: AnalyseViewProps) {
-  const rows = useMemo(() => stepRows(recording), [recording]);
+  const rows = useMemo(() => stepRows(recording, timeline), [recording, timeline]);
   const numbers = useMemo(() => testNumbers(recording), [recording]);
   const sensors = recording.network.sensors.filter((sensor) => rows.some((row) => row.bySensor.has(sensor.id)));
   const row = select === undefined ? undefined : rows.find((item) => item.step.id === select);

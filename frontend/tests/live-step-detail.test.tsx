@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { StepDetail } from "../src/live/StepDetail";
 import { stepRows } from "../src/live/analyse";
+import { buildTimeline } from "../src/live/playback";
 import { timeOf } from "../src/live/recording";
 import { alert, at, event, recording, step } from "./live-fixture";
 
@@ -13,7 +14,7 @@ it("times a step's first alert from when it was raised, as the rest of the detai
     events: [event("1-1", "1", 10.5)],
     alerts: [alert("a", "1", 10.5, ["1-1"], { raised: at(25) })],
   });
-  const row = stepRows(value)[0];
+  const row = stepRows(value, buildTimeline(value))[0];
   if (!row) throw new Error("no row");
   const ignore = () => undefined;
   render(<StepDetail recording={value} row={row} colours={new Map()} testNumber={1} testsTotal={2} origin={timeOf(at(10))} onSelect={ignore} onWatch={ignore} onClose={ignore} takeFocus={false} />);

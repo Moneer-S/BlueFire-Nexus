@@ -3,7 +3,7 @@
 
 import { memo } from "react";
 import type { Recording, RecordingEvent } from "./recording";
-import { timeOf } from "./recording";
+import { alertMoment, timeOf } from "./recording";
 import { clockTime, count, kindRank, matchKind, middleCut, sensorWord, stepLabel, strongerKind } from "./format";
 import type { MatchKind } from "./format";
 import type { StepMoment } from "./moment";
@@ -131,7 +131,7 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
           const text = `${owner ? stepLabel(recording, owner) : alert.step}: ${alert.rule.title}`;
           return (
             <div key={`late:${alert.id}`} className={`lv-log-line is-late${kind === "launcher" ? "" : ` is-${kind}`}`} style={{ "--rgb": KIND_RGB[kind] } as StyleVars}>
-              <span className="lv-log-time">{clockTime(timeOf(alert.raised ?? alert.time))}</span>
+              <span className="lv-log-time">{clockTime(alertMoment(alert))}</span>
               <i className="lv-dot" title="Raised after its step ended" />
               <span className="lv-log-kind">raised late</span>
               <span className="lv-log-text" title={text}>

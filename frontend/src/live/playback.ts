@@ -113,6 +113,12 @@ export interface StepPlay {
   arrivals: Arrival[];
   /** The step's matches of any level and origin that fire while it is on screen, in firing order. Late arrivals are not among them. */
   fires: Fire[];
+  /**
+   * Every match of the step, late arrivals too, in firing order: the one
+   * order in which the view picks, lists and names a step's matches, so that
+   * nothing is named before it fires and no two parts pick different ones.
+   */
+  matches: Fire[];
   /** The step's first counting match of a published rule, if any, a late arrival too. */
   firstCounting: Fire | null;
   /** The step's first counting match of either origin, if any. */
@@ -404,7 +410,7 @@ export function buildTimeline(recording: Recording): Timeline {
   }
   const { segments, gaps, duration } = laid;
 
-  const byStep = new Map<string, StepPlay>(recording.steps.map((step) => [step.id, { arrivals: [], fires: [], firstCounting: null, firstCountingWithLabRules: null }]));
+  const byStep = new Map<string, StepPlay>(recording.steps.map((step) => [step.id, { arrivals: [], fires: [], matches: [], firstCounting: null, firstCountingWithLabRules: null }]));
   const lateOn = new Map<number, Fire[]>();
   const timeline: Timeline = {
     recording,
@@ -435,6 +441,7 @@ export function buildTimeline(recording: Recording): Timeline {
     } else {
       own.fires.push(fire);
     }
+    own.matches.push(fire);
     if (own.firstCounting === null && countsForScore(fire.alert)) own.firstCounting = fire;
     if (own.firstCountingWithLabRules === null && countsAsAlert(fire.alert)) own.firstCountingWithLabRules = fire;
   }
@@ -462,6 +469,37 @@ export function buildTimeline(recording: Recording): Timeline {
   timeline.firstAlert = first(countsForScore);
   timeline.firstAlertWithLabRules = first(countsAsAlert);
   return timeline;
+}
+
+const STEP_MATCHES = new WeakMap<StepPlay, Alert[]>();
+const NO_ALERTS: Alert[] = [];
+
+/**
+ * A step's matches, late arrivals too, in the order playback fires them. The
+ * recording lists matches in the order of their activity, which is not when
+ * a live rule engine raised them: a part that picks, lists or names a step's
+ * matches reads them from here. The same array for the same step every time.
+ */
+export function stepMatchesInFiringOrder(timeline: Timeline, stepId: string): Alert[] {
+  const own = timeline.byStep.get(stepId);
+  if (!own) return NO_ALERTS;
+  const known = STEP_MATCHES.get(own);
+  if (known) return known;
+  const alerts = own.matches.map(({ alert }) => alert);
+  STEP_MATCHES.set(own, alerts);
+  return alerts;
+}
+
+/**
+ * The first of those that have fired by screen time `screen`, late arrivals
+ * too: the only matches the watch view may speak of then. A match that fires
+ * later is told when it fires. The same array for the same count every time.
+ */
+export function stepMatchesFiredBy(timeline: Timeline, stepId: string, screen: number): Alert[] {
+  const own = timeline.byStep.get(stepId);
+  if (!own) return NO_ALERTS;
+  const t = clampScreen(timeline, screen);
+  return cutAlerts(own.matches, t >= timeline.duration ? own.matches.length : countUpTo(own.matches, t));
 }
 
 function clampScreen(timeline: Timeline, screen: number): number {

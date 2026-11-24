@@ -456,11 +456,16 @@ def _check_agreement(
     event_steps = {event["id"]: event["step"] for event in events}
     held = Counter(event["step"] for event in events)
     # The earliest time of each kind on each step, as (time, the recording's own text).
+    # An alert counts from its moment: when it was raised, for a live detector, and
+    # otherwise the time of its activity. The step's first alert and the race agree.
     first_event: dict[str, tuple[datetime, str]] = {}
     first_pinned: dict[str, tuple[datetime, str]] = {}
     first_counting: dict[str, tuple[datetime, str]] = {}
-    # The earliest moment of a counting published alert on each step, for the race.
-    first_raised: dict[str, tuple[datetime, str]] = {}
+    # The same two by the alerts' activity time, only to name that mistake plainly.
+    by_activity: dict[str, dict[str, tuple[datetime, str]]] = {
+        "first_alert": {},
+        "first_alert_with_lab_rules": {},
+    }
 
     def earliest(table: dict[str, tuple[datetime, str]], step_id: str, text: str) -> None:
         moment = (_time(text), text)
@@ -513,13 +518,13 @@ def _check_agreement(
         if any(event_steps[event_id] != alert["step"] for event_id in alert["events"]):
             check.fail(f"{where}.events", "names an event of another step.")
         if alert["counts"]:
-            earliest(first_counting, alert["step"], alert["time"])
+            live = detector_when.get(detector) == "live" and "raised" in alert
+            moment = alert["raised"] if live else alert["time"]
+            earliest(first_counting, alert["step"], moment)
+            earliest(by_activity["first_alert_with_lab_rules"], alert["step"], alert["time"])
             if origin == "pinned":
-                earliest(first_pinned, alert["step"], alert["time"])
-                # The race counts an alert from its moment: when it was raised, for a
-                # live detector, and otherwise the time of its activity.
-                live = detector_when.get(detector) == "live" and "raised" in alert
-                earliest(first_raised, alert["step"], alert["raised"] if live else alert["time"])
+                earliest(first_pinned, alert["step"], moment)
+                earliest(by_activity["first_alert"], alert["step"], alert["time"])
 
     def first_time(
         step: Mapping[str, Any],
@@ -534,9 +539,18 @@ def _check_agreement(
         elif given is not None and expected is None:
             check.fail(f"{where}.{key}", f"is set, but the step has no {what}.")
         elif given is not None and expected is not None and _time(given) != expected[0]:
-            check.fail(
-                f"{where}.{key}", f"is {given}, but the step's first {what} is at {expected[1]}."
-            )
+            activity = by_activity.get(key, {}).get(step["id"])
+            if activity is not None and _time(given) == activity[0]:
+                check.fail(
+                    f"{where}.{key}",
+                    f"is {given}, the time of the alert's activity, but a step's first "
+                    f"alert counts from when a live detector raised it: {expected[1]}.",
+                )
+            else:
+                check.fail(
+                    f"{where}.{key}",
+                    f"is {given}, but the step's first {what} is at {expected[1]}.",
+                )
 
     for index, step in enumerate(steps):
         where = f"steps[{index}]"
@@ -625,7 +639,7 @@ def _check_agreement(
     for key, number in expected_score.items():
         if score[key] != number:
             check.fail(f"score.{key}", f"is {score[key]}, but the steps give {number}.")
-    _check_race(value, first_raised, check)
+    _check_race(value, first_pinned, check)
 
 
 def _check_race(
@@ -634,9 +648,9 @@ def _check_race(
     """Check the two times of an attack path's race against what its steps give.
 
     ``first_raised`` holds the earliest moment of a counting published alert on each
-    step: its ``raised`` time for a live detector, else its ``time``. ``goal_seconds``
-    must end at the end of one of the steps; the format does not say which step
-    reached the goal, so that is not checked.
+    step, the step's ``first_alert``: its ``raised`` time for a live detector, else its
+    ``time``. ``goal_seconds`` must end at the end of one of the steps; the format does
+    not say which step reached the goal, so that is not checked.
     """
 
     score, steps = value["score"], value["steps"]

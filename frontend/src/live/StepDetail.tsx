@@ -5,7 +5,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Alert, Recording, RecordingEvent, Step } from "./recording";
 import { alertMoment, timeOf } from "./recording";
-import { minOf } from "./playback";
 import type { StepRow } from "./analyse";
 import { fixHint, ordinaryMatches, otherRuns } from "./analyse";
 import { capital, clockTime, comparedStep, count, elapsed, falseAlertsOf, howItWent, matchKind, outcomeClass, outcomeWords, plural, roleWords, sensorShortName, sensorWord, sentence, span, stepLabel, stepPlace, strongerKind } from "./format";
@@ -79,7 +78,7 @@ function MatchGroup({ recording, title, alerts, ended }: { recording: Recording;
               {alert.rule.title}
             </span>
             <span className="lv-dt-mmeta">
-              {alert.events.length > 0 ? plural(alert.events.length, "event") : "no event"} &middot; {clockTime(timeOf(alert.raised ?? alert.time))}
+              {alert.events.length > 0 ? plural(alert.events.length, "event") : "no event"} &middot; {clockTime(alertMoment(alert))}
               {noise !== null ? (
                 <span className="lv-dt-noise" title="Events of ordinary activity, outside every step, that this rule matched">
                   {" "}
@@ -222,9 +221,9 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
   const refusalSensor = refusal ? recording.network.sensors.find((item) => item.id === refusal.sensor) : undefined;
   const started = step.started === undefined ? null : timeOf(step.started);
   const ended = step.ended === undefined ? null : timeOf(step.ended);
-  // The step's first alert at its moment, the time playback fires it: when it was raised, where the rules ran live.
-  const firstAlert = minOf(m.alert.map(alertMoment), Number.NaN);
-  const firstLabAlert = minOf(m.labAlert.map(alertMoment), Number.NaN);
+  // The step's first alert, the first playback fires and the one its verdict names, at its moment: when it was raised, where the rules ran live.
+  const firstAlert = m.alert[0] ? alertMoment(m.alert[0]) : Number.NaN;
+  const firstLabAlert = m.labAlert[0] ? alertMoment(m.labAlert[0]) : Number.NaN;
   const host = recording.network.hosts.find((item) => item.id === step.host);
   const from = step.from === undefined ? undefined : recording.network.hosts.find((item) => item.id === step.from);
   const labWord = step.outcome_with_lab_rules !== undefined && step.outcome_with_lab_rules !== step.outcome ? step.outcome_with_lab_rules : null;

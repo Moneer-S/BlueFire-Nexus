@@ -95,7 +95,7 @@ attack path in plain words, or null for a test list.
 | `outcome` | string | The score word for the step, counting published rules only. See below. |
 | `outcome_with_lab_rules` | string | Optional. The score word when the accepted rules written in this repository count too. Present on every step when the run evaluated such rules, and absent when it did not. |
 | `first_event` | time | Optional. The first sensor event of the step. |
-| `first_alert` | time | Optional. The first match of a published rule on the step that counts as an alert. Absent when there is none. |
+| `first_alert` | time | Optional. The first match of a published rule on the step that counts as an alert, at its moment: its `raised` time when its detector ran live, and its `time` when the rules ran after the run, like the score's `first_alert_seconds`. Absent when there is none. |
 | `first_alert_with_lab_rules` | time | Optional. The same, when the accepted rules written in this repository count too. Written only when the run evaluated such rules and one of the two kinds alerted on the step. A step whose `outcome` is `seen` or `stopped` can carry it. |
 | `compared_with` | string | Optional. For a `hardened` or `variant` step: the id of the step it repeats. |
 | `defense` | object | Optional. For a `hardened` step: `{ "title", "why" }` of the hardening change. |
@@ -236,8 +236,11 @@ follows this format and its parts agree with each other:
   `visibility.events`, and it (or `events` when there is no `kept`) is the number
   of the step's events the recording holds.
 - A step's `first_event` is the time of its earliest event in the recording, and
-  is there exactly when it has events. `first_alert` is the time of its earliest
-  counting alert of a published rule, and is there exactly when it has one.
+  is there exactly when it has events. `first_alert` is the moment of its
+  earliest counting alert of a published rule, and is there exactly when it has
+  one: an alert's moment is its `raised` time where its detector ran live, and
+  its `time` otherwise, and the earliest is the earliest by moment. A file that
+  gives a live alert's `time` instead is refused with both times named.
   `first_alert_with_lab_rules` is the same over every counting alert, on a step
   with `outcome_with_lab_rules` only.
 - The counts of `score` are the ones its steps give; `false_alerts`, when

@@ -5,8 +5,8 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import "./live.css";
 import type { Recording } from "./recording";
-import { alertsByStep, eventsByStep } from "./recording";
-import { buildTimeline, frameAt, seekStep } from "./playback";
+import { eventsByStep } from "./recording";
+import { buildTimeline, frameAt, seekStep, stepMatchesInFiringOrder } from "./playback";
 import type { Timeline } from "./playback";
 import { clockTime, day, elapsed, isLabDetector, placeInRole, plural, runLink, sensorColours } from "./format";
 import { lateWords, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
@@ -249,12 +249,12 @@ export function LiveView({ recording, origin, initial, onFix }: LiveViewProps) {
 
   const frame = useMemo(() => frameAt(timeline, time), [timeline, time]);
   const byStepEvents = useMemo(() => eventsByStep(recording), [recording]);
-  const byStepAlerts = useMemo(() => alertsByStep(recording), [recording]);
   const colours = useMemo(() => sensorColours(recording.network.sensors), [recording]);
   const labDetectors = useMemo(() => new Set(recording.network.detectors.filter((detector) => isLabDetector(recording, detector.id)).map((detector) => detector.id)), [recording]);
   const facts = useMemo(() => runFacts(recording, timeline), [recording, timeline]);
   const stepId = frame.step?.id;
-  const stepAlerts = useMemo(() => (stepId === undefined ? [] : (byStepAlerts.get(stepId) ?? [])), [byStepAlerts, stepId]);
+  // The step's matches in the order playback fires them, fired or not: only the lights of its events read them all. What is said reads `moment.heard`.
+  const stepAlerts = useMemo(() => (stepId === undefined ? [] : stepMatchesInFiringOrder(timeline, stepId)), [timeline, stepId]);
   const matches = useMemo(() => stepMatches(stepAlerts), [stepAlerts]);
   const moment = momentOf(timeline, frame, stepAlerts, matches);
   const lastLate = frame.late[frame.late.length - 1];
@@ -374,7 +374,7 @@ export function LiveView({ recording, origin, initial, onFix }: LiveViewProps) {
             <EventLog recording={recording} moment={moment} total={total} colours={colours} onOpen={openStep} />
           </main>
           {/* Without the app, "Fix this" opens the step's detail, which says where the gap is. */}
-          <StepCaption recording={recording} moment={moment} stepAlerts={stepAlerts} total={total} onFix={onFix ?? openInAnalyse} quiet={playing && speed >= 4} onLoseFocus={focusPlay} late={late} />
+          <StepCaption recording={recording} moment={moment} total={total} onFix={onFix ?? openInAnalyse} quiet={playing && speed >= 4} onLoseFocus={focusPlay} late={late} />
           <footer className="lv-transport">
             <div className="lv-controls">
               <button type="button" className="lv-play" ref={playButton} aria-label={playing ? "Pause" : "Play"} onClick={togglePlay} disabled={timeline.duration <= 0}>
