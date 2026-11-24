@@ -33,7 +33,10 @@ function readPage(): { recording: Recording } | { problem: string; empty: boolea
 
 const NO_ORIGIN = "This page does not say where its recording comes from.";
 
-/** Where the recording comes from, as the command that made the page wrote it: the app's note on a shipped or an imported recording. */
+/** The kinds of origin a page can hold: the app's own two, and the lab's, whose workflow writes the page of each run it records. */
+const ORIGINS = new Set(["shipped", "imported", "lab run"]);
+
+/** Where the recording comes from, as the command that made the page wrote it: the app's note on a shipped or an imported recording, or the lab's on the CI run that made it. */
 function readOrigin(): string {
   const text = document.getElementById("bluefire-origin")?.textContent?.trim() ?? "";
   let value: unknown;
@@ -43,7 +46,7 @@ function readOrigin(): string {
     return NO_ORIGIN;
   }
   if (typeof value !== "object" || value === null || !("kind" in value) || !("note" in value)) return NO_ORIGIN;
-  if ((value.kind !== "shipped" && value.kind !== "imported") || typeof value.note !== "string" || value.note.trim() === "") return NO_ORIGIN;
+  if (typeof value.kind !== "string" || !ORIGINS.has(value.kind) || typeof value.note !== "string" || value.note.trim() === "") return NO_ORIGIN;
   return value.note;
 }
 

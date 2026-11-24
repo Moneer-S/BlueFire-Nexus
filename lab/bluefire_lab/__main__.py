@@ -1,4 +1,4 @@
-"""Command line of the lab: run, evaluate, report, recording, compare, atomic, range."""
+"""Command line of the lab: run, evaluate, report, recording, replay, compare, atomic, range."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import atomic, compare, evaluate, recording, report, run
+from . import atomic, compare, evaluate, recording, replay, report, run
 from .range import engine as range_engine
 
 
@@ -38,6 +38,21 @@ def main(arguments: list[str] | None = None) -> int:
     replaying.add_argument("--run-url", help="address of the CI run that made the files")
     replaying.add_argument(
         "--tests", type=Path, help="the list of pinned tests, for a run made before it recorded plain words"
+    )
+
+    paging = commands.add_parser(
+        "replay", help="write the single replay page of a recording, from the app's page template"
+    )
+    paging.add_argument("recording", type=Path, help="the recording.json a run of the lab wrote")
+    paging.add_argument(
+        "--template", type=Path, required=True, help="the app's page template, bluefire/ui/replay.html"
+    )
+    paging.add_argument(
+        "--out", type=Path, required=True, help="the page to write, a file that does not exist"
+    )
+    paging.add_argument(
+        "--run-url",
+        help="address of the CI run writing the page; the page says that run made it if it made the recording",
     )
 
     comparing = commands.add_parser("compare", help="say which answers changed since an earlier run, and why")
@@ -123,6 +138,8 @@ def main(arguments: list[str] | None = None) -> int:
         return compare.main(options.before, options.after)
     if options.command == "recording":
         return recording.main(options.folder, options.run_url, options.tests)
+    if options.command == "replay":
+        return replay.main(options.recording, options.template, options.out, options.run_url)
     return report.main(options.folder)
 
 

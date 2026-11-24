@@ -432,7 +432,17 @@ rotate, and the loss control would fail a run in which it did; none has since.
    `results.json`. Its format is [`docs/RECORDING.md`](../docs/RECORDING.md).
    The job writes it whenever the evaluation wrote `results.json`, also when a
    control failed, and it is part of the run's artifact.
-6. A separate job, which runs no test, compares the run with the latest
+6. `bluefire-lab replay` writes `replay.html` beside it: the app's single replay
+   page (`bluefire/ui/replay.html` of the same checkout) with the recording put
+   inside, which plays the run in a browser with nothing installed (see
+   [`docs/LIVE_VIEW.md`](../docs/LIVE_VIEW.md)). The job passes its own address
+   with `--run-url`, and the page says that the lab workflow made it in that CI
+   run. Written without that option, or by another run, the page says only which
+   CI run recorded the recording. It is part of the run's
+   artifact `lab-run` too. The command fills the template as the app does,
+   refuses one that does not hold exactly one recording element and one origin
+   element, and never replaces an existing file.
+7. A separate job, which runs no test, compares the run with the latest
    successful run on `main` (`bluefire-lab compare`) and writes to the run page
    which answers changed and what changed under them: events, rules that
    match, a rule of the lab's own accepted now and how many published

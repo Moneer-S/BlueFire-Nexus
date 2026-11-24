@@ -101,6 +101,33 @@ and the engine and CI run the file names. A page that holds no such note, a
 template filled by other means, says that it does not say where its recording
 comes from.
 
+Every run of the lab leaves a page of its own: the lab workflow fills the same
+template with the run's `recording.json` (`bluefire-lab replay`, see
+[lab/README.md](../lab/README.md)), and that page says it was made by the lab
+workflow in the CI run it names. The same command run anywhere else writes a
+page that says only which CI run recorded the recording.
+
+## Pictures made in CI
+
+The pictures of the live view are made in CI, on a clean runner, never on a
+developer's machine. After its browser tests, the job `screens in a browser`
+of the app workflow (`.github/workflows/app.yml`) runs
+`frontend/tests/pictures/live-view.ts` against the real service and the
+shipped recording. It makes the replay page with `bluefire recordings page`
+and takes pictures of it, paused at moments it finds by the steps' outcomes:
+the first alert on a test, the unseen test, a test seen with no alert, a
+hardened rerun that was stopped, analyse mode with the whole run and with the
+unseen test's detail, and the first alert again at 1920 by 1080. Inside the app
+it takes the Runs screen and the recorded run's page on the first alert, at
+1920 by 1080 so that every rule title fits. It fails if a page prints an error,
+if the replay page asks for anything beyond its own file or the app for
+anything beyond the service, or if a picture would show a rule title cut short.
+
+The run keeps them for 90 days as the artifact `live-view-pictures`: the
+pictures, the page `replay.html` they show, and `SOURCE.txt`, which names the
+recording, the CI run that recorded it and the commit the pictures were made
+from.
+
 The browser test `frontend/tests/service/replay-page.spec.ts`, run by the app
 workflow, makes this page for the shipped recording and checks what a person
 does and sees on it: where the recording comes from, for a shipped, an imported

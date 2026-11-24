@@ -14,6 +14,7 @@
     "vitest.config.ts",
     "playwright.config.ts",
     "playwright.service.config.ts",
+    "playwright.pictures.config.ts",
     "eslint.config.js"
   ]
 }
