@@ -222,13 +222,44 @@ complete upstream LICENSE-MIT text:
 > IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 > DEALINGS IN THE SOFTWARE.
 
-## Example recording shipped with the app
+## Recordings shipped with the app
 
 `bluefire/data/recordings/lab-linux-host.json` (1,135,924 bytes, SHA-256
 `d8056aa091bd8ab74bd604d540053d4eb0674741b32ebe76cc7c0cb009dc3595`) is the
 recording that this repository's lab workflow wrote on a GitHub-hosted runner in
 the run https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895
 (artifact `lab-run`), unchanged. It is data, not code: nothing in it is run.
+
+The pair of runs shipped with the app comes from the artifact `lab-pair` of the run
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367, unchanged:
+`bluefire/data/recordings/lab-pair-history-watch-before.json` (its
+`before/recording.json`, 1,147,271 bytes, SHA-256
+`24a4f0138307091f61330615df74653480107fdb1861b109d24a794cdd652960`),
+`bluefire/data/recordings/lab-pair-history-watch-after.json` (its
+`after/recording.json`, 1,172,517 bytes, SHA-256
+`a4d802c2658780cea95d8a82dec4ba5b51e1fcedea9ee78f5d379930ff129d5e`) and
+`bluefire/data/recordings/deltas/lab-pair-history-watch.json` (its `delta.json`,
+51,591 bytes, SHA-256
+`4470d56391eafa38a005ef003b36526a1afeba989251545725b343de9fc62646`). They are data
+too, and what follows holds for them as it does for the example: the same tests at the
+same commit, and the same published rules, all of them in the table below.
+
+The run evaluated with two rule sets shipped with the app comes from the artifact
+`lab-rules-twice` of the run
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682, unchanged:
+`bluefire/data/recordings/lab-rule-history-truncated-base.json` (its
+`before/recording.json`, 1,196,140 bytes, SHA-256
+`3be33c4987e190a1329bd74d70984707a4d8473a39b4d827dd1a54c170587118`),
+`bluefire/data/recordings/lab-rule-history-truncated-head.json` (its
+`after/recording.json`, 1,201,217 bytes, SHA-256
+`4802adcbec733a0e96048aa7463dea0d07b401d24c7e4768cc021c15c9e5f828`) and
+`bluefire/data/recordings/deltas/lab-rule-history-truncated.json` (its `delta.json`,
+59,666 bytes, SHA-256
+`51ad6e80f43f6e84f7551878db0903b4856804543fc83beb459ca058ddfd2ddc`). They are data
+too, and what follows holds for them as it does for the example: the same tests at the
+same commit, and the same published rules, all of them in the table below. These two
+recordings also hold the text of the rules written in this repository (`lab/rules/`),
+which are this repository's own work under its license.
 
 - It quotes the commands and the printed output of published Atomic Red Team tests
   at commit `a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6`, and their names and GUIDs.
@@ -287,10 +318,10 @@ the run https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895
 | Use Of Hidden Paths Or Files | `9e1bef8d-0fff-46f6-8465-9aa54e128c1e` | David Burkett, @signalblur |
 | User Has Been Deleted Via Userdel | `08f26069-6f80-474b-8d1f-d971c6fedea0` | Tuan Le (NCSGroup) |
 
-The recording also names the tools of the run (Invoke-AtomicRedTeam, Sysmon for
-Linux, auditd, Zircolite) with their versions, and holds what Sysmon for Linux and
+The recordings also name the tools of their runs (Invoke-AtomicRedTeam, Sysmon for
+Linux, auditd, Zircolite) with their versions, and hold what Sysmon for Linux and
 auditd recorded on the runner. Those tools ran in CI only; none of them is shipped.
-The home folders it names belong to the runner's lab accounts: `bluefire-lab`, which
+The home folders they name belong to the runner's lab accounts: `bluefire-lab`, which
 the lab creates, and `art`, which Atomic Red Team's own tests create.
 
 ## Release license decision

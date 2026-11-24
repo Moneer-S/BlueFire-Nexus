@@ -4,11 +4,37 @@
 import type { LiveMoment, LiveViewProps } from "../live/LiveView";
 import type { Recording } from "../live/recording";
 import { count, day, plural, span } from "../live/format";
-import type { RecordingList, RecordingOrigin, RecordingSummary } from "./api";
+import type { DeltaSummary, RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 
 /** Newest first, by when the run started; the service lists shipped recordings before imported ones. */
 export function newestFirst(recordings: readonly RecordingSummary[]): RecordingSummary[] {
   return [...recordings].sort((a, b) => Date.parse(b.source.started) - Date.parse(a.source.started));
+}
+
+/**
+ * The recordings the Runs screen lists on their own, newest first: a recording
+ * that is one side of a listed pair is listed with its pair instead, so that two
+ * near-identical runs of one pair do not read as two unrelated runs.
+ */
+export function ownRuns(recordings: readonly RecordingSummary[], pairs: readonly DeltaSummary[]): RecordingSummary[] {
+  const paired = new Set(pairs.flatMap((pair) => [pair.before.id, pair.after.id]));
+  return newestFirst(recordings).filter((summary) => !paired.has(summary.id));
+}
+
+/** When the later of a pair's two runs started, from the recordings the service keeps. */
+function pairStarted(pair: DeltaSummary): number {
+  return Math.max(Date.parse(pair.recordings.before.source.started), Date.parse(pair.recordings.after.source.started));
+}
+
+/**
+ * The newest thing the Runs screen lists: a recorded run of its own, or a pair
+ * of runs when the pair's later run started after every run listed on its own.
+ */
+export function newestListed(recordings: readonly RecordingSummary[], pairs: readonly DeltaSummary[]): { run: RecordingSummary } | { pair: DeltaSummary } | null {
+  const [run] = ownRuns(recordings, pairs);
+  const [pair] = [...pairs].sort((a, b) => pairStarted(b) - pairStarted(a));
+  if (pair && (!run || pairStarted(pair) > Date.parse(run.source.started))) return { pair };
+  return run ? { run } : null;
 }
 
 /** "Test list" or "Attack path". */
@@ -31,7 +57,7 @@ function onEnvironment(environment: string): string {
 }
 
 /** The origin in a word or three: "Shipped with BlueFire" or "Imported". */
-export function originWords(origin: RecordingOrigin): string {
+export function originWords(origin: Pick<RecordingOrigin, "kind">): string {
   return origin.kind === "shipped" ? "Shipped with BlueFire" : "Imported";
 }
 
@@ -71,9 +97,18 @@ export function withSummary(list: RecordingList, summary: RecordingSummary): Rec
   return { ...list, recordings: list.recordings.map((entry) => (entry.id === summary.id ? summary : entry)) };
 }
 
-/** The path of a recorded run's page inside the app. */
-export function recordedRunPath(id: string): string {
-  return `/runs/recorded/${encodeURIComponent(id)}`;
+/**
+ * The path of a recorded run's page inside the app: of the first file kept for
+ * its id, or, with `sha256`, of that file, which a run evaluated more than once
+ * needs to tell its evaluations apart.
+ */
+export function recordedRunPath(id: string, sha256?: string): string {
+  return `/runs/recorded/${encodeURIComponent(id)}${sha256 ? `/${sha256}` : ""}`;
+}
+
+/** The pairs as the Runs screen lists them: in the order they happened, by when the later of their runs started. */
+export function pairsInOrder(pairs: readonly DeltaSummary[]): DeltaSummary[] {
+  return [...pairs].sort((a, b) => pairStarted(a) - pairStarted(b));
 }
 
 /**

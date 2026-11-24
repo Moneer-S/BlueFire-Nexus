@@ -399,6 +399,158 @@ These checks show that a recording agrees with itself. They do not show that
 its steps ran, where or when, which sensor recorded each event, or which step
 reached the goal: the app says so next to every imported recording.
 
+The app keeps a recording file as it was sent, so the SHA-256 of the kept file
+is the one its engine wrote, and a delta (below) can name it. The Runs screen
+and `bluefire recordings import <file>` send the file itself.
+
+One run can be evaluated more than once: the lab evaluates one run's telemetry
+with two sets of its rules and writes two recordings with the run's one `id`
+(see One run evaluated twice, below). A finished file whose `id` is kept, when
+the kept file is finished too and the two `source` objects are the same in every
+key, is kept beside it as another evaluation of that run, under the SHA-256 of
+its file. So is the same recording in other bytes, such as its original file
+sent after the recording was sent as an object and kept as canonical JSON: a
+delta names its recordings by the SHA-256 of their files, and can name either.
+At most 8 files are kept for one `id`. Any other file under a kept `id` is
+refused, and so is every other recording under the `id` of a recording shipped
+with BlueFire: what was shipped stands alone, and the shipped recording sent in
+other bytes is answered by the shipped file. Every import that is not refused
+names, by its `sha256`, a kept file that is returned by it. The list shows the first file of each `id`, and
+`GET /api/v1/recordings/<id>` returns it; every kept file, the first included,
+is returned by its `id` and SHA-256 (see [API.md](API.md)). Whether two such
+files really are one run, in their steps and events, is checked when a delta
+of one run evaluated twice names them.
+
+**A pair of runs in the app.** The app also keeps deltas: `bluefire recordings
+import-delta <delta.json>` or `POST /api/v1/recordings/deltas` (see
+[API.md](API.md)). It takes a delta only when it follows the format below in
+every key the app reads and agrees with itself where the format ties its keys
+together, when both recordings it names are kept, finished, as the very files it
+was made from (by `sha256` and `id`), with the facts it copies from their
+`source` (and `lab_rules_commit`, the `commit` of the recording's detector
+`lab`), and when every step id it names is a step of its recording; otherwise
+it says why, and keeps nothing. A kept recording that is finished is never
+replaced, so a delta made from another file under a kept id cannot be imported
+unless that file can be kept beside it, as another evaluation of the same run or
+as the same recording in other bytes.
+A delta is shown only while both its recordings are still those files.
+The app never computes or corrects a delta. A delta whose recordings, or which
+itself, was imported is labelled as imported, with the note that the app did
+not make the comparison; a delta shipped with the app is a file under
+`bluefire/data/recordings/deltas/`. Of a limited verdict the app also checks
+that the limit, the marks and the counts agree: a `limit` only with `runners` 2,
+both sides naming one CI run, a verdict, a declared change that leaves a mark
+of its own, and names of a runner's image or kernel that are among the
+`differences`, recorded in both with two different values and not part of the
+declared change; every other difference part of the declared change; under a
+limit, each key of `audit_keys` saying `mark`, with `no_mark` exactly when it
+is false, and without a limit neither; a `mark` only under a limit, on a step
+counted `better`, `worse` or `changed` whose verdict starts as the format says
+and names each audit key of the mark, whose other run says `no telemetry`,
+none of whose keys `audit_keys` lists for the other run or with `mark` false,
+each it lists for its run listing that step, and, when `audit_keys` lists every
+key of the mark for its run, those entries' `events` adding up to at least the
+mark's `events` (a key that can carry the mark and whose name the other run's
+events carry too is not listed, and then the sum is not checked), and which
+carries `records` whose count for its run is the mark's `events`; under a
+limit, no step credited without a mark and no price but `price not known`;
+`counts.by_mark` and the limit's `credited` equal to the steps with a mark;
+and, from the two kept recordings, that both say what their audit rules watch
+(`audit_watches`) and that every key said to carry the mark is on a rule of its
+run. A limited delta of recordings that name their audit keys alone is
+refused: a key's name is no mark. The app checks the delta's structure and the
+few phrases the format fixes (`one pair of runs`, a credited step's lead,
+`price not known`), not the rest of the lab's sentences, which it draws as
+written. Under a limit, a step that is `not attributable` says under it, for
+each key of its events that `audit_keys` says gives no mark, the lab's reason.
+
+Of a delta of one run evaluated twice (`one_run` true) the app checks what
+`--one-run` promises, as hard as it checks a pair of runs. In the delta: the
+`claim` is `one run evaluated with two rule sets` exactly when `one_run` is
+true and `one pair of runs` otherwise; the declared change is `detectors:lab`;
+there is no `runners`, `limit` or `audit_keys`; both sides name the same `id`
+and the same `run_url`, and two different files; with a verdict, no step varied
+in the control, none is `without cause` or `not attributable`, and `lab_rules`
+is a list. `judged` and `control.fields` are the fields the format gives the
+declared change, for every delta. Each row of `lab_rules` is in the evaluations
+its `change` says (`new` after only, `gone` before only), and a `moved` rule's
+file differs. From the two kept files: their `source` is the same; they hold the
+same steps in the same order, each with the same `happened`, `recorded`,
+`outcome`, `visibility.events`, `first_event`, `first_alert`, `started` and
+`ended`; the same events, where an event one file holds alone must be one an
+alert of the lab's rules there rests on; the same alerts of the published rules
+and the same `ordinary`; both detectors `lab` have `verdicts`, and every rule
+whose file has the same digest in both was judged the same and matched the same
+steps; `lab_rules` lists exactly the rules that are new, gone or of another
+text or file, each side as that file's `verdicts` give it (`accepted`, `reason`
+and `file`); each step's `before` and `after` are its values in each file; and
+every step credited to the change was matched, in one evaluation only, by a rule
+`lab_rules` lists. A delta that claims one run and holds two is refused with
+each reason.
+
+The app ships two real pairs, and they tell the defender's loop as it went.
+The first is the watch: the two runs of the pull request that added an audit
+watch on the test account's shell history files, made side by side on two
+runners of the same image and kernel, and their delta, all three from the
+artifact `lab-pair` of CI run
+[45365902367](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367),
+unchanged. Its verdict is on every step: of 91 paired steps, "Clear Bash history
+(echo)" is better, unseen before and seen after by one event, with its price;
+the other 90 are the same. The second is the rule drafted from that event,
+"Shell History File Truncated In Place": one run evaluated with the lab's rules
+of the base commit and of the head's, the two recordings and their delta from
+the artifact `lab-rules-twice` of CI run
+[45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682),
+unchanged. Of 93 paired steps, "Clear Bash history (echo)" and "Clear Bash
+history (cat dev/null)", and a run of each with changed input arguments, are
+better, seen before and alerted after with the lab's rules; the other 89 are
+the same. Its price is not counted, in the lab's words: the lab leaves a rule
+that matched ordinary activity out of the recording. The two recordings of that
+run, about 1.2 MB each, ship as one entry of the list with a second file.
+
+The Runs screen lists the pairs under "Before against after", in the order
+they happened (by when the later of their runs started), each with what changed
+(the rule, by its change and title, when the delta names one rule of the
+lab's own, otherwise the declared change), how the runs were made (side by
+side, one run evaluated with two rule sets, or the two dates), in one line what
+the change moved (the steps it is credited with, and from which outcome to
+which), one line of the result, a limited verdict's said as limited with its
+steps credited by the mark, and opens one at `#/runs/compared/<id>`. A recording
+that is one side of a listed pair is opened from its pair, by its file, and not
+listed again on its own, so that the two runs of one pair do not read as
+unrelated runs. The Overview offers the newest of what the Runs screen lists: a
+pair when the later of its runs is newer than every run listed on its own, and
+that run otherwise. The page of a pair draws
+the delta alone: the declared change with both values, or "No verdict" with
+every reason and every difference; under a limit, at the top, that the verdict
+is limited, in what the two runners differed with both values, and what alone
+is credited; what was recorded as the same in both and whether the lab's code
+was; the two runs
+side by side, each with where and when, its CI run (a link only for a recording
+shipped with the app) and a way to open it; each step the change moved as one
+line, with the before and after outcomes, the delta's verdict with its price,
+what changed underneath, the step's mark when it is credited by one, and what
+the declared sensor recorded of it in one run only; the control, the steps
+where it varied, named as run variation, and the steps that changed without a
+cause (under a limit, the steps not attributable, named as the runners' as
+well); new and gone steps,
+listed and not counted; and the race only when the delta has one with numbers,
+otherwise its reason. A step's title opens its detail from both recordings,
+next to each other, each by its file, and the address keeps it (`?step=<id>`).
+
+For a change of the lab's rules, the page names the rule in its title when
+`lab_rules` names one, and shows each rule of `lab_rules`: its change, title and
+file, how each evaluation judged it (not there, or accepted or not with the
+lab's reason), and its text line by line as the recording that has it carries
+it (`lines` of its verdict), as text that can be selected. Each step the change
+moved also shows the alert of such a rule on it and the events that alert rests
+on, from the evaluation that has it. When every moved step has the same price,
+each step carries the price's lead and the price is said once, whole, under the
+steps. For one run evaluated twice the page says at the top that it is one run,
+not a pair of runs, with no second runner and no run variation, and shows that
+one run (where and when, its CI run, the commit each evaluation took the lab's
+rules from, and a way to open it with either set of rules) after the steps.
+
 ## A delta
 
 A delta says what differs between two recordings, a run before a change and a

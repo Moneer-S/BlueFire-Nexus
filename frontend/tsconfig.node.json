@@ -10,6 +10,7 @@
   },
   "include": [
     "vite.config.ts",
+    "shipped-summaries.ts",
     "vite.replay.config.ts",
     "vitest.config.ts",
     "playwright.config.ts",

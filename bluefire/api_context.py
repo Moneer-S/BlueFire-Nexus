@@ -458,6 +458,18 @@ class PlatformService(Protocol):
     def import_recording(self, request: JsonObject) -> JsonResult:
         """Store a recording, or the grown version of one that is still running."""
 
+    def recording_file(self, recording_id: str, digest: str) -> JsonResult:
+        """Return one kept file of a recording by its SHA-256: the first or another evaluation."""
+
+    def recording_deltas(self) -> JsonResult:
+        """List the comparisons of two kept recordings, each with where it came from."""
+
+    def recording_delta(self, delta_id: str) -> JsonResult:
+        """Return one whole comparison with its list entry."""
+
+    def import_recording_delta(self, request: JsonObject) -> JsonResult:
+        """Store a comparison whose two recordings are kept, as `bluefire-lab compare` wrote it."""
+
     def prepare_replay(self, run_id: str, request: JsonObject) -> JsonResult: ...
 
     def submit_replay(self, run_id: str, request: JsonObject) -> JsonResult: ...

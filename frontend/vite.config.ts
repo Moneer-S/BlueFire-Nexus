@@ -1,9 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { shippedSummariesPlugin } from "./shipped-summaries";
 
 export default defineConfig({
   base: "/ui/",
-  plugins: [react(), {
+  plugins: [react(), shippedSummariesPlugin(), {
     name: "bluefire-normalize-generated-text",
     transformIndexHtml: {
       order: "post",

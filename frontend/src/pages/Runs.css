@@ -321,6 +321,21 @@
 .recorded-runs-refusal ul { margin: 0; padding-left: 18px; color: var(--muted-strong); }
 .recorded-runs-refusal li { overflow-wrap: anywhere; }
 .recorded-runs > .workspace-note { margin: 10px 18px 0; }
+.recorded-pairs { border-top: 1px solid var(--line); }
+.recorded-pairs > h3 { margin: 0; padding: 14px 18px 0; color: var(--text); font-size: .92rem; font-weight: 600; }
+.recorded-pairs > p { margin: 3px 18px 0; color: var(--muted); font-size: .78rem; }
+.recorded-pair-item .recorded-run-symbol { color: var(--muted-strong); }
+.recorded-pair-item.is-refused .recorded-run-symbol { border-color: color-mix(in srgb, var(--amber-soft) 45%, transparent); color: var(--amber-soft); }
+.recorded-pair-item.is-limited .recorded-run-symbol { border-color: color-mix(in srgb, var(--amber-soft) 45%, transparent); color: var(--amber-soft); }
+/* The pair's two runs: links above the row's own, so each opens its run in the live view. */
+.recorded-pair-runs { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; font-size: .8rem; }
+.recorded-pair-runs a { color: var(--blue-soft); text-decoration: none; }
+.recorded-pair-runs a:hover { text-decoration: underline; }
+.recorded-pair-runs a:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 2px; border-radius: 2px; }
+.recorded-pairs-note { margin: 0; padding: 0 18px 12px; color: var(--muted); font-size: .78rem; }
+.recorded-pair-moved { margin: 0; color: var(--text-soft); font-size: .84rem; }
+.recorded-pair-refused { color: var(--amber-soft); }
+.recorded-pair-refused code { color: inherit; font-size: .95em; }
 @keyframes recorded-run-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .recorded-run-live i { animation: none; } .recorded-run-item, .recorded-run-open svg { transition: none; } }
 @media (max-width: 640px) {
