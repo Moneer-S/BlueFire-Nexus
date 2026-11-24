@@ -18,18 +18,31 @@ interface RaceLineProps {
 }
 
 /**
+ * True once the screen tells that the attacker reached the goal: the clock has
+ * passed it, and the run's first alert, when it was raised before the goal,
+ * has been told (`told`, the first alert as the screen tells it), also when
+ * that alert fires on screen only after the clock has passed the goal. The
+ * goal never comes first on screen when the alert came first in the
+ * recording, and once told it is not taken back.
+ */
+export function goalReached(frame: Frame, facts: RunFacts, told: FirstAlert | null): boolean {
+  if (facts.goal === null || frame.real < facts.goal) return false;
+  const first = facts.firstAlert;
+  return told !== null || first === null || first.real > facts.goal;
+}
+
+/**
  * One sentence that says who is winning so far. For an attack path it is the
  * race between the first alert and the goal, both on the recording's real
- * clock: the goal falls `score.goal_seconds` after the first step's start.
+ * clock: the goal falls `score.goal_seconds` after the first step's recorded start.
  */
 export function whoIsWinning(recording: Recording, frame: Frame, score: ScoreSoFar, facts: RunFacts, firstAlert: FirstAlert | null = frame.race.firstAlert): string {
   const { race } = frame;
   if (frame.segment === null) return "Nothing has run yet.";
   if (recording.kind === "attack path") {
     const first = firstAlert;
-    const goal = recording.score.goal_seconds;
-    const goalReal = goal === undefined ? null : facts.start + goal * 1000;
-    if (goalReal !== null && frame.real >= goalReal) {
+    const goalReal = facts.goal;
+    if (goalReal !== null && goalReached(frame, facts, first)) {
       if (!first) return "The attacker reached the goal with no alert.";
       const gap = span(Math.abs(goalReal - first.real));
       return first.real <= goalReal ? `The defense alerted ${gap} before the attacker reached the goal.` : `The attacker reached the goal ${gap} before the first alert.`;
@@ -71,7 +84,7 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
   const first = timeline.firstAlert;
   const reached = firstAlertOnScreen(frame.race.firstAlert, frame.time, frame.segment, revealed);
   const goal = recording.score.goal_seconds;
-  const goalReal = goal !== undefined ? facts.start + goal * 1000 : null;
+  const goalReal = facts.goal;
   const other = facts.otherFirst && frame.time >= facts.otherFirst.at ? facts.otherFirst : null;
   const firstLeft = first ? (first.real - facts.start) / length : 0;
   const testList = recording.kind === "test list";
@@ -133,7 +146,7 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
           ) : timeline.segments.length === 0 ? null : (
             <div className="lv-flag-wait">{frame.ended ? (testList ? "no test raised an alert" : "no alert") : testList ? "first alert on a test: not yet" : "first alert: not yet"}</div>
           )}
-          {goalReal !== null && frame.real >= goalReal ? (
+          {goalReal !== null && goalReached(frame, facts, reached) ? (
             <div className="lv-flag is-goal" style={{ left: at(goalReal) }}>
               <span>
                 <b>{elapsed(goal ?? 0)}</b> goal reached
