@@ -6,7 +6,7 @@ import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "
 import "./live.css";
 import type { Recording } from "./recording";
 import { eventsByStep } from "./recording";
-import { buildTimeline, frameAt, seekStep, stepMatchesInFiringOrder } from "./playback";
+import { buildTimeline, frameAt, seekStep, stepMatchesInFiringOrder, stepPosition } from "./playback";
 import type { Timeline } from "./playback";
 import { clockTime, day, elapsed, isLabDetector, placeInRole, plural, runLink, sensorColours } from "./format";
 import { lateWords, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
@@ -22,7 +22,7 @@ export type LiveMode = "watch" | "analyse";
 /** Where the viewer is: the same shape as `initial`, so a page can write it into its address and open there again. */
 export interface LiveMoment {
   step?: string;
-  /** The position inside the step, 0 to 1. While playing it is 0: the step's start. */
+  /** The position inside the step, 0 to 1, or above 1 inside the silence after it. While playing it is 0: the step's start. */
   at?: number;
   paused: boolean;
   mode: LiveMode;
@@ -320,8 +320,9 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
   };
   const openStep = useMemo(() => (stepId === undefined ? undefined : () => openInAnalyse(stepId)), [stepId, openInAnalyse]);
 
-  // Not every frame: while playing only the step counts, while paused the position too.
-  const momentAt = playing ? 0 : Math.round(frame.progress * 1000) / 1000;
+  // Not every frame: while playing only the step counts, while paused the position too,
+  // also inside the silence after the step, where a late alert may already be on screen.
+  const momentAt = playing ? 0 : Math.round(stepPosition(frame) * 1000) / 1000;
   useEffect(() => {
     onMoment?.({ step: stepId, at: momentAt, paused: !playing, mode, select });
   }, [onMoment, stepId, momentAt, playing, mode, select]);
