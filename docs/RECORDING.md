@@ -19,6 +19,36 @@ Times are ISO 8601 in UTC with a `Z`, with up to six digits after the second
 where the source has them (`2026-11-17T17:07:23.834Z`). The live view plays
 them to the millisecond.
 
+## Characters a text cannot hold
+
+No text or key holds NUL or half of a character pair (a lone surrogate). A
+step's `command`, `output` and `plain`, the attacker's `description` and
+`goal`, and `notes` are free text: they may hold line breaks, tabs and a
+terminal's escapes. Every other text and every key, an event's `text`, a
+title, a host's or a sensor's name and a rule's title included, holds no
+control character: no C0 or C1 control or DEL, no direction mark, embedding,
+override or isolate (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to
+U+2069), and no line or paragraph separator (U+2028, U+2029). Each of these can
+make a name read otherwise on screen than it is written. What the app refuses
+on import is under "In the app".
+
+A sensor can still record such a character: a command line with a tab in it,
+or a file name with a right-to-left override, as a test of ATT&CK T1036.002
+makes one. A writer neither drops it nor replaces it with another character.
+Where the format refuses a character, the writer writes `\u{`, the
+character's code point in uppercase hexadecimal, and `}`: a tab is `\u{9}`, a
+line break `\u{A}`, a right-to-left override `\u{202E}`, a NUL `\u{0}`. So
+that this form never stands for text the source held already, a backslash that
+comes right before `u{` in the source is written `\u{5C}`, in every text, free
+text included: what the source held as `\u{41}` is written `\u{5C}u{41}`.
+Nothing else changes. Free text keeps its line breaks and tabs, every other
+backslash is the source's own, and a text that holds none of these characters
+and no `\u{` is written as the source gave it. So each `\u{<hex>}` in a text
+stands for one character the source recorded there, and a reader that turns
+each back into its character gets the source's text. A text that is cut
+(`...`) keeps such a form whole or leaves it out. `bluefire-lab recording`
+does this for every text and key it writes.
+
 ## Top level
 
 | Key | Type | Meaning |
@@ -44,8 +74,8 @@ them to the millisecond.
 | `engine` | string | The program that ran the steps, such as `bluefire-lab`. |
 | `environment` | string | Plain words: `GitHub-hosted runner` or `containers on a developer machine`. |
 | `started`, `finished` | time | The run's start and end. |
-| `repository`, `commit` | string | Optional. The repository and commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
-| `defense_commit` | string | Optional. The commit of the same repository that the sensors' settings were loaded from, and the lab's own rules too unless the detector `lab` has its own `commit`: that one names where the rules came from, and wins. In the run of a pair that loads a pull request's base commit, it is that commit and not `commit`. When one run is evaluated twice, both recordings have the run's `defense_commit`, and the detector `lab` of each names its rules' commit. |
+| `repository`, `commit` | string | Optional. The repository, and a commit of it that stays there, for the code that ran the steps. For a run of a push to a branch, a scheduled run or one started by hand, it is the commit the run checked out: the branch's newest commit. For a run of a pull request, it is the pull request's head commit, its branch's newest commit when the run started. The pull request's own reference `refs/pull/<number>/head` points to it until the branch is pushed again, and a merge of the pull request by a merge commit keeps it in the base branch's history. GitHub runs a pull request's code as a merge of that commit into the base branch as it then was, in a merge commit that it makes anew whenever either side moves and that no branch holds, so a clone does not have it. The code that ran is this commit's changes on that base, which is this commit itself when the branch was not behind its base. The recording can be written later from the run's files, by newer code. |
+| `defense_commit` | string | Optional. The commit of the same repository that the sensors' settings were loaded from, and the lab's own rules too unless the detector `lab` has its own `commit`: that one names where the rules came from, and wins. In the run of a pair that loads a pull request's base commit, it is that commit and not `commit`; otherwise it is the same commit as `commit`, with the same meaning for a pull request. When one run is evaluated twice, both recordings have the run's `defense_commit`, and the detector `lab` of each names its rules' commit: the base commit, and the pull request's head commit. |
 | `run_url` | string | Optional. The CI run that made the recording. A reader shows it as a link only when it is the https address of a GitHub Actions run (`https://github.com/<owner>/<repository>/actions/runs/<number>`) of the recording's own `repository` when that is given, and leaves out anything else. |
 | `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. The list is always there, and empty when the run names no pinned tool. |
 | `setup` | object | Optional. What a comparison of two runs needs to know was the same. See below. A recording with `setup` has stable step ids. |
@@ -92,7 +122,8 @@ repository (such as `lab/rules/linux/auditd/<name>.yml`), and `lines`, an array
 of strings, the file's text line by line, without the line breaks (no value of
 the format outside a step's own text holds a line break). Joined with a line
 break after each line, the lines give the file whose SHA-256 is `digest`, for a
-file that ends with a line break and uses no other kind, as the lab's do. The
+file that ends with a line break, uses no other kind and holds no character a
+text cannot hold (see above), as the lab's do. The
 detector can also have `commit`, optional, the commit of this repository the
 rules came from; where it is given, it and not `source.defense_commit` says
 where the lab's rules came from. For the recording of run 45350480637, written again outside
@@ -179,7 +210,9 @@ source's own field names and values, and for auditd also `paths` and `command`,
 which the lab puts together from the record). `sensor` is a sensor id. `kind`
 is plain words such as `process start`, `file created`, `network connection`,
 or the sensor's own name for the record: a call such as auditd's `execve` or
-`openat`, or a record type such as `USER_ACCT`. `text` is one line: the command
+`openat`, or a record type such as `USER_ACCT`. `text` is one line, where a line
+break or a tab the sensor recorded is shown as "Characters a text cannot hold"
+says (`\u{A}`, `\u{9}`): the command
 line for a program start, the file for a file record, a sentence that names the
 file and the kernel's answer for a start the kernel refused, the connection for
 a network record, auditd's own `op=`, `cmd=`, `acct=` and `res=` words for a
@@ -225,9 +258,13 @@ ordinary activity outside the attack steps: the ordinary administration the run
 did at its own positions in `order`, and the host's own background work (the
 runner, system services and the test driver) outside every step's window.
 `matches` lists `{ "rule", "level", "count" }` for the published rules that
-matched any of those events: `rule` is the rule's title, and `count` the number
-of events it matched. A match at a level that counts as an alert is a false
-alert.
+matched any of those events, each rule once: `rule` is the rule's title, and
+`count` the number of events it matched. Two published rules can share a
+title, so where two listed rules do, each one's `rule` is its title followed by
+its id in parentheses, such as `Some Title (<id>)`, and no two rules are listed
+under one `rule`. `id`, optional, is the rule's id, as an alert's `rule.id`
+gives it; the lab writes it on every match, and an older recording has none. A
+match at a level that counts as an alert is a false alert.
 
 ## `score`
 
@@ -319,7 +356,8 @@ follows this format and its parts agree with each other:
   NUL. Only a step's `command`, `output` and `plain`, the attacker's
   `description` and `goal`, and `notes` may hold other control characters, such
   as line breaks, tabs or a terminal's escapes; every other text holds none,
-  an event's `text` included.
+  an event's `text` included. A writer shows a character the format refuses as
+  "Characters a text cannot hold" says.
 
 These checks show that a recording agrees with itself. They do not show that
 its steps ran, where or when, which sensor recorded each event, or which step

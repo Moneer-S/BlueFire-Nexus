@@ -18,6 +18,7 @@ import secrets
 import shutil
 import subprocess
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -498,14 +499,24 @@ def facts(context: dict) -> tuple[dict, dict]:
         "sysmonforlinux": output_of("dpkg-query", "-W", "-f", "${Version}", "sysmonforlinux"),
         "sysinternalsebpf": output_of("dpkg-query", "-W", "-f", "${Version}", "sysinternalsebpf"),
         "auditd": output_of("dpkg-query", "-W", "-f", "${Version}", "auditd"),
-        # The lab's code: this repository at the commit that ran.
-        "lab": f"{os.environ.get('GITHUB_REPOSITORY', '')}@{os.environ.get('GITHUB_SHA', '')}",
-        # Where the lab's own rules and the sensors' settings come from: the commit that ran, or the
-        # base commit of a pull request for the run of a pair that loads the base's files.
-        "lab-defense": f"{os.environ.get('GITHUB_REPOSITORY', '')}@"
-        f"{os.environ.get('DEFENSE_COMMIT') or os.environ.get('GITHUB_SHA', '')}",
+        **lab_commits(os.environ),
     }
     return target, tools
+
+
+def lab_commits(environ: Mapping[str, str]) -> dict[str, str]:
+    """Where the lab's code came from, and its own rules and the sensors' settings, each as
+    "<repository>@<commit>". The code's commit is LAB_COMMIT, which the workflow sets to a pull
+    request's head commit, since GITHUB_SHA is then GitHub's merge commit that no clone keeps, or
+    else GITHUB_SHA. The defense's is DEFENSE_COMMIT, the base commit of a pull request for the
+    run of a pair that loads the base's files, or else the code's."""
+
+    repository = environ.get("GITHUB_REPOSITORY", "")
+    code = environ.get("LAB_COMMIT") or environ.get("GITHUB_SHA", "")
+    return {
+        "lab": f"{repository}@{code}",
+        "lab-defense": f"{repository}@{environ.get('DEFENSE_COMMIT') or code}",
+    }
 
 
 def main(
