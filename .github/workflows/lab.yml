@@ -306,6 +306,15 @@ jobs:
           "$RUNNER_TEMP/venv/bin/bluefire-lab" recording "$RUN" \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
+      # The same run as one page that plays it in a browser: the app's page template, from this
+      # checkout, with the recording inside. See docs/LIVE_VIEW.md.
+      - name: Write the replay page
+        if: always()
+        run: |
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" replay "$RUN/recording.json" \
+            --template bluefire/ui/replay.html --out "$RUN/replay.html" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
       - name: Take pictures of the report
         if: always()
         run: |

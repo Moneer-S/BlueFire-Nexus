@@ -16,6 +16,7 @@
     "test:watch": "vitest --configLoader runner",
     "test:e2e": "pnpm build:e2e && playwright test",
     "test:service": "playwright test --config playwright.service.config.ts",
+    "pictures": "playwright test --config playwright.pictures.config.ts",
     "test:e2e:install": "playwright install --with-deps chromium",
     "test:e2e:list": "playwright test --list"
   },

@@ -38,12 +38,19 @@ let workspace = "";
 let shippedPage = "";
 let hostilePage = "";
 let unsaidPage = "";
+let labPage = "";
 const ORIGIN_ELEMENT = '<script id="bluefire-origin" type="application/json">';
 
 /** Runs the app's command line on the test's own workspace. */
 function bluefire(...args: string[]): void {
   const run = spawnSync(process.env.BLUEFIRE_PYTHON ?? "python3", ["-m", "bluefire.cli", "--runs-dir", join(workspace, "runs"), ...args], { cwd: repository, encoding: "utf-8" });
   if (run.status !== 0) throw new Error(`bluefire ${args.join(" ")} exited with ${run.status}:\n${run.stdout}\n${run.stderr}`);
+}
+
+/** Runs the lab's command line from this checkout, as the lab workflow does after a run. */
+function bluefireLab(...args: string[]): void {
+  const run = spawnSync(process.env.BLUEFIRE_PYTHON ?? "python3", ["-m", "bluefire_lab", ...args], { cwd: join(repository, "lab"), encoding: "utf-8" });
+  if (run.status !== 0) throw new Error(`bluefire-lab ${args.join(" ")} exited with ${run.status}:\n${run.stdout}\n${run.stderr}`);
 }
 
 test.beforeAll(() => {
@@ -73,6 +80,12 @@ test.beforeAll(() => {
   if (start < ORIGIN_ELEMENT.length) throw new Error("The page has no origin element.");
   unsaidPage = join(workspace, "unsaid.html");
   writeFileSync(unsaidPage, `${made.slice(0, start)}null${made.slice(made.indexOf("</script>", start))}`);
+
+  // The page a run of the lab leaves beside its recording, from the same template, written by the run that recorded it.
+  const labRecording = join(workspace, "recording.json");
+  writeFileSync(labRecording, JSON.stringify(shipped));
+  labPage = join(workspace, "lab.html");
+  bluefireLab("replay", labRecording, "--template", join(repository, "bluefire/ui/replay.html"), "--out", labPage, "--run-url", String(shipped.source.run_url));
 });
 
 test.afterAll(() => {
@@ -296,6 +309,18 @@ test("a page that does not say where its recording comes from says so", async ({
 
   await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
   await expect(page.getByText("This page does not say where its recording comes from.", { exact: true })).toBeVisible();
+  await expect(page.getByText(/^Shipped with BlueFire/)).toHaveCount(0);
+  expect(problems).toEqual([]);
+  expect(requests).toEqual([]);
+});
+
+test("the page a lab run leaves says that the lab's CI run made it", async ({ page }) => {
+  const { requests, problems } = await open(page, labPage, "?paused=1");
+
+  await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
+  const origin = page.getByText(/^Made by this repository's lab workflow in the CI run at /);
+  await expect(origin).toBeVisible();
+  await expect(origin).toContainText(String(shipped.source.run_url));
   await expect(page.getByText(/^Shipped with BlueFire/)).toHaveCount(0);
   expect(problems).toEqual([]);
   expect(requests).toEqual([]);
