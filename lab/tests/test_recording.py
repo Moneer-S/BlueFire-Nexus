@@ -706,17 +706,27 @@ def test_one_watch_in_any_spelling_auditctl_takes_is_one_form(tmp_path: Path) ->
     }
 
 
-def test_the_lab_detector_says_which_rules_the_run_accepted_and_the_digest_of_each(tmp_path: Path) -> None:
-    lab_rules = [{**OURS, "text": "title: A\n", "reason": "it alerted"}, {**REJECTED, "text": "title: R\n"}]
+def test_the_lab_detector_carries_each_rule_with_its_file_text_digest_and_verdict(tmp_path: Path) -> None:
+    text = "title: A\nlevel: high\n"
+    lab_rules = [
+        {**OURS, "file": "linux/auditd/a.yml", "text": text, "reason": "it alerted"},
+        {**REJECTED, "text": "title: R\n"},
+    ]
+    (tmp_path / "lab-rules").mkdir()
+    (tmp_path / "lab-rules" / "SOURCE").write_text("example/lab@" + "e" * 40 + "\n", encoding="utf-8")
 
     made = recorded(tmp_path, a_run(), lab_rules=lab_rules)
 
     lab = next(detector for detector in made["network"]["detectors"] if detector["id"] == "lab")
+    assert lab["commit"] == "e" * 40
+    # A reader can show the rule beside the step it alerted on: its path in the repository and its lines.
     assert lab["verdicts"] == [
         {
             "rule": "rule-ours",
             "title": "Shell History File Emptied",
-            "digest": hashlib.sha256(b"title: A\n").hexdigest(),
+            "file": "lab/rules/linux/auditd/a.yml",
+            "digest": hashlib.sha256(text.encode()).hexdigest(),
+            "lines": ["title: A", "level: high"],
             "accepted": True,
             "reason": "it alerted",
         },
@@ -724,10 +734,12 @@ def test_the_lab_detector_says_which_rules_the_run_accepted_and_the_digest_of_ea
             "rule": "rule-rejected",
             "title": "A Rule That Matches Ordinary Work Too",
             "digest": hashlib.sha256(b"title: R\n").hexdigest(),
+            "lines": ["title: R"],
             "accepted": False,
             "reason": "it matched 3 events of ordinary activity",
         },
     ]
+    assert "\n".join(lab["verdicts"][0]["lines"]) + "\n" == text
 
 
 def test_events_are_in_time_order_even_when_a_step_outlasts_the_next_ones_start(tmp_path: Path) -> None:

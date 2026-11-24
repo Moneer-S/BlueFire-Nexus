@@ -52,7 +52,7 @@ def test_the_same_files_need_no_pair_whatever_else_changed(
     assert "the same as the base commit's" in said["said"]
 
 
-def test_a_change_of_the_audit_rules_alone_is_a_pair_that_declares_it(
+def test_a_change_of_the_audit_rules_alone_is_two_runs_that_declare_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     base = a_lab(tmp_path / "base")
@@ -63,13 +63,27 @@ def test_a_change_of_the_audit_rules_alone_is_a_pair_that_declares_it(
     said = decided(capsys, head, base)
 
     assert (said["pair"], json.loads(said["sides"]), said["change"]) == (
-        "yes",
+        "runs",
         ["base", "head"],
         "sensors:auditd",
     )
     # The sentence claims nothing about the rest of the pull request, only that both runs share it.
     assert said["said"].startswith("Of the defense, this pull request changes only the rules of auditd:")
     assert said["said"].endswith("Both runs use this commit's code, list and tools.")
+
+
+def test_a_change_of_the_lab_rules_alone_is_one_run_evaluated_twice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = a_lab(tmp_path / "base")
+    head = a_lab(tmp_path / "head", rule=RULE + "status: test\n")
+
+    said = decided(capsys, head, base)
+
+    # Only the head's side runs the list; the base commit's rules are evaluated over its telemetry.
+    assert (said["pair"], json.loads(said["sides"]), said["change"]) == ("rules", ["head"], "detectors:lab")
+    assert said["said"].startswith("Of the defense, this pull request changes only the lab's own rules.")
+    assert "the list runs once" in said["said"] and "evaluated twice" in said["said"]
 
 
 def test_a_lab_rule_moved_to_another_file_is_a_change_of_the_lab_rules(
@@ -81,10 +95,10 @@ def test_a_lab_rule_moved_to_another_file_is_a_change_of_the_lab_rules(
 
     said = decided(capsys, head, base)
 
-    assert (said["pair"], said["change"]) == ("yes", "detectors:lab")
+    assert (said["pair"], said["change"]) == ("rules", "detectors:lab")
 
 
-def test_more_than_one_change_runs_the_pair_and_declares_nothing(
+def test_more_than_one_change_runs_twice_and_declares_nothing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     base = a_lab(tmp_path / "base")
@@ -92,6 +106,7 @@ def test_more_than_one_change_runs_the_pair_and_declares_nothing(
 
     said = decided(capsys, head, base)
 
-    assert (said["pair"], json.loads(said["sides"]), said["change"]) == ("yes", ["base", "head"], "")
+    # The lab's rules changed too, but with a sensor change the telemetry differs: two runs, no verdict.
+    assert (said["pair"], json.loads(said["sides"]), said["change"]) == ("runs", ["base", "head"], "")
     assert "the rules of auditd and the lab's own rules" in said["said"]
     assert "no one change is declared, so the comparison gives no verdict" in said["said"]

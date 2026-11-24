@@ -1,12 +1,18 @@
-"""Decide whether a pull request's change to the defense needs a pair of runs, and what it declares.
+"""Decide how a pull request's change to the defense is shown, and what it declares.
 
 The defense here is what a run loads from the lab's folder: the lab's own rules and
-the two sensors' settings. When the head of a pull request loads other files than
-its base commit, the lab workflow runs the whole list twice, once with the base's
-files and once with the head's, and compares the two recordings. What decides is
-the digest of those files, the same digest a recording carries for them, not which
-paths the pull request touched: a change that leaves the files as they were needs
-no pair.
+the two sensors' settings. What decides is the digest of those files, the same
+digest a recording carries for them, not which paths the pull request touched: a
+change that leaves the files as they were runs the list once, as every run that is
+not of a pull request does.
+
+On the single host the rules are evaluated after the run, over the telemetry it
+recorded. So a change of the lab's rules alone needs no second run of the tests:
+the list runs once, and its telemetry is evaluated twice, with the base commit's
+rules and with the head's (pair=rules). A change of a sensor's settings changes
+what is recorded, so the list runs twice, on two runners, with the base's files
+and with the head's (pair=runs). A change of both is two changes: it runs twice
+and declares nothing.
 """
 
 from __future__ import annotations
@@ -48,10 +54,12 @@ def changed(base: Path, head: Path) -> list[str]:
 
 
 def decide(base: Path | None, head: Path) -> dict[str, str]:
-    """Whether a pair runs, which sides run, the one change it declares, and a sentence for the summary.
+    """How the change is shown (pair: no, rules or runs), which sides run the list, the one change it
+    declares, and a sentence for the summary.
 
     No base folder means the run is not of a pull request: it runs once, with the head's files.
-    More than one changed part declares nothing, and the comparison then gives no verdict.
+    A change of the lab's rules alone runs the list once and evaluates it twice. More than one
+    changed part declares nothing, and the comparison then gives no verdict.
     """
 
     once = {"pair": "no", "sides": json.dumps(["head"]), "change": ""}
@@ -64,7 +72,17 @@ def decide(base: Path | None, head: Path) -> dict[str, str]:
             "said": "The lab's own rules and the sensors' settings are the same as the base commit's, "
             "so the list runs once.",
         }
-    pair = {"pair": "yes", "sides": json.dumps(["base", "head"])}
+    if names == ["detectors:lab"]:
+        return {
+            "pair": "rules",
+            "sides": json.dumps(["head"]),
+            "change": "detectors:lab",
+            "said": f"Of the defense, this pull request changes only {WORDS['detectors:lab']}. The rules are "
+            "evaluated after a run, over the telemetry it recorded, so the list runs once, with the head's "
+            "files, and that one run's telemetry is evaluated twice: with the base commit's rules and with "
+            "the head's.",
+        }
+    pair = {"pair": "runs", "sides": json.dumps(["base", "head"])}
     if len(names) == 1:
         return {
             **pair,
