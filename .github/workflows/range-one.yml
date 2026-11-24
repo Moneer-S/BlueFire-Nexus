@@ -4,9 +4,21 @@ name: range one
 # tests through it, written in lab/range/range-one.yaml. Every container of a range sits
 # on internal networks with no route out, and a run proves that before anything runs in
 # it. The jobs hold no secrets and a read-only token.
+#
+# It also runs on main: a pull request's build can read the image cache that the last run
+# on its base branch left, so while that cache is there a pull request that changes no image
+# builds nothing and needs no package server. GitHub drops a cache that no run has used for
+# seven days, or when the repository's caches pass their limit; the build then fetches its
+# packages again.
 
 on:
   pull_request:
+    paths:
+      - lab/**
+      - .github/workflows/range-one.yml
+  push:
+    branches:
+      - main
     paths:
       - lab/**
       - .github/workflows/range-one.yml

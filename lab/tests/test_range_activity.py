@@ -183,11 +183,115 @@ def test_an_ssh_job_needs_a_key_the_target_accepts() -> None:
     assert "ops on client holds no key that ops@web accepts" in refused(data)
 
 
+def test_an_ssh_job_logs_in_with_the_accepted_key_only_whatever_its_file_is_called() -> None:
+    data = with_job(
+        name="peek", host="client", account="ops", every=60, do="ssh", target="ops@web", run="true"
+    )
+    (key,) = data["hosts"]["client"]["keys"]
+    key["file"] = "ops-key"
+    loop = activity.loop_script(loaded(data).activity, "client")
+
+    (once,) = [line for line in loop.splitlines() if line.startswith("  once() {")]
+    file = f"{range_spec.home('ops')}/.ssh/ops-key"
+    assert f" -o IdentitiesOnly=yes -i {file} ops@web " in once
+
+
 def test_two_jobs_of_one_name_are_refused() -> None:
     data = document()
     data["activity"]["jobs"] = [CRON, {**CRON, "host": "db", "account": "root"}]
 
     assert "lists the job tidy twice" in refused(data)
+
+
+LOOK = {"name": "look", "host": "client", "account": "ops", "every": 5, "do": "http", "target": "web"}
+PEEK = {"name": "peek", "host": "client", "account": "ops", "every": 60, "do": "ssh", "run": "true"}
+
+
+@pytest.mark.parametrize(
+    ("jobs", "reason"),
+    [
+        (
+            [{**LOOK, "paths": ["/", "/cart"]}, {**LOOK, "name": "shop", "paths": ["/cart"]}],
+            "jobs look and shop both fetch /cart of web from client",
+        ),
+        (
+            [{**PEEK, "target": "ops@web"}, {**PEEK, "name": "check", "target": "ops@web"}],
+            "jobs peek and check both log in to web from client",
+        ),
+        (
+            [{**CRON, "writes": ["/tmp/shop-*"]}, {**CRON, "name": "sweep", "writes": ["/tmp/*.json"]}],
+            "jobs tidy and sweep both write files of /tmp/shop-* and /tmp/*.json on web",
+        ),
+    ],
+)
+def test_two_jobs_whose_lines_cannot_be_told_apart_are_refused(jobs: list, reason: str) -> None:
+    data = document()
+    data["activity"]["jobs"] = jobs
+
+    assert reason in refused(data)
+
+
+def counted_on_the_excerpts(jobs: list) -> dict:
+    """Range one's activity with `jobs` in place of its own, counted on the trimmed logs of a run."""
+
+    record = json.loads((FIXTURES / "window.json").read_text())
+    data = document()
+    data["activity"]["jobs"] = jobs
+    logs = {
+        ("web", "/var/log/nginx/access.log"): excerpt("web-nginx-access.txt"),
+        ("web", "/var/log/auth.log"): excerpt("web-auth.txt"),
+        ("web", "/var/log/snoopy.log"): excerpt("web-snoopy.txt"),
+        ("db", "/var/log/snoopy.log"): excerpt("db-snoopy.txt"),
+    }
+    events = [json.loads(line) for line in excerpt("archive.ndjson")]
+    return activity.count(
+        loaded(data).activity, logs, events, record["addresses"], record["go"], record["stop"]
+    )
+
+
+def test_two_http_jobs_to_one_server_are_counted_by_their_own_paths() -> None:
+    # In the trimmed window client fetched /, /?item=1, /?item=2, /?item=3, /cart, /missing and / again.
+    pages = {**LOOK, "name": "pages", "paths": ["/", "/?item=1", "/?item=2", "/?item=3"]}
+    errors = {**LOOK, "name": "errors", "paths": ["/cart", "/missing"]}
+    other = {**LOOK, "name": "other", "paths": ["/other-only"]}
+
+    counted = counted_on_the_excerpts([other, pages, errors])
+
+    assert {name: entry["runs"] for name, entry in counted.items()} == {"other": 0, "pages": 5, "errors": 2}
+    assert {name: entry["archived runs"] for name, entry in counted.items()} == {
+        "other": 0,
+        "pages": 5,
+        "errors": 2,
+    }
+    assert counted["other"]["archive events"] == 0
+    summary = activity.summary({"range": "range-one", "activity": {"jobs": counted, "schedule": {}}})
+    assert summary.startswith("### Ordinary activity of range-one: NOT every job ran")
+
+
+def test_two_cron_jobs_of_one_account_are_counted_by_their_tags() -> None:
+    jobs = document()["activity"]["jobs"]
+    cache = next(job for job in jobs if job["name"] == "cache")
+
+    counted = counted_on_the_excerpts([{**cache, "name": "again", "writes": []}, cache])
+
+    assert counted["cache"]["runs"] == 1
+    assert counted["again"]["runs"] == 0
+    assert counted["again"]["archive events"] == 0
+
+
+def test_a_job_that_runs_as_the_account_an_ssh_job_logs_in_as_is_refused() -> None:
+    # admin logs in to ops@web. A cron job on web as ops would leave PAM, sudo and cron lines that
+    # name ops and no job, so they could not be told from admin's.
+    jobs = document()["activity"]["jobs"]
+    admin = next(job for job in jobs if job["name"] == "admin")
+    data = document()
+    data["activity"]["jobs"] = [admin, {**CRON, "account": "ops"}]
+
+    assert "jobs admin and tidy both act as ops on web" in refused(data)
+
+    # The same cron job as another account of web is told apart by that account, and loads.
+    data["activity"]["jobs"] = [admin, CRON]
+    assert [job.name for job in loaded(data).activity.jobs] == ["admin", "tidy"]
 
 
 def test_the_same_seed_gives_the_same_waits_and_another_seed_others() -> None:

@@ -570,6 +570,9 @@ def _run(*commands: str) -> str:
 
 APT_INSTALL = "apt-get update && apt-get install -y --no-install-recommends "
 APT_CLEAN = "rm -rf /var/lib/apt/lists/*"
+# apt's setting for a server that answers with an error now and then: each download is tried
+# again up to eight times, with apt's growing wait between the tries.
+APT_RETRIES = 'Acquire::Retries "8";'
 
 
 def dockerfile(spec: Spec) -> str:
@@ -586,8 +589,11 @@ def dockerfile(spec: Spec) -> str:
             "ARG DEBIAN_FRONTEND=noninteractive",
             "# Packages come from the Ubuntu archive as it was at the snapshot. The snapshot service is",
             "# reached over HTTPS, so the certificate store (ca-certificates and openssl) comes first, from",
-            "# the archive of the day: the only packages that do not come from the snapshot.",
+            "# the archive of the day: the only packages that do not come from the snapshot. A download",
+            "# that fails is tried again with a growing wait, so that a short outage of either service",
+            "# does not fail the build.",
             _run(
+                f"echo '{APT_RETRIES}' > /etc/apt/apt.conf.d/80retries",
                 APT_INSTALL + "ca-certificates",
                 APT_CLEAN,
                 f"echo 'APT::Snapshot \"{spec.base.apt_snapshot}\";' > /etc/apt/apt.conf.d/50snapshot",
@@ -607,7 +613,7 @@ def dockerfile(spec: Spec) -> str:
                 _run(APT_INSTALL + "curl", APT_CLEAN),
                 "# The Wazuh agent package, checked against the SHA-512 the spec pins.",
                 _run(
-                    f"curl -fsSL --proto '=https' -o /wazuh-agent.deb {url}",
+                    f"curl -fsSL --retry 5 --retry-all-errors --proto '=https' -o /wazuh-agent.deb {url}",
                     f'echo "{wazuh.agent_sha512}  /wazuh-agent.deb" | sha512sum -c -',
                 ),
             ]
