@@ -3,11 +3,13 @@
 // view, and one control to import a recording file.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, FileUp, Radio, RotateCcw } from "lucide-react";
+import { ArrowRight, FileUp, GitCompareArrows, Radio, RotateCcw } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, ApiError, type RecordingSummary } from "../lib/api";
-import { inListOrder, originWords, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
+import { api, ApiError, type DeltaSummary, type RecordingSummary } from "../lib/api";
+import { day } from "../live/format";
+import { originWords, ownRuns, pairsInOrder, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
+import { codeSpans, isOneRun, movedWords, pairChangeWords, pairPath, pairResultWords } from "../lib/recording-pairs";
 import { Button, ErrorState, LoadingState, Panel } from "./Primitives";
 
 /** The problems a refused import names, in the service's own words. */
@@ -19,20 +21,32 @@ function refusalProblems(error: unknown): string[] {
 
 type ImportProblem = { message: string; problems: string[] };
 
+function readBytes(file: File): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result instanceof ArrayBuffer ? new Uint8Array(reader.result) : new Uint8Array());
+    reader.onerror = () => reject(reader.error ?? new Error("the file could not be read"));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
 export function RecordedRuns() {
   const recordings = useQuery({ queryKey: ["recordings"], queryFn: api.recordings });
+  const pairs = useQuery({ queryKey: ["recording-deltas"], queryFn: api.recordingDeltas });
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const input = useRef<HTMLInputElement | null>(null);
   const [problem, setProblem] = useState<ImportProblem | null>(null);
   const importing = useMutation({
-    mutationFn: (file: Blob) => api.importRecording(file),
+    mutationFn: (file: Uint8Array) => api.importRecording(file),
     onSuccess: async (result) => {
       setProblem(null);
       // A recording imported again under its id, a running one that grew or finished, is not shown from the cache.
       queryClient.removeQueries({ queryKey: ["recording", result.summary.id] });
       await queryClient.invalidateQueries({ queryKey: ["recordings"] });
-      navigate(recordedRunPath(result.summary.id));
+      // A file kept beside the first file of its id, another evaluation or the same recording in
+      // other bytes, is opened by its SHA-256: the id alone opens its first file.
+      navigate(recordedRunPath(result.summary.id, result.anotherEvaluation ? result.sha256 : undefined));
     },
     onError: (error) => {
       setProblem({ message: error instanceof Error ? error.message : "The import failed.", problems: refusalProblems(error) });
@@ -41,15 +55,29 @@ export function RecordedRuns() {
     },
   });
   // The file goes to the service as it is, byte for byte, and is read there as the command line reads it:
-  // the same file is refused for the same reason whichever way it comes in.
-  const chooseFile = (event: ChangeEvent<HTMLInputElement>) => {
+  // the same file is refused for the same reason whichever way it comes in, and the service keeps the
+  // bytes the lab wrote.
+  const chooseFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
     if (!file) return;
     setProblem(null);
-    importing.mutate(file);
+    let bytes: Uint8Array;
+    try {
+      bytes = await readBytes(file);
+    } catch (error) {
+      setProblem({ message: `${file.name} could not be read, so it was not sent: ${error instanceof Error ? error.message : "the file could not be read"}.`, problems: [] });
+      return;
+    }
+    importing.mutate(bytes);
   };
-  const list = recordings.data ? inListOrder(recordings.data.recordings) : undefined;
+  // A recording that is one side of a listed pair is listed with its pair, not again on its own:
+  // two near-identical rows of one list would read as two unrelated runs.
+  // The pairs in the order they happened, so that the list tells the defender's loop as it went.
+  const pairList = pairsInOrder(pairs.data?.deltas ?? []);
+  const all = recordings.data && !pairs.isPending ? recordings.data.recordings : undefined;
+  const list = all ? ownRuns(all, pairList) : undefined;
+  const inPairs = (all?.length ?? 0) - (list?.length ?? 0);
   const unreadable = recordings.data?.unreadable_count ?? 0;
   const omitted = recordings.data?.omitted_count ?? 0;
 
@@ -62,7 +90,7 @@ export function RecordedRuns() {
       <div className="recorded-runs-actions">
         <Button size="small" variant="ghost" aria-label="Refresh recorded runs" onClick={() => { void recordings.refetch(); }} disabled={recordings.isFetching}><RotateCcw aria-hidden="true" />Refresh</Button>
         <Button size="small" onClick={() => input.current?.click()} disabled={importing.isPending}><FileUp aria-hidden="true" />{importing.isPending ? "Importing" : "Import a recording"}</Button>
-        <input ref={input} className="sr-only" type="file" accept=".json,application/json" aria-label="Recording file to import" tabIndex={-1} onChange={chooseFile} />
+        <input ref={input} className="sr-only" type="file" accept=".json,application/json" aria-label="Recording file to import" tabIndex={-1} onChange={(event) => { void chooseFile(event); }} />
       </div>
     </header>
     {problem ? <div className="recorded-runs-refusal" role="alert">
@@ -73,10 +101,44 @@ export function RecordedRuns() {
     {recordings.isError ? <ErrorState title="Recorded runs unavailable" error={recordings.error} retry={() => { void recordings.refetch(); }} /> : null}
     {unreadable > 0 ? <p className="workspace-note" role="status">{unreadable} imported {unreadable === 1 ? "recording no longer follows" : "recordings no longer follow"} the recording format and {unreadable === 1 ? "is" : "are"} not listed.</p> : null}
     {omitted > 0 ? <p className="workspace-note" role="status">{omitted} more imported {omitted === 1 ? "recording is" : "recordings are"} kept but not listed: the list reads the first 200.</p> : null}
-    {recordings.isPending ? <LoadingState label="Loading recorded runs" />
+    {recordings.isPending || (recordings.isSuccess && pairs.isPending) ? <LoadingState label="Loading recorded runs" />
       : list?.length ? <ul className="recorded-run-list">{list.map((summary) => <RecordedRunItem key={summary.id} summary={summary} />)}</ul>
-      : recordings.isSuccess ? <div className="inline-empty"><span>No recorded runs yet. Import a recording file made by the lab.</span></div> : null}
+      : recordings.isSuccess && inPairs === 0 ? <div className="inline-empty"><span>No recorded runs yet. Import a recording file made by the lab.</span></div> : null}
+    {inPairs > 0 ? <p className="recorded-pairs-note">{inPairs === 1 ? "1 more recorded run is listed with its" : `${inPairs} more recorded runs are listed with their`} {pairList.length === 1 ? "pair" : "pairs"} under Before against after.</p> : null}
+    {pairList.length > 0 ? <section className="recorded-pairs" aria-labelledby="recorded-pairs-heading">
+      <h3 id="recorded-pairs-heading">Before against after</h3>
+      <p>A change to the defense, compared by the lab in the order the changes were made: what changed, and what it moved.</p>
+      <ul className="recorded-run-list">{pairList.map((summary) => <RecordedPairItem key={summary.id} summary={summary} />)}</ul>
+    </section> : null}
+    {pairs.data && pairs.data.unreadable_count > 0 ? <p className="workspace-note" role="status">{pairs.data.unreadable_count} imported {pairs.data.unreadable_count === 1 ? "comparison is" : "comparisons are"} not listed: a comparison is shown only while it can be read and both its recordings are still the files it names.</p> : null}
   </Panel>;
+}
+
+function RecordedPairItem({ summary }: { summary: DeltaSummary }) {
+  const dates = [summary.before.started, summary.after.started].map((started) => (started ? day(started) : "not recorded"));
+  const oneRun = isOneRun(summary);
+  const how = oneRun ? `One run evaluated with two rule sets, ${dates[0]}`
+    : summary.runners === 2 ? `Two runs side by side, ${dates[1] === dates[0] ? dates[0] : `${dates[0]} and ${dates[1]}`}`
+    : `Before ${dates[0]}, after ${dates[1]}`;
+  const moved = summary.comparable ? movedWords(summary) : null;
+  return <li className={`recorded-run-item recorded-pair-item${summary.comparable ? "" : " is-refused"}${summary.limit ? " is-limited" : ""}`}>
+    <span className="recorded-run-symbol" aria-hidden="true"><GitCompareArrows /></span>
+    <div className="recorded-run-main">
+      <Link className="recorded-run-link" to={pairPath(summary.id)}>{pairChangeWords(summary)}</Link>
+      <p className="recorded-run-meta">
+        <span>{how}</span>
+        <span className={`recorded-run-origin is-${summary.origin.kind}`}>{originWords(summary.origin)}</span>
+      </p>
+      {moved ? <p className="recorded-pair-moved">{moved}</p> : null}
+      <p className="recorded-run-score">
+        <span className={summary.comparable && !summary.limit ? undefined : "recorded-pair-refused"}>{codeSpans(pairResultWords(summary)).map((part, index) => (part.code ? <code key={index}>{part.text}</code> : part.text))}</span>
+      </p>
+      <p className="recorded-pair-runs">
+        {(["before", "after"] as const).map((side) => <Link key={side} to={recordedRunPath(summary[side].id, summary[side].sha256)}>{oneRun ? `Play with the rules ${side}` : `Play the ${side} run`}<span className="sr-only">, {recordedWhere(summary.recordings[side])}</span></Link>)}
+      </p>
+    </div>
+    <span className="recorded-run-open" aria-hidden="true">Compare<ArrowRight /></span>
+  </li>;
 }
 
 /** A thin bar of the score: alerted, seen and unseen, as parts of the tests that took effect. */

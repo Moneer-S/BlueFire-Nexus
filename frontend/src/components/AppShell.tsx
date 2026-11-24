@@ -77,8 +77,9 @@ function WorkspaceShell() {
   }, []);
   const location = useLocation();
   // A recorded run's live view needs the window's width, so its page uses the
-  // icon rail the same way, without changing the saved preference.
-  const pageNeedsRail = location.pathname.startsWith("/runs/recorded/");
+  // icon rail the same way, without changing the saved preference; so does the
+  // page of two compared runs, which sets two runs side by side on the same stage.
+  const pageNeedsRail = location.pathname.startsWith("/runs/recorded/") || location.pathname.startsWith("/runs/compared/");
   const temporaryRail = pageNeedsRail || (Boolean(assistantOpen) && dockNeedsRail);
   const [labelsBesideAssistant, setLabelsBesideAssistant] = useState(false);
   useEffect(() => { if (!temporaryRail) setLabelsBesideAssistant(false); }, [temporaryRail]);

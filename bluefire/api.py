@@ -33,8 +33,11 @@ from .application_errors import APIError
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_REQUEST_BODY = 1_048_576
-# One recording of up to 8 MiB (``recordings.MAX_RECORDING_BYTES``) in its import envelope.
-MAX_RECORDING_REQUEST_BODY = 8 * 1024 * 1024 + 1024
+# One recording file of up to 8 MiB (``recordings.MAX_RECORDING_BYTES``) in base64, in its
+# import envelope. The comparisons' import route reads a body this large too.
+MAX_RECORDING_REQUEST_BODY = 4 * -(-8 * 1024 * 1024 // 3) + 1024
+# The body of the largest recording file in base64 as the import's `recording_file`.
+_MAX_FILE_BODY = 4 * -(-recordings.MAX_RECORDING_BYTES // 3) + len('{"recording_file":""}')
 _REJECTION_CLOSE_SECONDS = 0.2
 _REJECTION_DISCARD_BYTES = 65_536
 _REVIEWED_T1082_INTAKE_ROUTE = f"{API_PREFIX}/research-intakes/mitre-attack-t1082-v19-2"
@@ -445,6 +448,26 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/scenarios":
             self._dispatch(lambda: self.platform_server.service.scenarios())
             return
+        delta_request = self._routes._recording_delta_request(path)
+        if delta_request is not None:
+            valid, delta_id = delta_request
+            if not valid:
+                return
+            if delta_id is None:
+                self._dispatch(lambda: self.platform_server.service.recording_deltas())
+            else:
+                self._dispatch(lambda: self.platform_server.service.recording_delta(delta_id))
+            return
+        file_request = self._routes._recording_file_request(path)
+        if file_request is not None:
+            valid, file_recording, file_digest = file_request
+            if valid:
+                self._dispatch(
+                    lambda: self.platform_server.service.recording_file(
+                        file_recording, file_digest
+                    )
+                )
+            return
         recording_request = self._routes._recording_request(path)
         if recording_request is not None:
             valid, recording_id = recording_request
@@ -727,12 +750,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if self._is_api_path(path) and not self._require_browser_session(unread_body=True):
             return
-        importing = path == f"{API_PREFIX}/recordings"
         body = self._read_json_object(
             self.platform_server.max_recording_body
-            if importing
+            if path in (f"{API_PREFIX}/recordings", f"{API_PREFIX}/recordings/deltas")
             else self.platform_server.max_request_body,
-            recording=importing,
+            recording=path == f"{API_PREFIX}/recordings",
         )
         if body is None:
             return
@@ -1048,6 +1070,22 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/runs/preflight":
             self._dispatch(lambda: self.platform_server.service.preflight(body))
+            return
+        delta_request = self._routes._recording_delta_request(path)
+        if delta_request is not None:
+            valid, delta_id = delta_request
+            if valid and delta_id is None:
+                self._dispatch(
+                    lambda: self.platform_server.service.import_recording_delta(body),
+                    success_status=HTTPStatus.CREATED,
+                )
+            elif valid:
+                self._method_not_allowed("GET")
+            return
+        file_request = self._routes._recording_file_request(path)
+        if file_request is not None:
+            if file_request[0]:
+                self._method_not_allowed("GET")
             return
         recording_request = self._routes._recording_request(path)
         if recording_request is not None:
@@ -1608,9 +1646,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
     def _read_json_object(self, limit: int, *, recording: bool = False) -> dict[str, Any] | None:
         """Read the request's JSON object, or answer the refusal and return None.
 
-        With ``recording``, a body that is not strict JSON because of the recording
-        it holds is refused as the command line refuses that file: 422
-        ``recording_invalid`` with its problems.
+        With ``recording``, a body over the limit holds a file over the recording
+        file's own limit, and is refused as the command line refuses that file: 422
+        ``recording_invalid`` with its reason.
         """
 
         if self.headers.get_all("Transfer-Encoding", []):
@@ -1633,9 +1671,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             )
             return None
         length = int(raw_length, 10)
-        if length > limit and recording and length > recordings.MAX_RECORDING_BYTES + 14:
-            # The file in `{"recording":` and `}` (14 bytes) is over the file limit itself:
-            # refused as the command line refuses that file, not by the body's own limit.
+        if length > limit and recording and length > _MAX_FILE_BODY:
+            # Larger than the largest file in base64 in `{"recording_file":""}`: the file is
+            # over the file limit itself, refused as the command line refuses it, not by the
+            # body's own limit.
             refusal = recordings.invalid_recording(recordings.file_too_large())
             self._reject_unread_body(
                 refusal.status, refusal.code, refusal.message, details=refusal.details
@@ -1679,11 +1718,6 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 parse_constant=_reject_json_constant,
             )
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
-            problem = recordings.import_body_problem(payload) if recording else None
-            if problem is not None:
-                refusal = recordings.invalid_recording(problem)
-                self._error(refusal.status, refusal.code, refusal.message, refusal.details)
-                return None
             self._error(HTTPStatus.BAD_REQUEST, "invalid_json", "Request body must be valid JSON.")
             return None
         if not isinstance(value, dict):
@@ -1691,14 +1725,6 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_REQUEST, "object_required", "Request body must be a JSON object."
             )
             return None
-        # A strict body can still hide a file the command line refuses: one over the size
-        # limit, or one with members after its object, which the envelope makes fields.
-        if recording and (set(value) != {"recording"} or length > recordings.MAX_RECORDING_BYTES):
-            problem = recordings.import_body_problem(payload)
-            if problem is not None:
-                refusal = recordings.invalid_recording(problem)
-                self._error(refusal.status, refusal.code, refusal.message, refusal.details)
-                return None
         return value
 
     def _reject_unread_body(

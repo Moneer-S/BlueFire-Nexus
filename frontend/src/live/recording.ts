@@ -64,6 +64,21 @@ export interface Detector {
   name: string;
   rules: number;
   when: DetectorWhen;
+  /** The commit of the repository the lab's own rules came from, when the detector `lab` names it. */
+  commit?: string;
+  /** For the detector `lab`: how the run judged each rule written in the repository, and the rule itself where it is given. */
+  verdicts?: RuleVerdict[];
+}
+
+/** How a run judged one rule of the lab's own, and, optionally, the rule's file and its text line by line. */
+export interface RuleVerdict {
+  rule: string;
+  title: string;
+  digest?: string;
+  accepted: boolean;
+  reason?: string;
+  file?: string;
+  lines?: string[];
 }
 
 export interface Network {
@@ -386,6 +401,20 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
     text(detector.name, `The name of detector ${index + 1}`);
     number(detector.rules, `The number of rules of detector ${index + 1}`);
     oneOf(detector.when, WHENS, `When detector ${JSON.stringify(detector.id)} ran`);
+    optionalText(detector.commit, `The commit of detector ${index + 1}`);
+    if (detector.verdicts !== undefined) {
+      array(detector.verdicts, `The verdicts of detector ${index + 1}`).forEach((item, at) => {
+        const where = `verdict ${at + 1} of detector ${index + 1}`;
+        const verdict = object(item, `The ${where}`);
+        text(verdict.rule, `The rule of ${where}`);
+        text(verdict.title, `The title of ${where}`);
+        optionalText(verdict.digest, `The digest of ${where}`);
+        bool(verdict.accepted, `Whether ${where} accepted its rule`);
+        optionalText(verdict.reason, `The reason of ${where}`);
+        optionalText(verdict.file, `The file of ${where}`);
+        if (verdict.lines !== undefined) textList(verdict.lines, `The lines of ${where}`);
+      });
+    }
   });
 
   const attacker = object(top.attacker, "The recording's attacker");

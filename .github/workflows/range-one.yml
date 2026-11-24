@@ -234,17 +234,19 @@ jobs:
           if-no-files-found: error
 
   # Range one's seven hosts on its three networks (lab/range/range-one.yaml), built from the
-  # spec with everything the path will need planted in them. The run seals the range, waits
-  # until the defense is ready, checks that each plant is in place with single uses of what
-  # is planted, starts the shop's ordinary activity, makes a few harmless marks on the three
-  # agent hosts, counts how many lines of each watched log reached the manager and how often
-  # each job of the activity ran and was seen, writes every archived event and alert as an
-  # ECS line with its origin, and scores the alerts the stock rules raised on the shop's own
-  # work. No published test runs in this job.
+  # spec with everything the path needs planted in them. The run seals the range, waits until
+  # the defense is ready, checks that each plant is in place with single uses of what is
+  # planted, starts the shop's ordinary activity, makes a few harmless marks on the three
+  # agent hosts, runs the path of published tests inside the sealed range, checks the seal
+  # again, counts how many lines of each watched log reached the manager and how often each
+  # job of the activity ran and was seen, writes every archived event and alert as an ECS
+  # line with its origin, and scores the alerts the stock rules raised on the shop's own work.
+  # The path alone can take about 25 minutes: s01 has a timeout of 600 s, and the two port
+  # scans, which try every port, run to their timeout of 300 s each.
   range-one:
-    name: range one's hosts, sealed and watched
+    name: range one's path, sealed and watched
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       SPEC: lab/range/range-one.yaml
     steps:
@@ -303,12 +305,30 @@ jobs:
         if: always()
         run: echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED ))" >> "$GITHUB_ENV"
 
-      # No path runs yet, so the range is held 90 s where it will run: with the warm-up and
-      # the tail that gives the ordinary activity more than two minutes, in which cron starts
-      # each cron job at least once.
+      # The path runs between the activity's warm-up and its tail, so the ordinary activity runs
+      # for as long as the path, which is long enough for cron to start each cron job.
       - name: Run the range
         run: |
-          "$LAB" range run "$SPEC" --out "$OUT/run" --hold 90
+          "$LAB" range run "$SPEC" --out "$OUT/run"
+
+      # Every planned step ran and was attempted, nothing stopped the path, the last step took
+      # effect and the goal check passed.
+      - name: The path ran through the range and reached its goal
+        run: |
+          if ! jq -e '
+            .path.planned == [.path.steps[].id]
+            and (.path.planned | length > 0)
+            and .path.stopped == null
+            and (.path | has("skipped") | not)
+            and (.path.steps | all(.happened == "took effect" or .happened == "attempted without effect"))
+            and .path.steps[-1].happened == "took effect"
+            and .path.goal.passed == true
+          ' "$OUT/run/manifest.json" > /dev/null; then
+            jq '{result, reason, path: (.path | {skipped, stopped, goal: (.goal | {passed, why}),
+              steps: [.steps[] | {id, happened, why, exit_code, check: .check.result}]})}' \
+              "$OUT/run/manifest.json"
+            exit 1
+          fi
 
       # The engine flags a delivery gap and does not fail the run on it: a lost event is a result
       # about the defense. This job is there to show that the defense sees every agent host and
@@ -374,7 +394,7 @@ jobs:
             echo "Image build, from the end of the builder's set-up: ${BUILD_SECONDS:-?} s."
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          for part in plants activity score defense seal; do
+          for part in path plants activity score defense seal; do
             if [ -f "$OUT/run/$part.md" ]; then cat "$OUT/run/$part.md" >> "$GITHUB_STEP_SUMMARY"; fi
           done
 

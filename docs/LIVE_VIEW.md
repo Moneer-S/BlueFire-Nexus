@@ -238,28 +238,46 @@ and takes pictures of it, paused at moments it finds by the steps' outcomes:
 the first alert on a test, the unseen test, a test seen with no alert, a
 hardened rerun that was stopped, analyse mode with the whole run and with the
 unseen test's detail, and the first alert again at 1920 by 1080. Inside the app
-it takes the Runs screen and the recorded run's page on the first alert, at
-1920 by 1080. Before that it opens the recorded run's page at 1440 by 900 too,
+it takes the Runs screen, the Runs screen at the pairs shipped with the app,
+the page of the pair of runs (`app-pair.png`), the page of the run evaluated
+with two rule sets with its rule's text loaded (`app-rule-pair.png`), and the
+recorded run's page on the first alert, at 1920 by 1080 so that every rule
+title fits. Before that it opens the recorded run's page at 1440 by 900 too,
 on the first alert, and on the test with the longest command, whose command
-takes two lines under the host. It fails if a page prints an error, if the
-replay page asks for anything beyond its own file or the app for anything
-beyond the service, if a picture or the page at 1440 by 900 would show a rule
-title cut short or a wrapped one reaching the next rule engine, if the
-host's label reaches below the map, if the race line of a watched moment is cut
-short, or if the lanes' time axis has no label past its middle.
+takes two lines under the host. It also makes `live-view-loop.gif`,
+a loop of the live view playing, 1000 pixels wide, at six tenths of the view's
+speed (`frontend/tests/pictures/loop.ts`). It starts on the moment of the
+first alert on a test, the picture `watch-first-alert.png`, held a second, so
+that a still or a link preview shows that moment. It goes on to the step after
+it, held two seconds, then plays the alerted test from the moment its step
+begins up to its first frame again, so it loops with no seam. Each frame is
+the page opened paused at one place of the recording, a step and how far into
+it as the address names it, so the same recording gives the same frames on any
+machine; [sharp](https://github.com/lovell/sharp) puts them together. It fails
+if a page prints an error, if the replay page asks for anything beyond its own
+file or the app for anything beyond the service, if a picture or the page at
+1440 by 900 would show a rule title cut short or a wrapped one reaching the
+next rule engine, if the host's label reaches below the map, if the race line
+of a watched moment is cut short, or if the lanes' time axis has no label past
+its middle. It also fails if the step after the first alert is not a test that
+no sensor recorded, because the caption under the loop in the
+[README](../README.md) says it is.
 
 The run keeps them for 90 days as the artifact `live-view-pictures`: the
-pictures, the page `replay.html` they show, and `SOURCE.txt`, which names the
-recording, the CI run that recorded it and the commit the pictures were made
-from.
+pictures, the loop, the page `replay.html` they show, and `SOURCE.txt`, which names the
+recording, the CI run that recorded it, each shipped pair and the CI run that
+made it, and the commit the pictures were made from.
 
-The picture of the live view in the [README](../README.md)
+The pictures of the [README](../README.md) in `docs/assets/front/`, the
+picture of [the run on the front page](#the-run-on-the-front-page)
 (`docs/assets/screenshots/live-view-first-alert.png`) and the page
 [`docs/live-view/replay.html`](live-view/replay.html) are files of that
-artifact, copied in unchanged; `docs/assets/screenshots/live-view-source.txt`
-names the run that made them and the recording they show. To renew them, take
+artifact, copied in unchanged; `docs/assets/front/SOURCE.txt` and
+`docs/assets/screenshots/live-view-source.txt` name the run that made them
+and the artifact file each one is, and the artifact's own `SOURCE.txt` names
+the recordings they show. To renew them, take
 the artifact `live-view-pictures` of a run of the app workflow on `main`, copy
-the files over the committed ones byte for byte, and update that note from the
+the files over the committed ones byte for byte, and update those notes from the
 artifact's `SOURCE.txt`. The page holds the recording, so when the recording
 changes, the page's entries in `.secrets.baseline` change with those of the
 recording.
@@ -270,3 +288,14 @@ does and sees on it: where the recording comes from, for a shipped, an imported
 and an unsaid origin, watching, playing and pausing, moving on the timeline by
 pointer and keyboard, the address, the unseen test and its fix hint, analyse
 mode, the score at the end, and that the page makes no request.
+
+## The run on the front page
+
+The loop at the top of the [README](../README.md) plays the recording shipped
+with BlueFire. These are its numbers and the CI run that made it.
+
+![The live view at the first alert on a test: the host, its two sensors, the rule engines, the events and the score](assets/screenshots/live-view-first-alert.png)
+
+Test 39 of 60 empties the shell history, and a published Sigma rule raises the first alert on a test of a real run. [The lab](../lab/README.md) ran 60 published Atomic Red Team tests on a GitHub-hosted runner, watched by Sysmon and auditd, with 188 published Sigma rules reading what they recorded. By the end all 60 had taken effect, 3 had raised an alert, and of 1 nothing was recorded besides its launcher's start, the lab's own launch of its command, which does not count ([CI run 45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)). [The defender loop](../lab/README.md#the-defender-loop-so-far) follows that unseen test, before against after: a change to the defense got it seen, then a rule written in this repository alerted on it.
+
+Watch this run in the app: start it with [`docker compose up app`](INSTALLATION.md#look-at-the-current-source-with-docker), open the address it prints, then **Runs**. Or open `docs/live-view/replay.html` from a clone in any browser, with nothing installed: double-click it, or drag it onto a browser window.

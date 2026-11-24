@@ -24,9 +24,11 @@ interface StepDetailProps {
   /** What that origin is, in words (`RunFacts.startWords`). */
   originWords?: string;
   onSelect: (stepId: string) => void;
-  onWatch: (stepId: string) => void;
+  /** Left out where the step is shown outside its run's playback: there is no "Watch from here". */
+  onWatch?: (stepId: string) => void;
   onFix?: (stepId: string) => void;
-  onClose: () => void;
+  /** Left out where the step's place has its own way to close it: there is no "Whole run". */
+  onClose?: () => void;
   /** True when the step was just chosen by the viewer: the detail then takes keyboard focus, so its actions are the next stops. */
   takeFocus: boolean;
 }
@@ -265,17 +267,23 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
             id <span className="lv-mono">{step.id}</span>
           </span>
         </div>
-        <div className="lv-dt-actions">
-          <button type="button" className="lv-button is-watch" onClick={() => onWatch(step.id)}>
-            <svg viewBox="0 0 12 12" aria-hidden="true">
-              <path d="M3 1.5v9l7.5-4.5z" />
-            </svg>
-            Watch from here
-          </button>
-          <button type="button" className="lv-button is-close" onClick={onClose} title="Close the step and show the whole run">
-            Whole run
-          </button>
-        </div>
+        {onWatch || onClose ? (
+          <div className="lv-dt-actions">
+            {onWatch ? (
+              <button type="button" className="lv-button is-watch" onClick={() => onWatch(step.id)}>
+                <svg viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="M3 1.5v9l7.5-4.5z" />
+                </svg>
+                Watch from here
+              </button>
+            ) : null}
+            {onClose ? (
+              <button type="button" className="lv-button is-close" onClick={onClose} title="Close the step and show the whole run">
+                Whole run
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       <h3 className="lv-dt-title">{step.title}</h3>
       <div className="lv-dt-kicker lv-dt-techline">

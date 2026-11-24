@@ -14,13 +14,15 @@ run variation, not an effect. A lab rule that is the same file in both runs and
 matched a step differently is run variation too, unless a sensor's settings are
 the declared change. So is a step whose outcome moved under a sensor change
 while that sensor recorded the same for it in both runs (for auditd: nothing
-under an audit key that only one run's events carry). A changed step lists what the
-declared sensor recorded of it in one run only. It refuses a verdict, and still
-lists what differed, when the two are not of the same steps, when a recording
-lacks source.setup, when anything other than the declared change differs in the
-setup, in the detectors' digests or in the tools' versions (the published rules'
-pin is part of a change of the published rules), and when two runs said to be
-made side by side do not name one CI run.
+under an audit key that only one run's events carry, or an alert in one run only
+that rests on other events too), and so is every step that moved under a change
+of Sysmon's settings, whose events nothing tells from run variation. A changed
+step lists what the declared sensor recorded of it in one run only. It refuses
+a verdict, and still lists what differed, when the two are not of the same
+steps, when a recording lacks source.setup, when anything other than the
+declared change differs in the setup, in the detectors' digests or in the
+tools' versions (the published rules' pin is part of a change of the published
+rules), and when two runs said to be made side by side do not name one CI run.
 
 Two runs side by side get two runners, and GitHub can hand out two images and
 kernels. When the runner's image and kernel are all that differ besides a
@@ -493,6 +495,21 @@ def mark_of(
     }
 
 
+def loose_alerts(alerts: tuple[list[dict], list[dict]], cause: tuple[set[str], set[str]]) -> list[str]:
+    """The titles of the rules whose alerts on a step one run has and the other lacks, by rule, that do
+    not rest on that run's events of cause alone. alerts and cause are the before and the after run's."""
+
+    found = set()
+    for number in (0, 1):
+        others = {alert["rule"]["id"] for alert in alerts[1 - number]}
+        for alert in alerts[number]:
+            if alert["rule"]["id"] not in others and not (
+                alert.get("events") and set(alert["events"]) <= cause[number]
+            ):
+                found.add(alert["rule"]["title"])
+    return sorted(found)
+
+
 def underneath(old: dict, new: dict, before: set[str], after: set[str]) -> list[str]:
     """What changed under a step's answers: whether a sensor recorded it, and which rules matched."""
 
@@ -946,6 +963,13 @@ def compare(
     else:
         lines = (sensor_lines(before, sensor), sensor_lines(after, sensor)) if sensor else ({}, {})
         unchanged = f"sensor `{sensor}` recorded the same for this step in both runs"
+    # Sysmon's events carry nothing like an audit key, so what its new settings recorded cannot be told
+    # from what two runs of the same settings differ by.
+    untold = (
+        f"two runs of the same settings of sensor `{sensor}` already differ in what it records of a step, "
+        "such as temporary file names, and nothing a recording holds tells what a change of those settings "
+        "recorded from that"
+    )
     events = (by_step(before, "events"), by_step(after, "events"))
     # A rule that matched only the launcher's start moves no outcome, and the mark leaves it out.
     alerts = tuple(
@@ -989,9 +1013,30 @@ def compare(
         # A sensor's settings move a step only through what that sensor recorded of it: when the
         # recordings hold the step's events and none of the declared sensor's is the change's, the
         # credit an unchanged lab rule got above does not hold either.
-        if records and moved and not records["new"]["count"] and not records["gone"]["count"]:
-            if old["id"] in kept[0] or step["id"] in kept[1]:
-                unmoved = [unchanged]
+        held = old["id"] in kept[0] or step["id"] in kept[1]
+        if records and moved and held and not records["new"]["count"] and not records["gone"]["count"]:
+            unmoved = [unchanged]
+        elif records and moved and sensor != "auditd":
+            unmoved = [untold]
+        elif records and moved and held and limit is None:
+            # As under a limit, the step's move rests on those events only when every alert that one run
+            # has on it and the other lacks rests on them alone.
+            unmoved = [
+                f"the rule `{title}` matched it in one run only, on events other than those of an audit key "
+                "that only one run's events carry"
+                for title in loose_alerts(
+                    (alerts[0].get(old["id"], []), alerts[1].get(step["id"], [])),
+                    tuple(
+                        {
+                            event["id"]
+                            for event in events[number].get(part["id"], [])
+                            if event["sensor"] == "auditd"
+                            and (event.get("fields") or {}).get("key") in listed_keys[number]
+                        }
+                        for number, part in enumerate((old, step))
+                    ),
+                )
+            ]
         mark = (
             mark_of(
                 tuple(
@@ -1092,7 +1137,8 @@ def compare(
                 f"{'after' if row['mark']['run'] == 'before' else 'before'} run, as written, could have recorded, the only "
                 f"events either run holds of the step, on two runners that differed ({runners_said})"
             )
-        if row["result"] != "same":
+        # A refused comparison of one run evaluated twice has not shown that its verdicts rest on one.
+        if row["result"] != "same" and (comparable or not one_run):
             row["verdict"] += f"; {claim}"
     if limit is not None:
         limit["credited"] = sum(1 for row in rows if "mark" in row)
@@ -1493,7 +1539,12 @@ def markdown(delta: dict) -> str:
             for label in ("before", "after")
         ]
         lines += ["Race, in seconds from the first step: " + "; ".join(times) + ".", ""]
-    lines += [f"All of this rests on {delta.get('claim', CLAIM)}.", ""]
+    lines += [
+        f"All of this rests on {delta.get('claim', CLAIM)}."
+        if delta["comparable"] or not once
+        else "There is no verdict here: the comparison is refused.",
+        "",
+    ]
     return "\n".join(lines)
 
 

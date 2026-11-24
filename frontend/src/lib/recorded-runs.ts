@@ -4,7 +4,7 @@
 import type { LiveMoment, LiveViewProps } from "../live/LiveView";
 import type { Recording } from "../live/recording";
 import { count, day, plural, span } from "../live/format";
-import type { RecordingList, RecordingOrigin, RecordingSummary } from "./api";
+import type { DeltaSummary, RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 
 /**
  * The runs shipped with BlueFire first, then the imported ones, whatever their
@@ -14,6 +14,38 @@ import type { RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 export function inListOrder(recordings: readonly RecordingSummary[]): RecordingSummary[] {
   const rank = (summary: RecordingSummary) => (summary.origin.kind === "shipped" ? 0 : 1);
   return [...recordings].sort((a, b) => rank(a) - rank(b) || Date.parse(b.source.started) - Date.parse(a.source.started));
+}
+
+/**
+ * The recordings the Runs screen lists on their own, in list order: a recording
+ * that is one side of a listed pair is listed with its pair instead, so that two
+ * near-identical runs of one pair do not read as two unrelated runs.
+ */
+export function ownRuns(recordings: readonly RecordingSummary[], pairs: readonly DeltaSummary[]): RecordingSummary[] {
+  const paired = new Set(pairs.flatMap((pair) => [pair.before.id, pair.after.id]));
+  return inListOrder(recordings).filter((summary) => !paired.has(summary.id));
+}
+
+/** When the later of a pair's two runs started, from the recordings the service keeps. */
+function pairStarted(pair: DeltaSummary): number {
+  return Math.max(Date.parse(pair.recordings.before.source.started), Date.parse(pair.recordings.after.source.started));
+}
+
+/**
+ * The newest thing the Runs screen lists: the first recorded run it lists on its
+ * own, or a pair of runs when the pair's later run started after that run. What
+ * was shipped with BlueFire goes before what was imported, whatever the dates,
+ * so an imported pair never takes a shipped run's place, nor an imported run a
+ * shipped pair's.
+ */
+export function newestListed(recordings: readonly RecordingSummary[], pairs: readonly DeltaSummary[]): { run: RecordingSummary } | { pair: DeltaSummary } | null {
+  const rank = (origin: Pick<RecordingOrigin, "kind">) => (origin.kind === "shipped" ? 0 : 1);
+  const [run] = ownRuns(recordings, pairs);
+  const [pair] = [...pairs].sort((a, b) => rank(a.origin) - rank(b.origin) || pairStarted(b) - pairStarted(a));
+  if (!pair) return run ? { run } : null;
+  if (!run) return { pair };
+  const byOrigin = rank(pair.origin) - rank(run.origin);
+  return byOrigin < 0 || (byOrigin === 0 && pairStarted(pair) > Date.parse(run.source.started)) ? { pair } : { run };
 }
 
 /** "Test list" or "Attack path". */
@@ -36,7 +68,7 @@ function onEnvironment(environment: string): string {
 }
 
 /** The origin in a few words: "Shipped with BlueFire" or "Imported, not verified by BlueFire". */
-export function originWords(origin: RecordingOrigin): string {
+export function originWords(origin: Pick<RecordingOrigin, "kind">): string {
   return origin.kind === "shipped" ? "Shipped with BlueFire" : "Imported, not verified by BlueFire";
 }
 
@@ -76,9 +108,18 @@ export function withSummary(list: RecordingList, summary: RecordingSummary): Rec
   return { ...list, recordings: list.recordings.map((entry) => (entry.id === summary.id ? summary : entry)) };
 }
 
-/** The path of a recorded run's page inside the app. */
-export function recordedRunPath(id: string): string {
-  return `/runs/recorded/${encodeURIComponent(id)}`;
+/**
+ * The path of a recorded run's page inside the app: of the first file kept for
+ * its id, or, with `sha256`, of that file, which a run evaluated more than once
+ * needs to tell its evaluations apart.
+ */
+export function recordedRunPath(id: string, sha256?: string): string {
+  return `/runs/recorded/${encodeURIComponent(id)}${sha256 ? `/${sha256}` : ""}`;
+}
+
+/** The pairs as the Runs screen lists them: in the order they happened, by when the later of their runs started. */
+export function pairsInOrder(pairs: readonly DeltaSummary[]): DeltaSummary[] {
+  return [...pairs].sort((a, b) => pairStarted(a) - pairStarted(b));
 }
 
 /**

@@ -22,9 +22,11 @@ test("a recorded run opens from Runs, plays in the live view and keeps its momen
   await page.goto("./#/runs");
 
   const recorded = page.getByRole("region", { name: "Recorded runs" });
-  await expect(recorded.getByText("Shipped with BlueFire", { exact: true })).toBeVisible();
-  await expect(recorded.getByText("3 of 60 tests alerted, 56 seen, 1 unseen")).toBeVisible();
-  await recorded.getByRole("link", { name: "60 published tests on one Linux host" }).click();
+  // The example is the one run listed on its own; the pair's two runs are listed with their pair.
+  const example = recorded.getByRole("listitem").filter({ hasText: "60 published tests on one Linux host" });
+  await expect(example.getByText("Shipped with BlueFire", { exact: true })).toBeVisible();
+  await expect(example.getByText("3 of 60 tests alerted, 56 seen, 1 unseen")).toBeVisible();
+  await example.getByRole("link", { name: "60 published tests on one Linux host" }).click();
   await expect(page).toHaveURL(/#\/runs\/recorded\/[A-Za-z0-9_-]+/);
   const opened = await page.evaluate(() => window.history.length);
 

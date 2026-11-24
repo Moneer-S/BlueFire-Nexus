@@ -46,6 +46,33 @@ describe("several late arrivals fired at once", () => {
     expect(container.querySelector(".lv-score-lead b")?.textContent).toBe("3");
     unmount();
   });
+
+  it("draws twenty thousand of them on one engine without stalling, and names the newest in a tooltip of readable size", () => {
+    // Every alert of test 1 is raised live at 20 s, while test 2 runs: the importer takes 20,000 alerts.
+    const many = recording({
+      when: "live",
+      steps: [step("1", 1, 2, { outcome: "alerted", visibility: { answer: "alert", basis: "rules", events: 1 } }), step("2", 18, 25)],
+      events: [event("1-1", "1", 1.5), event("2-1", "2", 18.5)],
+      alerts: Array.from({ length: 20_000 }, (_, n) => alert(`a${n}`, "1", 1.5, ["1-1"], { raised: at(20) })),
+    });
+    const timeline = buildTimeline(many);
+    const fire = timeline.fire.get("a0") ?? Number.NaN;
+    const two = timeline.segments[1];
+    if (!two) throw new Error("fixture");
+    const started = performance.now();
+    const { container, unmount } = open(many, { step: "2", at: (fire + 0.2 - two.start) / (two.end - two.start), paused: true });
+    const took = performance.now() - started;
+    const engine = container.querySelector(".lv-match--late");
+    // Nothing is counted short: the engine says how many more arrived late.
+    expect(engine?.textContent).toContain("19999 more late");
+    // The tooltip names the newest and counts the rest: it does not grow with every arrival.
+    const title = engine?.getAttribute("title") ?? "";
+    expect(title).toContain("earlier ones, then");
+    expect(title.length).toBeLessThan(5_000);
+    // A copy of the names for every arrival took seven seconds here; one list takes well under one.
+    expect(took).toBeLessThan(4_000);
+    unmount();
+  }, 60_000);
 });
 
 describe("the page's address", () => {

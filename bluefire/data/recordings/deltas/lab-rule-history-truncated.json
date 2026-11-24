@@ -1,0 +1,2271 @@
+{
+ "schema": "bluefire.delta/1",
+ "claim": "one run evaluated with two rule sets",
+ "before": {
+  "sha256": "3be33c4987e190a1329bd74d70984707a4d8473a39b4d827dd1a54c170587118",
+  "id": "b2666c50",
+  "run_url": "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682",
+  "environment": "GitHub-hosted runner",
+  "commit": "e809f685f682f3ba644bbd2395dcacbecf9eb2cd",
+  "defense_commit": "e809f685f682f3ba644bbd2395dcacbecf9eb2cd",
+  "started": "2026-11-24T12:42:13Z",
+  "lab_rules_commit": "3d8f3610249901c2ddc7706a06de2afd31920c2b"
+ },
+ "after": {
+  "sha256": "4802adcbec733a0e96048aa7463dea0d07b401d24c7e4768cc021c15c9e5f828",
+  "id": "b2666c50",
+  "run_url": "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682",
+  "environment": "GitHub-hosted runner",
+  "commit": "e809f685f682f3ba644bbd2395dcacbecf9eb2cd",
+  "defense_commit": "e809f685f682f3ba644bbd2395dcacbecf9eb2cd",
+  "started": "2026-11-24T12:42:13Z",
+  "lab_rules_commit": "e809f685f682f3ba644bbd2395dcacbecf9eb2cd"
+ },
+ "declared_change": "detectors:lab",
+ "runners": null,
+ "one_run": true,
+ "lab_rules": [
+  {
+   "rule": "3d6f0b8e-5a41-4c7e-9b2d-7e1a6c40f5b9",
+   "title": "Shell History File Truncated In Place",
+   "change": "new",
+   "before": null,
+   "after": {
+    "accepted": true,
+    "reason": "it alerted on every run with changed input arguments and on no ordinary activity",
+    "file": "lab/rules/linux/auditd/lnx_auditd_history_file_truncated_in_place.yml"
+   }
+  }
+ ],
+ "comparable": true,
+ "limit": null,
+ "refused_because": [],
+ "differences": [
+  {
+   "what": "detectors:lab",
+   "before": "2c18e03e46f597de44cbdd1b1e79709dea627d5ba8b8191b75a964a2494d51b8",
+   "after": "1e14783fba384d0e9d9d5dfd635964ba298bc0b53631588d0651fc09b3354e12",
+   "declared": true
+  }
+ ],
+ "same_in_both": [
+  "atomic_commit",
+  "detectors:pinned",
+  "images:target",
+  "kernels:target",
+  "sensors:auditd",
+  "sensors:sysmon",
+  "tools:Invoke-AtomicRedTeam",
+  "tools:SigmaHQ/sigma",
+  "tools:Sysmon for Linux",
+  "tools:Zircolite",
+  "tools:auditd"
+ ],
+ "lab_code": {
+  "before": "e809f685f682f3ba644bbd2395dcacbecf9eb2cd",
+  "after": "e809f685f682f3ba644bbd2395dcacbecf9eb2cd",
+  "same": true
+ },
+ "judged": [
+  "outcome_with_lab_rules"
+ ],
+ "control": {
+  "fields": [
+   "happened",
+   "recorded",
+   "outcome"
+  ],
+  "same": 93,
+  "of": 93,
+  "varied": []
+ },
+ "counts": {
+  "paired": 93,
+  "same": 89,
+  "better": 4,
+  "worse": 0,
+  "changed": 0,
+  "not attributable": 0,
+  "without cause": 0,
+  "no verdict": 0,
+  "by_mark": 0,
+  "new": 0,
+  "gone": 0
+ },
+ "unexplained": [],
+ "steps": [
+  {
+   "id": "canary:a934276e:1",
+   "role": "canary",
+   "title": "Clear Bash history (rm)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "control:486e88ea",
+   "role": "control",
+   "title": "Hostname Discovery",
+   "technique": "T1082",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:cccb070c",
+   "role": "test",
+   "title": "List OS Information",
+   "technique": "T1082",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:952931a4",
+   "role": "test",
+   "title": "Permission Groups Discovery (Local)",
+   "technique": "T1069.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:23b91cd2",
+   "role": "test",
+   "title": "Security Software Discovery - ps (Linux)",
+   "technique": "T1518.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:4ff64f0b",
+   "role": "test",
+   "title": "Process Discovery - ps",
+   "technique": "T1057",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:bcf05343",
+   "role": "test",
+   "title": "System Network Connections Discovery via ss or lsof (Linux/MacOS)",
+   "technique": "T1049",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:13c5e1ae",
+   "role": "test",
+   "title": "Nix File and Directory Discovery 2",
+   "technique": "T1083",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:c955a599",
+   "role": "test",
+   "title": "View accounts with UID 0",
+   "technique": "T1087.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:7c86c55c",
+   "role": "test",
+   "title": "Examine password expiration policy - All Linux",
+   "technique": "T1201",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:435057fb",
+   "role": "test",
+   "title": "Cron - Replace crontab with referenced file",
+   "technique": "T1053.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:078e69eb:e36788",
+   "role": "test",
+   "title": "Cron - Add script to /etc/cron.d folder",
+   "technique": "T1053.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:f4983098",
+   "role": "test",
+   "title": "Create Systemd Service and Timer",
+   "technique": "T1053.006",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:d9e4f24f",
+   "role": "test",
+   "title": "Create Systemd Service",
+   "technique": "T1543.002",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:40d8eabd",
+   "role": "test",
+   "title": "Create a user account on a Linux system",
+   "technique": "T1136.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:342cc723",
+   "role": "test",
+   "title": "Modify SSH Authorized Keys",
+   "technique": "T1098.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:0a898315",
+   "role": "test",
+   "title": "Add command to .bashrc",
+   "technique": "T1546.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:94500ae1",
+   "role": "test",
+   "title": "Add command to .bash_profile",
+   "technique": "T1546.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:bbdb06bc",
+   "role": "test",
+   "title": "Append commands user shell profile",
+   "technique": "T1546.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:126f71af",
+   "role": "test",
+   "title": "rc.local",
+   "technique": "T1037.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:a74b2e07",
+   "role": "test",
+   "title": "Trap EXIT",
+   "technique": "T1546.005",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:6e78084a",
+   "role": "test",
+   "title": "Python Startup Hook - usercustomize.py (Linux / MacOS)",
+   "technique": "T1546.018",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:2fc6c0ab",
+   "role": "test",
+   "title": "Enable systemd Service for Persistence with Auto-Restart",
+   "technique": "T1569.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:e58c8723",
+   "role": "test",
+   "title": "Create and Enable a Malicious systemd Service Unit",
+   "technique": "T1569.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:6fec8560",
+   "role": "test",
+   "title": "Masquerade Malicious Service as Legitimate System Service",
+   "technique": "T1569.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:a1fa406e",
+   "role": "test",
+   "title": "Create systemd Service Unit from /tmp (Unusual Location)",
+   "technique": "T1569.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:4b9dde80",
+   "role": "test",
+   "title": "Malicious PAM rule",
+   "technique": "T1556.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:d2b95631",
+   "role": "test",
+   "title": "Reactivate a locked/expired account (Linux)",
+   "technique": "T1078.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:3cfde62b",
+   "role": "test",
+   "title": "Search Through Bash History",
+   "technique": "T1552.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:46959285:85163a",
+   "role": "test",
+   "title": "Discover Private SSH Keys",
+   "technique": "T1552.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:7c247dc7:85163a",
+   "role": "test",
+   "title": "Copy Private SSH Keys with CP",
+   "technique": "T1552.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:5e417277:d0b57c",
+   "role": "test",
+   "title": "Find TLS private key files",
+   "technique": "T1552.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:34ca1464",
+   "role": "test",
+   "title": "chmod - Change file or folder mode (numeric mode)",
+   "technique": "T1222.002",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:759055b3",
+   "role": "test",
+   "title": "Set a SetUID flag on file",
+   "technique": "T1548.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:db55f666",
+   "role": "test",
+   "title": "Set a SetGID flag on file",
+   "technique": "T1548.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:db53959c",
+   "role": "test",
+   "title": "Make and modify capabilities of a binary",
+   "technique": "T1548.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:a315bfff",
+   "role": "test",
+   "title": "Masquerading as FreeBSD or Linux crond process.",
+   "technique": "T1036.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:812c3ab8",
+   "role": "test",
+   "title": "Execute a process from a directory masquerading as the current parent directory",
+   "technique": "T1036.005",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:61a782e5",
+   "role": "test",
+   "title": "Create a hidden file in a hidden directory",
+   "technique": "T1564.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:20ef1523",
+   "role": "test",
+   "title": "Set a file's modification timestamp",
+   "technique": "T1070.006",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:47966a1d",
+   "role": "test",
+   "title": "Clear Bash history (truncate)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:cbf506a5",
+   "role": "test",
+   "title": "Clear Bash history (echo)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [
+    "outcome_with_lab_rules"
+   ],
+   "underneath": [
+    "matches now: high: Shell History File Truncated In Place"
+   ],
+   "result": "better",
+   "verdict": "better: seen to alerted with the lab's rules, on 2 of the 4 published procedures of T1070.003 in the list; price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written (before: The run accepted 8 of the 9 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process); after: The run accepted 9 of the 10 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process)); one run evaluated with two rule sets",
+   "price": "price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written (before: The run accepted 8 of the 9 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process); after: The run accepted 9 of the 10 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process))",
+   "procedures": {
+    "better": 2,
+    "of": 4
+   }
+  },
+  {
+   "id": "test:b1251c35",
+   "role": "test",
+   "title": "Clear Bash history (cat dev/null)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [
+    "outcome_with_lab_rules"
+   ],
+   "underneath": [
+    "matches now: high: Shell History File Truncated In Place"
+   ],
+   "result": "better",
+   "verdict": "better: seen to alerted with the lab's rules, on 2 of the 4 published procedures of T1070.003 in the list; price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written (before: The run accepted 8 of the 9 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process); after: The run accepted 9 of the 10 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process)); one run evaluated with two rule sets",
+   "price": "price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written (before: The run accepted 8 of the 9 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process); after: The run accepted 9 of the 10 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process))",
+   "procedures": {
+    "better": 2,
+    "of": 4
+   }
+  },
+  {
+   "id": "test:23d348f3",
+   "role": "test",
+   "title": "Clear Bash history (ln dev/null)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:989cc1b1",
+   "role": "test",
+   "title": "rm -rf",
+   "technique": "T1685.006",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:f45df6be",
+   "role": "test",
+   "title": "Decode base64 Data into Script",
+   "technique": "T1027",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:3a15c372",
+   "role": "test",
+   "title": "Linux Base64 Encoded Shebang in CLI",
+   "technique": "T1140",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:5bec4cc8",
+   "role": "test",
+   "title": "Obfuscated command line scripts",
+   "technique": "T1059.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:ee72b37d",
+   "role": "test",
+   "title": "Shell Creation using awk command",
+   "technique": "T1059.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:11c46cd8",
+   "role": "test",
+   "title": "Binary simply packed by UPX (linux)",
+   "technique": "T1027.002",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:d0377aa6",
+   "role": "test",
+   "title": "C compile",
+   "technique": "T1027.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:c2ca068a",
+   "role": "test",
+   "title": "Password-Protected ZIP Payload Extraction and Execution",
+   "technique": "T1027.013",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:bc219ff7",
+   "role": "test",
+   "title": "Shared Library Injection via LD_PRELOAD",
+   "technique": "T1574.006",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:50859b3b",
+   "role": "test",
+   "title": "Inplace Instruction Overwrite",
+   "technique": "T1055.009",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:a743e3a6",
+   "role": "test",
+   "title": "Encrypts collected data with AES-256 and Base64",
+   "technique": "T1560.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:e86f1b4b",
+   "role": "test",
+   "title": "Compressing data using tarfile in Python (FreeBSD/Linux)",
+   "technique": "T1560.002",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:ab936c51",
+   "role": "test",
+   "title": "Data Transfer Size Limits",
+   "technique": "T1030",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:142752dc:2800ca",
+   "role": "test",
+   "title": "Encrypt files using openssl (FreeBSD/Linux)",
+   "technique": "T1486",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:42e3a5bd",
+   "role": "test",
+   "title": "Linux - Stop service using systemctl",
+   "technique": "T1489",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:ac333fe1",
+   "role": "test",
+   "title": "Disable ASLR Via sysctl parameters - Linux",
+   "technique": "T1685",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:53bcf8a0",
+   "role": "test",
+   "title": "Install root CA on Debian/Ubuntu",
+   "technique": "T1553.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "test:a7b17659",
+   "role": "test",
+   "title": "Unlimited sudo cache timeout",
+   "technique": "T1548.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:435057fb:cron-allow",
+   "role": "hardened",
+   "title": "Cron - Replace crontab with referenced file",
+   "technique": "T1053.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "after": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:078e69eb:e36788:cron-allow",
+   "role": "hardened",
+   "title": "Cron - Add script to /etc/cron.d folder",
+   "technique": "T1053.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:342cc723:ssh-keys-root-owned",
+   "role": "hardened",
+   "title": "Modify SSH Authorized Keys",
+   "technique": "T1098.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "after": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:0a898315:profile-immutable",
+   "role": "hardened",
+   "title": "Add command to .bashrc",
+   "technique": "T1546.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "after": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:94500ae1:profile-immutable",
+   "role": "hardened",
+   "title": "Add command to .bash_profile",
+   "technique": "T1546.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:bbdb06bc:profile-immutable",
+   "role": "hardened",
+   "title": "Append commands user shell profile",
+   "technique": "T1546.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:2fc6c0ab:tmp-noexec",
+   "role": "hardened",
+   "title": "Enable systemd Service for Persistence with Auto-Restart",
+   "technique": "T1569.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "after": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:a315bfff:tmp-noexec",
+   "role": "hardened",
+   "title": "Masquerading as FreeBSD or Linux crond process.",
+   "technique": "T1036.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "after": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:11c46cd8:tmp-noexec",
+   "role": "hardened",
+   "title": "Binary simply packed by UPX (linux)",
+   "technique": "T1027.002",
+   "paired_by": "id",
+   "before": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "after": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:d0377aa6:tmp-noexec",
+   "role": "hardened",
+   "title": "C compile",
+   "technique": "T1027.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "after": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:c2ca068a:tmp-noexec",
+   "role": "hardened",
+   "title": "Password-Protected ZIP Payload Extraction and Execution",
+   "technique": "T1027.013",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "hardened:bc219ff7:tmp-noexec",
+   "role": "hardened",
+   "title": "Shared Library Injection via LD_PRELOAD",
+   "technique": "T1574.006",
+   "paired_by": "id",
+   "before": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "after": {
+    "happened": "blocked",
+    "recorded": "recorded",
+    "outcome": "stopped",
+    "outcome_with_lab_rules": "stopped"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:f4983098:b55e9a",
+   "role": "variant",
+   "title": "Create Systemd Service and Timer",
+   "technique": "T1053.006",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:d9e4f24f:aad2ef",
+   "role": "variant",
+   "title": "Create Systemd Service",
+   "technique": "T1543.002",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:40d8eabd:16f154",
+   "role": "variant",
+   "title": "Create a user account on a Linux system",
+   "technique": "T1136.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:6e78084a:619452",
+   "role": "variant",
+   "title": "Python Startup Hook - usercustomize.py (Linux / MacOS)",
+   "technique": "T1546.018",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:2fc6c0ab:1e75e7",
+   "role": "variant",
+   "title": "Enable systemd Service for Persistence with Auto-Restart",
+   "technique": "T1569.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:e58c8723:85e741",
+   "role": "variant",
+   "title": "Create and Enable a Malicious systemd Service Unit",
+   "technique": "T1569.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:6fec8560:0546c0",
+   "role": "variant",
+   "title": "Masquerade Malicious Service as Legitimate System Service",
+   "technique": "T1569.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:46959285:5e4f5f",
+   "role": "variant",
+   "title": "Discover Private SSH Keys",
+   "technique": "T1552.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:7c247dc7:c4a564",
+   "role": "variant",
+   "title": "Copy Private SSH Keys with CP",
+   "technique": "T1552.004",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:759055b3:5bee6e",
+   "role": "variant",
+   "title": "Set a SetUID flag on file",
+   "technique": "T1548.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:db55f666:fa6277",
+   "role": "variant",
+   "title": "Set a SetGID flag on file",
+   "technique": "T1548.001",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:812c3ab8:4ad2f6",
+   "role": "variant",
+   "title": "Execute a process from a directory masquerading as the current parent directory",
+   "technique": "T1036.005",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:47966a1d:27e9e5",
+   "role": "variant",
+   "title": "Clear Bash history (truncate)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:47966a1d:7b1cde",
+   "role": "variant",
+   "title": "Clear Bash history (truncate)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:cbf506a5:27e9e5",
+   "role": "variant",
+   "title": "Clear Bash history (echo)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [
+    "outcome_with_lab_rules"
+   ],
+   "underneath": [
+    "matches now: high: Shell History File Truncated In Place"
+   ],
+   "result": "better",
+   "verdict": "better: seen to alerted with the lab's rules; price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written (before: The run accepted 8 of the 9 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process); after: The run accepted 9 of the 10 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process)); one run evaluated with two rule sets",
+   "price": "price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written (before: The run accepted 8 of the 9 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process); after: The run accepted 9 of the 10 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process))"
+  },
+  {
+   "id": "variant:b1251c35:3c4f01",
+   "role": "variant",
+   "title": "Clear Bash history (cat dev/null)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "seen"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [
+    "outcome_with_lab_rules"
+   ],
+   "underneath": [
+    "matches now: high: Shell History File Truncated In Place"
+   ],
+   "result": "better",
+   "verdict": "better: seen to alerted with the lab's rules; price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written (before: The run accepted 8 of the 9 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process); after: The run accepted 9 of the 10 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process)); one run evaluated with two rule sets",
+   "price": "price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written (before: The run accepted 8 of the 9 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process); after: The run accepted 9 of the 10 rules written in this repository. A match of a rule it did not accept is not in the recording. Not accepted: Program Named Like A System Daemon Run From A Temporary Folder (not every procedure it alerts on ran again with changed input arguments and took effect: T1036.003 Masquerading as FreeBSD or Linux crond process))"
+  },
+  {
+   "id": "variant:23d348f3:4c26c6",
+   "role": "variant",
+   "title": "Clear Bash history (ln dev/null)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "variant:c2ca068a:b2f3f4",
+   "role": "variant",
+   "title": "Password-Protected ZIP Payload Extraction and Execution",
+   "technique": "T1027.013",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "seen",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  },
+  {
+   "id": "canary:a934276e:2",
+   "role": "canary",
+   "title": "Clear Bash history (rm)",
+   "technique": "T1070.003",
+   "paired_by": "id",
+   "before": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "after": {
+    "happened": "took effect",
+    "recorded": "recorded",
+    "outcome": "alerted",
+    "outcome_with_lab_rules": "alerted"
+   },
+   "changed": [],
+   "underneath": [],
+   "result": "same",
+   "verdict": "no change"
+  }
+ ],
+ "new": [],
+ "gone": [],
+ "race": {
+  "why": "the rules ran after each run, so there is no race to compare"
+ },
+ "audit_keys": null
+}
