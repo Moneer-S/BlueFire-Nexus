@@ -338,22 +338,23 @@ record of T1070.003 Clear Bash history (echo) in
   or a history file the watch does not name.
 
 Its text was fixed from that one record and from what the shells do, before
-it was evaluated over the whole run. What it alerts on and what it matches in
-a run's ordinary activity: not yet shown, since no CI run has evaluated it. By
-the records of run 45350480637, of the 4 published procedures of T1070.003 on
-the list besides the canary, the echo test and T1070.003 Clear Bash history
-(cat dev/null), `cat /dev/null > ~/.bash_history`, make the open it names, and
-`truncate` and `ln dev/null` do not, for the reasons above, nor does the
-canary's `rm`. A run's ordinary activity tests little of its price: of that
-run's ordinary events, 2 are of the key it reads (the baseline's append that
-creates `~/.bash_history`, and its `chmod`), and none saves a shell's history
-the way a shell does. A test on records built by hand from the shells' and the
-kernel's code, and marked as built, stands in for that part
-([`tests/test_lab_rules.py`](tests/test_lab_rules.py)). A run accepts a rule
-only when each procedure it alerts on also ran with changed input arguments,
-so the list now runs both once more, on `~/.zsh_history` and on
-`~/.sh_history`, which the watch names too. Whether a run accepts the rule:
-not yet shown.
+it was evaluated over a whole run.
+[Run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682)
+is the first to evaluate it. Of the 4 published procedures of T1070.003 on
+the list besides the canary, it alerted on two, the echo test and T1070.003
+Clear Bash history (cat dev/null), `cat /dev/null > ~/.bash_history`, each by
+one event, and not on `truncate` and `ln dev/null`, for the reasons above, nor
+on the canary's `rm`. It matched none of that run's 8,847 ordinary events. A
+run's ordinary activity tests little of its price: by the records of run
+45350480637, 2 of its ordinary events are of the key the rule reads (the
+baseline's append that creates `~/.bash_history`, and its `chmod`), and none
+saves a shell's history the way a shell does. A test on records built by hand
+from the shells' and the kernel's code, and marked as built, stands in for
+that part ([`tests/test_lab_rules.py`](tests/test_lab_rules.py)). A run
+accepts a rule only when each procedure it alerts on also ran with changed
+input arguments, so the list now runs both once more, on `~/.zsh_history` and
+on `~/.sh_history`, which the watch names too. The rule alerted on both of
+those runs as well, and run 45395673682 accepted it.
 
 ## What the target has
 
@@ -1617,11 +1618,19 @@ and no run variation.
   evaluation judged it, so that a rule that did not change an answer, because
   the run did not accept it, says why.
 - **What it costs.** One run of the list instead of two, and a job that
-  evaluates the run twice, which takes a few minutes of runner time (an
-  estimate: not yet measured in CI).
+  evaluates the run twice: 54 s of runner time in the one run so far.
 
-What this job shows for the rule above: not yet shown, since no CI run has
-run it.
+What this job shows for the rule above, in
+[run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682):
+with the base commit's rules the rule is not there, and with the head's the
+run accepted it. Four steps are better, each from seen to alerted with the
+lab's rules and each by one alert of the new rule: T1070.003 Clear Bash
+history (echo), T1070.003 Clear Bash history (cat dev/null), and the variant
+of each. The 89 other steps are the same, and what the change cannot move
+(what happened, whether a sensor recorded the step, the published rules'
+outcome) is the same on all 93. Of the 60 tests, 17 were alerted with the
+lab's rules before and 19 after; by the published rules alone it stays 3. One
+run, evaluated with two rule sets.
 
 ## The defender loop so far
 
@@ -1635,8 +1644,11 @@ after, each turn shown by a CI run of the `lab` workflow:
    no rule alerts on it. See
    [A pair of runs for a change to the defense](#a-pair-of-runs-for-a-change-to-the-defense).
 2. **The rule.** [Shell History File Truncated In Place](#a-rule-on-auditds-records-a-history-file-truncated-in-place),
-   drafted from that event, shown as one run evaluated twice. Whether it is
-   accepted and moves the step from seen to alerted: not yet shown.
+   drafted from that event, shown as one run evaluated twice in
+   [run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682):
+   the run accepted the rule, and the step went from seen to alerted with the
+   lab's rules, as did T1070.003 Clear Bash history (cat dev/null). See
+   [A change of the lab's rules: one run, evaluated twice](#a-change-of-the-labs-rules-one-run-evaluated-twice).
 
 ## Before the loop: the sensor spike
 
