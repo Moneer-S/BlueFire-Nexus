@@ -14,7 +14,7 @@ run variation, not an effect. A lab rule that is the same file in both runs and
 matched a step differently is run variation too, unless a sensor's settings are
 the declared change. So is a step whose outcome moved under a sensor change
 while that sensor recorded the same for it in both runs (for auditd: nothing
-under an audit key that only one run has). A changed step lists what the
+under an audit key that only one run's events carry). A changed step lists what the
 declared sensor recorded of it in one run only. It refuses a verdict, and still
 lists what differed, when the two are not of the same steps, when a recording
 lacks source.setup, when anything other than the declared change differs in the
@@ -26,10 +26,13 @@ Two runs side by side get two runners, and GitHub can hand out two images and
 kernels. When the runner's image and kernel are all that differ besides a
 change of the audit rules, the verdict is limited instead of refused: it
 credits the change only on a step that carries the change's own mark, events of
-an audit key that only one run's rules define and nothing else of the step, and
-every other step that differs is not attributable. Which keys a run's rules
-define is what its recording's auditd sensor says, and a pair whose recordings
-do not both say it is refused. Any other change on two
+an audit key whose every rule watches a path that no rule of the other run
+could have recorded, which name no path that one could have, and nothing else
+of the step, and every other step that
+differs is not attributable. Where the rules' text cannot establish that, there
+is no mark, and the verdict says why. What a run's rules watch under each key
+is what its recording's auditd sensor says, and a pair whose recordings do not
+both say it is refused. Any other change on two
 runners that differed is refused, with the advice to run the pair again. The
 lab's own code is not part of the setup: when its commit differs, every verdict
 says so.
@@ -40,6 +43,7 @@ from __future__ import annotations
 import collections
 import hashlib
 import json
+import re
 from pathlib import Path
 
 SCHEMA = "bluefire.delta/1"
@@ -75,9 +79,23 @@ NOT_RECORDED = "not recorded"
 RUNNER = ("images:", "kernels:")
 # The declared changes that leave a mark of their own on what they record, and what that mark is.
 MARKS = {
-    "sensors:auditd": "every event the recordings hold of it is of an audit key that only one run's audit "
-    "rules define, and the other run holds nothing of it",
+    "sensors:auditd": "every event the recordings hold of it is of an audit key whose every rule in that run "
+    "watches a path that no rule of the other run, as written, could have recorded (none there watches that "
+    "path, any other path the event names, a folder above one or a path under one, and none without a path "
+    "records the same kind of event, a program start being one kind and a read, a write or a change of "
+    "attributes the other; paths are compared as written, so a second name that a link gives a file is not "
+    "found out), and the other run holds nothing of it",
 }
+# The kinds of event the comparison tells apart. A program start is one. A read, a write and a change of
+# attributes are one other: the kernel matches perm r and perm w alike on an open for reading and
+# writing, and link and linkat are in its class of writes and in its class of changes of attributes.
+KIND_WORDS = {"start": "program starts", "file": "reads, writes and changes of attributes"}
+# The letters of perm, each by the kind it selects.
+PERMS = {"r": "file", "w": "file", "a": "file", "x": "start"}
+# The system calls that only start programs: a rule on these alone records no other kind.
+STARTS = {"execve", "execveat"}
+# The lists of audit rules that hold no system call's records: filters, and messages from programs.
+NOT_SYSCALLS = {"exclude", "user", "filesystem"}
 # A changed step lists at most this many of the records its declared sensor added, and as many it lost.
 KEPT_LINES = 20
 
@@ -222,12 +240,162 @@ def audit_keys(recording: dict) -> dict[str, list[dict]]:
     return found
 
 
-def defined_keys(recording: dict) -> set[str] | None:
-    """The audit keys that the run's audit rules define, as its auditd sensor says, or None when it
-    does not say: an older recording, or one without auditd."""
+def audit_watches(recording: dict) -> dict[str, set[str]] | None:
+    """What the run's audit rules watch under each audit key, as its auditd sensor says, or None when
+    it does not say: an older recording, or one without auditd."""
 
     sensor = next((sensor for sensor in recording["network"]["sensors"] if sensor["id"] == "auditd"), {})
-    return set(sensor["audit_keys"]) if "audit_keys" in sensor else None
+    found = sensor.get("audit_watches")
+    return {key: set(forms) for key, forms in found.items()} if isinstance(found, dict) else None
+
+
+def rule_of(form: str) -> dict | None:
+    """One audit rule of the fixed form the recordings write, read back: the words of its list and
+    action, its system calls (None when it names none, which is every one), and each of its fields as
+    (name, operator, value). None when the form holds anything else, which the comparison cannot read."""
+
+    words = form.split()
+    if len(words) % 2 or words[:1] != ["-a"]:
+        return None
+    rule: dict = {"listed": set(words[1].split(",")), "syscalls": None, "fields": []}
+    for option, then in zip(words[2::2], words[3::2], strict=True):
+        if option == "-S":
+            rule["syscalls"] = set(then.split(","))
+        elif option == "-F" and not then.startswith("-"):
+            rule["fields"].append(re.match(r"([^!=<>&]*)(!=|>=|<=|&=|=|>|<|&)?(.*)", then).groups())
+        elif option != "-C":
+            return None
+    return rule
+
+
+def kinds(rule: dict) -> set[str]:
+    """The kinds of event a rule can record, of KIND_WORDS: program starts, and reads, writes and changes
+    of attributes as one. A perm field of only x keeps program starts, one without x the other kind; a
+    perm field with other letters, or with another operator, says nothing the comparison reads. A rule
+    whose system calls are all execve or execveat records program starts alone; of any other system
+    call, and of a rule that names none, the text does not tell which kinds, so it is both."""
+
+    found = set(KIND_WORDS)
+    for name, operator, letters in rule["fields"]:
+        if name == "perm" and operator == "=" and letters and set(letters) <= set(PERMS):
+            found &= {PERMS[letter] for letter in letters}
+    if rule["syscalls"] is not None and rule["syscalls"] <= STARTS:
+        found &= {"start"}
+    return found
+
+
+def plain(path: str) -> bool:
+    """Whether a path is written in the one way the comparison compares: absolute, with no empty, . or
+    .. part and no / at the end."""
+
+    return path.startswith("/") and all(part not in ("", ".", "..") for part in path[1:].split("/"))
+
+
+def recorders(watches: dict[str, set[str]]) -> list[tuple[str, dict | None]]:
+    """A run's rules, under any key or none, that can record a system call's event, each as its form and
+    its rule_of(): not one that never records, nor one of a list that holds no system call's records. A
+    form that cannot be read back stays, with None."""
+
+    return [
+        (form, rule)
+        for form, rule in ((form, rule_of(form)) for form in sorted(set().union(*watches.values())))
+        if rule is None or not ("never" in rule["listed"] or rule["listed"] & NOT_SYSCALLS)
+    ]
+
+
+def paths_of(rule: dict) -> list[str]:
+    return [value for name, operator, value in rule["fields"] if name == "path" and operator == "="]
+
+
+def near(path: str, others: list[tuple[str, dict | None]], label: str) -> str | None:
+    """Why a rule of the other run that names a path could have recorded an event at this plain path,
+    or None: it watches the same path, a folder above it or a path under it (this path may be a
+    folder), whatever its permission letters or key. label names the other run."""
+
+    mine = path.split("/")
+    for other_form, other in others:
+        if other is None:
+            return f"the {label} run's rule `{other_form}` is in a form the comparison does not read"
+        for there in paths_of(other):
+            if not plain(there):
+                return f"the {label} run's rule `{other_form}` names its path in a form the comparison does not compare"
+            parts = there.split("/")
+            if parts == mine:
+                return f"the {label} run's rule `{other_form}` watches the same path, `{path}`"
+            if parts == mine[: len(parts)]:
+                return f"the {label} run's rule `{other_form}` watches `{there}`, a folder above `{path}`"
+            if mine == parts[: len(mine)]:
+                return f"the {label} run's rule `{other_form}` watches `{there}`, under `{path}`, which may be a folder"
+    return None
+
+
+def unmarked(form: str, others: list[tuple[str, dict | None]], label: str) -> str | None:
+    """Why a rule's events cannot be shown to be its own against the other run's rules, or None when
+    they can: the rule names one path, no rule of the other run is near() it, and none that names no
+    path could record the same kind of event. others are the other run's recording() rules, label
+    names that run."""
+
+    rule = rule_of(form)
+    if rule is None:
+        return f"its rule `{form}` is in a form the comparison does not read"
+    watched = paths_of(rule)
+    if len(watched) != 1 or any(name == "path" and operator != "=" for name, operator, _ in rule["fields"]):
+        return (
+            f"its rule `{form}` watches no one path, and what such a rule records cannot be told apart by its "
+            "text from what another rule records"
+        )
+    path = watched[0]
+    if not plain(path):
+        return f"its rule `{form}` names its path in a form the comparison does not compare"
+    why = near(path, others, label)
+    if why:
+        return why
+    for other_form, other in others:
+        shared = kinds(rule) & kinds(other)
+        if not paths_of(other) and shared:
+            said = " or ".join(KIND_WORDS[kind] for kind in KIND_WORDS if kind in shared)
+            return (
+                f"the {label} run's rule `{other_form}` watches no path and could record the same kind of "
+                f"event ({said})"
+            )
+    return None
+
+
+def crossed(event: dict, others: list[tuple[str, dict | None]], label: str) -> str | None:
+    """Why the other run's rules could have recorded this event through a path it names, or None. One
+    system call can name two paths, as a rename or a link does, and a watch on either records it, so
+    every path of the event must be plain and none near() a rule of the other run. A recording cuts a
+    long field and ends it in "...", and the paths it cut off are not known."""
+
+    text = (event.get("fields") or {}).get("paths") or ""
+    if text.endswith("..."):
+        return "its event's paths may be cut short, so not every path it names is known"
+    if not text:
+        return "its event names no path"
+    # An empty piece is a path the recording could not read: it is not plain, so it gives no mark.
+    named = text.split(", ")
+    for path in named:
+        if not plain(path):
+            return f"its event names the path `{path}` in a form the comparison does not compare"
+        why = near(path, others, label)
+        if why:
+            return why
+    return None
+
+
+def marks(mine: dict[str, set[str]], other: dict[str, set[str]], label: str) -> dict[str, str | None]:
+    """For each audit key of one run, None when its events can carry the change's own mark, or why they
+    cannot: every rule under the key must pass unmarked() against every rule of the other run, under
+    any key or none. label names the other run. A key is only a label on rules, so its name counts for
+    nothing: a key renamed, split, merged or kept with an old rule is no mark by what its rules watch."""
+
+    others = recorders(other)
+    found: dict[str, str | None] = {}
+    for key, forms in sorted(mine.items()):
+        if key:
+            reasons = [unmarked(form, others, label) for form in sorted(forms)] or ["it has no rule"]
+            found[key] = next((reason for reason in reasons if reason), None)
+    return found
 
 
 def sensor_lines(recording: dict, sensor: str, keys: set[str] | None = None) -> dict[str, list[str]]:
@@ -274,25 +442,36 @@ def by_step(recording: dict, part: str) -> dict[str, list[dict]]:
     return found
 
 
-def mark_of(sides: tuple[tuple[dict, list[dict], list[dict], set[str]], ...]) -> dict | str:
+def mark_of(
+    sides: tuple[tuple[dict, list[dict], list[dict], dict[str, str | None]], ...],
+    rules: tuple[list[tuple[str, dict | None]], ...],
+) -> dict | str:
     """Whether a change of the audit rules left its own mark on a step: one run holds nothing of the
-    step, and every event the other holds of it is of an audit key that only that run's rules define,
-    every one it recorded kept, with every alert on the step resting on those events alone. Then the
-    step's move is carried by those events: without them that run too would hold nothing of it.
-    sides is (step, its events, its alerts, the audit keys that its run's rules define and the other
-    run's do not) of the before and the after run. The mark as {"run", "keys", "events"}, or why
-    the step does not carry one."""
+    step, and every event the other holds of it is of an audit key whose every rule watches a path
+    that no rule of the first run could have recorded, names no path that one could have, every one
+    it recorded kept, with every alert on the step resting on those events alone. Then the step's
+    move is carried by those events: without them that run too would hold nothing of it. sides is
+    (step, its events, its alerts, the marks() of its run's keys) of the before and the after run, and
+    rules the recorders() of each. The mark as {"run", "keys", "events"}, or why the step does not
+    carry one."""
 
     holding = [number for number, (_, events, alerts, _) in enumerate(sides) if events or alerts]
     if len(holding) != 1:
         return "both runs hold events of it" if holding else "neither run holds an event of it"
-    step, events, alerts, only = sides[holding[0]]
+    step, events, alerts, keys = sides[holding[0]]
     if sides[1 - holding[0]][0]["visibility"]["answer"] != "no telemetry":
         return "the other run does not say that no sensor recorded it"
-    if not all(
-        event["sensor"] == "auditd" and (event.get("fields") or {}).get("key") in only for event in events
-    ):
-        return "not every event of it is auditd's under an audit key that only that run's audit rules define"
+    for event in events:
+        key = (event.get("fields") or {}).get("key")
+        if event["sensor"] != "auditd" or not key:
+            return "not every event of it is auditd's under an audit key"
+        if key not in keys:
+            return f"its events' audit key `{key}` is on no rule of that run's audit rules"
+        if keys[key]:
+            return f"its events' audit key `{key}` gives no mark: {keys[key]}"
+        why = crossed(event, rules[1 - holding[0]], ("before", "after")[1 - holding[0]])
+        if why:
+            return f"its event `{event['id']}` of the audit key `{key}` gives no mark: {why}"
     if step["visibility"].get("events") != len(events):
         return "the recording did not keep every event of it"
     ids = {event["id"] for event in events}
@@ -534,20 +713,23 @@ def compare(
     ]
     runners_only = bool(runner_rows) and two_runners and sorted(refusals) == sorted(runner_reasons)
     runners_said = ", ".join(named(row["what"]) for row in runner_rows)
-    # The mark is a key that one run's audit rules define and the other's do not: a key that only one
-    # run's events carry may be one both rule sets define that fired on one runner only.
-    defined = (defined_keys(before), defined_keys(after))
+    # The mark is a key whose rules watch only paths that no rule of the other run could have recorded,
+    # on events that name no path such a rule watches:
+    # a key that only one run's events carry may be on a rule both runs have that fired on one runner
+    # only, a key that only one run's rules name may be an old rule under a new name, and a new rule may
+    # watch what an old one already covers.
+    defined = (audit_watches(before), audit_watches(after))
     unsaid = [label for label, keys_ in zip(("before", "after"), defined, strict=True) if keys_ is None]
     limit = None
     if runners_only and declared in MARKS and unsaid:
         refusals.append(
             f"the two runners differed ({runners_said}), and "
             + (
-                f"the {unsaid[0]} recording does not say which audit keys its"
+                f"the {unsaid[0]} recording does not say what its"
                 if len(unsaid) == 1
-                else "neither recording says which audit keys its run's"
+                else "neither recording says what its run's"
             )
-            + " audit rules define, so no step can be shown to carry the change's "
+            + " audit rules watch under each audit key, so no step can be shown to carry the change's "
             "own mark: write the recordings again with `bluefire-lab recording` from each run's folder, "
             "which holds the audit rules as they were loaded, or run the pair again"
         )
@@ -583,12 +765,22 @@ def compare(
     kept = ({event["step"] for event in before["events"]}, {event["step"] for event in after["events"]})
     keys = (audit_keys(before), audit_keys(after))
     only = (set(keys[0]) - set(keys[1]), set(keys[1]) - set(keys[0]))
+    marking = (
+        (marks(defined[0], defined[1], "after"), marks(defined[1], defined[0], "before"))
+        if limit is not None
+        else ({}, {})
+    )
+    rules = (recorders(defined[0]), recorders(defined[1])) if limit is not None else ([], [])
+    # The keys whose events a changed step lists: those only one run's events carry, and on two runners
+    # that differed also those that can carry the mark, whose name the other run's events may carry too.
+    listed_keys = tuple(
+        only[number] | {key for key, why in marking[number].items() if not why} for number in (0, 1)
+    )
     if sensor == "auditd":
         # Two runs of the same audit rules differ in text that is new in every run, such as temporary
-        # file names and a password's salt. Only the records of a rule that one run has and the other
-        # lacks, told by its audit key, can be the change's.
-        lines = (sensor_lines(before, sensor, only[0]), sensor_lines(after, sensor, only[1]))
-        unchanged = f"sensor `{sensor}` recorded nothing of this step under an audit key that only one of the runs has"
+        # file names and a password's salt, so the records of a key both runs' events carry are not listed.
+        lines = (sensor_lines(before, sensor, listed_keys[0]), sensor_lines(after, sensor, listed_keys[1]))
+        unchanged = f"sensor `{sensor}` recorded nothing of this step under an audit key that only one run's events carry"
     else:
         lines = (sensor_lines(before, sensor), sensor_lines(after, sensor)) if sensor else ({}, {})
         unchanged = f"sensor `{sensor}` recorded the same for this step in both runs"
@@ -600,7 +792,6 @@ def compare(
         )
         for recording in (before, after)
     )
-    marking = (defined[0] - defined[1], defined[1] - defined[0]) if limit is not None else (set(), set())
     rows = []
     for old, step in pairs:
         changed = [
@@ -649,7 +840,8 @@ def compare(
                         marking[number],
                     )
                     for number, part in enumerate((old, step))
-                )
+                ),
+                rules,
             )
             if limit is not None and changed
             else None
@@ -733,15 +925,22 @@ def compare(
             keys_said = ", ".join(f"`{key}`" for key in row["mark"]["keys"])
             row["verdict"] += (
                 f"; it rests on {plural(row['mark']['events'], 'event')} of the audit "
-                f"{'key' if len(row['mark']['keys']) == 1 else 'keys'} {keys_said}, which only "
-                f"the {row['mark']['run']} run's audit rules define, the only events either run holds of the "
-                f"step, on two runners that differed ({runners_said})"
+                f"{'key' if len(row['mark']['keys']) == 1 else 'keys'} {keys_said}, whose every rule in "
+                f"the {row['mark']['run']} run watches a path that no rule of the "
+                f"{'after' if row['mark']['run'] == 'before' else 'before'} run, as written, could have recorded, the only "
+                f"events either run holds of the step, on two runners that differed ({runners_said})"
             )
         if row["result"] != "same":
             row["verdict"] += f"; {CLAIM}"
     if limit is not None:
         limit["credited"] = sum(1 for row in rows if "mark" in row)
         limit["not_attributable"] = sum(1 for row in rows if row["result"] == "not attributable")
+
+    def mark_said(marks_of: dict[str, str | None], key: str) -> dict:
+        """On two runners that differed: whether events of a key can carry the change's own mark, and why not."""
+
+        why = marks_of.get(key, "it is on no rule of its run")
+        return {"mark": True} if why is None else {"mark": False, "no_mark": why}
 
     def listed(steps: list[dict]) -> list[dict]:
         return [
@@ -790,11 +989,18 @@ def compare(
         "race": race(before, after),
         "audit_keys": {
             label: {
-                key: {"events": len(events), "steps": sorted({event["step"] for event in events})}
+                key: {
+                    "events": len(events),
+                    "steps": sorted({event["step"] for event in events}),
+                    **(mark_said(marks_of, key) if limit is not None else {}),
+                }
                 for key, events in sorted(found.items())
                 if key in keys_of
             }
-            for label, found, keys_of in (("only_before", keys[0], only[0]), ("only_after", keys[1], only[1]))
+            for label, found, keys_of, marks_of in (
+                ("only_before", keys[0], only[0], marking[0]),
+                ("only_after", keys[1], only[1], marking[1]),
+            )
         }
         if sensor == "auditd"
         else None,
@@ -995,7 +1201,14 @@ def markdown(delta: dict) -> str:
             more = part["count"] - len(part["lines"])
             return (", ".join(shown) + (f", and {more} more" if more else "")) if shown else "none"
 
-        lines += [f"What sensor `{sensor}` recorded of each step above in one run only:", ""]
+        which = (
+            ", under an audit key that only one run's events carry"
+            + (" or that can carry the change's own mark" if limit else "")
+            + " (not by itself the change's own: the verdict says whether it is)"
+            if sensor == "auditd"
+            else ""
+        )
+        lines += [f"What sensor `{sensor}` recorded of each step above in one run only{which}:", ""]
         lines += [
             f"- `{cell(row['id'])}` {cell(row['technique'] + ' ' + row['title'])}: only after, "
             f"{listed(row['records']['new'])}; only before, {listed(row['records']['gone'])}."
@@ -1028,15 +1241,26 @@ def markdown(delta: dict) -> str:
             lines.append(f"Unseen in both runs: {steps_of(still)}.")
         keys = delta.get("audit_keys")
         if keys is not None:
+
+            def mark_words(part: dict) -> str:
+                if "mark" not in part:
+                    return ""
+                return (
+                    ", a key that can carry the change's own mark"
+                    if part["mark"]
+                    else f", no mark: {part['no_mark']}"
+                )
+
             for label, words in (
-                ("only_after", "only the after run has"),
-                ("only_before", "only the before run has"),
+                ("only_after", "only the after run's events carry"),
+                ("only_before", "only the before run's events carry"),
             ):
                 found = keys[label]
                 lines.append(
                     f"Events of an audit key that {words}: "
                     + "; ".join(
-                        f"`{cell(key)}`, {plural(part['events'], 'event')} of {plural(len(part['steps']), 'step')}"
+                        f"`{cell(key)}`, {plural(part['events'], 'event')} of "
+                        f"{plural(len(part['steps']), 'step')}{cell(mark_words(part))}"
                         for key, part in found.items()
                     )
                     + "."

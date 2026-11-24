@@ -1204,15 +1204,35 @@ change: it is run variation. When two runners side by side got another image
 or kernel, and nothing else differs besides the declared change, a change of
 the audit rules gets a limited verdict (`limit` in `delta.json`): it is
 credited only on a step it left its own mark on, every event of the step being
-of an audit key that only one run's rules define while the other run holds
-nothing of it, and every other step that differs is not attributable. Which
-keys a run's rules define, each recording says from the audit rules as that
-run loaded them (`audit_keys` of its sensor `auditd`); a key both rule sets
-define is no mark, also when it fired on one runner only. A credited step is
-counted under its result and again in `counts.by_mark`. A recording that does
-not say its keys, one written by an older version, is refused on two runners
-that differed: write it again with `bluefire-lab recording` from its run's
-folder. Every other change on two runners that differed is refused, with the
+of an audit key whose every rule watches a path that no rule of the other run,
+as written, could have recorded, while the other run holds nothing of it, and
+every other step that differs is not attributable. What a run's rules watch under each key,
+each recording says from the audit rules as that run loaded them
+(`audit_watches` of its sensor `auditd`, each rule in one fixed form without its
+key, so that a watch and the system-call rule it stands for, or a rule's two
+architectures, read the same). The mark is given only where that text can
+establish it: each rule of the key names one path; no rule of the other run,
+under any key, names that path, a folder above it or a path under it, whatever
+its permission letters, nor any other path the event names (a rename or a link
+names two); and no rule of the other run without a path could record the same
+kind of event. There are two kinds: program starts, and reads, writes and
+changes of attributes as one, since the kernel matches `perm=r` and `perm=w`
+alike on an open for reading and writing. A rule with `perm=x`, or on `execve`
+or `execveat` alone, records program starts alone, so it leaves the mark
+standing; one for reads alone (`perm=r`) does not, and neither does one on
+`open`, `openat`, `truncate` or any other system call, or on every one. Where
+the text cannot establish the mark, the step is not attributable and its
+verdict says why. The text has a limit, and the verdict names it: paths are
+compared as the rules and the events write them, so a second name that a link
+gives a file (a symbolic or hard link, or a name under `/proc`) is not found
+out. A key is only a label: a key renamed, split or merged on
+rules both runs have, or one that kept an old rule beside a new one, is no
+mark, nor is a key whose rules both runs have that fired on one runner only.
+A credited step is counted under its result and again in
+`counts.by_mark`. A recording that does not say what its rules watch, one
+written by an older version, is refused on two runners that differed: write it
+again with `bluefire-lab recording` from its run's folder, or run the pair
+again. Every other change on two runners that differed is refused, with the
 advice to run the pair again. The section "Two runners that differed" of
 [`docs/RECORDING.md`](../docs/RECORDING.md) gives the rule.
 
@@ -1287,8 +1307,11 @@ fresh runs for it, in the same workflow run, where only that thing differs.
   none, and the tests unseen in both runs. Two runs of the same audit rules
   already differ in auditd's text, by temporary file names and a password's
   salt that are new in every run, so for `sensors:auditd` a step is credited
-  only through events of an audit key that one run has and the other lacks,
-  and `delta.md` gives how many events of each such key the recordings hold.
+  only through events of an audit key that one run's events carry and the
+  other's never do, and `delta.md` gives how many events of each such key the
+  recordings hold. That is a description: on two runners that differed it
+  also says whether each such key can carry the change's own mark, and why
+  not.
   Each side says the commit its rules and sensor settings came from.
 - **What it costs.** One more run of the whole list: in the three pairs told
   below it took 13.5 to 15.5 minutes of runner time, and each of the two short
@@ -1315,8 +1338,8 @@ same image and kernel, so the comparison is like with like, with a verdict on
 every step. Before, with the old audit rules, "Clear Bash history (echo)"
 (`test:cbf506a5`) had no telemetry; after, it is seen, by one event:
 `openat: /home/bluefire-lab/.bash_history` of the audit key `shell-history`,
-which only the changed rules define, written by the launcher's shell in the
-test's attack session. The comparison calls that step better, on 1 of the 4
+the key of the new watches, written by the launcher's shell in the test's
+attack session. The comparison calls that step better, on 1 of the 4
 published procedures of T1070.003 in the list (the 3 others were seen or
 alerted before too), and gives its price: 2 published rules alerted on
 ordinary activity before and 2 after, with 8,902 ordinary events before and
@@ -1325,17 +1348,19 @@ on all 91. One pair of runs.
 
 Two earlier pairs of the same change got two runners that differed in image
 and kernel (`ubuntu24 20261116.133.1` with `7.0.0-1014-aws`, and
-`ubuntu24 20261116.376.1` with `7.0.0-1017-azure`). In run
+`ubuntu24 20261116.376.1` with `7.0.0-1017-azure`). Both recorded the same
+event on the same step, and both summaries were written by earlier versions of
+`compare`: run
 [45362120784](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45362120784)
-the comparison gave a limited verdict: the same step better by the change's
-own mark, resting on that one event, its price not known, since each run
-counted its ordinary activity on its own runner; the 90 other steps the same.
-Run
+gave a limited verdict that rested on the key's name alone, and run
 [45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
-recorded the same event on the same step; its summary was written by an
-earlier version of `compare`, which refused every pair on two runners that
-differed, and its recordings do not say which audit keys their rules define,
-so this version refuses them too. In that pair one more step differed,
+refused every pair on two runners that differed. Their recordings were written
+before a recording said what its audit rules watch under each key (those of
+run 45362120784 name the keys alone, those of run 45350480637 not even
+those), so this version of `compare` refuses both: on two runners that
+differed, a key's name is no mark. A limited verdict by this version's
+rule, on a pair of runners that differed, is not yet shown by a CI run. In run
+45350480637 one more step differed,
 `test:23b91cd2` (T1518.001 Security Software Discovery - ps): on one runner
 its output lacked the text its effect check looks for. That is what two
 runners can differ by, and why such a step is not credited to a change. Of

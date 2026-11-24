@@ -636,25 +636,74 @@ def test_the_setup_names_each_sensors_settings_and_each_detector_the_digest_of_i
     assert {detector["id"]: detector["digest"] for detector in changed["network"]["detectors"]} != digests
 
 
-def test_the_auditd_sensor_says_which_audit_keys_its_rules_as_loaded_define(tmp_path: Path) -> None:
+def watches_of(tmp_path: Path, rules: str) -> dict[str, list[str]]:
+    made = recorded(tmp_path, a_run(), audit={"name": "auditd", "rules_text": rules})
+    return next(sensor for sensor in made["network"]["sensors"] if sensor["id"] == "auditd")["audit_watches"]
+
+
+def test_the_auditd_sensor_says_what_its_rules_as_loaded_watch_under_each_key(tmp_path: Path) -> None:
     rules = (
         "## A watch that is only a comment: -w /etc/hosts -p wa -k not-loaded\n"
+        "-w /etc/passwd -p wa -k removed-by-the-next-line\n"
         "-D\n"
+        "-b 32768\n"
         "-w /home/bluefire-lab/.bash_history -p wa -k shell-history\n"
         "-a always,exit -F arch=b64 -S execve -F auid!=unset -F key=process-start\n"
+        "-a always,exit -F arch=b32 -S execve -F auid!=unset -F key=process-start\n"
         "  # -w /etc/shadow -p wa -k also-not-loaded\n"
         "-w /root/.bashrc -p wa -k shell-start\n"
+        "-w /etc/profile -p wa\n"
+        "-w /etc/sudoers -p wa -k gone\n"
+        "-W /etc/sudoers -p wa -k gone\n"
+        "-w /etc/group -p wa -k kept\n"
+        "-W /etc/group -p wa -k another-key\n"
     )
 
-    made = recorded(tmp_path, a_run(), audit={"name": "auditd", "rules_text": rules})
     older = recorded(tmp_path, a_run(), audit={"name": "auditd"})
 
-    auditd = next(sensor for sensor in made["network"]["sensors"] if sensor["id"] == "auditd")
-    assert auditd["audit_keys"] == ["process-start", "shell-history", "shell-start"]
-    # A run whose results do not hold the rules' text does not say which keys they define.
-    assert "audit_keys" not in next(
+    # The architecture pair is one form; a rule without a key is under ""; -W removes only the rule
+    # with its key.
+    assert watches_of(tmp_path, rules) == {
+        "": ["-a always,exit -F path=/etc/profile -F perm=aw"],
+        "kept": ["-a always,exit -F path=/etc/group -F perm=aw"],
+        "process-start": ["-a always,exit -S execve -F auid!=unset"],
+        "shell-history": ["-a always,exit -F path=/home/bluefire-lab/.bash_history -F perm=aw"],
+        "shell-start": ["-a always,exit -F path=/root/.bashrc -F perm=aw"],
+    }
+    # A run whose results do not hold the rules' text does not say what they watch.
+    assert "audit_watches" not in next(
         sensor for sensor in older["network"]["sensors"] if sensor["id"] == "auditd"
     )
+
+
+def test_one_watch_in_any_spelling_auditctl_takes_is_one_form(tmp_path: Path) -> None:
+    # A watch, the syscall rule it stands for in the other field order and with the letters of perm
+    # swapped, and that rule for each architecture: the same thing watched, so a new key on it is no mark.
+    spellings = [
+        "-w /home/bluefire-lab/.bash_history -p wa -k a",
+        "-a always,exit -F perm=aw -F path=/home/bluefire-lab/.bash_history -k b",
+        "-a exit,always  -F arch=b64 -F path=/home/bluefire-lab/.bash_history   -F perm=wa -F key=c",
+        "-a always,exit -F arch=b32 -F dir=/home/bluefire-lab/.bash_history -F perm=wa -F key=c",
+        "-a always,exit -S execve -F auid!=4294967295 -k d",
+        "-a always,exit -F auid!=-1 -S execve -k d2",
+        "-a always,exit -F auid!=unset -S execve -k d3",
+    ]
+
+    found = watches_of(tmp_path, "\n".join(spellings) + "\n")
+
+    assert {key: forms for key, forms in found.items() if key in ("a", "b", "c")} == {
+        key: ["-a always,exit -F path=/home/bluefire-lab/.bash_history -F perm=aw"] for key in ("a", "b", "c")
+    }
+    assert {tuple(found[key]) for key in ("d", "d2", "d3")} == {("-a always,exit -S execve -F auid!=unset",)}
+    # Another path, other permissions or another system call is another form.
+    other = watches_of(
+        tmp_path,
+        "-w /home/bluefire-lab/.zsh_history -p wa -k a\n-w /home/bluefire-lab/.bash_history -p r -k b\n"
+        "-a always,exit -S openat -F auid!=unset -k d\n",
+    )
+    assert not {form for forms in other.values() for form in forms} & {
+        form for forms in found.values() for form in forms
+    }
 
 
 def test_the_lab_detector_says_which_rules_the_run_accepted_and_the_digest_of_each(tmp_path: Path) -> None:

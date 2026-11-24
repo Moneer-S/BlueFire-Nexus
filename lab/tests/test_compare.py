@@ -6,6 +6,8 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+
 from bluefire_lab.__main__ import main
 
 ANSWER = {"alerted": "alert", "seen": "telemetry only", "unseen": "no telemetry"}
@@ -348,7 +350,14 @@ def test_a_sensor_change_is_judged_on_whether_the_step_was_recorded(tmp_path: Pa
     )
 
 
-def an_event(step: str, number: int, sensor: str, kind: str, text: str, key: str = "") -> dict:
+def an_event(
+    step: str, number: int, sensor: str, kind: str, text: str, key: str = "", paths: str | None = None
+) -> dict:
+    """An event as a recording holds it. auditd's openat names the path it opened, as its text and in
+    the field paths, as the recording writes them, unless paths says otherwise."""
+
+    if paths is None and (sensor, kind) == ("auditd", "openat"):
+        paths = text
     return {
         "id": f"{step}-{number}",
         "time": f"2026-11-16T04:10:0{number}.000Z",
@@ -358,7 +367,7 @@ def an_event(step: str, number: int, sensor: str, kind: str, text: str, key: str
         "text": text,
         "step": step,
         "tied_by": "session",
-        "fields": {"key": key} if key else {},
+        "fields": {**({"key": key} if key else {}), **({"paths": paths} if paths is not None else {})},
     }
 
 
@@ -393,8 +402,8 @@ def test_a_sensor_change_lists_what_it_recorded_and_credits_no_step_it_recorded_
     }
     assert find_step["result"] == "not attributable"
     assert find_step["verdict"] == (
-        "not attributable: sensor `auditd` recorded nothing of this step under an audit key that only one of "
-        "the runs has, so this is run variation; one pair of runs"
+        "not attributable: sensor `auditd` recorded nothing of this step under an audit key that only one run's "
+        "events carry, so this is run variation; one pair of runs"
     )
     assert find_step["records"]["new"] == {"count": 0, "lines": []}
     assert delta["unexplained"] == ["test:46959285"] and delta["runners"] == 2
@@ -409,7 +418,11 @@ def test_a_sensor_change_lists_what_it_recorded_and_credits_no_step_it_recorded_
         "only before, none."
     ) in text
     assert "Recorded now, and by no sensor before: `test:7c247dc7` T1552.004 Test 7c247dc7." in text
-    assert "Events of an audit key that only the after run has: `shell-history`, 1 event of 1 step." in text
+    # Like with like, a key that only one run's events carry is described, with no word on a mark.
+    assert (
+        "Events of an audit key that only the after run's events carry: `shell-history`, 1 event of 1 step."
+        in text
+    )
     assert (
         "Same in both: the tests' commit, the rules of detector `lab`, the rules of detector `pinned`, the image "
         "of host `target`, the kernel of host `target`, the settings of sensor `sysmon`, the version of `Zircolite`."
@@ -439,7 +452,7 @@ def test_a_sensor_change_that_recorded_nothing_new_says_so_and_names_the_step_st
     assert delta["counts"]["same"] == 3
     assert "No step that no sensor recorded before is recorded now." in text
     assert "Unseen in both runs: `test:7c247dc7` T1552.004 Test 7c247dc7." in text
-    assert "No event of an audit key that only the after run has." in text
+    assert "No event of an audit key that only the after run's events carry." in text
     assert "the whole audit log of each run is `audit.txt` in its artifact" in text
 
 
@@ -464,6 +477,56 @@ RUNNERS = (
 )
 
 
+def watch(path: str) -> str:
+    """A watch on a file for writes and changes of attributes, in the form a recording writes it."""
+
+    return f"-a always,exit -F path={path} -F perm=aw"
+
+
+HOME = "/home/bluefire-lab"
+# What the audit rules of the first real pair watch, as its two runs' audit-rules.txt say: the history
+# files are the after run's new watches; the rest the base commit's, the same in both runs.
+HISTORY_FILES = [
+    watch(f"{HOME}/{name}")
+    for name in (".bash_history", ".zsh_history", ".histfile", ".sh_history", ".history")
+]
+BASE_WATCHES = {
+    "bluefire-lab-probe": [watch("/var/tmp/bluefire-lab-audit-probe")],
+    "process-start": ["-a always,exit -S execve -F auid!=unset"],
+    "shell-start": sorted(
+        watch(path)
+        for path in (
+            "/etc/profile",
+            "/etc/profile.d",
+            "/etc/bash.bashrc",
+            "/etc/environment",
+            "/root/.bashrc",
+            "/root/.profile",
+            *(
+                f"{HOME}/{name}"
+                for name in (".bashrc", ".profile", ".bash_profile", ".bash_login", ".bash_logout")
+            ),
+        )
+    ),
+}
+# Why a key of a rule both runs have gives no mark, as the verdict says it.
+SAME_PATH = (
+    "its events' audit key `shell-history` gives no mark: the before run's rule "
+    f"`{watch(HOME + '/.bash_history')}` watches the same path, `{HOME}/.bash_history`"
+)
+NO_PATH = (
+    "its events' audit key `process-start` gives no mark: its rule `-a always,exit -S execve -F auid!=unset` "
+    "watches no one path, and what such a rule records cannot be told apart by its text from what another rule "
+    "records"
+)
+
+
+def watching(recording: dict, watches: dict[str, list[str]]) -> None:
+    """Say in the recording's auditd sensor what its run's audit rules watch under each key."""
+
+    recording["network"]["sensors"][1]["audit_watches"] = watches
+
+
 def the_first_pair() -> tuple[dict, dict]:
     """Two recordings of the shape of the first real pair, CI run 45350480637 (its recordings hold 91
     steps and about 1 MB each, too big to keep here): the audit rules gained a watch on the shell history
@@ -471,8 +534,10 @@ def the_first_pair() -> tuple[dict, dict]:
     (echo)" was unseen before, with no event and no alert; after, its one event is the history-file
     write, as that run recorded it. A discovery test printed less on the after runner, so what happened
     changed. 89 other steps are the same, one of them with a shell-history event next to events of a
-    rule both runs have. Each recording's auditd says which keys its rules define, as that run's
-    audit-rules.txt does."""
+    rule both runs have. Each recording's auditd says what its rules watch under each key, as that
+    run's audit-rules.txt does: no rule of the before run watches a history file, a folder above one or a
+    path under one, and its one rule without a path records program starts alone, so the history watches
+    can carry the change's mark."""
 
     others = [a_step(f"test:{number:08x}", number, guid=f"{number:08x}") for number in range(89)]
     before = a_recording(
@@ -481,7 +546,7 @@ def the_first_pair() -> tuple[dict, dict]:
         *others,
     )
     before["source"]["setup"]["sensors"]["auditd"] = "7" * 64
-    before["network"]["sensors"][1]["audit_keys"] = ["bluefire-lab-probe", "process-start", "shell-start"]
+    watching(before, BASE_WATCHES)
     before["events"] = [
         an_event("test:23b91cd2", 1, "auditd", "execve", "ps aux", "process-start"),
         an_event("test:00000000", 1, "auditd", "execve", "cat /etc/passwd", "process-start"),
@@ -491,12 +556,7 @@ def the_first_pair() -> tuple[dict, dict]:
         images={"target": "ubuntu24 20261116.376.1"}, kernels={"target": "7.0.0-1017-azure"}
     )
     after["source"]["setup"]["sensors"]["auditd"] = "6" * 64
-    after["network"]["sensors"][1]["audit_keys"] = [
-        "bluefire-lab-probe",
-        "process-start",
-        "shell-history",
-        "shell-start",
-    ]
+    watching(after, {**BASE_WATCHES, "shell-history": HISTORY_FILES})
     after["ordinary"]["events"] = 921
     after["steps"][0]["happened"] = {"answer": "attempted without effect", "basis": "it printed less"}
     after["steps"][0].update(outcome="no effect", outcome_with_lab_rules="no effect")
@@ -539,7 +599,11 @@ def test_a_pair_on_runners_that_differed_credits_the_audit_rules_only_where_thei
         "why": "the two runners differed",
         "differences": ["images:target", "kernels:target"],
         "credits": "only a step that carries the change's own mark: every event the recordings hold of it is "
-        "of an audit key that only one run's audit rules define, and the other run holds nothing of it",
+        "of an audit key whose every rule in that run watches a path that no rule of the other run, as written, "
+        "could have recorded (none there watches that path, any other path the event names, a folder above one "
+        "or a path under one, and none without a path records the same kind of event, a program start being one "
+        "kind and a read, a write or a change of attributes the other; paths are compared as written, so a "
+        "second name that a link gives a file is not found out), and the other run holds nothing of it",
         "credited": 1,
         "not_attributable": 1,
     }
@@ -557,10 +621,23 @@ def test_a_pair_on_runners_that_differed_credits_the_audit_rules_only_where_thei
         "rules that alerted on ordinary activity: 2 before, 2 after; ordinary events: 940 before, 921 after)"
     )
     assert history["verdict"].endswith(
-        f"; {history['price']}; it rests on 1 event of the audit key `shell-history`, which only the after "
-        "run's audit rules define, the only events either run holds of the step, on two runners that differed "
-        "(the image of host `target`, the kernel of host `target`); one pair of runs"
+        f"; {history['price']}; it rests on 1 event of the audit key `shell-history`, whose every rule in the "
+        "after run watches a path that no rule of the before run, as written, could have recorded, the only events "
+        "either run "
+        "holds of the step, on two runners that differed (the image of host `target`, the kernel of host "
+        "`target`); one pair of runs"
     )
+    # The description of the keys only one run's events carry says the same as the verdict.
+    assert delta["audit_keys"] == {
+        "only_before": {},
+        "only_after": {
+            "shell-history": {"events": 2, "steps": ["test:00000000", "test:cbf506a5"], "mark": True}
+        },
+    }
+    assert (
+        "Events of an audit key that only the after run's events carry: `shell-history`, 2 events of 2 steps, a "
+        "key that can carry the change's own mark."
+    ) in text
     assert (discovery["result"], "mark" in discovery) == ("not attributable", False)
     assert discovery["verdict"] == (
         "not attributable: the two runners differed (the image of host `target`, the kernel of host `target`), "
@@ -633,10 +710,245 @@ def test_events_of_a_key_both_rule_sets_define_are_no_mark_also_when_only_one_ru
 
     assert (step["result"], "mark" in step) == ("not attributable", False)
     assert (
-        "the step does not carry the change's own mark (not every event of it is auditd's under an audit key "
-        "that only that run's audit rules define)"
+        "the step does not carry the change's own mark (its events' audit key `shell-start` gives no mark: the "
+        f"before run's rule `{watch('/etc/bash.bashrc')}` watches the same path, `/etc/bash.bashrc`)"
     ) in step["verdict"]
     assert (delta["counts"]["by_mark"], delta["limit"]["credited"]) == (1, 1)
+
+
+def history_watched_before(watches: dict[str, list[str]]) -> tuple[dict, dict]:
+    """The first pair, with the before run's audit rules watching this as well. Its runner recorded
+    nothing of the history step, as the real before run did not."""
+
+    before, after = the_first_pair()
+    watching(before, {**BASE_WATCHES, **watches})
+    return before, after
+
+
+def test_a_key_renamed_on_a_rule_both_runs_have_is_no_mark(tmp_path: Path) -> None:
+    # The change only gave the history watch a new key: what the rule watches is the same, so on two
+    # runners that differed the step's new event is the after runner's, not the change's.
+    before, after = history_watched_before({"old-history": HISTORY_FILES})
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    assert f"({SAME_PATH})" in step["verdict"]
+    assert (delta["counts"]["better"], delta["counts"]["by_mark"], delta["limit"]["credited"]) == (0, 0, 0)
+    # The key's events are still described as of a key only the after run's events carry, with why that
+    # is no mark, so the description does not read as a credit the verdict withholds.
+    assert (
+        delta["audit_keys"]["only_after"]["shell-history"]["no_mark"] == SAME_PATH.partition("no mark: ")[2]
+    )
+
+
+def test_a_key_split_in_two_or_two_keys_merged_is_no_mark(tmp_path: Path) -> None:
+    # Split: the before run watched the two history files under a key each, the after run under one.
+    split = history_watched_before({"history-bash": HISTORY_FILES[:1], "history-zsh": HISTORY_FILES[1:]})
+    # Merged: the before run watched the start files and the history file under two keys, the after run
+    # watches both under the one key shell-history.
+    merged = history_watched_before({"old-history": HISTORY_FILES[:1]})
+    merged_watches = {key: forms for key, forms in BASE_WATCHES.items() if key != "shell-start"}
+    watching(merged[1], {**merged_watches, "shell-history": BASE_WATCHES["shell-start"] + HISTORY_FILES[:1]})
+
+    for before, after in (split, merged):
+        delta, step = judged(tmp_path, before, after, index=1)
+
+        assert (step["result"], "mark" in step) == ("not attributable", False)
+        assert delta["counts"]["by_mark"] == 0
+
+
+def test_a_key_that_gained_a_rule_and_kept_an_old_one_is_no_mark(tmp_path: Path) -> None:
+    # Both runs watch ~/.bash_history under shell-history; the after run watches ~/.zsh_history too.
+    # The step's event of that key could come from the old watch, which both runs have.
+    before, after = history_watched_before({"shell-history": HISTORY_FILES[:1]})
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    assert delta["counts"]["by_mark"] == 0
+
+
+def test_a_rule_without_a_key_in_the_other_run_is_watched_there_too(tmp_path: Path) -> None:
+    before, after = history_watched_before({"": HISTORY_FILES})
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    assert delta["counts"]["by_mark"] == 0
+
+
+def test_a_key_whose_rules_are_all_new_is_a_mark_whatever_its_name(tmp_path: Path) -> None:
+    # The before run had a key of the same name on another watch: what counts is what the rules watch.
+    # Its events carry the key too, so the key is not one that only one run's events carry; the step still
+    # lists the event that carries the mark.
+    before, after = history_watched_before({"shell-history": [watch("/home/bluefire-lab/.lesshst")]})
+    before["events"].append(
+        an_event("test:00000000", 3, "auditd", "openat", f"{HOME}/.lesshst", "shell-history")
+    )
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert (step["result"], step["mark"]) == (
+        "better",
+        {"run": "after", "keys": ["shell-history"], "events": 1},
+    )
+    assert step["records"]["new"] == {"count": 1, "lines": [f"openat: {HOME}/.bash_history"]}
+    assert delta["counts"]["by_mark"] == 1
+
+
+def no_mark(step: dict) -> str:
+    """Why the step carries no mark, as its verdict says it."""
+
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    return step["verdict"].partition("the step does not carry the change's own mark (")[2]
+
+
+def test_a_watch_on_a_folder_above_the_new_watch_in_the_other_run_is_no_mark(tmp_path: Path) -> None:
+    # A watch on a folder records what happens to every file under it: the before run's rule could have
+    # recorded the history-file write that only the after run holds.
+    before, after = history_watched_before({"home": [watch(HOME)]})
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert no_mark(step).startswith(
+        f"its events' audit key `shell-history` gives no mark: the before run's rule `{watch(HOME)}` watches "
+        f"`{HOME}`, a folder above `{HOME}/.bash_history`)"
+    )
+    assert (delta["counts"]["by_mark"], delta["limit"]["credited"]) == (0, 0)
+
+
+def test_a_watch_under_the_new_watch_in_the_other_run_is_no_mark(tmp_path: Path) -> None:
+    # The after run watches a folder, the before run a file in it: the text does not say whether a watched
+    # path is a folder, so the old rule may cover part of the new one's ground.
+    before, after = history_watched_before({"old": [watch(f"{HOME}/.config/fish/fish_history")]})
+    watching(after, {**BASE_WATCHES, "shell-history": [watch(f"{HOME}/.config")]})
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert (
+        f"watches `{HOME}/.config/fish/fish_history`, under `{HOME}/.config`, which may be a folder"
+        in no_mark(step)
+    )
+    assert delta["counts"]["by_mark"] == 0
+
+
+def test_the_same_path_with_other_permission_letters_under_another_key_is_no_mark(tmp_path: Path) -> None:
+    # The before run watched the history file for writes alone; the after run for writes and changes of
+    # attributes. The write the after run holds is one the before run's rule could have recorded.
+    old = f"-a always,exit -F path={HOME}/.bash_history -F perm=w"
+    before, after = history_watched_before({"old-history": [old]})
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert no_mark(step).startswith(
+        f"its events' audit key `shell-history` gives no mark: the before run's rule `{old}` watches the same "
+        f"path, `{HOME}/.bash_history`)"
+    )
+    assert delta["counts"]["by_mark"] == 0
+
+
+def test_a_marking_key_whose_rule_names_no_path_is_no_mark(tmp_path: Path) -> None:
+    # The after run's new key holds a system call rule for every program: what it records cannot be told
+    # apart by the text from what the before run's rules record.
+    before, after = the_first_pair()
+    watching(after, {**BASE_WATCHES, "shell-history": ["-a always,exit -S openat -F auid!=unset"]})
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert no_mark(step).startswith(
+        "its events' audit key `shell-history` gives no mark: its rule `-a always,exit -S openat -F auid!=unset` "
+        "watches no one path"
+    )
+    assert delta["counts"]["by_mark"] == 0
+
+
+def test_a_rule_without_a_path_in_the_other_run_that_could_record_the_event_is_no_mark(
+    tmp_path: Path,
+) -> None:
+    # A system call rule on opening and truncating files, with no path, records the shell's write to the
+    # history file as well, under its own key. Its program starts alone, which the real before run has, could not.
+    files = "-a always,exit -S open,openat,truncate -F auid!=unset"
+    before, after = history_watched_before({"file-writes": [files]})
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert no_mark(step).startswith(
+        f"its events' audit key `shell-history` gives no mark: the before run's rule `{files}` watches no path "
+        "and could record the same kind of event (reads, writes and changes of attributes))"
+    )
+    assert delta["counts"]["by_mark"] == 0
+    # A rule on another list, which holds no system call's records, leaves the mark standing.
+    before, after = history_watched_before({"quiet": ["-a always,exclude -F msgtype=CWD"]})
+    _, step = judged(tmp_path, before, after, index=1)
+    assert step["result"] == "better"
+
+
+@pytest.mark.parametrize(
+    "reads",
+    ["-a always,exit -F auid!=unset -F perm=r", "-a always,exit -S openat -F auid!=unset -F perm=r"],
+)
+def test_a_rule_without_a_path_for_reads_in_the_other_run_is_no_mark(tmp_path: Path, reads: str) -> None:
+    # The kernel matches perm r and perm w alike on an open for reading and writing, so a rule for reads
+    # records an open that the new watch for writes records: reads, writes and changes of attributes are
+    # one kind. Without a system call the rule selects every one; with openat, that one.
+    before, after = history_watched_before({"reads": [reads]})
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert no_mark(step).startswith(
+        f"its events' audit key `shell-history` gives no mark: the before run's rule `{reads}` watches no "
+        "path and could record the same kind of event (reads, writes and changes of attributes))"
+    )
+    assert (delta["counts"]["by_mark"], delta["audit_keys"]["only_after"]["shell-history"]["mark"]) == (
+        0,
+        False,
+    )
+
+
+def test_a_rule_without_a_path_for_program_starts_in_the_other_run_leaves_the_mark_standing(
+    tmp_path: Path,
+) -> None:
+    # perm x selects only the system calls that start a program, and no watch for writes records one.
+    before, after = history_watched_before({"starts": ["-a always,exit -F perm=x"]})
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert (step["result"], step["mark"]) == (
+        "better",
+        {"run": "after", "keys": ["shell-history"], "events": 1},
+    )
+    assert delta["counts"]["by_mark"] == 1
+
+
+def test_an_event_that_names_a_path_the_other_run_watches_is_no_mark(tmp_path: Path) -> None:
+    # A rename onto the history file names the file it came from as well, and the before run's watch on
+    # that file records the same rename under its own key.
+    before, after = the_first_pair()
+    after["events"][2]["fields"]["paths"] = f"{HOME}/.bashrc, {HOME}/.bash_history"
+
+    delta, step = judged(tmp_path, before, after, index=1)
+
+    assert no_mark(step).startswith(
+        "its event `test:cbf506a5-1` of the audit key `shell-history` gives no mark: the before run's rule "
+        f"`{watch(HOME + '/.bashrc')}` watches the same path, `{HOME}/.bashrc`)"
+    )
+    assert delta["counts"]["by_mark"] == 0
+    # A path the comparison cannot compare, here one relative to the working folder, gives no mark either.
+    after["events"][2]["fields"]["paths"] = ".bash_history"
+    _, step = judged(tmp_path, before, after, index=1)
+    assert no_mark(step).startswith(
+        "its event `test:cbf506a5-1` of the audit key `shell-history` gives no mark: its event names the path "
+        "`.bash_history` in a form the comparison does not compare)"
+    )
+    # A field the recording cut short leaves out the paths after the cut, which may be watched.
+    after["events"][2]["fields"]["paths"] = f"{HOME}/.bash_history, {HOME}/.bas..."
+    _, step = judged(tmp_path, before, after, index=1)
+    assert "its event's paths may be cut short, so not every path it names is known)" in no_mark(step)
+    # A path the recording could not read is an empty piece: it is not left out, it gives no mark.
+    after["events"][2]["fields"]["paths"] = f"{HOME}/.bash_history, "
+    _, step = judged(tmp_path, before, after, index=1)
+    assert "its event names the path `` in a form the comparison does not compare)" in no_mark(step)
 
 
 def test_a_marked_event_next_to_an_unmarked_one_is_not_attributable(tmp_path: Path) -> None:
@@ -650,10 +962,7 @@ def test_a_marked_event_next_to_an_unmarked_one_is_not_attributable(tmp_path: Pa
     _, step = judged(tmp_path, before, after)
 
     assert (step["result"], "mark" in step) == ("not attributable", False)
-    assert (
-        "not every event of it is auditd's under an audit key that only that run's audit rules define"
-        in step["verdict"]
-    )
+    assert f"({NO_PATH})" in step["verdict"]
 
 
 def test_a_step_whose_recording_kept_fewer_events_than_it_counted_is_not_credited(tmp_path: Path) -> None:
@@ -729,10 +1038,7 @@ def test_an_event_of_another_sensor_under_a_key_of_the_marks_name_is_not_marked(
     delta, step = judged(tmp_path, before, after)
 
     assert (step["result"], "mark" in step) == ("not attributable", False)
-    assert (
-        "not every event of it is auditd's under an audit key that only that run's audit rules define"
-        in step["verdict"]
-    )
+    assert "(not every event of it is auditd's under an audit key)" in step["verdict"]
     assert (delta["counts"]["by_mark"], delta["limit"]["credited"]) == (1, 1)
 
 
@@ -750,7 +1056,10 @@ def test_a_step_that_lost_its_only_events_with_a_removed_rule_is_worse_by_the_ma
         "worse by the change's own mark, on two runners that differed: recorded to no telemetry by the sensors; "
         "seen to unseen by the published rules; seen to unseen with the lab's rules"
     )
-    assert "which only the before run's audit rules define" in step["verdict"]
+    assert (
+        "whose every rule in the before run watches a path that no rule of the after run, as written, could have "
+        "recorded" in step["verdict"]
+    )
     assert "price" not in step
     assert (delta["counts"]["worse"], delta["counts"]["by_mark"]) == (1, 1)
 
@@ -776,20 +1085,22 @@ def test_a_launcher_only_match_in_the_run_that_recorded_nothing_leaves_the_mark_
     assert (step["result"], step["mark"]["run"]) == ("better", "after")
 
 
-def test_a_pair_on_runners_that_differed_whose_recording_does_not_say_its_audit_keys_is_refused(
+def test_a_pair_on_runners_that_differed_whose_recording_does_not_say_what_its_rules_watch_is_refused(
     tmp_path: Path,
 ) -> None:
+    # A recording written before it said what the rules watch names only their keys, and a key is no mark.
     before, after = the_first_pair()
-    del before["network"]["sensors"][1]["audit_keys"]
+    before["network"]["sensors"][1].pop("audit_watches")
+    before["network"]["sensors"][1]["audit_keys"] = sorted(BASE_WATCHES)
 
     delta, text = compared(tmp_path, before, after, "--change", "sensors:auditd", "--two-runners")
 
     assert (delta["comparable"], delta["limit"]) == (False, None)
     reason = (
         "the two runners differed (the image of host `target`, the kernel of host `target`), and the before "
-        "recording does not say which audit keys its audit rules define, so no step can be shown to carry the "
-        "change's own mark: write the recordings again with `bluefire-lab recording` from each run's folder, "
-        "which holds the audit rules as they were loaded, or run the pair again"
+        "recording does not say what its audit rules watch under each audit key, so no step can be shown to "
+        "carry the change's own mark: write the recordings again with `bluefire-lab recording` from each run's "
+        "folder, which holds the audit rules as they were loaded, or run the pair again"
     )
     assert delta["refused_because"][-1] == reason
     assert len(delta["refused_because"]) == 3
