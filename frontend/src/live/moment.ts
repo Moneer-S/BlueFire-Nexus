@@ -1,6 +1,6 @@
 // What the watch view needs about the current step at one moment: pure.
 
-import { countsForScore, timeOf } from "./recording";
+import { alertMoment, countsForScore, timeOf } from "./recording";
 import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recording";
 import type { Fire, FirstAlert, Frame, ScoreSoFar, Segment, Timeline } from "./playback";
 import { landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE } from "./playback";
@@ -181,9 +181,9 @@ export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[]
 
 /**
  * The time to the first alert on a test, the same wherever it is shown. For
- * an attack path it counts from the start of the first test step (the
- * recording's own `score.first_alert_seconds` when it has it), like the
- * format's score; null when that start was not recorded. For a test list it
+ * an attack path it counts from the start of the first test step to the
+ * moment the alert fires, like the format's `score.first_alert_seconds`; null
+ * when that start was not recorded. For a test list it
  * counts into the run from the first step, like the clock and the race track.
  */
 export function firstAlertClock(recording: Recording, facts: RunFacts, first: FirstAlert): { seconds: number; words: string } | null {
@@ -209,6 +209,6 @@ export function runFacts(recording: Recording, timeline: Timeline): RunFacts {
   const roles = new Map(recording.steps.map((step) => [step.id, step]));
   const found = timeline.fires.find(({ alert }) => countsForScore(alert) && roles.get(alert.step)?.role !== "test");
   const step = found ? roles.get(found.alert.step) : undefined;
-  const otherFirst = found && step ? { step, at: found.at, real: timeOf(found.alert.raised ?? found.alert.time) } : null;
+  const otherFirst = found && step ? { step, at: found.at, real: alertMoment(found.alert) } : null;
   return { start, end, otherFirst };
 }

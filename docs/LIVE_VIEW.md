@@ -46,7 +46,12 @@ plays in a browser with nothing installed.
   once the screen has told its outcome; at the end of the run it is the
   recording's `score`. False alerts, on ordinary activity outside every step,
   have no times in a recording, so watch mode shows them only at the end. In
-  analyse mode it is the whole run's score from the start.
+  analyse mode it is the whole run's score from the start. The time to the
+  first alert, wherever it is shown, is read from the alerts themselves: from
+  the first test's start to the moment that alert fires (its `raised` time
+  where the rules ran live), the same clock the race compares with the goal.
+  A file whose `score.first_alert_seconds` says otherwise is refused on import;
+  the page shows what the alerts say.
 
 ## Two modes
 

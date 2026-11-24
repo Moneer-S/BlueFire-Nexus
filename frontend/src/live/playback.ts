@@ -22,7 +22,7 @@
 // such time), and that holds, its clock stopped, until the arrival has been on
 // screen long enough to be read.
 
-import { countsAsAlert, countsForScore, timeOf } from "./recording";
+import { alertMoment, countsAsAlert, countsForScore, timeOf } from "./recording";
 import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recording";
 
 export const PLAYBACK_RULE = {
@@ -152,7 +152,7 @@ export interface FirstAlert {
   alert: Alert;
   /** Screen time at which it fires. */
   at: number;
-  /** Its real time, in ms: `raised` when present, else the time of the matched activity. */
+  /** Its real time, in ms: its moment (`alertMoment`), `raised` when present, else the time of the matched activity. */
   real: number;
   /**
    * The other steps of role `test` that had begun when it fired: the tests the
@@ -160,9 +160,9 @@ export interface FirstAlert {
    */
   testsBefore: number;
   /**
-   * Real seconds from the start of the first step of role `test`: the
-   * recording's own `score.first_alert_seconds` for an attack path that has
-   * it. Null when the first test has no recorded start.
+   * Real seconds from the start of the first step of role `test` to `real`,
+   * the moment at which playback fires it: never a second source such as the
+   * score, which could differ. Null when the first test has no recorded start.
    */
   secondsFromFirstTest: number | null;
 }
@@ -262,10 +262,6 @@ function placeInBody(segment: Segment, real: number): number {
   if (span <= 0) return segment.bodyStart;
   const clamped = Math.min(segment.realEnd, Math.max(segment.realStart, real));
   return segment.bodyStart + (body * (clamped - segment.realStart)) / span;
-}
-
-function alertReal(alert: Alert): number {
-  return timeOf(alert.raised ?? alert.time);
 }
 
 /** Screen seconds that steps (by id) and silences (by the index of the segment before them) hold for. */
@@ -447,24 +443,24 @@ export function buildTimeline(recording: Recording): Timeline {
   // time is never measured from a later step.
   const firstTest = timeline.tests[0];
   const firstTestReal = firstTest?.step.started === undefined ? null : timeOf(firstTest.step.started);
-  const ownSeconds = recording.kind === "attack path" ? recording.score.first_alert_seconds : undefined;
-  const first = (counts: (alert: Alert) => boolean, own: number | undefined): FirstAlert | null => {
+  const first = (counts: (alert: Alert) => boolean): FirstAlert | null => {
     const found = timeline.fires.find(({ alert }) => counts(alert) && segmentOf.get(alert.step)?.step.role === "test");
     if (!found) return null;
     const segment = segmentOf.get(found.alert.step);
     if (!segment) return null;
-    const real = alertReal(found.alert);
+    const real = alertMoment(found.alert);
     return {
       step: segment.step,
       alert: found.alert,
       at: found.at,
       real,
       testsBefore: timeline.tests.filter((other) => other.start < found.at && other.index !== segment.index).length,
-      secondsFromFirstTest: own ?? (firstTestReal === null ? null : (real - firstTestReal) / 1000),
+      // Like the format's score: zero when the alert's stamp is a little before the first start.
+      secondsFromFirstTest: firstTestReal === null ? null : Math.max(0, (real - firstTestReal) / 1000),
     };
   };
-  timeline.firstAlert = first(countsForScore, ownSeconds);
-  timeline.firstAlertWithLabRules = first(countsAsAlert, undefined);
+  timeline.firstAlert = first(countsForScore);
+  timeline.firstAlertWithLabRules = first(countsAsAlert);
   return timeline;
 }
 

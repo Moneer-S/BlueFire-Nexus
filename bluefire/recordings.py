@@ -459,6 +459,8 @@ def _check_agreement(
     first_event: dict[str, tuple[datetime, str]] = {}
     first_pinned: dict[str, tuple[datetime, str]] = {}
     first_counting: dict[str, tuple[datetime, str]] = {}
+    # The earliest moment of a counting published alert on each step, for the race.
+    first_raised: dict[str, tuple[datetime, str]] = {}
 
     def earliest(table: dict[str, tuple[datetime, str]], step_id: str, text: str) -> None:
         moment = (_time(text), text)
@@ -514,6 +516,10 @@ def _check_agreement(
             earliest(first_counting, alert["step"], alert["time"])
             if origin == "pinned":
                 earliest(first_pinned, alert["step"], alert["time"])
+                # The race counts an alert from its moment: when it was raised, for a
+                # live detector, and otherwise the time of its activity.
+                live = detector_when.get(detector) == "live" and "raised" in alert
+                earliest(first_raised, alert["step"], alert["raised"] if live else alert["time"])
 
     def first_time(
         step: Mapping[str, Any],
@@ -619,16 +625,18 @@ def _check_agreement(
     for key, number in expected_score.items():
         if score[key] != number:
             check.fail(f"score.{key}", f"is {score[key]}, but the steps give {number}.")
-    _check_race(value, first_pinned, check)
+    _check_race(value, first_raised, check)
 
 
 def _check_race(
-    value: Mapping[str, Any], first_pinned: Mapping[str, tuple[datetime, str]], check: _Checker
+    value: Mapping[str, Any], first_raised: Mapping[str, tuple[datetime, str]], check: _Checker
 ) -> None:
     """Check the two times of an attack path's race against what its steps give.
 
-    ``goal_seconds`` must end at the end of one of the steps; the format does not say
-    which step reached the goal, so that is not checked.
+    ``first_raised`` holds the earliest moment of a counting published alert on each
+    step: its ``raised`` time for a live detector, else its ``time``. ``goal_seconds``
+    must end at the end of one of the steps; the format does not say which step
+    reached the goal, so that is not checked.
     """
 
     score, steps = value["score"], value["steps"]
@@ -642,9 +650,9 @@ def _check_race(
         _time(step["started"]) for step in steps if step["role"] == "test" and "started" in step
     ]
     test_alerts = [
-        first_pinned[step["id"]][0]
+        first_raised[step["id"]][0]
         for step in steps
-        if step["role"] == "test" and step["id"] in first_pinned
+        if step["role"] == "test" and step["id"] in first_raised
     ]
     if "first_alert_seconds" in score:
         if not test_starts or not test_alerts:

@@ -4,7 +4,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Alert, Recording, RecordingEvent, Step } from "./recording";
-import { timeOf } from "./recording";
+import { alertMoment, timeOf } from "./recording";
+import { minOf } from "./playback";
 import type { StepRow } from "./analyse";
 import { fixHint, ordinaryMatches, otherRuns } from "./analyse";
 import { capital, clockTime, comparedStep, count, elapsed, falseAlertsOf, howItWent, matchKind, outcomeClass, outcomeWords, plural, roleWords, sensorShortName, sensorWord, sentence, span, stepLabel, stepPlace, strongerKind } from "./format";
@@ -221,6 +222,9 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
   const refusalSensor = refusal ? recording.network.sensors.find((item) => item.id === refusal.sensor) : undefined;
   const started = step.started === undefined ? null : timeOf(step.started);
   const ended = step.ended === undefined ? null : timeOf(step.ended);
+  // The step's first alert at its moment, the time playback fires it: when it was raised, where the rules ran live.
+  const firstAlert = minOf(m.alert.map(alertMoment), Number.NaN);
+  const firstLabAlert = minOf(m.labAlert.map(alertMoment), Number.NaN);
   const host = recording.network.hosts.find((item) => item.id === step.host);
   const from = step.from === undefined ? undefined : recording.network.hosts.find((item) => item.id === step.from);
   const labWord = step.outcome_with_lab_rules !== undefined && step.outcome_with_lab_rules !== step.outcome ? step.outcome_with_lab_rules : null;
@@ -370,8 +374,8 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
                 <small>
                   {ended !== null ? `${span(ended - started)}, ` : ""}
                   <span title={`Counted from the first event of the first step, ${clockTime(origin)} UTC`}>{elapsed((started - origin) / 1000)} into the run</span>
-                  {step.first_alert ? `, ${afterStart("first alert", timeOf(step.first_alert) - started)}` : ""}
-                  {!step.first_alert && step.first_alert_with_lab_rules ? `, ${afterStart("a lab rule's first alert", timeOf(step.first_alert_with_lab_rules) - started)}` : ""}
+                  {Number.isFinite(firstAlert) ? `, ${afterStart("first alert", firstAlert - started)}` : ""}
+                  {!Number.isFinite(firstAlert) && Number.isFinite(firstLabAlert) && step.first_alert_with_lab_rules ? `, ${afterStart("a lab rule's first alert", firstLabAlert - started)}` : ""}
                 </small>
               </>
             ) : (

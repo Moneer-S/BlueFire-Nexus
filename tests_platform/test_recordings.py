@@ -309,6 +309,27 @@ def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -
     assert accepted["created"] is True
 
 
+def test_the_race_counts_a_live_alert_from_when_it_was_raised(service: BlueFireService) -> None:
+    def path(recording_id: str, when: str, first_alert_seconds: float) -> dict[str, Any]:
+        race = small_recording(recording_id)
+        race["kind"] = "attack path"
+        race["network"]["detectors"][0]["when"] = when
+        if when == "live":
+            # The first test starts at 21.000 s and its event is at 21.100 s; the alert is
+            # raised at 36.000 s.
+            race["alerts"][0]["raised"] = "2026-11-17T17:07:36.000Z"
+        race["score"]["first_alert_seconds"] = first_alert_seconds
+        return race
+
+    _, from_the_event = refusal(service, path("rec-event", "live", 0.1))
+    live = service.import_recording({"recording": path("rec-raised", "live", 15.0)})
+    after = service.import_recording({"recording": path("rec-after", "after the run", 0.1)})
+
+    assert from_the_event == ["score.first_alert_seconds is 0.1, but the steps give 15.000."]
+    assert live["created"] is True
+    assert after["created"] is True
+
+
 def test_a_null_in_place_of_a_left_out_value_is_refused(service: BlueFireService) -> None:
     race = small_recording("rec-path")
     race["kind"] = "attack path"

@@ -184,7 +184,7 @@ alert.
 | `alerted`, `seen`, `unseen` | number | Of those that took effect, how many have each outcome. |
 | `alerted_with_lab_rules` | number | Optional. The same count of alerted steps when the accepted rules of this repository count too. Present when the run evaluated such rules. |
 | `stopped` | number | Steps of any role with outcome `stopped`. |
-| `first_alert_seconds` | number | Optional, attack path only: seconds from the start of the first step of role `test` to the first alert of a published rule on a step of role `test`. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
+| `first_alert_seconds` | number | Optional, attack path only: seconds from the start of the first step of role `test` to the first alert of a published rule on a step of role `test`. An alert counts from its `raised` time when its detector ran live, and from its `time` when the rules ran after the run. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
 | `goal_seconds` | number | Optional, attack path only: seconds from the start of the first step to the end of the step that reached the goal. Not written for a test list. |
 | `false_alerts` | number | Optional. Published rules that matched ordinary activity (see `ordinary`) at a level that counts as an alert. Each such rule is one false alert, whatever the number of events it matched. |
 
@@ -243,8 +243,9 @@ follows this format and its parts agree with each other:
 - The counts of `score` are the ones its steps give; `false_alerts`, when
   `ordinary` is there, is the number of `ordinary.matches` at a level that counts.
   A test list has no `first_alert_seconds` or `goal_seconds`. In an attack path,
-  `first_alert_seconds` is the time its steps give, to the millisecond (zero when
-  the alert's stamp is earlier than the first start), and `goal_seconds` the time
+  `first_alert_seconds` is the time its steps and alerts give, to the
+  millisecond, counted to the alert's `raised` time where its detector ran live
+  (zero when the alert's stamp is earlier than the first start), and `goal_seconds` the time
   from the first step's start to the end of one of the steps. Which step reached
   the goal is not checked.
 - The file is at most 8 MiB, with at most 2,000 steps, 20,000 events and 20,000

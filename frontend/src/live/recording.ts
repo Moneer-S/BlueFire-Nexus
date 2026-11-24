@@ -523,6 +523,15 @@ export function countsForScore(alert: Alert): boolean {
   return countsAsAlert(alert) && alert.rule.origin === "pinned";
 }
 
+/**
+ * The moment of an alert, in ms: when it was raised where its detector ran
+ * live, else the time of its activity (rules that ran after the run have no
+ * other moment). Playback fires it then, and the race counts it from then.
+ */
+export function alertMoment(alert: Alert): number {
+  return timeOf(alert.raised ?? alert.time);
+}
+
 /** True when every detector of the recording ran after the run, so an alert's time is its event's time. */
 export function rulesRanAfterTheRun(recording: Recording): boolean {
   return recording.network.detectors.length > 0 && recording.network.detectors.every((detector) => detector.when === "after the run");
