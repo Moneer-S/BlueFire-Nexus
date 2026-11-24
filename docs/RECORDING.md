@@ -313,7 +313,7 @@ The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
 | `declared_change` | string or null | The one thing declared as changed between the runs, as a name of the setup (below): `sensors:<sensor id>` for a sensor's settings or `detectors:<detector id>` for a rule set. Null when nothing was declared. |
 | `comparable` | boolean | True when there is a verdict: `refused_because` is empty. |
 | `refused_because` | array of strings | Each reason there is no verdict, in plain words. |
-| `differences` | array | Each `{ "what", "before", "after" }`: a name of the setup whose values differ, with both values, null where a recording does not record it. |
+| `differences` | array | Each `{ "what", "before", "after" }`: a name of the setup whose values differ, with both values, null where a recording does not record it, and `"declared": true` on the declared change and on a name that is part of it (see Refusals). |
 | `same_in_both` | array of strings | The names of the setup whose values are recorded and equal in both. |
 | `lab_code` | object | `{ "before", "after", "same" }`: each recording's `source.commit`, null where it has none, and whether both are recorded and equal. See below. |
 | `judged` | array of strings | The fields of a step the declared change can move. Empty when nothing was declared. |
@@ -354,6 +354,12 @@ the same `kind`; when they are not of the same steps in the same order (a new or
 a gone step included); when the declared change is not a sensor's settings or a
 detector's rules of these recordings, is the same in both, or is not recorded in
 both; or when any name of the setup other than the declared change differs.
+The published rules' pin, the version of the tool of role `rules`, is the commit
+their files come from, so it is part of a declared `detectors:pinned`; no other
+tool version is part of a declared change. The rule engine's version is not
+part of either rule set, and a sensor's program version is not its settings: a
+new version can record otherwise under the same settings, so it refuses a
+declared `sensors:<id>`.
 
 **A step** of a delta:
 
@@ -365,7 +371,7 @@ both; or when any name of the setup other than the declared change differs.
 | `before`, `after` | object | `{ "happened", "recorded", "outcome", "outcome_with_lab_rules" }` of each side: `happened` is the step's `happened.answer`; `recorded` is `recorded` when `visibility.answer` is `alert` or `telemetry only`, `no telemetry` when it is that, and `not known` otherwise; and `outcome_with_lab_rules` is the `outcome` when the run evaluated no rules of the lab's own. |
 | `changed` | array of strings | The fields whose value differs. |
 | `underneath` | array of strings | For a changed step, what changed under it: `recorded now` or `no longer recorded` with the number of events, `matches now:` or `no longer matches:` and a rule as `<level>: <title>`. |
-| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too, or a rule of the lab's own that is the same file in both runs matched the step differently); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
+| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too, or, for a change of rules, a rule of the lab's own that is the same file in both runs matched the step differently while its outcome with the lab's rules moved); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
 | `verdict` | string | The result in plain words. A changed step's ends with `one pair of runs`. |
 | `procedures`, `price` | object, string | On a `better` step, and in its `verdict` too: `price`, what the gain cost; and on a step of role `test` only, `procedures`, `{ "better", "of" }`, on how many of the steps of role `test` of the same technique the result is `better`. |
 
@@ -382,7 +388,12 @@ lab's rules, so for `detectors:lab` a step that a rule of the lab's own matched
 in one run and not in the other, while that rule's file has the same digest in
 both `verdicts`, is `not attributable`, and its verdict gives what each run
 said of that rule. A recording without `verdicts` does not say which rules
-changed, and such a step is `not attributable` too.
+changed, and such a step is `not attributable` too. A change of the published
+rules cannot make a rule of the lab's own match at all, so for
+`detectors:pinned` a step whose `outcome_with_lab_rules` moved while a rule of
+the lab's own matched it in one run only is `not attributable`. A change of a
+sensor's settings can make an unchanged rule of the lab's own match new
+telemetry, and that is its effect, so for `sensors:<id>` it is credited.
 
 **The price** of a gain is on the same line as the gain. For the lab's rules,
 the lab leaves a rule that matched ordinary activity out of the recording before

@@ -263,6 +263,74 @@ def test_a_rule_change_gets_no_credit_for_a_step_the_sensors_missed_before(tmp_p
     assert "recorded now: 2 events" in step["underneath"]
 
 
+def test_the_published_rules_pin_is_part_of_their_change_and_other_versions_still_refuse(
+    tmp_path: Path,
+) -> None:
+    before = a_recording(*three_steps())
+    before["source"]["tools"] += [
+        {"name": "SigmaHQ/sigma", "version": "b" * 40, "role": "rules"},
+        {"name": "auditd", "version": "3.1.2", "role": "sensor"},
+    ]
+    after = copy.deepcopy(before)
+    after["source"]["tools"][1]["version"] = "e" * 40
+    after["network"]["detectors"][0]["digest"] = "5" * 64
+    after["steps"][1].update(outcome="alerted", outcome_with_lab_rules="alerted")
+
+    delta, text = compared(tmp_path, before, after, "--change", "detectors:pinned")
+
+    assert delta["comparable"] and delta["refused_because"] == []
+    assert [(row["what"], row.get("declared")) for row in delta["differences"]] == [
+        ("detectors:pinned", True),
+        ("tools:SigmaHQ/sigma", True),
+    ]
+    assert delta["steps"][1]["result"] == "better"
+    assert "| the version of `SigmaHQ/sigma` (part of the declared change) | " in text
+
+    # The rule engine is not the published rules: its version refuses.
+    engine = copy.deepcopy(after)
+    engine["source"]["tools"][0]["version"] = "4.8.0"
+    delta, _ = compared(tmp_path, before, engine, "--change", "detectors:pinned")
+    assert delta["refused_because"] == [
+        "also differed: the version of `Zircolite` (4.7.1 before, 4.8.0 after)"
+    ]
+
+    # A sensor's program is not its settings: its version refuses a declared change of its settings.
+    sensor = copy.deepcopy(before)
+    sensor["source"]["setup"]["sensors"]["auditd"] = "6" * 64
+    sensor["source"]["tools"][2]["version"] = "3.1.3"
+    delta, _ = compared(tmp_path, before, sensor, "--change", "sensors:auditd")
+    assert delta["refused_because"] == ["also differed: the version of `auditd` (3.1.2 before, 3.1.3 after)"]
+
+
+def test_an_unchanged_lab_rule_that_matched_in_one_run_only_is_credited_to_a_sensor_change_only(
+    tmp_path: Path,
+) -> None:
+    # The lab's rules are the same files in both runs; one of them was accepted by the after run only,
+    # and matched a step whose outcome by the published rules stayed seen.
+    before = a_recording(*three_steps())
+    moved = a_lab_rule_change(before, edited=False)
+    moved["network"]["detectors"][1]["digest"] = "4" * 64
+    published, sensor = copy.deepcopy(moved), copy.deepcopy(moved)
+    published["network"]["detectors"][0]["digest"] = "5" * 64
+    sensor["source"]["setup"]["sensors"]["auditd"] = "6" * 64
+
+    delta, _ = compared(tmp_path, before, published, "--change", "detectors:pinned")
+
+    step = delta["steps"][0]
+    assert (step["result"], step["changed"]) == ("not attributable", ["outcome_with_lab_rules"])
+    assert step["verdict"] == (
+        "not attributable: the lab's rule `Private Key Files Searched With Find` matched it in one run only, "
+        "and a change of the published rules cannot make a rule of the lab's own match, so this is run "
+        "variation; one pair of runs"
+    )
+    assert delta["unexplained"] == ["test:46959285"]
+
+    # A sensor's new telemetry can make an unchanged rule match: that is the sensor change's effect.
+    delta, _ = compared(tmp_path, before, sensor, "--change", "sensors:auditd")
+
+    assert delta["steps"][0]["result"] == "better"
+
+
 def test_a_sensor_change_is_judged_on_whether_the_step_was_recorded(tmp_path: Path) -> None:
     before = a_recording(*three_steps())
     before["steps"][1] = a_step("test:7c247dc7", 5, outcome="unseen", guid="7c247dc7")

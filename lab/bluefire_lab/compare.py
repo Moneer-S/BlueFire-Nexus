@@ -11,11 +11,13 @@ outcome with the lab's rules, a change of the published rules on both outcomes,
 and a change of a sensor's settings also on whether a sensor recorded the step.
 What the declared change cannot move is the control, and a difference there is
 run variation, not an effect. A lab rule that is the same file in both runs and
-matched a step differently is run variation too. It refuses a verdict, and still
-lists what differed, when the two are not of the same steps, when a recording
-lacks source.setup, or when anything other than the declared change differs in
-the setup or in the detectors' digests. The lab's own code is not part of the
-setup: when its commit differs, every verdict says so.
+matched a step differently is run variation too, unless a sensor's settings are
+the declared change. It refuses a verdict, and still lists what differed, when
+the two are not of the same steps, when a recording lacks source.setup, or when
+anything other than the declared change differs in the setup, in the detectors'
+digests or in the tools' versions; the published rules' pin is part of a change
+of the published rules. The lab's own code is not part of the setup: when its
+commit differs, every verdict says so.
 """
 
 from __future__ import annotations
@@ -92,6 +94,23 @@ def items(recording: dict) -> dict[str, object]:
     # Every comparison needs the tests' commit: recorded nowhere, it is not known to be the same.
     found.setdefault("atomic_commit", None)
     return found
+
+
+def parts(declared: str | None, recordings: tuple[dict, dict]) -> set[str]:
+    """The names of the setup that are the declared change itself. The published rules' pin, the
+    version of the tool of role rules, is the commit their files come from, so the digest of the
+    detector pinned already covers it: they are one change. No tool version is part of any other
+    declared change. The lab's rules are files of this repository, and a sensor's program is not its
+    settings: a new version of it can record otherwise under the same settings, a second change."""
+
+    if declared != "detectors:pinned":
+        return {declared} if declared else set()
+    return {declared} | {
+        f"tools:{tool['name']}"
+        for recording in recordings
+        for tool in recording["source"].get("tools", [])
+        if tool["role"] == "rules"
+    }
 
 
 def value(step: dict, field: str) -> str:
@@ -291,8 +310,14 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
         for name in set(first) | set(second)
         if first.get(name) is not None and first.get(name) == second.get(name)
     )
+    declared_parts = parts(declared, (before, after))
     differences = [
-        {"what": name, "before": first.get(name), "after": second.get(name)}
+        {
+            "what": name,
+            "before": first.get(name),
+            "after": second.get(name),
+            **({"declared": True} if name in declared_parts else {}),
+        }
         for name in sorted(set(first) | set(second))
         if name not in same
     ]
@@ -309,7 +334,7 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
                 "so it is not known to have changed"
             )
     for difference in differences:
-        if difference["what"] == declared:
+        if difference.get("declared"):
             continue
         if difference["before"] is None and difference["after"] is None:
             refusals.append(
@@ -355,6 +380,12 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
     gain_price = price(before, after, declared) if comparable and declared else None
     rules_before, rules_after = matches(before), matches(after)
     lab_before, lab_after = lab_matches(before), lab_matches(after)
+    lab_titles = {
+        alert["rule"]["id"]: alert["rule"]["title"]
+        for recording in (before, after)
+        for alert in recording["alerts"]
+        if alert["rule"].get("origin") == "lab"
+    }
     verdicts = (lab_verdicts(before), lab_verdicts(after))
     rows = []
     for old, step in pairs:
@@ -365,11 +396,24 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
         ]
         moved = [change for change in changed if change[0] in judged]
         varied = [change for change in changed if change[0] in control]
-        unmoved = (
-            unmoved_rules(lab_before[old["id"]] ^ lab_after[step["id"]], *verdicts)
-            if declared == "detectors:lab" and moved
-            else []
-        )
+        touched = lab_before[old["id"]] ^ lab_after[step["id"]]
+        # A lab rule that matched the step in one run only. A change of a sensor's settings can make an
+        # unchanged lab rule match new telemetry, and that is its effect. A change of the lab's rules is
+        # credited only with the rules whose file changed. A change of the published rules cannot make
+        # any lab rule match, so every such rule moved by itself, and the outcome with the lab's rules
+        # that moved with it is not the change's.
+        if not touched or not declared or declared.startswith("sensors:"):
+            unmoved = []
+        elif declared == "detectors:lab":
+            unmoved = unmoved_rules(touched, *verdicts) if moved else []
+        elif any(field == "outcome_with_lab_rules" for field, _, _ in moved):
+            unmoved = [
+                f"the lab's rule `{lab_titles.get(rule, rule)}` matched it in one run only, and a change of "
+                "the published rules cannot make a rule of the lab's own match"
+                for rule in sorted(touched)
+            ]
+        else:
+            unmoved = []
         if not changed:
             result, words = "same", "no change"
         elif not comparable:
@@ -545,10 +589,16 @@ def markdown(delta: dict) -> str:
     known_rows = [
         row for row in delta["differences"] if row["before"] is not None or row["after"] is not None
     ]
+
+    def mark(row: dict) -> str:
+        if not row.get("declared"):
+            return ""
+        return " (declared)" if row["what"] == declared else " (part of the declared change)"
+
     if known_rows:
         lines += ["| What differed | Before | After |", "|---|---|---|"]
         lines += [
-            f"| {cell(named(row['what']))}{' (declared)' if row['what'] == declared else ''} | "
+            f"| {cell(named(row['what']))}{mark(row)} | "
             f"{cell(shown(row['before']))} | {cell(shown(row['after']))} |"
             for row in known_rows
         ]

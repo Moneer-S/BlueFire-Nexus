@@ -916,7 +916,9 @@ summary. `--change` declares the one thing that changed between the two runs:
   files. The comparison lists every one of these, and each tool's version,
   that differs between the two. It gives no verdict, and still lists every
   step and what differed, when anything differs other than the declared
-  change, when the declared change is the same in both, when the two are not
+  change (the published rules' pinned commit is part of a change of the
+  published rules; a sensor's program version is not part of a change of its
+  settings), when the declared change is the same in both, when the two are not
   of the same steps in the same order, or when a recording has no
   `source.setup`, as every recording made before this format had.
 - **Pairing.** A step has the same id in every run of the same list (its role,
@@ -934,7 +936,9 @@ summary. `--change` declares the one thing that changed between the two runs:
   variation, not an effect, and is named as such. Each run decides anew which
   of the lab's rules it accepts, so the recording keeps, for each rule, whether
   the run accepted it and the digest of its file: a step that an unchanged rule
-  matched in one run only is not credited to the change.
+  matched in one run only is not credited to a change of rules, the lab's or
+  the published ones. It is credited to a change of a sensor's settings, whose
+  new telemetry can make an unchanged rule match.
 - **The control step.** The step of role `control` must raise no alert, so an
   alert on it is worse, and named as a false alert.
 - **Its price, on the same line.** A step that got better carries what the
