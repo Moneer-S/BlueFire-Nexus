@@ -1053,22 +1053,19 @@
    "source": "/var/log/auth.log",
    "lines": 8,
    "delivered": 8,
-   "missing": 0,
-   "events": 8
+   "missing": 0
   },
   {
    "source": "/var/log/snoopy.log",
    "lines": 35,
    "delivered": 35,
-   "missing": 0,
-   "events": 35
+   "missing": 0
   },
   {
    "source": "/var/log/dpkg.log",
    "lines": 0,
    "delivered": 0,
-   "missing": 0,
-   "events": 0
+   "missing": 0
   }
  ]
 }
