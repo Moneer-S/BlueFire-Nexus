@@ -22,7 +22,7 @@
 // such time), and that holds, its clock stopped, until the arrival has been on
 // screen long enough to be read.
 
-import { countsAsAlert, countsForScore, timeOf } from "./recording";
+import { alertMoment, countsAsAlert, countsForScore, timeOf } from "./recording";
 import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recording";
 
 export const PLAYBACK_RULE = {
@@ -113,6 +113,12 @@ export interface StepPlay {
   arrivals: Arrival[];
   /** The step's matches of any level and origin that fire while it is on screen, in firing order. Late arrivals are not among them. */
   fires: Fire[];
+  /**
+   * Every match of the step, late arrivals too, in firing order: the one
+   * order in which the view picks, lists and names a step's matches, so that
+   * nothing is named before it fires and no two parts pick different ones.
+   */
+  matches: Fire[];
   /** The step's first counting match of a published rule, if any, a late arrival too. */
   firstCounting: Fire | null;
   /** The step's first counting match of either origin, if any. */
@@ -152,7 +158,7 @@ export interface FirstAlert {
   alert: Alert;
   /** Screen time at which it fires. */
   at: number;
-  /** Its real time, in ms: `raised` when present, else the time of the matched activity. */
+  /** Its real time, in ms: its moment (`alertMoment`), `raised` when present, else the time of the matched activity. */
   real: number;
   /**
    * The other steps of role `test` that had begun when it fired: the tests the
@@ -160,9 +166,9 @@ export interface FirstAlert {
    */
   testsBefore: number;
   /**
-   * Real seconds from the start of the first step of role `test`: the
-   * recording's own `score.first_alert_seconds` for an attack path that has
-   * it. Null when the first test has no recorded start.
+   * Real seconds from the start of the first step of role `test` to `real`,
+   * the moment at which playback fires it: never a second source such as the
+   * score, which could differ. Null when the first test has no recorded start.
    */
   secondsFromFirstTest: number | null;
 }
@@ -262,10 +268,6 @@ function placeInBody(segment: Segment, real: number): number {
   if (span <= 0) return segment.bodyStart;
   const clamped = Math.min(segment.realEnd, Math.max(segment.realStart, real));
   return segment.bodyStart + (body * (clamped - segment.realStart)) / span;
-}
-
-function alertReal(alert: Alert): number {
-  return timeOf(alert.raised ?? alert.time);
 }
 
 /** Screen seconds that steps (by id) and silences (by the index of the segment before them) hold for. */
@@ -408,7 +410,7 @@ export function buildTimeline(recording: Recording): Timeline {
   }
   const { segments, gaps, duration } = laid;
 
-  const byStep = new Map<string, StepPlay>(recording.steps.map((step) => [step.id, { arrivals: [], fires: [], firstCounting: null, firstCountingWithLabRules: null }]));
+  const byStep = new Map<string, StepPlay>(recording.steps.map((step) => [step.id, { arrivals: [], fires: [], matches: [], firstCounting: null, firstCountingWithLabRules: null }]));
   const lateOn = new Map<number, Fire[]>();
   const timeline: Timeline = {
     recording,
@@ -439,6 +441,7 @@ export function buildTimeline(recording: Recording): Timeline {
     } else {
       own.fires.push(fire);
     }
+    own.matches.push(fire);
     if (own.firstCounting === null && countsForScore(fire.alert)) own.firstCounting = fire;
     if (own.firstCountingWithLabRules === null && countsAsAlert(fire.alert)) own.firstCountingWithLabRules = fire;
   }
@@ -447,25 +450,56 @@ export function buildTimeline(recording: Recording): Timeline {
   // time is never measured from a later step.
   const firstTest = timeline.tests[0];
   const firstTestReal = firstTest?.step.started === undefined ? null : timeOf(firstTest.step.started);
-  const ownSeconds = recording.kind === "attack path" ? recording.score.first_alert_seconds : undefined;
-  const first = (counts: (alert: Alert) => boolean, own: number | undefined): FirstAlert | null => {
+  const first = (counts: (alert: Alert) => boolean): FirstAlert | null => {
     const found = timeline.fires.find(({ alert }) => counts(alert) && segmentOf.get(alert.step)?.step.role === "test");
     if (!found) return null;
     const segment = segmentOf.get(found.alert.step);
     if (!segment) return null;
-    const real = alertReal(found.alert);
+    const real = alertMoment(found.alert);
     return {
       step: segment.step,
       alert: found.alert,
       at: found.at,
       real,
       testsBefore: timeline.tests.filter((other) => other.start < found.at && other.index !== segment.index).length,
-      secondsFromFirstTest: own ?? (firstTestReal === null ? null : (real - firstTestReal) / 1000),
+      // Like the format's score: zero when the alert's stamp is a little before the first start.
+      secondsFromFirstTest: firstTestReal === null ? null : Math.max(0, (real - firstTestReal) / 1000),
     };
   };
-  timeline.firstAlert = first(countsForScore, ownSeconds);
-  timeline.firstAlertWithLabRules = first(countsAsAlert, undefined);
+  timeline.firstAlert = first(countsForScore);
+  timeline.firstAlertWithLabRules = first(countsAsAlert);
   return timeline;
+}
+
+const STEP_MATCHES = new WeakMap<StepPlay, Alert[]>();
+const NO_ALERTS: Alert[] = [];
+
+/**
+ * A step's matches, late arrivals too, in the order playback fires them. The
+ * recording lists matches in the order of their activity, which is not when
+ * a live rule engine raised them: a part that picks, lists or names a step's
+ * matches reads them from here. The same array for the same step every time.
+ */
+export function stepMatchesInFiringOrder(timeline: Timeline, stepId: string): Alert[] {
+  const own = timeline.byStep.get(stepId);
+  if (!own) return NO_ALERTS;
+  const known = STEP_MATCHES.get(own);
+  if (known) return known;
+  const alerts = own.matches.map(({ alert }) => alert);
+  STEP_MATCHES.set(own, alerts);
+  return alerts;
+}
+
+/**
+ * The first of those that have fired by screen time `screen`, late arrivals
+ * too: the only matches the watch view may speak of then. A match that fires
+ * later is told when it fires. The same array for the same count every time.
+ */
+export function stepMatchesFiredBy(timeline: Timeline, stepId: string, screen: number): Alert[] {
+  const own = timeline.byStep.get(stepId);
+  if (!own) return NO_ALERTS;
+  const t = clampScreen(timeline, screen);
+  return cutAlerts(own.matches, t >= timeline.duration ? own.matches.length : countUpTo(own.matches, t));
 }
 
 function clampScreen(timeline: Timeline, screen: number): number {

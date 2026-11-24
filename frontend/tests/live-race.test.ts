@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { buildTimeline, frameAt } from "../src/live/playback";
 import type { Timeline } from "../src/live/playback";
-import { runFacts } from "../src/live/moment";
+import { firstAlertClock, runFacts } from "../src/live/moment";
 import { whoIsWinning } from "../src/live/RaceLine";
 import { runLink, stepLabel } from "../src/live/format";
 import type { Alert, Recording } from "../src/live/recording";
-import { alert, event, recording, step } from "./live-fixture";
+import { alert, at, event, recording, step } from "./live-fixture";
 
 /** The race sentence at screen time `screen`, with the score so far. */
 function sentenceAt(value: Recording, timeline: Timeline, screen: number): string {
@@ -51,6 +51,17 @@ describe("the race sentence on an attack path", () => {
     const value = path([alert("a", "1", 10.8, ["1-1"])], 12);
     const timeline = buildTimeline(value);
     expect(sentenceAt(value, timeline, timeline.fire.get("a") ?? Infinity)).toBe("The defense raised its first alert on test 1, 00:00.8 after the first test step.");
+  });
+
+  it("times a live alert from when it was raised, in the sentence, the flag's clock and the goal comparison", () => {
+    // The test starts at 10 s, its event is at 10.8 s and its alert is raised at 25 s; the goal falls at 22 s.
+    // The score's own number, counted from the event, disagrees: what the alerts say is shown.
+    const value = path([alert("a", "1", 10.8, ["1-1"], { raised: at(25) })], 12);
+    value.score = { ...value.score, first_alert_seconds: 0.8 };
+    const timeline = buildTimeline(value);
+    const first = timeline.firstAlert;
+    expect(first ? firstAlertClock(value, runFacts(value, timeline), first) : null).toEqual({ seconds: 15, words: "after the first test step" });
+    expect(sentenceAt(value, timeline, timeline.fire.get("a") ?? Infinity)).toBe("The attacker reached the goal 3.0 s before the first alert.");
   });
 
   it("gives no time when the first test has no recorded start", () => {

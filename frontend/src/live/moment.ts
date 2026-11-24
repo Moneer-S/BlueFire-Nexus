@@ -1,9 +1,9 @@
 // What the watch view needs about the current step at one moment: pure.
 
-import { countsForScore, timeOf } from "./recording";
+import { alertMoment, countsAsAlert, countsForScore, timeOf } from "./recording";
 import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recording";
 import type { Fire, FirstAlert, Frame, ScoreSoFar, Segment, Timeline } from "./playback";
-import { landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE } from "./playback";
+import { landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE, stepMatchesFiredBy } from "./playback";
 import { matchKind, span, stepLabel, strongerKind } from "./format";
 import type { MatchKind } from "./format";
 
@@ -37,8 +37,22 @@ export interface StepMoment {
   events: RecordingEvent[];
   /** The step's matches that have fired, in firing order. */
   fired: Alert[];
-  /** Every match of the step, fired or not. */
+  /** Every match of the step, fired or not. Only for drawing the lights of its events: nothing said on screen reads it. */
   all: readonly Alert[];
+  /**
+   * The step's matches that have fired by now, its late arrivals too, in
+   * firing order: every sentence, count, hint and spoken text about the
+   * step's matches reads this, so a match is told only once it has fired.
+   */
+  heard: readonly Alert[];
+  /**
+   * The step's first counting match of a published rule in playback's firing
+   * order, once it has fired: the alert the step's sentence names, the same
+   * one the score and the first alert's flag count from. Null before then.
+   */
+  named: Alert | null;
+  /** The same for a rule written in this repository at alert level, which is never in the score. */
+  namedLab: Alert | null;
   /** The fired matches whose light has reached its rule engine, with that moment. */
   landed: { alert: Alert; at: number }[];
   /** For each event of the step, the strongest match on it by each detector. */
@@ -146,7 +160,7 @@ export function lateWords(recording: Recording, timeline: Timeline, fire: Fire):
   const segment = timeline.segments.find((item) => item.step.id === fire.alert.step);
   const where = segment ? `${stepLabel(recording, segment.step)}, ${segment.step.title}` : fire.alert.step;
   const ended = segment ? (segment.step.ended === undefined ? segment.realEnd : timeOf(segment.step.ended)) : Number.NaN;
-  const after = Number.isFinite(ended) ? `raised ${span(timeOf(fire.alert.raised ?? fire.alert.time) - ended)} after that step ended` : "raised after that step ended";
+  const after = Number.isFinite(ended) ? `raised ${span(alertMoment(fire.alert) - ended)} after that step ended` : "raised after that step ended";
   return `${LATE_WORDS[matchKind(fire.alert)]} on ${where}: ${fire.alert.rule.title}, ${after}.`;
 }
 
@@ -160,6 +174,7 @@ export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[]
     const at = landing({ alert, at: timeline.fire.get(alert.id) ?? segment.bodyStart, late: false });
     if (at <= now || frame.ended) landed.push({ alert, at });
   }
+  const heard = stepMatchesFiredBy(timeline, segment.step.id, now);
   return {
     segment,
     step: segment.step,
@@ -173,6 +188,9 @@ export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[]
     events: frame.events,
     fired: frame.alerts,
     all,
+    heard,
+    named: heard.find(countsForScore) ?? null,
+    namedLab: heard.find((alert) => countsAsAlert(alert) && alert.rule.origin === "lab") ?? null,
     landed,
     matchByDetector: matches.byDetector,
     matchOf: matches.strongest,
@@ -181,9 +199,9 @@ export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[]
 
 /**
  * The time to the first alert on a test, the same wherever it is shown. For
- * an attack path it counts from the start of the first test step (the
- * recording's own `score.first_alert_seconds` when it has it), like the
- * format's score; null when that start was not recorded. For a test list it
+ * an attack path it counts from the start of the first test step to the
+ * moment the alert fires, like the format's `score.first_alert_seconds`; null
+ * when that start was not recorded. For a test list it
  * counts into the run from the first step, like the clock and the race track.
  */
 export function firstAlertClock(recording: Recording, facts: RunFacts, first: FirstAlert): { seconds: number; words: string } | null {
@@ -209,6 +227,6 @@ export function runFacts(recording: Recording, timeline: Timeline): RunFacts {
   const roles = new Map(recording.steps.map((step) => [step.id, step]));
   const found = timeline.fires.find(({ alert }) => countsForScore(alert) && roles.get(alert.step)?.role !== "test");
   const step = found ? roles.get(found.alert.step) : undefined;
-  const otherFirst = found && step ? { step, at: found.at, real: timeOf(found.alert.raised ?? found.alert.time) } : null;
+  const otherFirst = found && step ? { step, at: found.at, real: alertMoment(found.alert) } : null;
   return { start, end, otherFirst };
 }

@@ -1,13 +1,15 @@
 """Write recording.json: what really happened in a run, in one file that can be replayed.
 
 The format is docs/RECORDING.md. Every value comes from run.json and
-results.json, and one the run did not measure is left out. The rules were
-evaluated after the run, so an alert carries the time of the event it matched.
+results.json, and the digests of the rule sets from the rule files in the run's
+folder; one the run did not measure is left out. The rules were evaluated after
+the run, so an alert carries the time of the event it matched.
 """
 
 from __future__ import annotations
 
 import collections
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +67,44 @@ def named(name: str, version: str | None) -> str:
     return f"{name} {version}" if version else name
 
 
+def digest(folder: Path) -> str | None:
+    """The SHA-256 of a rule set: of the lines sha256sum prints for its files, sorted by their path
+    inside the folder. None when the folder is not there; an empty folder has the digest of nothing."""
+
+    if not folder.is_dir():
+        return None
+    files = sorted(
+        (path.relative_to(folder).as_posix(), path) for path in folder.rglob("*") if path.is_file()
+    )
+    listing = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {name}\n" for name, path in files)
+    return hashlib.sha256(listing.encode("utf-8")).hexdigest()
+
+
+def step_ids(tests: list[dict]) -> dict[int, str]:
+    """The id of each test of the run, by its order: the same in every run of the same list.
+    Its role and the first 8 characters of its GUID, then the first 6 hex digits of the SHA-256 of
+    its input arguments when it has any, then the name of its hardening change when it has one, and
+    when the same id comes more than once, as the canary's does, its count among them."""
+
+    names = []
+    for test in tests:
+        parts = [test["role"], test["guid"][:8]]
+        if test.get("args"):
+            text = json.dumps(test["args"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            parts.append(hashlib.sha256(text.encode("utf-8")).hexdigest()[:6])
+        if test.get("defense"):
+            parts.append(test["defense"]["name"])
+        names.append(":".join(parts))
+    repeated, counted = collections.Counter(names), collections.Counter()
+    ids = {}
+    for test, name in zip(tests, names, strict=True):
+        if repeated[name] > 1:
+            counted[name] += 1
+            name = f"{name}:{counted[name]}"
+        ids[test["order"]] = name
+    return ids
+
+
 def plain_words(document: dict) -> dict[str, str]:
     """The plain sentence of each test on the list of pinned tests, by the test's GUID."""
 
@@ -88,9 +128,10 @@ def outcome(happened: str, seen: str) -> str:
     return "inconclusive"
 
 
-def event(found: dict, step: str, number: int) -> dict:
+def event(found: dict, step: str, number: int, order: int | None = None) -> dict:
     """One event of a step as a recording holds it: a few fields of its record, never all of it.
-    Its id is the step's and its place among the step's events, whether or not all are kept."""
+    Its id is the step's order (or else its id) and its place among the step's events, whether
+    or not all are kept."""
 
     audit = isinstance(found["record"], str)  # "audit <seconds>.<ms>:<serial>"; Sysmon numbers its records
     fields = {
@@ -107,7 +148,7 @@ def event(found: dict, step: str, number: int) -> dict:
         elif kind == "openat" and found["fields"].get("paths"):
             text = found["fields"]["paths"].split(", ")[0]
     return {
-        "id": f"{step}-{number}",
+        "id": f"{step if order is None else order}-{number}",
         "time": utc(found["time"]),
         "host": HOST,
         "sensor": "auditd" if audit else "sysmon",
@@ -131,8 +172,9 @@ def rule_matches(seen: dict, accepted: set[str]) -> list[tuple[dict, bool]]:
     return [(rule, only) for rule, only in matches if rule.get("origin") != "lab" or rule["id"] in accepted]
 
 
-def network(results: dict) -> dict:
-    """The one host the tests ran on, its sensors, and the rule sets that read their records."""
+def network(results: dict, digests: dict[str, str | None]) -> dict:
+    """The one host the tests ran on, its sensors, and the rule sets that read their records,
+    each with the digest of its files when the run's folder holds them."""
 
     target, rules = results["run"]["target"], results["rules"]
     system = [target.get("os")] + [
@@ -145,21 +187,36 @@ def network(results: dict) -> dict:
         sensors["auditd"] = results["audit"]
     engine = named(results["engine"]["name"], results["engine"].get("version"))
     detectors = [
-        {
-            "id": "pinned",
-            "name": f"Published Sigma rules ({rules['source'].partition('@')[0]}) with {engine}",
-            "rules": sum(number or 0 for number in rules["evaluated"].values()),
-            "when": "after the run",
-        }
+        known(
+            id="pinned",
+            name=f"Published Sigma rules ({rules['source'].partition('@')[0]}) with {engine}",
+            rules=sum(number or 0 for number in rules["evaluated"].values()),
+            when="after the run",
+            digest=digests.get("pinned"),
+        )
     ]
     if results.get("lab_rules"):
         detectors.append(
-            {
-                "id": "lab",
-                "name": f"Rules written in this repository with {engine}",
-                "rules": rules.get("lab", len(results["lab_rules"])),
-                "when": "after the run",
-            }
+            known(
+                id="lab",
+                name=f"Rules written in this repository with {engine}",
+                rules=rules.get("lab", len(results["lab_rules"])),
+                when="after the run",
+                digest=digests.get("lab"),
+                # Whether the run accepted each rule, and the digest of the file that holds it.
+                verdicts=[
+                    known(
+                        rule=rule["id"],
+                        title=rule["title"],
+                        digest=hashlib.sha256(rule["text"].encode("utf-8")).hexdigest()
+                        if "text" in rule
+                        else None,
+                        accepted=rule["accepted"],
+                        reason=rule.get("reason"),
+                    )
+                    for rule in results["lab_rules"]
+                ],
+            )
         )
     return {
         "hosts": [
@@ -207,6 +264,24 @@ def source(results: dict, run_url: str | None) -> dict:
         commit=commit if repository else None,
         run_url=run_url,
         tools=[known(name=name, version=version, role=role) for name, version, role in tools],
+        setup=setup(results),
+    )
+
+
+def setup(results: dict) -> dict | None:
+    """What two runs must share for a comparison of them to say what one change did: the tests'
+    commit, the runner's image and kernel, and the digest of each sensor's settings as loaded."""
+
+    target, audit = results["run"]["target"], results.get("audit") or {}
+    sensors = known(sysmon=results["sensor"].get("configuration_sha256"), auditd=audit.get("rules_sha256"))
+    return (
+        known(
+            atomic_commit=results["run"]["tools"].get("atomic-red-team"),
+            images=known(**{HOST: target.get("runner_image")}) or None,
+            kernels=known(**{HOST: target.get("kernel")}) or None,
+            sensors=sensors or None,
+        )
+        or None
     )
 
 
@@ -295,11 +370,19 @@ def notes(run: dict, results: dict, steps: list[dict], events: list[dict], liste
     return said
 
 
-def build(run: dict, results: dict, run_url: str | None = None, plain: dict[str, str] | None = None) -> dict:
+def build(
+    run: dict,
+    results: dict,
+    run_url: str | None = None,
+    plain: dict[str, str] | None = None,
+    digests: dict[str, str | None] | None = None,
+) -> dict:
     """The recording of a run. plain gives the plain sentence of a test by its GUID, for a run
-    made before the run itself recorded those."""
+    made before the run itself recorded those, and digests the digest of each rule set by its
+    detector's id."""
 
     plain, lab_rules, listed = plain or {}, bool(results.get("lab_rules")), 0
+    ids = step_ids(results["tests"])
     accepted = {rule["id"] for rule in results.get("lab_rules", []) if rule["accepted"]}
     printed = {}
     for test in run["tests"]:
@@ -311,12 +394,12 @@ def build(run: dict, results: dict, run_url: str | None = None, plain: dict[str,
 
     steps, events, alerts = [], [], []
     for test in results["tests"]:
-        done, seen, step_id = test["execution"], test["visibility"], str(test["order"])
+        done, seen, step_id = test["execution"], test["visibility"], ids[test["order"]]
         launcher, window, change = seen.get("launcher"), seen.get("window"), test.get("defense")
         matches = rule_matches(seen, accepted)
         cited = {record for rule, only in matches if not only for record in rule["records"]}
         placed = {
-            found["record"]: event(found, step_id, number)
+            found["record"]: event(found, step_id, number, test["order"])
             for number, found in enumerate(test["events"], start=1)
             if number <= KEPT_EVENTS or found["record"] in cited
         }
@@ -347,6 +430,7 @@ def build(run: dict, results: dict, run_url: str | None = None, plain: dict[str,
         first = outcome(done["answer"], seen["answer"])
         second = outcome(done["answer"], seen.get("with_lab_rules", {}).get("answer", seen["answer"]))
         # Like outcome, first_alert counts the published rules only; the second time counts the lab's too.
+        # A first alert is the alert's moment: its time here, since these rules run after the run.
         published = [alert["time"] for alert in raised if alert["counts"] and alert["detector"] == "pinned"]
         every = [alert["time"] for alert in raised if alert["counts"]]
         timed = bool(launcher and window)
@@ -385,7 +469,7 @@ def build(run: dict, results: dict, run_url: str | None = None, plain: dict[str,
                 first_event=utc(test["events"][0]["time"]) if test["events"] else None,
                 first_alert=min(published, default=None),
                 first_alert_with_lab_rules=min(every) if lab_rules and every else None,
-                compared_with=str(test["compared_with"]) if "compared_with" in test else None,
+                compared_with=ids.get(test["compared_with"]) if "compared_with" in test else None,
                 defense={"title": change["title"], "why": change["why"]} if change else None,
             )
         )
@@ -410,7 +494,7 @@ def build(run: dict, results: dict, run_url: str | None = None, plain: dict[str,
         title=f"{count(sum(1 for step in steps if step['role'] == 'test'), 'published test')} on one Linux host",
         kind="test list",
         source=source(results, run_url),
-        network=network(results),
+        network=network(results, digests or {}),
         attacker={
             "kind": "scripted",
             "description": "Invoke-AtomicRedTeam ran each published test in turn, as "
@@ -432,7 +516,9 @@ def main(folder: Path, run_url: str | None = None, tests: Path | None = None) ->
         json.loads((folder / name).read_text(encoding="utf-8")) for name in ("run.json", "results.json")
     )
     plain = plain_words(yaml.safe_load(tests.read_text(encoding="utf-8"))) if tests else {}
-    made = build(run, results, run_url, plain)
+    # The rules the run used travel with its results: the published ones, and the lab's own apart.
+    digests = {"pinned": digest(folder / "rules" / "linux"), "lab": digest(folder / "lab-rules" / "linux")}
+    made = build(run, results, run_url, plain, digests)
     (folder / "recording.json").write_text(json.dumps(made, indent=1) + "\n", encoding="utf-8")
     print(
         f"recording.json: {count(len(made['steps']), 'step')}, {count(len(made['events']), 'event')}, "

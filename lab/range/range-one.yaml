@@ -1,18 +1,145 @@
-# Range one: the spec of a small network and the path of published tests that runs through it.
-# This file holds the path for now. Networks, hosts, the defense and ordinary activity follow.
+# Range one: a small network of disposable containers, and the path of published
+# tests that runs through it. The files that `from:` names are beside this file:
+# app/ holds the shop's pages and its table, repos/ the build server's git
+# repository. range-one.lock holds the SHA-256 of every file the hosts carry
+# from Atomic Red Team. `activity` is the shop's ordinary work beside the path.
 range: range-one
 version: 1
 sentence: >-
   An attacker on the internet guesses a weak SSH password on a shop's web
   server, looks around, finds a deploy key, uses it to pull the build server's
   configuration, and uploads it out over HTTPS, while Wazuh watches web, build and db.
+prefix: bluefire-lab-r1            # every container, network and image name starts with it
+docker: {min_engine: 28}
 atomic_red_team:
   repo: redcanaryco/atomic-red-team
   commit: a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6  # pragma: allowlist secret
+  lock: range-one.lock             # sha256 of every fetched technique YAML and src file
 executor:
   reference: redcanaryco/invoke-atomicredteam
   commit: 8af478bb9e4637df568ac1e596553b025b16cd1b  # pragma: allowlist secret
+base:
+  image: ubuntu:noble-20261110.1@sha256:882e1e56091c9ffbc70c026ff5935fe85d3c91ad155917865ba2ffa23ede1560
+  apt_snapshot: "20261120T000000Z"
+defense:
+  wazuh:
+    manager_image: wazuh/wazuh-manager:4.14.10@sha256:eabfa7ee4e63acb51c2130fa0583e30f843d030b091cf45a4fbd93d78fa21517
+    agent_deb:
+      version: 4.14.10-1
+      sha512: 5ee41846e81b2f5f5017bb0f968ac039443f09a400e5feb8121a4e52db6bb8d1c91683667b03a657a0236c858bd1f159026b493ace504ec8f92e491e6c8ae04d  # pragma: allowlist secret
+    alert_level: 12
+    off: [command_monitoring, sca, rootcheck, syscollector]
+  watch:                           # every host with an agent
+    logs:
+      - {path: /var/log/auth.log, format: syslog}
+      - {path: /var/log/snoopy.log, format: syslog}
+      - {path: /var/log/dpkg.log, format: syslog}
+    fim_realtime: [/etc, /home, /root, /tmp, /var/tmp]
+networks:                          # all: --internal, gateway_mode_ipv4=isolated, no IPv6
+  edge: {}                         # the stand-in internet
+  inside: {}                       # web, build, db
+  mgmt: {}                         # agents to manager
+hosts:
+  attacker:
+    kind: attacker
+    role: attacker's machine on the internet
+    networks: [edge]
+    packages: [openssh-client, sshpass]
+    atomics_src: [T1110.004]
+    agent: false
+  inet:
+    kind: internet
+    role: stand-in internet (file server and upload drop)
+    networks: [edge]
+    packages: [python3]
+    services: [inet-server]
+    listens: [80, 443]
+    serve: {"/atomics/T1105/src/atomic.sh": "atomic:T1105/src/atomic.sh"}
+    agent: false
+  client:
+    kind: host
+    role: shop customers and the administrator's laptop
+    networks: [edge]
+    packages: [curl, openssh-client]
+    accounts: [{name: ops, shell: /bin/bash}]
+    keys: [{name: ops, type: ed25519, private: ops@client}]
+    known_hosts: [{account: ops, hosts: [web]}]
+    agent: false
+  web:
+    kind: host
+    role: web application
+    networks: [edge, inside, mgmt]
+    packages: [nginx, php-fpm, php-mysql, curl, wget, procps, openssh-client, openssh-server, sudo, cron]
+    services: [sshd, nginx, php-fpm, cron]
+    listens: [22, 80]
+    sshd: {password_auth: true, permit_root: false, pam_nodelay: true}
+    accounts:
+      - {name: webadmin, password: webadmin, shell: /bin/bash,  # pragma: allowlist secret
+         listed: {file: "atomic:T1110.004/src/credstuffuserpass.txt", line: 475}}
+      - {name: ops, shell: /bin/bash, sudo: ["/usr/sbin/nginx -t"]}
+    keys:
+      - {name: deploy, type: rsa, private: webadmin@web, file: id_rsa, authorized: deploy@build}
+      - {name: ops, authorized: ops@web}
+    known_hosts: [{account: webadmin, hosts: [build], hashed: false}]
+    dirs:
+      - {path: /tmp/stage, owner: webadmin, mode: "0700"}        # staging folder for s08
+    files:
+      - {path: /var/www/app/config.php, owner: www-data, mode: "0644",
+         text: "<?php $db_host='db'; $db_user='shop'; $db_password='Shop-Db-2026'; ?>"}  # pragma: allowlist secret
+      - {path: /var/www/app/index.php, from: app/index.php}      # session_start(), one db query
+      - {path: /var/www/app/cron.php, from: app/cron.php}        # writes /tmp/shop-cache-*.json, removes old ones
+    watch: {logs: [{path: /var/log/nginx/access.log, format: apache},
+                   {path: /var/log/nginx/error.log, format: syslog}],
+            fim_realtime: [/var/www, /var/lib/php/sessions]}
+  db:
+    kind: host
+    role: database
+    networks: [inside, mgmt]
+    packages: [mariadb-server, cron]
+    services: [mariadb, cron]
+    listens: [3306]
+    database: {name: shop, user: shop, password: Shop-Db-2026, from: "%",  # pragma: allowlist secret
+               bind_address: 0.0.0.0, log_error: /var/log/mysql/error.log, sql: app/shop.sql}
+    watch: {logs: [{path: /var/log/mysql/error.log, format: syslog}]}   # mysql_log delivers none of MariaDB 10.11's lines
+  build:
+    kind: host
+    role: build server
+    networks: [inside, mgmt]
+    packages: [git, make, openssh-server, cron]
+    services: [sshd, cron]
+    listens: [22]
+    sshd: {password_auth: false, permit_root: false}
+    accounts: [{name: deploy, shell: /bin/bash}, {name: ci, shell: /bin/bash}]
+    files:
+      - {path: /etc/buildbot/signing.env, owner: root, group: deploy, mode: "0640",
+         text: "SIGNING_KEY=range-one-signing-secret-7f3a"}  # pragma: allowlist secret
+      - {path: /srv/git/shop.git, from: repo:shop, owner: ci}
+    watch: {fim_realtime: [/srv/git]}
+  manager:
+    kind: defense
+    role: Wazuh manager
+    networks: [mgmt]
+    listens: [1514, 1515]
+activity:                          # every job runs with BLUEFIRE_TAG=job:<name>, from the engine's go
+  seed: 1
+  warmup_seconds: 30
+  tail_seconds: 15
+  jobs:
+    - {name: browse, host: client, account: ops, every: [5, 15], do: http, target: web,
+       paths: [/, "/?item=1", "/?item=2", "/?item=3", /cart, /missing],
+       writes: ["/var/lib/php/sessions/*"]}                      # each view keeps a PHP session
+    - {name: admin, host: client, account: ops, every: [90, 150], do: ssh, target: ops@web,
+       run: "uptime; df -h /; ls -l /var/www/app; sudo -n /usr/sbin/nginx -t"}
+    - {name: cache, host: web, account: www-data, every: 60, do: cron,
+       run: "php /var/www/app/cron.php", writes: ["/tmp/shop-cache-*.json"]}
+    - {name: build, host: build, account: ci, every: 60, do: cron,
+       run: "cd && { test -d shop || git clone -q /srv/git/shop.git shop; } && cd shop && git pull -q && make -s -B",
+       writes: ["/home/ci/*"]}                                    # the clone in ci's home folder
+    - {name: backup, host: db, account: root, every: 300, do: cron,
+       run: "mariadb-dump shop > /var/backups/shop.sql", writes: ["/var/backups/*"]}
 path:
+  start: {host: attacker, note: "the attacker has only an address on the internet"}
+  hand_off: "steps s02 to s10 run as webadmin on web through docker exec, not inside the SSH session of s01"
   goal:
     plain: "build's signing secret reaches inet"
     after: s10

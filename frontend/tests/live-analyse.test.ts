@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FIRST_TABLE_STATE } from "../src/live/StepTable";
 import { fixHint, groupMatches, otherRuns, roleRuns, seenBreakdown, stepRows, tableRows } from "../src/live/analyse";
 import { elapsed, falseAlertsOf, ordinal, span } from "../src/live/format";
+import { buildTimeline } from "../src/live/playback";
 import type { Recording } from "../src/live/recording";
 import { alert, event, recording, step } from "./live-fixture";
 
@@ -22,7 +23,7 @@ const run = recording({
     alert("launch", "2", 3, [], { counts: true, launcher_only: true }),
   ],
 });
-const rows = stepRows(run);
+const rows = stepRows(run, buildTimeline(run));
 
 describe("the table of every step", () => {
   it("puts the step nobody saw first, then the alerted ones, each group in run order", () => {
