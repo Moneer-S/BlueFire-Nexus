@@ -1041,8 +1041,9 @@ The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
 `manifest.json` records the daemon's security options under `docker`, and
 every plant check that uses them passed there.
 
-Not yet shown: the path of published tests through the range (see
-[the path](#range-one-the-path)), and the scoring of its steps. The ordinary day is scored, and shown,
+The path of published tests runs through the range, and a CI run shows it
+([the path](#range-one-the-path)). Not yet shown: the scoring of its steps.
+The ordinary day is scored, and shown,
 [below](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
 ## Range one: ordinary activity
@@ -1372,16 +1373,36 @@ Limits:
   mistakes; the seal is what keeps a step inside the range.
 - `blocked` cannot occur: range one configures no active response.
 
-The path in a CI run: not yet shown.
-<!-- The link of this pull request's CI run of the job "range one's path, sealed
-and watched", and that run's table from path.md, go here. -->
+In [run 45464907926](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45464907926),
+job "range one's path, sealed and watched" on a hosted runner, the range
+stayed sealed in every phase (static, no way out, segmentation, after path,
+teardown), every step took effect, and the goal check passed: the first
+upload `inet` stored came from `web`, and the `buildbot/signing.env` in it is
+byte for byte the file on `build`. Seconds are the Docker daemon's times of
+each step's exec. The two port scans ended by themselves before their timeout
+of 300 s, with exit code 1, and nothing was killed. s08 exits 2 because tar
+could not read every file of `/etc` on `build` as `deploy`; the archive holds
+`buildbot/signing.env`, which is what the check asks.
 
+| Step | Host | Technique | Test | Seconds | Exit code | What happened | The check |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| s01 | attacker | T1110.004 | SSH Credential Stuffing From Linux | 60.05 | 5 | took effect | pass |
+| s02 | web | T1105 | Linux Download File and Run | 0.029 | 0 | took effect | pass |
+| s03 | web | T1082 | List OS Information | 0.027 | 0 | took effect | pass |
+| s04 | web | T1018 | Enumerate SSH Configuration | 0.027 | 0 | took effect | pass |
+| s05a | web | T1046 | Port Scan | 242.124 | 1 | took effect | pass |
+| s05b | web | T1046 | Port Scan | 262.528 | 1 | took effect | pass |
+| s06 | web | T1552.001 | Extract passwords with grep | 0.024 | 0 | took effect | pass |
+| s07 | web | T1552.004 | Discover Private SSH Keys | 0.026 | 0 | took effect | pass |
+| s08 | web | T1048 | Exfiltration Over Alternative Protocol - SSH | 0.224 | 2 | took effect | pass |
+| s09 | web | T1560.001 | Data Compressed - nix - tar Folder or File | 0.031 | 0 | took effect | pass |
+| s10 | web | T1048.002 | Exfiltrate data in a file over HTTPS using wget | 0.042 | 0 | took effect | pass |
+
+Not yet shown: whether the defense saw, alerted on or stopped each step.
 
 ## Not yet shown
 
 - Tests on Windows, and a lab on a local machine.
-- A chain of several published tests in a CI run: range one's path runs one
-  ([the path](#range-one-the-path)), and no CI run shows it yet.
 
 ## How to run it
 
