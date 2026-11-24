@@ -678,6 +678,64 @@ def test_a_step_with_an_alert_that_rests_on_an_event_without_the_mark_is_not_cre
     assert "(an alert on it does not rest on those events alone)" in step["verdict"]
 
 
+def test_an_alert_that_cites_a_marked_event_and_an_unmarked_one_is_not_credited(tmp_path: Path) -> None:
+    # Every event an alert cites must carry the mark: the program start of a rule both runs have, which
+    # it cites too, could have raised it on its own.
+    before, after = a_step_unseen_before(an_event("test:00000001", 1, *HISTORY_WRITE))
+    after["alerts"].append(
+        {
+            **after["alerts"][0],
+            "id": "alert-2",
+            "step": "test:00000001",
+            "events": ["test:00000001-1", "test:00000000-1"],
+        }
+    )
+
+    delta, step = judged(tmp_path, before, after)
+
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    assert "(an alert on it does not rest on those events alone)" in step["verdict"]
+    assert (delta["counts"]["by_mark"], delta["limit"]["credited"]) == (1, 1)
+
+
+def test_a_step_the_other_run_counted_events_of_and_kept_none_is_not_credited(tmp_path: Path) -> None:
+    # The before run holds no event of the step, but it says a sensor recorded two: the recording left
+    # them out, so what that run recorded of the step is not known and the after run's events are no mark.
+    before, after = a_step_unseen_before(an_event("test:00000001", 1, *HISTORY_WRITE))
+    before["steps"][3] = a_step("test:00000001", 1, outcome="seen", guid="00000001")
+    after["steps"][3] = a_step("test:00000001", 1, outcome="alerted", guid="00000001")
+    after["steps"][3]["visibility"]["events"] = 1
+    after["alerts"].append(
+        {**after["alerts"][0], "id": "alert-2", "step": "test:00000001", "events": ["test:00000001-1"]}
+    )
+
+    delta, step = judged(tmp_path, before, after)
+
+    assert [event for event in before["events"] if event["step"] == "test:00000001"] == []
+    assert (step["before"]["recorded"], step["after"]["recorded"]) == ("recorded", "recorded")
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    assert "(the other run does not say that no sensor recorded it)" in step["verdict"]
+    assert (delta["counts"]["by_mark"], delta["limit"]["credited"]) == (1, 1)
+
+
+def test_an_event_of_another_sensor_under_a_key_of_the_marks_name_is_not_marked(tmp_path: Path) -> None:
+    # Only auditd's events carry audit keys: a field of the same name on another sensor's event says
+    # nothing of which audit rule wrote it, so the step holds an event that is not the change's.
+    before, after = a_step_unseen_before(
+        an_event("test:00000001", 1, *HISTORY_WRITE),
+        an_event("test:00000001", 2, "sysmon", "file", "/home/bluefire-lab/.bash_history", "shell-history"),
+    )
+
+    delta, step = judged(tmp_path, before, after)
+
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    assert (
+        "not every event of it is auditd's under an audit key that only that run's audit rules define"
+        in step["verdict"]
+    )
+    assert (delta["counts"]["by_mark"], delta["limit"]["credited"]) == (1, 1)
+
+
 def test_a_step_that_lost_its_only_events_with_a_removed_rule_is_worse_by_the_mark(tmp_path: Path) -> None:
     # The first pair the other way round: the watch on the history files removed.
     with_watch, without = the_first_pair()
