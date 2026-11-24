@@ -310,17 +310,22 @@ record of T1070.003 Clear Bash history (echo) in
   front of it. It names no account, no command and no shell. An open the
   kernel refused emptied nothing, and does not match.
 - **Why ordinary writers mostly do not do it.** By their source code: bash
-  4.4 and later (readline 7.0 and later), tcsh and busybox ash append to their
+  4.4 and later (readline 7.0 and later) and busybox ash append to their
   history file with `O_APPEND` and rewrite it by writing a new file and
+  renaming it over the old one; tcsh always saves by writing a new file and
   renaming it over the old one; ksh93 appends and trims with `ftruncate`; zsh
-  appends, or renames a new file over the old one. Three exceptions are known,
-  and the rule alerts on each: bash creating a missing history file, which it
-  opens with `O_TRUNC`, once per account; bash before 4.4, whose readline trims
-  the file in place on exit once it is longer than `HISTFILESIZE`, and rewrites
-  it in place for `history -w`; and zsh with its option `HIST_SAVE_BY_COPY`
-  unset. The rule cannot leave out the creation: auditd's system call record
-  gives the number of path items, but on kernels before 6.12 an `O_CREAT` open
-  of an existing file records two items too, as a creation does.
+  appends, or renames a new file over the old one. Three exceptions among the
+  shells are known, and the rule alerts on each: bash creating a missing
+  history file, which it opens with `O_TRUNC`, once per account; bash before
+  4.4, whose readline trims the file in place on exit once it is longer than
+  `HISTFILESIZE`, and rewrites it in place for `history -w`; and zsh with its
+  option `HIST_SAVE_BY_COPY` unset. Besides the shells, any program that
+  rewrites the history file in place under its own name truncates it and
+  alerts: an editor that saves in place, as nano does, or a copy onto the
+  existing file, `cp backup ~/.bash_history`. The rule cannot leave out the
+  creation: auditd's system call record gives the number of path items, but
+  on kernels before 6.12 an `O_CREAT` open of an existing file records two
+  items too, as a creation does.
 - **What it rests on.** auditd's system call record holds the open's flags and
   not the file's name; its path record holds the name and not the flags; and
   the rule engine reads one record at a time. So the rule takes the file from
@@ -340,8 +345,13 @@ record of T1070.003 Clear Bash history (echo) in
 Its text was fixed from that one record and from what the shells do, before
 it was evaluated over a whole run.
 [Run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682)
-is the first to evaluate it. Of the 4 published procedures of T1070.003 on
-the list besides the canary, it alerted on two, the echo test and T1070.003
+is the first to evaluate it. Its recordings and job summary were written
+before a recording named the pull request's head commit: they name commit
+`e809f685`, the merge commit GitHub made for the run, which no clone has. A
+clone has the pull request's head, `09f4c4b4`, whose files are that merge
+commit's, on its base `3d8f3610`, whose rules are the before side. Of the 4
+published procedures of T1070.003 on the list besides the canary, it alerted
+on two, the echo test and T1070.003
 Clear Bash history (cat dev/null), `cat /dev/null > ~/.bash_history`, each by
 one event, and not on `truncate` and `ln dev/null`, for the reasons above, nor
 on the canary's `rm`. It matched none of that run's 8,847 ordinary events. A
@@ -432,8 +442,11 @@ command in the same process (`bash -c "sysctl ..."`), so only the first program
 start of the launcher's process is the launcher's, which, holding the whole
 test, is never counted as a detection; the ASLR test's `sysctl` start, in the
 same process, is the test's. And auditd rotates its log at 8 MB by default,
-which it did during the first run with this change: the lab now sets it not to
-rotate, and the loss control would fail a run in which it did; none has since.
+which it did during
+[run 44050159740](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44050159740),
+the first with this change, so its export missed records and the run failed
+its readiness control: the lab now sets auditd not to rotate, and the loss
+control fails a run in which it does.
 
 ## How a run works
 
@@ -1403,16 +1416,19 @@ summary. `--change` declares the one thing that changed between the two runs:
 - Every verdict rests on one pair of runs, and says so.
 
 The job "compare with the latest run on main" of the `lab` workflow runs it
-with nothing declared, on every run without a pair (next section). Until a run
-on `main` has a recording with `source.setup`, its comparison is refused for
-that reason, and lists the steps.
+with nothing declared, on every run without a pair (next section).
 
 With `--two-runners`, as the pair gives it, `delta.json` says `runners: 2` and
 `delta.md` says that the two runs were made side by side, each on a fresh
 runner of its own. With `--change sensors:<id>`, a changed step also lists what
 that sensor recorded of it in one run only, and a step whose outcome moved
 while that sensor recorded the same for it in both runs is not credited to the
-change: it is run variation. When two runners side by side got another image
+change: it is run variation. A change of Sysmon's settings is credited with no
+step at all: two runs of the same settings already differ in what Sysmon
+records of a step, by temporary file names, and Sysmon's events carry nothing,
+as auditd's carry an audit key, that tells what new settings recorded from
+that, so every step that moved is not attributable, and its verdict says why.
+When two runners side by side got another image
 or kernel, and nothing else differs besides the declared change, a change of
 the audit rules gets a limited verdict (`limit` in `delta.json`): it is
 credited only on a step it left its own mark on, every event of the step being
@@ -1526,10 +1542,11 @@ change of the lab's own rules alone needs no second run: see the next section.
   already differ in auditd's text, by temporary file names and a password's
   salt that are new in every run, so for `sensors:auditd` a step is credited
   only through events of an audit key that one run's events carry and the
-  other's never do, and `delta.md` gives how many events of each such key the
-  recordings hold. That is a description: on two runners that differed it
-  also says whether each such key can carry the change's own mark, and why
-  not.
+  other's never do, with every alert that one run has on it and the other
+  lacks resting on those events alone, and `delta.md` gives how many events
+  of each such key the recordings hold. That is a description: on two
+  runners that differed it also says whether each such key can carry the
+  change's own mark, and why not.
   Each side says the commit its rules and sensor settings came from.
 - **What it costs.** One more run of the whole list: in the three pairs told
   below it took 13.5 to 15.5 minutes of runner time, and each of the two short
@@ -1538,8 +1555,10 @@ change of the lab's own rules alone needs no second run: see the next section.
 
 **The first change: auditd watches the history files.** One test of the list
 was unseen: T1070.003 Clear Bash history (echo) empties `~/.bash_history` with
-the shell's own redirect, which starts no program, and neither sensor recorded
-anything of it, so no rule could alert on it. The change is to a sensor: the
+the shell's own redirect, which starts no program. Both sensors recorded only
+the launcher's own start, `sh -c` with the test's whole command, which the lab
+never counts, since it holds the whole test, and nothing of what the test did.
+The change is to a sensor: the
 rules in [`sensors/audit.rules`](sensors/audit.rules) now watch the test
 account's shell history files by path (`~/.bash_history`, `~/.zsh_history`,
 `~/.histfile`, `~/.sh_history`, `~/.history`) for writes and changes of
@@ -1551,7 +1570,12 @@ seen.
 **The pair that shows it** is run
 [45365902367](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367)
 of the pull request that made the change (its job "the change to the defense,
-before against after", and the artifact `lab-pair`). Its two runners had the
+before against after", and the artifact `lab-pair`). Its recordings and job
+summary were written before a recording named the pull request's head
+commit: they name commit `35df6a6f`, the merge commit GitHub made for the
+run, which no clone has. A clone has the pull request's head, `fc33afe0`,
+whose files are that merge commit's, on its base `673169ec`, whose rules and
+sensor settings are the before side. Its two runners had the
 same image and kernel, so the comparison is like with like, with a verdict on
 every step. Before, with the old audit rules, "Clear Bash history (echo)"
 (`test:cbf506a5`) had no telemetry; after, it is seen, by one event:

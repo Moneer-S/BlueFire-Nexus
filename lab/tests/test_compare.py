@@ -429,6 +429,69 @@ def test_a_sensor_change_lists_what_it_recorded_and_credits_no_step_it_recorded_
     ) in text
 
 
+PUBLISHED = {"id": "rule-published", "title": "A Published Rule", "level": "high", "origin": "pinned"}
+
+
+def an_alert(step: str, *events: str, rule: dict = PUBLISHED) -> dict:
+    return {"id": f"alert-{step}", "step": step, "rule": rule, "counts": True, "events": list(events)}
+
+
+def test_an_audit_rule_change_credits_no_step_whose_alert_rests_on_other_events(tmp_path: Path) -> None:
+    before = a_recording(*three_steps())
+    before["steps"][1] = a_step("test:7c247dc7", 5, outcome="unseen", guid="7c247dc7")
+    before["events"] = [an_event("test:46959285", 1, "sysmon", "process start", "find / -name id_rsa")]
+    after = copy.deepcopy(before)
+    after["source"]["setup"]["sensors"]["auditd"] = "6" * 64
+    # The step the change was for: recorded now, by the new watch alone.
+    after["steps"][1] = a_step("test:7c247dc7", 5, outcome="seen", guid="7c247dc7")
+    after["events"].append(an_event("test:7c247dc7", 2, *HISTORY_WRITE))
+    # Another step got an event of the new key too, and in this run only a published rule matched one of
+    # its Sysmon events: the change of the audit rules cannot have made that match.
+    after["events"] += [
+        an_event("test:46959285", 3, *HISTORY_WRITE),
+        an_event("test:46959285", 4, "sysmon", "process start", "find / -name id_ed25519"),
+    ]
+    after["alerts"] = [an_alert("test:46959285", "test:46959285-4")]
+    after["steps"][0].update(outcome="alerted", outcome_with_lab_rules="alerted")
+
+    delta, _ = compared(tmp_path, before, after, "--change", "sensors:auditd", "--two-runners")
+
+    history, find_step = delta["steps"][1], delta["steps"][0]
+    assert history["result"] == "better" and history["procedures"] == {"better": 1, "of": 2}
+    assert find_step["result"] == "not attributable"
+    assert find_step["verdict"] == (
+        "not attributable: the rule `A Published Rule` matched it in one run only, on events other than those "
+        "of an audit key that only one run's events carry, so this is run variation; one pair of runs"
+    )
+
+
+def test_a_change_of_sysmon_settings_is_not_credited_with_a_step_its_events_cannot_tell(
+    tmp_path: Path,
+) -> None:
+    before = a_recording(*three_steps())
+    before["events"] = [
+        an_event("test:46959285", 1, "sysmon", "file created", "/var/spool/cron/crontabs/tmp.sxmsyR"),
+        an_event("test:46959285", 2, "auditd", "execve", "crontab /tmp/job", "process-start"),
+    ]
+    after = copy.deepcopy(before)
+    after["source"]["setup"]["sensors"]["sysmon"] = "6" * 64
+    # Sysmon's text differs only by a temporary name, as between any two runs, and in this run only a
+    # published rule matched the step's auditd event, which a change of Sysmon's settings cannot do.
+    after["events"][0]["text"] = "/var/spool/cron/crontabs/tmp.EGNV1e"
+    after["alerts"] = [an_alert("test:46959285", "test:46959285-2")]
+    after["steps"][0].update(outcome="alerted", outcome_with_lab_rules="alerted")
+
+    delta, _ = compared(tmp_path, before, after, "--change", "sensors:sysmon", "--two-runners")
+
+    step = delta["steps"][0]
+    assert delta["comparable"] and step["result"] == "not attributable" and "price" not in step
+    assert step["verdict"] == (
+        "not attributable: two runs of the same settings of sensor `sysmon` already differ in what it records "
+        "of a step, such as temporary file names, and nothing a recording holds tells what a change of those "
+        "settings recorded from that, so this is run variation; one pair of runs"
+    )
+
+
 def test_an_empty_change_declares_nothing(tmp_path: Path) -> None:
     # As the workflow passes it when its plan declared no one change.
     recording = a_recording(*three_steps())
@@ -1427,6 +1490,19 @@ def test_one_run_evaluated_twice_is_refused_when_anything_but_the_lab_rules_diff
         + "the lab's rule `Private Key Files Searched With Find` is the same file in both, and was judged "
         "differently"
     ]
+
+
+def test_a_refused_one_run_comparison_does_not_say_it_rests_on_one_run(tmp_path: Path) -> None:
+    before, after = one_run_evaluated_twice()
+    after["id"] = "r2"
+
+    delta, text = compared(tmp_path, before, after, "--change", "detectors:lab", "--one-run")
+
+    assert not delta["comparable"]
+    step = delta["steps"][0]
+    assert (step["result"], step["verdict"]) == ("no verdict", "no verdict: the comparison is refused")
+    assert "rests on one run evaluated with two rule sets" not in text
+    assert "There is no verdict here: the comparison is refused." in text
 
 
 def test_a_lab_rule_moved_to_another_file_is_named_as_moved(tmp_path: Path) -> None:
