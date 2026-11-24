@@ -130,7 +130,8 @@ jobs:
   browser:
     name: screens in a browser
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Longer than the others: the loop of the live view opens the replay page once for each of its frames.
+    timeout-minutes: 15
     # The image holds the browser build that the locked Playwright version drives.
     container: mcr.microsoft.com/playwright:v1.62.1-noble
     defaults:
@@ -169,15 +170,16 @@ jobs:
         run: pnpm test:service
 
       # Pictures for the README are made here, on a clean runner, and never on a
-      # developer's machine. The folder holds the pictures, replay.html and SOURCE.txt,
-      # and nothing else: the script fails otherwise.
-      - name: Take pictures of the live view, and keep the replay page they show
+      # developer's machine. The folder holds the pictures, the loop of the live view
+      # playing (live-view-loop.gif), replay.html and SOURCE.txt, and nothing else:
+      # the script fails otherwise.
+      - name: Take pictures of the live view and a loop of it playing, and keep the replay page they show
         env:
           BLUEFIRE_PYTHON: /tmp/venv/bin/python
           BLUEFIRE_PICTURES: /tmp/live-view-pictures
         run: pnpm pictures
 
-      - name: Keep the pictures and the page
+      - name: Keep the pictures, the loop and the page
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: live-view-pictures

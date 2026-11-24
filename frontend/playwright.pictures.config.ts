@@ -6,7 +6,8 @@ export default defineConfig({
   testDir: "./tests/pictures",
   testMatch: "live-view.ts",
   globalSetup: "./tests/service/start-service.ts",
-  timeout: 180_000,
+  // The loop opens the page once for each of its frames.
+  timeout: 600_000,
   workers: 1,
   retries: 0,
   reporter: "list",

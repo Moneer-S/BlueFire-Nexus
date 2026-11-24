@@ -408,6 +408,7 @@ None of the following is copied into this repository.
 | [Playwright image](https://mcr.microsoft.com/en-us/artifact/mar/playwright) | `mcr.microsoft.com/playwright:v1.62.1-noble` | Apache-2.0 for Playwright; the image's Ubuntu packages and browser keep their own licences | Container of the browser tests in `.github/workflows/app.yml` and in `CONTRIBUTING.md` |
 | [gzip](https://www.gnu.org/software/gzip/) as Ubuntu packages it | `gzip_1.12-1ubuntu3.2_amd64.deb`, pinned by digest | GPL-3.0-or-later | The exact gzip build the runner's collection tests expect, in `.github/workflows/runner.yml` |
 | [Python image](https://hub.docker.com/_/python) | `python:3.12-slim` | PSF-2.0 for Python; the image's Debian packages keep their own licences | Base of `docker/app.Dockerfile`, which `docker compose up app` builds |
+| [sharp](https://github.com/lovell/sharp) with its prebuilt [libvips](https://github.com/libvips/libvips) | `sharp@0.34.5` in `frontend/pnpm-lock.yaml` (with `@img/sharp-libvips-*@1.2.4`) | Apache-2.0 for sharp; LGPL-3.0-or-later for libvips and the libraries built into it | A development dependency of the interface: `frontend/tests/pictures/loop.ts` writes the loop of the live view as an animated GIF with it, in the job that takes the pictures. Nothing of it is in the app or its pages |
 
 The app's own Python and JavaScript dependencies are named in `pyproject.toml` and
 `frontend/package.json`, and the release dependency inventory above covers what a wheel carries.

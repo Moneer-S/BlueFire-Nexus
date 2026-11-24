@@ -5,8 +5,11 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { loopFrames, takeFrames, writeLoop } from "./loop";
+import type { LoopPlan } from "./loop";
 
-// Takes the pictures of the live view that the README shows, and keeps the
+// Takes the pictures of the live view that the README shows, and the loop of it
+// playing (see loop.ts), and keeps the
 // single replay page they were taken of, from the recording shipped with the
 // app and the real service. CI runs it and keeps the folder as an artifact:
 //
@@ -50,6 +53,7 @@ const FILES = [
   "app-rule-pair.png",
   "app-runs-pair.png",
   "app-runs.png",
+  "live-view-loop.gif",
   "replay.html",
   "watch-first-alert.png",
   "watch-seen.png",
@@ -84,6 +88,15 @@ function launcherLine(step: Step): boolean {
 }
 
 const firstAlert = first("test that alerted", (step) => step.role === "test" && step.outcome === "alerted");
+const afterFirstAlert = first("step after the first alert on a test", (step) => step.order > firstAlert.order);
+// The README's caption under the loop says that the test after the first alert is one no sensor recorded.
+if (afterFirstAlert.role !== "test" || afterFirstAlert.outcome !== "unseen") {
+  throw new Error(
+    `The step after the first alert, "${afterFirstAlert.title}", is a ${afterFirstAlert.role} with the outcome ${afterFirstAlert.outcome}, not an unseen test. ` +
+      'The caption under the loop in README.md ("a published rule raises its first alert, then the next test does its work and neither sensor records it") ' +
+      "would be untrue of this recording: change the caption, or the loop's plan, with the recording.",
+  );
+}
 const unseen = first("unseen test", (step) => step.role === "test" && step.outcome === "unseen");
 // Seen with no alert, while a rule written in this repository would have alerted: the gap and its fix in one picture.
 // The first of these whose rule titles fit the picture whole.
@@ -295,6 +308,31 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   }, `${path.slice(1)}?step=${firstAlert.id}&at=${LATE}&paused=1`);
   await expectWholeMoment(page, firstAlert);
   await picture(page, folder, "app-recorded-run.png");
+
+  // The loop for the top of the README, back in the replay page. It comes last because its frames
+  // take minutes, and the app above has to be opened while the address the service printed is
+  // still good. Its first frame, which a still or a link preview shows, is the moment of
+  // watch-first-alert.png, held a second. It goes on to the step after it, held there, then plays
+  // the alerted test from the moment it begins up to that first frame again, so it closes with no
+  // seam. Six tenths of the view's speed, so the lights can be followed.
+  // Leave the app first, so that nothing of it is still asking the service when only the page's own file may be reached.
+  await page.goto("about:blank");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  reachable = own;
+  const alertMoment = { step: firstAlert.id, at: LATE };
+  const loop: LoopPlan = {
+    stretches: [
+      { from: alertMoment, to: { step: afterFirstAlert.id, at: 1 }, holdFirst: 1000, holdLast: 2000 },
+      { from: { step: firstAlert.id, at: 0 }, to: alertMoment },
+    ],
+    fps: 10,
+    pace: 0.6,
+  };
+  const frames = loopFrames(shipped, loop);
+  const pictures = await takeFrames(page, open, frames);
+  // The last frame is the alerted test just before the loop's first frame.
+  await expect(page.getByRole("region", { name: "The step", exact: true })).toContainText(firstAlert.title);
+  await writeLoop(pictures, frames, 1000, join(folder, "live-view-loop.gif"));
 
   writeFileSync(
     join(folder, "SOURCE.txt"),
