@@ -652,12 +652,19 @@ network without the isolated
 gateway mode (caught by the host canary as well), a published port, a bind
 mount, and an extra container connected to a range network after the seal
 (caught by the event watch).
+[Run 45385756781](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45385756781)
+shows it on a GitHub-hosted runner with Docker Engine 28.0.4, phase by phase.
+The passing case was sealed: `static` 94 of 94 checks, `no way out` 149 of
+149, `segmentation` 158 of 158, `after path` 158 of 158. A network that is not
+internal, a published port and a bind mount each failed `static`, and no later
+phase ran. The missing isolated gateway mode failed `static` and `no way out`
+(148 of 155 checks), and the ready gate never ran. The connect was recorded by
+the event watch after `segmentation` had passed, and that run ended invalid
+(exit code 4). In the same run, range one passed `static` (201 checks),
+`no way out` (357), `segmentation` (430) and `after path` (430).
 [Run 45246204061](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45246204061)
-shows it on a GitHub-hosted runner with Docker Engine 28.0.4: the passing case
-was sealed, each of the four `--plant` breaks was stopped by its own check, and
-the connect was recorded by the event watch. That run is of an earlier engine,
-which made all its checks inside the containers in one phase after the ready
-gate; the phases above, on a hosted runner, are not yet shown.
+showed the same six cases with an earlier engine, which made all its checks
+inside the containers in one phase after the ready gate.
 
 ## Writing a spec
 
