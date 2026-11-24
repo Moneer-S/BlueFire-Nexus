@@ -11,10 +11,15 @@ outcome with the lab's rules, a change of the published rules on both outcomes,
 and a change of a sensor's settings also on whether a sensor recorded the step.
 What the declared change cannot move is the control, and a difference there is
 run variation, not an effect. A lab rule that is the same file in both runs and
-matched a step differently is run variation too. It refuses a verdict, and still
+matched a step differently is run variation too, and so is a step whose outcome
+moved under a sensor change while that sensor recorded the same for it in both
+runs (for auditd: nothing under an audit key that only one run has). A changed
+step lists what the declared sensor recorded of it in one run only. It refuses
+a verdict, and still
 lists what differed, when the two are not of the same steps, when a recording
 lacks source.setup, or when anything other than the declared change differs in
-the setup or in the detectors' digests. The lab's own code is not part of the
+the setup or in the detectors' digests, and when two runs said to be made side
+by side do not name one CI run. The lab's own code is not part of the
 setup: when its commit differs, every verdict says so.
 """
 
@@ -54,6 +59,8 @@ WORDS = {
     "tools": "the version of",
 }
 NOT_RECORDED = "not recorded"
+# A changed step lists at most this many of the records its declared sensor added, and as many it lost.
+KEPT_LINES = 20
 
 
 def plural(number: int, noun: str) -> str:
@@ -169,6 +176,53 @@ def unmoved_rules(
     ]
 
 
+def audit_keys(recording: dict) -> dict[str, list[dict]]:
+    """auditd's events by their audit key, the key of the rule that wrote the record, in time order."""
+
+    found: dict[str, list[dict]] = collections.defaultdict(list)
+    for event in recording["events"]:
+        if event["sensor"] == "auditd" and (event.get("fields") or {}).get("key"):
+            found[event["fields"]["key"]].append(event)
+    return found
+
+
+def sensor_lines(recording: dict, sensor: str, keys: set[str] | None = None) -> dict[str, list[str]]:
+    """The events one sensor recorded for each step, as "<kind>: <text>" lines in time order, only
+    those of these audit keys when keys are given. A recording keeps at most a few hundred events of
+    a step: these are the ones it kept."""
+
+    found: dict[str, list[str]] = collections.defaultdict(list)
+    for event in recording["events"]:
+        if event["sensor"] == sensor and (keys is None or (event.get("fields") or {}).get("key") in keys):
+            found[event["step"]].append(
+                f"{event['kind']}: {event['text']}" if event["text"] else event["kind"]
+            )
+    return found
+
+
+def only_in(lines: list[str], other: list[str]) -> list[str]:
+    """The lines of one side that the other side does not have as often, in their order."""
+
+    left, found = collections.Counter(other), []
+    for line in lines:
+        if left[line]:
+            left[line] -= 1
+        else:
+            found.append(line)
+    return found
+
+
+def records_of(sensor: str, before: list[str], after: list[str]) -> dict:
+    """What one sensor recorded for a step in one run and not in the other, the first KEPT_LINES of each."""
+
+    new, gone = only_in(after, before), only_in(before, after)
+    return {
+        "sensor": sensor,
+        "new": {"count": len(new), "lines": new[:KEPT_LINES]},
+        "gone": {"count": len(gone), "lines": gone[:KEPT_LINES]},
+    }
+
+
 def underneath(old: dict, new: dict, before: set[str], after: set[str]) -> list[str]:
     """What changed under a step's answers: whether a sensor recorded it, and which rules matched."""
 
@@ -265,12 +319,23 @@ def side(recording: dict, sha: str) -> dict:
     return {
         "sha256": sha,
         "id": recording["id"],
-        **{key: source[key] for key in ("run_url", "environment", "commit", "started") if key in source},
+        **{
+            key: source[key]
+            for key in ("run_url", "environment", "commit", "defense_commit", "started")
+            if key in source
+        },
     }
 
 
-def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declared: str | None = None) -> dict:
-    """The delta of two recordings, as delta.json holds it."""
+def compare(
+    before: dict,
+    after: dict,
+    shas: tuple[str, str] = ("", ""),
+    declared: str | None = None,
+    two_runners: bool = False,
+) -> dict:
+    """The delta of two recordings, as delta.json holds it. two_runners says that the two runs were
+    made side by side, each on a fresh runner of its own, rather than one after the other on one."""
 
     refusals = []
     for label, recording in (("before", before), ("after", after)):
@@ -320,6 +385,13 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
             NOT_RECORDED if part is None else part for part in (difference["before"], difference["after"])
         ]
         refusals.append(f"also differed: {named(difference['what'])} ({shown[0]} before, {shown[1]} after)")
+    # Two runs side by side in one CI run name that one run: anything else is not such a pair.
+    urls = (before["source"].get("run_url"), after["source"].get("run_url"))
+    if two_runners and not (urls[0] and urls[0] == urls[1]):
+        refusals.append(
+            "the two runs were said to be made side by side in one CI run, but the recordings "
+            + ("name different CI runs" if all(urls) else "do not both name the CI run that made them")
+        )
     # The lab's own code is not part of the setup: it differs between a pull request and main, and
     # a rule of the lab's own changes it too. It refuses nothing, and every verdict says it differed.
     code = {
@@ -356,6 +428,20 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
     rules_before, rules_after = matches(before), matches(after)
     lab_before, lab_after = lab_matches(before), lab_matches(after)
     verdicts = (lab_verdicts(before), lab_verdicts(after))
+    # A sensor's settings can change a step only through what that sensor recorded of it.
+    sensor = declared.partition(":")[2] if declared and declared.startswith("sensors:") else None
+    kept = ({event["step"] for event in before["events"]}, {event["step"] for event in after["events"]})
+    keys = (audit_keys(before), audit_keys(after))
+    only = (set(keys[0]) - set(keys[1]), set(keys[1]) - set(keys[0]))
+    if sensor == "auditd":
+        # Two runs of the same audit rules differ in text that is new in every run, such as temporary
+        # file names and a password's salt. Only the records of a rule that one run has and the other
+        # lacks, told by its audit key, can be the change's.
+        lines = (sensor_lines(before, sensor, only[0]), sensor_lines(after, sensor, only[1]))
+        unchanged = f"sensor `{sensor}` recorded nothing of this step under an audit key that only one of the runs has"
+    else:
+        lines = (sensor_lines(before, sensor), sensor_lines(after, sensor)) if sensor else ({}, {})
+        unchanged = f"sensor `{sensor}` recorded the same for this step in both runs"
     rows = []
     for old, step in pairs:
         changed = [
@@ -370,6 +456,15 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
             if declared == "detectors:lab" and moved
             else []
         )
+        records = (
+            records_of(sensor, lines[0].get(old["id"], []), lines[1].get(step["id"], []))
+            if sensor and changed
+            else None
+        )
+        # The recordings hold the step's events, and none of the declared sensor's is the change's.
+        if records and moved and not records["new"]["count"] and not records["gone"]["count"]:
+            if old["id"] in kept[0] or step["id"] in kept[1]:
+                unmoved = [unchanged]
         if not changed:
             result, words = "same", "no change"
         elif not comparable:
@@ -407,6 +502,7 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
                 "underneath": underneath(old, step, rules_before[old["id"]], rules_after[step["id"]])
                 if changed
                 else [],
+                **({"records": records} if records else {}),
                 "result": result,
                 "verdict": words,
             }
@@ -450,6 +546,7 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
         "before": side(before, shas[0]),
         "after": side(after, shas[1]),
         "declared_change": declared,
+        "runners": 2 if two_runners and urls[0] and urls[0] == urls[1] else None,
         "comparable": comparable,
         "refused_because": refusals,
         "differences": differences,
@@ -473,6 +570,16 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
         "new": listed(new),
         "gone": listed(gone),
         "race": race(before, after),
+        "audit_keys": {
+            label: {
+                key: {"events": len(events), "steps": sorted({event["step"] for event in events})}
+                for key, events in sorted(found.items())
+                if key in keys_of
+            }
+            for label, found, keys_of in (("only_before", keys[0], only[0]), ("only_after", keys[1], only[1]))
+        }
+        if sensor == "auditd"
+        else None,
     }
 
 
@@ -486,19 +593,35 @@ def markdown(delta: dict) -> str:
         address = facts.get("run_url")
         label = address.rstrip("/").rpartition("/")[2] if address else facts["id"]
         made = f", commit `{facts['commit'][:8]}`" if "commit" in facts else ""
+        defense = facts.get("defense_commit")
+        if defense:
+            made += (
+                f", its rules and sensor settings from commit `{defense[:8]}`"
+                if defense != facts.get("commit")
+                else ", its rules and sensor settings from that commit"
+            )
         return (
             f"[{label}]({address})" if address else f"`{label}`"
         ) + f", {facts.get('environment', '')}{made}"
 
-    declared = delta["declared_change"]
+    declared, runners = delta["declared_change"], delta.get("runners")
     lines = [
-        "## Compared with an earlier recording",
+        "## A pair of runs, before and after the change"
+        if runners == 2
+        else "## Compared with an earlier recording",
         "",
         f"Before: {run(delta['before'])}. After: {run(delta['after'])}.",
         "",
         f"Declared change: {named(declared) if declared else 'none'}.",
         "",
     ]
+    if runners == 2:
+        lines += [
+            "The two runs were made side by side in one CI run, each on a fresh runner of its own, not one "
+            "after the other on one runner. So nothing the first run left behind could change the second, and "
+            "what differs between two runners of the same image and kernel is part of the run variation.",
+            "",
+        ]
     code = delta["lab_code"]
     if delta["comparable"]:
         lines.append(
@@ -600,6 +723,68 @@ def markdown(delta: dict) -> str:
                 + f" | {cell(why)} |"
             )
         lines.append("")
+    recorded = [row for row in differing if "records" in row]
+    if recorded:
+        sensor = recorded[0]["records"]["sensor"]
+
+        def listed(part: dict) -> str:
+            shown = ["`" + cell(line).replace("`", "'") + "`" for line in part["lines"]]
+            more = part["count"] - len(part["lines"])
+            return (", ".join(shown) + (f", and {more} more" if more else "")) if shown else "none"
+
+        lines += [f"What sensor `{sensor}` recorded of each step above in one run only:", ""]
+        lines += [
+            f"- `{cell(row['id'])}` {cell(row['technique'] + ' ' + row['title'])}: only after, "
+            f"{listed(row['records']['new'])}; only before, {listed(row['records']['gone'])}."
+            for row in recorded
+        ]
+        lines.append("")
+    if declared and declared.startswith("sensors:"):
+        # What a sensor change did to the steps nobody saw, said also when it did nothing.
+        def steps_of(rows: list[dict]) -> str:
+            return "; ".join(
+                f"`{cell(row['id'])}` {cell(row['technique'] + ' ' + row['title'])}" for row in rows
+            )
+
+        now = [
+            row
+            for row in delta["steps"]
+            if row["before"]["recorded"] == "no telemetry" and row["after"]["recorded"] == "recorded"
+        ]
+        still = [
+            row
+            for row in delta["steps"]
+            if row["role"] == "test" and row["before"]["outcome"] == row["after"]["outcome"] == "unseen"
+        ]
+        lines.append(
+            f"Recorded now, and by no sensor before: {steps_of(now)}."
+            if now
+            else "No step that no sensor recorded before is recorded now."
+        )
+        if still:
+            lines.append(f"Unseen in both runs: {steps_of(still)}.")
+        keys = delta.get("audit_keys")
+        if keys is not None:
+            for label, words in (
+                ("only_after", "only the after run has"),
+                ("only_before", "only the before run has"),
+            ):
+                found = keys[label]
+                lines.append(
+                    f"Events of an audit key that {words}: "
+                    + "; ".join(
+                        f"`{cell(key)}`, {plural(part['events'], 'event')} of {plural(len(part['steps']), 'step')}"
+                        for key, part in found.items()
+                    )
+                    + "."
+                    if found
+                    else f"No event of an audit key that {words}."
+                )
+            lines.append(
+                "A recording holds only the records tied to a step; the whole audit log of each run is "
+                "`audit.txt` in its artifact."
+            )
+        lines.append("")
     for label in ("new", "gone"):
         if delta[label]:
             names = "; ".join(f"`{step['id']}` {step['technique']} {step['title']}" for step in delta[label])
@@ -617,10 +802,12 @@ def markdown(delta: dict) -> str:
     return "\n".join(lines)
 
 
-def main(before: Path, after: Path, out: Path, declared: str | None = None) -> int:
+def main(before: Path, after: Path, out: Path, declared: str | None = None, two_runners: bool = False) -> int:
     texts = [path.read_bytes() for path in (before, after)]
     recordings = [json.loads(text) for text in texts]
-    delta = compare(*recordings, tuple(hashlib.sha256(text).hexdigest() for text in texts), declared)
+    delta = compare(
+        *recordings, tuple(hashlib.sha256(text).hexdigest() for text in texts), declared, two_runners
+    )
     out.mkdir(parents=True, exist_ok=True)
     (out / "delta.json").write_text(json.dumps(delta, indent=1) + "\n", encoding="utf-8")
     text = markdown(delta)

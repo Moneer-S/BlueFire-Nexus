@@ -432,8 +432,13 @@ rotate, and the loss control would fail a run in which it did; none has since.
    Its format is [`docs/RECORDING.md`](../docs/RECORDING.md).
    The job writes it whenever the evaluation wrote `results.json`, also when a
    control failed, and it is part of the run's artifact.
-6. A separate job, which runs no test, compares the run's recording with that
-   of the latest successful run on `main` (`bluefire-lab compare`, see
+6. When a pull request changes the lab's own rules or a sensor's settings, the
+   list runs twice, with the base commit's files and with the head's, and a
+   job that runs no test compares the two recordings: see
+   [A pair of runs for a change to the defense](#a-pair-of-runs-for-a-change-to-the-defense).
+   Otherwise a separate job, which runs no test either, compares the run's
+   recording with that of the latest successful run on `main`
+   (`bluefire-lab compare`, see
    [Comparing two recordings](#comparing-two-recordings)), writes `delta.md` to
    the run page, and keeps `delta.json` as the artifact `lab-delta`.
 
@@ -476,7 +481,8 @@ Seven controls must pass, or the run fails as a whole:
   matched no published test and was not accepted. While `/tmp` is bind-mounted
   for the `noexec` change, Sysmon names files under it with the folder twice
   (`/tmp/tmp/crond`).
-- auditd watches only the shell start files in
+- auditd watches only the shell start files and the test account's shell
+  history files in
   [`sensors/audit.rules`](sensors/audit.rules), for writes and for changes of
   permissions, owner and extended attributes; `chattr`'s file flags, such as
   immutable, are not among them. It records the process starts of processes
@@ -953,8 +959,16 @@ summary. `--change` declares the one thing that changed between the two runs:
 - Every verdict rests on one pair of runs, and says so.
 
 The job "compare with the latest run on main" of the `lab` workflow runs it
-with nothing declared. Until a run on `main` has a recording with
-`source.setup`, its comparison is refused for that reason, and lists the steps.
+with nothing declared, on every run without a pair (next section). Until a run
+on `main` has a recording with `source.setup`, its comparison is refused for
+that reason, and lists the steps.
+
+With `--two-runners`, as the pair gives it, `delta.json` says `runners: 2` and
+`delta.md` says that the two runs were made side by side, each on a fresh
+runner of its own. With `--change sensors:<id>`, a changed step also lists what
+that sensor recorded of it in one run only, and a step whose outcome moved
+while that sensor recorded the same for it in both runs is not credited to the
+change: it is run variation.
 
 **The noise floor.** Runs
 [45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)
@@ -971,6 +985,82 @@ happened, in whether a sensor recorded them and in both outcomes. They do
 differ below the outcomes: the recordings hold 1,931 and 1,923 events. No CI
 run shows this comparison: it is not yet shown, and two runs are one sample of
 the noise floor, not its measure.
+
+## A pair of runs for a change to the defense
+
+A defender who changes a rule or a sensor setting wants to see what that one
+change did. A comparison with the latest run on `main` cannot show it: that run
+is days old, on another runner, from other code. So when a pull request
+changes what a run loads of the defense, the `lab` workflow makes a pair of
+fresh runs for it, in the same workflow run, where only that thing differs.
+
+- **When.** The job "decide whether the change needs a pair of runs" checks out
+  the base commit's `lab/rules/` and `lab/sensors/`, and nothing else of it,
+  and runs `bluefire-lab pair --base base/lab lab`. It compares the digests of
+  what a run loads: [`sensors/sysmon.xml`](sensors/sysmon.xml) (`sensors:sysmon`),
+  [`sensors/audit.rules`](sensors/audit.rules) (`sensors:auditd`) and the
+  folder [`rules/linux`](rules/linux) (`detectors:lab`, the same digest a
+  recording gives that detector). The paths a pull request touched do not
+  decide: a change that leaves these files as they were runs once, as does
+  every run that is not of a pull request.
+- **The two runs.** The whole list runs twice, as two jobs on two runners
+  started side by side: "attack tests on this runner, with the defense of the
+  base commit", which loads the base commit's rules and sensor settings, and
+  "attack tests on this runner", the usual run, which loads the head's. Both
+  run the head's code, list and tools, and are evaluated, reported and
+  recorded the usual way; their artifacts are `lab-run-base` and `lab-run`.
+- **Why two runners, not one after the other on one.** A run that the first
+  run's leftovers could have changed is no before or after, and the list
+  leaves some behind on purpose: it ends with tests whose changes upstream does
+  not undo (the root certificate of T1553.004 and the sudo setting of
+  T1548.003 stay until the runner is gone), and the effect checks of those
+  tests would pass on a second run whatever the test then did. The tests'
+  cleanups undo much of the rest, but nothing shows that they undo all of it.
+  A fresh runner for each side is a clean state that needs no proof. What it
+  costs: two runners can differ, and GitHub hands out different kernels under
+  the same label. Each recording says its runner image and kernel, and the
+  comparison refuses a verdict when they differ; when they are the same, what
+  still differs between two runners is part of the run variation the control
+  shows.
+- **The comparison.** The job "the change to the defense, before against
+  after" runs `bluefire-lab compare` on the two recordings with the one change
+  the plan declared (`--change sensors:auditd`, for example) and
+  `--two-runners`. When more than one thing changed it declares nothing, the
+  comparison gives no verdict, and the job's summary says so. `delta.md` goes
+  to the run page, and the artifact `lab-pair` holds both recordings
+  (`before/recording.json`, `after/recording.json`), `delta.json` and
+  `delta.md`. The job runs only when both runs passed their controls.
+- **The comparison with `main`** runs only on a run without a pair. There it is
+  the one comparison, and it declares nothing, so it names what varies and
+  credits nothing to a change. Beside a pair it would be a second, weaker
+  comparison that could be read as the result, so a run with a pair has none.
+- **What it says.** Under a sensor change, `delta.md` names the steps that are
+  recorded now and were recorded by no sensor before, or says that there are
+  none, and the tests unseen in both runs. Two runs of the same audit rules
+  already differ in auditd's text, by temporary file names and a password's
+  salt that are new in every run, so for `sensors:auditd` a step is credited
+  only through events of an audit key that one run has and the other lacks,
+  and `delta.md` gives how many events of each such key the recordings hold.
+  Each side says the commit its rules and sensor settings came from.
+- **What it costs** (an estimate: not yet measured for a pair). One more run of
+  the whole list, which took 13 to 16 minutes of runner time in the runs that
+  the item on runners under [Limits](#limits) names, and a few minutes for the
+  two short jobs that decide and compare. The two runs go side by side, so the
+  pull request should wait about as long as for one.
+
+**The first change: auditd watches the history files.** One test of the list
+was unseen: T1070.003 Clear Bash history (echo) empties `~/.bash_history` with
+the shell's own redirect, which starts no program, and neither sensor recorded
+anything of it, so no rule could alert on it. The change is to a sensor: the
+rules in [`sensors/audit.rules`](sensors/audit.rules) now watch the test
+account's shell history files by path (`~/.bash_history`, `~/.zsh_history`,
+`~/.histfile`, `~/.sh_history`, `~/.history`) for writes and changes of
+attributes, as a defender would watch them, not the test's command. If the
+watch works, auditd records the shell opening the file to empty it, in the
+audit session of the test's attack step, and the step goes from unseen to
+seen. The other history tests of the list write the same files, so they may
+get these records too (an expectation: not yet shown). The pair of the pull
+request that made this change is its proof: not yet shown.
 
 ## Before the loop: the sensor spike
 

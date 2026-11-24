@@ -43,6 +43,7 @@ it (`2026-11-17T17:07:23.834Z`).
 | `environment` | string | Plain words: `GitHub-hosted runner` or `containers on a developer machine`. |
 | `started`, `finished` | time | The run's start and end. |
 | `repository`, `commit` | string | Optional. The repository and commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
+| `defense_commit` | string | Optional. The commit of the same repository that the lab's own rules and the sensors' settings were loaded from. In the run of a pair that loads a pull request's base commit, it is that commit and not `commit`. |
 | `run_url` | string | Optional. The CI run that made the recording. |
 | `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. |
 | `setup` | object | Optional. What a comparison of two runs needs to know was the same. See below. A recording with `setup` has stable step ids. |
@@ -300,7 +301,7 @@ run after it, and whether one declared change can explain it. "Before against
 after" is a claim about a cause, so the delta is the one place where it is
 computed, and where it is refused; a view only draws what a delta says. It is
 not a recording. `bluefire-lab compare <before.json> <after.json> --out
-<folder> [--change <what>]` writes it as `delta.json`, with `delta.md`, the same
+<folder> [--change <what>] [--two-runners]` writes it as `delta.json`, with `delta.md`, the same
 in a few lines for a job summary (see `lab/README.md`).
 
 The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
@@ -309,8 +310,9 @@ The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
 | --- | --- | --- |
 | `schema` | string | `bluefire.delta/1` |
 | `claim` | string | `one pair of runs`: what every verdict rests on. |
-| `before`, `after` | object | Each recording: `{ "sha256", "id" }`, the SHA-256 of its file and its `id`, and from its `source` the `run_url`, `environment`, `commit` and `started` it has. |
+| `before`, `after` | object | Each recording: `{ "sha256", "id" }`, the SHA-256 of its file and its `id`, and from its `source` the `run_url`, `environment`, `commit`, `defense_commit` and `started` it has. |
 | `declared_change` | string or null | The one thing declared as changed between the runs, as a name of the setup (below): `sensors:<sensor id>` for a sensor's settings or `detectors:<detector id>` for a rule set. Null when nothing was declared. |
+| `runners` | number or null | `2` when the two runs were made side by side in one CI run, each on a fresh runner of its own (`--two-runners`, as the lab's pair of runs gives it), and both recordings name the same `run_url`. Null otherwise: `--two-runners` on recordings that do not name one CI run is a refusal. |
 | `comparable` | boolean | True when there is a verdict: `refused_because` is empty. |
 | `refused_because` | array of strings | Each reason there is no verdict, in plain words. |
 | `differences` | array | Each `{ "what", "before", "after" }`: a name of the setup whose values differ, with both values, null where a recording does not record it. |
@@ -323,6 +325,7 @@ The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
 | `steps` | array | Each paired step, in the order of the after recording. See below. |
 | `new`, `gone` | array | Each `{ "id", "role", "title", "technique" }`: a step only in the after recording, or only in the before recording. Listed, never counted. |
 | `race` | object | The time to the first alert of each side, `{ "before", "after" }` with each recording's `first_alert_seconds` and `goal_seconds` where it has them, only when both are attack paths with a detector that ran `live`. Otherwise `{ "why" }`: there is no race to compare, and none is made up. |
+| `audit_keys` | object or null | Only when the declared change is `sensors:auditd`: `{ "only_before", "only_after" }`, each the audit keys (`fields.key` of auditd's events) that one recording's events carry and the other's never do, each `{ "events", "steps" }`, its number of events and the ids of their steps. Null otherwise. |
 
 **The setup.** A delta compares, by name: each key of `source.setup`, and each
 member of an object there as `<key>:<id>` (such as `images:target` or
@@ -353,7 +356,9 @@ what differed, when a recording has no `source.setup`; when the two are not of
 the same `kind`; when they are not of the same steps in the same order (a new or
 a gone step included); when the declared change is not a sensor's settings or a
 detector's rules of these recordings, is the same in both, or is not recorded in
-both; or when any name of the setup other than the declared change differs.
+both; when any name of the setup other than the declared change differs; or
+when `--two-runners` says the runs were made side by side in one CI run and the
+two recordings do not name the same `run_url`.
 
 **A step** of a delta:
 
@@ -365,7 +370,8 @@ both; or when any name of the setup other than the declared change differs.
 | `before`, `after` | object | `{ "happened", "recorded", "outcome", "outcome_with_lab_rules" }` of each side: `happened` is the step's `happened.answer`; `recorded` is `recorded` when `visibility.answer` is `alert` or `telemetry only`, `no telemetry` when it is that, and `not known` otherwise; and `outcome_with_lab_rules` is the `outcome` when the run evaluated no rules of the lab's own. |
 | `changed` | array of strings | The fields whose value differs. |
 | `underneath` | array of strings | For a changed step, what changed under it: `recorded now` or `no longer recorded` with the number of events, `matches now:` or `no longer matches:` and a rule as `<level>: <title>`. |
-| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too, or a rule of the lab's own that is the same file in both runs matched the step differently); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
+| `records` | object | Only on a changed step, when the declared change is `sensors:<id>`: `{ "sensor", "new", "gone" }`, where `new` is what that sensor recorded of the step in the after recording and not in the before one, and `gone` the other way, each `{ "count", "lines" }` with the first 20 lines as `<kind>: <text>` of the events (`<kind>` alone when the text is empty), in time order. Only the events a recording kept count. For `sensors:auditd`, only events of an audit key that one recording has and the other lacks (`audit_keys`) count. |
+| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too, a rule of the lab's own that is the same file in both runs matched the step differently, or, for a sensor's settings, that sensor's `records` of the step are empty while the recordings hold events of the step); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
 | `verdict` | string | The result in plain words. A changed step's ends with `one pair of runs`. |
 | `procedures`, `price` | object, string | On a `better` step, and in its `verdict` too: `price`, what the gain cost; and on a step of role `test` only, `procedures`, `{ "better", "of" }`, on how many of the steps of role `test` of the same technique the result is `better`. |
 
@@ -382,7 +388,18 @@ lab's rules, so for `detectors:lab` a step that a rule of the lab's own matched
 in one run and not in the other, while that rule's file has the same digest in
 both `verdicts`, is `not attributable`, and its verdict gives what each run
 said of that rule. A recording without `verdicts` does not say which rules
-changed, and such a step is `not attributable` too.
+changed, and such a step is `not attributable` too. A sensor's settings change a
+step only through what that sensor records of it, so for `sensors:<id>` a step
+whose judged fields moved while that sensor's events of it are the same in both
+recordings is `not attributable`, and its verdict says the sensor recorded the
+same. Two runs of the same audit rules already differ in auditd's text, by
+temporary file names and a password's salt that are new in every run, so for
+`sensors:auditd` only events of an audit key that one run has and the other
+lacks are the change's: a step that moved with none of them is `not
+attributable`. Under a sensor change, `delta.md` also names the steps recorded
+now and by no sensor before, or says there are none, the steps of role `test`
+unseen in both runs, and for auditd the events of each audit key only one run
+has.
 
 **The price** of a gain is on the same line as the gain. For the lab's rules,
 the lab leaves a rule that matched ordinary activity out of the recording before

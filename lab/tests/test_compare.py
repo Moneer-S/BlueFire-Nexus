@@ -279,6 +279,133 @@ def test_a_sensor_change_is_judged_on_whether_the_step_was_recorded(tmp_path: Pa
     )
 
 
+def an_event(step: str, number: int, sensor: str, kind: str, text: str, key: str = "") -> dict:
+    return {
+        "id": f"{step}-{number}",
+        "time": f"2026-11-16T04:10:0{number}.000Z",
+        "host": "target",
+        "sensor": sensor,
+        "kind": kind,
+        "text": text,
+        "step": step,
+        "tied_by": "session",
+        "fields": {"key": key} if key else {},
+    }
+
+
+def test_a_sensor_change_lists_what_it_recorded_and_credits_no_step_it_recorded_the_same(
+    tmp_path: Path,
+) -> None:
+    before = a_recording(*three_steps())
+    before["steps"][1] = a_step("test:7c247dc7", 5, outcome="unseen", guid="7c247dc7")
+    before["events"] = [
+        an_event("test:46959285", 1, "auditd", "execve", "cc -o /tmp/ccm3GO8m.s", "process-start")
+    ]
+    after = copy.deepcopy(before)
+    after["source"]["setup"]["sensors"]["auditd"] = "6" * 64
+    after["steps"][1] = a_step("test:7c247dc7", 5, outcome="seen", guid="7c247dc7")
+    # The step the change was for: the shell's write to the history file, which only the new watch records.
+    after["events"].append(
+        an_event("test:7c247dc7", 2, "auditd", "openat", "/home/bluefire-lab/.bash_history", "shell-history")
+    )
+    # A step whose outcome moved while auditd recorded for it only what is new in every run, here a
+    # compiler's temporary file name under a rule both runs have: run variation.
+    after["events"][0]["text"] = "cc -o /tmp/ccOZCXa6.s"
+    after["steps"][0].update(outcome="alerted", outcome_with_lab_rules="alerted")
+
+    delta, text = compared(tmp_path, before, after, "--change", "sensors:auditd", "--two-runners")
+
+    history, find_step = delta["steps"][1], delta["steps"][0]
+    assert history["result"] == "better"
+    assert history["records"] == {
+        "sensor": "auditd",
+        "new": {"count": 1, "lines": ["openat: /home/bluefire-lab/.bash_history"]},
+        "gone": {"count": 0, "lines": []},
+    }
+    assert find_step["result"] == "not attributable"
+    assert find_step["verdict"] == (
+        "not attributable: sensor `auditd` recorded nothing of this step under an audit key that only one of "
+        "the runs has, so this is run variation; one pair of runs"
+    )
+    assert find_step["records"]["new"] == {"count": 0, "lines": []}
+    assert delta["unexplained"] == ["test:46959285"] and delta["runners"] == 2
+    assert delta["audit_keys"] == {
+        "only_before": {},
+        "only_after": {"shell-history": {"events": 1, "steps": ["test:7c247dc7"]}},
+    }
+    assert text.startswith("## A pair of runs, before and after the change")
+    assert "each on a fresh runner of its own, not one after the other on one runner" in text
+    assert (
+        "- `test:7c247dc7` T1552.004 Test 7c247dc7: only after, `openat: /home/bluefire-lab/.bash_history`; "
+        "only before, none."
+    ) in text
+    assert "Recorded now, and by no sensor before: `test:7c247dc7` T1552.004 Test 7c247dc7." in text
+    assert "Events of an audit key that only the after run has: `shell-history`, 1 event of 1 step." in text
+    assert (
+        "Same in both: the tests' commit, the rules of detector `lab`, the rules of detector `pinned`, the image "
+        "of host `target`, the kernel of host `target`, the settings of sensor `sysmon`, the version of `Zircolite`."
+    ) in text
+
+
+def test_an_empty_change_declares_nothing(tmp_path: Path) -> None:
+    # As the workflow passes it when its plan declared no one change.
+    recording = a_recording(*three_steps())
+
+    delta, text = compared(tmp_path, recording, recording, "--change", "")
+
+    assert (delta["declared_change"], delta["comparable"], delta["runners"]) == (None, True, None)
+    assert "Declared change: none." in text and "fresh runner" not in text
+
+
+def test_a_sensor_change_that_recorded_nothing_new_says_so_and_names_the_step_still_unseen(
+    tmp_path: Path,
+) -> None:
+    before = a_recording(*three_steps())
+    before["steps"][1] = a_step("test:7c247dc7", 5, outcome="unseen", guid="7c247dc7")
+    after = copy.deepcopy(before)
+    after["source"]["setup"]["sensors"]["auditd"] = "6" * 64
+
+    delta, text = compared(tmp_path, before, after, "--change", "sensors:auditd")
+
+    assert delta["counts"]["same"] == 3
+    assert "No step that no sensor recorded before is recorded now." in text
+    assert "Unseen in both runs: `test:7c247dc7` T1552.004 Test 7c247dc7." in text
+    assert "No event of an audit key that only the after run has." in text
+    assert "the whole audit log of each run is `audit.txt` in its artifact" in text
+
+
+def test_two_runs_said_to_be_side_by_side_must_name_one_ci_run(tmp_path: Path) -> None:
+    before = a_recording(*three_steps())
+    after = copy.deepcopy(before)
+    after["source"]["setup"]["sensors"]["auditd"] = "6" * 64
+    after["source"]["run_url"] = "https://example.org/runs/2"
+
+    delta, text = compared(tmp_path, before, after, "--change", "sensors:auditd", "--two-runners")
+
+    assert (delta["comparable"], delta["runners"]) == (False, None)
+    assert delta["refused_because"] == [
+        "the two runs were said to be made side by side in one CI run, but the recordings name different CI runs"
+    ]
+    assert "fresh runner" not in text
+
+
+def test_each_side_names_the_commit_its_rules_and_sensor_settings_came_from(tmp_path: Path) -> None:
+    before = a_recording(*three_steps())
+    before["source"]["defense_commit"] = "b" * 40
+    after = copy.deepcopy(before)
+    after["source"]["defense_commit"] = "c" * 40
+    after["source"]["setup"]["sensors"]["auditd"] = "6" * 64
+
+    delta, text = compared(tmp_path, before, after, "--change", "sensors:auditd", "--two-runners")
+
+    assert (delta["before"]["defense_commit"], delta["after"]["defense_commit"]) == ("b" * 40, "c" * 40)
+    assert (
+        "Before: [1](https://example.org/runs/1), GitHub-hosted runner, commit `cccccccc`, its rules and sensor "
+        "settings from commit `bbbbbbbb`. After: [1](https://example.org/runs/1), GitHub-hosted runner, commit "
+        "`cccccccc`, its rules and sensor settings from that commit."
+    ) in text
+
+
 def test_an_alert_on_the_control_step_is_worse_and_other_roles_name_no_procedures(tmp_path: Path) -> None:
     before = a_recording(*three_steps(), a_step("control:486e88ea", 8, "control", guid="486e88ea"))
     after = copy.deepcopy(before)

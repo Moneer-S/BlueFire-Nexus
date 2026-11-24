@@ -7,7 +7,9 @@ parent, and a detached child has parent 1. They are constructed, not recorded.
 
 from __future__ import annotations
 
-from bluefire_lab import evaluate, sysmon
+from pathlib import Path
+
+from bluefire_lab import auditd, evaluate, sysmon
 
 ACCOUNT = "bluefire-lab"
 RUN = {"id": "r1", "account": ACCOUNT, "sensor": {"ready_after_seconds": 1}}
@@ -226,6 +228,48 @@ def test_a_write_auditd_recorded_in_the_attack_session_is_the_tests_telemetry() 
         (key, "openat (auditd)", "/home/bluefire-lab/.bashrc by sh -c echo hi >> ~/.bashrc")
     ]
     assert [(rule["id"], rule["records"]) for rule in answer["rules"]] == [("medium-rule", [key])]
+
+
+def test_the_shells_own_write_to_the_history_file_is_the_tests_telemetry(tmp_path: Path) -> None:
+    # Built by the audit format's rules, not recorded: the records auditd writes when the watch on
+    # ~/.bash_history sees the launcher's shell itself open the file to empty it, as
+    # sh -c 'echo "" > ~/.bash_history' does without starting a program (flags O_WRONLY|O_CREAT|O_TRUNC).
+    stamp = "msg=audit(1794802705.120:178):"
+    title = b'sh\0-c\0echo "" > ~/.bash_history'.hex().upper()
+    lines = [
+        f"type=SYSCALL {stamp} arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=55d0c3a1b2c0 "
+        "a2=241 a3=1b6 items=2 ppid=105 pid=120 auid=1001 uid=1001 gid=1001 euid=1001 tty=(none) ses=11 "
+        f'comm="sh" exe="/usr/bin/dash" subj=unconfined key="shell-history"\x1dARCH=x86_64 SYSCALL=openat '
+        'AUID="bluefire-lab" UID="bluefire-lab"',
+        f'type=CWD {stamp} cwd="/home/bluefire-lab"',
+        f'type=PATH {stamp} item=0 name="/home/bluefire-lab/" inode=2 dev=fc:00 mode=040750 ouid=1001 '
+        "ogid=1001 nametype=PARENT",
+        f'type=PATH {stamp} item=1 name="/home/bluefire-lab/.bash_history" inode=7 dev=fc:00 mode=0100600 '
+        "ouid=1001 ogid=1001 nametype=NORMAL",
+        f"type=PROCTITLE {stamp} proctitle={title}",
+    ]
+    path = tmp_path / "audit.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    audit = auditd.events(auditd.read(path))
+    # Sysmon saw nothing of the test but its launcher's start and end.
+    events = [
+        event for event in telemetry() if event["EventRecordID"] in ("1", "2", "3", "4", "5", "9", "10", "13")
+    ]
+
+    without, _ = see(a_test(), events)
+    answer, mine = see(a_test(), events, audit=audit)
+
+    assert without["answer"] == "no telemetry"
+    assert answer["answer"] == "telemetry only"
+    assert [(event["record"], event["kind"], event["why"], event["detail"]) for event in mine] == [
+        (
+            "audit 1794802705.120:178",
+            "openat (auditd)",
+            "session",
+            '/home/bluefire-lab/.bash_history by sh -c echo "" > ~/.bash_history',
+        )
+    ]
+    assert mine[0]["fields"]["key"] == "shell-history"
 
 
 def test_an_auditd_event_counts_when_its_process_is_the_tests_and_not_the_drivers() -> None:

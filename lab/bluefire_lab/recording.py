@@ -32,7 +32,7 @@ FIELDS = (
 # What each sensor records under the configuration in lab/sensors.
 RECORDS = {
     "sysmon": "process starts and ends, network connections, and files created and deleted",
-    "auditd": "program starts with their arguments, changes to shell start files, and what programs "
+    "auditd": "program starts with their arguments, changes to the files its rules watch, and what programs "
     "such as sudo and useradd report about themselves",
 }
 
@@ -246,6 +246,7 @@ def source(results: dict, run_url: str | None) -> dict:
 
     run, pins, audit = results["run"], results["run"]["tools"], results.get("audit")
     repository, _, commit = (pins.get("lab") or "").partition("@")
+    defense_commit = (pins.get("lab-defense") or "").partition("@")[2]
     rules, _, rules_commit = results["rules"]["source"].partition("@")
     tools = [
         ("Atomic Red Team", pins.get("atomic-red-team"), "tests"),
@@ -262,6 +263,8 @@ def source(results: dict, run_url: str | None) -> dict:
         finished=run.get("finished"),
         repository=repository if commit else None,
         commit=commit if repository else None,
+        # The commit the lab's own rules and the sensors' settings came from, when the run says.
+        defense_commit=defense_commit or None,
         run_url=run_url,
         tools=[known(name=name, version=version, role=role) for name, version, role in tools],
         setup=setup(results),

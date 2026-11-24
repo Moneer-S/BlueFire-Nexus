@@ -144,6 +144,8 @@ def recorded(folder: Path, tests: list[dict], *arguments: str, printed: str | No
                 "atomic-red-team": "a" * 40,
                 "invoke-atomicredteam": "b" * 40,
                 "lab": "example/lab@" + "c" * 40,
+                # The run of a pair that loaded the base commit's rules and sensor settings.
+                "lab-defense": "example/lab@" + "e" * 40,
             },
         },
         "sensor": {"name": "Sysmon for Linux", "version": "1.6.0"},
@@ -222,6 +224,7 @@ def test_a_run_becomes_one_file_with_its_steps_in_order_and_where_it_ran(tmp_pat
         "finished": "2026-11-16T04:30:00Z",
         "repository": "example/lab",
         "commit": "c" * 40,
+        "defense_commit": "e" * 40,
         "run_url": "https://example.org/runs/1",
         "tools": [
             {"name": "Atomic Red Team", "version": "a" * 40, "role": "tests"},
