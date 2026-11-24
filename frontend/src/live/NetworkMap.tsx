@@ -8,8 +8,9 @@ import type { Alert, Host, Recording } from "./recording";
 import { rulesRanAfterTheRun } from "./recording";
 import { curvePath, layoutNetwork, travelPath } from "./networkLayout";
 import type { HostNode, NetworkLayout, Point } from "./networkLayout";
-import { detectorParts, kindRank, matchKind, plural, stepLabel } from "./format";
+import { capital, detectorParts, kindRank, matchKind, plainMarks, plural, stepLabel, unseenWords } from "./format";
 import type { MatchKind } from "./format";
+import { FreeText } from "./FreeText";
 import { TO_SENSOR, TRAVEL } from "./moment";
 import type { StepMoment } from "./moment";
 import { Motion } from "./motion";
@@ -122,6 +123,7 @@ function MatchChip({ kind, level }: { kind: MatchKind; level: string }) {
   if (kind === "launcher") return <span className="lv-chip lv-chip--launcher">launcher line</span>;
   if (kind === "lab") return <span className="lv-chip lv-chip--lab" title="A rule written in this repository, at alert level. It is not in the score.">would alert &middot; {level}</span>;
   if (kind === "alert") return <span className="lv-chip lv-chip--alert">alert &middot; {level}</span>;
+  if (level === "informational") return <span className="lv-chip lv-chip--review" title="Informational: nobody reviews it.">info</span>;
   return <span className="lv-chip lv-chip--review">review &middot; {level}</span>;
 }
 
@@ -148,12 +150,40 @@ function LateMatch({ late }: { late: LateLine }) {
   );
 }
 
+/** The box an engine's matches have under its name: as wide as its label, and as tall as the room above the next engine. */
+interface MatchRoom {
+  width: number;
+  height: number;
+}
+
+/** The height of an engine's name and its count of rules above its matches, with the space under them and a few pixels to spare. */
+const ENGINE_HEAD = 50;
+const MATCH_GAP = 5;
+
+/** The size of a match's words, as the page sets it (`--lv-md`) for the window's width. */
+function matchFont(): number {
+  return Math.min(15.5, Math.max(12.5, 6 + 0.0046 * window.innerWidth));
+}
+
+/** How many lines a match's words take when they wrap, two at most, near enough: a character is about half the font wide. */
+function wrappedLines(chars: number, chip: boolean, width: number): number {
+  const font = matchFont();
+  const words = (chip ? font * 9 : 0) + chars * font * 0.55;
+  return Math.min(2, Math.max(1, Math.ceil(words / Math.max(1, width))));
+}
+
+/** The height of the matches, each a row with its chip, and a wrapped title one line of words taller. */
+function matchesHeight(rows: readonly number[]): number {
+  const font = matchFont();
+  return rows.reduce((sum, lines) => sum + font * 1.6 + (lines - 1) * font * 1.3, 0) + Math.max(0, rows.length - 1) * MATCH_GAP;
+}
+
 /**
  * What one engine matched: at most two chips (three when that is all), then
  * how many more, and a match on the launcher line named on a quiet line of
  * its own, since it never counts. A late arrival takes one of the lines.
  */
-function EngineMatches({ lines, none, late }: { lines: MatchLine[]; none: boolean; late: LateLine | null }) {
+function EngineMatches({ lines, none, late, room: box }: { lines: MatchLine[]; none: boolean; late: LateLine | null; room: MatchRoom }) {
   const counted = lines.filter((line) => line.kind !== "launcher");
   const launcher = lines.filter((line) => line.kind === "launcher");
   const lateLine = late ? <LateMatch late={late} /> : null;
@@ -169,13 +199,21 @@ function EngineMatches({ lines, none, late }: { lines: MatchLine[]; none: boolea
   const room = late ? (counted.length > 2 || launcher.length > 0 ? 1 : 2) : counted.length > 3 || (launcher.length > 0 && counted.length > 2) ? 2 : 3;
   const shown = counted.slice(0, room);
   const rest = counted.slice(room);
-  const review = rest.filter((line) => line.kind === "review").length;
-  const other = rest.length - review;
+  const review = rest.filter((line) => line.kind === "review" && line.alert.rule.level !== "informational").length;
+  const info = rest.filter((line) => line.kind === "review" && line.alert.rule.level === "informational").length;
+  const other = rest.length - review - info;
   const crowded = rest.length > 0 && launcher.length > 0;
-  const more = [review ? `${review} more for review` : "", other ? `${other} more` : "", crowded ? `the launcher line ${launcher.length === 1 ? "matched once" : `matched ${launcher.length} times`}, not counted` : ""].filter(Boolean).join(" · ");
+  const more = [review ? `${review} more for review` : "", info ? `${info} more informational` : "", other ? `${other} more` : "", crowded ? `the launcher line ${launcher.length === 1 ? "matched once" : `matched ${launcher.length} times`}, not counted` : ""].filter(Boolean).join(" · ");
   const firstLauncher = crowded ? undefined : launcher[0];
+  // A long title wraps to a second line where the engine's box has room for every line it then takes; where it has not, each line keeps to one, cut short.
+  const rows = [
+    ...shown.map((line) => wrappedLines(line.alert.rule.title.length + (line.count > 1 ? 4 : 0), true, box.width)),
+    ...(more ? [wrappedLines(more.length + 2, false, box.width)] : []),
+    ...(firstLauncher ? [wrappedLines(firstLauncher.alert.rule.title.length + 40, false, box.width)] : []),
+    ...(late ? [1] : []),
+  ];
   return (
-    <div className="lv-matches">
+    <div className={`lv-matches${matchesHeight(rows) > box.height ? " is-tight" : ""}`}>
       {shown.map((line) => (
         <div key={line.key} className="lv-match" title={line.alert.rule.title}>
           <MatchChip kind={line.kind} level={line.alert.rule.level} />
@@ -421,7 +459,7 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
           ) : null,
         )}
         {layout.hosts.map((node) => (
-          <HostLabel key={node.host.id} node={node} single={layout.single} moment={node.host.id === currentHost ? moment : null} />
+          <HostLabel key={node.host.id} node={node} single={layout.single} commandLines={layout.commandLines} moment={node.host.id === currentHost ? moment : null} />
         ))}
         {layout.sensors.map((node) => {
           const own = perSensor.get(node.sensor.id);
@@ -448,8 +486,12 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
           const parts = detectorParts(node.detector.name);
           const lab = labDetectors.has(node.detector.id);
           const state = engine.get(node.detector.id);
+          const width = Math.max(160, layout.width - (node.x + node.r + 16) - 12);
+          // The matches have the room between the engine's name and the next engine's label, or the map's bottom.
+          const below = layout.detectors.filter((other) => other.y > node.y).reduce((lowest, other) => Math.min(lowest, other.y - 15), layout.height);
+          const room = { width, height: below - (node.y - 15) - ENGINE_HEAD };
           return (
-            <div key={node.detector.id} className="lv-engine-label" style={{ left: node.x + node.r + 16, top: node.y - 15, maxWidth: Math.max(160, layout.width - (node.x + node.r + 16) - 12) }}>
+            <div key={node.detector.id} className="lv-engine-label" style={{ left: node.x + node.r + 16, top: node.y - 15, maxWidth: width }}>
               <div className="lv-engine-name">
                 {parts.main}
                 {lab ? (
@@ -461,17 +503,16 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
               <div className="lv-engine-sub" title={parts.engine ? `Run by ${parts.engine}` : undefined}>
                 {node.detector.rules > 0 ? plural(node.detector.rules, "rule") : parts.engine}
               </div>
-              {moment ? <EngineMatches lines={state?.lines ?? []} none={moment.revealed && !moment.heard.some((alert) => alert.detector === node.detector.id)} late={state?.late ?? null} /> : null}
+              {moment ? <EngineMatches lines={state?.lines ?? []} none={moment.revealed && !moment.heard.some((alert) => alert.detector === node.detector.id)} late={state?.late ?? null} room={room} /> : null}
             </div>
           );
         })}
         {unseen && moment ? (
           <div className="lv-silence" style={{ left: layout.silence.x, top: layout.silence.y }}>
             <b>
-              It <em>took effect</em>, and
-              <br />
-              nothing travelled.
+              It <em>took effect</em>.
             </b>
+            {step ? <span>{capital(unseenWords(step))}.</span> : null}
           </div>
         ) : null}
       </div>
@@ -485,7 +526,7 @@ function OrbitArc({ node, radius }: { node: HostNode; radius: { x: number; y: nu
   return <path className="lv-orbit" d={`M${node.x + radius.x * Math.cos(a0)},${node.y + radius.y * Math.sin(a0)} A${radius.x},${radius.y} 0 0 1 ${node.x + radius.x * Math.cos(a1)},${node.y + radius.y * Math.sin(a1)}`} />;
 }
 
-function HostLabel({ node, single, moment }: { node: HostNode; single: boolean; moment: StepMoment | null }) {
+function HostLabel({ node, single, commandLines, moment }: { node: HostNode; single: boolean; commandLines: 1 | 2; moment: StepMoment | null }) {
   const host = node.host;
   const badge = badgeOf(moment);
   const os = shortOs(host);
@@ -499,8 +540,12 @@ function HostLabel({ node, single, moment }: { node: HostNode; single: boolean; 
       <div className={`lv-host-label${single ? "" : " is-small"}`} style={{ left: node.x, top: node.y + node.r + (single ? 10 : 8) }}>
         <div className="lv-host-name">{host.name}</div>
         {single && host.kind === "host" ? (
-          <div className="lv-host-command" title={moment?.step.command ?? ""}>
-            {moment?.step.command ? <span>{moment.step.command}</span> : null}
+          <div className={`lv-host-command${commandLines === 1 ? " is-one-line" : ""}`} title={plainMarks(moment?.step.command ?? "")}>
+            {moment?.step.command ? (
+              <span>
+                <FreeText text={moment.step.command} />
+              </span>
+            ) : null}
           </div>
         ) : null}
         <div className="lv-host-role" title={host.os ?? ""}>

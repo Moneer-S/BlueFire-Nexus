@@ -1,0 +1,153 @@
+{
+ "schema": "bluefire.recording/1",
+ "id": "refused-small",
+ "title": null,
+ "kind": "test list",
+ "source": {
+  "engine": "bluefire-lab",
+  "environment": "GitHub-hosted runner",
+  "started": "2026-11-17T17:07:20Z",
+  "finished": "2026-11-17T17:08:14Z",
+  "tools": []
+ },
+ "network": {
+  "hosts": [
+   {
+    "id": "target",
+    "name": "runner",
+    "role": "Linux host under test",
+    "kind": "host"
+   }
+  ],
+  "sensors": [
+   {
+    "id": "sysmon",
+    "name": "Sysmon for Linux 1.6.0",
+    "host": "target",
+    "records": "process starts"
+   }
+  ],
+  "detectors": [
+   {
+    "id": "pinned",
+    "name": "Published Sigma rules",
+    "rules": 1,
+    "when": "after the run"
+   }
+  ]
+ },
+ "attacker": {
+  "kind": "scripted",
+  "description": "A list of published tests.",
+  "goal": null
+ },
+ "steps": [
+  {
+   "id": "1",
+   "order": 1,
+   "role": "test",
+   "title": "Clear Bash history (rm)",
+   "technique": {
+    "id": "T1070.003"
+   },
+   "host": "target",
+   "started": "2026-11-17T17:07:21.000Z",
+   "ended": "2026-11-17T17:07:21.500Z",
+   "happened": {
+    "answer": "took effect",
+    "basis": "the effect check exited with 0"
+   },
+   "visibility": {
+    "answer": "alert",
+    "basis": "what the sensors and rules said",
+    "events": 2
+   },
+   "outcome": "alerted",
+   "first_event": "2026-11-17T17:07:21.100Z",
+   "first_alert": "2026-11-17T17:07:21.100Z"
+  },
+  {
+   "id": "2",
+   "order": 2,
+   "role": "test",
+   "title": "List running processes",
+   "technique": {
+    "id": "T1070.003"
+   },
+   "host": "target",
+   "started": "2026-11-17T17:07:22.000Z",
+   "ended": "2026-11-17T17:07:22.500Z",
+   "happened": {
+    "answer": "took effect",
+    "basis": "the effect check exited with 0"
+   },
+   "visibility": {
+    "answer": "telemetry only",
+    "basis": "what the sensors and rules said",
+    "events": 1
+   },
+   "outcome": "seen",
+   "first_event": "2026-11-17T17:07:22.100Z"
+  }
+ ],
+ "events": [
+  {
+   "id": "1-1",
+   "time": "2026-11-17T17:07:21.100Z",
+   "host": "target",
+   "sensor": "sysmon",
+   "kind": "process start",
+   "text": "rm .bash_history",
+   "step": "1",
+   "tied_by": "session"
+  },
+  {
+   "id": "1-2",
+   "time": "2026-11-17T17:07:21.102Z",
+   "host": "target",
+   "sensor": "sysmon",
+   "kind": "process start",
+   "text": "rm",
+   "step": "1",
+   "tied_by": "session"
+  },
+  {
+   "id": "2-1",
+   "time": "2026-11-17T17:07:22.100Z",
+   "host": "target",
+   "sensor": "sysmon",
+   "kind": "process start",
+   "text": "ps aux",
+   "step": "2",
+   "tied_by": "session"
+  }
+ ],
+ "alerts": [
+  {
+   "id": "alert-1",
+   "time": "2026-11-17T17:07:21.100Z",
+   "host": "target",
+   "detector": "pinned",
+   "rule": {
+    "id": "rule-1",
+    "title": "History File Deletion",
+    "level": "high",
+    "origin": "pinned"
+   },
+   "counts": true,
+   "step": "1",
+   "events": [
+    "1-1"
+   ]
+  }
+ ],
+ "score": {
+  "steps": 2,
+  "took_effect": 2,
+  "alerted": 1,
+  "seen": 1,
+  "unseen": 0,
+  "stopped": 0
+ },
+ "notes": []
+}

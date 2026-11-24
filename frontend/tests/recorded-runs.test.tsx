@@ -51,6 +51,17 @@ function mount({ runs = demoRuns } = {}) {
   return userEvent.setup();
 }
 
+/** The bytes of what was sent, read as a browser reads a file. */
+function bytesOf(blob: unknown): Promise<number[]> {
+  return new Promise((resolve, reject) => {
+    if (!(blob instanceof Blob)) return reject(new Error("nothing was sent"));
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result instanceof ArrayBuffer ? [...new Uint8Array(reader.result)] : []);
+    reader.onerror = () => reject(reader.error ?? new Error("unreadable"));
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
 function recordingFile(value: unknown, name = "recording.json") {
   return new File([typeof value === "string" ? value : JSON.stringify(value)], name, { type: "application/json" });
 }
@@ -64,9 +75,9 @@ describe("the Runs screen's recorded runs", () => {
     expect(recorded.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     const items = within(recorded).getAllByRole("listitem");
-    // Newest first: the run that is still going started a day later.
-    expect(items.map((item) => within(item).getByRole("link").textContent)).toEqual(["Two steps toward a secrets file", "60 published tests on one Linux host"]);
-    const [path, list] = items;
+    // The run shipped with BlueFire first, although the imported one started a day later.
+    expect(items.map((item) => within(item).getByRole("link").textContent)).toEqual(["60 published tests on one Linux host", "Two steps toward a secrets file"]);
+    const [list, path] = items;
     expect(within(list!).getByRole("link")).toHaveAttribute("href", "/runs/recorded/lab-run-1");
     expect(within(list!).getByText("Test list")).toBeVisible();
     expect(within(list!).getByText("Recorded on a GitHub-hosted runner, 23 Nov 2026")).toBeVisible();
@@ -76,13 +87,30 @@ describe("the Runs screen's recorded runs", () => {
 
     expect(within(path!).getByText("Attack path")).toBeVisible();
     expect(within(path!).getByText("Recording on containers on a developer machine, started 24 Nov 2026")).toBeVisible();
-    expect(within(path!).getByText("Imported")).toBeVisible();
+    expect(within(path!).getByText("Imported, not verified by BlueFire")).toBeVisible();
     expect(within(path!).getByText("Still running")).toBeVisible();
     expect(within(path!).getByText("1 of 2 tests alerted, 1 seen, 0 unseen so far")).toBeVisible();
     expect(within(path!).getByText("First alert after 500 ms, the goal after 1 min 3 s")).toBeVisible();
 
+    // Only what BlueFire shipped is called real.
+    expect(within(recorded).getByText(/^Runs recorded step by step/)).toHaveTextContent("Those shipped with BlueFire are real runs of this repository's CI; imported ones are shown as their files say.");
+
     // The older engine's runs stay listed below, as they were.
     expect(await screen.findAllByRole("link", { name: /^Review run / })).toHaveLength(demoRuns.length);
+  });
+
+  it("keeps the shipped run first above an imported copy of it with later dates and the same title", async () => {
+    const copy: RecordingSummary = { ...shipped, id: "newer-copy", source: { ...shipped.source, started: "2026-11-24T17:25:50Z", finished: "2026-11-24T17:36:23Z" }, origin: { kind: "imported", note: "Imported." } };
+    const older: RecordingSummary = { ...copy, id: "older-import", title: "An older import", source: { ...shipped.source, started: "2026-11-01T10:00:00Z" } };
+    vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [older, copy, shipped], unreadable_count: 0, omitted_count: 0 });
+    mount();
+    const recorded = await screen.findByRole("region", { name: "Recorded runs" });
+    const items = await within(recorded).findAllByRole("listitem");
+    expect(items.map((item) => within(item).getByRole("link").getAttribute("href"))).toEqual(["/runs/recorded/lab-run-1", "/runs/recorded/newer-copy", "/runs/recorded/older-import"]);
+    const [first, second] = items;
+    if (!first || !second) throw new Error("The list holds fewer than two runs.");
+    expect(within(first).getByText("Shipped with BlueFire")).toBeVisible();
+    expect(within(second).getByText("Imported, not verified by BlueFire")).toBeVisible();
   });
 
   it("gives recorded runs and the older engine's runs each their own empty state", async () => {
@@ -107,7 +135,8 @@ describe("the Runs screen's recorded runs", () => {
     // Each problem once: the service's message repeats the first, so it is not shown beside the list.
     expect(within(refusal).getAllByText(/score\.alerted is 2, but the steps give 1\./)).toHaveLength(1);
     expect(within(refusal).getByText("score.seen is 1, but the steps give 0.")).toBeVisible();
-    expect(importing).toHaveBeenLastCalledWith({ schema: "bluefire.recording/1", id: "broken" });
+    // The file itself is what goes to the service.
+    expect(await bytesOf(importing.mock.lastCall?.[0])).toEqual([...new TextEncoder().encode(JSON.stringify({ schema: "bluefire.recording/1", id: "broken" }))]);
     expect(screen.getByLabelText("Address")).toHaveTextContent("/runs");
 
     await user.upload(input, recordingFile({ schema: "bluefire.recording/1", id: "path-run-2" }));
@@ -115,14 +144,18 @@ describe("the Runs screen's recorded runs", () => {
     expect(screen.getByLabelText("Address")).toHaveTextContent("/runs/recorded/path-run-2");
   });
 
-  it("does not send a file that is not JSON, and says why", async () => {
+  it("sends a file the browser would read otherwise as it is, and shows the service's reason", async () => {
     vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [shipped], unreadable_count: 0, omitted_count: 0 });
-    const importing = vi.spyOn(api, "importRecording");
+    const reason = "The file is not UTF-8 JSON: the key 'title' appears twice in one object";
+    const importing = vi.spyOn(api, "importRecording").mockRejectedValue(new ApiError(`The recording is not valid: ${reason}`, "recording_invalid", { problems: [reason] }, 422));
     const user = mount();
     await screen.findByRole("region", { name: "Recorded runs" });
-    await user.upload(screen.getByLabelText("Recording file to import"), recordingFile("not json", "notes.json"));
-    expect(await screen.findByText(/^notes\.json is not a JSON file, so it was not sent/)).toBeVisible();
-    expect(importing).not.toHaveBeenCalled();
+    // A byte order mark and a key twice: a browser's JSON reader would drop the one and keep the last of the other.
+    const bytes = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode('{"title": "one", "title": "two"}')]);
+    await user.upload(screen.getByLabelText("Recording file to import"), new File([bytes], "twice.json", { type: "application/json" }));
+    const refusal = await screen.findByRole("alert");
+    expect(within(refusal).getByText(`The recording is not valid: ${reason}`)).toBeVisible();
+    expect(await bytesOf(importing.mock.lastCall?.[0])).toEqual([...bytes]);
   });
 
   it("says so when the service cannot list its recordings, and keeps the older runs listed", async () => {

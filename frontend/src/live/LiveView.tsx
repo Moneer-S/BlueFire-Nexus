@@ -8,8 +8,9 @@ import type { Recording } from "./recording";
 import { eventsByStep } from "./recording";
 import { buildTimeline, frameAt, seekStep, stepMatchesInFiringOrder, stepPosition } from "./playback";
 import type { Timeline } from "./playback";
-import { clockTime, day, elapsed, isLabDetector, placeInRole, plural, runLink, sensorColours } from "./format";
+import { capital, clockTime, day, elapsed, isLabDetector, plural, runLink, sensorColours, sharedUnseenWords, stepLabel } from "./format";
 import { lateLine, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
+import { FreeText } from "./FreeText";
 import { NetworkMap } from "./NetworkMap";
 import { EventLog } from "./EventLog";
 import { StepCaption } from "./StepCaption";
@@ -66,7 +67,8 @@ const Provenance = memo(function Provenance({ recording }: { recording: Recordin
   const popId = useId();
   const source = recording.source;
   const runUrl = runLink(source);
-  const ran = recording.steps.length > 0;
+  // A run that finished has run, also when it holds no step; only a recording with neither is a plan.
+  const ran = recording.steps.length > 0 || source.finished !== undefined;
   const close = () => {
     setOpen(false);
     trigger.current?.focus();
@@ -121,7 +123,9 @@ const Provenance = memo(function Provenance({ recording }: { recording: Recordin
           {recording.notes.length > 0 ? (
             <ul>
               {recording.notes.map((note) => (
-                <li key={note}>{note}</li>
+                <li key={note}>
+                  <FreeText text={note} />
+                </li>
               ))}
             </ul>
           ) : null}
@@ -333,7 +337,8 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
   const hardened = useMemo(() => recording.steps.filter((step) => step.role === "hardened").length, [recording]);
   const onlyHardenedStop = useMemo(() => recording.steps.every((step) => step.outcome !== "stopped" || step.role === "hardened"), [recording]);
   const allSteps = `${plural(recording.steps.length, "step")} in all`;
-  const widestPlace = useMemo(() => recording.steps.map((step) => placeInRole(recording, step)).reduce((widest, place) => (place.length > widest.length ? place : widest), ""), [recording]);
+  const widestName = useMemo(() => recording.steps.map((step) => capital(stepLabel(recording, step))).reduce((widest, name) => (name.length > widest.length ? name : widest), ""), [recording]);
+  const unseenBasis = useMemo(() => sharedUnseenWords(recording), [recording]);
   // Ordinary activity has no times in a recording, so while watching, its false alerts are told only at the end.
   // They are counted from ordinary activity, so they are shown only with it: the reader refuses the count without it.
   const falseAlerts = recording.ordinary && (mode === "analyse" || frame.ended) ? recording.score.false_alerts : undefined;
@@ -397,7 +402,7 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
                 <b>{score.seen}</b>
                 <span>seen, no alert</span>
               </div>
-              <div className={`lv-score-item is-unseen${score.unseen === 0 ? " is-zero" : ""}`} title="Tests that took effect, and nothing of them was recorded">
+              <div className={`lv-score-item is-unseen${score.unseen === 0 ? " is-zero" : ""}`} title={unseenBasis ? `Tests that took effect and were not seen. The recording says: ${capital(unseenBasis)}.` : "Tests that took effect and were not seen: each one's detail says what the recording holds of it"}>
                 <b>{score.unseen}</b>
                 <span>unseen</span>
               </div>
@@ -425,7 +430,7 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
             <button type="button" aria-pressed={mode === "watch"} onClick={() => switchMode("watch")}>
               Watch
             </button>
-            <button type="button" aria-pressed={mode === "analyse"} onClick={() => switchMode("analyse")} disabled={!hasSteps} title={hasSteps ? undefined : "Nothing has run on this network yet, so there is nothing to analyse"}>
+            <button type="button" aria-pressed={mode === "analyse"} onClick={() => switchMode("analyse")} disabled={!hasSteps} title={hasSteps ? undefined : recording.source.finished !== undefined ? "This run holds no step, so there is nothing to analyse" : "Nothing has run on this network yet, so there is nothing to analyse"}>
               Analyse
             </button>
           </div>
@@ -435,7 +440,10 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
       {mode === "watch" && !hasSteps ? (
         <div className="lv-main is-plan">
           <NetworkMap recording={recording} moment={null} speed={speed} seek={seek} colours={colours} labDetectors={labDetectors} arrival={arrival} />
-          <p className="lv-plan-note">{planWords(recording)}</p>
+          <p className="lv-plan-note">
+            {recording.source.finished !== undefined ? "This run finished with no steps: nothing ran as a step on this network. " : ""}
+            {planWords(recording)}
+          </p>
         </div>
       ) : mode === "watch" ? (
         <>
@@ -476,12 +484,12 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
             </div>
             <Scrubber recording={recording} timeline={timeline} time={time} real={frame.real} revealed={moment?.revealed ?? false} onSeek={jump} />
             <div className="lv-stepno">
-              <b>{segment ? placeInRole(recording, segment.step) : ""}</b>
-              {/* Holds the column at the width of the longest place, so the scrubber beside it does not move under the pointer. */}
+              <b>{segment ? capital(stepLabel(recording, segment.step)) : ""}</b>
+              {/* Holds the column at the width of the longest name, so the scrubber beside it does not move under the pointer. */}
               <b className="lv-stepno-sizer" aria-hidden="true">
-                {widestPlace}
+                {widestName}
               </b>
-              <span>{allSteps}</span>
+              <span>{segment ? `${segment.index + 1} of ${plural(recording.steps.length, "step")}` : allSteps}</span>
             </div>
           </footer>
         </>

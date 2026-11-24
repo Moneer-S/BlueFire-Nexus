@@ -801,11 +801,14 @@ def _execute(
                 "path": str(args.out),
                 "bytes": len(page),
             }
-        text = _bounded_utf8_text(
-            args.path, maximum_bytes=MAX_RECORDING_BYTES, description="recording"
-        )
+        # The file's own bytes, as the import route reads them: the same refusal either way.
         try:
-            recording = parse_recording_bytes(text.encode("utf-8"))
+            with args.path.open("rb") as source:
+                payload = source.read(MAX_RECORDING_BYTES + 1)
+        except OSError as exc:
+            raise ValueError("unable to read recording") from exc
+        try:
+            recording = parse_recording_bytes(payload)
         except RecordingError as exc:
             raise invalid_recording(exc) from None
         return service.import_recording({"recording": recording})
@@ -1044,8 +1047,14 @@ def _write_new_file(path: Path, payload: bytes, *, description: str) -> None:
             f"the {description} was not written: the file already exists. "
             "Name a new file with --out."
         ) from None
+    except FileNotFoundError:
+        raise ValueError(
+            f"the {description} was not written: the folder --out names does not exist. "
+            "Create the folder first, or name a file in an existing folder."
+        ) from None
     except OSError as exc:
-        raise ValueError(f"unable to create the {description} file") from exc
+        reason = exc.strerror or "the system refused it"
+        raise ValueError(f"unable to create the {description} file: {reason}") from exc
     try:
         with handle:
             handle.write(payload)

@@ -11,7 +11,7 @@ import type { Timeline } from "./playback";
 import { maxOf, PLAYBACK_RULE } from "./playback";
 import type { RunFacts } from "./moment";
 import { firstAlertClock } from "./moment";
-import { capital, elapsed, outcomeClass, plural, sensorShortName, stepLabel } from "./format";
+import { capital, elapsed, outcomeClass, plural, sensorShortName, stepLabel, stepShortName, testNumbers, unseenWords } from "./format";
 import { roleCount, roleRuns } from "./analyse";
 import { useSize } from "./useSize";
 import type { StyleVars } from "./motion";
@@ -38,6 +38,8 @@ const MARK = 20;
 const MARK_ROOM = 24;
 /** A silence at least this long, in real seconds, gets a break mark on the axis. */
 const MARKED_SILENCE = 15;
+/** The longest step name an axis label holds, "canary 1"; a longer one is left to the label's tooltip. */
+const SHORT_NAME = 8;
 const BIN = 2;
 const REVIEW_Y: Record<string, number> = { medium: 0.3, low: 0.55, informational: 0.8 };
 
@@ -58,8 +60,7 @@ function silence(seconds: number): string {
 }
 
 function laneLabel(recording: Recording, step: Step): string {
-  const role = step.role === "test" ? "" : `, ${step.role}`;
-  return `${capital(stepLabel(recording, step))}${role}, ${step.outcome}: ${step.title}`;
+  return `${capital(stepLabel(recording, step))}, ${step.outcome}: ${step.title}`;
 }
 
 export function RunLanes({ recording, timeline, facts, colours, selected, onSelect }: RunLanesProps) {
@@ -167,8 +168,12 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
   }
 
   // Axis labels: the first step, then every tenth, as long as they do not crowd each other or a silence mark.
-  // A label that would crowd a mark moves to one of the next few steps instead. Steps are counted by their place in the run.
-  const ticks: { x: number; text: string }[] = [];
+  // A label that would crowd one moves to the next step that has room. Each names its step as the table
+  // does, a test by its number ("#28") and any other step by its short name where that is short ("canary 1");
+  // a longer name, a rerun's, is left to the label's tooltip, which holds every label's whole name. Only the
+  // choice of which steps get one goes by their place in the run.
+  const numbers = testNumbers(recording);
+  const ticks: { x: number; text: string; full: string }[] = [];
   let lastRight = -Infinity;
   let wanted = 0;
   for (const segment of timeline.segments) {
@@ -176,12 +181,13 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
     const due = segment.index === 0 || place >= wanted;
     if (!due) continue;
     const left = x(segment.start);
-    const right = left + 74;
-    if (right > width) break;
-    const late = segment.index > 0 && place - wanted > 4;
-    if (late) wanted = Math.ceil((place + 1) / 10) * 10;
-    if (late || left < lastRight + 12 || breaks.some((mark) => mark.x > left - MARK_ROOM && mark.x < right + 6)) continue;
-    ticks.push({ x: left, text: `#${place}  ${elapsed((segment.realStart - facts.start) / 1000, 0)}` });
+    const number = numbers.get(segment.step.id);
+    const time = elapsed((segment.realStart - facts.start) / 1000, 0);
+    const name = number === undefined ? stepShortName(recording, segment.step) : `#${number}`;
+    const text = name.length <= SHORT_NAME ? `${name}  ${time}` : time;
+    const right = left + text.length * 6.6 + 6;
+    if (right > width || left < lastRight + 12 || breaks.some((mark) => mark.x > left - MARK_ROOM && mark.x < right + 6)) continue;
+    ticks.push({ x: left, text, full: `${capital(stepLabel(recording, segment.step))}, ${time} into the run` });
     lastRight = right;
     wanted = Math.floor(place / 10) * 10 + 10;
   }
@@ -263,7 +269,7 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
             .filter((segment) => segment.step.outcome === "unseen")
             .map((segment) => (
               <rect key={`u:${segment.step.id}`} x={x(segment.start)} y={sensorTop} width={Math.max(3, x(segment.end) - x(segment.start))} height={bottom - sensorTop} fill="url(#lv-hatch)">
-                <title>{`${capital(stepLabel(recording, segment.step))}, unseen: it took effect and no sensor recorded it`}</title>
+                <title>{`${capital(stepLabel(recording, segment.step))}, unseen: it took effect, and ${unseenWords(segment.step)}`}</title>
               </rect>
             ))}
           {current ? <rect className="lv-ln-selected" x={x(current.start) - 1.5} y={TOP - 3} width={Math.max(4, x(current.end) - x(current.start) + 3)} height={bottom - TOP + 3} rx={2} /> : null}
@@ -301,6 +307,7 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
           ))}
           {ticks.map((tick) => (
             <g key={tick.text} className="lv-ln-tick">
+              <title>{tick.full}</title>
               <line x1={tick.x + 0.5} x2={tick.x + 0.5} y1={bottom} y2={bottom + 5} />
               <text x={tick.x + 2} y={bottom + 20}>
                 {tick.text}

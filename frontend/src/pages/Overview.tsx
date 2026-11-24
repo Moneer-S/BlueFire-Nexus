@@ -5,7 +5,7 @@ import { objectiveLabel, shortRunId } from "../lib/run-presentation";
 import { profileChoiceLabel, scopeLabel } from "../lib/run-review-labels";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Boxes, CircleDot, GitBranch, Network, Play, Radio, RotateCcw, ScanLine, Server } from "lucide-react";
-import { newestFirst, originWords, recordedRunPath, recordedScoreWords } from "../lib/recorded-runs";
+import { inListOrder, originWords, recordedRunPath, recordedScoreWords } from "../lib/recorded-runs";
 import { Link } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
 import { useProduct } from "../state/ProductContext";
@@ -23,7 +23,7 @@ export function OverviewPage() {
   const activeWork = useActiveDefensiveWork();
   const activeSummary = useActiveWorkSummary(DEMO_MODE ? undefined : activeWork);
   const recordings = useQuery({ queryKey: ["recordings"], queryFn: api.recordings });
-  const newestRecorded = recordings.data ? newestFirst(recordings.data.recordings)[0] : undefined;
+  const newestRecorded = recordings.data ? inListOrder(recordings.data.recordings)[0] : undefined;
   const recent = runs.data?.runs.slice(0, 4);
   const unavailable = runs.data?.unavailable_run_count ?? 0;
   const historyIsEmpty = runs.isSuccess && runs.data?.runs.length === 0 && unavailable === 0;
@@ -68,7 +68,7 @@ export function OverviewPage() {
 
       <section className="work-section overview-recent-work" aria-labelledby="recent-work-heading">
         <header className="work-section-heading"><h2 id="recent-work-heading">Recent outcomes</h2><div className="work-section-actions"><Link to="/runs">View all<ArrowRight aria-hidden="true"/></Link><Button variant="ghost" size="small" aria-label="Refresh runs" disabled={runs.isFetching} onClick={() => { void runs.refetch(); }}><RotateCcw aria-hidden="true"/><span className="sr-only">{runs.isFetching ? "Refreshing" : "Refresh runs"}</span></Button></div></header>
-        {newestRecorded ? <Link className="overview-recorded" to={recordedRunPath(newestRecorded.id)}><Radio aria-hidden="true"/><span>Watch the newest recorded run: <strong>{newestRecorded.title}</strong><small>{originWords(newestRecorded.origin)} · {recordedScoreWords(newestRecorded)}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
+        {newestRecorded ? <Link className="overview-recorded" to={recordedRunPath(newestRecorded.id)}><Radio aria-hidden="true"/><span>Watch the first recorded run on Runs: <strong>{newestRecorded.title}</strong><small>{originWords(newestRecorded.origin)} · {recordedScoreWords(newestRecorded)}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
         {runs.isError ? <><ErrorState title="Run history unavailable" error={runs.error} retry={() => runs.refetch()}/>{recent ? <p className="workspace-note">Showing previously loaded runs. Their current state could not be checked.</p> : null}</> : null}
         {unavailable > 0 ? <p className="workspace-note" role="status">{unavailable} run {unavailable === 1 ? "record is" : "records are"} unavailable. Only readable records are shown.</p> : null}
         {runs.isPending ? <LoadingState label="Loading run history"/> : recent?.length ? <div className="table-scroll"><table className="recent-work-table"><thead><tr><th>Run</th><th>Created</th><th>Outcome</th></tr></thead><tbody>{recent.map(run => {

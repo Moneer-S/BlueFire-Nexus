@@ -153,7 +153,7 @@ describe("going back to Runs from a recorded run", { timeout: 20_000 }, () => {
     ready();
 
     const row = await listed("Two steps toward a secrets file");
-    expect(within(row).getByText("Imported")).toBeVisible();
+    expect(within(row).getByText("Imported, not verified by BlueFire")).toBeVisible();
     expect(within(row).getByText("1 of 2 tests alerted, 1 seen, 0 unseen")).toBeVisible();
     expect(window.location.hash).toBe("#/runs");
   });
@@ -189,6 +189,6 @@ describe("going back to Runs from a recorded run", { timeout: 20_000 }, () => {
 
     expect(await screen.findByRole("alert", {}, shown)).toHaveTextContent("The local service did not respond before the timeout.");
     const row = await listed("Two steps toward a secrets file");
-    expect(within(row).getByText("Imported")).toBeVisible();
+    expect(within(row).getByText("Imported, not verified by BlueFire")).toBeVisible();
   });
 });

@@ -21,9 +21,11 @@
 
 ![The live view at the first alert on a test: the host, its two sensors, the rule engines, the events and the score](docs/assets/screenshots/live-view-first-alert.png)
 
-Test 39 of 60 empties the shell history, and a published Sigma rule raises the first alert on a test of a real run. [The lab](lab/README.md) ran 60 published Atomic Red Team tests on a GitHub-hosted runner, watched by Sysmon and auditd, with 188 published Sigma rules reading what they recorded. By the end all 60 had taken effect, 3 had raised an alert and 1 had left nothing a sensor recorded ([CI run 45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)). [The defender loop](lab/README.md#the-defender-loop-so-far) follows that unseen test, before against after: a change to the defense got it seen, then a rule written in this repository alerted on it.
+What you see is a recording of a real run of published attack tests, which the app plays back step by step next to what the defenses on the target saw, keeping score as it goes.
 
 Watch this run in the app: start it with [`docker compose up app`](#get-started), open the address it prints, then **Runs**. Or open `docs/live-view/replay.html` from a clone in any browser, with nothing installed: double-click it, or drag it onto a browser window.
+
+In the picture, test 39 of 60 empties the shell history, and a published Sigma rule raises the first alert on a test of the run. [The lab](lab/README.md) ran 60 published Atomic Red Team tests on a GitHub-hosted runner, watched by Sysmon and auditd, with 188 published Sigma rules reading what they recorded. By the end all 60 had taken effect, 3 had raised an alert, and of 1 nothing was recorded besides its launcher's start, the lab's own launch of its command, which does not count ([CI run 45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)). [The defender loop](lab/README.md#the-defender-loop-so-far) follows that unseen test, before against after: a change to the defense got it seen, then a rule written in this repository alerted on it.
 
 BlueFire Nexus is an open-source, AI-first security experimentation and defense-validation workspace. Its desktop-oriented local interface connects objectives, composable attack-chain plans, reviewed execution, independent observations, defensive changes, and fresh retesting.
 

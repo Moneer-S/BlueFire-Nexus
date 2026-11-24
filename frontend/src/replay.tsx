@@ -9,6 +9,7 @@ import "./replay.css";
 import { LiveView } from "./live/LiveView";
 import type { LiveViewProps } from "./live/LiveView";
 import { LiveViewBoundary } from "./live/LiveViewBoundary";
+import { plainMarks } from "./live/format";
 import { RecordingError, readRecording } from "./live/recording";
 import type { Recording } from "./live/recording";
 
@@ -37,17 +38,32 @@ const NO_ORIGIN = "This page does not say where its recording comes from.";
 const ORIGINS = new Set(["shipped", "imported", "lab run"]);
 
 /** Where the recording comes from, as the command that made the page wrote it: the app's note on a shipped or an imported recording, or the lab's on the CI run that made it. */
-function readOrigin(): string {
+function readOrigin(): { kind: string | null; note: string } {
   const text = document.getElementById("bluefire-origin")?.textContent?.trim() ?? "";
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
-    return NO_ORIGIN;
+    return { kind: null, note: NO_ORIGIN };
   }
-  if (typeof value !== "object" || value === null || !("kind" in value) || !("note" in value)) return NO_ORIGIN;
-  if (typeof value.kind !== "string" || !ORIGINS.has(value.kind) || typeof value.note !== "string" || value.note.trim() === "") return NO_ORIGIN;
-  return value.note;
+  if (typeof value !== "object" || value === null || !("kind" in value) || !("note" in value)) return { kind: null, note: NO_ORIGIN };
+  if (typeof value.kind !== "string" || !ORIGINS.has(value.kind) || typeof value.note !== "string" || value.note.trim() === "") return { kind: null, note: NO_ORIGIN };
+  return { kind: value.kind, note: value.note };
+}
+
+/**
+ * What the page plays, and the line it shows under the title. The CI run an
+ * imported file names is only what the file says, as it is in the app: the
+ * page does not link it as the run that made the recording, and says that the
+ * file names it and BlueFire could not confirm it. A page that does not say
+ * where its recording comes from is read the same way.
+ */
+function shown(recording: Recording, origin: { kind: string | null; note: string }): { recording: Recording; origin: string } {
+  const claimed = recording.source.run_url;
+  if (origin.kind === "shipped" || origin.kind === "lab run" || claimed === undefined) return { recording, origin: origin.note };
+  const source = { ...recording.source };
+  delete source.run_url;
+  return { recording: { ...recording, source }, origin: `${origin.note} The file names this CI run, which BlueFire cannot confirm: ${plainMarks(claimed)}` };
 }
 
 function readAddress(): NonNullable<LiveViewProps["initial"]> {
@@ -79,16 +95,17 @@ function Problem({ title, text }: { title: string; text: string }) {
 const root = document.getElementById("root");
 if (root) {
   const page = readPage();
-  if ("recording" in page) document.title = `${page.recording.title}: BlueFire replay`;
+  const view = "recording" in page ? shown(page.recording, readOrigin()) : null;
+  if (view) document.title = `${plainMarks(view.recording.title)}: BlueFire replay`;
   createRoot(root).render(
     <StrictMode>
-      {"recording" in page ? (
+      {view ? (
         <LiveViewBoundary fallback={(message) => <Problem title="This recording cannot be played" text={message} />}>
-          <LiveView recording={page.recording} origin={readOrigin()} initial={readAddress()} />
+          <LiveView recording={view.recording} origin={view.origin} initial={readAddress()} />
         </LiveViewBoundary>
-      ) : (
+      ) : "problem" in page ? (
         <Problem title={page.empty ? "No recording here" : "This recording cannot be played"} text={page.problem} />
-      )}
+      ) : null}
     </StrictMode>,
   );
 }

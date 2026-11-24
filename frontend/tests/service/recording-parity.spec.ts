@@ -104,7 +104,7 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap
     },
   },
   {
-    name: "a plan: hosts and sensors, and no step yet",
+    name: "a finished run with hosts and sensors and no step",
     answer: "kept and plays",
     make: (value) => {
       Object.assign(value, { steps: [], events: [], alerts: [], score: { steps: 0, took_effect: 0, alerted: 0, seen: 0, unseen: 0, stopped: 0 } });
@@ -297,6 +297,35 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap
     make: (value) => {
       part(value, "alerts", 0).time = "2026-11-17T17:07:21.050Z";
       part(value, "steps", 0).first_alert = "2026-11-17T17:07:21.050Z";
+    },
+  },
+  {
+    name: "an alert on another host than the event it names",
+    answer: "refused",
+    make: (value) => {
+      (part(value, "network").hosts as Value[]).push({ id: "other", name: "other", role: "another host", kind: "host" });
+      part(value, "alerts", 0).host = "other";
+    },
+  },
+  {
+    name: "a number in an event's fields past 2^53, written as a float",
+    answer: "refused",
+    make: (value) => {
+      part(value, "events", 0).fields = { size: 1e300 };
+    },
+  },
+  {
+    name: "a number in an event's fields at 2^53",
+    answer: "kept and plays",
+    make: (value) => {
+      part(value, "events", 0).fields = { size: 2 ** 53, ratio: -0.5 };
+    },
+  },
+  {
+    name: "direction marks and overrides in a step's command, output and plain sentence, which are free text",
+    answer: "kept and plays",
+    make: (value) => {
+      Object.assign(part(value, "steps", 0), { command: "cp x /tmp/\u202Etxt.exe\u202C", output: "\u2067done\u2069", plain: "Copies a file whose name reads backwards\u200F." });
     },
   },
   {

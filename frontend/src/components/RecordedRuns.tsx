@@ -1,12 +1,13 @@
-// The recorded runs on the Runs screen: what the service keeps, newest first,
-// each opening in the live view, and one control to import a recording file.
+// The recorded runs on the Runs screen: what the service keeps, those shipped
+// with BlueFire first and each part newest first, each opening in the live
+// view, and one control to import a recording file.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, FileUp, Radio, RotateCcw } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, type RecordingSummary } from "../lib/api";
-import { newestFirst, originWords, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
+import { inListOrder, originWords, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
 import { Button, ErrorState, LoadingState, Panel } from "./Primitives";
 
 /** The problems a refused import names, in the service's own words. */
@@ -18,15 +19,6 @@ function refusalProblems(error: unknown): string[] {
 
 type ImportProblem = { message: string; problems: string[] };
 
-function readText(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-    reader.onerror = () => reject(reader.error ?? new Error("the file could not be read"));
-    reader.readAsText(file);
-  });
-}
-
 export function RecordedRuns() {
   const recordings = useQuery({ queryKey: ["recordings"], queryFn: api.recordings });
   const queryClient = useQueryClient();
@@ -34,7 +26,7 @@ export function RecordedRuns() {
   const input = useRef<HTMLInputElement | null>(null);
   const [problem, setProblem] = useState<ImportProblem | null>(null);
   const importing = useMutation({
-    mutationFn: (recording: unknown) => api.importRecording(recording),
+    mutationFn: (file: Blob) => api.importRecording(file),
     onSuccess: async (result) => {
       setProblem(null);
       // A recording imported again under its id, a running one that grew or finished, is not shown from the cache.
@@ -48,21 +40,16 @@ export function RecordedRuns() {
       void queryClient.invalidateQueries({ queryKey: ["recordings"] });
     },
   });
-  const chooseFile = async (event: ChangeEvent<HTMLInputElement>) => {
+  // The file goes to the service as it is, byte for byte, and is read there as the command line reads it:
+  // the same file is refused for the same reason whichever way it comes in.
+  const chooseFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
     if (!file) return;
     setProblem(null);
-    let value: unknown;
-    try {
-      value = JSON.parse(await readText(file));
-    } catch (error) {
-      setProblem({ message: `${file.name} is not a JSON file, so it was not sent: ${error instanceof Error ? error.message : "it could not be read"}.`, problems: [] });
-      return;
-    }
-    importing.mutate(value);
+    importing.mutate(file);
   };
-  const list = recordings.data ? newestFirst(recordings.data.recordings) : undefined;
+  const list = recordings.data ? inListOrder(recordings.data.recordings) : undefined;
   const unreadable = recordings.data?.unreadable_count ?? 0;
   const omitted = recordings.data?.omitted_count ?? 0;
 
@@ -70,12 +57,12 @@ export function RecordedRuns() {
     <header className="panel-header">
       <div>
         <h2 id="recorded-runs-heading">Recorded runs</h2>
-        <p>Real runs, recorded step by step with what the sensors saw and which rules fired. Open one to watch it.</p>
+        <p>Runs recorded step by step with what the sensors saw and which rules fired. Those shipped with BlueFire are real runs of this repository's CI; imported ones are shown as their files say. Open one to watch it.</p>
       </div>
       <div className="recorded-runs-actions">
         <Button size="small" variant="ghost" aria-label="Refresh recorded runs" onClick={() => { void recordings.refetch(); }} disabled={recordings.isFetching}><RotateCcw aria-hidden="true" />Refresh</Button>
         <Button size="small" onClick={() => input.current?.click()} disabled={importing.isPending}><FileUp aria-hidden="true" />{importing.isPending ? "Importing" : "Import a recording"}</Button>
-        <input ref={input} className="sr-only" type="file" accept=".json,application/json" aria-label="Recording file to import" tabIndex={-1} onChange={(event) => { void chooseFile(event); }} />
+        <input ref={input} className="sr-only" type="file" accept=".json,application/json" aria-label="Recording file to import" tabIndex={-1} onChange={chooseFile} />
       </div>
     </header>
     {problem ? <div className="recorded-runs-refusal" role="alert">

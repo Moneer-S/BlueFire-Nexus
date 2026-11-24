@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 
 /** A small recording that follows the format: two steps of an attack path, one alerted and one seen. */
@@ -61,8 +63,8 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await page.goto(process.env.BLUEFIRE_SERVICE_URL ?? "");
   await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
-  // The Overview points at the newest recorded run, saying where it comes from.
-  const newest = page.getByRole("link", { name: /^Watch the newest recorded run/ });
+  // The Overview points at the first recorded run of the Runs list, saying where it comes from.
+  const newest = page.getByRole("link", { name: /^Watch the first recorded run on Runs/ });
   await expect(newest).toContainText("Shipped with BlueFire · 3 of 60 tests alerted, 56 seen, 1 unseen");
   await expect(page.getByText("No experiment runs yet.")).toBeVisible();
 
@@ -98,6 +100,16 @@ test("the service serves the interface, and its main screens open on a fresh wor
   const refusal = page.getByRole("alert").filter({ hasText: "The recording was not imported" });
   await expect(refusal.getByText("The recording is not valid: score.alerted is 2, but the steps give 1.")).toBeVisible();
 
+  // The screen sends a file's own bytes: each of the small refused files is refused with the
+  // reason the command line and the import route give it (tests_platform/test_recordings.py).
+  const refusedFolder = join(resolve(process.cwd(), ".."), "tests_platform/fixtures/refused-recordings");
+  const reasons = (JSON.parse(readFileSync(join(refusedFolder, "reasons.json"), "utf-8")) as { files: Record<string, string> }).files;
+  for (const [name, reason] of Object.entries(reasons)) {
+    await page.getByLabel("Recording file to import").setInputFiles({ name, mimeType: "application/json", buffer: readFileSync(join(refusedFolder, name)) });
+    await expect(refusal, name).toContainText(`The recording is not valid: ${reason}`);
+  }
+  await expect(page).toHaveURL(/#\/runs$/);
+
   // A small valid one is imported, opens, and says what BlueFire could and could not check.
   // The CI run it names is shown as the file's claim, never as a link to the run that made it.
   const small = smallRecording();
@@ -105,7 +117,7 @@ test("the service serves the interface, and its main screens open on a fresh wor
   Object.assign(small.source, { repository: "example/lab", run_url: claimed });
   await page.getByLabel("Recording file to import").setInputFiles(file("small.json", small));
   await expect(page).toHaveURL(/#\/runs\/recorded\/small-attack-path/);
-  await expect(page.getByText("Imported", { exact: true })).toBeVisible();
+  await expect(page.getByText("Imported, not verified by BlueFire", { exact: true })).toBeVisible();
   await expect(page.getByText(/^Imported\. BlueFire checked that this file follows the recording format.+It cannot confirm that the steps ran/)).toBeVisible();
   await expect(page.getByText(`The file names this CI run, which BlueFire cannot confirm: ${claimed}`, { exact: false })).toBeVisible();
   await expect(page.getByRole("link", { name: "CI run (github.com)" })).toHaveCount(0);
@@ -113,7 +125,7 @@ test("the service serves the interface, and its main screens open on a fresh wor
 
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   const imported = recorded.getByRole("listitem").filter({ hasText: "Two steps toward a secrets file" });
-  await expect(imported.getByText("Imported", { exact: true })).toBeVisible();
+  await expect(imported.getByText("Imported, not verified by BlueFire", { exact: true })).toBeVisible();
   await expect(imported.getByText("1 of 2 tests alerted, 1 seen, 0 unseen")).toBeVisible();
 
   // A recording still running says so, and its page asks the service again until it has finished.

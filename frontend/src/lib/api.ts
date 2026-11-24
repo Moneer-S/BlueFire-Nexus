@@ -782,10 +782,17 @@ export const api = {
     }
     return { summary: envelope.summary, recording: envelope.recording };
   },
-  /** Imports one recording. A refusal is an ApiError whose `details.problems` lists the service's problems in plain words. */
-  async importRecording(recording: unknown): Promise<RecordingImport> {
+  /**
+   * Imports one recording file. Its own bytes are sent, untouched, inside the
+   * body `{"recording": ...}`, so the service reads exactly what the command
+   * line reads: a duplicate key, a NaN or a byte order mark is refused with the
+   * same reason. A refusal is an ApiError whose `details.problems` lists the
+   * service's problems in plain words.
+   */
+  async importRecording(file: Blob): Promise<RecordingImport> {
     if (DEMO_MODE) throw new ApiError("The demo cannot import recordings. Import one in the installed app.", "demo_recording_import_refused", undefined, 409);
-    const envelope = jsonObject(await request<unknown>("/recordings", { method: "POST", body: JSON.stringify({ recording }) }, 60_000));
+    const body = new Blob(['{"recording":', file, "}"], { type: "application/json" });
+    const envelope = jsonObject(await request<unknown>("/recordings", { method: "POST", body }, 60_000));
     if (!envelope || typeof envelope.created !== "boolean" || typeof envelope.replaced !== "boolean" || !isRecordingSummary(envelope.summary)) {
       throw new ApiError("The service's answer to the import could not be read. Refresh the list to see whether the recording is there.", "invalid_recording_import");
     }

@@ -14,6 +14,17 @@ const summary = {
   digest: "sha256:abc",
 };
 
+/** The bytes of what was sent, read as a browser reads a file. */
+function bytesOf(blob: unknown): Promise<number[]> {
+  return new Promise((resolve, reject) => {
+    if (!(blob instanceof Blob)) return reject(new Error("nothing was sent"));
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result instanceof ArrayBuffer ? [...new Uint8Array(reader.result)] : []);
+    reader.onerror = () => reject(reader.error ?? new Error("unreadable"));
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
 function answer(status: number, body: unknown) {
   return vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(body), { status }));
 }
@@ -47,17 +58,21 @@ describe("the recordings in the service's client", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("imports a recording, and passes on a refusal with every problem the service named", async () => {
+  it("imports a recording file as its own bytes, and passes on a refusal with every problem the service named", async () => {
     const fetch = answer(201, { created: true, replaced: false, summary });
-    const result = await api.importRecording({ schema: "bluefire.recording/1", id: "lab-run-1" });
+    // A byte order mark and a key twice: the service is to see them, as the command line does.
+    const bytes = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode('{"id": "lab-run-1", "id": "again", "n": NaN}')]);
+    const result = await api.importRecording(new Blob([bytes]));
     expect(result.summary.id).toBe("lab-run-1");
     const [url, options] = fetch.mock.calls[0] ?? [];
     expect(url).toBe("/api/v1/recordings");
     expect(options?.method).toBe("POST");
-    expect(JSON.parse(String(options?.body))).toEqual({ recording: { schema: "bluefire.recording/1", id: "lab-run-1" } });
+    expect(new Headers(options?.headers).get("Content-Type")).toBe("application/json");
+    const prefix = new TextEncoder().encode('{"recording":');
+    expect(await bytesOf(options?.body)).toEqual([...prefix, ...bytes, "}".charCodeAt(0)]);
 
     answer(422, { error: { code: "recording_invalid", message: "The recording is not valid: score.alerted is 2, but the steps give 1.", details: { problems: ["score.alerted is 2, but the steps give 1.", "score.seen is 1, but the steps give 0."] } } });
-    const refusal = await api.importRecording({}).catch((error: unknown) => error);
+    const refusal = await api.importRecording(new Blob(["{}"])).catch((error: unknown) => error);
     expect(refusal).toBeInstanceOf(ApiError);
     expect(refusal).toMatchObject({ status: 422, code: "recording_invalid", message: "The recording is not valid: score.alerted is 2, but the steps give 1." });
     expect((refusal as ApiError).details).toEqual({ problems: ["score.alerted is 2, but the steps give 1.", "score.seen is 1, but the steps give 0."] });
@@ -100,7 +115,7 @@ describe("the recordings in the demo build", () => {
     const entry = await demo.recording(shipped?.id ?? "");
     expect(readRecording(entry.recording).steps).toHaveLength(91);
     await expect(demo.recording("not-shipped")).rejects.toMatchObject({ code: "recording_not_found", status: 404 });
-    await expect(demo.importRecording(entry.recording)).rejects.toMatchObject({ code: "demo_recording_import_refused" });
+    await expect(demo.importRecording(new Blob([JSON.stringify(entry.recording)]))).rejects.toMatchObject({ code: "demo_recording_import_refused" });
     expect(fetch).not.toHaveBeenCalled();
   });
 });

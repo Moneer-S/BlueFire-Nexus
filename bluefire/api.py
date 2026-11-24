@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import unquote, urlsplit
 
+from . import recordings
 from .api_context import API_PREFIX, JsonResult, PlatformService
 from .api_context import JsonObject as JsonObject
 from .api_routes import APIRoutes
@@ -726,10 +727,12 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if self._is_api_path(path) and not self._require_browser_session(unread_body=True):
             return
+        importing = path == f"{API_PREFIX}/recordings"
         body = self._read_json_object(
             self.platform_server.max_recording_body
-            if path == f"{API_PREFIX}/recordings"
-            else self.platform_server.max_request_body
+            if importing
+            else self.platform_server.max_request_body,
+            recording=importing,
         )
         if body is None:
             return
@@ -1602,7 +1605,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _read_json_object(self, limit: int) -> dict[str, Any] | None:
+    def _read_json_object(self, limit: int, *, recording: bool = False) -> dict[str, Any] | None:
+        """Read the request's JSON object, or answer the refusal and return None.
+
+        With ``recording``, a body that is not strict JSON because of the recording
+        it holds is refused as the command line refuses that file: 422
+        ``recording_invalid`` with its problems.
+        """
+
         if self.headers.get_all("Transfer-Encoding", []):
             self._reject_unread_body(
                 HTTPStatus.BAD_REQUEST,
@@ -1623,6 +1633,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             )
             return None
         length = int(raw_length, 10)
+        if length > limit and recording and length > recordings.MAX_RECORDING_BYTES + 14:
+            # The file in `{"recording":` and `}` (14 bytes) is over the file limit itself:
+            # refused as the command line refuses that file, not by the body's own limit.
+            refusal = recordings.invalid_recording(recordings.file_too_large())
+            self._reject_unread_body(
+                refusal.status, refusal.code, refusal.message, details=refusal.details
+            )
+            return None
         if length > limit:
             self._reject_unread_body(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
@@ -1661,6 +1679,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 parse_constant=_reject_json_constant,
             )
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
+            problem = recordings.import_body_problem(payload) if recording else None
+            if problem is not None:
+                refusal = recordings.invalid_recording(problem)
+                self._error(refusal.status, refusal.code, refusal.message, refusal.details)
+                return None
             self._error(HTTPStatus.BAD_REQUEST, "invalid_json", "Request body must be valid JSON.")
             return None
         if not isinstance(value, dict):
@@ -1668,6 +1691,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_REQUEST, "object_required", "Request body must be a JSON object."
             )
             return None
+        # A strict body can still hide a file the command line refuses: one over the size
+        # limit, or one with members after its object, which the envelope makes fields.
+        if recording and (set(value) != {"recording"} or length > recordings.MAX_RECORDING_BYTES):
+            problem = recordings.import_body_problem(payload)
+            if problem is not None:
+                refusal = recordings.invalid_recording(problem)
+                self._error(refusal.status, refusal.code, refusal.message, refusal.details)
+                return None
         return value
 
     def _reject_unread_body(
@@ -1676,13 +1707,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         code: str,
         message: str,
         *,
+        details: JsonResult | None = None,
         extra_headers: Mapping[str, str] | None = None,
     ) -> None:
         """Reject before reading a body and close instead of parsing it as another request."""
 
         self.close_connection = True
         headers = {**(extra_headers or {}), "Connection": "close"}
-        self._error(status, code, message, extra_headers=headers)
+        self._error(status, code, message, details, extra_headers=headers)
         self._finish_rejected_request()
 
     def _finish_rejected_request(self) -> None:

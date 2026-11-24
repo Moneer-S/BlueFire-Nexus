@@ -75,7 +75,7 @@ const ScrubberCells = memo(
           const state = index < current ? " is-past" : index === current ? " is-now" : "";
           const role = item.step.role === "test" ? "" : isCheck(item.step.role) ? " is-short is-check" : " is-short";
           const told = index < current || (index === current && revealed) ? ` is-${outcomeClass(outcomeAt(timeline, item, time))}` : "";
-          return <div key={item.step.id} className={`lv-cell${told}${role}${state}`} style={{ left: `${(index / Math.max(1, count)) * 100}%` }} title={`${capital(stepLabel(recording, item.step))} (${item.step.role}): ${item.step.title}`} />;
+          return <div key={item.step.id} className={`lv-cell${told}${role}${state}`} style={{ left: `${(index / Math.max(1, count)) * 100}%` }} title={`${capital(stepLabel(recording, item.step))}: ${item.step.title}`} />;
         })}
       </div>
     );
@@ -166,7 +166,7 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
         aria-valuemin={0}
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(time)}
-        aria-valuetext={segment ? `${capital(stepLabel(recording, segment.step))}, ${revealed ? outcomeWords(outcomeAt(timeline, segment, time)) : "running"}: ${segment.step.title}, ${segment.index + 1} of ${count}, ${clockTime(real)} UTC` : "No steps"}
+        aria-valuetext={segment ? `${capital(stepLabel(recording, segment.step))}, ${revealed ? outcomeWords(outcomeAt(timeline, segment, time)) : "running"}: ${segment.step.title}, ${segment.index + 1} of ${count} steps, ${clockTime(real)} UTC` : "No steps"}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}

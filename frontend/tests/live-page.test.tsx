@@ -99,6 +99,96 @@ describe("analyse mode of a recording without tests", () => {
   });
 });
 
+describe("one name for a step, and the recording's own words, on every part of the screen", () => {
+  const lab = "nothing of the test was recorded besides its launcher's start";
+  const base = recording({
+    steps: [
+      step("canary:a", 1, 2, { role: "canary", outcome: "alerted", technique: { id: "T1070.003" } }),
+      step("control:b", 3, 4, { role: "control", outcome: "seen", visibility: { answer: "telemetry only", basis: "recorded", events: 1 } }),
+      step("test:cc", 5, 6, { outcome: "seen", visibility: { answer: "telemetry only", basis: "recorded", events: 1 }, technique: { id: "T1082" } }),
+      step("test:dd", 7, 8, { outcome: "unseen", visibility: { answer: "no telemetry", basis: lab, events: 0 }, technique: { id: "T1070.003" }, command: "sh -c cp x /tmp/\u202Etxt.exe", output: "done\u2067" }),
+      step("hardened:cc", 9, 10, { role: "hardened", outcome: "seen", compared_with: "test:cc", visibility: { answer: "telemetry only", basis: "recorded", events: 1 }, technique: { id: "T1082" } }),
+    ],
+    events: [event("c-1", "control:b", 3.1), event("t-1", "test:cc", 5.1), event("h-1", "hardened:cc", 9.1)],
+    alerts: [alert("info", "test:cc", 5.1, ["t-1"], { counts: false, rule: { id: "r-info", title: "Informational rule", level: "informational", origin: "pinned" } })],
+  });
+  const value: Recording = { ...base, ordinary: { events: 100, matches: [{ rule: "Binary Padding", level: "high", count: 3 }] }, score: { ...base.score, steps: 2, took_effect: 2, alerted: 0, seen: 1, unseen: 1, stopped: 0, false_alerts: 1 } };
+
+  it("names each row of the table, its detail and the summary's reruns as the captions do, and shows the id an address takes", () => {
+    // The table looks again for the chosen row once the page's font has loaded, which this test's document has no word of.
+    Object.defineProperty(document, "fonts", { value: { ready: Promise.resolve() }, configurable: true });
+    const { container, unmount } = open(value, { mode: "analyse", select: "test:dd" });
+    // Among the tests, a row is its test's number; among every step, each is named by its role, as the captions name it.
+    expect(texts(container, "tr[data-step] td.is-n").sort()).toEqual(["1", "2"]);
+    expect(texts(container, "thead th.is-n")).toEqual(["Test"]);
+    fireEvent.click(within(within(container).getByRole("group", { name: "Role" })).getByRole("button", { name: /All/ }));
+    expect(texts(container, "tr[data-step] td.is-n").sort()).toEqual(["canary", "control", "rerun of test 1", "test 1", "test 2"]);
+    expect(texts(container, "thead th.is-n")).toEqual(["Step"]);
+    const detail = within(container).getByRole("article", { name: "Test 2" });
+    expect(detail.textContent).toContain("4 of 5 steps");
+    expect(detail.textContent).toContain("id test:dd");
+    expect(detail.textContent).not.toMatch(/step \d+ of/);
+    // What the recording says of the unseen test, and why a sensor is the place to start.
+    expect(detail.querySelector(".lv-dt-why")?.textContent).toBe(`It took effect, and ${lab}.`);
+    expect(detail.querySelector(".lv-dt-hint")?.textContent).toBe("Start with a sensor: its only record is the harness's own launch of its command, which never counts. Other runs of T1070.003 were recorded: the canary alerted.");
+    unmount();
+  });
+
+  it("counts a test with only informational matches apart from those for review, and a false alert once however many its events", () => {
+    const { container, unmount } = open(value, { mode: "analyse" });
+    const summary = within(container).getByRole("article", { name: "The whole run" });
+    expect(within(summary).getByText("Seen, no alert").nextElementSibling?.textContent).toBe("1 with only informational matches");
+    expect(summary.textContent).toContain("1 was unseen");
+    expect(summary.querySelector(".lv-sum-gap")?.textContent).toBe("The test nobody saw: Test test:dd: nothing of the test was recorded besides its launcher's start. Open it to start fixing.");
+    expect(summary.textContent).toContain("1 false alert");
+    // A rerun is named by the test it reruns, never by a place in the list.
+    expect(summary.textContent).toContain("Not stopped: rerun of test 1");
+    unmount();
+  });
+
+  it("tells the unseen test in the caption and on the map in the recording's words, and shows a direction mark of its command as a tag", () => {
+    const { container, unmount } = open(value, { step: "test:dd", at: 1.5, paused: true });
+    expect(container.querySelector(".lv-why")?.textContent).toBe("Nothing of the test was recorded besides its launcher's start.");
+    expect(container.querySelector(".lv-silence")?.textContent).toBe("It took effect.Nothing of the test was recorded besides its launcher's start.");
+    const command = container.querySelector(".lv-host-command");
+    expect(command?.textContent).toBe("sh -c cp x /tmp/U+202Etxt.exe");
+    expect(command?.getAttribute("title")).toBe("sh -c cp x /tmp/[U+202E]txt.exe");
+    expect(container.querySelector(".lv-step-chip")?.textContent).toBe("test 2");
+    // The log between them says the same, the header's count too, and the footer names the step as they do.
+    expect(container.querySelector(".lv-log-none")?.textContent).toBe("Nothing of the test was recorded besides its launcher's start.");
+    expect(container.querySelector(".lv-score-item.is-unseen")?.getAttribute("title")).toContain("The recording says: Nothing of the test was recorded besides its launcher's start.");
+    expect(texts(container, ".lv-stepno > b:not(.lv-stepno-sizer), .lv-stepno > span")).toEqual(["Test 2", "4 of 5 steps"]);
+    unmount();
+    const rerun = open(value, { step: "hardened:cc", at: 1.5, paused: true });
+    expect(texts(rerun.container, ".lv-stepno > b:not(.lv-stepno-sizer)")).toEqual(["Hardened rerun of test 1"]);
+    rerun.unmount();
+  });
+
+  it("marks an informational match as info, never for review, on the map and in the log", () => {
+    const { container, unmount } = open(value, { step: "test:cc", at: 1.5, paused: true });
+    expect(texts(container, ".lv-chip--review")).toEqual(["info"]);
+    expect(texts(container, ".lv-log-mark").filter(Boolean)).toEqual(["info"]);
+    unmount();
+  });
+});
+
+describe("a finished run with no steps", () => {
+  it("is told as a run that finished, not as a plan", () => {
+    const base = recording({ steps: [] });
+    const value: Recording = { ...base, score: { ...base.score, steps: 0, took_effect: 0, alerted: 0, seen: 0, unseen: 0, stopped: 0 } };
+    const { container, unmount } = open(value, {});
+    expect(container.textContent).not.toContain("A plan");
+    expect(container.querySelector(".lv-prov-button")?.textContent).toMatch(/^Recorded on a /);
+    expect(container.querySelector(".lv-plan-note")?.textContent).toMatch(/^This run finished with no steps/);
+    unmount();
+    const source = { ...value.source };
+    delete source.finished;
+    const running = open({ ...value, source }, {});
+    expect(running.container.textContent).toContain("A plan: nothing has run on this network yet");
+    running.unmount();
+  });
+});
+
 describe("the attacker's goal", () => {
   it("is named in the run's summary where it is claimed, and said not to be recorded as reached without a time", () => {
     const base = recording({ steps: [step("1", 10, 20), step("2", 30, 40)] });

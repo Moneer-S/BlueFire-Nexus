@@ -96,9 +96,11 @@ break after each line, the lines give the file whose SHA-256 is `digest`, for a
 file that ends with a line break and uses no other kind, as the lab's do. The
 detector can also have `commit`, optional, the commit of this repository the
 rules came from; where it is given, it and not `source.defense_commit` says
-where the lab's rules came from. For the recording of run 45350480637, written again outside
-CI from that run's artifact, the lab's 9 rules added about 14 KB to about
-1.16 MB. A recording written before these keys has none of them.
+where the lab's rules came from. In the artifact `lab-rules-twice` of
+[CI run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682),
+which holds one run's recording written with two sets of the lab's rules, the
+text of 9 rules makes about 14 KB of a 1.2 MB recording, and that of 10 rules
+about 17 KB. A recording written before these keys has none of them.
 
 A host is `{ "id", "name", "role", "kind", "os", "addresses" }`. `kind` is one
 of `host`, `attacker`, `internet`, `defense`. `role` is plain words, such as
@@ -296,8 +298,9 @@ follows this format and its parts agree with each other:
   rule, and `ordinary`. Every word is one the tables allow, and every time is a
   UTC time. An optional key is left out when it is not known, never null; only
   `attacker.goal` and the values of an event's `fields` may be null. A value of
-  `fields` is text, a number no further than 2^53 from zero, true, false or
-  null. The replay page reads every one of these keys, so a recording the app
+  `fields` is text, a number no further than 2^53 from zero (written as a whole
+  number or with a decimal point or an exponent alike), true, false or null.
+  The replay page reads every one of these keys, so a recording the app
   keeps is one the page can play once it has its end time. The events, the
   alerts with their `raised`, and each step's `started` and `ended` fall inside
   the run's `started` and `finished`. Steps are sorted by `order`, and events
@@ -307,7 +310,7 @@ follows this format and its parts agree with each other:
   is `owner/name`.
 - Every id that a step, an event, an alert or a link names exists, and ids are
   unique. An event is on the host of its sensor. An alert's events belong to the
-  alert's step.
+  alert's step and are on the alert's host.
 - An alert `counts` exactly when its rule's level is `high` or `critical` and it
   is not `launcher_only`; a `launcher_only` alert has no events, and one that
   counts has at least one. An alert of the detector `pinned` has the origin

@@ -6,9 +6,14 @@ import type { Recording } from "../live/recording";
 import { count, day, plural, span } from "../live/format";
 import type { RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 
-/** Newest first, by when the run started; the service lists shipped recordings before imported ones. */
-export function newestFirst(recordings: readonly RecordingSummary[]): RecordingSummary[] {
-  return [...recordings].sort((a, b) => Date.parse(b.source.started) - Date.parse(a.source.started));
+/**
+ * The runs shipped with BlueFire first, then the imported ones, whatever their
+ * dates, each newest first by when the run started: an imported copy never
+ * takes a shipped run's place.
+ */
+export function inListOrder(recordings: readonly RecordingSummary[]): RecordingSummary[] {
+  const rank = (summary: RecordingSummary) => (summary.origin.kind === "shipped" ? 0 : 1);
+  return [...recordings].sort((a, b) => rank(a) - rank(b) || Date.parse(b.source.started) - Date.parse(a.source.started));
 }
 
 /** "Test list" or "Attack path". */
@@ -30,9 +35,9 @@ function onEnvironment(environment: string): string {
   return `on ${/^[aeiou]/i.test(first) ? "an" : "a"} ${environment}`;
 }
 
-/** The origin in a word or three: "Shipped with BlueFire" or "Imported". */
+/** The origin in a few words: "Shipped with BlueFire" or "Imported, not verified by BlueFire". */
 export function originWords(origin: RecordingOrigin): string {
-  return origin.kind === "shipped" ? "Shipped with BlueFire" : "Imported";
+  return origin.kind === "shipped" ? "Shipped with BlueFire" : "Imported, not verified by BlueFire";
 }
 
 /**

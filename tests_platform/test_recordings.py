@@ -9,7 +9,7 @@ from typing import Any, Iterator
 import pytest
 
 from bluefire import cli, recordings
-from bluefire.api import generate_browser_bootstrap_capability
+from bluefire.api import MAX_RECORDING_REQUEST_BODY, generate_browser_bootstrap_capability
 from bluefire.application_errors import APIError
 from bluefire.service import BlueFireService
 from tests_platform.test_api import json_body, request, running_server
@@ -732,6 +732,108 @@ def test_recordings_are_imported_and_read_through_the_http_server(
     assert unauthenticated[0] in {401, 403}
 
 
+REFUSED = ROOT / "tests_platform" / "fixtures" / "refused-recordings"
+REFUSED_REASONS: dict[str, str] = json.loads((REFUSED / "reasons.json").read_bytes())["files"]
+
+
+@pytest.mark.parametrize("name", sorted(REFUSED_REASONS))
+def test_a_refused_file_gets_the_same_reason_from_the_command_line_and_the_import_route(
+    service: BlueFireService,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+) -> None:
+    # The Runs screen sends the file's own bytes in this body; frontend/tests/service
+    # sends the same files through the screen.
+    payload = (REFUSED / name).read_bytes()
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    capability = generate_browser_bootstrap_capability()
+
+    status = cli.main(["recordings", "import", str(REFUSED / name)])
+    printed = json.loads(capsys.readouterr().out)["error"]
+    with running_server(
+        service,  # type: ignore[arg-type]
+        max_request_body=1024,
+        bootstrap_capability=capability,
+    ) as (server, _):
+        answer = request(
+            server, "POST", "/api/v1/recordings", body=b'{"recording":' + payload + b"}"
+        )
+    routed = json_body(answer[2])["error"]
+
+    reason = REFUSED_REASONS[name]
+    assert status == 2
+    assert printed["code"] == "recording_invalid"
+    assert printed["details"]["problems"] == [reason]
+    assert answer[0] == 422
+    assert routed == printed
+    assert imported(service) == []
+
+
+@pytest.mark.parametrize("over", [600, 4096])
+def test_a_file_over_the_size_limit_gets_the_same_reason_from_every_door(
+    service: BlueFireService,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    over: int,
+) -> None:
+    # A valid recording padded with spaces: just over the file limit, with its body
+    # inside the route's own limit (600), and with its body beyond that too (4096).
+    valid = (REFUSED / "title-null.json").read_bytes().replace(b'"title": null', b'"title": "Run"')
+    padded = valid + b" " * (recordings.MAX_RECORDING_BYTES + over - len(valid))
+    path = tmp_path / "padded.json"
+    path.write_bytes(padded)
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    capability = generate_browser_bootstrap_capability()
+
+    status = cli.main(["recordings", "import", str(path)])
+    printed = json.loads(capsys.readouterr().out)["error"]
+    with running_server(
+        service,  # type: ignore[arg-type]
+        max_request_body=1024,
+        bootstrap_capability=capability,
+    ) as (server, _):
+        body = b'{"recording":' + padded + b"}"
+        if len(body) <= MAX_RECORDING_REQUEST_BODY:
+            answer = request(server, "POST", "/api/v1/recordings", body=body)
+        else:
+            # Refused from its Content-Length alone, before a byte of it is read.
+            answer = request(
+                server,
+                "POST",
+                "/api/v1/recordings",
+                extra_headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+            )
+
+    assert status == 2
+    assert printed["details"]["problems"] == [
+        f"A recording file is limited to {recordings.MAX_RECORDING_BYTES} bytes."
+    ]
+    assert answer[0] == 422
+    assert json_body(answer[2])["error"] == printed
+    assert imported(service) == []
+
+
+def test_a_body_that_holds_no_recording_is_still_refused_as_json(
+    service: BlueFireService,
+) -> None:
+    capability = generate_browser_bootstrap_capability()
+    with running_server(
+        service,  # type: ignore[arg-type]
+        max_request_body=1024,
+        bootstrap_capability=capability,
+    ) as (server, _):
+        other = request(server, "POST", "/api/v1/recordings", body=b'{"record": NaN}')
+        after = request(server, "POST", "/api/v1/recordings", body=b'{"recording": {}} x')
+
+    assert other[0] == 400
+    assert json_body(other[2])["error"]["code"] == "invalid_json"
+    # The trouble is after the recording, in the body around it.
+    assert after[0] == 400
+    assert json_body(after[2])["error"]["code"] == "invalid_json"
+
+
 PAGE_ELEMENT = '<script id="bluefire-recording" type="application/json">'
 ORIGIN_ELEMENT = '<script id="bluefire-origin" type="application/json">'
 
@@ -785,6 +887,24 @@ def test_the_command_line_writes_the_replay_page_of_the_shipped_recording(
     assert out.read_text(encoding="utf-8") == page
     assert missing == 2 and missing_output["error"]["code"] == "recording_not_found"
     assert not (tmp_path / "none.html").exists()
+
+
+def test_the_page_into_a_folder_that_does_not_exist_says_so(
+    service: BlueFireService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    shipped = json.loads(SHIPPED.read_bytes())
+    out = tmp_path / "no-such-folder" / "replay.html"
+
+    status = cli.main(["recordings", "page", shipped["id"], "--out", str(out)])
+    message = json.loads(capsys.readouterr().out)["error"]["message"]
+
+    assert status == 2
+    assert "the folder --out names does not exist" in message
+    assert not out.parent.exists()
 
 
 def test_the_page_of_an_imported_recording_says_what_was_not_confirmed_and_a_running_one_has_none(

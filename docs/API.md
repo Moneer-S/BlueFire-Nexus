@@ -514,7 +514,16 @@ replaces the stored file in one step (`replaced: true`). Once stored with its
 end time, or when shipped, a recording is frozen, and a different one under its
 id is `409 recording_id_taken`. A recording that does not follow the format, or
 whose parts disagree, is `422 recording_invalid`; `details.problems` lists up to
-20 problems in plain words, and the message starts with the first. Imports into
+20 problems in plain words, and the message starts with the first. The
+recording is read as strictly as a file: when the body is `{"recording":`, the
+bytes of a recording file and `}`, as the Runs screen sends it, and those bytes
+are not strict UTF-8 JSON (a key twice in one object, `NaN` or `Infinity`, a
+byte order mark, bytes that are not UTF-8, more after the recording's object),
+it is `422 recording_invalid` with the reason `bluefire recordings import` gives
+for that file. A file over 8 MiB is refused the same way, as the command line
+refuses it, also when its body is over the route's limit: that one is answered
+from its `Content-Length` alone. A body that is not JSON for any other reason is
+`400 invalid_json`. Imports into
 one runs directory, from the server or the command line, take one lock in turn;
 when it cannot be had within five seconds the import is
 `503 recordings_busy` and nothing is stored.
