@@ -1,0 +1,14 @@
+The live view's picture in this folder (live-view-first-alert.png) and the
+page docs/live-view/replay.html are copied unchanged from the artifact
+live-view-pictures of the CI run
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45412159821
+made from the commit a522216d3f24945ac7654a3da4c9b653a799749a.
+
+They show the recording shipped with BlueFire: 175a3a26
+(bluefire/data/recordings/lab-linux-host.json), which the lab workflow
+recorded in the CI run
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895
+
+Each file and its name in the artifact:
+live-view-first-alert.png  wide-first-alert.png
+replay.html                replay.html
