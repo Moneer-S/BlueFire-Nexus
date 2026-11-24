@@ -1,6 +1,9 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { bodySeconds, buildTimeline, evenPosition, evenTime, frameAt, PLAYBACK_RULE, realToScreen, screenToReal, seekStep } from "../src/live/playback";
-import { timeOf } from "../src/live/recording";
+import { alertMoment, readRecording, timeOf } from "../src/live/recording";
+import { stepRows } from "../src/live/analyse";
 import { alert, at, event, recording, step } from "./live-fixture";
 
 // Step 1: a quick test that alerts. Step 2: a long test that is only seen,
@@ -233,12 +236,106 @@ describe("the first alert on a test", () => {
   });
 });
 
+describe("one clock for every part of the screen", () => {
+  it("fires each step's first alert of the shipped recording at the recording's own first_alert, and names the same one", () => {
+    // 45 of its alerts name an event stamped after their moment: none of them waits for it.
+    const shipped = readRecording(JSON.parse(readFileSync(resolve(process.cwd(), "../bluefire/data/recordings/lab-linux-host.json"), "utf-8")));
+    const timeline = buildTimeline(shipped);
+    let alerted = 0;
+    for (const item of shipped.steps) {
+      const first = timeline.byStep.get(item.id)?.firstCounting ?? null;
+      if (item.first_alert === undefined) {
+        expect(first).toBeNull();
+        continue;
+      }
+      alerted += 1;
+      expect(first ? alertMoment(first.alert) : null).toBe(timeOf(item.first_alert));
+      expect(first ? screenToReal(timeline, first.at) : Number.NaN).toBeCloseTo(timeOf(item.first_alert), 3);
+    }
+    expect(alerted).toBeGreaterThan(0);
+    const tests = shipped.steps.filter((item) => item.role === "test" && item.first_alert !== undefined).map((item) => timeOf(item.first_alert ?? ""));
+    expect(timeline.firstAlert?.real).toBe(Math.min(...tests));
+  });
+
+  it("fires a match at its moment once the first event it names has arrived, not after the later ones", () => {
+    // Test 1 has events at 11 s and 19 s. Alert x names both and is raised at 12 s; alert y names
+    // the first and is raised at 14 s. x is the step's first alert, as the recording says.
+    const value = recording({
+      when: "live",
+      steps: [step("1", 10, 20, { outcome: "alerted", visibility: { answer: "alert", basis: "rules", events: 2 }, first_alert: at(12) })],
+      events: [event("1-1", "1", 11), event("1-2", "1", 19)],
+      alerts: [alert("x", "1", 11, ["1-1", "1-2"], { raised: at(12) }), alert("y", "1", 11, ["1-1"], { raised: at(14) })],
+    });
+    const timeline = buildTimeline(value);
+    expect(timeline.byStep.get("1")?.matches.map(({ alert: item }) => item.id)).toEqual(["x", "y"]);
+    expect(timeline.firstAlert?.alert.id).toBe("x");
+    const fire = timeline.fire.get("x") ?? Infinity;
+    // The clock at the moment it fires is its moment, the step's first_alert, and its later event arrives after it.
+    expect(screenToReal(timeline, fire)).toBeCloseTo(timeOf(at(12)), 6);
+    expect(timeline.firstAlert?.real).toBe(timeOf(value.steps[0]?.first_alert ?? ""));
+    expect(timeline.arrival.get("1-2")).toBeGreaterThan(fire);
+  });
+
+  it("orders two alerts a fraction of a millisecond apart as the recording does", () => {
+    const value = recording({
+      when: "live",
+      steps: [step("1", 10, 20, { outcome: "alerted" })],
+      events: [event("1-1", "1", 11)],
+      alerts: [alert("late", "1", 11, ["1-1"], { raised: "2026-01-01T10:00:12.2009Z" }), alert("early", "1", 11, ["1-1"], { raised: "2026-01-01T10:00:12.2001Z" })],
+    });
+    const timeline = buildTimeline(value);
+    expect(timeline.firstAlert?.alert.id).toBe("early");
+    expect(timeline.byStep.get("1")?.firstCounting?.alert.id).toBe("early");
+  });
+
+  it("holds the clock and the race's head at a late arrival while it is read in the silence after its step", () => {
+    // Test 1 runs from 0 to 10 s and its alert is raised live at 13 s; test 2 starts at 60 s.
+    const value = recording({
+      when: "live",
+      steps: [step("1", 1, 10, { outcome: "alerted", visibility: { answer: "alert", basis: "rules", events: 1 } }), step("2", 60, 61)],
+      events: [event("1-1", "1", 2), event("2-1", "2", 60.5)],
+      alerts: [alert("a", "1", 2, ["1-1"], { raised: at(13) })],
+    });
+    const timeline = buildTimeline(value);
+    const fire = timeline.fire.get("a") ?? Infinity;
+    const next = timeline.segments[1];
+    if (!next) throw new Error("fixture");
+    let held = 0;
+    for (let t = fire; t < next.start; t += 0.01) {
+      const frame = frameAt(timeline, t);
+      if (frame.step?.id !== "1" || frame.late.length === 0) continue;
+      // While the late line is read, the clock stays at its moment, not at the next step's start.
+      if (t <= fire + PLAYBACK_RULE.read) {
+        expect(frame.real).toBeCloseTo(timeOf(at(13)), 3);
+        held += 1;
+      }
+    }
+    expect(held).toBeGreaterThan(250);
+    // The rest of the silence then plays in what is left of its beat, and the next step starts on its own start.
+    expect(next.start - (fire + PLAYBACK_RULE.read)).toBeLessThanOrEqual(PLAYBACK_RULE.beat);
+    expect(screenToReal(timeline, next.start)).toBe(timeOf(at(60)));
+  });
+
+  it("calls a match raised after its step's recorded end late, also when a sensor stamped an event later still", () => {
+    // The step ends at 10 s, a sensor stamps an event at 10.5 s, and the alert is raised at 10.3 s.
+    const value = recording({
+      when: "live",
+      steps: [step("1", 1, 10, { outcome: "alerted", visibility: { answer: "alert", basis: "rules", events: 2 } }), step("2", 30, 31)],
+      events: [event("1-1", "1", 5), event("1-2", "1", 10.5)],
+      alerts: [alert("a", "1", 5, ["1-1"], { raised: at(10.3) })],
+    });
+    const timeline = buildTimeline(value);
+    expect(timeline.fires.find(({ alert: item }) => item.id === "a")?.late).toBe(true);
+    expect(stepRows(value, timeline)[0]?.end).toBe(timeOf(at(10)));
+  });
+});
+
 describe("large recordings", () => {
-  it("places an alert on 200,000 events after the last of them", () => {
+  it("places an alert on 200,000 events at its moment, once the first of them has arrived", () => {
     const events = Array.from({ length: 200_000 }, (_, index) => event(`e${index}`, "1", 10 + index / 100_000));
     const value = recording({ steps: [step("1", 10, 12, { outcome: "alerted" })], events, alerts: [alert("all", "1", 10, events.map((item) => item.id))] });
     const timeline = buildTimeline(value);
-    expect(timeline.fire.get("all")).toBeGreaterThanOrEqual(timeline.arrival.get("e199999") ?? Infinity);
+    expect(timeline.fire.get("all")).toBe(timeline.arrival.get("e0"));
   });
 
   it("works out a frame quickly for thousands of alerted steps and tens of thousands of matches", () => {

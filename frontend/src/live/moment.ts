@@ -3,7 +3,7 @@
 import { alertMoment, countsAsAlert, countsForScore, timeOf } from "./recording";
 import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recording";
 import type { Fire, FirstAlert, Frame, ScoreSoFar, Segment, Timeline } from "./playback";
-import { landing, maxOf, minOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE, stepMatchesFiredBy } from "./playback";
+import { landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE, stepEnd, stepMatchesFiredBy } from "./playback";
 import { matchKind, span, stepLabel, strongerKind } from "./format";
 import type { MatchKind } from "./format";
 
@@ -103,8 +103,11 @@ function workOutReveal(timeline: Timeline, segment: Segment): number {
   const middle = segment.bodyStart + (segment.bodyEnd - segment.bodyStart) * 0.42;
   if (segment.step.outcome === "alerted") {
     const fire = timeline.byStep.get(segment.step.id)?.firstCounting;
-    // An alert raised after the step ended is not waited for: the step is told as it stood.
-    if (fire && !fire.late) return Math.max(landing(fire), segment.bodyStart);
+    // An alert raised after the step ended is not waited for: the step is told
+    // as it stood. One that still fires inside the step's own stretch, before
+    // the step leaves the screen, is waited for, so the step is never told as
+    // seen first and then taken back.
+    if (fire && (!fire.late || fire.at <= segment.end)) return Math.max(landing(fire), segment.bodyStart);
   }
   // The step's own fires, which leave out its late arrivals.
   const fires = timeline.byStep.get(segment.step.id)?.fires ?? [];
@@ -159,9 +162,34 @@ const LATE_WORDS: Record<MatchKind, string> = {
 export function lateWords(recording: Recording, timeline: Timeline, fire: Fire): string {
   const segment = timeline.segments.find((item) => item.step.id === fire.alert.step);
   const where = segment ? `${stepLabel(recording, segment.step)}, ${segment.step.title}` : fire.alert.step;
-  const ended = segment ? (segment.step.ended === undefined ? segment.realEnd : timeOf(segment.step.ended)) : Number.NaN;
-  const after = Number.isFinite(ended) ? `raised ${span(alertMoment(fire.alert) - ended)} after that step ended` : "raised after that step ended";
-  return `${LATE_WORDS[matchKind(fire.alert)]} on ${where}: ${fire.alert.rule.title}, ${after}.`;
+  return `${LATE_WORDS[matchKind(fire.alert)]} on ${where}: ${fire.alert.rule.title}, ${raisedAfterEnd(timeline, fire, "that step")}.`;
+}
+
+/** "raised 14.2 s after that step ended", from the step's end as every part of the view reads it. */
+function raisedAfterEnd(timeline: Timeline, fire: Fire, which: string): string {
+  const segment = timeline.segments.find((item) => item.step.id === fire.alert.step);
+  const ended = segment ? stepEnd(segment) : Number.NaN;
+  return Number.isFinite(ended) ? `raised ${span(alertMoment(fire.alert) - ended)} after ${which} ended` : `raised after ${which} ended`;
+}
+
+/**
+ * The line under the step for the late arrivals on screen: every one fired
+ * within the time it takes to read one, so when several fire at once each is
+ * named, and never fewer than the score counts. One arrival is told by
+ * `lateWords`; several by their count and each rule with its step.
+ */
+export function lateLine(recording: Recording, timeline: Timeline, late: readonly Fire[]): string | null {
+  const last = late[late.length - 1];
+  if (!last) return null;
+  const together = late.filter((fire) => fire.at > last.at - PLAYBACK_RULE.read);
+  if (together.length === 1) return lateWords(recording, timeline, last);
+  const step = (fire: Fire) => recording.steps.find((item) => item.id === fire.alert.step);
+  const what = together.every((fire) => matchKind(fire.alert) === "alert") ? "alerts" : "matches";
+  const named = together.map((fire) => {
+    const owner = step(fire);
+    return `${fire.alert.rule.title} on ${owner ? stepLabel(recording, owner) : fire.alert.step}, ${raisedAfterEnd(timeline, fire, "it")}`;
+  });
+  return `${together.length} ${what} raised late: ${named.join("; ")}.`;
 }
 
 export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[], matches: ReturnType<typeof stepMatches>): StepMoment | null {
@@ -211,15 +239,21 @@ export function firstAlertClock(recording: Recording, facts: RunFacts, first: Fi
 
 /** The recording's own facts about the run that the watch view shows in several places. */
 export interface RunFacts {
-  /** Real time (ms) of the first step's start, the origin of "into the run". */
+  /**
+   * Real time (ms) at which the run starts, the origin of "into the run" and
+   * of the race track: for an attack path its first step's recorded start, the
+   * one moment its race counts from; for a test list the start of the first
+   * step's window, its start or an event stamped a little before it.
+   */
   start: number;
+  /** What `start` is, in words for a tooltip: "the first step's recorded start". */
+  startWords: string;
   /** Real time (ms) of the last step's end. */
   end: number;
   /**
    * Real time (ms) at which an attack path reaches its goal: `score.goal_seconds`
-   * after the earliest recorded step start, as the format counts it. Never
-   * from `start`, which playback moves back to an event stamped before its
-   * step's start. Null without a goal or a recorded start.
+   * after its first step's recorded start, as the format counts it. Null
+   * without a goal time.
    */
   goal: number | null;
   /**
@@ -235,14 +269,17 @@ export interface RunFacts {
 export function runFacts(recording: Recording, timeline: Timeline): RunFacts {
   const first = timeline.segments[0];
   const last = timeline.segments[timeline.segments.length - 1];
-  const start = first ? first.realStart : timeOf(recording.source.started);
+  // An attack path begins with a test that has a start, and its race counts
+  // from that one moment: the first alert, the goal, the track and the clock.
+  const raceStart = recording.kind === "attack path" && first?.step.started !== undefined ? timeOf(first.step.started) : null;
+  const start = raceStart ?? (first ? first.realStart : timeOf(recording.source.started));
   const end = last ? last.realEnd : timeOf(recording.source.finished);
   const seconds = recording.kind === "attack path" ? recording.score.goal_seconds : undefined;
-  const origin = minOf(recording.steps.flatMap((step) => (step.started === undefined ? [] : [timeOf(step.started)])), Number.NaN);
-  const goal = seconds === undefined || !Number.isFinite(origin) ? null : origin + seconds * 1000;
+  const goal = seconds === undefined || raceStart === null ? null : raceStart + seconds * 1000;
   const roles = new Map(recording.steps.map((step) => [step.id, step]));
   const found = timeline.fires.find(({ alert }) => countsForScore(alert) && roles.get(alert.step)?.role !== "test");
   const step = found ? roles.get(found.alert.step) : undefined;
   const otherFirst = found && step ? { step, at: found.at, real: alertMoment(found.alert) } : null;
-  return { start, end, goal, firstAlert: timeline.firstAlert, otherFirst };
+  const startWords = raceStart !== null ? "the first step's recorded start" : "the first recorded event of the first step";
+  return { start, startWords, end, goal, firstAlert: timeline.firstAlert, otherFirst };
 }

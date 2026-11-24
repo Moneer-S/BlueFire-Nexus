@@ -16,8 +16,9 @@ known.
 
 The format is JSON, UTF-8, one object. Its `schema` is `bluefire.recording/1`.
 Times are ISO 8601 in UTC with a `Z`, with up to six digits after the second
-where the source has them (`2026-11-17T17:07:23.834Z`). The live view plays
-them to the millisecond.
+where the source has them (`2026-11-17T17:07:23.834Z`). The app and the live
+view compare them to the microsecond, and the live view shows them to the
+millisecond.
 
 ## Top level
 
@@ -44,7 +45,7 @@ them to the millisecond.
 | `engine` | string | The program that ran the steps, such as `bluefire-lab`. |
 | `environment` | string | Plain words: `GitHub-hosted runner` or `containers on a developer machine`. |
 | `started`, `finished` | time | The run's start and end. |
-| `repository`, `commit` | string | Optional. The repository and commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
+| `repository`, `commit` | string | Optional. The GitHub repository, as `owner/name`, and the commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
 | `run_url` | string | Optional. The CI run that made the recording. A reader shows it as a link only when it is the https address of a GitHub Actions run (`https://github.com/<owner>/<repository>/actions/runs/<number>`) of the recording's own `repository` when that is given, and leaves out anything else. |
 | `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. The list is always there, and empty when the run names no pinned tool. |
 | `setup` | object | Optional. What a comparison of two runs needs to know was the same. See below. A recording with `setup` has stable step ids. |
@@ -100,7 +101,9 @@ reason.
 
 `{ "kind", "description", "goal" }`. `kind` is `scripted` or `agent`.
 `description` says in plain words what drove the steps. `goal` is the end of an
-attack path in plain words, or null for a test list: it is always there.
+attack path in plain words, or null for a test list: it is always there. An
+attack path with `score.goal_seconds` has a goal, and the live view names it
+where it says the goal was reached.
 
 ## A step
 
@@ -115,7 +118,7 @@ attack path in plain words, or null for a test list: it is always there.
 | `test` | object | Optional. `{ "project", "guid", "executor", "elevated" }`: the published test this step ran. `elevated` is a boolean: true when the test ran as root. |
 | `host` | string | The id of the host the step ran on. |
 | `from` | string | Optional. The id of the host the step came from, for a step that crosses the network. |
-| `started`, `ended` | time | When the step's attack command started and ended. Left out when the engine could not measure them, as for a test whose attack did not start. |
+| `started`, `ended` | time | When the step's attack command started and ended. Left out when the engine could not measure them, as for a test whose attack did not start. `ended` is never earlier than `started`. See "Steps run forward" below. |
 | `command` | string | Optional. What ran, as text. It keeps its start: when it is cut it ends in `...`. |
 | `output` | string | Optional. What the step printed. It keeps its end: when it is cut it starts with `...`. |
 | `happened` | object | `{ "answer", "basis" }`. `answer` is `took effect`, `attempted without effect`, `blocked`, `not attempted` (the attack did not start) or `inconclusive`. `basis` says what the answer rests on. |
@@ -125,7 +128,7 @@ attack path in plain words, or null for a test list: it is always there.
 | `first_event` | time | Optional. The first sensor event of the step. |
 | `first_alert` | time | Optional. The first match of a published rule on the step that counts as an alert, at its moment: its `raised` time when its detector ran live, and its `time` when the rules ran after the run, like the score's `first_alert_seconds`. Absent when there is none. |
 | `first_alert_with_lab_rules` | time | Optional. The same, when the accepted rules written in this repository count too. Written only when the run evaluated such rules and one of the two kinds alerted on the step. A step whose `outcome` is `seen` or `stopped` can carry it. |
-| `compared_with` | string | Optional. For a `hardened` or `variant` step: the id of the step it repeats. |
+| `compared_with` | string | Optional. For a `hardened` or `variant` step only: the id of the step it repeats, an earlier step that is itself neither `hardened` nor `variant`, never the step itself. |
 | `defense` | object | Optional. For a `hardened` step: `{ "title", "why" }` of the hardening change. |
 
 The lab makes a step's id from parts joined by `:`: its `role`; the first 8
@@ -141,7 +144,23 @@ events, such as `31-4`.
 
 `command` and `output` are at most 2,000 characters, the `...` included. Each
 sensor stamps its own records, so a step's `first_event` or `first_alert` can be
-a few milliseconds earlier than its `started`.
+a few milliseconds earlier than its `started`, and an event a little later than
+its `ended`.
+
+**Steps run forward.** Steps run one after another in their `order`: a step's
+`started` is not earlier than the `started` of the step before it with one, nor
+earlier than that step's `ended`, so steps do not overlap. The stretch of the
+run a step holds, from its `started` or its earliest event or alert `time`,
+whichever comes first, to its `ended` or its latest event or alert `time`,
+whichever comes last, begins no earlier than the stretch of the step before it
+ends. An event stamped a moment outside its step's start and end is kept; one
+stamped inside another step's stretch is not.
+
+**An attack path's race** counts from one moment: its first step in `order` is
+of role `test` and has a `started`, and both `score.first_alert_seconds` and
+`score.goal_seconds` count from that start. A check of the lab's own, such as a
+canary or a control, comes after the first test or is left out. A test list has
+no race.
 
 `outcome` is the first of these that holds:
 
@@ -200,7 +219,7 @@ kept.
 | `rule` | object | `{ "id", "title", "level", "origin" }`. `level` is one of Sigma's levels: `informational`, `low`, `medium`, `high`, `critical`. `origin` is `pinned` for a published rule and `lab` for an accepted rule written in this repository. |
 | `counts` | boolean | True when the match counts as an alert: its level is high or critical. A lower level is a match for review. This holds for both origins: a counting match of a lab rule goes toward `outcome_with_lab_rules` and `first_alert_with_lab_rules` only, never toward `outcome` or `first_alert`. |
 | `step` | string | The id of the step the matched event belongs to. |
-| `events` | array of strings | The ids of the matched events. |
+| `events` | array of strings | The ids of the matched events. The alert's moment (its `raised` time where its detector ran live, else its `time`) is not earlier than the earliest of them; it can be earlier than a later one. |
 | `launcher_only` | boolean | Optional. True when the rule matched only the one shell command that carried the whole test, not what the test did. Such a match never counts, and its `events` is empty: that command is the step's `command`, not one of its events. |
 
 ## `ordinary`
@@ -211,9 +230,9 @@ ordinary activity outside the attack steps: the ordinary administration the run
 did at its own positions in `order`, and the host's own background work (the
 runner, system services and the test driver) outside every step's window.
 `matches` lists `{ "rule", "level", "count" }` for the published rules that
-matched any of those events: `rule` is the rule's title, and `count` the number
-of events it matched. A match at a level that counts as an alert is a false
-alert.
+matched any of those events, each rule once: `rule` is the rule's title, and
+`count` the number of events it matched, not more than `events`. A match at a
+level that counts as an alert is a false alert.
 
 ## `score`
 
@@ -224,9 +243,9 @@ alert.
 | `alerted`, `seen`, `unseen` | number | Of those that took effect, how many have each outcome. |
 | `alerted_with_lab_rules` | number | Optional. The same count of alerted steps when the accepted rules of this repository count too. Present when the run evaluated such rules. |
 | `stopped` | number | Steps of any role with outcome `stopped`. |
-| `first_alert_seconds` | number | Optional, attack path only: seconds from the start of the first step of role `test` to the first alert of a published rule on a step of role `test`. An alert counts from its `raised` time when its detector ran live, and from its `time` when the rules ran after the run. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
-| `goal_seconds` | number | Optional, attack path only: seconds from the start of the first step to the end of the step that reached the goal. Not written for a test list. |
-| `false_alerts` | number | Optional. Published rules that matched ordinary activity (see `ordinary`) at a level that counts as an alert. Each such rule is one false alert, whatever the number of events it matched. |
+| `first_alert_seconds` | number | Optional, attack path only: seconds from the `started` of the first step, which is of role `test`, to the first alert of a published rule on a step of role `test`, and zero when that alert's stamp is a moment earlier. An alert counts from its `raised` time when its detector ran live, and from its `time` when the rules ran after the run. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
+| `goal_seconds` | number | Optional, attack path only: seconds from the same start, the first step's `started`, to the end of the step that reached the goal. Written only with an `attacker.goal`. Not written for a test list. |
+| `false_alerts` | number | Optional, and only with `ordinary`. Published rules that matched ordinary activity (see `ordinary`) at a level that counts as an alert. Each such rule is one false alert, whatever the number of events it matched. |
 
 ## A recording that is still running
 
@@ -263,7 +282,10 @@ follows this format and its parts agree with each other:
   keeps is one the page can play once it has its end time. The events, the
   alerts with their `raised`, and each step's `started` and `ended` fall inside
   the run's `started` and `finished`. Steps are sorted by `order`, and events
-  and alerts by `time`.
+  and alerts by `time`. Steps run forward, as "Steps run forward" above says:
+  none ends before it starts, starts go forward in `order` with no overlap, and
+  no step's events or alerts fall inside the stretch of another. `repository`
+  is `owner/name`.
 - Every id that a step, an event, an alert or a link names exists, and ids are
   unique. An event is on the host of its sensor. An alert's events belong to the
   alert's step.
@@ -271,7 +293,10 @@ follows this format and its parts agree with each other:
   is not `launcher_only`; a `launcher_only` alert has no events, and one that
   counts has at least one. An alert of the detector `pinned` has the origin
   `pinned`, and one of the detector `lab` the origin `lab`. `raised` is not
-  earlier than `time`, and is absent when the detector ran after the run.
+  earlier than `time`, and is absent when the detector ran after the run. An
+  alert's moment is not earlier than the earliest event it names. A
+  `compared_with` is on a `hardened` or `variant` step only, and names an
+  earlier step that is neither.
 - A step's `visibility.answer` is `alert` exactly when an alert of a published
   rule that counts is on the step. Its `outcome` is the one the rules under
   "A step" give for its `happened.answer` and `visibility.answer`, and its
@@ -289,21 +314,28 @@ follows this format and its parts agree with each other:
   gives a live alert's `time` instead is refused with both times named.
   `first_alert_with_lab_rules` is the same over every counting alert, on a step
   with `outcome_with_lab_rules` only.
-- The counts of `score` are the ones its steps give; `false_alerts`, when
-  `ordinary` is there, is the number of `ordinary.matches` at a level that counts.
-  A test list has no `first_alert_seconds` or `goal_seconds`. In an attack path,
-  `first_alert_seconds` is the time its steps and alerts give, to the
-  millisecond, counted to the alert's `raised` time where its detector ran live
-  (zero when the alert's stamp is earlier than the first start), and `goal_seconds` the time
-  from the first step's start to the end of one of the steps. Which step reached
-  the goal is not checked.
+- The counts of `score` are the ones its steps give. `false_alerts` is there
+  only with `ordinary`, and is the number of rules of `ordinary.matches` at a
+  level that counts; each rule is listed there once, with no more events than
+  `ordinary.events`. A test list has no `first_alert_seconds` or
+  `goal_seconds`, and its `attacker.goal` is null. An attack path begins with a
+  step of role `test` that has a `started`; its `first_alert_seconds` is the
+  time its steps and alerts give from that start, to the millisecond, counted
+  to the alert's `raised` time where its detector ran live (zero when the
+  alert's stamp is earlier than that start), and its `goal_seconds`, written
+  only with a goal, the time from that start to the end of one of the steps.
+  Which step reached the goal is not checked.
 - The file is at most 8 MiB, with at most 2,000 steps, 20,000 events and 20,000
   alerts, nested at most 8 deep. Event `fields` hold at most 64 plain values.
   Numbers are finite, keys appear once in an object, and no text or key holds a
   NUL. Only a step's `command`, `output` and `plain`, the attacker's
   `description` and `goal`, and `notes` may hold other control characters, such
-  as line breaks, tabs or a terminal's escapes; every other text holds none,
-  an event's `text` included.
+  as line breaks, tabs or a terminal's escapes; every other text and every key
+  holds none, an event's `text` included: no C0 or C1 control character, no
+  direction mark, embedding, override or isolate (U+061C, U+200E, U+200F,
+  U+202A to U+202E, U+2066 to U+2069), and no line or paragraph separator
+  (U+2028, U+2029). Each of these can make a name read otherwise on screen than
+  it is written.
 
 These checks show that a recording agrees with itself. They do not show that
 its steps ran, where or when, which sensor recorded each event, or which step

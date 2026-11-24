@@ -25,6 +25,20 @@ plays in a browser with nothing installed.
   last match fires near its end stays on screen, its clock held at the step's
   end, until that match's light has reached the rule engine and the step's
   outcome is told.
+- **A step plays its own stretch of the run, unmoved.** A step's bar plays
+  from its `started`, or its earliest event or match when a sensor stamped one
+  a moment before, to its `ended`, or its latest event or match. The format
+  has steps run forward with no overlap and no step's events inside another's
+  stretch, and the page refuses a file that breaks that, so no step is moved or
+  squeezed to fit, and the clock, the log, the analyse lanes and a step's
+  detail read the same times. "The step ended", wherever it is said or
+  counted, is the step's recorded `ended` (the end of its stretch when the
+  recording has none).
+- **A match fires at its moment.** Its moment is its `raised` time where the
+  rules ran live and its `time` where they ran after the run, the moment the
+  recording's `first_alert` and `first_alert_seconds` count. It fires then, as
+  soon as the earliest event it names has arrived; it does not wait for later
+  events it names, which arrive after it as events of a match already told.
 - **An alert raised after its step ended arrives late, and is shown when it
   arrives.** Where the rules ran live, a match fires at its `raised` time.
   While a step is on screen it is told as it stood at its end, so a step whose
@@ -33,8 +47,16 @@ plays in a browser with nothing installed.
   whatever is on screen then (a later step, or the silence after its own
   step), its rule engine lights, the log gets a line marked "raised late", and
   one line under the step names it and says how long after its step ended it
-  was raised. What is on screen holds, its clock stopped, until that line has
-  been there for three seconds. From that moment the score, the race line and
+  was raised. When several arrive together, that line counts and names every
+  one of them, the log names the earlier ones on a line of their own, and each
+  engine says how many more arrived on it, so nothing that the score counts
+  goes unnamed. A match raised after its step's `ended` that still fires while
+  that step's own stretch plays (a sensor stamped one of its events later
+  still) is late in the same way, and the step waits for it: it is told
+  alerted when that match fires, never first as seen. What is on screen
+  holds, its clock and the race's head stopped at that arrival's moment, until
+  that line has been there for three seconds; the rest of the silence then
+  plays. From that moment the score, the race line and
   that step's bar on the timeline count it as alerted, and not before; when it
   fires in the silence after its own step, while that step is still on screen,
   the step's verdict and its host's badge say alerted from then too, and its
@@ -54,16 +76,21 @@ plays in a browser with nothing installed.
   once the screen has told its outcome; at the end of the run it is the
   recording's `score`. False alerts, on ordinary activity outside every step,
   have no times in a recording, so watch mode shows them only at the end. In
-  analyse mode it is the whole run's score from the start. The time to the
+  analyse mode it is the whole run's score from the start. False alerts are
+  shown only with the ordinary activity they are counted from. The time to the
   first alert, wherever it is shown, is read from the alerts themselves: from
   the first test's start to the moment that alert fires (its `raised` time
   where the rules ran live), the same clock the race compares with the goal.
-  The goal falls `score.goal_seconds` after the earliest recorded start of a
-  step, as the format counts it, even where an event is stamped before its
-  step's start. When the first alert came before the goal, the race line
-  tells the goal only once that alert has been told, never the other way round.
-  A file whose `score.first_alert_seconds`, or a step's `first_alert`, says
-  otherwise is refused on import; the page shows what the alerts say.
+  An attack path begins with a test that has a recorded start, and its race
+  counts from that one moment: the first alert's number, the goal, the race
+  track's 00:00, the flags' places on it and the clock's time into the run.
+  The goal falls `score.goal_seconds` after it, even where an event is stamped
+  before that start, and the race line and the run's summary name the
+  attacker's goal where they say it was reached. When the first alert came
+  before the goal, the race line tells the goal only once that alert has been
+  told, never the other way round. A file whose `score.first_alert_seconds`,
+  or a step's `first_alert`, says otherwise is refused on import; the page
+  shows what the alerts say.
 
 ## Two modes
 
@@ -74,16 +101,21 @@ plays in a browser with nothing installed.
 - **Analyse** shows the whole run on one axis, the table of every step with
   filters by role and outcome, and the chosen step's detail: how it went, its
   times, the command, the rules that matched and its events. "Watch from here"
-  goes back to watch mode at that step.
+  goes back to watch mode at that step. The table opens on the tests, or on
+  every step when the recording has no test.
+
+In a small window, or a large one zoomed in, the view grows with what it
+holds and the page scrolls; at phone width its bands stack. Nothing is cut
+off beyond reach.
 
 ## Keys
 
 | Where | Key | Does |
 | --- | --- | --- |
 | Watch mode | Space | Plays or pauses, unless a button, link or the timeline has focus |
-| Timeline | Left, Right (or Down, Up) | One step back or on |
+| Timeline | Left, Right (or Down, Up) | One step back or on; on the last step, on goes to the end |
 | Timeline | Shift with an arrow | One second back or on |
-| Timeline | Page Down, Page Up | Ten steps back or on |
+| Timeline | Page Down, Page Up | Ten steps back or on; on never goes back |
 | Timeline | Home, End | The start or the end of the run |
 | Analyse: the lanes | Left, Right, Home, End | Moves between steps |
 | Analyse: the table | Up, Down, Home, End | Moves between rows |
@@ -97,10 +129,14 @@ The replay page reads where to start from its address, for example
 | Parameter | Value | Does |
 | --- | --- | --- |
 | `step` | a step's `id` | Opens at that step |
-| `at` | 0 to 2 | How far into that step, 0 its start and 1 its end; from 1 to 2, how far into the silence after it, where it is still on screen. 0.6 when left out. Read only with `step`. |
+| `at` | 0 to 2 | How far into that step, 0 its start and 1 its end. Above 1 and below 2, how far into the silence after it, where that step is still on screen; 2 or more is that silence's end, which is the next step's start. On the last step, which has no silence after it, anything above 1 is its end. 0.6 when left out. Read only with `step`. |
 | `paused` | `1` | Opens paused |
 | `mode` | `watch` or `analyse` | Opens in that mode; analyse opens paused |
 | `select` | a step's `id` | The step whose detail analyse mode opens on |
+
+An address that names a step the recording does not hold gets one line under
+the title that says so, in both modes; the view then opens at the start of the
+run, or analyse mode on the whole run.
 
 ## Making the page
 

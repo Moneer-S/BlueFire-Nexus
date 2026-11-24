@@ -82,17 +82,21 @@ export interface Segment {
 /**
  * A silence between two steps, shortened to one beat, or after the last step
  * the silence until the last match raised live after it. A silence in which a
- * late arrival fires holds after its beat, its clock at the silence's end.
+ * late arrival fires holds at the moment of the last such arrival, its clock
+ * stopped there while the arrival is read, and then plays the rest of its beat.
  */
 export interface Gap {
   /** Index of the segment before it. */
   after: number;
   start: number;
-  /** Screen time where the silence has played: its start and one beat. */
-  played: number;
   end: number;
   realStart: number;
   realEnd: number;
+  /** The real time (ms) the silence holds at: the last late arrival fired in it, or its end when none is. */
+  holdReal: number;
+  /** Screen times where the hold begins and ends; the same when the silence does not hold. */
+  holdStart: number;
+  holdEnd: number;
 }
 
 export interface Arrival {
@@ -262,21 +266,57 @@ function finite(values: number[]): number[] {
   return values.filter((value) => Number.isFinite(value));
 }
 
+/**
+ * Where real time `real` (ms) plays in a step's body. Every event and match of
+ * the step falls inside its window, which is made to hold them, so nothing is
+ * moved to fit.
+ */
 function placeInBody(segment: Segment, real: number): number {
   const body = segment.bodyEnd - segment.bodyStart;
   const span = segment.realEnd - segment.realStart;
   if (span <= 0) return segment.bodyStart;
-  const clamped = Math.min(segment.realEnd, Math.max(segment.realStart, real));
-  return segment.bodyStart + (body * (clamped - segment.realStart)) / span;
+  return segment.bodyStart + (body * (real - segment.realStart)) / span;
 }
 
-/** Screen seconds that steps (by id) and silences (by the index of the segment before them) hold for. */
+/**
+ * When a step ended, the one meaning every part of the view reads: its
+ * recorded `ended`, or the end of its window when the recording has none. A
+ * match raised live after it is a late arrival, and the words say how long
+ * after it the match was raised.
+ */
+export function stepEnd(segment: Segment): number {
+  return segment.step.ended === undefined ? segment.realEnd : timeOf(segment.step.ended);
+}
+
+/** How long a silence holds, and at which real time: the last late arrival fired in it. */
+interface GapHold {
+  real: number;
+  seconds: number;
+}
+
+/** Screen seconds that steps (by id) hold for, and silences (by the index of the segment before them). */
 interface Holds {
   steps: Map<string, number>;
-  gaps: Map<number, number>;
+  gaps: Map<number, GapHold>;
 }
 
-/** Lays the steps out on screen, each holding after its body, and each silence after its beat, for the seconds `holds` gives it. */
+/** A silence of one beat from screen time `start`, holding where `hold` says. */
+function silence(after: number, start: number, realStart: number, realEnd: number, hold: GapHold | undefined): Gap {
+  const { beat } = PLAYBACK_RULE;
+  const length = realEnd - realStart;
+  const holdReal = hold ? Math.min(realEnd, Math.max(realStart, hold.real)) : realEnd;
+  const holdStart = start + (length > 0 ? (beat * (holdReal - realStart)) / length : beat);
+  const holdEnd = holdStart + (hold?.seconds ?? 0);
+  return { after, start, end: holdEnd + (start + beat - holdStart), realStart, realEnd, holdReal, holdStart, holdEnd };
+}
+
+/**
+ * Lays the steps out on screen, each holding after its body, and each silence
+ * at its last late arrival, for as long as `holds` says. A step's window runs
+ * from its start, or its earliest event or match, to its end, or its latest
+ * one. The reader refuses a recording whose windows would go back in time or
+ * overlap, so each window is the recording's own and none is moved.
+ */
 function layOut(recording: Recording, facts: Map<string, StepFacts>, holds: Holds): { segments: Segment[]; gaps: Gap[]; duration: number } {
   const segments: Segment[] = [];
   const gaps: Gap[] = [];
@@ -293,19 +333,16 @@ function layOut(recording: Recording, facts: Map<string, StepFacts>, holds: Hold
     const high = maxOf(recorded, Number.NaN);
     const starts = finite([started, low]);
     const ends = finite([ended, started, high]);
-    let realStart = starts.length > 0 ? minOf(starts) : previousEnd;
-    let realEnd = ends.length > 0 ? maxOf(ends) : realStart;
-    if (!Number.isFinite(previousEnd)) previousEnd = realStart;
-    if (realStart < previousEnd) realStart = previousEnd;
-    if (realEnd < realStart) realEnd = realStart;
+    // A step with no time of its own sits where the one before it ended.
+    const realStart = starts.length > 0 ? minOf(starts) : previousEnd;
+    const realEnd = ends.length > 0 ? maxOf(ends) : realStart;
 
     if (index > 0) {
       const before = segments[index - 1];
       if (before) {
-        const played = screen + PLAYBACK_RULE.beat;
-        const end = played + (holds.gaps.get(index - 1) ?? 0);
-        gaps.push({ after: index - 1, start: screen, played, end, realStart: before.realEnd, realEnd: realStart });
-        screen = end;
+        const gap = silence(index - 1, screen, before.realEnd, realStart, holds.gaps.get(index - 1));
+        gaps.push(gap);
+        screen = gap.end;
       }
     }
     const bodyStart = screen + PLAYBACK_RULE.lead;
@@ -320,20 +357,27 @@ function layOut(recording: Recording, facts: Map<string, StepFacts>, holds: Hold
   const last = segments[segments.length - 1];
   const lastRaised = maxOf(finite(recording.alerts.map((alert) => (alert.raised === undefined ? Number.NaN : timeOf(alert.raised)))), Number.NaN);
   if (last && lastRaised > last.realEnd) {
-    const played = screen + PLAYBACK_RULE.beat;
-    const end = played + (holds.gaps.get(last.index) ?? 0);
-    gaps.push({ after: last.index, start: screen, played, end, realStart: last.realEnd, realEnd: lastRaised });
-    screen = end;
+    const gap = silence(last.index, screen, last.realEnd, lastRaised, holds.gaps.get(last.index));
+    gaps.push(gap);
+    screen = gap.end;
   }
   return { segments, gaps, duration: screen };
 }
 
-/** Where real time `real` (ms) plays inside a silence: across its beat, then held at its end. */
+/** Where real time `real` (ms) plays inside a silence: across its beat, with the hold at `holdReal`. A time at the hold plays where the hold begins. */
 function placeInSilence(gap: Gap, real: number): number {
-  const silence = gap.realEnd - gap.realStart;
-  if (silence <= 0) return gap.played;
-  const fraction = Math.min(1, Math.max(0, (real - gap.realStart) / silence));
-  return gap.start + (gap.played - gap.start) * fraction;
+  const length = gap.realEnd - gap.realStart;
+  if (length <= 0) return gap.holdStart;
+  const t = Math.min(gap.realEnd, Math.max(gap.realStart, real));
+  if (t <= gap.holdReal) return gap.holdReal > gap.realStart ? gap.start + ((gap.holdStart - gap.start) * (t - gap.realStart)) / (gap.holdReal - gap.realStart) : gap.holdStart;
+  return gap.holdEnd + ((gap.end - gap.holdEnd) * (t - gap.holdReal)) / (gap.realEnd - gap.holdReal);
+}
+
+/** The real time (ms) shown at screen time `t` inside a silence: the inverse of `placeInSilence`, held at `holdReal` during the hold. */
+function realInSilence(gap: Gap, t: number): number {
+  if (t <= gap.holdStart) return gap.holdStart > gap.start ? gap.realStart + ((gap.holdReal - gap.realStart) * (t - gap.start)) / (gap.holdStart - gap.start) : gap.holdReal;
+  if (t <= gap.holdEnd) return gap.holdReal;
+  return gap.end > gap.holdEnd ? gap.holdReal + ((gap.realEnd - gap.holdReal) * (t - gap.holdEnd)) / (gap.end - gap.holdEnd) : gap.realEnd;
 }
 
 /** When each event arrives and each match fires on a laid-out screen, both in time order. */
@@ -354,10 +398,12 @@ function placeAll(recording: Recording, laid: { segments: Segment[]; gaps: Gap[]
     if (!segment) continue;
     const raised = alert.raised === undefined ? Number.NaN : timeOf(alert.raised);
     const base = Number.isNaN(raised) ? placeInBody(segment, timeOf(alert.time)) : realToScreen(laid, raised);
-    // A match fires once every event it names has arrived.
-    let at = Math.max(base, segment.bodyStart);
-    for (const id of alert.events) at = Math.max(at, arrival.get(id) ?? segment.bodyStart);
-    fires.push({ alert, at, late: raised > segment.realEnd });
+    // A match fires at its moment, once the earliest event it names has
+    // arrived; the reader refuses a match whose moment is earlier than that
+    // event. Its later events then arrive as events of a match already told.
+    const earliest = minOf(alert.events.map((id) => arrival.get(id) ?? segment.bodyStart), segment.bodyStart);
+    const at = Math.max(base, segment.bodyStart, earliest);
+    fires.push({ alert, at, late: raised > stepEnd(segment) });
   }
   arrivals.sort((a, b) => a.at - b.at);
   fires.sort((a, b) => a.at - b.at);
@@ -377,21 +423,32 @@ function lastBegun(segments: readonly Segment[], t: number): number {
 function holdsFor(laid: { segments: readonly Segment[]; gaps: readonly Gap[] }, fires: readonly Fire[]): Holds {
   const segmentOf = new Map(laid.segments.map((segment) => [segment.step.id, segment]));
   const holds: Holds = { steps: new Map(), gaps: new Map() };
-  const hold = <K>(map: Map<K, number>, key: K, need: number) => {
-    if (need > (map.get(key) ?? 0)) map.set(key, need);
+  const hold = (key: string, need: number) => {
+    if (need > (holds.steps.get(key) ?? 0)) holds.steps.set(key, need);
   };
+  // The late arrivals that fire in each silence: it holds at the last of them.
+  const inSilence = new Map<number, Fire[]>();
   for (const fire of fires) {
     if (!fire.late) {
       const segment = segmentOf.get(fire.alert.step);
-      if (segment) hold(holds.steps, segment.step.id, landing(fire) + PLAYBACK_RULE.told - segment.end);
+      if (segment) hold(segment.step.id, landing(fire) + PLAYBACK_RULE.told - segment.end);
       continue;
     }
     const shown = laid.segments[lastBegun(laid.segments, fire.at)];
     if (!shown) continue;
-    const until = landing(fire) + PLAYBACK_RULE.read;
     const gap = gapAfter(laid.gaps, shown.index);
-    if (fire.at <= shown.end || !gap) hold(holds.steps, shown.step.id, until - shown.end);
-    else hold(holds.gaps, shown.index, until - gap.end);
+    if (fire.at <= shown.end || !gap) hold(shown.step.id, landing(fire) + PLAYBACK_RULE.read - shown.end);
+    else inSilence.set(shown.index, [...(inSilence.get(shown.index) ?? []), fire]);
+  }
+  for (const [index, list] of inSilence) {
+    const gap = gapAfter(laid.gaps, index);
+    if (!gap) continue;
+    const real = maxOf(list.map((fire) => alertMoment(fire.alert)));
+    // Where that moment plays once the silence holds there, and how long every
+    // arrival in the silence needs from then to be read.
+    const holdStart = placeInSilence(silence(index, gap.start, gap.realStart, gap.realEnd, { real, seconds: 0 }), real);
+    const seconds = maxOf(list.map((fire) => landing(fire) + PLAYBACK_RULE.read)) - holdStart;
+    holds.gaps.set(index, { real, seconds: Math.max(0, seconds) });
   }
   return holds;
 }
@@ -526,7 +583,11 @@ export function segmentIndexAt(timeline: Timeline, screen: number): number {
   return found;
 }
 
-/** The real time (ms) shown at screen time `screen`. During a lead the clock waits at the step's start, and during a hold at its end. */
+/**
+ * The real time (ms) shown at screen time `screen`. During a lead the clock
+ * waits at the step's start, during a step's hold at its end, and during a
+ * silence's hold at the late arrival being read.
+ */
 export function screenToReal(timeline: Timeline, screen: number): number {
   const t = clampScreen(timeline, screen);
   const segment = timeline.segments[segmentIndexAt(timeline, t)];
@@ -539,9 +600,7 @@ export function screenToReal(timeline: Timeline, screen: number): number {
   if (t <= segment.end) return segment.realEnd;
   const gap = gapAfter(timeline.gaps, segment.index);
   if (!gap) return segment.realEnd;
-  const beat = gap.played - gap.start;
-  if (beat <= 0 || t >= gap.played) return gap.realEnd;
-  return gap.realStart + ((gap.realEnd - gap.realStart) * (t - gap.start)) / beat;
+  return realInSilence(gap, t);
 }
 
 /** The silence after the segment at `index`, if any. */
@@ -679,12 +738,19 @@ export function outcomeAt(timeline: Timeline, segment: Segment, screen: number):
   return first && screen >= first.at ? segment.step.outcome : outcomeAtEnd(timeline, segment);
 }
 
-/** A step's outcome as it stood when it ended: its own, but seen or unseen for one whose first alert was raised live after that. */
+/**
+ * A step's outcome as it stood when it ended: its own, but seen or unseen for
+ * one whose first alert was raised live after that and fires once the step
+ * has left the screen. One that fires while the step is still on screen (its
+ * stretch runs on to an event a sensor stamped later) is waited for, and the
+ * step is told with it.
+ */
 export function outcomeAtEnd(timeline: Timeline, segment: Segment): Outcome {
   const step = segment.step;
   const own = timeline.byStep.get(step.id);
-  if (step.outcome !== "alerted" || !own?.firstCounting?.late) return step.outcome;
-  return own.arrivals.length > 0 || (step.visibility.events ?? 0) > 0 ? "seen" : "unseen";
+  const first = own?.firstCounting;
+  if (step.outcome !== "alerted" || !first?.late || first.at <= segment.end) return step.outcome;
+  return (own?.arrivals.length ?? 0) > 0 || (step.visibility.events ?? 0) > 0 ? "seen" : "unseen";
 }
 
 /** The score so far at screen time `screen`: one pass over the steps that have begun, with each step's first alert looked up. */

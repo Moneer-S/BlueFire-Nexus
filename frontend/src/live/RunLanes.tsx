@@ -201,13 +201,17 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
     buttons.current[next]?.focus();
   };
 
-  let bracket: { a: number; b: number; text: string; right: boolean } | null = null;
+  let bracket: { a: number; b: number; text: string; full: string; right: boolean } | null = null;
   if (first && firstTest) {
     const a = x(firstTest.start);
     const b = x(first.at);
     const clock = firstAlertClock(recording, facts, first);
-    const text = `${plural(first.testsBefore, "other test")} had started when the first alert on a test fired${clock ? `, ${elapsed(clock.seconds)} ${clock.words}` : ""}`;
-    bracket = { a, b, text, right: b - a > text.length * 6.4 + 16 };
+    const full = `${plural(first.testsBefore, "other test")} had started when the first alert on a test fired${clock ? `, ${elapsed(clock.seconds)} ${clock.words}` : ""}`;
+    const room = (words: string) => words.length * 6.4 + 16;
+    // In a narrow plot where the sentence fits on neither side of the alert, a shorter one does; the whole one is its tooltip.
+    const short = `${plural(first.testsBefore, "other test")} had started${clock ? `, ${elapsed(clock.seconds)}` : ""}`;
+    const text = b - a > room(full) || b + room(full) <= width ? full : short;
+    bracket = { a, b, text, full, right: b - a > room(text) || (b + room(text) > width && b > width - b) };
   }
 
   return (
@@ -283,6 +287,7 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
             <g className="lv-ln-bracket">
               <path d={`M${bracket.a} ${11}v6M${bracket.a} 14H${bracket.b}M${bracket.b} 9V${bottom}`} />
               <text x={bracket.right ? bracket.b - 7 : bracket.b + 7} y={10} textAnchor={bracket.right ? "end" : "start"}>
+                <title>{bracket.full}</title>
                 {bracket.text}
               </text>
             </g>
@@ -324,7 +329,7 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
         </div>
       </div>
       <div className="lv-ln-foot">
-        <span title="Times count from the first recorded event of the first step.">
+        <span title={`Times count from ${facts.startWords}.`}>
           Silences are shortened{marked.length > 0 ? <>, those over {MARKED_SILENCE} s marked <b className="lv-ln-breakkey">//</b></> : null}
           {longest > 0 ? ` (the longest, ${silence(longest)}, takes ${PLAYBACK_RULE.beat} s)` : ""}.{checks ? " Outlined: canary and control steps, not scored." : ""}
         </span>

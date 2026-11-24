@@ -131,14 +131,19 @@ interface LateLine {
   kind: MatchKind;
   /** The step it belongs to, in words: "test 3". */
   label: string;
+  /** The earlier late arrivals on the same engine while this step is on screen, each "Rule (test 1)". */
+  earlier: string[];
 }
 
 function LateMatch({ late }: { late: LateLine }) {
+  const all = [...late.earlier, `${late.alert.rule.title} (${late.label})`];
   return (
-    <div className="lv-match lv-match--late" title={`${late.alert.rule.title}: a match of ${late.label}, raised after that step ended`}>
+    <div className="lv-match lv-match--late" title={`Raised after their steps ended: ${all.join(", ")}`}>
       <MatchChip kind={late.kind} level={late.alert.rule.level} />
       <span className="lv-match-title">{late.alert.rule.title}</span>
-      <span className="lv-match-count">{late.label}, late</span>
+      <span className="lv-match-count">
+        {late.label}, late{late.earlier.length > 0 ? ` · ${late.earlier.length} more late` : ""}
+      </span>
     </div>
   );
 }
@@ -278,7 +283,8 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
       if (fire.alert.detector !== node.detector.id) continue;
       const own = matchKind(fire.alert);
       const owner = recording.steps.find((item) => item.id === fire.alert.step);
-      late = { alert: fire.alert, kind: own, label: owner ? stepLabel(recording, owner) : fire.alert.step };
+      const earlier: string[] = late ? [...late.earlier, `${late.alert.rule.title} (${late.label})`] : [];
+      late = { alert: fire.alert, kind: own, label: owner ? stepLabel(recording, owner) : fire.alert.step, earlier };
       if (own !== "launcher" && (kind === null || kindRank(own) >= kindRank(kind))) {
         kind = own;
         first = fire.at;
