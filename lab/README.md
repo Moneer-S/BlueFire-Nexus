@@ -1048,7 +1048,9 @@ summary. `--change` declares the one thing that changed between the two runs:
   from the recording: a rule that matched ordinary activity is not accepted,
   and its matches are left out of the recording before it is written. The line
   says that, and quotes both recordings' notes on which rules were accepted,
-  rather than a count that would read as zero.
+  rather than a count that would read as zero. On two runners that differed
+  (below), each run counted its ordinary activity on its own runner, so the
+  line says the price is not known and gives each run's own counts.
 - **The lab's code.** Two runs from different commits of this repository may
   differ because of the code, which the comparison does not check. It does not
   refuse for that, since a pull request always differs from `main`, but every
@@ -1072,9 +1074,15 @@ or kernel, and nothing else differs besides the declared change, a change of
 the audit rules gets a limited verdict (`limit` in `delta.json`): it is
 credited only on a step it left its own mark on, every event of the step being
 of an audit key that only one run's rules define while the other run holds
-nothing of it, and every other step that differs is not attributable. Every
-other change on two runners that differed is refused, with the advice to run
-the pair again. The section "Two runners that differed" of
+nothing of it, and every other step that differs is not attributable. Which
+keys a run's rules define, each recording says from the audit rules as that
+run loaded them (`audit_keys` of its sensor `auditd`); a key both rule sets
+define is no mark, also when it fired on one runner only. A credited step is
+counted under its result and again in `counts.by_mark`. A recording that does
+not say its keys, one written by an older version, is refused on two runners
+that differed: write it again with `bluefire-lab recording` from its run's
+folder. Every other change on two runners that differed is refused, with the
+advice to run the pair again. The section "Two runners that differed" of
 [`docs/RECORDING.md`](../docs/RECORDING.md) gives the rule.
 
 **The noise floor.** Runs
@@ -1186,17 +1194,24 @@ too, and stayed so. The two runners differed: image `ubuntu24 20261116.133.1`
 and kernel `7.0.0-1014-aws` before, `ubuntu24 20261116.376.1` and
 `7.0.0-1017-azure` after. The run's own summary was written by an earlier
 version of `compare`, which refused every pair on two runners that differed,
-and gave no verdict. The same two recordings from that run's artifact
-`lab-pair`, compared outside CI with this version
-(`bluefire-lab compare --change sensors:auditd --two-runners`), give a limited
-verdict: `test:cbf506a5` is better by the change's own mark, on two runners
-that differed, resting on that one event; `test:23b91cd2` (T1518.001 Security
-Software Discovery - ps) is not attributable, since what happened differed
-too (on the after runner its output lacked the text its effect check looks
-for, so it took effect before and not after); the 89
-other steps are the same. No CI run has yet written that verdict itself: not
-yet shown. Nor has a pair shown it on two runners of the same image and
-kernel: not yet shown.
+and gave no verdict. Its recordings do not say which audit keys their rules
+define, so this version refuses them too, with that reason. Written again with
+`bluefire-lab recording` of this version from each side's run folder in the
+artifacts `lab-run-base` and `lab-run` (the same recordings apart from the new
+`audit_keys`: `bluefire-lab-probe`, `process-start` and `shell-start` before,
+and `shell-history` as well after, as each run's loaded `audit-rules.txt`
+defines them) and compared outside CI with this version
+(`bluefire-lab compare --change sensors:auditd --two-runners`), they give a
+limited verdict: `test:cbf506a5` is better by the change's own mark, on two
+runners that differed, resting on that one event; its price is not known,
+since each run counted its ordinary activity on its own runner (8,858 ordinary
+events before and 8,779 after, 2 published rules that alerted on it in each);
+`test:23b91cd2` (T1518.001 Security Software Discovery - ps) is not
+attributable, since what happened differed too (on the after runner its
+output lacked the text its effect check looks for, so it took effect before
+and not after); the 89 other steps are the same. No CI run has yet written
+that verdict itself: not yet shown. Nor has a pair shown it on two runners of
+the same image and kernel: not yet shown.
 
 ## Before the loop: the sensor spike
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import itertools
 import json
 from datetime import datetime
 from pathlib import Path
@@ -172,6 +173,21 @@ def rule_matches(seen: dict, accepted: set[str]) -> list[tuple[dict, bool]]:
     return [(rule, only) for rule, only in matches if rule.get("origin") != "lab" or rule["id"] in accepted]
 
 
+def audit_keys(rules: str) -> list[str]:
+    """The audit keys that audit rules define, as auditctl reads them: the word after each rule's -k,
+    or after key= in its -F, in order of name. A line that starts with # is a comment."""
+
+    found = set()
+    for line in rules.splitlines():
+        words = [] if line.lstrip().startswith("#") else line.split()
+        for word, then in itertools.pairwise(words):
+            if word == "-k":
+                found.add(then)
+            elif word == "-F" and then.startswith("key="):
+                found.add(then.removeprefix("key="))
+    return sorted(found)
+
+
 def network(results: dict, digests: dict[str, str | None]) -> dict:
     """The one host the tests ran on, its sensors, and the rule sets that read their records,
     each with the digest of its files when the run's folder holds them."""
@@ -234,6 +250,12 @@ def network(results: dict, digests: dict[str, str | None]) -> dict:
                 "name": named(sensor["name"], sensor.get("version")),
                 "host": HOST,
                 "records": RECORDS[sensor_id],
+                # Which audit keys the audit rules define, from the rules as the run loaded them.
+                **(
+                    {"audit_keys": audit_keys(sensor["rules_text"])}
+                    if sensor_id == "auditd" and "rules_text" in sensor
+                    else {}
+                ),
             }
             for sensor_id, sensor in sensors.items()
         ],

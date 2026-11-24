@@ -66,7 +66,7 @@ runs must share.
 | --- | --- | --- |
 | `hosts` | array | Each host of the run. |
 | `links` | array | Optional. Each `{ "from", "to", "label" }` between host ids: who can reach whom. |
-| `sensors` | array | Each `{ "id", "name", "host", "records" }`: a sensor, the host it runs on, and in plain words what it records. |
+| `sensors` | array | Each `{ "id", "name", "host", "records" }`: a sensor, the host it runs on, and in plain words what it records. Optional on the sensor `auditd`: `audit_keys`, an array of strings, the audit keys that its rules define (the word after `-k`, or after `key=` in `-F`, of each rule), in order of name, read from the rules as the run loaded them. An older recording does not have it. |
 | `detectors` | array | Each `{ "id", "name", "rules", "when" }`, plus an optional `digest`: a rule set with its engine, the number of rules evaluated, `when` the rules ran: `live` or `after the run`, and the SHA-256 of its rule files. The detector `pinned` holds the published rules, and `lab` the rules written in this repository. |
 
 A rule set's `digest` is the SHA-256 of what `sha256sum` prints for its files,
@@ -321,7 +321,7 @@ The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
 | `lab_code` | object | `{ "before", "after", "same" }`: each recording's `source.commit`, null where it has none, and whether both are recorded and equal. See below. |
 | `judged` | array of strings | The fields of a step the declared change can move. Empty when nothing was declared. |
 | `control` | object | `{ "fields", "same", "of", "varied" }`: the fields of a step the declared change cannot move, on how many paired steps they are the same of how many, and the ids of the steps where they are not. |
-| `counts` | object | `paired`, the number of steps paired, then how many of them have each `result`, every result with its number, 0 included, then `new` and `gone`. |
+| `counts` | object | `paired`, the number of steps paired, then how many of them have each `result`, every result with its number, 0 included, then `by_mark`, how many of the steps counted as `better`, `worse` or `changed` were credited by the change's own mark alone under a `limit` (0 without one), then `new` and `gone`. |
 | `unexplained` | array of strings | The ids of the steps that changed although the declared change could not have changed them (`result` `without cause` or `not attributable`). |
 | `steps` | array | Each paired step, in the order of the after recording. See below. |
 | `new`, `gone` | array | Each `{ "id", "role", "title", "technique" }`: a step only in the after recording, or only in the before recording. Listed, never counted. |
@@ -421,20 +421,27 @@ started side by side. When the runner's image and kernel (`images:<host>`,
 `kernels:<host>`, both recorded) are all that differ besides the declared
 change, and nothing else refuses, then:
 
-- For `sensors:auditd`, the comparison is not refused. It is limited, and
-  `limit` says so. The change is credited only on a step that carries its own
-  mark: one run holds no event and no alert of the step (a rule that matched
-  only the launcher's start left out) and says it was not recorded, every
-  event the other run holds of it is auditd's, under an audit key that only
-  that run's rules define, the step's `visibility.events` equals the events
-  kept, and every alert on the step rests on those events alone. Without
-  those events that run too would hold nothing of the step, so its move is
-  the change's and not the runners'. Such a step has `mark`, and its
-  verdict says what it rests on. Every other step that differs is `not
-  attributable`, with the runners' difference as the reason, also one that
-  only the control moved for, and also one whose new alert rests on a marked
-  event while it has other events too: those other events were recorded on
-  another runner, and could have moved it as well.
+- For `sensors:auditd`, when both recordings' auditd says which audit keys
+  its rules define (`audit_keys`), the comparison is not refused. It is
+  limited, and `limit` says so. The change is credited only on a step that
+  carries its own mark: one run holds no event and no alert of the step (a
+  rule that matched only the launcher's start left out) and says it was not
+  recorded, every event the other run holds of it is auditd's, under an
+  audit key that that run's `audit_keys` has and the other run's does not,
+  the step's `visibility.events` equals the events kept, and every alert on
+  the step rests on those events alone. Without those events that run too
+  would hold nothing of the step, so its move is the change's and not the
+  runners'. A key that both runs' rules define is never a mark, also when
+  only one run's events carry it: it may have fired on one runner only.
+  Such a step has `mark`, it is counted under its `result` and in
+  `counts.by_mark`, and its verdict says what it rests on. Every other step
+  that differs is `not attributable`, with the runners' difference as the
+  reason, also one that only the control moved for, and also one with a
+  marked event and other events too: those other events were recorded on
+  another runner, and could have moved it as well. When a recording does not
+  have `audit_keys`, nothing shows which keys only one run's rules define,
+  so the comparison is refused, and a reason says so and how to write the
+  recording again from its run's folder.
 - For any other declared change (another sensor's settings, which leave no
   mark of their own, or a rule set) the comparison is refused, and a reason
   says that the runners differed and to run the pair again, which gives two
@@ -452,4 +459,7 @@ recordings' notes on the rules they accepted; it never writes a number that
 looks like zero. For another rule set, the published rules that alerted on ordinary
 activity (`score.false_alerts`) before and after; for a sensor, those and the
 ordinary events (`ordinary.events`) before and after. A number the recording
-does not hold is written `not recorded`.
+does not hold is written `not recorded`. Under a `limit`, each run counted its
+ordinary activity on a runner of its own, so what differs between the two
+counts is not the change's price: the price is `price not known`, and gives
+both counts as each run's own.

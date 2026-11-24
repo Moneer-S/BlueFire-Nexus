@@ -169,6 +169,7 @@ def test_a_recording_against_itself_says_nothing_changed(tmp_path: Path) -> None
         "not attributable": 0,
         "without cause": 0,
         "no verdict": 0,
+        "by_mark": 0,
         "new": 0,
         "gone": 0,
     }
@@ -467,9 +468,11 @@ def the_first_pair() -> tuple[dict, dict]:
     """Two recordings of the shape of the first real pair, CI run 45350480637 (its recordings hold 91
     steps and about 1 MB each, too big to keep here): the audit rules gained a watch on the shell history
     files, key shell-history, and the two runners got another image and kernel. "Clear Bash history
-    (echo)" was unseen before; after, its one event is the history-file write, as that run recorded it.
-    A discovery test printed less on the after runner, so what happened changed. 89 other steps are the
-    same, one of them with a shell-history event next to events of a rule both runs have."""
+    (echo)" was unseen before, with no event and no alert; after, its one event is the history-file
+    write, as that run recorded it. A discovery test printed less on the after runner, so what happened
+    changed. 89 other steps are the same, one of them with a shell-history event next to events of a
+    rule both runs have. Each recording's auditd says which keys its rules define, as that run's
+    audit-rules.txt does."""
 
     others = [a_step(f"test:{number:08x}", number, guid=f"{number:08x}") for number in range(89)]
     before = a_recording(
@@ -478,17 +481,7 @@ def the_first_pair() -> tuple[dict, dict]:
         *others,
     )
     before["source"]["setup"]["sensors"]["auditd"] = "7" * 64
-    # A rule that matched the launcher's start only, whose command line is the whole test: no telemetry.
-    before["alerts"] = [
-        {
-            "id": "alert-0",
-            "step": "test:cbf506a5",
-            "rule": RULE,
-            "counts": False,
-            "launcher_only": True,
-            "events": [],
-        }
-    ]
+    before["network"]["sensors"][1]["audit_keys"] = ["bluefire-lab-probe", "process-start", "shell-start"]
     before["events"] = [
         an_event("test:23b91cd2", 1, "auditd", "execve", "ps aux", "process-start"),
         an_event("test:00000000", 1, "auditd", "execve", "cat /etc/passwd", "process-start"),
@@ -498,6 +491,13 @@ def the_first_pair() -> tuple[dict, dict]:
         images={"target": "ubuntu24 20261116.376.1"}, kernels={"target": "7.0.0-1017-azure"}
     )
     after["source"]["setup"]["sensors"]["auditd"] = "6" * 64
+    after["network"]["sensors"][1]["audit_keys"] = [
+        "bluefire-lab-probe",
+        "process-start",
+        "shell-history",
+        "shell-start",
+    ]
+    after["ordinary"]["events"] = 921
     after["steps"][0]["happened"] = {"answer": "attempted without effect", "basis": "it printed less"}
     after["steps"][0].update(outcome="no effect", outcome_with_lab_rules="no effect")
     after["steps"][1] = a_step("test:cbf506a5", 90, outcome="seen", guid="cbf506a5")
@@ -550,10 +550,16 @@ def test_a_pair_on_runners_that_differed_credits_the_audit_rules_only_where_thei
         "better by the change's own mark, on two runners that differed: no telemetry to recorded by the sensors; "
         "unseen to seen by the published rules; unseen to seen with the lab's rules"
     )
+    # The ordinary activity of each run was counted on its own runner: no difference of the two is a price.
+    assert history["price"] == (
+        "price not known: each run counted its ordinary activity on its own runner, and the two runners "
+        "differed, so what differs between the counts is not the change's price (each run's own, published "
+        "rules that alerted on ordinary activity: 2 before, 2 after; ordinary events: 940 before, 921 after)"
+    )
     assert history["verdict"].endswith(
-        "; it rests on 1 event of the audit key `shell-history`, which only the after run's audit rules define, "
-        "the only events either run holds of the step, on two runners that differed (the image of host "
-        "`target`, the kernel of host `target`); one pair of runs"
+        f"; {history['price']}; it rests on 1 event of the audit key `shell-history`, which only the after "
+        "run's audit rules define, the only events either run holds of the step, on two runners that differed "
+        "(the image of host `target`, the kernel of host `target`); one pair of runs"
     )
     assert (discovery["result"], "mark" in discovery) == ("not attributable", False)
     assert discovery["verdict"] == (
@@ -563,6 +569,12 @@ def test_a_pair_on_runners_that_differed_credits_the_audit_rules_only_where_thei
     )
     assert {step["result"] for step in delta["steps"][2:]} == {"same"}
     assert (delta["counts"]["same"], delta["unexplained"]) == (89, ["test:23b91cd2"])
+    # The one better step is counted with the limit beside it, where a reader of the counts looks.
+    assert (delta["counts"]["better"], delta["counts"]["by_mark"]) == (1, 1)
+    assert (
+        "91 steps paired by id: 89 same, 1 better (1 of them by the change's own mark alone, on two runners "
+        "that differed), 1 not attributable."
+    ) in text
     assert "each on a fresh runner of its own, not one after the other on one runner" in text
     assert f"but the two runners differed: {RUNNERS}." in text
     assert "**A limited verdict, not like with like.**" in text and "**Comparable.**" not in text
@@ -583,6 +595,148 @@ def test_a_pair_on_runners_that_differed_credits_the_audit_rules_only_where_thei
     step = delta["steps"][2]
     assert step["result"] == "not attributable"
     assert "the step does not carry the change's own mark (both runs hold events of it)" in step["verdict"]
+
+
+def a_step_unseen_before(*events: dict, counted: int | None = None) -> tuple[dict, dict]:
+    """The first pair, with one more step that no sensor recorded before and that holds these events
+    after: counted is the number of events the after run tied to it, by default the events given."""
+
+    before, after = the_first_pair()
+    before["steps"][3] = a_step("test:00000001", 1, outcome="unseen", guid="00000001")
+    after["steps"][3] = a_step("test:00000001", 1, outcome="seen", guid="00000001")
+    after["steps"][3]["visibility"]["events"] = len(events) if counted is None else counted
+    after["events"] += list(events)
+    return before, after
+
+
+def judged(tmp_path: Path, before: dict, after: dict, index: int = 3) -> tuple[dict, dict]:
+    """The delta of a pair on runners that differed under a change of the audit rules, and one step of it."""
+
+    delta, _ = compared(tmp_path, before, after, "--change", "sensors:auditd", "--two-runners")
+    assert delta["limit"] is not None
+    return delta, delta["steps"][index]
+
+
+HISTORY_WRITE = ("auditd", "openat", "/home/bluefire-lab/.bash_history", "shell-history")
+
+
+def test_events_of_a_key_both_rule_sets_define_are_no_mark_also_when_only_one_run_has_them(
+    tmp_path: Path,
+) -> None:
+    # Both runs' rules watch /root/.bashrc under shell-start, and only the after runner recorded a write
+    # to it: a key that fired on one runner only is the runners' difference, not the change's mark.
+    before, after = a_step_unseen_before(
+        an_event("test:00000001", 1, "auditd", "openat", "/root/.bashrc", "shell-start")
+    )
+
+    delta, step = judged(tmp_path, before, after)
+
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    assert (
+        "the step does not carry the change's own mark (not every event of it is auditd's under an audit key "
+        "that only that run's audit rules define)"
+    ) in step["verdict"]
+    assert (delta["counts"]["by_mark"], delta["limit"]["credited"]) == (1, 1)
+
+
+def test_a_marked_event_next_to_an_unmarked_one_is_not_attributable(tmp_path: Path) -> None:
+    # The other run holds nothing of the step, but the after run holds a program start of it too, under
+    # a rule both runs have: on another runner that start alone could have made the step seen.
+    before, after = a_step_unseen_before(
+        an_event("test:00000001", 1, *HISTORY_WRITE),
+        an_event("test:00000001", 2, "auditd", "execve", "sh -c history -c", "process-start"),
+    )
+
+    _, step = judged(tmp_path, before, after)
+
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    assert (
+        "not every event of it is auditd's under an audit key that only that run's audit rules define"
+        in step["verdict"]
+    )
+
+
+def test_a_step_whose_recording_kept_fewer_events_than_it_counted_is_not_credited(tmp_path: Path) -> None:
+    # The recording keeps the first events of a step: the two it left out may be of any key.
+    before, after = a_step_unseen_before(an_event("test:00000001", 1, *HISTORY_WRITE), counted=3)
+
+    _, step = judged(tmp_path, before, after)
+
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    assert "(the recording did not keep every event of it)" in step["verdict"]
+
+
+def test_a_step_with_an_alert_that_rests_on_an_event_without_the_mark_is_not_credited(tmp_path: Path) -> None:
+    before, after = a_step_unseen_before(an_event("test:00000001", 1, *HISTORY_WRITE))
+    after["alerts"].append(
+        {**after["alerts"][0], "id": "alert-2", "step": "test:00000001", "events": ["test:00000000-1"]}
+    )
+
+    _, step = judged(tmp_path, before, after)
+
+    assert (step["result"], "mark" in step) == ("not attributable", False)
+    assert "(an alert on it does not rest on those events alone)" in step["verdict"]
+
+
+def test_a_step_that_lost_its_only_events_with_a_removed_rule_is_worse_by_the_mark(tmp_path: Path) -> None:
+    # The first pair the other way round: the watch on the history files removed.
+    with_watch, without = the_first_pair()
+
+    delta, step = judged(tmp_path, without, with_watch, index=1)
+
+    assert (step["result"], step["mark"]) == (
+        "worse",
+        {"run": "before", "keys": ["shell-history"], "events": 1},
+    )
+    assert step["verdict"].startswith(
+        "worse by the change's own mark, on two runners that differed: recorded to no telemetry by the sensors; "
+        "seen to unseen by the published rules; seen to unseen with the lab's rules"
+    )
+    assert "which only the before run's audit rules define" in step["verdict"]
+    assert "price" not in step
+    assert (delta["counts"]["worse"], delta["counts"]["by_mark"]) == (1, 1)
+
+
+def test_a_launcher_only_match_in_the_run_that_recorded_nothing_leaves_the_mark_standing(
+    tmp_path: Path,
+) -> None:
+    # A rule that matched only the launcher's start, whose command line is the whole test, moves no outcome.
+    before, after = the_first_pair()
+    before["alerts"] = [
+        {
+            "id": "alert-0",
+            "step": "test:cbf506a5",
+            "rule": RULE,
+            "counts": False,
+            "launcher_only": True,
+            "events": [],
+        }
+    ]
+
+    _, step = judged(tmp_path, before, after, index=1)
+
+    assert (step["result"], step["mark"]["run"]) == ("better", "after")
+
+
+def test_a_pair_on_runners_that_differed_whose_recording_does_not_say_its_audit_keys_is_refused(
+    tmp_path: Path,
+) -> None:
+    before, after = the_first_pair()
+    del before["network"]["sensors"][1]["audit_keys"]
+
+    delta, text = compared(tmp_path, before, after, "--change", "sensors:auditd", "--two-runners")
+
+    assert (delta["comparable"], delta["limit"]) == (False, None)
+    reason = (
+        "the two runners differed (the image of host `target`, the kernel of host `target`), and the before "
+        "recording does not say which audit keys its audit rules define, so no step can be shown to carry the "
+        "change's own mark: write the recordings again with `bluefire-lab recording` from each run's folder, "
+        "which holds the audit rules as they were loaded, or run the pair again"
+    )
+    assert delta["refused_because"][-1] == reason
+    assert len(delta["refused_because"]) == 3
+    assert {step["result"] for step in delta["steps"] if step["changed"]} == {"no verdict"}
+    assert f"- {reason}" in text and "**No verdict.**" in text
 
 
 def test_a_change_without_a_mark_of_its_own_on_runners_that_differed_is_refused_with_what_to_do(

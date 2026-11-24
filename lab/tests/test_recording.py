@@ -636,6 +636,27 @@ def test_the_setup_names_each_sensors_settings_and_each_detector_the_digest_of_i
     assert {detector["id"]: detector["digest"] for detector in changed["network"]["detectors"]} != digests
 
 
+def test_the_auditd_sensor_says_which_audit_keys_its_rules_as_loaded_define(tmp_path: Path) -> None:
+    rules = (
+        "## A watch that is only a comment: -w /etc/hosts -p wa -k not-loaded\n"
+        "-D\n"
+        "-w /home/bluefire-lab/.bash_history -p wa -k shell-history\n"
+        "-a always,exit -F arch=b64 -S execve -F auid!=unset -F key=process-start\n"
+        "  # -w /etc/shadow -p wa -k also-not-loaded\n"
+        "-w /root/.bashrc -p wa -k shell-start\n"
+    )
+
+    made = recorded(tmp_path, a_run(), audit={"name": "auditd", "rules_text": rules})
+    older = recorded(tmp_path, a_run(), audit={"name": "auditd"})
+
+    auditd = next(sensor for sensor in made["network"]["sensors"] if sensor["id"] == "auditd")
+    assert auditd["audit_keys"] == ["process-start", "shell-history", "shell-start"]
+    # A run whose results do not hold the rules' text does not say which keys they define.
+    assert "audit_keys" not in next(
+        sensor for sensor in older["network"]["sensors"] if sensor["id"] == "auditd"
+    )
+
+
 def test_the_lab_detector_says_which_rules_the_run_accepted_and_the_digest_of_each(tmp_path: Path) -> None:
     lab_rules = [{**OURS, "text": "title: A\n", "reason": "it alerted"}, {**REJECTED, "text": "title: R\n"}]
 

@@ -27,7 +27,9 @@ kernels. When the runner's image and kernel are all that differ besides a
 change of the audit rules, the verdict is limited instead of refused: it
 credits the change only on a step that carries the change's own mark, events of
 an audit key that only one run's rules define and nothing else of the step, and
-every other step that differs is not attributable. Any other change on two
+every other step that differs is not attributable. Which keys a run's rules
+define is what its recording's auditd sensor says, and a pair whose recordings
+do not both say it is refused. Any other change on two
 runners that differed is refused, with the advice to run the pair again. The
 lab's own code is not part of the setup: when its commit differs, every verdict
 says so.
@@ -220,6 +222,14 @@ def audit_keys(recording: dict) -> dict[str, list[dict]]:
     return found
 
 
+def defined_keys(recording: dict) -> set[str] | None:
+    """The audit keys that the run's audit rules define, as its auditd sensor says, or None when it
+    does not say: an older recording, or one without auditd."""
+
+    sensor = next((sensor for sensor in recording["network"]["sensors"] if sensor["id"] == "auditd"), {})
+    return set(sensor["audit_keys"]) if "audit_keys" in sensor else None
+
+
 def sensor_lines(recording: dict, sensor: str, keys: set[str] | None = None) -> dict[str, list[str]]:
     """The events one sensor recorded for each step, as "<kind>: <text>" lines in time order, only
     those of these audit keys when keys are given. A recording keeps at most a few hundred events of
@@ -269,8 +279,9 @@ def mark_of(sides: tuple[tuple[dict, list[dict], list[dict], set[str]], ...]) ->
     step, and every event the other holds of it is of an audit key that only that run's rules define,
     every one it recorded kept, with every alert on the step resting on those events alone. Then the
     step's move is carried by those events: without them that run too would hold nothing of it.
-    sides is (step, its events, its alerts, the audit keys only its run has) of the before and the
-    after run. The mark as {"run", "keys", "events"}, or why the step does not carry one."""
+    sides is (step, its events, its alerts, the audit keys that its run's rules define and the other
+    run's do not) of the before and the after run. The mark as {"run", "keys", "events"}, or why
+    the step does not carry one."""
 
     holding = [number for number, (_, events, alerts, _) in enumerate(sides) if events or alerts]
     if len(holding) != 1:
@@ -281,7 +292,7 @@ def mark_of(sides: tuple[tuple[dict, list[dict], list[dict], set[str]], ...]) ->
     if not all(
         event["sensor"] == "auditd" and (event.get("fields") or {}).get("key") in only for event in events
     ):
-        return "some of its events are of a rule both runs have, or of another sensor"
+        return "not every event of it is auditd's under an audit key that only that run's audit rules define"
     if step["visibility"].get("events") != len(events):
         return "the recording did not keep every event of it"
     ids = {event["id"] for event in events}
@@ -338,8 +349,10 @@ def direction(role: str, changes: list[tuple[str, str, str]]) -> str:
     return {frozenset({True}): "better", frozenset({False}): "worse"}.get(frozenset(ways), "changed")
 
 
-def price(before: dict, after: dict, declared: str) -> str:
-    """What a gain cost, in the recording's own numbers, or why it holds none."""
+def price(before: dict, after: dict, declared: str, limited: bool = False) -> str:
+    """What a gain cost, in the recording's own numbers, or why it holds none. Under a limit each run
+    counted on a runner of its own, so the two numbers are each run's and their difference is not
+    the change's price."""
 
     if declared == "detectors:lab":
         said = (
@@ -359,10 +372,16 @@ def price(before: dict, after: dict, declared: str) -> str:
         return str(holder[key]) if key in holder else NOT_RECORDED
 
     alerts = f"published rules that alerted on ordinary activity: {count(before, 'false_alerts', 'score')} before, {count(after, 'false_alerts', 'score')} after"
+    counted = alerts
     if declared.startswith("sensors:"):
         events = f"ordinary events: {count(before, 'events', 'ordinary')} before, {count(after, 'events', 'ordinary')} after"
-        return f"price: {alerts}; {events}"
-    return f"price: {alerts}"
+        counted = f"{alerts}; {events}"
+    if limited:
+        return (
+            "price not known: each run counted its ordinary activity on its own runner, and the two runners "
+            f"differed, so what differs between the counts is not the change's price (each run's own, {counted})"
+        )
+    return f"price: {counted}"
 
 
 def race(before: dict, after: dict) -> dict:
@@ -514,8 +533,25 @@ def compare(
         for row in runner_rows
     ]
     runners_only = bool(runner_rows) and two_runners and sorted(refusals) == sorted(runner_reasons)
+    runners_said = ", ".join(named(row["what"]) for row in runner_rows)
+    # The mark is a key that one run's audit rules define and the other's do not: a key that only one
+    # run's events carry may be one both rule sets define that fired on one runner only.
+    defined = (defined_keys(before), defined_keys(after))
+    unsaid = [label for label, keys_ in zip(("before", "after"), defined, strict=True) if keys_ is None]
     limit = None
-    if runners_only and declared in MARKS:
+    if runners_only and declared in MARKS and unsaid:
+        refusals.append(
+            f"the two runners differed ({runners_said}), and "
+            + (
+                f"the {unsaid[0]} recording does not say which audit keys its"
+                if len(unsaid) == 1
+                else "neither recording says which audit keys its run's"
+            )
+            + " audit rules define, so no step can be shown to carry the change's "
+            "own mark: write the recordings again with `bluefire-lab recording` from each run's folder, "
+            "which holds the audit rules as they were loaded, or run the pair again"
+        )
+    elif runners_only and declared in MARKS:
         refusals = []
         limit = {
             "why": "the two runners differed",
@@ -524,7 +560,7 @@ def compare(
         }
     elif runners_only and declared:
         refusals.append(
-            f"the two runners differed ({', '.join(named(row['what']) for row in runner_rows)}), and a change of "
+            f"the two runners differed ({runners_said}), and a change of "
             f"{named(declared)} leaves no mark of its own on a step that tells its effect from theirs: run the "
             "pair again, which gives two new runners"
         )
@@ -532,7 +568,7 @@ def compare(
     comparable = not refusals
     judged = judged_fields(declared)
     control = tuple(field for field in FIELDS if field not in judged)
-    gain_price = price(before, after, declared) if comparable and declared else None
+    gain_price = price(before, after, declared, limit is not None) if comparable and declared else None
     rules_before, rules_after = matches(before), matches(after)
     lab_before, lab_after = lab_matches(before), lab_matches(after)
     lab_titles = {
@@ -564,7 +600,7 @@ def compare(
         )
         for recording in (before, after)
     )
-    runners_said = ", ".join(named(row["what"]) for row in runner_rows)
+    marking = (defined[0] - defined[1], defined[1] - defined[0]) if limit is not None else (set(), set())
     rows = []
     for old, step in pairs:
         changed = [
@@ -610,7 +646,7 @@ def compare(
                         part,
                         events[number].get(part["id"], []),
                         alerts[number].get(part["id"], []),
-                        only[number],
+                        marking[number],
                     )
                     for number, part in enumerate((old, step))
                 )
@@ -741,6 +777,9 @@ def compare(
         "counts": {
             "paired": len(rows),
             **{result: sum(1 for row in rows if row["result"] == result) for result in RESULTS},
+            # Of the steps counted above as better, worse or changed, those credited by the change's own
+            # mark alone on two runners that differed: a limited verdict, beside the counts it is part of.
+            "by_mark": sum(1 for row in rows if "mark" in row),
             "new": len(new),
             "gone": len(gone),
         },
@@ -893,7 +932,17 @@ def markdown(delta: dict) -> str:
 
     counts, control = delta["counts"], delta["control"]
     by = {row["paired_by"] for row in delta["steps"]} or {"id"}
-    tally = ", ".join(f"{counts[result]} {result}" for result in RESULTS if counts.get(result))
+    marked = collections.Counter(row["result"] for row in delta["steps"] if "mark" in row)
+    tally = ", ".join(
+        f"{counts[result]} {result}"
+        + (
+            f" ({marked[result]} of them by the change's own mark alone, on two runners that differed)"
+            if marked[result]
+            else ""
+        )
+        for result in RESULTS
+        if counts.get(result)
+    )
     lines += [
         f"{plural(counts['paired'], 'step')} paired by {' and '.join(sorted(by))}"
         + (f": {tally}" if tally else "")
