@@ -227,7 +227,8 @@ that a rule does not depend on what a test fixes in its command, such as the
 options it passes to `useradd` or the mode it gives `chmod`: a rule written for
 exactly those would be accepted as well. Where a test lets a run change what a
 rule looks at, a variant does so for some rules and not yet for others: the
-history tests run again on `~/.histfile` and `~/.history`, and the key search on
+history tests run again on `~/.zsh_history`, `~/.histfile`, `~/.sh_history` and
+`~/.history`, and the key search on
 `id_ed25519`, but the systemd tests' variants change a unit's name and not the
 folder it is written to, though two of those tests, T1053.006 and T1543.002,
 allow that too. Beyond that, each
@@ -290,6 +291,70 @@ stays quiet on it can still be noisy elsewhere. One such case is known: the
 rule for a unit file written by a shell also alerts when an administrator
 writes a new unit by hand. A draft that could not fire with this sensor is kept
 in [`rules/rejected`](rules/rejected) with the reason.
+
+### A rule on auditd's records: a history file truncated in place
+
+[Shell History File Truncated In Place](rules/linux/auditd/lnx_auditd_history_file_truncated_in_place.yml)
+is the first of the lab's rules on auditd's records, which the lab now
+evaluates beside its rules on Sysmon's. It was written for the one step the
+watch on history files made visible (see
+[the first change](#a-pair-of-runs-for-a-change-to-the-defense)), from the
+record of T1070.003 Clear Bash history (echo) in
+[run 45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637):
+`openat` with the flags `0x241`, `O_WRONLY|O_CREAT|O_TRUNC`, on the existing
+`~/.bash_history`, by the launcher's `sh`.
+
+- **What it is.** A file under the history watch opened, successfully, for a
+  truncating write (`O_TRUNC`, by `open`, `openat` or `creat`), which empties
+  it in place: what a shell's redirect does, `> file`, whatever command is in
+  front of it. It names no account, no command and no shell. An open the
+  kernel refused emptied nothing, and does not match.
+- **Why ordinary writers mostly do not do it.** By their source code: bash
+  4.4 and later (readline 7.0 and later), tcsh and busybox ash append to their
+  history file with `O_APPEND` and rewrite it by writing a new file and
+  renaming it over the old one; ksh93 appends and trims with `ftruncate`; zsh
+  appends, or renames a new file over the old one. Three exceptions are known,
+  and the rule alerts on each: bash creating a missing history file, which it
+  opens with `O_TRUNC`, once per account; bash before 4.4, whose readline trims
+  the file in place on exit once it is longer than `HISTFILESIZE`, and rewrites
+  it in place for `history -w`; and zsh with its option `HIST_SAVE_BY_COPY`
+  unset. The rule cannot leave out the creation: auditd's system call record
+  gives the number of path items, but on kernels before 6.12 an `O_CREAT` open
+  of an existing file records two items too, as a creation does.
+- **What it rests on.** auditd's system call record holds the open's flags and
+  not the file's name; its path record holds the name and not the flags; and
+  the rule engine reads one record at a time. So the rule takes the file from
+  the audit key of the watch, `shell-history` in
+  [`sensors/audit.rules`](sensors/audit.rules). A defender with another key
+  puts that key in the rule.
+- **What it does not see.** The `truncate` program, which opens without
+  `O_TRUNC` and then shortens the file, and `ln -sf`, which renames a new link
+  over the file as bash does when it rewrites its history: the lab's
+  [Shell History File Emptied](rules/linux/process_creation/proc_creation_lnx_history_file_emptied.yml)
+  covers both from their program starts. Nor anything else that writes a new
+  file and renames it over the history file: bash's own `history -c` followed
+  by `history -w` on bash 4.4 and later, `sed -i`, and editors that save by
+  rename. Nor removing the file, `openat2`, whose flags auditd does not show,
+  or a history file the watch does not name.
+
+Its text was fixed from that one record and from what the shells do, before
+it was evaluated over a whole run.
+[Run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682)
+is the first to evaluate it. Of the 4 published procedures of T1070.003 on
+the list besides the canary, it alerted on two, the echo test and T1070.003
+Clear Bash history (cat dev/null), `cat /dev/null > ~/.bash_history`, each by
+one event, and not on `truncate` and `ln dev/null`, for the reasons above, nor
+on the canary's `rm`. It matched none of that run's 8,847 ordinary events. A
+run's ordinary activity tests little of its price: by the records of run
+45350480637, 2 of its ordinary events are of the key the rule reads (the
+baseline's append that creates `~/.bash_history`, and its `chmod`), and none
+saves a shell's history the way a shell does. A test on records built by hand
+from the shells' and the kernel's code, and marked as built, stands in for
+that part ([`tests/test_lab_rules.py`](tests/test_lab_rules.py)). A run
+accepts a rule only when each procedure it alerts on also ran with changed
+input arguments, so the list now runs both once more, on `~/.zsh_history` and
+on `~/.sh_history`, which the watch names too. The rule alerted on both of
+those runs as well, and run 45395673682 accepted it.
 
 ## What the target has
 
@@ -432,10 +497,14 @@ rotate, and the loss control would fail a run in which it did; none has since.
    Its format is [`docs/RECORDING.md`](../docs/RECORDING.md).
    The job writes it whenever the evaluation wrote `results.json`, also when a
    control failed, and it is part of the run's artifact.
-6. When a pull request changes the lab's own rules or a sensor's settings, the
-   list runs twice, with the base commit's files and with the head's, and a
-   job that runs no test compares the two recordings: see
+6. When a pull request changes a sensor's settings, the list runs twice, with
+   the base commit's files and with the head's, and a job that runs no test
+   compares the two recordings: see
    [A pair of runs for a change to the defense](#a-pair-of-runs-for-a-change-to-the-defense).
+   When it changes only the lab's own rules, the list runs once, and a job that
+   runs no test evaluates that run twice, with the base commit's rules and with
+   the head's, and compares the two recordings: see
+   [A change of the lab's rules: one run, evaluated twice](#a-change-of-the-labs-rules-one-run-evaluated-twice).
    Otherwise a separate job, which runs no test either, compares the run's
    recording with that of the latest successful run on `main`
    (`bluefire-lab compare`, see
@@ -1265,7 +1334,7 @@ tests ran again, and this is what changed. `bluefire-lab compare` is where that
 claim is computed, and where it is refused:
 
 ```bash
-bluefire-lab compare <before>/recording.json <after>/recording.json --out <folder> [--change detectors:lab] [--two-runners]
+bluefire-lab compare <before>/recording.json <after>/recording.json --out <folder> [--change detectors:lab] [--two-runners | --one-run]
 ```
 
 It writes `delta.json`, whose format is the section "A delta" of
@@ -1387,9 +1456,10 @@ A defender who changes a rule or a sensor setting wants to see what that one
 change did. A comparison with the latest run on `main` cannot show it: that run
 is days old, on another runner, from other code. So when a pull request
 changes what a run loads of the defense, the `lab` workflow makes a pair of
-fresh runs for it, in the same workflow run, where only that thing differs.
+fresh runs for it, in the same workflow run, where only that thing differs. A
+change of the lab's own rules alone needs no second run: see the next section.
 
-- **When.** The job "decide whether the change needs a pair of runs" checks out
+- **When.** The job "decide how a change to the defense is shown" checks out
   the base commit's `lab/rules/` and `lab/sensors/`, and nothing else of it,
   and runs `bluefire-lab pair --base base/lab lab`. It compares the digests of
   what a run loads: [`sensors/sysmon.xml`](sensors/sysmon.xml) (`sensors:sysmon`),
@@ -1397,7 +1467,11 @@ fresh runs for it, in the same workflow run, where only that thing differs.
   folder [`rules/linux`](rules/linux) (`detectors:lab`, the same digest a
   recording gives that detector). The paths a pull request touched do not
   decide: a change that leaves these files as they were runs once, as does
-  every run that is not of a pull request.
+  every run that is not of a pull request (`pair=no`). A change of a sensor's
+  settings is a pair of runs (`pair=runs`), and so is a change of a sensor's
+  settings and of the lab's rules together, which is two changes and declares
+  nothing. A change of the lab's rules alone is one run evaluated twice
+  (`pair=rules`).
 - **The two runs.** The whole list runs twice, as two jobs on two runners
   started side by side: "attack tests on this runner, with the defense of the
   base commit", which loads the base commit's rules and sensor settings, and
@@ -1431,10 +1505,11 @@ fresh runs for it, in the same workflow run, where only that thing differs.
   to the run page, and the artifact `lab-pair` holds both recordings
   (`before/recording.json`, `after/recording.json`), `delta.json` and
   `delta.md`. The job runs only when both runs passed their controls.
-- **The comparison with `main`** runs only on a run without a pair. There it is
-  the one comparison, and it declares nothing, so it names what varies and
-  credits nothing to a change. Beside a pair it would be a second, weaker
-  comparison that could be read as the result, so a run with a pair has none.
+- **The comparison with `main`** runs only on a run that changes nothing of the
+  defense (`pair=no`). There it is the one comparison, and it declares nothing,
+  so it names what varies and credits nothing to a change. Beside a pair, or
+  beside one run evaluated twice, it would be a second, weaker comparison that
+  could be read as the result, so such a run has none.
 - **What it says.** Under a sensor change, `delta.md` names the steps that are
   recorded now and were recorded by no sensor before, or says that there are
   none, and the tests unseen in both runs. Two runs of the same audit rules
@@ -1498,6 +1573,82 @@ rule, on a pair of runners that differed, is not yet shown by a CI run. In run
 its output lacked the text its effect check looks for. That is what two
 runners can differ by, and why such a step is not credited to a change. Of
 these three pairs, two got runners that differed.
+
+## A change of the lab's rules: one run, evaluated twice
+
+On this host the rules run after the run, over the telemetry it recorded. So a
+change of the lab's own rules needs no second run of the tests: the same run's
+telemetry, evaluated once with the base commit's rules and once with the
+head's, gives two real recordings of one run, with no difference of runners
+and no run variation.
+
+- **When.** The plan says `pair=rules` when, of what a run loads of the
+  defense, only the folder [`rules/linux`](rules/linux) differs from the base
+  commit's. A change of a sensor's settings still makes a pair of runs on two
+  runners, since it changes what is recorded, and a change of both is two
+  changes and declares nothing.
+- **The run and the evaluations.** The list runs once, "attack tests on this
+  runner", with the head's files, as any run. Then the job "the change to the
+  lab's rules, one run evaluated twice", which runs no test, takes that run's
+  artifact `lab-run` and the base commit's `lab/rules/`, and makes two copies
+  of the run's folder, each with one commit's rules in `lab-rules/linux` and
+  that commit in `lab-rules/SOURCE`, and without what the run's own
+  evaluation wrote. It runs `bluefire-lab evaluate` and `bluefire-lab
+  recording` in each, with the pinned Zircolite, and `bluefire-lab compare
+  --change detectors:lab --one-run` on the two recordings. `delta.md` goes to
+  the run page; the artifact `lab-rules-twice` holds both recordings and both
+  `results.json`, `delta.json` and `delta.md`.
+- **What the comparison checks.** That the two are one run, and that
+  everything a change of the lab's rules cannot move is the same in both, not
+  only alike: the run and its CI run, the steps, what happened, whether a
+  sensor recorded each step, every event, the published rules' alerts and
+  outcomes, and the ordinary activity. It also checks that every rule of the
+  lab's own whose file is the same in both was judged the same way and matched
+  the same steps. A run judges a rule on its own tests, variants and ordinary
+  activity, so on one run an unchanged rule cannot flip: if one does, the two
+  were not evaluations of one run, and the comparison is refused.
+- **What it says.** "One run evaluated with two rule sets" on every verdict,
+  never "one pair of runs". A step that got better is named with its
+  procedures of the technique on the list and with its price as the lab tells
+  it for its own rules: not counted, since a rule that matched ordinary activity
+  is not accepted and its matches are left out of the recording, with both
+  evaluations' notes on which rules were accepted. `delta.md` also lists each
+  rule of the lab's own that is new, gone, changed, or the same text moved to
+  another file, and how each
+  evaluation judged it, so that a rule that did not change an answer, because
+  the run did not accept it, says why.
+- **What it costs.** One run of the list instead of two, and a job that
+  evaluates the run twice: 54 s of runner time in the one run so far.
+
+What this job shows for the rule above, in
+[run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682):
+with the base commit's rules the rule is not there, and with the head's the
+run accepted it. Four steps are better, each from seen to alerted with the
+lab's rules and each by one alert of the new rule: T1070.003 Clear Bash
+history (echo), T1070.003 Clear Bash history (cat dev/null), and the variant
+of each. The 89 other steps are the same, and what the change cannot move
+(what happened, whether a sensor recorded the step, the published rules'
+outcome) is the same on all 93. Of the 60 tests, 17 were alerted with the
+lab's rules before and 19 after; by the published rules alone it stays 3. One
+run, evaluated with two rule sets.
+
+## The defender loop so far
+
+A step nobody saw, its telemetry, a rule drafted from it, and before against
+after, each turn shown by a CI run of the `lab` workflow:
+
+1. **The watch.** T1070.003 Clear Bash history (echo) was unseen. The audit
+   rules now watch the test account's history files, and the pair of runs of
+   [run 45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
+   recorded the step for the first time, as one audit event: it is seen, and
+   no rule alerts on it. See
+   [A pair of runs for a change to the defense](#a-pair-of-runs-for-a-change-to-the-defense).
+2. **The rule.** [Shell History File Truncated In Place](#a-rule-on-auditds-records-a-history-file-truncated-in-place),
+   drafted from that event, shown as one run evaluated twice in
+   [run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682):
+   the run accepted the rule, and the step went from seen to alerted with the
+   lab's rules, as did T1070.003 Clear Bash history (cat dev/null). See
+   [A change of the lab's rules: one run, evaluated twice](#a-change-of-the-labs-rules-one-run-evaluated-twice).
 
 ## Before the loop: the sensor spike
 

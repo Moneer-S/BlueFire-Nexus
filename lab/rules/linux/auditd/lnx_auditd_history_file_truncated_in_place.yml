@@ -1,0 +1,53 @@
+title: Shell History File Truncated In Place
+id: 3d6f0b8e-5a41-4c7e-9b2d-7e1a6c40f5b9
+status: experimental
+description: >-
+  A shell history file was opened, successfully, for a truncating write
+  (O_TRUNC), which empties it in place. A shell's own redirect does this
+  (> file, echo > file, cat /dev/null > file) and starts no program. Current
+  shells do not save their history that way: bash 4.4 and later (readline
+  7.0 and later), tcsh and busybox ash append with O_APPEND and rewrite the
+  file as a new one renamed over the old one, ksh93 appends and trims with
+  ftruncate, and zsh appends or renames a new file over it. Older bash and
+  zsh with HIST_SAVE_BY_COPY unset do truncate in place, and are false
+  positives. auditd's system call record holds the open's flags and not the
+  file's name, and its path record the name and not the flags, so the rule
+  takes the file from the audit key of the watch on history files,
+  shell-history in the lab's audit rules: with another key, put that key
+  here. Covers open, openat and creat on any architecture auditd names the
+  call for; not openat2, whose flags the record does not show, nor truncate
+  or ftruncate, nor a new file renamed over the history file, which is how
+  bash's history -c then history -w, sed -i and editors that save by rename
+  empty or rewrite it.
+references:
+  - https://attack.mitre.org/techniques/T1070/003/
+  - https://man7.org/linux/man-pages/man2/open.2.html
+author: BlueFire lab
+date: 2026-11-24
+tags:
+  - attack.defense-evasion
+  - attack.t1070.003
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_watch:
+    type: SYSCALL
+    key: shell-history
+    success: 'yes'
+  # The flags are hex: O_TRUNC is 0x200, a bit of the third digit from the right.
+  selection_openat:
+    SYSCALL: openat
+    a2|re: '^[0-9a-f]*[2367abef][0-9a-f]{2}$'
+  selection_open:
+    SYSCALL: open
+    a1|re: '^[0-9a-f]*[2367abef][0-9a-f]{2}$'
+  selection_creat:
+    SYSCALL: creat
+  condition: selection_watch and (selection_openat or selection_open or selection_creat)
+falsepositives:
+  - bash creating a missing history file the first time it saves (O_CREAT|O_TRUNC), once per account
+  - bash before 4.4 trimming its history file on exit, or rewriting it (history -w, or on exit without histappend)
+  - zsh with HIST_SAVE_BY_COPY unset, saving its history
+  - Someone clearing their own history on purpose
+level: high
