@@ -1290,11 +1290,10 @@ fresh runs for it, in the same workflow run, where only that thing differs.
   only through events of an audit key that one run has and the other lacks,
   and `delta.md` gives how many events of each such key the recordings hold.
   Each side says the commit its rules and sensor settings came from.
-- **What it costs** (an estimate: not yet measured for a pair). One more run of
-  the whole list, which took 13 to 16 minutes of runner time in the runs that
-  the item on runners under [Limits](#limits) names, and a few minutes for the
-  two short jobs that decide and compare. The two runs go side by side, so the
-  pull request should wait about as long as for one.
+- **What it costs.** One more run of the whole list: in the three pairs told
+  below it took 13.5 to 15.5 minutes of runner time, and each of the two short
+  jobs that decide and compare under half a minute. The two runs go side by
+  side, so the pull request waits about as long as for one.
 
 **The first change: auditd watches the history files.** One test of the list
 was unseen: T1070.003 Clear Bash history (echo) empties `~/.bash_history` with
@@ -1309,35 +1308,38 @@ audit session of the test's attack step, and the step goes from unseen to
 seen.
 
 **The pair that shows it** is run
-[45362120784](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45362120784)
+[45365902367](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367)
 of the pull request that made the change (its job "the change to the defense,
-before against after", and the artifact `lab-pair`). Before, with the old
-audit rules, "Clear Bash history (echo)" (`test:cbf506a5`) had no telemetry;
-after, it is seen, by one event: `openat: /home/bluefire-lab/.bash_history`
-of the audit key `shell-history`, which only the changed rules define, written
-by the launcher's shell in the test's attack session. In all the after run
-holds 9 events of that key, one each on 9 steps, all of T1070.003; the 8
-others were seen or alerted before too, and stayed so. The two runners
-differed (image `ubuntu24 20261116.376.1` and kernel `7.0.0-1017-azure`
-before, `ubuntu24 20261116.133.1` and `7.0.0-1014-aws` after), so the run's
-comparison gives a limited verdict: `test:cbf506a5` is better by the change's
-own mark, resting on that one event; its price is not known, since each run
-counted its ordinary activity on its own runner (8,964 ordinary events before
-and 8,804 after, 2 published rules that alerted on it in each); the 90 other
-steps are the same, and what happened is the same on all 91. One pair of
-runs.
+before against after", and the artifact `lab-pair`). Its two runners had the
+same image and kernel, so the comparison is like with like, with a verdict on
+every step. Before, with the old audit rules, "Clear Bash history (echo)"
+(`test:cbf506a5`) had no telemetry; after, it is seen, by one event:
+`openat: /home/bluefire-lab/.bash_history` of the audit key `shell-history`,
+which only the changed rules define, written by the launcher's shell in the
+test's attack session. The comparison calls that step better, on 1 of the 4
+published procedures of T1070.003 in the list (the 3 others were seen or
+alerted before too), and gives its price: 2 published rules alerted on
+ordinary activity before and 2 after, with 8,902 ordinary events before and
+8,841 after. The 90 other steps are the same, and what happened is the same
+on all 91. One pair of runs.
 
-An earlier pair of the same change, run
-[45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637),
-recorded the same event on the same step, on two runners that differed the
-other way round. Its summary was written by an earlier version of `compare`,
-which refused every pair on two runners that differed, and its recordings do
-not say which audit keys their rules define, so this version refuses them
-too. In that pair one more step differed, `test:23b91cd2` (T1518.001 Security
-Software Discovery - ps): on one runner its output lacked the text its effect
-check looks for. That is what two runners can differ by, and why such a step
-is not credited to a change. A pair on two runners of the same image and
-kernel, with a verdict on every step: not yet shown.
+Two earlier pairs of the same change got two runners that differed in image
+and kernel (`ubuntu24 20261116.133.1` with `7.0.0-1014-aws`, and
+`ubuntu24 20261116.376.1` with `7.0.0-1017-azure`). In run
+[45362120784](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45362120784)
+the comparison gave a limited verdict: the same step better by the change's
+own mark, resting on that one event, its price not known, since each run
+counted its ordinary activity on its own runner; the 90 other steps the same.
+Run
+[45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
+recorded the same event on the same step; its summary was written by an
+earlier version of `compare`, which refused every pair on two runners that
+differed, and its recordings do not say which audit keys their rules define,
+so this version refuses them too. In that pair one more step differed,
+`test:23b91cd2` (T1518.001 Security Software Discovery - ps): on one runner
+its output lacked the text its effect check looks for. That is what two
+runners can differ by, and why such a step is not credited to a change. Of
+these three pairs, two got runners that differed.
 
 ## Before the loop: the sensor spike
 
