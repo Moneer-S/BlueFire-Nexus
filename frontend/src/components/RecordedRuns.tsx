@@ -43,7 +43,8 @@ export function RecordedRuns() {
       // A recording imported again under its id, a running one that grew or finished, is not shown from the cache.
       queryClient.removeQueries({ queryKey: ["recording", result.summary.id] });
       await queryClient.invalidateQueries({ queryKey: ["recordings"] });
-      // Another evaluation of a kept run is opened by its file: the run's id opens its first file.
+      // A file kept beside the first file of its id, another evaluation or the same recording in
+      // other bytes, is opened by its SHA-256: the id alone opens its first file.
       navigate(recordedRunPath(result.summary.id, result.anotherEvaluation ? result.sha256 : undefined));
     },
     onError: (error) => {

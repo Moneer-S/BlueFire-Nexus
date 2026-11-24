@@ -46,7 +46,8 @@ export function RecordedRunPage() {
 
 /**
  * One recording: the first file kept for its id, or, with `file`, the kept file
- * with that SHA-256, as a run evaluated more than once keeps one per evaluation.
+ * with that SHA-256: a run evaluated more than once keeps one per evaluation,
+ * and the same recording sent in other bytes is kept beside the first.
  */
 function RecordedRun({ recordingId, file }: { recordingId: string; file?: string }) {
   const entry = useQuery({

@@ -5,7 +5,8 @@
 // and each recording is a file of its own that is loaded only when it is
 // opened, so listing them loads none and the installed interface carries none.
 // As the service does, it lists the first file of each id; a later file of the
-// same id is another evaluation of that run, opened by its SHA-256.
+// same id (another evaluation of that run, or the same recording in other
+// bytes) is opened by its SHA-256.
 
 import entries from "virtual:shipped-recording-summaries";
 import { readRecording } from "../live/recording";

@@ -214,9 +214,13 @@ export interface RecordingEntry {
 export interface RecordingImport {
   created: boolean;
   replaced: boolean;
-  /** True when the file was kept beside the first file of its id, as another evaluation of the same run. */
+  /**
+   * True when the answer names a file kept beside the first file of its id, not that first file:
+   * another evaluation of the same run, or the same recording in other bytes (the lab's file and
+   * the copy of a recording sent as an object). Either is opened by its SHA-256.
+   */
   anotherEvaluation?: boolean;
-  /** The SHA-256 of the kept file, by which a run evaluated more than once names each of its files. */
+  /** The SHA-256 of the kept file, by which an id that holds more than one file names each of them. */
   sha256?: string;
   summary: RecordingSummary;
 }
