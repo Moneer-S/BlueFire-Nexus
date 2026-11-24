@@ -40,10 +40,16 @@ def main(arguments: list[str] | None = None) -> int:
         "--tests", type=Path, help="the list of pinned tests, for a run made before it recorded plain words"
     )
 
-    comparing = commands.add_parser("compare", help="say which answers changed since an earlier run, and why")
-    comparing.add_argument("before", type=Path, help="folder with the earlier run's results.json")
+    comparing = commands.add_parser(
+        "compare", help="say what differs between two recordings, and whether one declared change explains it"
+    )
+    comparing.add_argument("before", type=Path, help="the recording.json of the run before the change")
+    comparing.add_argument("after", type=Path, help="the recording.json of the run after it")
+    comparing.add_argument("--out", type=Path, required=True, help="folder for delta.json and delta.md")
     comparing.add_argument(
-        "after", type=Path, help="folder with the later run's results.json; gets compare.md"
+        "--change",
+        help="the one thing changed between the runs: sensors:<sensor id> for a sensor's settings, "
+        "or detectors:<detector id> for a rule set, such as detectors:lab; leave out when nothing was",
     )
 
     atomic_tests = commands.add_parser("atomic", help="read published Atomic Red Team tests as upstream does")
@@ -127,7 +133,7 @@ def main(arguments: list[str] | None = None) -> int:
     if options.command == "evaluate":
         return evaluate.main(options.folder, options.engine)
     if options.command == "compare":
-        return compare.main(options.before, options.after)
+        return compare.main(options.before, options.after, options.out, options.change)
     if options.command == "recording":
         return recording.main(options.folder, options.run_url, options.tests)
     return report.main(options.folder)

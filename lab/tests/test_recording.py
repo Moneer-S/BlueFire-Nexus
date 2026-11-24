@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -194,9 +195,9 @@ def test_a_run_becomes_one_file_with_its_steps_in_order_and_where_it_ran(tmp_pat
     assert (made["schema"], made["id"], made["kind"]) == ("bluefire.recording/1", "r1", "test list")
     assert made["title"] == "5 published tests on one Linux host"
     assert made["attacker"]["kind"] == "scripted" and made["attacker"]["goal"] is None
-    assert [(step["id"], step["role"]) for step in made["steps"]] == [
-        ("1", "canary"), ("2", "control"), ("4", "test"), ("5", "test"), ("6", "test"), ("7", "test"),
-        ("8", "test"), ("9", "hardened"), ("10", "variant"),
+    assert [(step["id"], step["order"]) for step in made["steps"]] == [
+        ("canary:guid-1", 1), ("control:guid-2", 2), ("test:guid-4", 4), ("test:guid-5", 5), ("test:guid-6", 6),
+        ("test:guid-7", 7), ("test:guid-8", 8), ("hardened:guid-9:lock", 9), ("variant:guid-10", 10),
     ]  # fmt: skip
     first = made["steps"][0]
     assert (first["title"], first["host"], first["command"]) == (
@@ -230,6 +231,12 @@ def test_a_run_becomes_one_file_with_its_steps_in_order_and_where_it_ran(tmp_pat
             {"name": "SigmaHQ/sigma", "version": "d" * 40, "role": "rules"},
             {"name": "Zircolite", "version": "4.7.1", "role": "rule engine"},
         ],
+        # The results of this run hold no digest of a sensor's settings, so the setup names none.
+        "setup": {
+            "atomic_commit": "a" * 40,
+            "images": {"target": "ubuntu24 20261111.370.1"},
+            "kernels": {"target": "7.0.0-1017-azure"},
+        },
     }
     host = made["network"]["hosts"][0]
     assert (host["id"], host["kind"], host["role"]) == ("target", "host", "Linux host under test")
@@ -251,7 +258,7 @@ def test_a_run_becomes_one_file_with_its_steps_in_order_and_where_it_ran(tmp_pat
 def test_every_step_gets_an_outcome_and_the_score_counts_the_tests(tmp_path: Path) -> None:
     made = recorded(tmp_path, a_run())
 
-    steps = {step["id"]: step for step in made["steps"]}
+    steps = {str(step["order"]): step for step in made["steps"]}
     assert {name: step["outcome"] for name, step in steps.items()} == {
         "1": "alerted",
         "2": "seen",
@@ -274,7 +281,7 @@ def test_every_step_gets_an_outcome_and_the_score_counts_the_tests(tmp_path: Pat
     }
     # Nothing was measured for a test that did not run, so no count of its events is written.
     assert steps["8"]["visibility"] == {"answer": "not applicable", "basis": "the test did not run"}
-    assert steps["9"]["compared_with"] == "4"
+    assert steps["9"]["compared_with"] == "test:guid-4"
     assert steps["9"]["defense"] == {"title": "the history file made immutable", "why": "A reason."}
     # A test that did not run has no times, and nothing is made up for them.
     assert not {"started", "ended", "command", "first_event"} & set(steps["8"])
@@ -301,15 +308,16 @@ def test_every_step_gets_an_outcome_and_the_score_counts_the_tests(tmp_path: Pat
 def test_only_a_high_rule_that_matched_what_the_test_did_counts_as_an_alert(tmp_path: Path) -> None:
     made = recorded(tmp_path, a_run())
 
-    steps = {step["id"]: step for step in made["steps"]}
-    alerts = {(alert["step"], alert["rule"]["id"]): alert for alert in made["alerts"]}
+    steps = {str(step["order"]): step for step in made["steps"]}
+    order = {step["id"]: name for name, step in steps.items()}
+    alerts = {(order[alert["step"]], alert["rule"]["id"]): alert for alert in made["alerts"]}
     assert len(alerts) == len(made["alerts"]) == 7
     assert [alert["id"] for alert in made["alerts"]] == [f"alert-{number}" for number in range(1, 8)]
     assert [alert["time"] for alert in made["alerts"]] == sorted(alert["time"] for alert in made["alerts"])
     # The low rule's first event, auditd's, is earlier than the high rule's: it comes first.
     assert [(alert["step"], alert["rule"]["id"]) for alert in made["alerts"]][:2] == [
-        ("1", "rule-low"),
-        ("1", "rule-high"),
+        ("canary:guid-1", "rule-low"),
+        ("canary:guid-1", "rule-high"),
     ]
     caught = alerts["1", "rule-high"]
     assert caught["counts"] and caught["events"] == ["1-2"] and "raised" not in caught
@@ -351,7 +359,7 @@ def test_an_event_keeps_a_few_fields_of_its_record_and_points_at_its_step(tmp_pa
         "kind": "execve",
         # The command, not every path of the record before it.
         "text": "rm /home/bluefire-lab/.bash_history",
-        "step": "1",
+        "step": "canary:guid-1",
         "tied_by": "session",
         "user": "bluefire-lab",
         "image": "/usr/bin/rm",
@@ -465,7 +473,7 @@ def test_only_a_match_the_run_says_alerts_counts_whatever_its_time(tmp_path: Pat
 
     made = recorded(tmp_path, [caught, reviewed])
 
-    steps = {step["id"]: step for step in made["steps"]}
+    steps = {str(step["order"]): step for step in made["steps"]}
     assert [alert["counts"] for alert in made["alerts"] if alert["rule"]["id"] == "rule-medium"] == [
         False,
         False,
@@ -565,6 +573,90 @@ def test_a_run_without_rules_of_its_own_or_auditd_has_no_second_answer(tmp_path:
     assert "auditd" not in [tool["name"] for tool in made["source"]["tools"]]
 
 
+def test_a_step_has_the_same_id_in_every_run_of_the_same_list(tmp_path: Path) -> None:
+    def the_list() -> list[dict]:
+        canary, closing = a_test(1, "canary"), a_test(12, "canary")
+        closing["guid"] = canary["guid"]
+        searched = {**a_test(4), "guid": "46959285-0a8d-4f2c-9c27-5e3a01b8e2a1", "args": {"search_path": "~"}}
+        varied = {**a_test(10, "variant"), "guid": searched["guid"], "compared_with": 4}
+        varied["args"] = {"filename": "id_ed25519", "search_path": "~"}
+        locked = {**a_test(11, "hardened"), "guid": searched["guid"], "args": {"search_path": "~"}}
+        locked.update(defense=CHANGE, compared_with=4)
+        return [canary, searched, varied, locked, closing]
+
+    first = recorded(tmp_path, the_list())
+    # The same list with one more position in front of it, as when the ordinary activity moves.
+    shifted = the_list()
+    for test in shifted:
+        test["order"] += 1
+        if "compared_with" in test:
+            test["compared_with"] += 1
+    second = recorded(tmp_path, shifted)
+
+    ids = [step["id"] for step in first["steps"]]
+    assert ids == [step["id"] for step in second["steps"]]
+    # Arguments as compact JSON with sorted keys: {"search_path":"~"} has the SHA-256 that starts 85163a.
+    assert ids == [
+        "canary:guid-1:1",
+        "test:46959285:85163a",
+        "variant:46959285:5e4f5f",
+        "hardened:46959285:85163a:lock",
+        "canary:guid-1:2",
+    ]
+    assert {step.get("compared_with") for made in (first, second) for step in made["steps"][2:4]} == {
+        "test:46959285:85163a"
+    }
+
+
+def test_the_setup_names_each_sensors_settings_and_each_detector_the_digest_of_its_rules(
+    tmp_path: Path,
+) -> None:
+    rules = tmp_path / "lab-rules" / "linux" / "process_creation"
+    rules.mkdir(parents=True)
+    (rules / "a.yml").write_text("title: A\n", encoding="utf-8")
+    (tmp_path / "rules" / "linux").mkdir(parents=True)
+    sums = {"sensor": {"name": "Sysmon for Linux", "configuration_sha256": "1" * 64}}
+    audit = {"audit": {"name": "auditd", "rules_sha256": "2" * 64}}
+
+    made = recorded(tmp_path, a_run(), **sums, **audit)
+
+    assert made["source"]["setup"]["sensors"] == {"sysmon": "1" * 64, "auditd": "2" * 64}
+    digests = {detector["id"]: detector["digest"] for detector in made["network"]["detectors"]}
+    # As sha256sum prints the folder's files, sorted by path, and that listing hashed once more.
+    listing = hashlib.sha256(b"title: A\n").hexdigest() + "  process_creation/a.yml\n"
+    assert digests == {
+        "pinned": hashlib.sha256(b"").hexdigest(),
+        "lab": hashlib.sha256(listing.encode()).hexdigest(),
+    }
+    (rules / "a.yml").write_text("title: B\n", encoding="utf-8")
+    changed = recorded(tmp_path, a_run(), **sums, **audit)
+    assert {detector["id"]: detector["digest"] for detector in changed["network"]["detectors"]} != digests
+
+
+def test_the_lab_detector_says_which_rules_the_run_accepted_and_the_digest_of_each(tmp_path: Path) -> None:
+    lab_rules = [{**OURS, "text": "title: A\n", "reason": "it alerted"}, {**REJECTED, "text": "title: R\n"}]
+
+    made = recorded(tmp_path, a_run(), lab_rules=lab_rules)
+
+    lab = next(detector for detector in made["network"]["detectors"] if detector["id"] == "lab")
+    assert lab["verdicts"] == [
+        {
+            "rule": "rule-ours",
+            "title": "Shell History File Emptied",
+            "digest": hashlib.sha256(b"title: A\n").hexdigest(),
+            "accepted": True,
+            "reason": "it alerted",
+        },
+        {
+            "rule": "rule-rejected",
+            "title": "A Rule That Matches Ordinary Work Too",
+            "digest": hashlib.sha256(b"title: R\n").hexdigest(),
+            "accepted": False,
+            "reason": "it matched 3 events of ordinary activity",
+        },
+    ]
+
+
 def test_events_are_in_time_order_even_when_a_step_outlasts_the_next_ones_start(tmp_path: Path) -> None:
     late = an_event(1, 11, time="2026-11-16 04:02:10.000")
     tests = [a_test(1, events=[an_event(1, 10), late]), a_test(2, events=[an_event(2, 20)])]
@@ -572,7 +664,7 @@ def test_events_are_in_time_order_even_when_a_step_outlasts_the_next_ones_start(
     made = recorded(tmp_path, tests)
 
     assert [(event["id"], event["step"]) for event in made["events"]] == [
-        ("1-1", "1"),
-        ("2-1", "2"),
-        ("1-2", "1"),
+        ("1-1", "test:guid-1"),
+        ("2-1", "test:guid-2"),
+        ("1-2", "test:guid-1"),
     ]
