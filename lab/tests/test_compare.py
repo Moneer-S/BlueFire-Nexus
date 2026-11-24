@@ -964,3 +964,129 @@ def test_recordings_without_stable_ids_pair_by_role_test_and_order_and_say_so(tm
         "A recording has no stable step ids, so each pair rests on its role, its test and its order." in text
     )
     assert "| `5` (paired by role, test and order) | T1552.004 Test 46959285 |" in text
+
+
+def one_run_evaluated_twice() -> tuple[dict, dict]:
+    """One run's two recordings: its telemetry evaluated with the base's lab rules and with the head's,
+    which adds a rule that the run accepts and that matched an event of the first step."""
+
+    before = a_recording(*three_steps())
+    before["events"] = [
+        {"id": "4-1", "time": "2026-11-16T04:01:00.000Z", "host": "target", "sensor": "auditd",
+         "kind": "openat", "text": "/home/bluefire-lab/.bash_history", "step": "test:46959285",
+         "tied_by": "session", "fields": {"key": "shell-history"}},
+    ]  # fmt: skip
+    before["network"]["detectors"][1]["commit"] = "b" * 40
+    after = a_lab_rule_change(before)
+    after["network"]["detectors"][1]["commit"] = "c" * 40
+    after["alerts"][0]["events"] = ["4-1"]
+    return before, after
+
+
+def test_one_run_evaluated_twice_names_the_changed_step_and_its_price_with_no_run_variation(
+    tmp_path: Path,
+) -> None:
+    before, after = one_run_evaluated_twice()
+
+    delta, text = compared(tmp_path, before, after, "--change", "detectors:lab", "--one-run")
+
+    assert (delta["comparable"], delta["one_run"], delta["runners"]) == (True, True, None)
+    assert delta["claim"] == "one run evaluated with two rule sets"
+    assert delta["before"]["lab_rules_commit"] == "b" * 40 and delta["after"]["lab_rules_commit"] == "c" * 40
+    changed = [step for step in delta["steps"] if step["result"] != "same"]
+    assert [(step["id"], step["result"]) for step in changed] == [("test:46959285", "better")]
+    # The price as the lab tells it for its own rules: not counted, with each evaluation's notes.
+    assert changed[0]["verdict"] == (
+        "better: seen to alerted with the lab's rules, on 1 of the 2 published procedures of T1552.004 in the "
+        "list; price not counted: the lab's rules that matched ordinary activity are left out of the recording "
+        f"before it is written (before: {ACCEPTED.rstrip('.')}; after: {ACCEPTED.rstrip('.')}); one run "
+        "evaluated with two rule sets"
+    )
+    assert delta["lab_rules"] == [
+        {
+            "rule": "rule-ours",
+            "title": RULE["title"],
+            "change": "changed",
+            "before": {"accepted": False},
+            "after": {"accepted": True},
+        }
+    ]
+    assert text.startswith("## One run, evaluated with two sets of the lab's rules")
+    assert (
+        "the lab's rules from commit `bbbbbbbb`" in text and "the lab's rules from commit `cccccccc`" in text
+    )
+    assert (
+        "the comparison checked that they are, so there is no run variation and no difference of runners."
+        in text
+    )
+    assert "- Private Key Files Searched With Find, changed: before not accepted; after accepted." in text
+    assert "All of this rests on one run evaluated with two rule sets." in text
+
+
+def test_one_run_evaluated_twice_is_refused_when_anything_but_the_lab_rules_differs(tmp_path: Path) -> None:
+    before, after = one_run_evaluated_twice()
+    published = copy.deepcopy(after)
+    published["steps"][1].update(outcome="alerted")
+    other_run = copy.deepcopy(after)
+    other_run["source"]["run_url"] = "https://example.org/runs/2"
+    events = copy.deepcopy(after)
+    events["events"][0]["text"] = "/home/bluefire-lab/.zsh_history"
+    # An unchanged rule cannot be judged two ways on the same run's tests and ordinary activity.
+    flipped = a_lab_rule_change(before, edited=False)
+
+    refusals = {}
+    for name, recording in (
+        ("published", published),
+        ("other run", other_run),
+        ("events", events),
+        ("flipped", flipped),
+    ):
+        delta, text = compared(tmp_path, before, recording, "--change", "detectors:lab", "--one-run")
+        assert not delta["comparable"] and "and found that they are not: see below." in text
+        refusals[name] = delta["refused_because"]
+
+    said = "the two were said to be one run evaluated twice, but "
+    assert refusals["published"] == [said + "step `test:7c247dc7` differs in outcome"]
+    assert refusals["other run"] == [said + "the two recordings do not name the same CI run"]
+    assert refusals["events"] == [
+        said
+        + "the events differ: 1 held by both differ, and 0 held by one only are not kept for an alert of "
+        "the lab's rules"
+    ]
+    assert refusals["flipped"] == [
+        said
+        + "the lab's rule `Private Key Files Searched With Find` is the same file in both, and was judged "
+        "differently"
+    ]
+
+
+def test_a_lab_rule_moved_to_another_file_is_named_as_moved(tmp_path: Path) -> None:
+    before, _ = one_run_evaluated_twice()
+    before["network"]["detectors"][1]["verdicts"][0]["file"] = "lab/rules/linux/a.yml"
+    after = copy.deepcopy(before)
+    after["network"]["detectors"][1].update(digest="5" * 64, commit="c" * 40)
+    after["network"]["detectors"][1]["verdicts"][0]["file"] = "lab/rules/linux/b.yml"
+
+    delta, text = compared(tmp_path, before, after, "--change", "detectors:lab", "--one-run")
+
+    assert delta["comparable"]
+    assert [(row["change"], row["before"]["file"], row["after"]["file"]) for row in delta["lab_rules"]] == [
+        ("moved", "lab/rules/linux/a.yml", "lab/rules/linux/b.yml")
+    ]
+    assert (
+        "- Private Key Files Searched With Find, the same text moved from lab/rules/linux/a.yml to "
+        "lab/rules/linux/b.yml: before not accepted; after not accepted." in text
+    )
+
+
+def test_one_run_evaluated_twice_shows_only_a_change_of_the_lab_rules(tmp_path: Path) -> None:
+    before, after = one_run_evaluated_twice()
+    after["source"]["setup"]["sensors"]["auditd"] = "6" * 64
+
+    delta, _ = compared(tmp_path, before, after, "--change", "sensors:auditd", "--one-run")
+
+    assert not delta["comparable"]
+    assert delta["refused_because"][0] == (
+        "one run evaluated twice can show only a change of the lab's rules, and the declared change is the "
+        "settings of sensor `auditd`"
+    )

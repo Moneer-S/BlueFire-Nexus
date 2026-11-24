@@ -33,6 +33,14 @@ do not both say it is refused. Any other change on two
 runners that differed is refused, with the advice to run the pair again. The
 lab's own code is not part of the setup: when its commit differs, every verdict
 says so.
+
+One run evaluated twice is the third kind: on the single host the rules run
+after the run, so a change of the lab's rules is shown by evaluating one run's
+telemetry with the base commit's rules and with the head's. Then everything but
+the lab's rules is the same by construction, and the comparison checks it and
+refuses when it is not: the same run, the same events, the same published-rule
+matches and outcomes, the same ordinary activity, and every lab rule whose file
+is the same in both judged the same way. There is no run variation to name.
 """
 
 from __future__ import annotations
@@ -44,6 +52,7 @@ from pathlib import Path
 
 SCHEMA = "bluefire.delta/1"
 CLAIM = "one pair of runs"
+ONE_RUN = "one run evaluated with two rule sets"
 FIELDS = ("happened", "recorded", "outcome", "outcome_with_lab_rules")
 SAID = {
     "happened": "what happened",
@@ -404,8 +413,147 @@ def race(before: dict, after: dict) -> dict:
     }
 
 
+def lab_cited(recording: dict) -> set[str]:
+    """The ids of the events that an alert of the lab's own rules rests on. A recording keeps the
+    first few hundred events of a step and every later one a rule matched, so a lab rule can keep
+    an event in one evaluation that the other leaves out."""
+
+    return {
+        found
+        for alert in recording["alerts"]
+        if alert["rule"].get("origin") == "lab"
+        for found in alert.get("events", [])
+    }
+
+
+def not_one_run(before: dict, after: dict) -> list[str]:
+    """Why two recordings are not one run whose telemetry was evaluated twice, with two sets of the
+    lab's rules and nothing else changed: empty when they are. Everything a change of the lab's rules
+    cannot move must be the same, not only alike: the run, its steps and their events, what happened,
+    whether a sensor recorded each step, the published rules' matches and outcomes, the ordinary
+    activity, and the verdict on every lab rule whose file is the same in both, which reads only
+    that same run's tests, variants and ordinary activity."""
+
+    problems = []
+    for label, part in (("id", lambda r: r["id"]), ("CI run", lambda r: r["source"].get("run_url"))):
+        first, second = part(before), part(after)
+        if not first or first != second:
+            problems.append(f"the two recordings do not name the same {label}")
+    steps = (before["steps"], after["steps"])
+    if [step["id"] for step in steps[0]] != [step["id"] for step in steps[1]]:
+        problems.append("the two recordings do not hold the same steps in the same order")
+    else:
+        for old, new in zip(*steps, strict=True):
+            fields = [
+                field
+                for field in ("happened", "recorded", "outcome")
+                if value(old, field) != value(new, field)
+            ]
+            fields += [
+                field
+                for field in ("visibility", "first_event", "first_alert", "started", "ended")
+                if (field == "visibility" and old[field].get("events") != new[field].get("events"))
+                or (field != "visibility" and old.get(field) != new.get(field))
+            ]
+            if fields:
+                problems.append(f"step `{new['id']}` differs in {', '.join(fields)}")
+    kept = (
+        {event["id"]: event for event in before["events"]},
+        {event["id"]: event for event in after["events"]},
+    )
+    cited = (lab_cited(before), lab_cited(after))
+    unlike = sorted(name for name in set(kept[0]) & set(kept[1]) if kept[0][name] != kept[1][name])
+    alone = sorted(
+        name
+        for number in (0, 1)
+        for name in set(kept[number]) - set(kept[1 - number])
+        if name not in cited[number]
+    )
+    if unlike or alone:
+        problems.append(
+            f"the events differ: {len(unlike)} held by both differ, and {len(alone)} held by one only are not "
+            "kept for an alert of the lab's rules"
+        )
+
+    def published(recording: dict) -> list[tuple]:
+        return sorted(
+            (
+                alert["step"],
+                alert["rule"]["id"],
+                alert.get("time", ""),
+                tuple(alert.get("events", [])),
+                bool(alert.get("launcher_only")),
+            )
+            for alert in recording["alerts"]
+            if alert["rule"].get("origin") != "lab"
+        )
+
+    if published(before) != published(after):
+        problems.append("the published rules' alerts differ")
+    if before.get("ordinary") != after.get("ordinary"):
+        problems.append("the ordinary activity, or what the published rules matched in it, differs")
+    verdicts = (lab_verdicts(before), lab_verdicts(after))
+    if verdicts[0] is None or verdicts[1] is None:
+        problems.append("a recording does not say how its run judged each of the lab's rules")
+    else:
+        lab = (lab_matches(before), lab_matches(after))
+        for rule in sorted(set(verdicts[0]) & set(verdicts[1])):
+            old, new = verdicts[0][rule], verdicts[1][rule]
+            if old.get("digest") is None or old.get("digest") != new.get("digest"):
+                continue
+            flipped = (old["accepted"], old.get("reason")) != (new["accepted"], new.get("reason"))
+            moved = {step for step, ids in lab[0].items() if rule in ids} != {
+                step for step, ids in lab[1].items() if rule in ids
+            }
+            if flipped or moved:
+                problems.append(
+                    f"the lab's rule `{new['title']}` is the same file in both, and "
+                    + ("was judged differently" if flipped else "matched other steps")
+                )
+    return problems
+
+
+def changed_lab_rules(before: dict, after: dict) -> list[dict] | None:
+    """The lab's rules that are new, gone, another text or the same text in another file in the after
+    recording, each with how each run judged it, by title. None when a recording does not say how
+    its run judged them."""
+
+    verdicts = (lab_verdicts(before), lab_verdicts(after))
+    if verdicts[0] is None or verdicts[1] is None:
+        return None
+
+    def judged(verdict: dict | None) -> dict | None:
+        if verdict is None:
+            return None
+        return {key: verdict[key] for key in ("accepted", "reason", "file") if key in verdict}
+
+    rows = []
+    for rule in set(verdicts[0]) | set(verdicts[1]):
+        old, new = verdicts[0].get(rule), verdicts[1].get(rule)
+        same_text = old and new and old.get("digest") is not None and old.get("digest") == new.get("digest")
+        if same_text and old.get("file") == new.get("file"):
+            continue
+        rows.append(
+            {
+                "rule": rule,
+                "title": (new or old)["title"],
+                "change": "new"
+                if old is None
+                else "gone"
+                if new is None
+                else "moved"
+                if same_text
+                else "changed",
+                "before": judged(old),
+                "after": judged(new),
+            }
+        )
+    return sorted(rows, key=lambda row: row["title"])
+
+
 def side(recording: dict, sha: str) -> dict:
     source = recording["source"]
+    lab = next((detector for detector in recording["network"]["detectors"] if detector["id"] == "lab"), {})
     return {
         "sha256": sha,
         "id": recording["id"],
@@ -414,6 +562,7 @@ def side(recording: dict, sha: str) -> dict:
             for key in ("run_url", "environment", "commit", "defense_commit", "started")
             if key in source
         },
+        **({"lab_rules_commit": lab["commit"]} if lab.get("commit") else {}),
     }
 
 
@@ -423,9 +572,11 @@ def compare(
     shas: tuple[str, str] = ("", ""),
     declared: str | None = None,
     two_runners: bool = False,
+    one_run: bool = False,
 ) -> dict:
     """The delta of two recordings, as delta.json holds it. two_runners says that the two runs were
-    made side by side, each on a fresh runner of its own, rather than one after the other on one."""
+    made side by side, each on a fresh runner of its own, rather than one after the other on one.
+    one_run says that the two are one run, its telemetry evaluated with two sets of the lab's rules."""
 
     refusals = []
     for label, recording in (("before", before), ("after", after)):
@@ -434,6 +585,16 @@ def compare(
                 f"the {label} recording has no source.setup, so what it was made with is not known"
             )
     by_id = not refusals
+    if one_run:
+        if declared != "detectors:lab":
+            refusals.append(
+                "one run evaluated twice can show only a change of the lab's rules, and the declared change is "
+                + (f"{named(declared)}" if declared else "none")
+            )
+        refusals += [
+            f"the two were said to be one run evaluated twice, but {problem}"
+            for problem in not_one_run(before, after)
+        ]
     if before["kind"] != after["kind"]:
         refusals.append(
             f"the before recording is a {before['kind']} and the after recording a {after['kind']}"
@@ -496,6 +657,7 @@ def compare(
     }
     code["same"] = code["before"] is not None and code["before"] == code["after"]
     variation = "run variation" if code["same"] else "run variation or a change of the lab's code"
+    claim = ONE_RUN if one_run else CLAIM
 
     earlier: dict[object, list[dict]] = collections.defaultdict(list)
     for step in before["steps"]:
@@ -738,7 +900,7 @@ def compare(
                 f"step, on two runners that differed ({runners_said})"
             )
         if row["result"] != "same":
-            row["verdict"] += f"; {CLAIM}"
+            row["verdict"] += f"; {claim}"
     if limit is not None:
         limit["credited"] = sum(1 for row in rows if "mark" in row)
         limit["not_attributable"] = sum(1 for row in rows if row["result"] == "not attributable")
@@ -756,11 +918,14 @@ def compare(
 
     return {
         "schema": SCHEMA,
-        "claim": CLAIM,
+        "claim": claim,
         "before": side(before, shas[0]),
         "after": side(after, shas[1]),
         "declared_change": declared,
         "runners": 2 if two_runners and urls[0] and urls[0] == urls[1] else None,
+        # One run, its telemetry evaluated twice: only said, as the claim, when the two were said to be.
+        "one_run": one_run,
+        "lab_rules": changed_lab_rules(before, after) if declared == "detectors:lab" else None,
         "comparable": comparable,
         "limit": limit,
         "refused_because": refusals,
@@ -811,8 +976,11 @@ def markdown(delta: dict) -> str:
         address = facts.get("run_url")
         label = address.rstrip("/").rpartition("/")[2] if address else facts["id"]
         made = f", commit `{facts['commit'][:8]}`" if "commit" in facts else ""
-        defense = facts.get("defense_commit")
-        if defense:
+        defense, rules = facts.get("defense_commit"), facts.get("lab_rules_commit")
+        if rules and rules != defense:
+            # The lab's rules came from another commit than the sensor settings: one run evaluated twice.
+            made += f", its sensor settings from commit `{(defense or NOT_RECORDED)[:8]}`, the lab's rules from commit `{rules[:8]}`"
+        elif defense:
             made += (
                 f", its rules and sensor settings from commit `{defense[:8]}`"
                 if defense != facts.get("commit")
@@ -822,9 +990,11 @@ def markdown(delta: dict) -> str:
             f"[{label}]({address})" if address else f"`{label}`"
         ) + f", {facts.get('environment', '')}{made}"
 
-    declared, runners = delta["declared_change"], delta.get("runners")
+    declared, runners, once = delta["declared_change"], delta.get("runners"), delta.get("one_run")
     lines = [
-        "## A pair of runs, before and after the change"
+        "## One run, evaluated with two sets of the lab's rules"
+        if once
+        else "## A pair of runs, before and after the change"
         if runners == 2
         else "## Compared with an earlier recording",
         "",
@@ -833,6 +1003,22 @@ def markdown(delta: dict) -> str:
         f"Declared change: {named(declared) if declared else 'none'}.",
         "",
     ]
+    if once:
+        alike = not any(
+            reason.startswith("the two were said to be one run") for reason in delta["refused_because"]
+        )
+        lines += [
+            "The rules are evaluated after a run, over the telemetry it recorded, so the list ran once, and its "
+            "telemetry was evaluated twice: with the lab's rules of the base commit (before) and with the head's "
+            "(after). Every event, every match and outcome of the published rules and the ordinary activity are "
+            "the same in both by construction, and the comparison checked that they are"
+            + (
+                ", so there is no run variation and no difference of runners."
+                if alike
+                else ", and found that they are not: see below."
+            ),
+            "",
+        ]
     limit = delta.get("limit")
     runner_rows = [
         row
@@ -929,6 +1115,28 @@ def markdown(delta: dict) -> str:
         lines.append("")
     if delta["same_in_both"]:
         lines += ["Same in both: " + ", ".join(named(name) for name in delta["same_in_both"]) + ".", ""]
+    if delta.get("lab_rules"):
+
+        def judged(verdict: dict | None) -> str:
+            if verdict is None:
+                return "not there"
+            return ("accepted" if verdict["accepted"] else "not accepted") + (
+                f" ({verdict['reason']})" if verdict.get("reason") else ""
+            )
+
+        def change(row: dict) -> str:
+            if row["change"] != "moved":
+                return row["change"]
+            files = (row["before"].get("file"), row["after"].get("file"))
+            return f"the same text moved from {cell(str(files[0]))} to {cell(str(files[1]))}"
+
+        lines += ["The lab's rules that differ, and how each evaluation judged them:", ""]
+        lines += [
+            f"- {cell(row['title'])}, {change(row)}: before {cell(judged(row['before']))}; after "
+            f"{cell(judged(row['after']))}."
+            for row in delta["lab_rules"]
+        ]
+        lines.append("")
 
     counts, control = delta["counts"], delta["control"]
     by = {row["paired_by"] for row in delta["steps"]} or {"id"}
@@ -1061,15 +1269,22 @@ def markdown(delta: dict) -> str:
             for label in ("before", "after")
         ]
         lines += ["Race, in seconds from the first step: " + "; ".join(times) + ".", ""]
-    lines += [f"All of this rests on {CLAIM}.", ""]
+    lines += [f"All of this rests on {delta.get('claim', CLAIM)}.", ""]
     return "\n".join(lines)
 
 
-def main(before: Path, after: Path, out: Path, declared: str | None = None, two_runners: bool = False) -> int:
+def main(
+    before: Path,
+    after: Path,
+    out: Path,
+    declared: str | None = None,
+    two_runners: bool = False,
+    one_run: bool = False,
+) -> int:
     texts = [path.read_bytes() for path in (before, after)]
     recordings = [json.loads(text) for text in texts]
     delta = compare(
-        *recordings, tuple(hashlib.sha256(text).hexdigest() for text in texts), declared, two_runners
+        *recordings, tuple(hashlib.sha256(text).hexdigest() for text in texts), declared, two_runners, one_run
     )
     out.mkdir(parents=True, exist_ok=True)
     (out / "delta.json").write_text(json.dumps(delta, indent=1) + "\n", encoding="utf-8")

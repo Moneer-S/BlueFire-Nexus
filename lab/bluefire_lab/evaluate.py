@@ -148,8 +148,11 @@ def run_engine(
     return matched, counts
 
 
-def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[dict[str, list[str]], dict]:
-    """Have the rule engine evaluate the pinned auditd rules over auditd's records.
+def run_audit_engine(
+    engine: Path, run_dir: Path, records: list[dict], root: str = "rules"
+) -> tuple[dict[str, list[str]], dict]:
+    """Have the rule engine evaluate the auditd rules under root over auditd's records: the pinned
+    ones, or with root "lab-rules" the lab's own.
 
     The engine gets one record per line and names a match by its line, so a match is
     tied back to its record, and through the record's serial to the event. Returns,
@@ -158,13 +161,15 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
     """
 
     matched: dict[str, list[str]] = collections.defaultdict(list)
-    counts = {"category": "auditd", "origin": "pinned", "kind": "auditd", "given": len(records)}
+    origin = "pinned" if root == "rules" else "lab"
+    counts = {"category": "auditd", "origin": origin, "kind": "auditd", "given": len(records)}
     counts.update(loaded=0, read=0)
-    rules, work = run_dir / "rules" / "linux" / "auditd", run_dir / "engine"
+    rules, work = run_dir / root / "linux" / "auditd", run_dir / "engine"
+    prefix = "" if root == "rules" else f"{root}-"
     work.mkdir(exist_ok=True)
-    output = work / "auditd.json"
+    output = work / f"{prefix}auditd.json"
     output.unlink(missing_ok=True)
-    (work / "auditd-engine.txt").unlink(missing_ok=True)
+    (work / f"{prefix}auditd-engine.txt").unlink(missing_ok=True)
     if not records or not rules.is_dir():
         return matched, counts
     (work / "auditd.txt").write_text("".join(record["line"] + "\n" for record in records), encoding="utf-8")
@@ -176,14 +181,15 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
             "--logs-encoding", "utf-8",
             "--ruleset", str(rules.resolve()),
             "--outfile", output.name,
-            "--logfile", "auditd-engine.txt",
+            "--logfile", f"{prefix}auditd-engine.txt",
         ],
         cwd=work,
         check=True,
         capture_output=True,
         timeout=900,
     )  # fmt: skip
-    counts["loaded"], counts["read"] = engine_counts((work / "auditd-engine.txt").read_text(errors="replace"))
+    log = (work / f"{prefix}auditd-engine.txt").read_text(errors="replace")
+    counts["loaded"], counts["read"] = engine_counts(log)
     for rule in json.loads(output.read_text(encoding="utf-8")) if output.exists() else []:
         for match in rule["matches"]:
             record = records[int(match["row_id"]) - 1]
@@ -191,6 +197,24 @@ def run_audit_engine(engine: Path, run_dir: Path, records: list[dict]) -> tuple[
                 raise SystemExit(f"the engine's line {match['row_id']} is not the record it was given there")
             matched[f"audit {record['event']}"].append(str(rule["id"]))
     return matched, counts
+
+
+def run_audit_engines(
+    engine: Path, run_dir: Path, records: list[dict], rules: dict, lab_rules: dict
+) -> tuple[dict[str, list[str]], list[dict]]:
+    """Have the rule engine evaluate the pinned auditd rules and the lab's own over auditd's records.
+    Returns the ids of the rules of both that matched each event, and for each rule set the engine's
+    counts with the number of auditd rules it holds, pinned first."""
+
+    matched: dict[str, list[str]] = collections.defaultdict(list)
+    tally = []
+    for root, index in (("rules", rules), ("lab-rules", lab_rules)):
+        found, counts = run_audit_engine(engine, run_dir, records, root)
+        for record, ids in found.items():
+            matched[record].extend(ids)
+        counts["rules"] = sum(1 for rule in index.values() if rule["file"].startswith("linux/auditd/"))
+        tally.append(counts)
+    return matched, tally
 
 
 def audit_facts(audit: dict, audit_events: list[dict]) -> dict:
@@ -885,9 +909,12 @@ def main(run_dir: Path, engine: Path) -> int:
     audit = run.get("audit")
     records = auditd.read(run_dir / "audit.txt") if audit else []
     audit_events = auditd.events(records)
-    audit_matched, audit_counts = run_audit_engine(engine, run_dir, records) if audit else ({}, None)
+    audit_matched, audit_tally = (
+        run_audit_engines(engine, run_dir, records, rules, lab_rules) if audit else ({}, [])
+    )
     for record, ids in audit_matched.items():
         matched[record].extend(ids)
+    audit_counts, lab_audit_counts = audit_tally or (None, None)
     for index, by_category in ((rules, counts), (lab_rules, lab_counts)):
         for category in by_category:
             by_category[category]["rules"] = sum(
@@ -897,10 +924,7 @@ def main(run_dir: Path, engine: Path) -> int:
         {"category": category, "origin": origin, **entry}
         for origin, by_category in (("pinned", counts), ("lab", lab_counts))
         for category, entry in by_category.items()
-    ]
-    if audit_counts is not None:
-        audit_counts["rules"] = sum(1 for rule in rules.values() if rule["file"].startswith("linux/auditd/"))
-        tally.append(audit_counts)
+    ] + audit_tally
     rules.update(lab_rules)
 
     known_sessions = {step["session"] for test in run["tests"] for step in test["steps"]}
@@ -987,7 +1011,8 @@ def main(run_dir: Path, engine: Path) -> int:
                 **({"auditd": audit_counts["loaded"]} if audit_counts else {}),
             },
             "alert_levels": list(ALERT_LEVELS),
-            "lab": sum(lab_counts[category]["loaded"] or 0 for category in CATEGORIES),
+            "lab": sum(lab_counts[category]["loaded"] or 0 for category in CATEGORIES)
+            + ((lab_audit_counts or {}).get("loaded") or 0),
         },
         "lab_rules": verdicts,
         "ordinary_activity": {

@@ -188,9 +188,12 @@ def audit_keys(rules: str) -> list[str]:
     return sorted(found)
 
 
-def network(results: dict, digests: dict[str, str | None]) -> dict:
+def network(results: dict, digests: dict[str, str | None], lab_commit: str | None = None) -> dict:
     """The one host the tests ran on, its sensors, and the rule sets that read their records,
-    each with the digest of its files when the run's folder holds them."""
+    each with the digest of its files when the run's folder holds them. The lab's own rules are
+    small, so each one's verdict carries its file's path in the repository and its lines, so that
+    a reader can show the rule beside the step it alerted on; lab_commit is the commit those
+    files came from, when the run's folder says."""
 
     target, rules = results["run"]["target"], results["rules"]
     system = [target.get("os")] + [
@@ -219,14 +222,18 @@ def network(results: dict, digests: dict[str, str | None]) -> dict:
                 rules=rules.get("lab", len(results["lab_rules"])),
                 when="after the run",
                 digest=digests.get("lab"),
-                # Whether the run accepted each rule, and the digest of the file that holds it.
+                commit=lab_commit,
+                # Whether the run accepted each rule, and the file that holds it: its path, digest and text.
                 verdicts=[
                     known(
                         rule=rule["id"],
                         title=rule["title"],
+                        file=f"lab/rules/{rule['file']}" if rule.get("file") else None,
                         digest=hashlib.sha256(rule["text"].encode("utf-8")).hexdigest()
                         if "text" in rule
                         else None,
+                        # Line by line: a value of the format holds no line break outside a step's text.
+                        lines=rule["text"].splitlines() if "text" in rule else None,
                         accepted=rule["accepted"],
                         reason=rule.get("reason"),
                     )
@@ -285,7 +292,8 @@ def source(results: dict, run_url: str | None) -> dict:
         finished=run.get("finished"),
         repository=repository if commit else None,
         commit=commit if repository else None,
-        # The commit the lab's own rules and the sensors' settings came from, when the run says.
+        # The commit the sensors' settings came from, when the run says, and the lab's own rules
+        # unless the detector lab names its own commit (one run evaluated with another commit's rules).
         defense_commit=defense_commit or None,
         run_url=run_url,
         tools=[known(name=name, version=version, role=role) for name, version, role in tools],
@@ -401,10 +409,11 @@ def build(
     run_url: str | None = None,
     plain: dict[str, str] | None = None,
     digests: dict[str, str | None] | None = None,
+    lab_commit: str | None = None,
 ) -> dict:
     """The recording of a run. plain gives the plain sentence of a test by its GUID, for a run
-    made before the run itself recorded those, and digests the digest of each rule set by its
-    detector's id."""
+    made before the run itself recorded those, digests the digest of each rule set by its
+    detector's id, and lab_commit the commit the lab's own rules came from."""
 
     plain, lab_rules, listed = plain or {}, bool(results.get("lab_rules")), 0
     ids = step_ids(results["tests"])
@@ -518,7 +527,7 @@ def build(
         title=f"{count(sum(1 for step in steps if step['role'] == 'test'), 'published test')} on one Linux host",
         kind="test list",
         source=source(results, run_url),
-        network=network(results, digests or {}),
+        network=network(results, digests or {}, lab_commit),
         attacker={
             "kind": "scripted",
             "description": "Invoke-AtomicRedTeam ran each published test in turn, as "
@@ -542,7 +551,12 @@ def main(folder: Path, run_url: str | None = None, tests: Path | None = None) ->
     plain = plain_words(yaml.safe_load(tests.read_text(encoding="utf-8"))) if tests else {}
     # The rules the run used travel with its results: the published ones, and the lab's own apart.
     digests = {"pinned": digest(folder / "rules" / "linux"), "lab": digest(folder / "lab-rules" / "linux")}
-    made = build(run, results, run_url, plain, digests)
+    # Beside the lab's rules, as rules/SOURCE beside the published ones: "<repository>@<commit>".
+    found = folder / "lab-rules" / "SOURCE"
+    lab_commit = None
+    if found.is_file():
+        lab_commit = found.read_text(encoding="utf-8").strip().partition("@")[2] or None
+    made = build(run, results, run_url, plain, digests, lab_commit)
     (folder / "recording.json").write_text(json.dumps(made, indent=1) + "\n", encoding="utf-8")
     print(
         f"recording.json: {count(len(made['steps']), 'step')}, {count(len(made['events']), 'event')}, "
