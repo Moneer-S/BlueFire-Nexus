@@ -93,47 +93,34 @@ def test_a_target_that_listens_on_nothing_is_probed_on_port_22_where_it_must_fai
 def test_a_spec_with_the_sections_that_later_parts_read_is_not_refused() -> None:
     document = a_spec(
         sentence="a sentence",
-        atomic_red_team={"repo": "redcanaryco/atomic-red-team", "commit": "a0e3f9bc"},
         executor={"reference": "redcanaryco/invoke-atomicredteam", "commit": "8af478bb"},
-        base={"image": IMAGE, "apt_snapshot": "20261120T000000Z"},
         activity={"seed": 1, "jobs": []},
-        path={"steps": []},
-    )
-    document["hosts"]["middle"].pop("image")
-    document["hosts"]["middle"].update(
-        accounts=[{"name": "ops"}],
-        keys=[],
-        known_hosts=[],
-        dirs=[],
-        files=[],
-        database={},
-        sshd={},
-        serve={},
-        atomics_src=[],
+        path={"steps": [], "goal": {"plain": "a goal"}},
     )
 
     spec = range_spec.parse(document)
 
-    assert spec.hosts["middle"].image is None
-    assert spec.hosts["middle"].built
+    assert sorted(spec.hosts) == ["left", "middle", "right"]
+    assert spec.steps == ()
 
 
-WAZUH_CHECK = Path(__file__).parents[1] / "range" / "wazuh-check.yaml"
+SMALL = Path(__file__).parent / "fixtures" / "range" / "small" / "small.yaml"
+RANGE_ONE = Path(__file__).parents[1] / "range" / "range-one.yaml"
 
 
-def wazuh_check(change=None) -> dict:
-    document = range_spec.read(WAZUH_CHECK.read_text())
+def small(change=None) -> dict:
+    document = range_spec.read(SMALL.read_text())
     if change:
         change(document)
     return document
 
 
-def test_the_wazuh_check_spec_has_a_manager_and_one_agent_host_that_shares_its_network() -> None:
-    spec = range_spec.load(WAZUH_CHECK)
+def test_the_small_spec_has_a_manager_and_two_agent_hosts_that_share_its_network() -> None:
+    spec = range_spec.load(SMALL)
 
-    assert spec.prefix == "bluefire-lab-wz"
+    assert spec.prefix == "bluefire-lab-sm"
     assert spec.manager == "manager"
-    assert spec.agents == ["web"]
+    assert spec.agents == ["web", "db"]
     assert spec.wazuh.version == "4.14.10"
     # The bare word off is a key, not the boolean YAML 1.1 would read.
     assert spec.wazuh.off == ("command_monitoring", "sca", "rootcheck", "syscollector")
@@ -145,15 +132,75 @@ def test_the_wazuh_check_spec_has_a_manager_and_one_agent_host_that_shares_its_n
     assert ("web", "manager", "connect") in {(p.source, p.target, p.must) for p in range_spec.matrix(spec)}
 
 
+def test_the_plants_of_the_small_spec_are_read_as_written() -> None:
+    web = range_spec.load(SMALL).hosts["web"]
+
+    assert web.account("admin").password == "admin"  # pragma: allowlist secret
+    assert web.account("admin").sudo == ("/usr/bin/id",)
+    assert web.account("admin").listed.file == "atomics/T1110.004/src/credstuffuserpass.txt"
+    assert web.account("app").password is None
+    key = web.keys[0]
+    assert (key.name, key.type, key.private, key.file_name, key.authorized) == (
+        "deploy",
+        "rsa",
+        "admin",
+        "id_rsa",
+        ("app", "web"),
+    )
+    assert [(d.path, d.owner, d.group, d.mode) for d in web.dirs] == [("/srv/drop", "app", "app", "0750")]
+    assert [(f.path, f.owner, f.group, f.mode) for f in web.files] == [
+        ("/etc/app/secret.env", "root", "app", "0640"),
+        ("/srv/app/page.txt", "root", "root", "0644"),
+    ]
+    assert web.sshd == range_spec.Sshd(password_auth=True, permit_root=False, pam_nodelay=True)
+
+
 def test_only_hosts_built_from_base_get_an_agent_unless_they_say_otherwise() -> None:
     def add(document: dict) -> None:
-        document["hosts"]["db"] = {**document["hosts"]["web"], "role": "no agent", "agent": False}
+        document["hosts"]["db2"] = {**document["hosts"]["db"], "role": "no agent", "agent": False}
         document["hosts"]["bare"] = {"kind": "host", "role": "pinned", "networks": ["mgmt"], "image": IMAGE}
 
-    spec = range_spec.parse(wazuh_check(add))
+    spec = range_spec.parse(small(add))
 
-    assert spec.agents == ["web"]
+    assert spec.agents == ["web", "db"]
     assert not spec.hosts["bare"].built
+
+
+def test_range_one_loads_with_seven_hosts_on_three_networks() -> None:
+    spec = range_spec.load(RANGE_ONE)
+
+    assert list(spec.hosts) == ["attacker", "inet", "client", "web", "db", "build", "manager"]
+    assert spec.networks == ("edge", "inside", "mgmt")
+    assert spec.agents == ["web", "db", "build"]
+    assert spec.path_hosts == {"attacker", "web"}
+    assert spec.atomics.commit == "a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6"  # pragma: allowlist secret
+
+
+def test_the_matrix_of_range_one_connects_every_pair_that_shares_a_network_and_fails_every_other() -> None:
+    probes = range_spec.matrix(range_spec.load(RANGE_ONE))
+    connect: dict[tuple[str, str], set[tuple[str, int]]] = {}
+    fail: dict[tuple[str, str], set[tuple[str, int]]] = {}
+    for probe in probes:
+        found = connect if probe.must == "connect" else fail
+        found.setdefault((probe.source, probe.target), set()).add((probe.network, probe.port))
+
+    outside, inside = {"attacker", "inet", "client"}, {"build", "db", "manager"}
+    assert set(fail) == {(a, b) for a in outside for b in inside} | {(b, a) for a in outside for b in inside}
+    # A pair that shares no network is tried on the target's first port, at each of its addresses.
+    assert fail[("attacker", "db")] == {("inside", 3306), ("mgmt", 3306)}
+    assert fail[("db", "attacker")] == {("edge", 22)}
+    assert fail[("client", "manager")] == {("mgmt", 1514)}
+    # A pair that shares networks is tried on every port the target listens on, on each shared network.
+    assert connect[("attacker", "web")] == {("edge", 22), ("edge", 80)}
+    assert connect[("client", "inet")] == {("edge", 80), ("edge", 443)}
+    assert connect[("web", "db")] == {("inside", 3306), ("mgmt", 3306)}
+    assert connect[("web", "build")] == {("inside", 22), ("mgmt", 22)}
+    assert connect[("db", "manager")] == {("mgmt", 1514), ("mgmt", 1515)}
+    assert connect[("manager", "web")] == {("mgmt", 22), ("mgmt", 80)}
+    assert connect[("web", "inet")] == {("edge", 80), ("edge", 443)}
+    # Nothing connects to a host that listens on nothing.
+    assert not [pair for pair in connect if pair[1] in ("attacker", "client")]
+    assert len(probes) == sum(len(v) for v in connect.values()) + sum(len(v) for v in fail.values())
 
 
 def drop(*path: str):
@@ -210,7 +257,7 @@ def put(value, *path: str):
             "the format of /var/log/x.log must be one of syslog",
         ),
         (
-            put(False, "hosts", "web", "agent"),
+            lambda d: [d["hosts"][h].update(agent=False) for h in ("web", "db")],
             "a spec with defense.wazuh needs at least one host built from base with an agent",
         ),
         (
@@ -232,8 +279,8 @@ def put(value, *path: str):
         (put([1514], "hosts", "manager", "listens"), "must list 1514 and 1515 in listens"),
         (put(IMAGE, "hosts", "manager", "image"), "host manager runs the Wazuh manager"),
         (
-            put(["nginx"], "hosts", "web", "services"),
-            "the lab cannot start service 'nginx' yet; it can start sshd",
+            put(["telnetd"], "hosts", "web", "services"),
+            "the lab cannot start service 'telnetd' yet; it can start sshd, nginx, php-fpm, mariadb, cron, inet-server",
         ),
         (put([], "hosts", "web", "packages"), "service sshd needs the package openssh-server in packages"),
         (
@@ -247,7 +294,7 @@ def put(value, *path: str):
 )
 def test_the_loader_refuses_a_defense_or_a_built_host_with_the_reason(change, message: str) -> None:
     with pytest.raises(range_spec.SpecError) as refused:
-        range_spec.parse(wazuh_check(change))
+        range_spec.parse(small(change))
 
     assert message in str(refused.value)
 
@@ -255,13 +302,136 @@ def test_the_loader_refuses_a_defense_or_a_built_host_with_the_reason(change, me
 def test_an_agent_on_a_network_without_the_manager_is_refused() -> None:
     def apart(document: dict) -> None:
         document["networks"]["inside"] = {}
-        document["hosts"]["db"] = {**document["hosts"]["web"], "role": "apart", "networks": ["inside"]}
-        document["hosts"]["db2"] = {**document["hosts"]["web"], "role": "beside db", "networks": ["inside"]}
+        document["hosts"]["far"] = {**document["hosts"]["db"], "role": "apart", "networks": ["inside"]}
+        document["hosts"]["far2"] = {**document["hosts"]["db"], "role": "beside far", "networks": ["inside"]}
 
     with pytest.raises(
-        range_spec.SpecError, match="host db has an agent and shares no network with the manager"
+        range_spec.SpecError, match="host far has an agent and shares no network with the manager"
     ):
-        range_spec.parse(wazuh_check(apart))
+        range_spec.parse(small(apart))
+
+
+def change_web(key: str, value):
+    """A change to one key of the small spec's web host."""
+
+    return put(value, "hosts", "web", key)
+
+
+def change_entry(key: str, index: int, **values):
+    def change(document: dict) -> None:
+        document["hosts"]["web"][key][index].update(values)
+
+    return change
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        # accounts
+        (change_entry("accounts", 1, name="root"), "host web: accounts: 'root' must be a new account name"),
+        (
+            change_entry("accounts", 0, password="two words"),  # pragma: allowlist secret
+            "account admin: password must be letters, digits",
+        ),
+        (change_entry("accounts", 0, sudo=["id"]), "sudo lists 'id', and takes commands by full path"),
+        (
+            change_web("packages", ["openssh-server", "openssh-client", "php-mysql"]),
+            "host web: account admin may run commands with sudo, so host web needs the package sudo",
+        ),
+        (
+            change_entry("accounts", 1, listed={"file": "atomic:T1110.004/src/x.txt", "line": 1}),
+            "account app is listed in a published file and has no password",
+        ),  # fmt: skip
+        (
+            change_entry("accounts", 0, listed={"file": "/etc/passwd", "line": 1}),
+            "listed.file must be a published file",
+        ),
+        # keys
+        (change_entry("keys", 0, type="dsa"), "host web: key deploy: type must be one of rsa, ed25519"),
+        (change_entry("keys", 0, private="admin@db"), "a key is held on the host that lists it"),
+        (change_entry("keys", 0, authorized="app@inet"), "authorized names app@inet, and inet runs no sshd"),
+        (
+            change_entry("keys", 0, authorized="nobody@web"),
+            "authorized names nobody@web, and web has no such account",
+        ),
+        (change_entry("keys", 0, authorized="app at web"), "authorized must be <account>@<host>"),
+        (
+            lambda d: d["hosts"]["db"].update(keys=[{"name": "lost", "authorized": "app@web"}]),
+            "host db: key lost: no host holds the private half of lost",
+        ),
+        # known_hosts
+        (change_entry("known_hosts", 0, hosts=["db"]), "known_hosts of admin names db, which runs no sshd"),
+        (change_entry("known_hosts", 0, account="nobody"), "'nobody' is not an account of host web"),
+        # dirs
+        (change_entry("dirs", 0, mode=750), 'mode must be octal digits in quotes, as in "0640"'),
+        (change_entry("dirs", 0, path="srv/drop"), "must be an absolute path of letters"),
+        (change_entry("dirs", 0, path="/srv/../etc"), "must be an absolute path of letters"),
+        (change_entry("dirs", 0, owner="nobody"), "'nobody' is not an account of host web"),
+        # files
+        (
+            change_entry("files", 0, **{"from": "page.txt"}),
+            "file /etc/app/secret.env needs either text or from",
+        ),
+        (change_entry("files", 1, **{"from": "../page.txt"}), "from must be a file beside the spec"),
+        (
+            change_entry("files", 1, **{"from": "repo:site"}),
+            "is a git repository, so host web needs the package git",
+        ),
+        (change_entry("files", 1, path="/srv/drop"), "host web plants /srv/drop twice"),
+        # database
+        (
+            lambda d: d["hosts"]["web"].update(database=d["hosts"]["db"]["database"]),
+            "host web: database needs the service mariadb",
+        ),
+        (lambda d: d["hosts"]["db"]["database"].update({"from": "web"}), 'from must be "%"'),
+        (
+            lambda d: d["hosts"]["db"]["database"].update(password="it's"),
+            "database: password must be letters",
+        ),
+        (
+            lambda d: d["hosts"]["db"]["database"].update(bind_address="any"),
+            "bind_address must be an IPv4 address",
+        ),
+        (lambda d: d["hosts"]["db"]["database"].pop("log_error"), "host db: database lacks: log_error"),
+        # sshd
+        (
+            lambda d: d["hosts"]["db"].update(sshd={"password_auth": False, "permit_root": False}),
+            "host db: sshd sets the SSH server, and the host's services do not run sshd",
+        ),
+        (
+            change_web("sshd", {"password_auth": "yes", "permit_root": False}),  # pragma: allowlist secret
+            "sshd.password_auth must be true or false",
+        ),
+        # serve
+        (change_web("serve", {"/x": "atomic:T1105/src/atomic.sh"}), "the host does not run inet-server"),
+        (
+            lambda d: d["hosts"]["inet"].update(serve={"/x": "https://example.com/x"}),
+            "/x must be served from a published file",
+        ),
+        # atomics_src
+        (change_web("atomics_src", ["1110"]), "atomics_src must list technique ids once each"),
+        (drop("atomic_red_team"), "host web carries published files, and the spec has no atomic_red_team"),
+        (put("a0e3f9bc", "atomic_red_team", "commit"), "atomic_red_team.commit must be a full commit id"),
+        # what a host lists against what its services listen on
+        (
+            change_web("listens", [22, 80]),
+            "host web lists [22, 80] in listens, and its services listen on [22]",
+        ),
+        (change_web("shell", "/bin/sh"), "host web has unknown keys: shell"),
+    ],
+)
+def test_the_loader_refuses_a_plant_with_the_reason(change, message: str) -> None:
+    with pytest.raises(range_spec.SpecError) as refused:
+        range_spec.parse(small(change), folder=SMALL.parent)
+
+    assert message in str(refused.value)
+
+
+def test_a_step_of_the_path_on_a_host_the_spec_does_not_declare_is_refused() -> None:
+    document = small(put({"steps": [{"id": "s01", "technique": "T1082", "host": "nowhere"}]}, "path"))
+
+    with pytest.raises(range_spec.SpecError, match="step s01 of the path runs on nowhere"):
+        range_spec.parse(document)
 
 
 @pytest.mark.parametrize(
