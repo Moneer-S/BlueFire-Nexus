@@ -106,6 +106,9 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
   const segment = timeline.segments[current];
   const longest = useMemo(() => Math.max(0, maxOf(timeline.gaps.map((gap) => (gap.realEnd - gap.realStart) / 1000))), [timeline]);
   const shortRoles = [...new Set(recording.steps.filter((step) => step.role !== "test").map((step) => (step.role === "hardened" || step.role === "variant" ? "reruns" : step.role)))];
+  // The legend in plain words: canary and control steps check the lab, reruns repeat a test.
+  const shortWords = [...new Set(shortRoles.map((role) => (role === "canary" || role === "control" ? "checks" : role === "reruns" ? "repeats" : role)))];
+  const shortList = shortWords.length > 1 ? `${shortWords.slice(0, -1).join(", ")} and ${shortWords[shortWords.length - 1] ?? ""}` : (shortWords[0] ?? "");
   const checks = recording.steps.some((step) => isCheck(step.role));
   const noEffect = recording.steps.some((step) => !isCheck(step.role) && (step.outcome === "no effect" || step.outcome === "inconclusive"));
   const head = evenPosition(timeline, time);
@@ -214,9 +217,9 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
         </span>
         <span className="lv-legend-sep" />
         {shortRoles.length > 0 ? (
-          <span title={checks ? "Canary and control steps check the lab itself and are drawn as outlines: solid when they alerted, dashed otherwise. None of these is in the score of tests." : "None of these is in the score of tests."}>
+          <span title={`Short marks, not tests: ${shortRoles.join(", ")}.${checks ? " Canary and control steps check the lab itself and are drawn as outlines: solid when they alerted, dashed otherwise." : ""}${shortRoles.includes("reruns") ? " Reruns repeat a test, on a hardened host or with other input arguments." : ""} None of these is in the score of tests.`}>
             <i className="is-short" />
-            short: {shortRoles.join(", ")}
+            short: {shortList}
           </span>
         ) : null}
         <span title={longest > 0 ? `Every step gets one bar. Silences between steps play as a short beat; the longest, ${elapsed(longest, 0)}, plays as ${PLAYBACK_RULE.beat} s.` : "Every step gets one bar."}>silences shortened</span>

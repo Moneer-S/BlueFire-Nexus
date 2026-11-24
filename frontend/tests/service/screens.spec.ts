@@ -124,7 +124,10 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await expect(page.getByText("Imported, not verified by BlueFire", { exact: true })).toBeVisible();
   await expect(page.getByText(/^Imported\. BlueFire checked that this file follows the recording format.+It cannot confirm that the steps ran/)).toBeVisible();
   await expect(page.getByText(`The file names this CI run, which BlueFire cannot confirm: ${claimed}`, { exact: false })).toBeVisible();
-  await expect(page.getByRole("link", { name: "CI run (github.com)" })).toHaveCount(0);
+  await page.getByRole("button", { name: /^An imported run, not verified by BlueFire, recorded .+· details$/ }).click();
+  await expect(page.getByRole("heading", { name: "Where this recording comes from" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /CI run/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   await expect(page.getByRole("slider", { name: /^Timeline/ })).toBeVisible();
 
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();

@@ -34,8 +34,26 @@ goes, and the view says the run is still running.
   as its code in a small tag, "U+202E", and is not applied; in a tooltip or the
   page's title it is written "[U+202E]".
 - **Rules written in this repository are drawn apart and not scored.** Their
-  matches are labelled "not scored" or "would alert", and the score never
-  counts them.
+  engine says "not counted in the score" under its name, their matches are
+  labelled "would alert", and the score never counts them.
+- **The head says what the run is, in one quiet line.** Under the title one
+  line says what the run is and when it was recorded: "A real run, recorded 23
+  Nov 2026 on a GitHub-hosted runner" for a run shipped with BlueFire or
+  recorded by the lab's own CI, "An imported run, not verified by BlueFire"
+  for an imported one, and "A run of unknown origin" for a page that does not
+  say where its recording comes from. Its "details" opens the rest: who
+  checked what, the link to the CI run that made it, the tool versions and the
+  recording's notes. While watching, the score's head says "tests alerted so
+  far", since its counts go up as the run plays; at the end of the run they are
+  the run's own. The hardened reruns are counted apart as "repeated tests
+  stopped", and the legend under the timeline calls their short marks, and
+  those of the canary and control steps, "short: checks and repeats"; its
+  tooltip names their roles and says that none of them is a test or in the
+  score of tests.
+- **The rules' time is said once.** Where the rules ran after the run, an
+  alert's time is the time of the event it matched. The race line says so
+  beside the first alert's time, "(the time of the event it matched)", and
+  analyse mode's lanes say it again under the axis.
 - **Silences are shortened, and the screen says so.** Every step gets one bar
   on the timeline, and the time between two steps plays as a short beat
   whatever its real length. The legend under the timeline says "silences
@@ -150,7 +168,7 @@ window sizes.
 | Timeline | Home, End | The start or the end of the run |
 | Analyse: the lanes | Left, Right, Home, End | Moves between steps |
 | Analyse: the table | Up, Down, Home, End | Moves between rows |
-| Tool versions | Escape | Closes the panel |
+| Details under the title | Escape | Closes the panel |
 
 ## The page's address
 
@@ -206,14 +224,15 @@ each one the app keeps and refuses each one it refuses. The page is one file of
 under 1 MB plus the recording.
 It carries its own script, styles and font, and its content security policy
 lets it load nothing and connect nowhere: the page makes no request by itself.
-The one way out is the link to the CI run that made the recording, shown only
-for a GitHub Actions run at `https://github.com` (of the recording's own
-repository, when the recording names one), and followed only when someone
-clicks it. The text of a recording is always shown
+The one way out is the link to the CI run that made the recording, in the
+details under the title, shown only for a GitHub Actions run at
+`https://github.com` (of the recording's own repository, when the recording
+names one), and followed only when someone clicks it. The text of a recording is always shown
 as text, never read as markup.
 
 Beside the recording the command writes where it comes from, as the app lists
-it, and the page shows that note under the title at all times. A recording
+it, and the page shows that note in the details the line under the title
+opens; the line itself says in a few words what the run is. A recording
 shipped with BlueFire says so and names the CI run that made it. An imported
 recording says what BlueFire checked, that the file follows the format and its
 parts agree, and what it cannot confirm: that the steps ran, where and when,

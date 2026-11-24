@@ -116,7 +116,7 @@ recording files first, both of them also for one run evaluated twice. A refused 
 `page` writes the single replay page of one recording, shipped or imported, to
 a new file: the packaged page `bluefire/ui/replay.html` with the recording put
 inside it, and beside it the recording's `origin` from the list, whose note the
-page shows under the title. The page plays in any browser with nothing
+page shows in the details under the title. The page plays in any browser with nothing
 installed and loads nothing from anywhere (see [LIVE_VIEW.md](LIVE_VIEW.md)).
 It prints the recording's id, the file's path and its size. It never replaces a
 file: when `--out` names one that exists, it exits with status 2 and writes

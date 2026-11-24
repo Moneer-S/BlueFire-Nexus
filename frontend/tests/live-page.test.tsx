@@ -205,7 +205,7 @@ describe("a finished run with no steps", () => {
     const value: Recording = { ...base, score: { ...base.score, steps: 0, took_effect: 0, alerted: 0, seen: 0, unseen: 0, stopped: 0 } };
     const { container, unmount } = open(value, {});
     expect(container.textContent).not.toContain("A plan");
-    expect(container.querySelector(".lv-prov-button")?.textContent).toMatch(/^Recorded on a /);
+    expect(container.querySelector(".lv-prov-button")?.textContent).toMatch(/^A run, recorded \d+ \w+ \d{4} on a /);
     expect(container.querySelector(".lv-plan-note")?.textContent).toMatch(/^This run finished with no steps/);
     unmount();
     const source = { ...value.source };
@@ -254,5 +254,66 @@ describe("keys on the timeline", () => {
     // From the first step it still moves on to a later step's start.
     const [on] = press(timeline, 0.1, key);
     expect(on).toBeGreaterThan(0.1);
+  });
+});
+
+describe("the head of the live view, in plain words", () => {
+  const runUrl = "https://github.com/example/lab/actions/runs/7";
+  const base = recording({
+    steps: [step("1", 1, 2, { outcome: "alerted", visibility: { answer: "alert", basis: "rules", events: 1 } }), step("2", 4, 5), step("3", 7, 8, { role: "hardened", outcome: "stopped", happened: { answer: "blocked", basis: "the change stopped it" } })],
+    events: [event("1-1", "1", 1.1), event("2-1", "2", 4.1)],
+    alerts: [alert("a1", "1", 1.1, ["1-1"])],
+  });
+  const value: Recording = { ...base, source: { ...base.source, run_url: runUrl } };
+  const note = `Shipped with BlueFire. This repository's lab workflow recorded it in the CI run at ${runUrl}.`;
+
+  function show(kind: LiveViewProps["originKind"], initial: LiveViewProps["initial"] = { step: "1", at: 1.5, paused: true }) {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1440);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(420);
+    return render(<LiveView recording={value} origin={note} originKind={kind} initial={initial} />);
+  }
+
+  it("says in one line what the run is and when it was recorded, and opens to who checked it and the CI run", () => {
+    const view = show("shipped");
+    const line = view.getByRole("button", { name: /^A real run, recorded \d+ \w+ \d{4} on a tests\s*· details$/ });
+    // Until it is opened, neither the note nor the CI run's address is on screen.
+    expect(view.queryByText(note)).toBeNull();
+    expect(view.queryByRole("link")).toBeNull();
+    fireEvent.click(line);
+    expect(view.getByText(note)).toBeVisible();
+    expect(view.getByRole("link", { name: "The CI run that made this recording (github.com)" })).toHaveAttribute("href", runUrl);
+    view.unmount();
+  });
+
+  it("never calls an imported run, or one whose page does not say, a real run", () => {
+    const imported = show("imported");
+    expect(imported.getByRole("button", { name: /^An imported run, not verified by BlueFire, recorded / })).toBeVisible();
+    imported.unmount();
+    const unsaid = show("unsaid");
+    expect(unsaid.getByRole("button", { name: /^A run of unknown origin, recorded / })).toBeVisible();
+    unsaid.unmount();
+  });
+
+  it("says that the score counts up while the run plays, and names the reruns and the lab's rules plainly", () => {
+    const view = show("shipped");
+    const score = view.getByLabelText("The score so far");
+    expect(score).toHaveTextContent("tests alerted so far");
+    expect(score).toHaveTextContent("repeated tests stopped");
+    expect(score).not.toHaveTextContent("reruns stopped");
+    expect(view.container.textContent).toContain("short: repeats");
+    expect(view.container.textContent).not.toContain("short: reruns");
+    view.unmount();
+    // At the end of the run the count is the run's own: no "so far".
+    const end = show("shipped", { step: "3", at: 2, paused: true });
+    expect(end.getByLabelText("The score so far")).not.toHaveTextContent("so far");
+    end.unmount();
+  });
+
+  it("says once, where the first alert's time is shown, that the rules ran after the run", () => {
+    const view = show("shipped");
+    const race = view.getByRole("region", { name: "The race" });
+    expect(race).toHaveTextContent("first alert on a test · test 1 (the time of the event it matched)");
+    expect(view.container.textContent).not.toContain("ran after the run, so an alert");
+    view.unmount();
   });
 });

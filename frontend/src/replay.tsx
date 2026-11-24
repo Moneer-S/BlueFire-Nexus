@@ -7,7 +7,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./replay.css";
 import { LiveView } from "./live/LiveView";
-import type { LiveViewProps } from "./live/LiveView";
+import type { LiveViewProps, OriginKind } from "./live/LiveView";
 import { LiveViewBoundary } from "./live/LiveViewBoundary";
 import { plainMarks } from "./live/format";
 import { RecordingError, readRecording } from "./live/recording";
@@ -58,12 +58,13 @@ function readOrigin(): { kind: string | null; note: string } {
  * file names it and BlueFire could not confirm it. A page that does not say
  * where its recording comes from is read the same way.
  */
-function shown(recording: Recording, origin: { kind: string | null; note: string }): { recording: Recording; origin: string } {
+function shown(recording: Recording, origin: { kind: string | null; note: string }): { recording: Recording; origin: string; originKind: OriginKind } {
   const claimed = recording.source.run_url;
-  if (origin.kind === "shipped" || origin.kind === "lab run" || claimed === undefined) return { recording, origin: origin.note };
+  const originKind: OriginKind = origin.kind === "shipped" || origin.kind === "lab run" || origin.kind === "imported" ? origin.kind : "unsaid";
+  if (origin.kind === "shipped" || origin.kind === "lab run" || claimed === undefined) return { recording, origin: origin.note, originKind };
   const source = { ...recording.source };
   delete source.run_url;
-  return { recording: { ...recording, source }, origin: `${origin.note} The file names this CI run, which BlueFire cannot confirm: ${plainMarks(claimed)}` };
+  return { recording: { ...recording, source }, origin: `${origin.note} The file names this CI run, which BlueFire cannot confirm: ${plainMarks(claimed)}`, originKind };
 }
 
 function readAddress(): NonNullable<LiveViewProps["initial"]> {
@@ -101,7 +102,7 @@ if (root) {
     <StrictMode>
       {view ? (
         <LiveViewBoundary fallback={(message) => <Problem title="This recording cannot be played" text={message} />}>
-          <LiveView recording={view.recording} origin={view.origin} initial={readAddress()} />
+          <LiveView recording={view.recording} origin={view.origin} originKind={view.originKind} initial={readAddress()} />
         </LiveViewBoundary>
       ) : "problem" in page ? (
         <Problem title={page.empty ? "No recording here" : "This recording cannot be played"} text={page.problem} />

@@ -96,7 +96,7 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
   y += MARK;
   const hasLab = recording.network.detectors.some((detector) => detector.id === "lab") || recording.alerts.some((alert) => alert.rule.origin === "lab");
   if (hasLab) {
-    rows.push({ key: "lab", label: "Lab rules", sub: "written here, not scored", y, h: MARK, className: "is-lab" });
+    rows.push({ key: "lab", label: "Lab rules", sub: "written here, not in the score", y, h: MARK, className: "is-lab" });
     y += MARK;
   }
   const bottom = y;
@@ -338,7 +338,7 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
       <div className="lv-ln-foot">
         <span title={`Times count from ${facts.startWords}.`}>
           Silences are shortened{marked.length > 0 ? <>, those over {MARKED_SILENCE} s marked <b className="lv-ln-breakkey">//</b></> : null}
-          {longest > 0 ? ` (the longest, ${silence(longest)}, takes ${PLAYBACK_RULE.beat} s)` : ""}.{checks ? " Outlined: canary and control steps, not scored." : ""}
+          {longest > 0 ? ` (the longest, ${silence(longest)}, takes ${PLAYBACK_RULE.beat} s)` : ""}.{checks ? " Outlined: canary and control steps, which check the lab and are not counted in the score." : ""}
         </span>
         {rulesRanAfterTheRun(recording) ? <span>The rules ran after the run, so an alert&apos;s time is the time of its event.</span> : null}
       </div>

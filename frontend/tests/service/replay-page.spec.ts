@@ -144,7 +144,7 @@ function expectedScore(recording: ShippedRecording): string {
   const score = recording.score;
   const hardened = recording.steps.filter((step) => step.role === "hardened").length;
   const falseAlerts = score.false_alerts === undefined ? "" : `${score.false_alerts}${score.false_alerts === 1 ? "false alert" : "false alerts"}`;
-  return `${score.alerted}/ ${score.alerted + score.seen + score.unseen}tests alerted${score.seen}seen, no alert${score.unseen}unseen${falseAlerts}${score.stopped} / ${hardened}reruns stopped`;
+  return `${score.alerted}/ ${score.alerted + score.seen + score.unseen}tests alerted${score.seen}seen, no alert${score.unseen}unseen${falseAlerts}${score.stopped} of ${hardened}repeated tests stopped`;
 }
 
 test("watch mode tells the run step by step, and plays, pauses and moves by pointer and keyboard", async ({ page }) => {
@@ -154,10 +154,16 @@ test("watch mode tells the run step by step, and plays, pauses and moves by poin
 
   await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
   await expect(caption(page)).toContainText(firstStep.plain);
-  // Under the title: the recording shipped with BlueFire, and the CI run that made it.
+  // Under the title, one line: a real run and when it was recorded. It opens to who checked it and the CI run that made it.
+  const line = page.getByRole("button", { name: /^A real run, recorded \d+ \w+ \d{4} on a GitHub-hosted runner\s*· details$/ });
+  await expect(line).toBeVisible();
+  await expect(page.getByText(/^Shipped with BlueFire\./)).toHaveCount(0);
+  await line.click();
   const origin = page.getByText(/^Shipped with BlueFire\. This repository's lab workflow recorded it in the CI run at /);
   await expect(origin).toBeVisible();
   await expect(origin).toContainText(String(shipped.source.run_url));
+  await expect(page.getByRole("link", { name: "The CI run that made this recording (github.com)" })).toHaveAttribute("href", String(shipped.source.run_url));
+  await page.getByRole("button", { name: "Close", exact: true }).click();
 
   // Playing: the clock moves. The button pauses it, and plays it again.
   const play = page.getByRole("button", { name: "Pause", exact: true });
@@ -320,8 +326,9 @@ test("a page that does not say where its recording comes from says so", async ({
 
   await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
   // Nothing vouches for the CI run the file names, so it is told as the file's claim, not linked.
+  await page.getByRole("button", { name: /^A run of unknown origin, recorded .+· details$/ }).click();
   await expect(page.getByText(/^This page does not say where its recording comes from\./)).toContainText(`The file names this CI run, which BlueFire cannot confirm: ${String(shipped.source.run_url)}`);
-  await expect(page.getByRole("link", { name: "CI run (github.com)" })).toHaveCount(0);
+  await expect(page.getByRole("link")).toHaveCount(0);
   await expect(page.getByText(/^Shipped with BlueFire/)).toHaveCount(0);
   expect(problems).toEqual([]);
   expect(requests).toEqual([]);
@@ -331,10 +338,10 @@ test("the page of an imported recording never links the CI run its file names as
   const { requests, problems } = await open(page, copyPage, "?paused=1");
 
   await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
-  await expect(page.getByText(/^Imported\. BlueFire checked/)).toContainText(`The file names this CI run, which BlueFire cannot confirm: ${String(shipped.source.run_url)}`);
   await expect(page.getByRole("link")).toHaveCount(0);
-  await page.getByRole("button", { name: /tool versions/ }).click();
+  await page.getByRole("button", { name: /^An imported run, not verified by BlueFire, recorded .+· details$/ }).click();
   await expect(page.getByRole("heading", { name: "Where this recording comes from" })).toBeVisible();
+  await expect(page.getByText(/^Imported\. BlueFire checked/)).toContainText(`The file names this CI run, which BlueFire cannot confirm: ${String(shipped.source.run_url)}`);
   await expect(page.getByRole("link")).toHaveCount(0);
   expect(problems).toEqual([]);
   expect(requests).toEqual([]);
@@ -344,6 +351,7 @@ test("the page a lab run leaves says that the lab's CI run made it", async ({ pa
   const { requests, problems } = await open(page, labPage, "?paused=1");
 
   await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
+  await page.getByRole("button", { name: /^A real run, recorded .+· details$/ }).click();
   const origin = page.getByText(/^Made by this repository's lab workflow in the CI run at /);
   await expect(origin).toBeVisible();
   await expect(origin).toContainText(String(shipped.source.run_url));
@@ -356,14 +364,14 @@ test("a recording cannot make the page load anything: its markup and addresses a
   const { requests, problems } = await open(page, hostilePage, "?step=1&paused=1");
 
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(HOSTILE_IMAGE);
-  // An imported recording says what BlueFire checked and what it cannot confirm.
-  await expect(page.getByText(/^Imported\. BlueFire checked that this file follows the recording format/)).toContainText("It cannot confirm that the steps ran");
   await expect(page.getByText(/^Shipped with BlueFire/)).toHaveCount(0);
   await expect(caption(page)).toContainText(`${HOSTILE_IMAGE} </script><!--`);
   await expect(caption(page)).toContainText(`Opens ${HOSTILE_LINK} <a href="${HOSTILE_LINK}">here</a>`);
   await expect(page.locator("img")).toHaveCount(0);
   await expect(page.locator("a")).toHaveCount(0);
-  await page.getByRole("button", { name: /tool versions/ }).click();
+  await page.getByRole("button", { name: /^An imported run, not verified by BlueFire, recorded .+· details$/ }).click();
+  // An imported recording says what BlueFire checked and what it cannot confirm.
+  await expect(page.getByText(/^Imported\. BlueFire checked that this file follows the recording format/)).toContainText("It cannot confirm that the steps ran");
   await expect(page.getByText(HOSTILE_IMAGE, { exact: true }).last()).toBeVisible();
   await expect(page.locator("img")).toHaveCount(0);
   await expect(page.locator("a")).toHaveCount(0);

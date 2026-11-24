@@ -2,6 +2,7 @@
 // where the defense's first alert came, with one sentence that says who is winning.
 
 import type { Recording } from "./recording";
+import { rulesRanAfterTheRun } from "./recording";
 import type { FirstAlert, Frame, ScoreSoFar, Timeline } from "./playback";
 import { capital, clockTime, elapsed, ordinaryAlertEvents, plainMarks, plural, span, stepLabel } from "./format";
 import { firstAlertClock, firstAlertOnScreen } from "./moment";
@@ -111,6 +112,9 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
   const firstFalse = firstRule ? ordinaryAlertEvents(recording, firstRule) : 0;
   const firstClock = first ? firstAlertClock(recording, facts, first) : null;
   const winning = whoIsWinning(recording, frame, score, facts, reached);
+  // Rules that ran after the run have no time of their own: said once, here, where the first alert's time is shown.
+  const eventTime = rulesRanAfterTheRun(recording);
+  const eventTimeWords = "The rules ran after the run, so an alert's time is the time of the event it matched.";
   // The count of tests that got through leads the sentence, in the attacker's colour.
   const lead = winning.includes("got through") ? (/^\d[\d,]* of [\d,]+ tests?/.exec(winning)?.[0] ?? "") : "";
 
@@ -142,12 +146,13 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
           <div className="lv-head-dot" style={{ left: head }} title="The playhead" />
           {first && reached ? (
             <div
-              className={`lv-flag${firstLeft > 0.78 ? " is-end" : ""}`}
+              className={`lv-flag${firstLeft > (eventTime ? 0.6 : 0.78) ? " is-end" : ""}`}
               style={{ left: at(first.real) }}
-              title={[firstClock ? `${elapsed(firstClock.seconds)} ${firstClock.words}.` : "", `${capital(plural(first.testsBefore, "other test"))} had started when it fired.`, firstRule ? `Rule: ${firstRule}.` : "", firstFalse > 0 ? `Its rule also alerted on ${plural(firstFalse, "event")} of ordinary activity, outside every step.` : "", otherNote].filter(Boolean).join(" ")}
+              title={[firstClock ? `${elapsed(firstClock.seconds)} ${firstClock.words}.` : "", eventTime ? eventTimeWords : "", `${capital(plural(first.testsBefore, "other test"))} had started when it fired.`, firstRule ? `Rule: ${firstRule}.` : "", firstFalse > 0 ? `Its rule also alerted on ${plural(firstFalse, "event")} of ordinary activity, outside every step.` : "", otherNote].filter(Boolean).join(" ")}
             >
               <span>
                 {firstClock ? <b>{elapsed(firstClock.seconds)}</b> : null} first alert on a test &middot; {stepLabel(recording, first.step)}
+                {eventTime ? <small className="lv-flag-note"> (the time of the event it matched)</small> : null}
               </span>
               <i />
             </div>

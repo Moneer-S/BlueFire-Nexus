@@ -5,7 +5,6 @@ import { memo, useMemo } from "react";
 import type { ReactNode } from "react";
 import { useSize } from "./useSize";
 import type { Alert, Host, Recording } from "./recording";
-import { rulesRanAfterTheRun } from "./recording";
 import { curvePath, layoutNetwork, travelPath } from "./networkLayout";
 import type { HostNode, NetworkLayout, Point } from "./networkLayout";
 import { capital, detectorParts, kindRank, matchKind, plainMarks, plural, stepLabel, unseenWords } from "./format";
@@ -509,16 +508,10 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
           const room = { width, height: below - (node.y - 15) - ENGINE_HEAD };
           return (
             <div key={node.detector.id} className="lv-engine-label" style={{ left: node.x + node.r + 16, top: node.y - 15, maxWidth: width }}>
-              <div className="lv-engine-name">
-                {parts.main}
-                {lab ? (
-                  <span className="lv-tag" title="Our own rules, shown apart from the published ones and never counted in the score">
-                    not scored
-                  </span>
-                ) : null}
-              </div>
-              <div className="lv-engine-sub" title={parts.engine ? `Run by ${parts.engine}` : undefined}>
+              <div className="lv-engine-name">{parts.main}</div>
+              <div className="lv-engine-sub" title={lab ? "Not scored: our own rules, shown apart from the published ones and never counted in the score" : parts.engine ? `Run by ${parts.engine}` : undefined}>
                 {node.detector.rules > 0 ? plural(node.detector.rules, "rule") : parts.engine}
+                {lab ? " · not counted in the score" : null}
               </div>
               {moment ? <EngineMatches lines={state?.lines ?? []} none={moment.revealed && !moment.heard.some((alert) => alert.detector === node.detector.id)} late={state?.late ?? null} room={room} /> : null}
             </div>
@@ -585,7 +578,6 @@ function badgeOf(moment: StepMoment | null): { text: string; className: string }
 
 function headsOf(recording: Recording, layout: NetworkLayout): ReactNode {
   const network = recording.network;
-  const after = rulesRanAfterTheRun(recording);
   // How the rules ran is only said of a run that happened.
   const live = recording.steps.length > 0 && network.detectors.length > 0 && network.detectors.every((detector) => detector.when === "live");
   return (
@@ -597,7 +589,8 @@ function headsOf(recording: Recording, layout: NetworkLayout): ReactNode {
       {network.detectors.length > 0 ? (
         <div className="lv-head is-left" style={{ left: layout.detectorsHeadX }}>
           <b>Rule engines</b>
-          {after ? <span>ran after the run, so an alert&apos;s time is the time of its event</span> : live ? <span>judged the events as they arrived</span> : null}
+          {/* Rules that ran after the run are said once, where the first alert's time is shown: the race line. */}
+          {live ? <span>judged the events as they arrived</span> : null}
         </div>
       ) : null}
     </>
