@@ -1379,6 +1379,9 @@ Limits:
 - A step's start and end are the Docker daemon's times of its exec, not the
   engine's; where those events were not matched, the engine's own clock is
   used and `path.md` marks it.
+- A loaded daemon can stamp an exec's `exec_die` before its `exec_start`; the
+  daemon's two times are used only in order, and otherwise the step is timed
+  by the engine's clock and labelled so, which fails the score's clock check.
 - The published port scan tries every port, so s05a and s05b may run until
   the step's timeout of 300 s. At a timeout the engine kills what the step
   started, as the step's account, and the effect check still decides what
@@ -1438,7 +1441,7 @@ a cleanup's nor a job's is a step's only on evidence the run holds, by the
 first of: `session`, snoopy tagged the program start `step:<id>`; `account`,
 the line names an account only the path uses on its host (`webadmin` on
 `web`, `deploy` on `build`; the activity's loader refuses a job that uses
-one), inside the step's window; `address`, the line's own source address is
+one), on a host the step ran on or reached, inside its window; `address`, the line's own source address is
 an address of the host the step ran on, inside its window (sshd's lines on
 `web` from `attacker` in `s01`'s), or the line is on a host the step reached
 and its text names an address or the container name of the host the step ran
@@ -1473,10 +1476,9 @@ of it, and both read the kernel clock of the machine that runs the
 containers; the engine's own clock is not used. Each run checks it: every
 program start snoopy logged in a step's session, at rsyslog's time in its
 container, must fall inside its step's daemon times, and every step's times
-must be the daemon's. When the check fails, the race is labelled "not a
-result" in the score, left out of the recording, and the CI job fails. The
-manager's own time of
-a line can run seconds behind the time rsyslog wrote on it, so an alert counts
+must be the daemon's, in order. When the check fails, the race is labelled
+"not a result" in the score, no recording is written, and the CI job fails.
+The manager's own time of a line can run seconds behind the time rsyslog wrote on it, so an alert counts
 from the manager's time of it, or from its line's time when that is later, and
 the score gives the spread it measured. Beside the race stand the ordinary
 day's false alerts and their denominators

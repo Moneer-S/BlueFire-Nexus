@@ -290,7 +290,7 @@ def tie(
     source = str((event.get("data") or {}).get("srcip") or "")
     named = _accounts(event, uses)
     rules = (
-        ("account", lambda s: named),
+        ("account", lambda s: named and s.on(host)),
         (
             "address",
             lambda s: (
@@ -567,14 +567,14 @@ def race(steps: list[dict], goal: dict | None, agree: bool = True) -> dict:
     """
 
     start = steps[0].get("started") if steps else None
-    if start is None:
-        return {"start": None, "result": False, "says": "no race: the first step did not start"}
-    if steps[0].get("time_source") != "daemon":
+    if steps and steps[0].get("time_source") not in (None, "daemon"):
         return {
             "start": None,
             "result": False,
-            "says": f"no race: {steps[0]['id']}'s times are the engine's clock, not the Docker daemon's",
+            "says": f"no race: {steps[0]['id']} has no times on the Docker daemon's clock",
         }
+    if start is None:
+        return {"start": None, "result": False, "says": "no race: the first step did not start"}
     alerted = [(s["first_alert"]["raised"], s) for s in steps if s.get("first_alert")]
     first = min(alerted, key=lambda pair: pair[0]) if alerted else None
     found: dict = {"start": start, "started by": steps[0]["id"], "result": agree}
@@ -589,8 +589,8 @@ def race(steps: list[dict], goal: dict | None, agree: bool = True) -> dict:
         found["goal"] = goal.get("plain")
     alert, reached = found.get("first_alert_seconds"), found.get("goal_seconds")
     unreached = (
-        f"the goal's step {after['id']} has the engine's clock, not the Docker daemon's"
-        if goal and goal.get("passed") and end and not daemon and after
+        f"the goal's step {after['id']} has no times on the Docker daemon's clock"
+        if goal and goal.get("passed") and after and after.get("time_source") not in (None, "daemon")
         else "the goal was not reached"
     )
     if alert is None:
@@ -613,13 +613,14 @@ def clock(steps: list[Stretch], events: list[dict], found: list[tuple], records:
     at rsyslog's time in its container, against the Docker daemon's start and end of the step's test.
 
     A step that started with the engine's clock for its times (the daemon's
-    exec events were not matched) makes the check fail.
+    exec events were not matched, or its end came before its start) makes the
+    check fail.
     """
 
     engine_timed = [
         record["id"]
         for record in records
-        if record.get("started") is not None and record.get("time_source") != "daemon"
+        if record.get("started") is not None and ecs.step_clock(record) != "daemon"
     ]
     windows = {stretch.step: stretch for stretch in steps}
     before, after, outside, counted = 0.0, 0.0, 0, 0
@@ -708,13 +709,15 @@ def path_score(
         seen = visibility(step_id in started, len(counted), bool(counting))
         happened = record.get("happened")
         expected = [str(rule) for rule in record.get("expect") or []]
+        source = ecs.step_clock(record)
+        told = source != ecs.END_BEFORE_START
         entry = {
             "id": step_id,
             "host": record.get("host"),
             "to": record.get("to") or [],
-            "started": record.get("started"),
-            "ended": record.get("ended"),
-            "time_source": record.get("time_source"),
+            "started": record.get("started") if told else None,
+            "ended": record.get("ended") if told else None,
+            "time_source": source,
             "happened": happened,
             "why": record.get("why"),
             "visibility": seen,
@@ -1071,9 +1074,9 @@ def path_summary(manifest: dict) -> str:
         f"{check['program starts checked']} program starts in the steps' sessions, at their containers' time, "
         f"{check['outside their step']} outside their step's daemon times"
         + (
-            "; the daemon's exec events of "
+            "; the daemon's times of "
             + ", ".join(check["steps on the engine's clock"])
-            + " were not matched, so their times are the engine's clock"
+            + " were not matched or not in order, so they are not used"
             if check["steps on the engine's clock"]
             else ""
         )

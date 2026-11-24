@@ -2016,6 +2016,8 @@ def write_recording(out: Path, manifest: dict) -> None:
         made = range_recording.write(out)
         manifest["recording"] = {"file": range_recording.FILE, "error": None, **made}
     except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
+        # A recording an earlier scoring of the folder wrote is not this score's.
+        (out / range_recording.FILE).unlink(missing_ok=True)
         manifest["recording"] = {"file": None, "error": f"{type(error).__name__}: {error}"[:500]}
     write_json(out / "manifest.json", manifest)
 

@@ -19,7 +19,7 @@ exactly the argument vector of `atomic`, a grace of a few seconds, the step's
 effect check from the spec, run as root, and the published cleanup when the
 spec asks for it. A step's start and end are the Docker daemon's times of its
 exec's `exec_start` and `exec_die` events, and the engine's clock, labelled,
-only where those were not matched. What happened is one of `took effect`,
+only where those were not matched or the end came before the start. What happened is one of `took effect`,
 `attempted without effect`, `not attempted` and `inconclusive`. Then the goal
 check, on files copied out of the range. An event on the range that the engine
 did not cause stops the path, and so does an event watch that no longer runs;
@@ -580,10 +580,22 @@ def iso(nanoseconds: int | None) -> str | None:
     return f"{moment:%Y-%m-%dT%H:%M:%S}.{rest // 1000:06d}Z"
 
 
-def daemon_times(record: dict | None) -> dict:
-    """A step's start and end from the daemon's exec_start and exec_die of its exec, as recorded by the watch."""
+def out_of_order(record: dict | None) -> bool:
+    """True when the daemon stamped an exec's exec_die before its exec_start, as a loaded daemon can."""
 
     if not record or record.get("start") is None or record.get("die") is None:
+        return False
+    return record["die"] < record["start"]
+
+
+def daemon_times(record: dict | None) -> dict:
+    """A step's start and end from the daemon's exec_start and exec_die of its exec, as recorded by the watch.
+
+    They are used only when they are in order: with an end before the start
+    there are none, and the step is timed by the engine's clock.
+    """
+
+    if not record or record.get("start") is None or record.get("die") is None or out_of_order(record):
         return {}
     code = record.get("exit_code")
     return {
@@ -690,7 +702,8 @@ def summary(manifest: dict) -> str:
         lines += [f"The first step, {first['id']}, took {first['seconds']} s.", ""]
     lines += [
         "Times are the Docker daemon's times of each test's exec_start and exec_die; a time marked "
-        "(engine clock) is the engine's own, used only when those events were not matched. "
+        "(engine clock) is the engine's own, used only when those events were not matched or the end came "
+        "before the start. "
         "No step can be blocked here: the range configures no active response.",
         "",
     ]
@@ -797,14 +810,20 @@ class Executor:
             "engine_started_ns": engine_start,
             "engine_ended_ns": engine_end,
         }
-        found.update(daemon_times(self.events_of(identifier, argv)))
+        events = self.events_of(identifier, argv)
+        found.update(daemon_times(events))
         if "started_ns" not in found:
+            why = (
+                "the daemon's exec_die came before its exec_start"
+                if out_of_order(events)
+                else "the daemon's exec events were not matched"
+            )
             found.update(
                 {
                     "started_ns": engine_start,
                     "ended_ns": engine_end,
                     "seconds": round((engine_end - engine_start) / 1e9, 3),
-                    "time_source": "engine clock (the daemon's exec events were not matched)",
+                    "time_source": f"engine clock ({why})",
                 }
             )
         return found
@@ -1113,7 +1132,8 @@ class Executor:
 NOTES = [
     "Each test runs through docker exec as the step's account: its parent is the container runtime, not a login "
     "shell, and no step runs inside the session of an earlier one.",
-    "A step's start and end are the Docker daemon's times of its exec_start and exec_die events.",
+    "A step's start and end are the Docker daemon's times of its exec_start and exec_die events, when they are "
+    "in order; otherwise the engine's, and the step's time_source says so.",
     "blocked cannot occur: the range configures no active response.",
     "An effect check that exits nonzero counts as no effect, also when it could not find the file it reads; "
     "only a check that could not be run at all makes a step inconclusive.",

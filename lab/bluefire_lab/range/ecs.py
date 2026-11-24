@@ -352,16 +352,32 @@ def nanoseconds(value: int) -> str:
     return iso(datetime.fromtimestamp(seconds, tz=timezone.utc) + timedelta(microseconds=rest // 1000))
 
 
+# A step whose record holds daemon times with the end before the start. The executor times such a step by the
+# engine's clock; a manifest that still holds them is read with this label, and its times are not used.
+END_BEFORE_START = "daemon, its end before its start"
+
+
+def step_clock(record: dict) -> str | None:
+    """The clock of a step's times: its `time_source`, or END_BEFORE_START for daemon times out of order."""
+
+    source = record.get("time_source")
+    started, ended = record.get("started_ns"), record.get("ended_ns")
+    if source == "daemon" and started is not None and ended is not None and int(ended) < int(started):
+        return END_BEFORE_START
+    return source
+
+
 def step(record: dict) -> dict:
     """One step of the path as an ECS event: its times, host, account, test, exit code and outcome.
 
     `record` is the step as the manifest's `path` holds it, with `visibility`
-    and `outcome` from the score when the run was scored.
+    and `outcome` from the score when the run was scored. A step is never
+    written with its end before its start.
     """
 
     technique = str(record.get("technique") or "")
     started, ended = record.get("started_ns"), record.get("ended_ns")
-    daemon = record.get("time_source") == "daemon"
+    source = step_clock(record)
     if started is not None:
         stamp = nanoseconds(started)
     else:
@@ -379,7 +395,7 @@ def step(record: dict) -> dict:
     _put(document, "event.type", ["info"])
     _put(document, "event.outcome", STEP_OUTCOMES.get(record.get("happened"), "unknown"))
     _put(document, "event.reason", record.get("why"))
-    if started is not None and ended is not None:
+    if started is not None and ended is not None and int(ended) >= int(started):
         _put(document, "event.start", stamp)
         _put(document, "event.end", nanoseconds(ended))
         _put(document, "event.duration", int(ended) - int(started))
@@ -400,7 +416,7 @@ def step(record: dict) -> dict:
         document,
         "step",
         None,
-        "daemon" if daemon else "engine clock",
+        source if source in ("daemon", END_BEFORE_START) else "engine clock",
         step_id=record.get("id"),
         test_guid=record.get("guid"),
         test_name=record.get("name"),

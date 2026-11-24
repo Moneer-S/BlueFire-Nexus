@@ -275,6 +275,16 @@ def scored(folder: Path) -> dict:
     return json.loads((folder / "manifest.json").read_text())
 
 
+def score_of(folder: Path) -> dict:
+    """The manifest after scoring, for a run folder whose few lines give the clock check nothing to check.
+
+    Such a run's race is not a result, so it has no recording, and `range score` exits 1 for that.
+    """
+
+    engine.rescore(folder)
+    return json.loads((folder / "manifest.json").read_text())
+
+
 def ecs_lines(folder: Path, name: str) -> list[dict]:
     return [json.loads(text) for text in (folder / name).read_text().splitlines()]
 
@@ -382,7 +392,7 @@ def test_a_steps_outcome_follows_what_happened_and_what_the_defense_made_of_it(
     manifest["path"]["steps"][1]["happened"] = happened
     (folder / "manifest.json").write_text(json.dumps(manifest))
 
-    steps = {step["id"]: step for step in scored(folder)["score"]["path"]["steps"]}
+    steps = {step["id"]: step for step in score_of(folder)["score"]["path"]["steps"]}
 
     assert steps["s03"]["outcome"] == outcome
     assert steps["s01"]["visibility"] == "no telemetry"
@@ -398,11 +408,9 @@ def test_a_step_whose_test_did_not_start_is_not_applicable(tmp_path: Path) -> No
     manifest["path"]["goal"]["passed"] = False
     (folder / "manifest.json").write_text(json.dumps(manifest))
 
-    steps = {step["id"]: step for step in scored(folder)["score"]["path"]["steps"]}
+    steps = {step["id"]: step for step in score_of(folder)["score"]["path"]["steps"]}
 
     assert (steps["s03"]["visibility"], steps["s03"]["outcome"]) == ("not applicable", "no effect")
-    made = json.loads((folder / "recording.json").read_text())
-    assert "started" not in made["steps"][1] and "events" not in made["steps"][1]["visibility"]
 
 
 def test_the_recording_holds_the_network_the_steps_their_events_and_the_race(tmp_path: Path) -> None:
@@ -482,11 +490,36 @@ def test_a_line_on_a_host_the_step_reached_that_names_the_steps_host_is_tied_by_
 
     rewrite(folder, reach)
 
-    steps = {step["id"]: step for step in scored(folder)["score"]["path"]["steps"]}
+    steps = {step["id"]: step for step in score_of(folder)["score"]["path"]["steps"]}
 
     assert ecs_lines(folder, score.EVENTS_FILE)[0]["labels"]["tied_by"] == tied
     expected = ("telemetry only", "seen") if tied == "address" else ("no telemetry", "unseen")
     assert (steps["s03"]["visibility"], steps["s03"]["outcome"]) == expected
+
+
+def test_a_line_that_names_an_account_of_the_path_goes_only_to_a_step_on_its_host(tmp_path: Path) -> None:
+    # webadmin's login on web comes in the grace after s01, which reached web, and after s03 started on build.
+    archive = [
+        line(
+            "web",
+            T0 + 13,
+            "/var/log/auth.log",
+            "sshd[12]: Accepted password for webadmin from 10.9.0.9 port 4002 ssh2",
+            data={"dstuser": "webadmin"},
+        )
+    ]
+    folder = small_run(tmp_path, archive, [])
+
+    def elsewhere(manifest: dict) -> None:
+        s03 = manifest["path"]["steps"][1]
+        s03.update(host="build", started_ns=int((T0 + 12) * 1e9), ended_ns=int((T0 + 12.2) * 1e9))
+
+    rewrite(folder, elsewhere)
+
+    score_of(folder)
+
+    labels = ecs_lines(folder, score.EVENTS_FILE)[0]["labels"]
+    assert (labels["origin"], labels["step_id"], labels["tied_by"]) == ("step", "s01", "account")
 
 
 def test_a_first_step_timed_by_the_engines_clock_gives_no_race_and_no_recording(tmp_path: Path) -> None:
@@ -497,46 +530,69 @@ def test_a_first_step_timed_by_the_engines_clock_gives_no_race_and_no_recording(
     manifest = json.loads((folder / "manifest.json").read_text())
 
     found = manifest["score"]["path"]
-    assert found["race"]["says"] == "no race: s01's times are the engine's clock, not the Docker daemon's"
+    assert found["race"]["says"] == "no race: s01 has no times on the Docker daemon's clock"
     assert "first_alert_seconds" not in found["race"]
     assert found["clock"]["steps on the engine's clock"] == ["s01"] and found["clock"]["agree"] is False
     assert manifest["recording"]["error"] is not None
     assert not (folder / recording.FILE).exists()
 
 
-def test_a_goal_step_timed_by_the_engines_clock_gives_no_goal_time(tmp_path: Path) -> None:
+def test_a_goal_step_timed_by_the_engines_clock_gives_no_goal_time_and_no_recording(tmp_path: Path) -> None:
     folder = small_run(tmp_path)
     rewrite(folder, lambda m: m["path"]["steps"][1].update(time_source="engine clock (not matched)"))
 
-    manifest = scored(folder)
+    assert engine.rescore(folder) == 1
+    manifest = json.loads((folder / "manifest.json").read_text())
 
     race = manifest["score"]["path"]["race"]
     assert "goal_seconds" not in race
     assert race["says"].startswith("not a result, the clocks are not shown to agree: first alert after")
-    assert race["says"].endswith("the goal's step s03 has the engine's clock, not the Docker daemon's")
-    made = json.loads((folder / recording.FILE).read_text())
-    assert "goal_seconds" not in made["score"] and "first_alert_seconds" not in made["score"]
+    assert race["says"].endswith("the goal's step s03 has no times on the Docker daemon's clock")
+    assert "not a result" in manifest["recording"]["error"]
+    assert not (folder / recording.FILE).exists()
 
 
-def test_a_race_the_clock_check_does_not_back_is_labelled_and_left_out_of_the_recording(
-    tmp_path: Path,
-) -> None:
+def test_a_race_the_clock_check_does_not_back_is_labelled_and_has_no_recording(tmp_path: Path) -> None:
     # Without its session's program start, s03 gives the clock check nothing to check.
     archive = [make() for name, (make, _) in LINES.items() if name != "a program the test started"]
     named = dict(zip([n for n in LINES if n != "a program the test started"], archive, strict=True))
     alerts = [alert_on(named["webadmin's login"], "40112", 12, "Multiple authentication failures.")]
     folder = small_run(tmp_path, archive, alerts)
 
-    manifest = scored(folder)
+    assert engine.rescore(folder) == 1
+    manifest = json.loads((folder / "manifest.json").read_text())
 
     race = manifest["score"]["path"]["race"]
     assert manifest["score"]["path"]["clock"]["agree"] is False
     assert race["result"] is False
     assert race["says"] == "not a result, the clocks are not shown to agree: alert before goal by 10.8 s"
     assert (folder / "score.md").read_text().startswith("### Path of range-one: not a result")
-    made = json.loads((folder / recording.FILE).read_text())
-    assert "first_alert_seconds" not in made["score"] and "goal_seconds" not in made["score"]
-    assert any(note.startswith("The score holds no race") for note in made["notes"])
+    assert not (folder / recording.FILE).exists()
+
+
+def test_a_step_recorded_with_its_daemon_end_before_its_start_is_never_told_so(tmp_path: Path) -> None:
+    # The daemon's times of s03, as a manifest can hold them: its end 0.749 s before its start. The folder was
+    # scored once before, with a recording.
+    folder = small_run(tmp_path)
+    scored(folder)
+    rewrite(
+        folder,
+        lambda m: m["path"]["steps"][1].update(
+            ended_ns=int((T0 + 20 - 0.749) * 1e9), ended=iso(T0 + 20 - 0.749).replace("+00:00", "Z")
+        ),
+    )
+
+    assert engine.rescore(folder) == 1
+    manifest = json.loads((folder / "manifest.json").read_text())
+
+    found = manifest["score"]["path"]
+    assert found["clock"]["steps on the engine's clock"] == ["s03"] and found["clock"]["agree"] is False
+    assert found["race"]["says"].startswith("not a result")
+    assert found["steps"][1]["started"] is None and found["steps"][1]["ended"] is None
+    s03 = ecs_lines(folder, score.STEPS_FILE)[1]
+    assert "start" not in s03["event"] and "end" not in s03["event"] and "duration" not in s03["event"]
+    assert s03["labels"]["time_source"] == "daemon, its end before its start"
+    assert not (folder / recording.FILE).exists()
 
 
 def test_an_alert_the_managers_time_puts_before_its_line_counts_from_its_line(tmp_path: Path) -> None:
@@ -549,7 +605,8 @@ def test_an_alert_the_managers_time_puts_before_its_line_counts_from_its_line(tm
             "sshd[12]: Accepted password for webadmin from 10.9.0.2 port 4002 ssh2",
             received=-2.4,
             data={"srcip": "10.9.0.2", "dstuser": "webadmin"},
-        )
+        ),
+        LINES["a program the test started"][0](),
     ]
     alerts = [alert_on(archive[0], "40112", 12, "Multiple authentication failures followed by a success.")]
     folder = small_run(tmp_path, archive, alerts)

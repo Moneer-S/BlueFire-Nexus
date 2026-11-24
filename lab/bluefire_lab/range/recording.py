@@ -17,6 +17,8 @@ tied to it by its session, an account only the path uses, the address of the
 host it ran on or a path it was given (`score`); one that only falls inside
 its window is not the step's, and is not in the recording. A step that went to
 another host (`to` in the spec) is on that host, and comes `from` its own.
+A run whose race the score's clock check does not back as a result has no
+recording.
 """
 
 from __future__ import annotations
@@ -27,8 +29,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .. import recording as lab
+from . import ecs, score
 from . import path as range_path
-from . import score
 from .spec import read
 
 FILE = "recording.json"
@@ -251,6 +253,9 @@ def build(folder: Path) -> dict:
         raise ValueError(
             f"an attack path's recording needs its first step's daemon start: {race.get('says')}"
         )
+    if not race.get("result"):
+        # A step on the engine's clock, or a program start outside its step: the times are not shown to agree.
+        raise ValueError(f"the run's race is not a result, so no recording is written: {race.get('says')}")
     alert_level = scored["alert_level"]
     defense = manifest.get("defense") or {}
     started, finished = run_times(folder)
@@ -315,7 +320,7 @@ def build(folder: Path) -> dict:
             )
         kept_alerts += held_alerts
         to = record.get("to") or []
-        daemon = record.get("time_source") == "daemon"
+        daemon = ecs.step_clock(record) == "daemon"
         counting = [a.get("raised", a["time"]) for a in held_alerts if a["counts"]]
         held = len(placed)
         cut += held < entry["events"]
@@ -386,8 +391,7 @@ def build(folder: Path) -> dict:
     totals["stopped"] = sum(1 for step in steps if step["outcome"] == "stopped")
     goal = path.get("goal") or {}
     first = steps[0] if steps else {}
-    # The race is left out when the score's clock check did not pass: it is then not a result.
-    if "started" in first and race.get("result"):
+    if "started" in first:
         alerted = [step["first_alert"] for step in tests if "first_alert" in step]
         if alerted:
             totals["first_alert_seconds"] = max(0.0, score.seconds_between(first["started"], min(alerted)))
@@ -473,12 +477,9 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
     said.append(
         "The steps' times are the Docker daemon's and the alerts' the manager container's: "
         f"{check.get('program starts checked')} program starts snoopy logged in the steps' sessions, at their "
-        f"containers' time, {'all fall' if check.get('agree') else 'do not all fall'} inside their step's "
+        "containers' time, all fall inside their step's "
         "daemon times."
     )
-    race = scored.get("race") or {}
-    if not race.get("result"):
-        said.append(f"The score holds no race, since it is not a result: {race.get('says')}.")
     said.append(
         "An alert's time is the time of the event it was raised on, and raised is the manager's time of it: "
         "the race counts to raised."
