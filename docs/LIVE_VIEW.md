@@ -170,6 +170,17 @@ pictures, the page `replay.html` they show, and `SOURCE.txt`, which names the
 recording, the CI run that recorded it, each shipped pair and the CI run that
 made it, and the commit the pictures were made from.
 
+The picture of the live view in the [README](../README.md)
+(`docs/assets/screenshots/live-view-first-alert.png`) and the page
+[`docs/live-view/replay.html`](live-view/replay.html) are files of that
+artifact, copied in unchanged; `docs/assets/screenshots/live-view-source.txt`
+names the run that made them and the recording they show. To renew them, take
+the artifact `live-view-pictures` of a run of the app workflow on `main`, copy
+the files over the committed ones byte for byte, and update that note from the
+artifact's `SOURCE.txt`. The page holds the recording, so when the recording
+changes, the page's entries in `.secrets.baseline` change with those of the
+recording.
+
 The browser test `frontend/tests/service/replay-page.spec.ts`, run by the app
 workflow, makes this page for the shipped recording and checks what a person
 does and sees on it: where the recording comes from, for a shipped, an imported
