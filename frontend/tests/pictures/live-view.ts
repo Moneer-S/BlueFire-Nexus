@@ -5,8 +5,11 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { loopFrames, takeFrames, writeLoop } from "./loop";
+import type { LoopPlan } from "./loop";
 
-// Takes the pictures of the live view that the README shows, and keeps the
+// Takes the pictures of the live view that the README shows, and the loop of it
+// playing (see loop.ts), and keeps the
 // single replay page they were taken of, from the recording shipped with the
 // app and the real service. CI runs it and keeps the folder as an artifact:
 //
@@ -37,12 +40,20 @@ interface Shipped {
 const repository = resolve(process.cwd(), "..");
 const RECORDING = "bluefire/data/recordings/lab-linux-host.json";
 const shipped: Shipped = JSON.parse(readFileSync(join(repository, RECORDING), "utf-8"));
+const PAIR = "bluefire/data/recordings/deltas/lab-pair-history-watch.json";
+const pairRun: string = (JSON.parse(readFileSync(join(repository, PAIR), "utf-8")) as { after: { run_url?: string } }).after.run_url ?? "not named in the comparison";
+const RULE_PAIR = "bluefire/data/recordings/deltas/lab-rule-history-truncated.json";
+const rulePairRun: string = (JSON.parse(readFileSync(join(repository, RULE_PAIR), "utf-8")) as { after: { run_url?: string } }).after.run_url ?? "not named in the comparison";
 const FILES = [
   "SOURCE.txt",
   "analyse-unseen.png",
   "analyse.png",
+  "app-pair.png",
   "app-recorded-run.png",
+  "app-rule-pair.png",
+  "app-runs-pair.png",
   "app-runs.png",
+  "live-view-loop.gif",
   "replay.html",
   "watch-first-alert.png",
   "watch-seen.png",
@@ -77,6 +88,15 @@ function launcherLine(step: Step): boolean {
 }
 
 const firstAlert = first("test that alerted", (step) => step.role === "test" && step.outcome === "alerted");
+const afterFirstAlert = first("step after the first alert on a test", (step) => step.order > firstAlert.order);
+// The README's caption under the loop says that the test after the first alert is one no sensor recorded.
+if (afterFirstAlert.role !== "test" || afterFirstAlert.outcome !== "unseen") {
+  throw new Error(
+    `The step after the first alert, "${afterFirstAlert.title}", is a ${afterFirstAlert.role} with the outcome ${afterFirstAlert.outcome}, not an unseen test. ` +
+      'The caption under the loop in README.md ("a published rule raises its first alert, then the next test does its work and neither sensor records it") ' +
+      "would be untrue of this recording: change the caption, or the loop's plan, with the recording.",
+  );
+}
 const unseen = first("unseen test", (step) => step.role === "test" && step.outcome === "unseen");
 // Seen with no alert, while a rule written in this repository would have alerted: the gap and its fix in one picture.
 // The first of these whose rule titles fit the picture whole.
@@ -252,9 +272,32 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   const recorded = page.getByRole("region", { name: "Recorded runs" });
-  const link = recorded.getByRole("link", { name: shipped.title });
+  const link = recorded.getByRole("link", { name: shipped.title, exact: true });
   await expect(link).toBeVisible();
   await picture(page, folder, "app-runs.png");
+
+  // The pair of runs shipped with the app: its part of the Runs screen alone, and its own page.
+  const pairs = page.getByRole("region", { name: "Before against after" });
+  const pair = pairs.getByRole("link", { name: "The settings of sensor auditd", exact: true });
+  await pairs.scrollIntoViewIfNeeded();
+  await expect(pair).toBeVisible();
+  await settle(page);
+  await pairs.screenshot({ path: join(folder, "app-runs-pair.png") });
+  await pair.click();
+  await expect(page).toHaveURL(/#\/runs\/compared\/[0-9a-f]{16}$/);
+  await expect(page.getByRole("heading", { level: 1, name: "One change: the settings of sensor auditd" })).toBeVisible();
+  await expect(page.getByRole("region", { name: /^What the change moved/ }).getByRole("button", { name: /Clear Bash history \(echo\)/ })).toBeVisible();
+  await picture(page, folder, "app-pair.png");
+  await page.getByRole("link", { name: "Runs", exact: true }).first().click();
+  await expect(link).toBeVisible();
+
+  // The run evaluated with two rule sets, the rule drafted from what the watch saw: its own page, with the rule's text loaded.
+  await pairs.getByRole("link", { name: "A new rule: Shell History File Truncated In Place", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "A new rule: Shell History File Truncated In Place" })).toBeVisible();
+  await expect(page.getByLabel("The text of the rule Shell History File Truncated In Place")).toBeVisible();
+  await picture(page, folder, "app-rule-pair.png");
+  await page.getByRole("link", { name: "Runs", exact: true }).first().click();
+  await expect(link).toBeVisible();
 
   const path = await link.getAttribute("href");
   if (!path?.startsWith("#/")) throw new Error(`The recorded run's link is ${path}.`);
@@ -266,12 +309,40 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await expectWholeMoment(page, firstAlert);
   await picture(page, folder, "app-recorded-run.png");
 
+  // The loop for the top of the README, back in the replay page. It comes last because its frames
+  // take minutes, and the app above has to be opened while the address the service printed is
+  // still good. Its first frame, which a still or a link preview shows, is the moment of
+  // watch-first-alert.png, held a second. It goes on to the step after it, held there, then plays
+  // the alerted test from the moment it begins up to that first frame again, so it closes with no
+  // seam. Six tenths of the view's speed, so the lights can be followed.
+  // Leave the app first, so that nothing of it is still asking the service when only the page's own file may be reached.
+  await page.goto("about:blank");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  reachable = own;
+  const alertMoment = { step: firstAlert.id, at: LATE };
+  const loop: LoopPlan = {
+    stretches: [
+      { from: alertMoment, to: { step: afterFirstAlert.id, at: 1 }, holdFirst: 1000, holdLast: 2000 },
+      { from: { step: firstAlert.id, at: 0 }, to: alertMoment },
+    ],
+    fps: 10,
+    pace: 0.6,
+  };
+  const frames = loopFrames(shipped, loop);
+  const pictures = await takeFrames(page, open, frames);
+  // The last frame is the alerted test just before the loop's first frame.
+  await expect(page.getByRole("region", { name: "The step", exact: true })).toContainText(firstAlert.title);
+  await writeLoop(pictures, frames, 1000, join(folder, "live-view-loop.gif"));
+
   writeFileSync(
     join(folder, "SOURCE.txt"),
     [
-      "Pictures of the live view and its single replay page, made from the recording shipped with BlueFire.",
+      "Pictures of the live view and its single replay page, made from the recording shipped with BlueFire,",
+      "and of the Runs screen and the pages of the pair of runs and the run evaluated twice shipped with it.",
       `Recording: ${shipped.id} (${RECORDING})`,
       `Recorded in the CI run: ${shipped.source.run_url ?? "not named in the recording"}`,
+      `Pair: ${PAIR} (made in the CI run ${pairRun})`,
+      `Run evaluated twice: ${RULE_PAIR} (made in the CI run ${rulePairRun})`,
       `Made from the commit: ${process.env.GITHUB_SHA ?? "not known: made outside CI"}`,
       "",
     ].join("\n"),

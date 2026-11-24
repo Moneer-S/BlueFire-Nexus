@@ -61,9 +61,13 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await page.goto(process.env.BLUEFIRE_SERVICE_URL ?? "");
   await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
-  // The Overview points at the newest recorded run, saying where it comes from.
-  const newest = page.getByRole("link", { name: /^Watch the newest recorded run/ });
-  await expect(newest).toContainText("Shipped with BlueFire · 3 of 60 tests alerted, 56 seen, 1 unseen");
+  // The Overview offers the newest of what Runs lists: on a fresh workspace the newest shipped pair, the
+  // run evaluated with the new rule, whose run is listed only with its pair, never on its own.
+  const newestPair = page.getByRole("link", { name: /^See the newest change to the defense, before against after/ });
+  await expect(newestPair).toContainText("A new rule: Shell History File Truncated In Place");
+  await expect(newestPair).toContainText("Shipped with BlueFire · Clear Bash history (echo) and Clear Bash history (cat dev/null), each also with changed input arguments: seen to alerted with the lab's rules");
+  await expect(newestPair).toHaveAttribute("href", /^#\/runs\/compared\/[0-9a-f]{16}$/);
+  await expect(page.getByRole("link", { name: /^Watch the newest recorded run/ })).toHaveCount(0);
   await expect(page.getByText("No experiment runs yet.")).toBeVisible();
 
   // What a fresh workspace holds: the packaged experiments, the recording that
@@ -139,6 +143,18 @@ test("the service serves the interface, and its main screens open on a fresh wor
   const settled = asked;
   await page.waitForTimeout(9_000);
   expect(asked).toBe(settled);
+
+  // A run recorded after the pair, listed on its own, is what the Overview offers then.
+  await page.getByRole("link", { name: "Runs", exact: true }).first().click();
+  const later = JSON.parse(JSON.stringify({ ...smallRecording(), id: "small-later", title: "Two later steps toward a secrets file" }).replaceAll("2026-11-20", "2026-11-30"));
+  await page.getByLabel("Recording file to import").setInputFiles(file("later.json", later));
+  await expect(page).toHaveURL(/#\/runs\/recorded\/small-later/);
+  await page.getByRole("link", { name: "Overview", exact: true }).first().click();
+  const newestRun = page.getByRole("link", { name: /^Watch the newest recorded run/ });
+  await expect(newestRun).toContainText("Two later steps toward a secrets file");
+  await expect(newestRun).toContainText("Imported · 1 of 2 tests alerted, 1 seen, 0 unseen");
+  await expect(newestRun).toHaveAttribute("href", "#/runs/recorded/small-later");
+  await expect(page.getByRole("link", { name: /^See the newest change to the defense/ })).toHaveCount(0);
 
   await page.getByRole("link", { name: "Detection Lab", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Detection Lab", exact: true })).toBeVisible();

@@ -12,6 +12,7 @@ import json
 import tarfile
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -118,7 +119,8 @@ def test_a_step_that_reaches_a_host_it_shares_a_network_with_loads(tmp_path: Pat
         (
             DOWNLOAD,
             a_step(args={"remote_url": "https://example.org/a.sh"}),
-            "step s01: the command reaches example.org, which is not a host of the spec",
+            "step s01: the command names example.org (in a URL, after an @, or in /dev/tcp or /dev/udp), "
+            "which is not a host of the spec",
         ),
         (
             DOWNLOAD,
@@ -133,7 +135,8 @@ def test_a_step_that_reaches_a_host_it_shares_a_network_with_loads(tmp_path: Pat
         (
             SCAN,
             a_step(host="attacker", account="root", args={"host": "db"}, cleanup="none"),
-            "step s01: the command reaches db, which shares no network with attacker",
+            "step s01: the command names db (in a URL, after an @, or in /dev/tcp or /dev/udp), "
+            "which shares no network with attacker",
         ),
         (
             DOWNLOAD,
@@ -455,6 +458,44 @@ def test_the_path_starts_only_once_every_phase_of_the_seal_before_it_has_passed(
     recorded = [{"phase": name, "passed": passed, "checks": []} for name, passed in phases]
 
     assert range_path.sealed(recorded) is allowed
+
+
+def a_sealed_run(tmp_path: Path, watch: engine.Watch) -> SimpleNamespace:
+    """What the executor uses of the engine's run, for a range whose seal passed before the path."""
+
+    phases = [{"phase": name, "passed": True, "checks": []} for name in range_path.BEFORE_PATH]
+    record = {"planned": ["s01"], "steps": [], "goal": None, "stopped": None}
+    return SimpleNamespace(
+        phases=phases, watch=watch, manifest={"path": record}, out=tmp_path, containers={}, write=lambda: None
+    )
+
+
+def test_no_step_starts_once_the_event_watch_has_stopped(tmp_path: Path) -> None:
+    plan = load(tmp_path, DOWNLOAD, a_step())
+    watch = engine.Watch("bluefire-lab-r1", tmp_path / "events.ndjson", inspect=lambda _: None)
+    # The watch ran, and `docker events` has exited since: there is no finding, and nothing watches.
+    watch.alive = False
+    run = a_sealed_run(tmp_path, watch)
+
+    range_path.Executor(run, plan, {}).run_path()
+
+    assert run.manifest["path"]["steps"] == []
+    assert "the event watch on the range stopped" in run.manifest["path"]["stopped"]
+
+
+def test_a_spec_with_a_path_and_no_built_host_is_refused_with_the_fix(tmp_path: Path) -> None:
+    seal_check = RANGE_ONE.parent / "seal-check.yaml"
+    spec_file = tmp_path / "seal-check.yaml"
+    spec_file.write_text(
+        seal_check.read_text(encoding="utf-8")
+        + "path:\n  steps:\n    - {id: s01, technique: T1082, host: left}\n",
+        encoding="utf-8",
+    )
+    spec = range_spec.load(spec_file)
+
+    with pytest.raises(range_spec.SpecError, match="build the path's hosts from base or leave the path out"):
+        range_path.plan(spec, None)
+    assert range_path.plan(range_spec.load(seal_check), None).steps == ()
 
 
 def test_the_daemons_nanoseconds_are_written_to_the_microsecond_in_utc() -> None:

@@ -12,6 +12,7 @@ import {
   RunnersPage,
 } from "./pages/CatalogPages";
 import { ComparePage } from "./pages/Compare";
+import { ComparedRunsPage } from "./pages/ComparedRuns";
 import { CompositionPage } from "./pages/Composition";
 import { FileAccessPage } from "./pages/FileAccess";
 import { DetectionLabPage } from "./pages/DetectionLab";
@@ -35,6 +36,8 @@ export default function App() {
         <Route path="runs" element={<RunsPage />} />
         <Route path="runs/:runId" element={<RunsPage />} />
         <Route path="runs/recorded/:recordingId" element={<RecordedRunPage />} />
+        <Route path="runs/recorded/:recordingId/:file" element={<RecordedRunPage />} />
+        <Route path="runs/compared/:deltaId" element={<ComparedRunsPage />} />
         <Route path="compare" element={<ComparePage />} />
         <Route path="composition" element={<CompositionPage />} />
         <Route path="environments" element={<EnvironmentsPage />} />

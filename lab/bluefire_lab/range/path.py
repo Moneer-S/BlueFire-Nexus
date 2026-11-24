@@ -1,10 +1,16 @@
 """The path of a range: its published tests, run one after another inside the sealed range, and what each did.
 
 `load` is the path part of the spec loader. It reads each step's test from the
-pinned technique YAML, checks it as the upstream executor would run it, and
-checks every host the step names or its merged command reaches: each must be
-a host of the spec that shares a network with the step's host, and no IP
-literal is allowed. It runs before any container is created.
+pinned technique YAML and checks it as the upstream executor would run it. It
+then refuses a host outside the spec, or one that shares no network with the
+step's host, where it recognises a host: the step's `to`, a Url-typed
+argument, a `user@host` argument, and in the merged command, prerequisite
+check and cleanup a URL with a scheme, an `@host` and `/dev/tcp/<host>` or
+`/dev/udp/<host>`. It refuses any word that Python's `ipaddress` reads as an
+address. It does not recognise a bare host name, nor an address in a short,
+integer or hex form. These rules are an early, plain refusal of mistakes; the
+seal is what keeps a step inside the range. They run before any container is
+created.
 
 `Executor` runs the path in a sealed range and only there: in the range's own
 containers, once the seal's phases before the path have passed. For each
@@ -16,7 +22,8 @@ exec's `exec_start` and `exec_die` events, and the engine's clock, labelled,
 only where those were not matched. What happened is one of `took effect`,
 `attempted without effect`, `not attempted` and `inconclusive`. Then the goal
 check, on files copied out of the range. An event on the range that the engine
-did not cause stops the path; the engine then makes the run invalid.
+did not cause stops the path, and so does an event watch that no longer runs;
+the engine then makes the run invalid.
 
 Tags, in BLUEFIRE_TAG: `engine:prereq:<id>`, `step:<id>`, `engine:check:<id>`,
 `cleanup:<id>` and `engine:kill`.
@@ -167,7 +174,10 @@ def upload_host(spec: Spec) -> str | None:
 
 
 def addresses_in(text: str) -> list[str]:
-    """The IPv4 and IPv6 literals in a text."""
+    """The words of a text that Python's `ipaddress` reads as an IPv4 or IPv6 address.
+
+    A short, integer or hex form of an address (127.1, 2130706433, 0x7f000001) is not one of them.
+    """
 
     found = []
     for word in ADDRESS_WORD.findall(text):
@@ -182,7 +192,10 @@ def addresses_in(text: str) -> list[str]:
 
 
 def hosts_in(text: str) -> list[str]:
-    """The host names a command reaches in a URL, after an @, or in /dev/tcp and /dev/udp."""
+    """The host names a command writes in a URL with a scheme, after an @, or in /dev/tcp and /dev/udp.
+
+    A bare host name, as in `ping build`, is not found.
+    """
 
     found = [match.strip("[]") for match in URL_HOST.findall(text)]
     found += AT_HOST.findall(text) + DEV_HOST.findall(text)
@@ -254,7 +267,11 @@ def _check(value: object, where: str, spec: Spec) -> Check:
 
 
 def _reached(step_id: str, host: str, text: str, what: str, spec: Spec) -> None:
-    """Refuse a merged command that holds an IP literal or reaches a host its step's host shares no network with."""
+    """Refuse a merged command that holds an address, or names a host outside the spec or off the step's networks.
+
+    Only the forms of `addresses_in` and `hosts_in` are recognised; a bare host
+    name, for one, is not.
+    """
 
     for address in addresses_in(text):
         raise SpecError(
@@ -264,13 +281,14 @@ def _reached(step_id: str, host: str, text: str, what: str, spec: Spec) -> None:
     for name in hosts_in(text):
         if name not in spec.hosts:
             raise SpecError(
-                f"step {step_id}: the {what} reaches {name}, which is not a host of the spec: give the input "
-                "argument a host of the range"
+                f"step {step_id}: the {what} names {name} (in a URL, after an @, or in /dev/tcp or /dev/udp), "
+                "which is not a host of the spec: give the input argument a host of the range"
             )
         if name != host and not spec.shared(host, name):
             raise SpecError(
-                f"step {step_id}: the {what} reaches {name}, which shares no network with {host}: run the step "
-                f"on a host that shares a network with {name}, or name another host"
+                f"step {step_id}: the {what} names {name} (in a URL, after an @, or in /dev/tcp or /dev/udp), "
+                f"which shares no network with {host}: run the step on a host that shares a network with "
+                f"{name}, or name another host"
             )
 
 
@@ -449,6 +467,25 @@ def load(spec: Spec, path: object, atomics: Path) -> Plan:
         _step(value, number, spec, atomics, seen) for number, value in enumerate(path["steps"], start=1)
     )
     return Plan(steps, _goal(path.get("goal"), spec, steps), upload_host(spec))
+
+
+def plan(spec: Spec, rendered: Path | None) -> Plan:
+    """The spec's path, read against the technique YAMLs of the rendered build folder.
+
+    `rendered` is None when no host is built from the spec. A spec with a path
+    is refused then, since the technique YAMLs are fetched for the build.
+    """
+
+    found = section(spec)
+    if found is None:
+        return Plan((), None, upload_host(spec))
+    if rendered is None:
+        raise SpecError(
+            "the spec has a path, and every host runs a pinned image: the path's published files are "
+            "fetched and carried only by hosts built from base, so build the path's hosts from base "
+            "or leave the path out"
+        )
+    return load(spec, found, rendered / "atomics")
 
 
 # The executor
@@ -683,9 +720,19 @@ class Executor:
             raise RuntimeError(f"{host} is not a container of the sealed range: the path runs only there")
         return identifier
 
+    def stop_reason(self) -> str | None:
+        """Why the path must stop now: a finding of the event watch, or a watch that no longer runs."""
+
+        watch = self.run.watch
+        with watch.lock:
+            if watch.findings:
+                return "an event on the range that the engine did not cause: see seal.json"
+            if not watch.alive:
+                return "the event watch on the range stopped, so nothing watched the seal: see seal.json"
+        return None
+
     def stopped(self) -> bool:
-        with self.run.watch.lock:
-            return bool(self.run.watch.findings)
+        return self.stop_reason() is not None
 
     def announce(self, identifier: str, argv: list[str] | tuple[str, ...]) -> None:
         action = " ".join(argv)
@@ -999,7 +1046,7 @@ class Executor:
             self.run.write()
             raise
         if stopped:
-            self.record["stopped"] = "an event on the range that the engine did not cause: see seal.json"
+            self.record["stopped"] = self.stop_reason() or "the run was stopped during the step"
         self.run.write()
         return record
 
@@ -1045,8 +1092,9 @@ class Executor:
             raise RuntimeError("the path runs only once the seal's phases before it have passed")
         self.folder.mkdir(parents=True, exist_ok=True)
         for step in self.plan.steps:
-            if self.stopped():
-                self.record["stopped"] = "an event on the range that the engine did not cause: see seal.json"
+            reason = self.stop_reason()
+            if reason:
+                self.record["stopped"] = reason
                 break
             self.step(step)
             if self.record.get("stopped"):

@@ -647,8 +647,14 @@ class Run:
         return found
 
     def prepare_images(self) -> None:
-        """Pull the pinned images, and build the others from the rendered spec unless all their tags exist."""
+        """Pull the pinned images, and build the others from the rendered spec unless all their tags exist.
 
+        The path is read here, before any container exists: against the technique YAMLs the
+        build fetched and checked, and refused for a spec that builds no host.
+        """
+
+        if not any(host.built for host in self.spec.hosts.values()):
+            self.plan = range_path.plan(self.spec, None)
         for host in self.spec.hosts.values():
             if host.built:
                 continue
@@ -659,8 +665,7 @@ class Run:
             self.images[host.name] = {"reference": reference, "id": image["Id"], "digest": host.digest}
         if any(host.built for host in self.spec.hosts.values()):
             rendered = build.render(self.spec, self.out / "build")
-            # The path's rules, on the technique YAMLs just fetched and checked: before any container exists.
-            self.plan = range_path.load(self.spec, range_path.section(self.spec), rendered.folder / "atomics")
+            self.plan = range_path.plan(self.spec, rendered.folder)
             if self.spec.atomics and self.spec.atomics.lock:
                 locked = atomics.read_lock(
                     atomics.lock_path(self.spec).read_text(encoding="utf-8"), self.spec
