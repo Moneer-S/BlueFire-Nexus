@@ -133,8 +133,8 @@
     ]
   },
   "frontend": {
-    "lockfile_sha256": "ccc0c8846ba8939b5a03a0c98d3a9a117a3c7ceb723b1014af7677cfd27cf46b",
-    "locked_package_count": 393,
+    "lockfile_sha256": "839cde61aa028ec6034665a0a5c107056fec15195f774be441d85fbff2d957ba",
+    "locked_package_count": 395,
     "direct_requirements": {
       "@dagrejs/dagre": "3.1.1",
       "@radix-ui/react-dialog": "^1.1.15",
@@ -157,7 +157,6 @@
       "@types/react": "^19.1.16",
       "@types/react-dom": "^19.1.9",
       "@vitejs/plugin-react": "^5.0.3",
-      "css-tree": "3.2.1",
       "eslint": "^9.36.0",
       "eslint-plugin-react-hooks": "^5.2.0",
       "eslint-plugin-react-refresh": "^0.4.20",
@@ -166,6 +165,7 @@
       "typescript": "^5.9.2",
       "typescript-eslint": "^8.44.1",
       "vite": "^7.1.7",
+      "vite-plugin-singlefile": "^2.3.4",
       "vitest": "^3.2.4"
     },
     "runtime_packages_by_license": {

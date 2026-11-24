@@ -9,6 +9,15 @@ licensed under the SIL Open Font License 1.1; the complete license is included a
 SHA-256 `693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3`.
 Inter is a trademark of Rasmus Andersson. BlueFire does not imply endorsement.
 
+The single replay page, `bluefire/ui/replay.html`, is meant to be passed around and opened on
+its own, so it embeds `InterVariable.woff2` and the React, react-dom and scheduler scripts
+(`react@19.2.8`, `react-dom@19.2.8`, `scheduler@0.27.0`; MIT License, Copyright (c) Meta
+Platforms, Inc. and affiliates) in the one file, and carries their notices, with the MIT
+permission text, the Inter copyright line and the whole SIL Open Font License, in a comment in
+its head. The build puts the page together with
+`vite-plugin-singlefile@2.3.4` (MIT License), a development dependency whose code is not in the
+page.
+
 BlueFire Nexus records third-party source provenance before any public content is imported, adapted, or integrated through an external adapter. A source record is not proof that remote bytes were fetched, vendored, redistributed, or executed.
 
 Current built-in records are stored in `bluefire/data/research_sources.yaml` and exposed through Research Sources:
@@ -163,7 +172,7 @@ including `@dagrejs/dagre@3.1.1` and its transitive dependency `@dagrejs/graphli
 the ISC-licensed D3 modules `d3-color`, `d3-dispatch`, `d3-drag`, `d3-interpolate`,
 `d3-selection`, `d3-timer`, `d3-transition`, and `d3-zoom`; ISC-licensed `lucide-react`;
 BSD-3-Clause `d3-ease`; and 0BSD `tslib`. The exact name/version inventory is in the policy.
-The remaining entries in the 393-package pnpm lock are build, test, platform, or development
+The remaining entries in the 395-package pnpm lock are build, test, platform, or development
 entries and are not represented as shipped browser code by this review.
 
 The native runner review classifies all 49 external crates in `Cargo.lock`; the conservative

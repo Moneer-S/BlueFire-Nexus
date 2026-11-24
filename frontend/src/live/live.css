@@ -1,0 +1,3832 @@
+/* The live view. It always uses its own dark palette, whatever theme the app
+   around it uses: its surfaces, strokes and glows are drawn for a dark stage.
+   Every class starts with lv-. */
+
+.lv {
+  --lv-ink-1000: #020913;
+  --lv-ink-950: #030e1a;
+  --lv-ink-875: #091a2a;
+  --lv-ink-700: #1a3553;
+  --lv-surface: #0d2235;
+  --lv-surface-soft: #112b40;
+  --lv-line: rgba(93, 151, 194, 0.21);
+  --lv-line-strong: rgba(101, 163, 212, 0.36);
+  --lv-text: #eef7ff;
+  --lv-text-soft: #d9e8f6;
+  --lv-muted: #90a6bc;
+  --lv-muted-strong: #b4c5d6;
+  --lv-blue: #169dff;
+  --lv-blue-soft: #7bcaff;
+  --lv-flame: #ff7045;
+  --lv-amber-soft: #ffd27d;
+  --lv-green: #28d9b0;
+  --lv-green-soft: #8cf0d6;
+  --lv-red: #ff6e79;
+  --lv-violet: #a892ff;
+  --lv-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+  --lv-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --lv-xs: clamp(11px, 5.4px + 0.4vw, 14px);
+  --lv-sm: clamp(11.5px, 5.5px + 0.42vw, 14.5px);
+  --lv-md: clamp(12.5px, 6px + 0.46vw, 15.5px);
+  --lv-gutter: clamp(16px, 2vw, 32px);
+
+  position: relative;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  height: 100%;
+  min-height: 600px;
+  overflow: hidden;
+  color: var(--lv-text);
+  background: radial-gradient(120% 90% at 42% 42%, #071a2b 0%, var(--lv-ink-950) 55%, var(--lv-ink-1000) 100%);
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.4;
+  /* No contextual alternates: Inter would draw a recording's "->" or "=>" as an arrow it does not hold. */
+  font-feature-settings: "cv11", "ss01", "tnum", "calt" 0;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+}
+
+.lv--analyse {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+/* Read by screen readers, not shown. */
+.lv-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+:where(.lv) button {
+  font: inherit;
+  color: inherit;
+}
+
+.lv button:focus-visible,
+.lv a:focus-visible,
+.lv [role="slider"]:focus-visible {
+  outline: 2px solid var(--lv-blue-soft);
+  outline-offset: 2px;
+}
+
+.lv-dot {
+  flex: none;
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgb(var(--rgb, 123, 202, 255));
+}
+
+/* ---------- top: brand, provenance, score, mode ---------- */
+
+.lv-top {
+  position: relative;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 28px;
+  padding: 12px var(--lv-gutter) 0;
+  min-height: 62px;
+}
+
+.lv-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.lv-brand-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.lv-wordmark {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.lv-wordmark i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 40%, #ffd2bd, var(--lv-flame));
+  box-shadow: 0 0 10px rgba(255, 112, 69, 0.7);
+}
+
+.lv-wordmark b {
+  font-weight: 750;
+  color: var(--lv-blue-soft);
+}
+
+.lv-run-title {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--lv-md);
+  font-weight: 500;
+  color: var(--lv-muted-strong);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lv-prov {
+  position: relative;
+  min-width: 0;
+}
+
+.lv-prov-button {
+  all: unset;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: var(--lv-sm);
+  color: var(--lv-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.lv-prov-button:hover,
+.lv-prov-button:focus-visible {
+  color: var(--lv-text-soft);
+}
+
+.lv-prov-button u {
+  text-decoration: none;
+  border-bottom: 1px dotted var(--lv-line-strong);
+}
+
+.lv-prov-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 10;
+  width: min(460px, 86vw);
+  max-height: 70vh;
+  overflow: auto;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--lv-surface);
+  box-shadow: 0 0 0 1px var(--lv-line-strong), 0 20px 50px rgba(0, 0, 0, 0.5);
+  font-size: 12.5px;
+  color: var(--lv-muted-strong);
+}
+
+.lv-prov-pop h3 {
+  margin: 0 0 8px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.lv-prov-pop dl {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.lv-prov-pop dl div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.lv-prov-pop dt {
+  color: var(--lv-text-soft);
+}
+
+.lv-prov-pop dt span {
+  color: var(--lv-muted);
+}
+
+.lv-prov-pop dd {
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--lv-mono);
+  font-size: 11px;
+  color: var(--lv-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lv-prov-pop p {
+  margin: 10px 0 0;
+}
+
+.lv-prov-pop a {
+  color: var(--lv-blue-soft);
+}
+
+.lv-prov-pop ul {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 12px;
+  padding-left: 16px;
+}
+
+.lv-score-wrap {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+}
+
+.lv-score {
+  display: flex;
+  align-items: flex-end;
+  gap: 22px;
+}
+
+.lv-score-lead {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding-right: 22px;
+  border-right: 1px solid var(--lv-line);
+  line-height: 1;
+}
+
+.lv-score-n {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.lv-score-n b {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--lv-flame);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-score-n span {
+  font-size: 18px;
+  color: var(--lv-muted-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-score-label {
+  margin-top: 4px;
+  font-size: var(--lv-xs);
+  letter-spacing: 0.04em;
+  color: var(--lv-muted-strong);
+}
+
+.lv-score-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.05;
+}
+
+.lv-score-item b {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-score-item span {
+  margin-top: 4px;
+  font-size: var(--lv-xs);
+  letter-spacing: 0.03em;
+  color: var(--lv-muted);
+  white-space: nowrap;
+}
+
+.lv-score-item.is-seen b {
+  color: var(--lv-muted-strong);
+}
+
+.lv-score-item.is-unseen b {
+  color: var(--lv-red);
+}
+
+.lv-score-item.is-stopped b {
+  color: var(--lv-green);
+}
+
+.lv-score-item.is-zero b,
+.lv-score-lead.is-zero .lv-score-n b {
+  opacity: 0.45;
+}
+
+/* False alerts judge the rules on ordinary activity: flame text, never a filled mark. */
+.lv-score-false b {
+  color: #ffb59c;
+}
+
+.lv-score-false {
+  margin-left: 4px;
+  padding-left: 22px;
+  border-left: 1px solid var(--lv-line);
+}
+
+/* Hardened reruns are not tests: their count stands apart, behind a rule, green only once one is stopped. */
+.lv-score-reruns {
+  margin-left: 4px;
+  padding-left: 22px;
+  border-left: 1px solid var(--lv-line);
+}
+
+.lv-score-reruns.is-zero b {
+  color: var(--lv-muted);
+}
+
+.lv-score-reruns b small {
+  margin-left: 3px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--lv-muted-strong);
+}
+
+.lv--plan {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.lv-main.is-plan {
+  grid-template-rows: minmax(0, 1fr) auto;
+  padding-bottom: 28px;
+}
+
+/* A plan is not a result: a neutral line, no outcome colour. */
+.lv-plan-note {
+  justify-self: center;
+  margin: 0;
+  padding: 8px 18px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--lv-text-soft);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+}
+
+.lv-prov-plan,
+.lv-prov-sep {
+  font-size: var(--lv-sm);
+  color: var(--lv-muted);
+}
+
+.lv-prov-link {
+  font-size: var(--lv-sm);
+  color: var(--lv-muted);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--lv-line-strong);
+}
+
+.lv-prov-link:hover {
+  color: var(--lv-text-soft);
+}
+
+/* Where the recording comes from: quiet, always shown, never in an outcome colour. */
+.lv-origin {
+  max-width: 78ch;
+  margin: 1px 0 0;
+  font-size: var(--lv-xs);
+  line-height: 1.4;
+  color: var(--lv-muted);
+}
+
+.lv-modes button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.lv-modes,
+.lv-speed {
+  display: flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(5, 20, 33, 0.6);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+.lv-modes button,
+.lv-speed button {
+  all: unset;
+  padding: 5px 11px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--lv-muted-strong);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-speed button {
+  padding: 4px 8px;
+  color: var(--lv-muted);
+}
+
+.lv-modes button[aria-pressed="true"],
+.lv-speed button[aria-pressed="true"] {
+  background: var(--lv-surface-soft);
+  color: var(--lv-text);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+}
+
+/* ---------- the race ---------- */
+
+.lv-race {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  /* A fixed first column: the race line starts at the same place whatever the counter says. */
+  grid-template-columns: 250px minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+  padding: 4px var(--lv-gutter) 4px;
+}
+
+.lv-race-side {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 12px;
+  padding-top: 18px;
+  white-space: nowrap;
+}
+
+.lv-race-more {
+  grid-column: 2;
+  min-height: 1.3em;
+  overflow: hidden;
+  font-size: var(--lv-xs);
+  color: var(--lv-muted);
+  text-overflow: ellipsis;
+}
+
+.lv-race-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--lv-xs);
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.lv-race-key i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lv-flame);
+  box-shadow: 0 0 10px rgba(255, 112, 69, 0.8);
+}
+
+.lv-race-value {
+  font-size: 24px;
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-race-value small {
+  margin-left: 6px;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--lv-muted-strong);
+}
+
+.lv-race-body {
+  min-width: 0;
+}
+
+.lv-track {
+  position: relative;
+  height: 40px;
+}
+
+.lv-rail,
+.lv-fill {
+  position: absolute;
+  top: 28px;
+  left: 0;
+  height: 2px;
+  border-radius: 2px;
+}
+
+.lv-rail {
+  right: 0;
+  background: rgba(101, 163, 212, 0.22);
+}
+
+/* The part the attacker has covered: thicker than the rest, in its colour. */
+.lv-fill {
+  top: 27px;
+  height: 4px;
+  background: linear-gradient(90deg, rgba(255, 112, 69, 0.15), rgba(255, 112, 69, 0.85));
+}
+
+.lv-track-start {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  font-size: var(--lv-xs);
+  color: var(--lv-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-phase {
+  font-size: 0.85em;
+  font-weight: 500;
+  color: var(--lv-muted-strong);
+}
+
+.lv-phase b {
+  font-weight: 650;
+  color: var(--lv-green);
+}
+
+/* The playhead: a white cursor, so it is never taken for an alert. */
+.lv-head-dot {
+  position: absolute;
+  top: 20px;
+  width: 2px;
+  height: 18px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--lv-text);
+  box-shadow: 0 0 10px rgba(238, 247, 255, 0.55);
+}
+
+.lv-pin {
+  position: absolute;
+  top: 24px;
+  width: 1px;
+  height: 10px;
+  background: rgba(255, 112, 69, 0.55);
+}
+
+.lv-flag {
+  position: absolute;
+  top: 0;
+  height: 40px;
+  pointer-events: auto;
+}
+
+.lv-flag i {
+  position: absolute;
+  top: 22px;
+  left: -7px;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--lv-flame);
+  box-shadow: 0 0 0 3px rgba(255, 112, 69, 0.22), 0 0 18px rgba(255, 112, 69, 0.8);
+  transform: rotate(45deg);
+  animation: lv-plant 0.7s var(--lv-ease) both;
+}
+
+.lv-flag span {
+  position: absolute;
+  bottom: 21px;
+  left: 0;
+  font-size: var(--lv-md);
+  color: #ffb59c;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  font-variant-numeric: tabular-nums;
+  animation: lv-rise 0.6s var(--lv-ease) both;
+}
+
+.lv-flag span b {
+  font-weight: 650;
+  color: var(--lv-text);
+}
+
+.lv-flag.is-end span {
+  transform: translateX(-100%);
+  left: 10px;
+}
+
+.lv-flag.is-goal i {
+  background: var(--lv-text-soft);
+  box-shadow: 0 0 12px rgba(238, 247, 255, 0.6);
+}
+
+.lv-flag.is-goal span {
+  color: var(--lv-text-soft);
+}
+
+.lv-flag-wait {
+  position: absolute;
+  right: 0;
+  bottom: 18px;
+  font-size: var(--lv-sm);
+  color: var(--lv-muted);
+  white-space: nowrap;
+}
+
+.lv-race-notes {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 20px;
+  margin-top: 2px;
+  min-width: 0;
+}
+
+.lv-winning {
+  min-width: 0;
+  font-size: clamp(15px, 8px + 0.62vw, 20px);
+  font-weight: 560;
+  color: var(--lv-text-soft);
+}
+
+.lv-winning em {
+  font-style: normal;
+  font-weight: 650;
+  color: var(--lv-flame);
+}
+
+.lv-race-end {
+  flex: none;
+  padding-left: 48px;
+  font-size: var(--lv-xs);
+  color: var(--lv-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- the stage ---------- */
+
+.lv-main {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+}
+
+.lv-stage {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.lv-map,
+.lv-map > svg,
+.lv-glows,
+.lv-motion,
+.lv-labels {
+  position: absolute;
+  inset: 0;
+}
+
+.lv-map > svg {
+  width: 100%;
+  height: 100%;
+}
+
+.lv-glows,
+.lv-motion {
+  pointer-events: none;
+}
+
+.lv-stars rect {
+  fill: rgb(160, 200, 235);
+}
+
+.lv-halo {
+  fill: none;
+  stroke: rgba(101, 163, 212, 0.07);
+}
+
+.lv-orbit {
+  fill: none;
+  stroke: rgba(101, 163, 212, 0.12);
+  stroke-dasharray: 2 6;
+}
+
+.lv-link {
+  fill: none;
+  stroke: rgba(101, 163, 212, 0.42);
+  stroke-width: 1.3;
+}
+
+.lv-link.is-used {
+  stroke: rgba(255, 112, 69, 0.6);
+}
+
+.lv-wire {
+  fill: none;
+  stroke-width: 1;
+  transition: stroke 0.6s var(--lv-ease), opacity 0.6s var(--lv-ease);
+}
+
+.lv-wire--hs {
+  stroke: rgba(101, 163, 212, 0.3);
+  stroke-width: 1.2;
+}
+
+.lv-wire--sj {
+  stroke: rgba(123, 202, 255, 0.2);
+}
+
+.is-many .lv-wire--sj {
+  stroke: rgba(123, 202, 255, 0.3);
+  stroke-dasharray: 2 4;
+}
+
+.lv-wire--sj.is-used {
+  stroke: rgba(123, 202, 255, 0.36);
+}
+
+.lv-wire--jd {
+  stroke: rgba(101, 163, 212, 0.2);
+}
+
+.lv-wire--jd.is-alert {
+  stroke: rgba(255, 112, 69, 0.6);
+  stroke-width: 1.6;
+}
+
+/* A lab rule at alert level lights its path as clearly as a published alert, in violet. */
+.lv-wire--jd.is-lab {
+  stroke: rgba(168, 146, 255, 0.7);
+  stroke-width: 1.6;
+}
+
+.lv-wire--jd.is-review {
+  stroke: rgba(247, 184, 75, 0.38);
+}
+
+.is-hush .lv-wire--hs.is-current {
+  stroke: rgba(255, 110, 121, 0.5);
+  stroke-dasharray: 4 6;
+}
+
+.is-hush .lv-wire--sj,
+.is-hush .lv-wire--jd {
+  stroke: rgba(123, 202, 255, 0.28);
+  stroke-dasharray: 2 7;
+}
+
+.lv-junction circle {
+  fill: none;
+  stroke: rgba(101, 163, 212, 0.16);
+}
+
+.lv-junction .lv-junction-dot {
+  fill: rgba(123, 202, 255, 0.55);
+  stroke: none;
+}
+
+.lv-host-body {
+  stroke: rgba(101, 163, 212, 0.5);
+  stroke-width: 1.5;
+  transition: stroke 0.5s var(--lv-ease);
+}
+
+.lv-host--attacker .lv-host-body {
+  stroke: rgba(255, 112, 69, 0.6);
+}
+
+.lv-host--defense .lv-host-body {
+  stroke: rgba(123, 202, 255, 0.6);
+}
+
+.lv-host--internet .lv-host-body {
+  stroke-dasharray: 4 4;
+}
+
+.lv-host.is-running .lv-host-body {
+  stroke: rgba(255, 140, 100, 0.8);
+}
+
+.lv-host.is-stopped .lv-host-body,
+.lv-host.is-unseen .lv-host-body {
+  stroke: rgba(101, 163, 212, 0.5);
+}
+
+.lv-glyph {
+  fill: none;
+  stroke: rgba(180, 197, 214, 0.7);
+  stroke-width: 1.2;
+}
+
+.lv-glyph-led {
+  fill: rgba(123, 202, 255, 0.9);
+  stroke: none;
+}
+
+.lv-glyph--attacker {
+  fill: rgba(255, 112, 69, 0.75);
+  stroke: none;
+}
+
+.lv-glyph--defense {
+  stroke: rgba(123, 202, 255, 0.8);
+  stroke-width: 1.4;
+}
+
+.lv-host-ring {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 2;
+  transition: stroke 0.5s var(--lv-ease);
+}
+
+.lv-host.is-alerted .lv-host-ring {
+  stroke: rgba(255, 112, 69, 0.85);
+}
+
+.lv-host.is-stopped .lv-host-ring {
+  stroke: rgba(40, 217, 176, 0.9);
+  stroke-dasharray: 100;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: rotate(-90deg);
+  animation: lv-draw 0.9s var(--lv-ease) both;
+}
+
+.lv-host.is-unseen .lv-host-ring {
+  stroke: rgba(255, 110, 121, 0.8);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+
+/* An unseen step keeps one red dashed ring on its host and nothing else around it. */
+.is-hush .lv-halo,
+.is-hush .lv-orbit {
+  opacity: 0;
+}
+
+.lv-sensor-body {
+  stroke: rgba(var(--rgb), 0.6);
+  stroke-width: 1.3;
+}
+
+.lv-sensor-ring {
+  fill: none;
+  stroke: rgba(var(--rgb), 0.85);
+  stroke-width: 1.2;
+}
+
+.lv-sensor-dot {
+  fill: rgb(var(--rgb));
+}
+
+.lv-sensor.is-crossed .lv-sensor-body,
+.lv-sensor.is-crossed .lv-sensor-ring,
+.lv-sensor.is-crossed .lv-sensor-dot {
+  opacity: 0.45;
+}
+
+.lv-cross line {
+  stroke: var(--lv-red);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  animation: lv-fade-in 0.5s var(--lv-ease) both;
+}
+
+.lv-engine-body {
+  stroke: rgba(101, 163, 212, 0.55);
+  stroke-width: 1.4;
+}
+
+.lv-engine-core {
+  fill: none;
+  stroke: rgba(123, 202, 255, 0.7);
+  stroke-width: 1.1;
+}
+
+.lv-engine--lab .lv-engine-body {
+  stroke: rgba(168, 146, 255, 0.6);
+}
+
+.lv-engine--lab .lv-engine-core {
+  stroke: rgba(168, 146, 255, 0.7);
+}
+
+.lv-engine-edge {
+  fill: none;
+  stroke: transparent;
+  transition: stroke 0.4s var(--lv-ease);
+}
+
+.lv-engine.is-alert .lv-engine-edge {
+  stroke: rgba(255, 112, 69, 0.92);
+  stroke-width: 2;
+}
+
+.lv-engine.is-alert .lv-engine-core {
+  stroke: rgba(255, 150, 110, 0.9);
+}
+
+.lv-engine.is-lab .lv-engine-edge {
+  stroke: rgba(168, 146, 255, 0.85);
+  stroke-width: 1.3;
+}
+
+.lv-engine.is-review .lv-engine-edge {
+  stroke: rgba(247, 184, 75, 0.85);
+  stroke-width: 1.3;
+}
+
+.is-hush .lv-engine {
+  opacity: 0.55;
+  transition: opacity 0.6s var(--lv-ease);
+}
+
+/* glows: soft light behind a node, keyed by what has arrived */
+
+.lv-glow {
+  --rgb: 255, 112, 69;
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(var(--rgb), 0.34), rgba(var(--rgb), 0.1) 45%, rgba(var(--rgb), 0));
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.7s var(--lv-ease);
+}
+
+.lv-glow--host.is-on {
+  opacity: 0.9;
+}
+
+.lv-glow--host.is-alert {
+  opacity: 0.55;
+}
+
+.lv-glow--host.is-stopped {
+  --rgb: 40, 217, 176;
+  opacity: 0.45;
+}
+
+.lv-glow--engine.is-alert {
+  opacity: 1;
+}
+
+.lv-glow--engine.is-lab {
+  --rgb: 168, 146, 255;
+  opacity: 0.4;
+}
+
+.lv-glow--engine.is-review {
+  --rgb: 247, 184, 75;
+  opacity: 0.22;
+}
+
+/* motion: lights on their paths and rings that flare once */
+
+.lv-light {
+  --rgb: 123, 202, 255;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 16px;
+  height: 2.5px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(var(--rgb), 0), rgba(var(--rgb), 0.95));
+  box-shadow: 4px 0 8px rgba(var(--rgb), 0.55);
+  offset-rotate: auto;
+  offset-anchor: 100% 50%;
+  animation-name: lv-travel;
+  animation-timing-function: cubic-bezier(0.42, 0.05, 0.38, 1);
+  animation-fill-mode: both;
+}
+
+.lv-light.is-strong {
+  width: 26px;
+  height: 3.5px;
+  box-shadow: 5px 0 14px rgba(var(--rgb), 0.85);
+}
+
+.lv-ring {
+  --rgb: 255, 140, 100;
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.lv-ring--launch {
+  border: 1.5px solid rgba(var(--rgb), 0.6);
+  animation-name: lv-launch;
+}
+
+.lv-ring--sensor {
+  border: 1.4px solid rgba(var(--rgb), 0.85);
+  box-shadow: 0 0 18px 4px rgba(var(--rgb), 0.35);
+  animation-name: lv-flash;
+}
+
+.lv-ring--engine {
+  --rgb: 255, 112, 69;
+  border: 1.5px solid rgba(var(--rgb), 0.55);
+  animation-name: lv-flare;
+}
+
+.lv-ring--engine.is-lab {
+  --rgb: 168, 146, 255;
+}
+
+.lv-ring--engine.is-review {
+  --rgb: 247, 184, 75;
+  border-width: 1px;
+}
+
+.lv-ring--hush {
+  --rgb: 255, 110, 121;
+  border: 1.2px dashed rgba(var(--rgb), 0.45);
+  animation-name: lv-hush;
+}
+
+.lv.is-paused .lv-motion > * {
+  animation-play-state: paused;
+}
+
+.is-calm .lv-motion {
+  opacity: 0.5;
+}
+
+/* labels: real text, selectable */
+
+.lv-head {
+  position: absolute;
+  top: 10px;
+  text-align: center;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.lv-head.is-left {
+  text-align: left;
+  transform: none;
+}
+
+.lv-head b {
+  display: block;
+  font-size: var(--lv-xs);
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.lv-head span {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--lv-xs);
+  color: rgba(144, 166, 188, 0.75);
+}
+
+.lv-host-label {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 340px;
+  text-align: center;
+  transform: translateX(-50%);
+}
+
+.lv-host-label.is-small {
+  width: 200px;
+  gap: 1px;
+}
+
+.lv-host-name {
+  font-size: clamp(14px, 7px + 0.5vw, 17px);
+  font-weight: 650;
+  color: var(--lv-text-soft);
+  white-space: nowrap;
+}
+
+.is-small .lv-host-name {
+  font-size: 13px;
+}
+
+/* On a network, links pass behind the labels, never through their words. */
+.is-small :is(.lv-host-name, .lv-host-role) {
+  width: fit-content;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: rgba(3, 14, 26, 0.88);
+}
+
+.lv-host-command {
+  display: -webkit-box;
+  max-width: min(300px, 24vw);
+  min-height: 1.45em;
+  margin: 2px 0;
+  overflow: hidden;
+  font-family: var(--lv-mono);
+  font-size: clamp(12px, 6px + 0.42vw, 14.5px);
+  line-height: 1.45;
+  color: var(--lv-text-soft);
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: break-word;
+}
+
+.lv-host-command span::before {
+  content: "$ ";
+  color: var(--lv-flame);
+  opacity: 0.8;
+}
+
+.lv-host-role {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: var(--lv-sm);
+  color: var(--lv-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.is-small .lv-host-role {
+  max-width: 150px;
+  font-size: 11.5px;
+  line-height: 1.3;
+  white-space: normal;
+  text-wrap: balance;
+}
+
+.lv-badge {
+  position: absolute;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transform: translate(-50%, -100%);
+  animation: lv-fade-in 0.4s var(--lv-ease) both;
+}
+
+.lv-badge.is-running {
+  color: #ffb59c;
+  box-shadow: inset 0 0 0 1px rgba(255, 112, 69, 0.4);
+}
+
+.lv-badge.is-seen,
+.lv-badge.is-noeffect,
+.lv-badge.is-inconclusive {
+  color: var(--lv-text-soft);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+}
+
+.lv-badge.is-alerted {
+  color: #ffb59c;
+  box-shadow: inset 0 0 0 1px rgba(255, 112, 69, 0.55);
+}
+
+.lv-badge.is-blocked {
+  color: var(--lv-green);
+  background: rgba(40, 217, 176, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(40, 217, 176, 0.5);
+}
+
+.lv-badge.is-unseen {
+  padding: 2px 8px;
+  border: 1.5px dashed rgba(255, 110, 121, 0.75);
+  color: var(--lv-red);
+}
+
+.lv-sensor-label {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  white-space: nowrap;
+}
+
+.lv-sensor-label.is-above {
+  flex-direction: column-reverse;
+}
+
+.lv-sensor-label.is-flip {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.lv-sensor-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--lv-md);
+  font-weight: 600;
+  color: var(--lv-text-soft);
+}
+
+.lv-sensor-label.is-small .lv-sensor-name {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--lv-muted-strong);
+}
+
+.lv-sensor-count {
+  padding-left: 15px;
+  font-size: var(--lv-xs);
+  color: var(--lv-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.is-small .lv-sensor-count {
+  padding-left: 0;
+}
+
+.lv-sensor-count.is-zero {
+  font-weight: 650;
+  color: var(--lv-red);
+}
+
+.lv-engine-label {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.lv-engine-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: clamp(14px, 7px + 0.5vw, 17px);
+  font-weight: 650;
+  color: var(--lv-text-soft);
+  white-space: nowrap;
+}
+
+.lv-tag {
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lv-violet);
+  box-shadow: inset 0 0 0 1px rgba(168, 146, 255, 0.4);
+}
+
+.lv-engine-sub {
+  font-size: var(--lv-sm);
+  color: var(--lv-muted);
+  white-space: nowrap;
+}
+
+.lv-matches {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 58px;
+  margin-top: 8px;
+}
+
+.lv-match {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  font-size: var(--lv-md);
+  color: var(--lv-text-soft);
+  white-space: nowrap;
+  animation: lv-rise 0.5s var(--lv-ease) both;
+}
+
+.lv-match-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lv-match-count {
+  font-size: var(--lv-xs);
+  color: var(--lv-muted);
+}
+
+.lv-match--more,
+.lv-match--none {
+  padding-left: 2px;
+  font-size: var(--lv-sm);
+  color: var(--lv-muted);
+}
+
+/* A match of an earlier step, raised after that step ended: the same chip, its step named after it. */
+.lv-match--late .lv-match-count {
+  flex: none;
+}
+
+.lv-chip {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lv-chip--alert {
+  color: #2a0b02;
+  background: var(--lv-flame);
+  box-shadow: 0 0 14px rgba(255, 112, 69, 0.45);
+}
+
+.lv-chip--lab {
+  color: var(--lv-violet);
+  box-shadow: inset 0 0 0 1px rgba(168, 146, 255, 0.6);
+}
+
+.lv-chip--review {
+  color: var(--lv-amber-soft);
+  box-shadow: inset 0 0 0 1px rgba(247, 184, 75, 0.55);
+}
+
+.lv-chip--launcher {
+  color: var(--lv-muted);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+.lv-link-label {
+  position: absolute;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--lv-muted-strong);
+  white-space: nowrap;
+  background: var(--lv-ink-950);
+  box-shadow: 0 0 0 1px rgba(93, 151, 194, 0.16);
+  transform: translate(-50%, -50%);
+}
+
+.lv-silence {
+  position: absolute;
+  width: 400px;
+  padding: 40px 30px;
+  border-radius: 50%;
+  text-align: center;
+  background: radial-gradient(closest-side, rgba(3, 14, 26, 0.95), rgba(3, 14, 26, 0.8) 55%, rgba(3, 14, 26, 0));
+  transform: translate(-50%, -50%);
+  animation: lv-fade-in 0.8s var(--lv-ease) both;
+}
+
+.lv-silence b {
+  display: block;
+  font-size: clamp(22px, 10px + 0.95vw, 30px);
+  font-weight: 550;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--lv-text-soft);
+  text-wrap: balance;
+}
+
+.lv-silence em {
+  font-style: normal;
+  color: var(--lv-red);
+}
+
+/* ---------- what the sensors recorded ---------- */
+
+/* A full-width strip under the map: times on the left gutter, rule marks on the right one. */
+.lv-log {
+  position: relative;
+  z-index: 2;
+  padding: 0 var(--lv-gutter) 4px;
+}
+
+.lv-log-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 6px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--lv-line);
+  white-space: nowrap;
+}
+
+.lv-log-head > b {
+  font-size: var(--lv-xs);
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.lv-log-count {
+  font-size: var(--lv-sm);
+  color: var(--lv-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-log-count em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--lv-blue-soft);
+}
+
+.lv-log-more {
+  all: unset;
+  font-size: var(--lv-xs);
+  color: var(--lv-blue-soft);
+  cursor: pointer;
+}
+
+.lv-log-more:hover {
+  text-decoration: underline;
+}
+
+.lv-log-key {
+  display: flex;
+  gap: 14px;
+  margin-left: auto;
+  font-size: var(--lv-xs);
+  color: var(--lv-muted);
+}
+
+.lv-log-key > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lv-log-key b {
+  font-weight: 600;
+  color: var(--lv-text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-log-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: calc(4 * 1.6em + 6px);
+  font-size: clamp(12.5px, 7px + 0.4vw, 15px);
+}
+
+.lv-log-line {
+  display: grid;
+  grid-template-columns: 7.6em 7px 7.6em minmax(0, 1fr) 6.6em;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.6;
+  white-space: nowrap;
+  animation: lv-rise 0.4s var(--lv-ease) both;
+}
+
+.lv-log-time {
+  font-family: var(--lv-mono);
+  font-size: 0.9em;
+  color: var(--lv-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-log-kind {
+  overflow: hidden;
+  font-size: 0.93em;
+  color: var(--lv-muted);
+  text-overflow: ellipsis;
+}
+
+.lv-log-text {
+  overflow: hidden;
+  font-family: var(--lv-mono);
+  color: var(--lv-text-soft);
+  text-overflow: ellipsis;
+}
+
+.lv-log-line.is-old .lv-log-text {
+  color: var(--lv-muted-strong);
+}
+
+.lv-log-mark {
+  justify-self: end;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lv-log-line.is-alert .lv-log-text,
+.lv-log-line.is-alert .lv-log-kind {
+  color: #ffb59c;
+}
+
+/* Log marks are outlines only: the one filled chip on screen is the outcome "alerted". */
+.lv-log-line.is-alert .lv-log-mark {
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--lv-flame);
+  box-shadow: inset 0 0 0 1px rgba(255, 112, 69, 0.7);
+}
+
+.lv-log-line.is-lab .lv-log-text,
+.lv-log-line.is-lab .lv-log-kind {
+  color: #c9bcff;
+}
+
+.lv-log-line.is-lab .lv-log-mark {
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--lv-violet);
+  box-shadow: inset 0 0 0 1px rgba(168, 146, 255, 0.6);
+}
+
+.lv-log-line.is-review .lv-log-text,
+.lv-log-line.is-review .lv-log-kind {
+  color: var(--lv-amber-soft);
+}
+
+.lv-log-line.is-review .lv-log-mark {
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--lv-amber-soft);
+  box-shadow: inset 0 0 0 1px rgba(247, 184, 75, 0.55);
+}
+
+.lv-log-line.is-refused .lv-log-text {
+  color: var(--lv-green-soft);
+}
+
+.lv-log-line.is-refused .lv-log-kind,
+.lv-log-line.is-refused .lv-log-mark {
+  color: var(--lv-green);
+}
+
+.lv-log-line:is(.is-alert, .is-lab, .is-review) .lv-dot {
+  box-shadow: 0 0 0 2px var(--lv-ink-950), 0 0 0 3.2px rgba(var(--rgb), 0.9);
+}
+
+.lv-log-none {
+  padding-top: 4px;
+  font-size: var(--lv-md);
+  color: var(--lv-muted);
+}
+
+/* ---------- caption ---------- */
+
+/* The story band: a fixed height with clear space above the eyebrow and above the scrubber. */
+.lv-caption {
+  position: relative;
+  z-index: 2;
+  height: clamp(184px, 23vh, 270px);
+  padding: 18px 48px 0;
+  overflow: hidden;
+}
+
+.lv-caption-in {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  text-align: center;
+  animation: lv-rise 0.5s var(--lv-ease) both;
+}
+
+/* The verdict and what follows it: kept across steps, faded in when the outcome is told. */
+.lv-caption-out {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  margin-top: 9px;
+  text-align: center;
+}
+
+.lv-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 10px;
+  font-size: var(--lv-xs);
+  color: var(--lv-muted);
+}
+
+/* Only a step that is not a test names its role, in neutral caps: colour is kept for outcomes. */
+.lv-role {
+  font-size: var(--lv-xs);
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-muted-strong);
+}
+
+.lv-kicker-hint {
+  color: var(--lv-muted);
+}
+
+.lv-sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--lv-muted);
+  opacity: 0.6;
+}
+
+.lv-tech {
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-family: var(--lv-mono);
+  font-size: var(--lv-xs);
+  color: var(--lv-blue-soft);
+  box-shadow: inset 0 0 0 1px rgba(123, 202, 255, 0.3);
+}
+
+.lv-title {
+  font-size: var(--lv-sm);
+  color: var(--lv-muted-strong);
+}
+
+.lv-step-chip {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: var(--lv-xs);
+  color: var(--lv-muted);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+  font-variant-numeric: tabular-nums;
+}
+
+/* One display sentence, never edge to edge: about 52 characters a line, wrapped in balance. */
+.lv-plain {
+  max-width: min(100%, 26em);
+  font-size: clamp(22px, 2.15vw, 46px);
+  font-weight: 520;
+  line-height: 1.22;
+  letter-spacing: -0.012em;
+  color: var(--lv-text);
+  text-wrap: balance;
+  text-shadow: 0 2px 18px rgba(2, 9, 19, 0.9);
+}
+
+.lv-plain.is-long {
+  max-width: min(100%, 30em);
+  font-size: clamp(20px, 1.9vw, 40px);
+  line-height: 1.15;
+}
+
+/* A rerun against the run it repeats: two short columns, with and without. */
+.lv-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 340px));
+  justify-content: center;
+  margin-top: 4px;
+  text-align: left;
+}
+
+.lv-pair-side {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 18px;
+}
+
+.lv-pair-side + .lv-pair-side {
+  border-left: 1px solid var(--lv-line);
+}
+
+.lv-pair-head {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.lv-pair-side.is-stopped .lv-pair-head {
+  color: var(--lv-green);
+}
+
+.lv-pair-body {
+  display: flex;
+  flex-direction: column;
+  font-size: 14px;
+  color: var(--lv-text-soft);
+}
+
+.lv-pair-body code {
+  font-family: var(--lv-mono);
+  font-size: 13px;
+  color: var(--lv-green-soft);
+}
+
+.lv-pair-body small {
+  font-size: 12px;
+  color: var(--lv-muted);
+}
+
+.lv-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 14px;
+  min-height: 34px;
+  font-size: clamp(15px, 8px + 0.5vw, 18px);
+  color: var(--lv-muted-strong);
+  transition: opacity 0.5s var(--lv-ease);
+}
+
+.lv-verdict.is-hidden,
+.lv-after.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  transition: none;
+}
+
+.lv-word {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.lv-word.is-alerted {
+  color: #2a0b02;
+  background: var(--lv-flame);
+  box-shadow: 0 0 22px rgba(255, 112, 69, 0.45);
+}
+
+.lv-word.is-seen,
+.lv-word.is-noeffect,
+.lv-word.is-inconclusive {
+  color: var(--lv-muted-strong);
+  box-shadow: inset 0 0 0 1px rgba(180, 197, 214, 0.45);
+}
+
+.lv-word.is-unseen {
+  padding: 2.5px 8.5px;
+  border: 1.5px dashed rgba(255, 110, 121, 0.85);
+  color: var(--lv-red);
+}
+
+.lv-word.is-stopped {
+  color: var(--lv-green);
+  box-shadow: inset 0 0 0 1.5px rgba(40, 217, 176, 0.75);
+}
+
+.lv-why b {
+  font-weight: 600;
+  color: var(--lv-text-soft);
+}
+
+.lv-red {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--lv-red);
+}
+
+/* "Fix this" looks the same whatever the outcome, so the outcome's own colour leads. */
+.lv-fix {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 13px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--lv-blue-soft);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(123, 202, 255, 0.45);
+  cursor: pointer;
+}
+
+.lv-fix:hover {
+  background: rgba(123, 202, 255, 0.1);
+}
+
+.lv-fix svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+
+.lv-after {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  transition: opacity 0.5s var(--lv-ease) 0.15s;
+}
+
+.lv-labnote {
+  font-size: var(--lv-md);
+  color: #c9bcff;
+}
+
+.lv-labnote b {
+  font-weight: 600;
+  color: var(--lv-violet);
+}
+
+.lv-fix-hint {
+  font-size: var(--lv-sm);
+  color: var(--lv-muted);
+}
+
+.lv-falsenote {
+  font-size: var(--lv-sm);
+  color: var(--lv-muted-strong);
+}
+
+/* A match of an earlier step raised after that step ended: one quiet line at the foot of the band, under the step's own words. */
+.lv-late {
+  position: absolute;
+  right: 48px;
+  bottom: 8px;
+  left: 48px;
+  overflow: hidden;
+  font-size: var(--lv-sm);
+  color: #ffb79e;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- transport ---------- */
+
+.lv-transport {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 18px;
+  padding: 2px var(--lv-gutter) 10px;
+}
+
+.lv-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 6px;
+}
+
+.lv-play {
+  all: unset;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: var(--lv-text);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+  cursor: pointer;
+}
+
+.lv-play svg {
+  fill: currentColor;
+}
+
+.lv-play:hover {
+  background: var(--lv-surface-soft);
+}
+
+.lv-play:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.lv-clock {
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding-top: 6px;
+  line-height: 1.15;
+}
+
+.lv-clock b {
+  font-size: clamp(15px, 8px + 0.5vw, 18px);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-clock small {
+  margin-left: 4px;
+  font-size: var(--lv-xs);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--lv-muted);
+}
+
+.lv-clock span {
+  font-size: var(--lv-xs);
+  color: var(--lv-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-stepno {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  padding-top: 4px;
+  font-size: var(--lv-xs);
+  color: var(--lv-muted);
+  white-space: nowrap;
+}
+
+.lv-stepno b {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--lv-text-soft);
+}
+
+/* As wide as the longest place, and takes no height. */
+.lv-stepno .lv-stepno-sizer {
+  height: 0;
+  margin-top: -1px;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+.lv-stepno span {
+  max-width: 210px;
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: normal;
+  text-align: right;
+}
+
+.lv-scrub-wrap {
+  min-width: 0;
+}
+
+.lv-scrub {
+  position: relative;
+  height: calc(28px + var(--lanes-h, 0px));
+  cursor: pointer;
+  touch-action: none;
+  border-radius: 3px;
+}
+
+.lv-cells {
+  position: absolute;
+  top: 6px;
+  right: 0;
+  left: 0;
+  height: 18px;
+}
+
+/* One even bar per step, a 2px gap between bars. */
+.lv-cell {
+  position: absolute;
+  bottom: 0;
+  width: calc(var(--slot, 1%) - 2px);
+  height: 18px;
+  border-radius: 2px;
+  background: var(--lv-ink-700);
+  box-shadow: inset 0 0 0 1px rgba(101, 163, 212, 0.28);
+}
+
+.lv-cell.is-short {
+  height: 9px;
+}
+
+/*
+ * Every outcome has a mark of its own besides its colour, the same on the
+ * scrubber, the analyse lanes and the legend: alerted has a notch on top,
+ * stopped a diagonal hatch, unseen a red outline, no effect and inconclusive
+ * a dotted outline, and a step still to come a dashed one. Seen is the plain fill.
+ */
+.lv-cell:not(.is-past, .is-now) {
+  background: transparent;
+  box-shadow: none;
+  border: 1px dashed rgba(101, 163, 212, 0.45);
+  box-sizing: border-box;
+}
+
+.lv-cell:is(.is-past, .is-now) {
+  box-shadow: none;
+}
+
+.lv-cell:is(.is-past, .is-now).is-alerted,
+.lv-ln-step.is-alerted,
+.lv-legend i.is-alerted {
+  background: var(--lv-flame);
+}
+
+.lv-legend i.is-alerted {
+  position: relative;
+}
+
+.lv-cell:is(.is-past, .is-now).is-alerted::before,
+.lv-ln-step.is-alerted::before,
+.lv-legend i.is-alerted::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  margin-left: -3.5px;
+  border-top: 4px solid var(--lv-flame);
+  border-right: 3.5px solid transparent;
+  border-left: 3.5px solid transparent;
+}
+
+.lv-cell.is-past.is-seen {
+  background: rgba(180, 197, 214, 0.42);
+}
+
+.lv-cell.is-now.is-seen {
+  background: var(--lv-muted-strong);
+}
+
+.lv-cell:is(.is-past, .is-now).is-unseen {
+  background: rgba(255, 110, 121, 0.22);
+  box-shadow: inset 0 0 0 2px var(--lv-red);
+}
+
+.lv-cell:is(.is-past, .is-now).is-stopped,
+.lv-ln-step.is-stopped,
+.lv-legend i.is-stopped {
+  background: repeating-linear-gradient(135deg, var(--lv-green) 0 2px, rgba(40, 217, 176, 0.32) 2px 4px);
+}
+
+.lv-cell:is(.is-past, .is-now):is(.is-noeffect, .is-inconclusive),
+.lv-ln-step:is(.is-noeffect, .is-inconclusive),
+.lv-legend i.is-noeffect {
+  background: rgba(144, 166, 188, 0.16);
+  border: 1.5px dotted var(--lv-muted);
+  box-sizing: border-box;
+}
+
+/* Canary and control steps: outlines, never a filled score cell. Alerted is a solid outline, any other outcome a dashed one. */
+.lv-cells .lv-cell:is(.is-past, .is-now).is-check,
+.lv-ln-steps .lv-ln-step.is-check {
+  background: transparent;
+  box-shadow: none;
+  border: 1.5px dashed var(--lv-muted);
+  box-sizing: border-box;
+}
+
+.lv-cells .lv-cell:is(.is-past, .is-now).is-check.is-alerted,
+.lv-ln-steps .lv-ln-step.is-check.is-alerted {
+  background: transparent;
+  border: 1.5px solid var(--lv-flame);
+}
+
+.lv-cell.is-past.is-short {
+  opacity: 0.6;
+}
+
+.lv-cell.is-now {
+  outline: 1px solid rgba(238, 247, 255, 0.7);
+  outline-offset: 2px;
+}
+
+.lv-lanes {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  left: 0;
+  width: 100%;
+  height: var(--lanes-h, 0px);
+}
+
+.lv-lane {
+  fill: rgba(123, 202, 255, 0.7);
+  stroke: none;
+}
+
+.lv-lane.is-events {
+  fill: rgba(180, 197, 214, 0.4);
+}
+
+.lv-lane.is-alert {
+  fill: var(--lv-flame);
+}
+
+.lv-lanes-hint {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  left: 0;
+  height: var(--lanes-h, 0px);
+}
+
+.lv-future {
+  position: absolute;
+  top: 27px;
+  right: 0;
+  bottom: -1px;
+  background: rgba(3, 14, 26, 0.62);
+  pointer-events: none;
+}
+
+.lv-first-mark {
+  position: absolute;
+  top: 1px;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 112, 69, 0.6);
+  pointer-events: none;
+}
+
+.lv-first-mark::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  background: var(--lv-flame);
+  transform: rotate(45deg);
+}
+
+.lv-playhead {
+  position: absolute;
+  top: 0;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--lv-text);
+  box-shadow: 0 0 10px rgba(238, 247, 255, 0.6);
+  pointer-events: none;
+}
+
+.lv-playhead::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--lv-text);
+}
+
+.lv-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 4px 14px;
+  margin-top: 7px;
+  font-size: clamp(12px, 6px + 0.42vw, 14px);
+  color: var(--lv-muted-strong);
+  white-space: nowrap;
+}
+
+.lv-legend span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.lv-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 2px;
+}
+
+.lv-legend i.is-seen {
+  background: var(--lv-muted-strong);
+}
+
+.lv-legend i.is-unseen {
+  box-shadow: inset 0 0 0 1.5px var(--lv-red);
+}
+
+.lv-legend i.is-future {
+  border: 1px dashed rgba(101, 163, 212, 0.6);
+  box-sizing: border-box;
+}
+
+.lv-legend i.is-check {
+  border: 1.5px dashed var(--lv-muted);
+  box-sizing: border-box;
+}
+
+.lv-legend i.is-short {
+  height: 4px;
+  background: rgba(180, 197, 214, 0.55);
+}
+
+.lv-legend-sep {
+  width: 1px;
+  height: 10px;
+  background: var(--lv-line);
+}
+
+/* ---------- analyse ---------- */
+
+.lv-analyse {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+  min-height: 0;
+  padding: 10px var(--lv-gutter) 18px;
+}
+
+.lv-mono {
+  font-family: var(--lv-mono);
+}
+
+/* the whole run on one axis */
+
+.lv-lanes-panel {
+  display: grid;
+  grid-template-columns: 156px minmax(0, 1fr);
+  column-gap: 16px;
+  padding: 6px 0 0;
+  border-bottom: 1px solid var(--lv-line);
+}
+
+.lv-ln-labels {
+  position: relative;
+}
+
+/* Lane labels: one plain name each, centred on its row; colour only in the small swatch. */
+.lv-ln-label {
+  position: absolute;
+  right: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.1;
+  color: var(--lv-text-soft);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lv-ln-label i {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(var(--rgb, 123, 202, 255));
+}
+
+.lv-ln-label.is-steps i {
+  border-radius: 1px;
+  background: rgba(180, 197, 214, 0.6);
+}
+
+.lv-ln-label.is-review i {
+  background: var(--lv-amber-soft);
+}
+
+.lv-ln-label.is-alert i {
+  background: var(--lv-flame);
+}
+
+.lv-ln-label.is-lab i {
+  background: var(--lv-violet);
+}
+
+.lv-ln-plot {
+  position: relative;
+  min-width: 0;
+}
+
+.lv-ln-svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.lv-ln-rule {
+  stroke: rgba(93, 151, 194, 0.1);
+}
+
+.lv-ln-base {
+  stroke: var(--lv-line);
+}
+
+.lv-ln-run path {
+  fill: none;
+  stroke: rgba(144, 166, 188, 0.45);
+}
+
+/* Role brackets are neutral: flame over the lanes is kept for the first-alert bracket alone. */
+.lv-ln-run text {
+  font-size: 11px;
+  font-weight: 500;
+  fill: var(--lv-muted-strong);
+}
+
+.lv-ln-ticks {
+  fill: rgba(var(--rgb), 0.72);
+}
+
+.lv-ln-review {
+  fill: rgba(255, 210, 125, 0.7);
+}
+
+.lv-ln-review.is-lab {
+  fill: rgba(168, 146, 255, 0.6);
+}
+
+.lv-ln-review.is-launcher {
+  fill: none;
+  stroke: rgba(255, 210, 125, 0.55);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+
+.lv-ln-alert {
+  fill: var(--lv-flame);
+}
+
+.lv-ln-lab {
+  fill: var(--lv-violet);
+}
+
+.lv-ln-bracket path {
+  fill: none;
+  stroke: rgba(255, 112, 69, 0.85);
+}
+
+.lv-ln-bracket text {
+  font-size: 12px;
+  font-weight: 600;
+  fill: #ffb197;
+}
+
+.lv-ln-break rect {
+  fill: var(--lv-ink-950);
+}
+
+.lv-ln-break path {
+  fill: none;
+  stroke: var(--lv-muted-strong);
+  stroke-width: 1.3;
+}
+
+.lv-ln-tick line {
+  stroke: rgba(144, 166, 188, 0.4);
+}
+
+.lv-ln-tick text {
+  font-size: 10.5px;
+  fill: var(--lv-muted);
+  white-space: pre;
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-ln-selected {
+  fill: rgba(22, 157, 255, 0.09);
+  stroke: rgba(123, 202, 255, 0.6);
+}
+
+.lv-ln-steps {
+  position: absolute;
+  right: 0;
+  left: 0;
+}
+
+.lv-ln-step {
+  all: unset;
+  position: absolute;
+  bottom: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--lv-ink-700);
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.lv-ln-step.is-short {
+  height: 50%;
+  opacity: 0.6;
+}
+
+.lv-ln-step.is-seen {
+  background: rgba(180, 197, 214, 0.5);
+}
+
+.lv-ln-step.is-unseen {
+  background: rgba(255, 110, 121, 0.14);
+  box-shadow: inset 0 0 0 2px var(--lv-red);
+}
+
+.lv-ln-steps .lv-ln-step.is-check {
+  opacity: 1;
+}
+
+.lv-ln-step:hover {
+  filter: brightness(1.35);
+}
+
+.lv-ln-step.is-selected {
+  opacity: 1;
+  outline: 2px solid var(--lv-text);
+  outline-offset: 1px;
+}
+
+.lv .lv-ln-step:focus-visible {
+  outline: 2px solid var(--lv-blue-soft);
+  outline-offset: 2px;
+}
+
+.lv-ln-foot {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 18px;
+  padding: 2px 0 8px;
+  font-size: 12px;
+  color: var(--lv-muted);
+}
+
+.lv-ln-breakkey {
+  margin-right: 2px;
+  font-weight: 600;
+  color: var(--lv-muted-strong);
+}
+
+/* the table and the detail */
+
+.lv-an-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(420px, 1fr);
+  gap: 20px;
+  min-height: 0;
+}
+
+.lv-table-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.lv-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.lv-seg {
+  display: flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(5, 20, 33, 0.6);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+.lv-seg button {
+  all: unset;
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--lv-muted-strong);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.lv-seg button b {
+  margin-left: 5px;
+  font-weight: 600;
+  color: var(--lv-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-seg button[aria-pressed="true"] {
+  color: var(--lv-text);
+  background: var(--lv-surface-soft);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+}
+
+.lv-seg button[aria-pressed="true"] b {
+  color: var(--lv-text-soft);
+}
+
+.lv-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lv-filter-chip {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--lv-muted-strong);
+  white-space: nowrap;
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+  cursor: pointer;
+}
+
+.lv-filter-chip b {
+  margin-left: 6px;
+  font-weight: 650;
+  color: var(--lv-text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-filter-chip[aria-pressed="true"] {
+  color: var(--lv-text);
+  background: var(--lv-surface-soft);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+}
+
+.lv-filter-chip .lv-ow {
+  font-size: 12px;
+}
+
+.lv-chips-scope {
+  align-self: center;
+  margin-right: 2px;
+  font-size: 12px;
+  color: var(--lv-muted);
+}
+
+.lv-filter-count {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--lv-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* An outcome word in a list: plain text, with its colour only on the dot before it. */
+.lv-ow {
+  --ow: var(--lv-muted);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--lv-text-soft);
+  white-space: nowrap;
+}
+
+.lv-ow::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--ow);
+  vertical-align: 1px;
+}
+
+.lv-ow.is-alerted {
+  --ow: var(--lv-flame);
+}
+
+.lv-ow.is-seen {
+  --ow: var(--lv-muted-strong);
+  color: var(--lv-muted-strong);
+}
+
+.lv-ow.is-seen::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--ow);
+}
+
+.lv-ow.is-unseen {
+  --ow: var(--lv-red);
+  color: var(--lv-red);
+}
+
+.lv-ow.is-unseen::before {
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border: 1.5px dashed var(--ow);
+  background: transparent;
+}
+
+.lv-ow.is-stopped {
+  --ow: var(--lv-green);
+}
+
+.lv-ow-note {
+  font-size: 12px;
+  color: var(--lv-muted);
+}
+
+.lv-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border-radius: 8px;
+  background: rgba(5, 20, 33, 0.55);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+.lv-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12.5px;
+}
+
+.lv-table col.is-n {
+  width: 40px;
+}
+
+.lv-table col.is-out {
+  width: 100px;
+}
+
+.lv-table col.is-role {
+  width: 80px;
+}
+
+.lv-table col.is-tech {
+  width: 92px;
+}
+
+.lv-table col.is-num {
+  width: 64px;
+}
+
+.lv-table col.is-rules {
+  width: 27%;
+}
+
+.lv-table thead th.is-plain {
+  padding: 9px 8px;
+}
+
+.lv-table td.is-role {
+  font-size: 11.5px;
+  color: var(--lv-muted);
+}
+
+.lv tr:not(.is-quiet) td.is-role {
+  color: var(--lv-muted-strong);
+}
+
+.lv-table thead th {
+  overflow: hidden;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0;
+  border-bottom: 1px solid var(--lv-line);
+  background: var(--lv-ink-875);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-align: left;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+  white-space: nowrap;
+}
+
+.lv-table thead th > button,
+.lv-table thead th > span {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px 8px;
+  cursor: pointer;
+}
+
+.lv-table thead th > span {
+  justify-content: flex-end;
+  cursor: default;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  font-size: 11px;
+}
+
+.lv-table thead th[aria-sort] {
+  color: var(--lv-text-soft);
+}
+
+.lv-table thead th i {
+  font-style: normal;
+}
+
+.lv-table tbody tr {
+  border-bottom: 1px solid rgba(93, 151, 194, 0.08);
+  cursor: pointer;
+}
+
+.lv-table tbody tr:hover {
+  background: rgba(17, 43, 64, 0.6);
+}
+
+/* Every row opens its step: a small chevron at its end says so. */
+.lv-table tbody td:last-child {
+  position: relative;
+  padding-right: 22px;
+}
+
+.lv-table tbody tr[data-step] td:last-child::after {
+  content: "›";
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--lv-muted);
+  transform: translateY(-55%);
+}
+
+.lv-table tbody tr[data-step]:hover td:last-child::after,
+.lv-table tbody tr.is-selected td:last-child::after {
+  color: var(--lv-blue-soft);
+}
+
+.lv-table tbody tr.is-selected {
+  background: rgba(22, 157, 255, 0.12);
+  box-shadow: inset 3px 0 0 var(--lv-blue-soft);
+}
+
+.lv-table td {
+  padding: 6px 8px;
+  overflow: hidden;
+  vertical-align: middle;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lv-table td.is-n {
+  color: var(--lv-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-table td.is-title > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lv-row-button {
+  all: unset;
+  overflow: hidden;
+  min-width: 0;
+  font-weight: 520;
+  color: var(--lv-text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.lv tr.is-quiet .lv-row-button,
+.lv tr.is-quiet td.is-tech {
+  color: var(--lv-muted-strong);
+}
+
+.lv-role-tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.lv-kept-tag {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--lv-muted);
+}
+
+.lv-table td.is-tech {
+  font-family: var(--lv-mono);
+  font-size: 11.5px;
+  color: var(--lv-blue-soft);
+}
+
+.lv-table td.is-num {
+  text-align: right;
+  color: var(--lv-muted-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-table td.is-num.is-zero {
+  color: var(--lv-muted);
+}
+
+.lv-table td.is-num.is-gap {
+  font-weight: 650;
+  color: var(--lv-red);
+}
+
+/* Score words are never cut: the cell wraps instead. */
+.lv-table td.is-rules {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--lv-muted);
+  white-space: normal;
+}
+
+.lv-table td.is-rules span {
+  white-space: nowrap;
+}
+
+.lv-table td.is-rules span + span {
+  margin-left: 9px;
+}
+
+.lv-table td.is-rules .is-lab {
+  color: #c9bcff;
+}
+
+.lv-table td.is-rules .is-info {
+  color: rgba(144, 166, 188, 0.75);
+}
+
+/* Only an alert is a coloured word; the rest are muted, with a coloured dot. */
+.lv-table td.is-rules .is-alert {
+  font-weight: 600;
+  color: var(--lv-flame);
+}
+
+.lv-table td.is-rules :is(.is-lab, .is-review)::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 5px;
+  border-radius: 50%;
+  vertical-align: 2px;
+}
+
+.lv-table td.is-rules .is-lab::before {
+  background: var(--lv-violet);
+}
+
+.lv-table td.is-rules .is-review::before {
+  background: var(--lv-amber-soft);
+}
+
+.lv-table-empty {
+  padding: 16px 10px;
+  color: var(--lv-muted);
+}
+
+/* The detail scrolls; a soft fade at its foot says there is more below. */
+.lv-an-detail {
+  min-height: 0;
+  overflow: auto;
+  mask-image: linear-gradient(180deg, #000 calc(100% - 26px), transparent);
+  padding: 18px 20px 22px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(13, 34, 53, 0.9), rgba(8, 26, 42, 0.85));
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+.lv-dt {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  color: var(--lv-text-soft);
+}
+
+/* The detail takes focus only so that its actions are the next stops; it is not a control. */
+.lv-dt:focus {
+  outline: none;
+}
+
+.lv-dt-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.lv-dt-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--lv-muted);
+}
+
+.lv-dt-kicker .lv-tech {
+  font-size: 11.5px;
+}
+
+.lv-dt-role {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-role.is-quiet {
+  color: var(--lv-blue-soft);
+}
+
+.lv-dt-tname {
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.lv-dt-actions .lv-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.lv-dt-actions .lv-button svg {
+  width: 10px;
+  height: 10px;
+  fill: currentColor;
+}
+
+.lv-dt-actions .lv-button.is-watch {
+  color: var(--lv-blue-soft);
+  box-shadow: inset 0 0 0 1px rgba(123, 202, 255, 0.45);
+}
+
+.lv-dt-actions .lv-button.is-close {
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-techline {
+  margin-bottom: 8px;
+}
+
+.lv-dt-title {
+  margin: 8px 0 6px;
+  font-size: 19px;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--lv-text);
+}
+
+.lv-dt-plain {
+  margin: 0 0 14px;
+  font-size: 14px;
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(2, 9, 19, 0.45);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+.lv-dt-verdict.is-unseen {
+  box-shadow: inset 0 0 0 1px rgba(255, 110, 121, 0.35);
+}
+
+.lv-dt-verdict.is-alerted {
+  box-shadow: inset 0 0 0 1px rgba(255, 112, 69, 0.35);
+}
+
+.lv-dt-verdict.is-stopped {
+  box-shadow: inset 0 0 0 1px rgba(40, 217, 176, 0.3);
+}
+
+.lv-dt-verdict .lv-word {
+  font-size: 11px;
+}
+
+.lv-dt-why {
+  flex: 1;
+  min-width: 180px;
+  font-size: 13px;
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-why b {
+  font-weight: 600;
+  color: var(--lv-text-soft);
+}
+
+.lv-dt-labnote {
+  color: #c9bcff;
+}
+
+.lv-dt-labnote b {
+  font-weight: 600;
+  color: var(--lv-violet);
+}
+
+.lv-dt-verdict .lv-fix {
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+
+.lv-dt-hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--lv-muted);
+}
+
+.lv-dt-compare {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-compare > div {
+  display: contents;
+}
+
+.lv-dt-compare > div > span:first-child {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+  align-self: baseline;
+}
+
+.lv-dt-compare > div.is-with > span:first-child {
+  color: var(--lv-green);
+}
+
+.lv-dt-compare b {
+  font-weight: 600;
+  color: var(--lv-text-soft);
+}
+
+.lv-dt-compare code {
+  font-family: var(--lv-mono);
+  font-size: 12px;
+  color: var(--lv-green-soft);
+  word-break: break-word;
+}
+
+.lv-dt-compare small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--lv-muted);
+}
+
+.lv-dt-sensors {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.lv-dt-sensors li {
+  display: grid;
+  grid-template-columns: 7px auto 1fr;
+  align-items: center;
+  column-gap: 8px;
+  color: var(--lv-text-soft);
+}
+
+.lv-dt-sensors b {
+  justify-self: end;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-dt-sensors b.is-gap {
+  color: var(--lv-red);
+}
+
+.lv-dt-sensors small {
+  grid-column: 2 / 4;
+  font-size: 12px;
+  color: var(--lv-muted);
+}
+
+/* A step's facts: a compact two-column grid right under its outcome. */
+.lv-dt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.lv-dt-grid dt {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.lv-dt-grid dd {
+  margin: 2px 0 0;
+  color: var(--lv-text-soft);
+}
+
+.lv-dt-grid dd small {
+  display: block;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--lv-muted);
+}
+
+.lv-dt-noise {
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-mnote {
+  grid-column: 2 / 4;
+  font-size: 12px;
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-change {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-left: 2px solid rgba(40, 217, 176, 0.55);
+  background: rgba(40, 217, 176, 0.04);
+}
+
+.lv-dt-change h4 {
+  margin: 0 0 4px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.lv-dt-change-title {
+  margin-left: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--lv-green-soft);
+}
+
+.lv-dt-change p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-change p b {
+  font-weight: 600;
+  color: var(--lv-text-soft);
+}
+
+.lv-dt-facts {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 7px 12px;
+  margin: 0 0 4px;
+  font-size: 12.5px;
+}
+
+.lv-dt-facts dt {
+  color: var(--lv-muted);
+}
+
+.lv-dt-facts dd {
+  margin: 0;
+  color: var(--lv-text-soft);
+}
+
+.lv-dt-facts dd small {
+  display: block;
+  font-size: 11.5px;
+  color: var(--lv-muted);
+}
+
+.lv-dt-sec {
+  margin-top: 16px;
+}
+
+.lv-dt-sec h4,
+.lv-dt-output summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 8px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.lv-dt-sec h4 span,
+.lv-dt-output summary span {
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  text-align: right;
+}
+
+/* The whole run's result, said first and large. */
+.lv-sum-head {
+  margin: 4px 0 6px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--lv-text);
+}
+
+.lv-sum-head em {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--lv-flame);
+}
+
+.lv-sum-lead {
+  margin: 0 0 10px;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--lv-text-soft);
+}
+
+.lv-sum-gap {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--lv-text-soft);
+  box-shadow: inset 0 0 0 1px rgba(255, 110, 121, 0.35);
+}
+
+.lv-sum-gap .lv-link-button {
+  font-weight: 600;
+  color: var(--lv-red);
+}
+
+.lv-dt-output summary {
+  justify-content: flex-start;
+  list-style: none;
+  cursor: pointer;
+}
+
+.lv-dt-output summary::-webkit-details-marker {
+  display: none;
+}
+
+.lv-dt-output summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+.lv-dt-output[open] summary::before {
+  transform: rotate(45deg);
+}
+
+.lv-dt-pre {
+  max-height: 110px;
+  margin: 0;
+  padding: 9px 11px;
+  overflow: auto;
+  border-radius: 6px;
+  background: rgba(2, 9, 19, 0.55);
+  font-family: var(--lv-mono);
+  font-size: 11.5px;
+  color: var(--lv-muted-strong);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.lv-dt-group + .lv-dt-group {
+  margin-top: 8px;
+}
+
+.lv-dt-group h5 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--lv-muted);
+}
+
+.lv-dt-match {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.lv-dt-match.is-dim {
+  opacity: 0.7;
+}
+
+.lv-mchip {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.lv-mchip.is-alert {
+  color: #2a0b02;
+  background: var(--lv-flame);
+}
+
+.lv-mchip.is-lab {
+  color: var(--lv-violet);
+  box-shadow: inset 0 0 0 1px rgba(168, 146, 255, 0.6);
+}
+
+.lv-mchip.is-review {
+  color: var(--lv-amber-soft);
+  box-shadow: inset 0 0 0 1px rgba(255, 210, 125, 0.5);
+}
+
+.lv-mchip.is-launcher {
+  color: var(--lv-muted);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+}
+
+.lv-dt-rule {
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--lv-text-soft);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lv-dt-mmeta {
+  font-size: 11px;
+  color: var(--lv-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-dt-empty {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--lv-muted);
+}
+
+.lv-dt-log {
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 6px;
+  background: rgba(2, 9, 19, 0.4);
+  font-family: var(--lv-mono);
+  font-size: 11px;
+}
+
+.lv-dt-line {
+  display: grid;
+  grid-template-columns: 84px 66px 92px minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 3px 9px;
+  border-bottom: 1px solid rgba(93, 151, 194, 0.07);
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-line > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lv-dt-time {
+  color: var(--lv-muted);
+}
+
+.lv-dt-sensor {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: Inter, system-ui, sans-serif;
+  color: var(--lv-muted-strong);
+}
+
+.lv-dt-sensor .lv-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.lv-dt-kind {
+  color: var(--lv-muted);
+}
+
+.lv-dt-text {
+  color: var(--lv-text-soft);
+}
+
+.lv-dt-mark {
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 10px;
+  color: var(--lv-muted);
+  text-align: right;
+}
+
+.lv-dt-line.is-alert .lv-dt-text,
+.lv-dt-line.is-alert .lv-dt-mark {
+  color: var(--lv-flame);
+}
+
+.lv-dt-line.is-lab .lv-dt-text,
+.lv-dt-line.is-lab .lv-dt-mark {
+  color: var(--lv-violet);
+}
+
+.lv-dt-line.is-review .lv-dt-text,
+.lv-dt-line.is-review .lv-dt-mark {
+  color: var(--lv-amber-soft);
+}
+
+.lv-dt-line.is-refused .lv-dt-text,
+.lv-dt-line.is-refused .lv-dt-mark {
+  color: var(--lv-green-soft);
+}
+
+.lv-dt-line:is(.is-alert, .is-lab, .is-review, .is-refused) .lv-dt-mark {
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lv-dt .lv-dt-more {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.lv-dt-others {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.lv-dt-others button {
+  all: unset;
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--lv-text-soft);
+  cursor: pointer;
+}
+
+.lv-dt-others button:hover {
+  background: rgba(17, 43, 64, 0.7);
+}
+
+.lv-dt-on {
+  color: var(--lv-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-dt-ot {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* the whole run, while no step is chosen */
+
+.lv-dt-facts dd.lv-sum-lab {
+  color: #c9bcff;
+}
+
+.lv-dt-facts dd.lv-sum-lab small {
+  display: inline;
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lv-violet);
+}
+
+.lv-sum-quiet {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--lv-muted);
+}
+
+.lv-sum-quiet a {
+  color: var(--lv-blue-soft);
+}
+
+.lv-sum-ord {
+  display: flex;
+  flex-direction: column;
+}
+
+.lv-sum-ord > div {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(93, 151, 194, 0.07);
+  font-size: 12px;
+  color: var(--lv-muted-strong);
+}
+
+.lv-sum-ord > div.is-false {
+  color: var(--lv-text-soft);
+}
+
+.lv-sum-level {
+  color: var(--lv-muted);
+}
+
+.lv-sum-ord > div.is-false .lv-sum-level,
+.lv-sum-ord > div.is-false .lv-sum-count {
+  color: var(--lv-flame);
+}
+
+.lv-sum-rule {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lv-sum-count {
+  font-size: 11.5px;
+  color: var(--lv-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-sum-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: var(--lv-muted-strong);
+}
+
+.lv-sum-tools {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.lv-sum-tools div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.lv-sum-tools dt {
+  color: var(--lv-text-soft);
+}
+
+.lv-sum-tools dt span {
+  color: var(--lv-muted);
+}
+
+.lv-sum-tools dd {
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--lv-mono);
+  font-size: 11px;
+  color: var(--lv-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lv-sum-pick {
+  margin-top: 16px;
+}
+
+.lv-button,
+.lv-link-button {
+  all: unset;
+  cursor: pointer;
+}
+
+.lv-button {
+  padding: 6px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--lv-text);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+}
+
+.lv-button:hover {
+  background: var(--lv-surface-soft);
+}
+
+.lv-link-button {
+  color: var(--lv-blue-soft);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---------- motion ---------- */
+
+@keyframes lv-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes lv-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes lv-travel {
+  0% {
+    offset-distance: 0%;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  86% {
+    opacity: 1;
+  }
+  100% {
+    offset-distance: 100%;
+    opacity: 0;
+  }
+}
+
+@keyframes lv-launch {
+  from {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(1.05);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.1);
+  }
+}
+
+@keyframes lv-flash {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.7);
+  }
+}
+
+@keyframes lv-flare {
+  from {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.6);
+  }
+}
+
+@keyframes lv-hush {
+  from {
+    opacity: 0.8;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.4);
+  }
+}
+
+@keyframes lv-draw {
+  from {
+    stroke-dashoffset: 100;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes lv-plant {
+  from {
+    opacity: 0;
+    transform: rotate(45deg) scale(1.8);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(45deg) scale(1);
+  }
+}
+
+@media (min-width: 1800px) {
+  .lv {
+    font-size: 16px;
+  }
+
+  .lv-race {
+    grid-template-columns: 300px minmax(0, 1fr);
+  }
+
+  .lv-race-value {
+    font-size: 30px;
+  }
+
+  .lv-race-value small {
+    font-size: 17px;
+  }
+
+  .lv-score-n b {
+    font-size: 38px;
+  }
+
+  .lv-score-n span {
+    font-size: 21px;
+  }
+
+  .lv-score-item b {
+    font-size: 23px;
+  }
+
+  .lv-modes button,
+  .lv-speed button {
+    font-size: 13.5px;
+  }
+
+  .lv-play {
+    width: 40px;
+    height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lv *,
+  .lv *::before,
+  .lv *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .lv-motion {
+    display: none;
+  }
+
+  .lv-host.is-stopped .lv-host-ring {
+    stroke-dasharray: none;
+  }
+}

@@ -10,6 +10,7 @@
   },
   "include": [
     "vite.config.ts",
+    "vite.replay.config.ts",
     "vitest.config.ts",
     "playwright.config.ts",
     "playwright.service.config.ts",

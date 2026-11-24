@@ -516,6 +516,7 @@ def build(
         first = outcome(done["answer"], seen["answer"])
         second = outcome(done["answer"], seen.get("with_lab_rules", {}).get("answer", seen["answer"]))
         # Like outcome, first_alert counts the published rules only; the second time counts the lab's too.
+        # A first alert is the alert's moment: its time here, since these rules run after the run.
         published = [alert["time"] for alert in raised if alert["counts"] and alert["detector"] == "pinned"]
         every = [alert["time"] for alert in raised if alert["counts"]]
         timed = bool(launcher and window)

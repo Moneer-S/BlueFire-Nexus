@@ -68,6 +68,7 @@ def small_recording(recording_id: str = "rec-small") -> dict[str, Any]:
             "environment": "GitHub-hosted runner",
             "started": "2026-11-17T17:07:20Z",
             "finished": "2026-11-17T17:08:14Z",
+            "tools": [{"name": "Sysmon for Linux", "version": "1.6.0", "role": "sensor"}],
         },
         "network": {
             "hosts": [{"id": "target", "name": "runner", "role": "Linux host under test", "kind": "host"}],
@@ -224,7 +225,12 @@ def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFire
     recording["steps"][0]["title"] = "Clear\x07history"
     recording["steps"][0]["extra"] = float("inf")
     recording["steps"][1]["outcome"] = "maybe"
-    recording["steps"][1]["test"] = {"guid": "a\x00b"}
+    recording["steps"][1]["test"] = {
+        "project": "Atomic Red Team",
+        "guid": "a\x00b",
+        "executor": "sh",
+        "elevated": False,
+    }
     recording["events"][0]["step"] = "9"
     recording["events"][1]["host"] = ["target"]
     recording["events"][2]["time"] = "2026-99-99T99:99:99Z"
@@ -241,6 +247,9 @@ def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFire
     message, problems = refusal(service, recording)
     _, deep_problems = refusal(service, deep)
     _, huge_problems = refusal(service, huge)
+    halved = small_recording("rec-halved")
+    halved["notes"] = ["half of a pair: \ud83d"]
+    _, halved_problems = refusal(service, halved)
 
     assert message == (
         "The recording is not valid: steps[0].title must not hold control characters."
@@ -257,6 +266,9 @@ def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFire
     ]
     assert deep_problems == ["A recording nests objects and lists at most 8 deep."]
     assert huge_problems == ["score.goal_seconds must be a number of seconds, zero or more."]
+    assert halved_problems == [
+        "notes[0] must not hold half of a character pair (a lone surrogate)."
+    ]
 
 
 def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -> None:
@@ -303,6 +315,96 @@ def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -
     assert accepted["created"] is True
 
 
+def test_the_race_counts_a_live_alert_from_when_it_was_raised(service: BlueFireService) -> None:
+    def path(recording_id: str, when: str, first_alert_seconds: float) -> dict[str, Any]:
+        race = small_recording(recording_id)
+        race["kind"] = "attack path"
+        race["network"]["detectors"][0]["when"] = when
+        if when == "live":
+            # The first test starts at 21.000 s and its event is at 21.100 s; the alert is
+            # raised at 36.000 s, which is also the step's first alert.
+            race["alerts"][0]["raised"] = "2026-11-17T17:07:36.000Z"
+            race["steps"][0]["first_alert"] = "2026-11-17T17:07:36.000Z"
+        race["score"]["first_alert_seconds"] = first_alert_seconds
+        return race
+
+    _, from_the_event = refusal(service, path("rec-event", "live", 0.1))
+    live = service.import_recording({"recording": path("rec-raised", "live", 15.0)})
+    after = service.import_recording({"recording": path("rec-after", "after the run", 0.1)})
+
+    assert from_the_event == ["score.first_alert_seconds is 0.1, but the steps give 15.000."]
+    assert live["created"] is True
+    assert after["created"] is True
+
+
+def test_a_steps_first_alert_counts_a_live_alert_from_when_it_was_raised(
+    service: BlueFireService,
+) -> None:
+    def listing(recording_id: str, when: str, first: str, first_with_lab: str) -> dict[str, Any]:
+        value = small_recording(recording_id)
+        value["network"]["detectors"] = [
+            {"id": "pinned", "name": "Published Sigma rules", "rules": 2, "when": when},
+            {"id": "lab", "name": "Lab rules", "rules": 1, "when": when},
+        ]
+        # Test 1 has two counting alerts of published rules, raised out of the order of
+        # their events: rule 1 matches at 21.100 s and is raised at 36.000 s, rule 2
+        # matches at 21.102 s and is raised at 22.000 s. Test 2, seen, has a counting
+        # alert of a lab rule at 22.100 s, raised at 23.000 s.
+        value["alerts"] = [
+            {**value["alerts"][0], "raised": "2026-11-17T17:07:36.000Z"},
+            {"id": "alert-2", "time": "2026-11-17T17:07:21.102Z", "raised": "2026-11-17T17:07:22.000Z",
+             "host": "target", "detector": "pinned",
+             "rule": {"id": "rule-2", "title": "History File Removed", "level": "high", "origin": "pinned"},
+             "counts": True, "step": "1", "events": ["1-2"]},
+            {"id": "alert-3", "time": "2026-11-17T17:07:22.100Z", "raised": "2026-11-17T17:07:23.000Z",
+             "host": "target", "detector": "lab",
+             "rule": {"id": "rule-3", "title": "Process Listing", "level": "high", "origin": "lab"},
+             "counts": True, "step": "2", "events": ["2-1"]},
+        ]  # fmt: skip
+        if when == "after the run":
+            for alert in value["alerts"]:
+                del alert["raised"]
+        one, two = value["steps"]
+        one.update(
+            first_alert=first, outcome_with_lab_rules="alerted", first_alert_with_lab_rules=first
+        )
+        two.update(outcome_with_lab_rules="alerted", first_alert_with_lab_rules=first_with_lab)
+        return value
+
+    raised = listing("rec-raised", "live", "2026-11-17T17:07:22.000Z", "2026-11-17T17:07:23.000Z")
+    _, from_the_events = refusal(
+        service,
+        listing("rec-events", "live", "2026-11-17T17:07:21.100Z", "2026-11-17T17:07:22.100Z"),
+    )
+    _, from_the_latest = refusal(
+        service,
+        listing("rec-latest", "live", "2026-11-17T17:07:36.000Z", "2026-11-17T17:07:23.000Z"),
+    )
+    after = listing(
+        "rec-after", "after the run", "2026-11-17T17:07:21.100Z", "2026-11-17T17:07:22.100Z"
+    )
+
+    assert service.import_recording({"recording": raised})["created"] is True
+    assert service.import_recording({"recording": after})["created"] is True
+    assert from_the_events == [
+        "steps[0].first_alert is 2026-11-17T17:07:21.100Z, the time of the alert's activity, but a "
+        "step's first alert counts from when a live detector raised it: 2026-11-17T17:07:22.000Z.",
+        "steps[0].first_alert_with_lab_rules is 2026-11-17T17:07:21.100Z, the time of the alert's "
+        "activity, but a step's first alert counts from when a live detector raised it: "
+        "2026-11-17T17:07:22.000Z.",
+        "steps[1].first_alert_with_lab_rules is 2026-11-17T17:07:22.100Z, the time of the alert's "
+        "activity, but a step's first alert counts from when a live detector raised it: "
+        "2026-11-17T17:07:23.000Z.",
+    ]
+    # The alert whose event came first is not the step's first alert: the one raised first is.
+    assert from_the_latest == [
+        "steps[0].first_alert is 2026-11-17T17:07:36.000Z, but the step's first counting alert of "
+        "a published rule is at 2026-11-17T17:07:22.000Z.",
+        "steps[0].first_alert_with_lab_rules is 2026-11-17T17:07:36.000Z, but the step's first "
+        "counting alert is at 2026-11-17T17:07:22.000Z.",
+    ]
+
+
 def test_a_null_in_place_of_a_left_out_value_is_refused(service: BlueFireService) -> None:
     race = small_recording("rec-path")
     race["kind"] = "attack path"
@@ -324,6 +426,74 @@ def test_a_null_in_place_of_a_left_out_value_is_refused(service: BlueFireService
         "steps[0].started is null; a value that is not known is left out.",
         "alerts[0].raised is null; a value that is not known is left out.",
     ]
+
+
+_LEFT_OUT = object()
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "problem"),
+    [
+        (("source", "tools"), _LEFT_OUT, "source.tools is missing."),
+        (("source", "tools", 0, "role"), "camera",
+         "source.tools[0].role must be one of: tests, executor, sensor, rules, rule engine."),
+        (("network", "hosts", 0, "addresses"), "10.0.0.1",
+         "network.hosts[0].addresses must be a list of at most 100 texts of at most 200 "
+         "characters."),
+        (("network", "links"), [{"from": "target", "to": "target"}],
+         "network.links[0].label is missing."),
+        (("network", "sensors", 0, "records"), _LEFT_OUT,
+         "network.sensors[0].records is missing."),
+        (("attacker", "goal"), _LEFT_OUT,
+         "attacker.goal is missing; it is null when the run has no goal."),
+        (("steps", 0, "technique", "name"), 5,
+         "steps[0].technique.name must be non-empty text."),
+        (("steps", 0, "test"), {"project": "Atomic Red Team", "guid": "g", "executor": "sh",
+                                "elevated": "yes"},
+         "steps[0].test.elevated must be true or false."),
+        (("steps", 0, "test"), "Atomic Red Team", "steps[0].test must be an object."),
+        (("steps", 0, "happened", "basis"), _LEFT_OUT, "steps[0].happened.basis is missing."),
+        (("steps", 0, "visibility", "basis"), 3,
+         "steps[0].visibility.basis must be non-empty text."),
+        (("steps", 0, "defense"), {"title": "Mount /tmp noexec"},
+         "steps[0].defense.why is missing."),
+        (("events", 0, "tied_by"), _LEFT_OUT, "events[0].tied_by is missing."),
+        (("events", 0, "tied_by"), "guess",
+         "events[0].tied_by must be one of: session, launcher, account, systemd, window."),
+        (("events", 0, "fields"), {"inode": 10**400},
+         "events[0].fields must hold at most 64 plain values: text of at most 300 characters, "
+         "a number no further than 9007199254740992 from zero, true, false or null."),
+        (("alerts", 0, "rule", "id"), _LEFT_OUT, "alerts[0].rule.id is missing."),
+        (("ordinary",), {"events": 3}, "ordinary.matches is missing."),
+    ],
+)  # fmt: skip
+def test_a_value_the_replay_page_cannot_show_is_refused_on_import(
+    service: BlueFireService, path: tuple[Any, ...], value: Any, problem: str
+) -> None:
+    """Each of these was once kept by the import and then refused by the replay page."""
+
+    recording = small_recording()
+    holder: Any = recording
+    for key in path[:-1]:
+        holder = holder[key]
+    if value is _LEFT_OUT:
+        del holder[path[-1]]
+    else:
+        holder[path[-1]] = value
+
+    _, problems = refusal(service, recording)
+
+    assert problems == [problem]
+
+
+def test_a_step_role_the_format_does_not_name_is_refused(service: BlueFireService) -> None:
+    recording = small_recording()
+    recording["steps"][1]["role"] = "baseline"
+    recording["score"].update(steps=1, took_effect=1, seen=0)
+
+    _, problems = refusal(service, recording)
+
+    assert problems == ["steps[1].role must be one of: test, canary, control, hardened, variant."]
 
 
 def test_a_finished_recording_is_not_overwritten_by_an_older_import_from_another_library(
@@ -436,6 +606,122 @@ def test_recordings_are_imported_and_read_through_the_http_server(
         "The recording is not valid: schema must be 'bluefire.recording/1'."
     )
     assert unauthenticated[0] in {401, 403}
+
+
+PAGE_ELEMENT = '<script id="bluefire-recording" type="application/json">'
+ORIGIN_ELEMENT = '<script id="bluefire-origin" type="application/json">'
+
+
+def page_recording(page: str, element: str = PAGE_ELEMENT) -> Any:
+    """Read a replay page's recording back the way a browser does: up to the first end tag."""
+
+    assert page.count(element) == 1
+    start = page.index(element) + len(element)
+    return json.loads(page[start : page.index("</script>", start)])
+
+
+def test_the_command_line_writes_the_replay_page_of_the_shipped_recording(
+    service: BlueFireService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    shipped = json.loads(SHIPPED.read_bytes())
+    out = tmp_path / "replay.html"
+    template = (ROOT / "bluefire" / "ui" / "replay.html").read_text(encoding="utf-8")
+
+    written = cli.main(["recordings", "page", shipped["id"], "--out", str(out)])
+    written_output = json.loads(capsys.readouterr().out)
+    page = out.read_text(encoding="utf-8")
+    again = cli.main(["recordings", "page", shipped["id"], "--out", str(out)])
+    again_output = json.loads(capsys.readouterr().out)
+    missing = cli.main(["recordings", "page", "rec-none", "--out", str(tmp_path / "none.html")])
+    missing_output = json.loads(capsys.readouterr().out)
+
+    assert written == 0
+    assert written_output["recording_id"] == shipped["id"]
+    assert written_output["bytes"] == len(page.encode("utf-8"))
+    assert page_recording(template) is None
+    assert page_recording(template, ORIGIN_ELEMENT) is None
+    assert page_recording(page) == shipped
+    # The page says where its recording comes from: the service's origin, with the CI run.
+    assert (
+        page_recording(page, ORIGIN_ELEMENT)
+        == service.recording(shipped["id"])["summary"]["origin"]
+    )
+    assert page_recording(page, ORIGIN_ELEMENT)["run_url"] == SHIPPED_RUN
+    # Only the elements' content changed: the page is the packaged one.
+    start = page.index(PAGE_ELEMENT)
+    assert page[:start] == template[: template.index(PAGE_ELEMENT)]
+    assert page.endswith(template[template.index(ORIGIN_ELEMENT) + len(ORIGIN_ELEMENT) + 4 :])
+    # An existing file is never replaced.
+    assert again == 2
+    assert "already exists" in again_output["error"]["message"]
+    assert out.read_text(encoding="utf-8") == page
+    assert missing == 2 and missing_output["error"]["code"] == "recording_not_found"
+    assert not (tmp_path / "none.html").exists()
+
+
+def test_the_page_of_an_imported_recording_says_what_was_not_confirmed_and_a_running_one_has_none(
+    service: BlueFireService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    service.import_recording({"recording": small_recording()})
+    running = small_recording("rec-live")
+    del running["source"]["finished"]
+    service.import_recording({"recording": running})
+    out = tmp_path / "imported.html"
+    running_out = tmp_path / "running.html"
+
+    written = cli.main(["recordings", "page", "rec-small", "--out", str(out)])
+    capsys.readouterr()
+    refused = cli.main(["recordings", "page", "rec-live", "--out", str(running_out)])
+    refused_output = json.loads(capsys.readouterr().out)
+
+    assert written == 0
+    assert page_recording(out.read_text(encoding="utf-8"), ORIGIN_ELEMENT) == {
+        "kind": "imported",
+        "note": recordings.IMPORTED_NOTE,
+    }
+    assert refused == 2
+    assert refused_output["error"]["code"] == "recording_running"
+    assert "still running" in refused_output["error"]["message"]
+    assert not running_out.exists()
+
+
+def test_a_recording_whose_texts_hold_markup_comes_back_whole_from_its_page() -> None:
+    recording = small_recording()
+    recording["title"] = "</script><script>alert(1)</script>"
+    recording["steps"][0]["title"] = "<!-- </SCRIPT > <script"
+    recording["steps"][0]["plain"] = "Ends </script\n><!--<script>"
+    recording["events"][0]["text"] = "<img src=http://example.invalid/x.png>"
+    recording["notes"] = ["</ScRiPt>", "<!--", "-->", "<script>"]
+    origin = {"kind": "imported", "note": "</script><!--<script>"}
+    template = recordings.replay_template()
+
+    page = recordings.replay_page(recording, origin)
+
+    assert page_recording(page) == recording
+    assert page_recording(page, ORIGIN_ELEMENT) == origin
+    # The recording and its origin add no markup: no "<" of their own, so each element
+    # is ended once.
+    for element in (PAGE_ELEMENT, ORIGIN_ELEMENT):
+        start = page.index(element) + len(element)
+        assert "<" not in page[start : page.index("</script>", start)]
+    assert page.lower().count("<script") == template.lower().count("<script")
+    for broken in (
+        template.replace(PAGE_ELEMENT, "<script>"),
+        template.replace("</body>", f"{PAGE_ELEMENT}null</script></body>"),
+        template.replace("</body>", '<script id="bluefire-recording">null</script></body>'),
+        template.replace(ORIGIN_ELEMENT, "<script>"),
+        template.replace("</body>", '<script id="bluefire-origin">null</script></body>'),
+    ):
+        with pytest.raises(ValueError, match="exactly one"):
+            recordings.replay_page(recording, origin, broken)
 
 
 def test_the_command_line_imports_and_lists_a_recording_file(

@@ -1,0 +1,44 @@
+/* The single replay page: its font, inlined at build time, and a full-window frame. */
+
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("../public/fonts/InterVariable.woff2") format("woff2");
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: #030e1a;
+  color: #eef7ff;
+}
+
+#root {
+  position: fixed;
+  inset: 0;
+}
+
+.replay-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 24px;
+  font-family: Inter, system-ui, sans-serif;
+  text-align: center;
+}
+
+.replay-empty h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.replay-empty p {
+  max-width: 34em;
+  margin: 0;
+  color: #b4c5d6;
+  line-height: 1.5;
+}

@@ -47,11 +47,13 @@ pnpm lint
 pnpm test                     # logic and quick component tests
 pnpm build                    # bluefire/ui must then be unchanged: commit it when it is not
 pnpm test:e2e                 # the screens of the demo build, which has sample data and no service
-pnpm test:service             # the screens the real service serves from bluefire/ui
+pnpm test:service             # the screens the real service serves from bluefire/ui, and the replay page
 ~~~
 
 `pnpm test:service` starts the service itself, with the Python that
-`BLUEFIRE_PYTHON` names (`python3` when it is not set). The same workflow also
+`BLUEFIRE_PYTHON` names (`python3` when it is not set). With the same Python it
+makes the single replay page of the shipped recording with
+`bluefire recordings page` and plays it from a file address. The same workflow also
 starts the app once with `docker compose up app` and checks that the interface
 answers.
 

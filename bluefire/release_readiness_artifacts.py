@@ -147,7 +147,7 @@ def persisted_artifact_hashes(destination: Path) -> Mapping[str, str]:
 def _ui_digest(root: Path) -> Mapping[str, str]:
     """Return bounded hashes only for the exact packaged UI and font inventory."""
 
-    expected = {"index.html", "app.js", "styles.css", "fonts"}
+    expected = {"index.html", "app.js", "styles.css", "replay.html", "fonts"}
     try:
         entries = {item.name: item for item in root.iterdir()}
     except OSError:
