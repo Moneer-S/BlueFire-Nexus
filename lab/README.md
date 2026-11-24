@@ -869,8 +869,8 @@ things that write to the watched logs and folders. The `activity` section of
 
 The expected rules are a prediction, from the stock ruleset and a run on a
 developer machine, all below level 12: which rules each job matches on a
-GitHub-hosted runner is not yet shown. Scoring them, as false alerts or not,
-comes with the score.
+GitHub-hosted runner is not yet shown. What the stock rules raised on them is
+scored in [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
 - **Apart from the path.** The score will tell the path from ordinary activity
   by account and address, so the loader refuses a job that runs as, or logs
@@ -935,6 +935,133 @@ runs reached the archive. The delivery counts of the same run are taken with
 the jobs running, so the job's check for a delivery gap also shows whether
 every line still reaches the manager under that load. Not yet shown: a run of
 that job with the activity on a GitHub-hosted runner.
+
+## Range one: what the defense recorded, in ECS, and the ordinary day
+
+After the collection, every run of a range with a defense writes two files
+next to `manifest.json`: `events.ecs.ndjson`, one line for each event of the
+manager's archive, and `alerts.ecs.ndjson`, one line for each alert, in the
+[Elastic Common Schema](https://www.elastic.co/guide/en/ecs/8.17/index.html)
+8.17, so that the run can be loaded into other tools. Nothing is dropped or
+merged, and the raw files stay in `raw/` so that the mapping can be checked
+against them. The run is invalid (exit code 4, with the reason) when a raw
+line cannot be parsed, when a file has another number of ECS lines than raw
+lines, or when a line would lack `@timestamp`, `event.kind` or `labels.origin`.
+
+Each ECS line keeps the manager's line whole under `wazuh.*`, less its
+`full_log` and `timestamp`. The ECS fields beside it are copies where ECS has a
+clear home (`lab/bluefire_lab/range/ecs.py` lists every field it can write, and
+a test checks each against the field list of ECS 8.17.0):
+
+| Wazuh field | ECS field |
+| --- | --- |
+| `full_log` | `event.original`; `message` on an event |
+| `timestamp` (the manager's time) | `event.ingested` on an event; `@timestamp` and `event.created` on an alert |
+| `agent.id`, `agent.name`, `agent.ip` | `agent.id`, `agent.name`, `host.name`, `host.ip`; `agent.type` is `wazuh` |
+| `manager.name` | `observer.name`; `observer.vendor` is `Wazuh` |
+| `location`, when it is a file | `log.file.path` |
+| `predecoder.program_name` | `event.provider` |
+| `data.srcip`, `data.srcport` | `source.ip`, `source.port` |
+| `data.dstuser`, when the line has no `data.srcuser` | `user.name` |
+| `data.srcuser`, `data.dstuser` (sudo, PAM) | `user.name` (who ran sudo or opened the session), `user.effective.name` when it is another account |
+| snoopy's `data.command`, `data.cwd`, `data.uid`, `data.euid` | `process.command_line`, `process.working_directory`, `user.id`, `user.effective.id`; `event.category` `process`, `event.type` `start` |
+| nginx's `data.protocol`, `data.url`, `data.id` | `http.request.method`, `url.original`, `http.response.status_code`; `event.category` `web`, `event.type` `access` |
+| `syscheck.path`, `uname_after`, `gname_after`, `uid_after`, `gid_after`, `inode_after`, `size_after`, `md5_after`, `sha1_after`, `sha256_after` | `file.path`, `file.owner`, `file.group`, `file.uid`, `file.gid`, `file.inode`, `file.size`, `file.hash.*`; `event.category` `file`, `event.type` `creation`, `change` or `deletion` |
+| `rule.id`, `rule.description`, `rule.level` | `rule.id`, `rule.description`, `event.severity`; `message` on an alert |
+| `rule.groups` with `authentication_success` or `authentication_failed` | `event.category` `authentication`, `event.type` `info`, `event.outcome` |
+| `rule.mitre.id`, `rule.mitre.tactic` | `threat.technique.id` (T1548), `threat.technique.subtechnique.id` (T1548.003), `threat.tactic.name`; `threat.framework` is `MITRE ATT&CK` |
+
+`event.kind` is `event` or `alert`, `event.dataset` `wazuh.archives` or
+`wazuh.alerts`, `event.module` `wazuh`. A categorization field is set only
+where the line says so. `labels.*` holds keyword values only:
+
+- `labels.time_source` says where `@timestamp` comes from: `rsyslog`, the
+  microsecond time rsyslog wrote on the line (`predecoder.timestamp`);
+  `log-second`, a time to the second that the program wrote at the start of
+  the line (nginx, dpkg, MariaDB; a time without a zone is the container's,
+  which is UTC); `manager`, the manager's own time, for lines with no time of
+  their source, such as file integrity events. An alert's `@timestamp` is
+  always the time the manager raised it.
+- `labels.origin`, and `labels.job` for an ordinary line, by the first rule
+  that holds (`lab/bluefire_lab/range/score.py`): `engine` when snoopy tagged
+  the program start `engine:*` or the line holds the run's ID, which every
+  nonce and mark of the engine and the name of every mark file it makes carry
+  (what the plant checks and the seal's probes leave behind, such as a login's
+  session lines or a PHP session file, carries no ID); `ordinary` when the
+  line is a job's as the [activity's counts](#range-one-ordinary-activity)
+  sort it (tag, address, account, the files the job writes, inside the job's
+  window), or when snoopy tagged it `job:<name>`; cron's session lines of a
+  cron job's account inside the job's window are `ordinary` with no
+  `labels.job`, since they do not tell one cron entry of the account from
+  another; `unattributed` for everything else, which is counted and listed
+  and never called ordinary. An alert takes the origin of its event in the archive (the
+  same agent, location, line and manager time).
+
+Loading them into a tool, here [DuckDB](https://duckdb.org/) 1.4.1 from PyPI,
+run in a run folder (on the run below it lists, for example, `ordinary`,
+`build`, rule 554, 30 alerts first):
+
+```python
+import duckdb
+
+duckdb.sql("""
+    SELECT labels.origin, labels.job, rule.id, any_value(rule.description), count(*) AS alerts
+    FROM read_json_auto('alerts.ecs.ndjson')
+    GROUP BY ALL ORDER BY alerts DESC
+""").show()
+```
+
+**The ordinary day.** From the same lines the run scores what the stock rules
+said about the shop's own work, into `manifest.json` (`score`) and `score.md`:
+per origin, the events and the alerts by level band; the *false alerts*, the
+distinct stock rules at the range's `alert_level` (12) or higher among alerts
+on ordinary events, each with its description, level, count and the job it
+fell on; the rules from level 7 to 11 on ordinary work, *for review*, a second
+number never added to the first; and the alerts at level 12 or higher on the
+engine's work and on unattributed events, listed apart, since the bench's own
+noise is not the shop's. Every number stands next to its denominators: the
+minutes of activity, the runs of each job (in the host's log and in the
+archive) and the events of each origin; without them, or when a job has no
+run in the archive, the score says "not scored" and gives no number. The
+engine starts the seal's probes after the stop only once every job's window
+has closed, and a file whose modification time is before the go is no job's.
+A file a job links rather than writes keeps its older time: the first clone
+of `build` hard-links git's objects from the server's repository, so those
+file events count as unattributed. The `range-one` job shows `score.md` in
+its summary, keeps both ECS files in its artifact, and fails when the
+conversion fails or the day was not scored. The score also lists what the
+jobs do, which is all it prices: a rule that fires only on something else,
+such as a password login or a failed login, is not priced by it.
+
+One run of range one in Docker on a developer machine (not a CI run), with
+the range held 90 s as the `range-one` job holds it: 3.01 minutes of
+activity, with `browse` 22 runs, `admin` 2, `cache` 3, `build` 3 and `backup`
+1, each run also counted in the archive. Its archive held 690 events and its
+alerts 138, and both ECS files had as many lines:
+
+| Origin | Events | Alerts 0 to 3 | Alerts 4 to 6 | Alerts 7 to 11 | Alerts 12 to 14 | Alerts 15 |
+| --- | --- | --- | --- | --- | --- | --- |
+| engine | 290 | 0 | 18 | 18 | 0 | 0 |
+| ordinary | 192 | 12 | 55 | 12 | 0 | 0 |
+| unattributed | 208 | 15 | 8 | 0 | 0 | 0 |
+
+False alerts: 0 rules at level 12 or higher. For review: 550 "Integrity
+checksum changed." (level 7) 10 times, 8 on `build`'s clone and 2 on PHP
+session files of `browse`, and 553 "File deleted." (level 7) twice on
+`cache`'s files. No alert at level 12 or higher on the engine's work or on
+unattributed events. Zero false alerts here is a result about those 3.01
+minutes and that work only. The same table from the
+`range-one` job on a GitHub-hosted runner: not yet shown.
+
+The engine's own seal probes and plant checks before the go and after the
+stop are not marked by the engine's tag or the run's ID, so they count as
+unattributed, as do the hosts' own start-up lines. Wazuh's stateful rules (a
+first time, a frequency, a rule that follows another) have already seen the
+plant checks' logins and sudo before the go, so a rule that fires only on a
+first occurrence may not fire on the jobs: in this run the plant check's sudo
+raised 5403 "First time user executed sudo." and `admin`'s sudo only 5402.
+The path of published tests is not yet in the range, so nothing here ties an
+event to a step.
 
 ## Range one: the path
 
