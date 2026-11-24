@@ -1,8 +1,9 @@
-"""The defense of a range, judged on files captured from real runs of lab/range/wazuh-check.yaml.
+"""The defense of a range, judged on files captured from real runs of a range with one agent host, web.
 
 The stock ossec.conf files are excerpts of those the pinned Wazuh agent package
 and manager image install. The delivery, state and agent_control fixtures are
-trimmed from one run on Docker 29: its run ID is replaced by a stand-in.
+trimmed from one run on Docker 29: its run ID is replaced by a stand-in. The
+engine's checks run against the small spec of the tests.
 """
 
 import gzip
@@ -20,7 +21,7 @@ from bluefire_lab.range import build, engine, ossec, wazuh
 from bluefire_lab.range import spec as range_spec
 
 FIXTURES = Path(__file__).parent / "fixtures" / "range" / "wazuh"
-WAZUH_CHECK = Path(__file__).parents[1] / "range" / "wazuh-check.yaml"
+SMALL = Path(__file__).parent / "fixtures" / "range" / "small" / "small.yaml"
 AGENT_STOCK = (FIXTURES / "agent-ossec.conf.stock").read_text()
 MANAGER_STOCK = (FIXTURES / "manager-ossec.conf.stock").read_text()
 WEB = {
@@ -307,7 +308,7 @@ def test_the_engines_counts_and_time_are_read_from_its_command_output() -> None:
 def test_the_summary_shows_the_delivery_table_and_the_gap() -> None:
     recorded = fixture("delivery-web.json")
     manifest = {
-        "range": "wazuh-check",
+        "range": "small",
         "result": "sealed",
         "exit_code": 0,
         "environment": "GitHub-hosted runner",
@@ -323,16 +324,16 @@ def test_the_summary_shows_the_delivery_table_and_the_gap() -> None:
 
     text = wazuh.summary(manifest, seal_passed=True)
 
-    assert text.startswith("### Defense of wazuh-check: no delivery gap")
+    assert text.startswith("### Defense of small: no delivery gap")
     assert "| web | /var/log/snoopy.log | 35 | 35 | 0 | 35 |" in text
     assert "| web | /var/log/dpkg.log | 0 | | not shown: no line in the window |" in text
     assert "| web | 1.407 |" in text
 
 
 def a_run(tmp_path: Path) -> engine.Run:
-    """An engine run of wazuh-check.yaml whose containers were never made; its commands are stood in for."""
+    """An engine run of the small spec whose containers were never made; its commands are stood in for."""
 
-    run = engine.Run(range_spec.load(WAZUH_CHECK), "wazuh-check.yaml", tmp_path, None, 0)
+    run = engine.Run(range_spec.load(SMALL), "small.yaml", tmp_path, None, 0)
     run.containers = {"manager": "m" * 64, "web": "w" * 64}
     run.manifest["ready"]["manager"] = {"listening": True, "seconds": 9.0}
     return run

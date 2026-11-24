@@ -1,0 +1,4 @@
+# redcanaryco/atomic-red-team aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aec6a02875513577c574907f568df2a4bd36e036a3ac2927cf63a975a3e073bd  LICENSE.txt
+bfdeaeb08cffb6a36438bcd12dda25417e3cdd36f1e7e482a2849d539225288b  atomics/T1105/src/atomic.sh
+0a7662b7c2bcd8623d18b966675abf5cab2a48998c2318dc5e1769d9c20a9da3  atomics/T1110.004/src/credstuffuserpass.txt

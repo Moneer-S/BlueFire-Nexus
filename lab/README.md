@@ -187,8 +187,7 @@ root still wrote a job into `/etc/cron.d` (T1053.003 Cron - Add script to
 files (T1546.004), which the change does not cover: a command to
 `~/.bash_profile`, and to `~/.profile` the comment that test appends. So `/tmp` mounted `noexec` blocked five of the six published procedures
 it was tried on, `/etc/cron.allow` one of two, the immutable `~/.bashrc` one of
-three and the root-owned `~/.ssh` one of one, and the comparison of runs says
-the same for each change. The first four rows were first shown in
+three and the root-owned `~/.ssh` one of one. The first four rows were first shown in
 [run 44020766356](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44020766356).
 
 What the changes leave open beyond these was not tried: keys that root adds for
@@ -429,14 +428,14 @@ rotate, and the loss control would fail a run in which it did; none has since.
 5. `bluefire-lab recording` writes `recording.json`: the run as one file, made
    to be replayed step by step. It holds each step in order, the events tied to
    it and the rules that matched, taken only from `run.json` and
-   `results.json`. Its format is [`docs/RECORDING.md`](../docs/RECORDING.md).
+   `results.json`, with the digest of each rule folder of the run beside them.
+   Its format is [`docs/RECORDING.md`](../docs/RECORDING.md).
    The job writes it whenever the evaluation wrote `results.json`, also when a
    control failed, and it is part of the run's artifact.
-6. A separate job, which runs no test, compares the run with the latest
-   successful run on `main` (`bluefire-lab compare`) and writes to the run page
-   which answers changed and what changed under them: events, rules that
-   match, a rule of the lab's own accepted now and how many published
-   procedures it covers, or a hardening change that blocks now.
+6. A separate job, which runs no test, compares the run's recording with that
+   of the latest successful run on `main` (`bluefire-lab compare`, see
+   [Comparing two recordings](#comparing-two-recordings)), writes `delta.md` to
+   the run page, and keeps `delta.json` as the artifact `lab-delta`.
 
 Seven controls must pass, or the run fails as a whole:
 
@@ -580,7 +579,11 @@ path of published tests will run:
   container tries it at every gateway the daemon knows, and the canary must see
   no connection. A probe that must fail passes only when nothing answered
   (network unreachable, no route to host, or a timeout); a refused connection
-  fails, since something routed the packet and answered it. Also: routes only
+  fails, since something routed the packet and answered it. Also: the TCP
+  ports in LISTEN state on any address but loopback (read from
+  `/proc/net/tcp` and `/proc/net/tcp6`) are exactly the ports the spec gives
+  the host under `listens`, so that no port the matrix does not probe is open;
+  routes only
   to the container's own subnets, forwarding off, no Docker socket, Docker's
   resolver only, range names resolving only to shared subnets and outside names
   not resolving.
@@ -620,14 +623,14 @@ the connect was recorded by the event watch.
 ## The defense of a range
 
 A range's defense is Wazuh: one manager and an agent inside each host it
-watches. [`wazuh-check.yaml`](range/wazuh-check.yaml) is the smallest such
-range, a manager and one host on one internal network, and shows that what
-happens on the host reaches the manager. No published test runs in it.
+watches. In [range one](#range-one-its-hosts) the agents are in `web`, `db`
+and `build`, and the run shows that what happens on each of them reaches the
+manager. No published test runs in it yet.
 
 ```bash
 pip install ./lab
-bluefire-lab range render lab/range/wazuh-check.yaml --out <folder>   # optional: only writes the build files
-bluefire-lab range run lab/range/wazuh-check.yaml --out <new folder>
+bluefire-lab range render lab/range/range-one.yaml --out <folder>   # optional: only writes the build files
+bluefire-lab range run lab/range/range-one.yaml --out <new folder>
 ```
 
 - **The pieces.** The manager is the official `wazuh/wazuh-manager` 4.14.10
@@ -674,12 +677,14 @@ bluefire-lab range run lab/range/wazuh-check.yaml --out <new folder>
     features and its file monitoring, since the manager's own container is not
     a defended host; vulnerability detection and the indexer connection, which
     need an indexer and the internet; the check for a newer version; Filebeat.
+    The manager's API listens on 127.0.0.1 only (`api.yaml`), since the range
+    uses no API and the hosts on `mgmt` must not reach it.
   - *startup*: the agent reports to `manager` by its name in the range, enrolls
     itself on port 1515 with no password (only range hosts can reach the
     port), waits 1 s after enrolling instead of 20, and does not restart itself
     when the manager first sends it the shared configuration; the manager reads
     new agent keys every second.
-- **Alert level.** `defense.wazuh.alert_level` (12 in the check range) is the
+- **Alert level.** `defense.wazuh.alert_level` (12 in range one) is the
   level from which a Wazuh alert will count as an alert when a step is scored,
   and `manifest.json` records it. It is not the manager's `log_alert_level`,
   which keeps its stock value 3, so that `alerts.json` also holds the matches
@@ -732,18 +737,345 @@ Some limits: snoopy does not see the first program of a `docker exec` (the
 engine's `bash`), nor static programs; a process without `BLUEFIRE_TAG` has
 the tag `(undefined)`. The agent package is for amd64 only.
 
-The `wazuh` job of the `range-one` workflow runs this on a GitHub-hosted
-runner, fails unless there was no delivery gap, every mark arrived, snoopy's
-tag was decoded and every ossec.conf is the lab's edits of the stock file, and
-writes the ready delays, the marks, the delivery table and the seal to its
-summary.
-[Run 45262448946](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45262448946)
-shows it on a GitHub-hosted runner with Docker Engine 28.0.4, from a build
-without a cache: the range was sealed and ready 28 s after its containers
-started, the ready nonce was in the manager's archive 0.2 s after it was
-logged, all 14 marks arrived, and every line of the window was delivered
-(`auth.log` 8 of 8, `snoopy.log` 35 of 35), with every counter of lost events
-at zero.
+The `range-one` job of the `range-one` workflow runs this on a GitHub-hosted
+runner, fails unless there was no delivery gap, every agent host got its marks
+and every mark arrived, snoopy's tag was decoded, every ossec.conf is the lab's
+edits of the stock file and every plant check passed, and writes the build
+time, the plant checks, the
+ready delays, the marks, the delivery table and the seal to its summary. Each
+image has a cache scope of its own in the GitHub Actions cache, and BuildKit
+runs from its own image, pinned by digest.
+[Run 45281159443](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45281159443)
+shows it for the seven hosts on a GitHub-hosted runner with Docker Engine
+28.0.4 and AppArmor: the seal passed (201 checks before the start, 430 after
+it and 430 again at the end), the range was ready 35 s after its containers
+started, every plant check passed, and every line of the window was delivered
+from `web`, `db` and `build` (for example `auth.log` 43 of 43 and `snoopy.log`
+137 of 137 on `web`). The same
+defense on a smaller range, one manager and one agent host, was shown by
+[run 45262448946](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45262448946)
+on a GitHub-hosted runner with Docker Engine 28.0.4, from a build without a
+cache: the range was sealed and ready 28 s after its containers started, the
+ready nonce was in the manager's archive 0.2 s after it was logged, all 14
+marks arrived, and every line of the window was delivered (`auth.log` 8 of 8,
+`snoopy.log` 35 of 35), with every counter of lost events at zero.
+
+## Range one: its hosts
+
+[`range/range-one.yaml`](range/range-one.yaml) describes a small network: a
+shop's web server, its database and its build server, watched by Wazuh, with
+an attacker, the shop's customers and a stand-in internet outside. Each host
+is built from the spec with what the path of published tests will need
+planted in it. The network has no route out: everything outside is in the
+range too.
+
+| Host | Networks | Listens on | What is planted, and why |
+| --- | --- | --- | --- |
+| `attacker` | edge | nothing | The `src` folder of T1110.004 (its published password lists) under `/opt/atomics`, and `sshpass`, which that test's prerequisite would fetch: the first step guesses web's SSH password from there. |
+| `inet` | edge | 80, 443 | The stand-in internet: a small server of the lab's own ([`inet_server.py`](bluefire_lab/range/inet_server.py)) that serves the published `atomic.sh` of T1105, which a step downloads, stores every `POST /upload` with its SHA-256, which the last step uses to send the stolen file out, and logs each request. Its certificate is made when the image is built. |
+| `client` | edge | nothing | The shop's customers and its administrator's laptop: the account `ops`, whose SSH key `web` accepts, for the [ordinary activity](#range-one-ordinary-activity). |
+| `web` | edge, inside, mgmt | 22, 80 | The shop (nginx, PHP, one page that keeps a session and reads the database). The account `webadmin` with the password `webadmin`, which is on line 475 of the published list (the build checks that line). SSH with passwords, and `pam_unix` with `nodelay`, so that a failed password is answered without the usual pause of about 3 s, which over the 482 tries of the list would come to roughly 24 minutes (an estimate: not yet measured). In `webadmin`'s `~/.ssh`, a deploy key without a passphrase (`id_rsa`), which a step finds and the next uses, and a `known_hosts` entry for `build`, which a step reads and without which that `ssh` would stop. The database password in `/var/www/app/config.php`, which a step finds. `/tmp/stage`, owned by `webadmin`, where a step writes what it pulls from `build`. `ops` may run `nginx -t` with sudo. |
+| `db` | inside, mgmt | 3306 | MariaDB with the shop's table, made when the image is built, and the user `shop`, allowed from any address with the password in `config.php`. |
+| `build` | inside, mgmt | 22 | The account `deploy`, which accepts the deploy key, and `/etc/buildbot/signing.env`, readable by the group `deploy`: the path's goal is to get this file out to `inet`. A git repository of the shop, owned by `ci`, for the ordinary activity. |
+| `manager` | mgmt | 1514, 1515 | The Wazuh manager. The agents on `web`, `db` and `build` also read nginx's logs on `web` and MariaDB's on `db`, and watch `/var/www`, PHP's sessions and `/srv/git` in real time. |
+
+The files the spec plants from its folder are beside it: the shop's pages and
+table in [`range/app`](range/app), the build server's repository in
+[`range/repos/shop`](range/repos/shop). The SSH keys have no value outside
+the range. They are made when the image stage that makes them is first built
+and are then kept by the build cache, the GitHub Actions cache of CI
+included, so ranges built from the same stage share them; `inet`'s
+certificate is kept the same way.
+
+```bash
+pip install ./lab
+bluefire-lab range run lab/range/range-one.yaml --out <new folder>
+bluefire-lab range lock lab/range/range-one.yaml   # only when the spec's published files change
+```
+
+**Published files, pinned and locked.** The build fetches the technique YAML
+of every step of the path, the `src` folders the hosts carry and the files
+they serve, from Atomic Red Team at the spec's commit, and checks each against
+its SHA-256 in [`range/range-one.lock`](range/range-one.lock). A file the lock
+does not list, or lists with another hash, stops the build with its name.
+`range lock` writes the lock. Atomic Red Team's licence (MIT), fetched and
+locked the same way, goes with its files: to `build/atomics/LICENSE.txt` and
+to `/opt/atomics/LICENSE.txt` on each host that carries or serves one. The
+images carry the files as data, with the
+commit in `/opt/atomics/COMMIT`, which the seal checks; no build step runs any
+published text and no prerequisite is fetched: what one would install is a
+package of the spec.
+
+**What the run shows**, on top of the seal and the defense above: the seal's
+matrix for seven hosts on three networks (every pair that shares a network
+connects on each port the target listens on, every other pair fails); in the
+ready gate, that each `known_hosts` entry is the host key of its host, and
+that `web` and `client` fetch `inet`'s page over HTTP and HTTPS; and, after
+the seal, a plant check for each thing the spec plants, each a single use of
+it with the engine's own commands (tag `engine:plant`): each account's shell,
+password (checked against its hash) and sudo rule, which the account then uses
+once (`ops` runs `sudo -n nginx -t`); one SSH login with each planted password,
+from `client` as `ops`, through PAM's auth stack as the first step will log
+in; the SSH server's settings
+and `nodelay`; the owner, group, mode and content of each planted folder and
+file, and the files of the git repository; the database's user, grant and
+settings, and a connection from `web` with the values in `config.php`; the
+shop's page, fetched from `client`, with items from the database; one login
+with each planted key, which also lists which planted files and secrets the
+account may read (`deploy` may read the signing file, and not
+`/etc/shadow`, `/etc/gshadow` or the host key); the served file, fetched
+from `client`, with its locked SHA-256 and its line in `inet`'s log; one
+upload of a few bytes, stored and indexed, and then removed so that the
+path's upload is the first one; and every file of the `src` folder
+`attacker` carries, with its locked SHA-256. The plant checks' pages,
+uploads and password login are tried from `client`, never from a host where a
+step runs, so that no check leaves a line that a step's own check looks for;
+the ready gate's fetch of `inet`'s `/` from `web` is the one request from a
+host of the path before the path, and no step looks for it. A plant check that
+fails ends the run with exit code 1 after the seal, the marks and the
+collection, unless the teardown or the event watch failed after it, which
+then gives the run its result.
+
+**Outputs**, in the run folder: `manifest.json` (with the lock, the planted
+weaknesses in words, the ready gate and the plant checks with what each
+command printed), `seal.json`, `seal.md`, `defense.md`, `plants.md`,
+`docker-events.ndjson`, `build/` (the rendered Dockerfile, bake file and
+build context) and `raw/hosts/<host>/`, which now also holds `inet`'s access
+log and uploads.
+
+The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
+`docker-default` profile on the hosted runner: run 45281159443's
+`manifest.json` records the daemon's security options under `docker`, and
+every plant check that uses them passed there.
+
+Not yet shown: the path of published tests through the range; scoring.
+
+## Range one: ordinary activity
+
+A defense that raises an alert on everything catches every step. So while the
+path runs, the shop's people and machines do their ordinary work: an alert on
+that work counts as a false alert, and the path's steps are not the only
+things that write to the watched logs and folders. The `activity` section of
+[`range/range-one.yaml`](range/range-one.yaml) lists five jobs:
+
+| Job | Who | Where, and what | How often | What it leaves, and where | Wazuh rules expected |
+| --- | --- | --- | --- | --- | --- |
+| `browse` | `ops` on `client` | Fetches a page of the shop on `web` with curl, in turn `/`, `/?item=1`, `/?item=2`, `/?item=3`, `/cart` and `/missing` (the last two answer 404) | every 5 to 15 s | `web`: a line in nginx's access log; for the four PHP pages, a new PHP session file in `/var/lib/php/sessions`, watched in real time, and a query of the database on `db`. | 31101 (a 404), 554, 550 |
+| `admin` | `ops` on `client` | Logs in to `ops@web` with its SSH key and runs `uptime; df -h /; ls -l /var/www/app; sudo -n /usr/sbin/nginx -t` | every 90 to 150 s | `web`: sshd's login, PAM's session and sudo's lines in `auth.log`; snoopy's program starts. | 5715, 5501, 5502, 5402 |
+| `cache` | `www-data` on `web`, from cron | `php /var/www/app/cron.php`: writes the shop's items to `/tmp/shop-cache-<minute>.json` and removes the older files | every minute | `web`: files added and removed in `/tmp`, the folder the path writes to, watched in real time; snoopy's program starts; cron's PAM session in `auth.log`. | 554, 553 |
+| `build` | `ci` on `build`, from cron | Clones `/srv/git/shop.git` into `shop` in `ci`'s home folder on its first run, then `git pull` and `make -s -B` there | every minute | `build`: files in `ci`'s home folder, watched in real time; snoopy's program starts; cron's PAM session. | 554, 550 |
+| `backup` | `root` on `db`, from cron | `mariadb-dump shop > /var/backups/shop.sql` | every 5 minutes | `db`: snoopy's program starts; cron's PAM session. `/var/backups` is not watched. | none |
+
+The expected rules are a prediction, from the stock ruleset and a run on a
+developer machine, all below level 12: which rules each job matches on a
+GitHub-hosted runner is not yet shown. What the stock rules raised on them is
+scored in [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
+
+- **Apart from the path.** The score will tell the path from ordinary activity
+  by account and address, so the loader refuses a job that runs as, or logs
+  in as, an account the path uses (`webadmin` on `web`, and `deploy`, which a
+  step's arguments name), and a job on or toward `attacker`, the host the path
+  starts from. It also refuses a job its host cannot run (an account the host
+  lacks, a cron job on a host without cron, a fetch without curl, a login
+  without a key the target accepts or a `known_hosts` entry for it), and a job
+  that acts on a host without an agent, since a job's runs and events are
+  counted from the logs of the watched host it acts on. For the same reason it
+  refuses two jobs whose lines could not be told apart: two `http` jobs from
+  one host to one server with a path in common, two `ssh` jobs from one host
+  to one other host, a job that runs or logs in as the account an `ssh` job
+  logs in as on the same host (PAM's, sudo's and cron's lines name the
+  account, not the job), and two jobs on one host whose `writes` patterns can
+  match the same file. Cron jobs are told apart by their tags.
+- **Baked into the images.** A cron job is an entry in `/etc/cron.d` and a
+  script in `/usr/local/lib/bluefire`. Cron starts the entry every minute,
+  and both start with `test -e /run/bluefire/go || exit 0`: the job's script
+  and its command start only after the engine writes that file. Before the
+  go and after the stop, cron still opens and closes a session for the job's
+  account each minute (two lines in `auth.log`), ordinary events outside the
+  activity's minutes. The `http` and `ssh` jobs (`browse` and `admin`) are
+  one loop script on the host they run from, `client`, since their waits are
+  counted in seconds and `client` runs no cron; its start script runs the
+  loop once for each job as the job's account, and the loop waits for the
+  same file. Every program a job starts after the go carries
+  `BLUEFIRE_TAG=job:<name>`; an `ssh` job sets it in the command it sends.
+- **A schedule from the seed.** Each wait between two runs is drawn from the
+  spec's `seed`, the job's name and the run's number (a SHA-256), inside the
+  job's `every`, whole minutes for a cron job, for the first hour of a run;
+  after that the waits start again. The same spec gives the same schedule,
+  and the schedule is in `manifest.json`. A loop job runs at once when the go
+  appears; cron starts a cron job at its next minute.
+- **The engine.** After the dynamic seal and the plant checks, the engine
+  writes `/run/bluefire/go` on each host that runs a job (tag `engine:go`) and
+  waits `warmup_seconds` (30). Then comes the place of the path. After it, the
+  jobs run `tail_seconds` (15) more and the engine removes the file again (tag
+  `engine:stop`), so the activity has an end; then the seal is checked again.
+  `manifest.json` records each host's go and stop in the container's clock.
+- **What was done, and what was seen.** After the collection, for each job:
+  how many times it ran, from the host it acts on (for a cron job, snoopy's
+  line of the run's own `/bin/bash -c <command>` with the job's tag; for
+  `browse`, nginx's access log lines of its paths from `client`'s address;
+  for `admin`, sshd's key logins of `ops` from `client`'s address), between
+  its host's go and stop; the same runs again from those lines that reached
+  the manager's archive ("archived runs"); and how many events of it reached
+  the archive in that time and 5 s after, by the job's tag on snoopy's lines,
+  `client`'s address on nginx's lines of the job's paths, on sshd's lines and
+  on snoopy's lines of an SSH session, the target account `ops` on snoopy's
+  lines of its sessions (sshd's motd scripts and what sudo starts without the
+  tag) and in PAM's, sshd's and sudo's lines, the close of a sudo session the
+  job opened, and the files the job writes (`writes` in the spec) for file
+  integrity events. A snoopy line with another job's tag or the engine's is
+  never this job's, by address or by account. An event counts
+  for one job at most, and the engine's mark files, one of which is in PHP's
+  session folder, for none. Cron's session lines of a cron job's account are
+  counted apart, as "cron sessions of the account": cron opens one for every
+  entry of an account, so on `db` root's stock entries in `/etc/crontab` (such
+  as `cron.hourly` at minute 17) give the same lines as `backup`'s entry. The
+  counts go into `manifest.json` and `activity.md`, next to the minutes from
+  the first go to the last stop. Each job's last output and its own state are
+  copied out of `/run/bluefire` into `raw/hosts/<host>/`.
+
+The `range-one` job holds the range 90 s where the path will run, since no
+path runs yet, so that the activity lasts more than two minutes and cron
+starts each cron job at least once. It shows `activity.md` in its summary and
+fails unless every job ran at least once and the line of at least one of its
+runs reached the archive. The delivery counts of the same run are taken with
+the jobs running, so the job's check for a delivery gap also shows whether
+every line still reaches the manager under that load. In
+[run 45337096555](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45337096555)
+on a GitHub-hosted runner the range was sealed and every job ran in the 2.4
+minutes from the first go to the last stop: `browse` 15 times, `admin` twice,
+`cache` and `build` three times each and `backup` once. The line of every one
+of those runs reached the manager's archive, and the run had no delivery gap.
+
+## Range one: what the defense recorded, in ECS, and the ordinary day
+
+After the collection, every run of a range with a defense writes two files
+next to `manifest.json`: `events.ecs.ndjson`, one line for each event of the
+manager's archive, and `alerts.ecs.ndjson`, one line for each alert, in the
+[Elastic Common Schema](https://www.elastic.co/guide/en/ecs/8.17/index.html)
+8.17, so that the run can be loaded into other tools. Nothing is dropped or
+merged, and the raw files stay in `raw/` so that the mapping can be checked
+against them. The run is invalid (exit code 4, with the reason) when a raw
+line cannot be parsed, when a file has another number of ECS lines than raw
+lines, or when a line would lack `@timestamp`, `event.kind` or `labels.origin`.
+
+Each ECS line keeps the manager's line whole under `wazuh.*`, less its
+`full_log` and `timestamp`. The ECS fields beside it are copies where ECS has a
+clear home (`lab/bluefire_lab/range/ecs.py` lists every field it can write, and
+a test checks each against the field list of ECS 8.17.0):
+
+| Wazuh field | ECS field |
+| --- | --- |
+| `full_log` | `event.original`; `message` on an event |
+| `timestamp` (the manager's time) | `event.ingested` on an event; `@timestamp` and `event.created` on an alert |
+| `agent.id`, `agent.name`, `agent.ip` | `agent.id`, `agent.name`, `host.name`, `host.ip`; `agent.type` is `wazuh` |
+| `manager.name` | `observer.name`; `observer.vendor` is `Wazuh` |
+| `location`, when it is a file | `log.file.path` |
+| `predecoder.program_name` | `event.provider` |
+| `data.srcip`, `data.srcport` | `source.ip`, `source.port` |
+| `data.dstuser`, when the line has no `data.srcuser` | `user.name` |
+| `data.srcuser`, `data.dstuser` (sudo, PAM) | `user.name` (who ran sudo or opened the session), `user.effective.name` when it is another account |
+| snoopy's `data.command`, `data.cwd`, `data.uid`, `data.euid` | `process.command_line`, `process.working_directory`, `user.id`, `user.effective.id`; `event.category` `process`, `event.type` `start` |
+| nginx's `data.protocol`, `data.url`, `data.id` | `http.request.method`, `url.original`, `http.response.status_code`; `event.category` `web`, `event.type` `access` |
+| `syscheck.path`, `uname_after`, `gname_after`, `uid_after`, `gid_after`, `inode_after`, `size_after`, `md5_after`, `sha1_after`, `sha256_after` | `file.path`, `file.owner`, `file.group`, `file.uid`, `file.gid`, `file.inode`, `file.size`, `file.hash.*`; `event.category` `file`, `event.type` `creation`, `change` or `deletion` |
+| `rule.id`, `rule.description`, `rule.level` | `rule.id`, `rule.description`, `event.severity`; `message` on an alert |
+| `rule.groups` with `authentication_success` or `authentication_failed` | `event.category` `authentication`, `event.type` `info`, `event.outcome` |
+| `rule.mitre.id`, `rule.mitre.tactic` | `threat.technique.id` (T1548), `threat.technique.subtechnique.id` (T1548.003), `threat.tactic.name`; `threat.framework` is `MITRE ATT&CK` |
+
+`event.kind` is `event` or `alert`, `event.dataset` `wazuh.archives` or
+`wazuh.alerts`, `event.module` `wazuh`. A categorization field is set only
+where the line says so. `labels.*` holds keyword values only:
+
+- `labels.time_source` says where `@timestamp` comes from: `rsyslog`, the
+  microsecond time rsyslog wrote on the line (`predecoder.timestamp`);
+  `log-second`, a time to the second that the program wrote at the start of
+  the line (nginx, dpkg, MariaDB; a time without a zone is the container's,
+  which is UTC); `manager`, the manager's own time, for lines with no time of
+  their source, such as file integrity events. An alert's `@timestamp` is
+  always the time the manager raised it.
+- `labels.origin`, and `labels.job` for an ordinary line, by the first rule
+  that holds (`lab/bluefire_lab/range/score.py`): `engine` when snoopy tagged
+  the program start `engine:*` or the line holds the run's ID, which every
+  nonce and mark of the engine and the name of every mark file it makes carry
+  (what the plant checks and the seal's probes leave behind, such as a login's
+  session lines or a PHP session file, carries no ID); `ordinary` when the
+  line is a job's as the [activity's counts](#range-one-ordinary-activity)
+  sort it (tag, address, the path of a request, account, the files the job
+  writes, inside the job's window), or when snoopy tagged it `job:<name>`; a
+  program start with a job's tag is that job's and no other's, whatever
+  account it runs as, and an nginx line from `client` for a path that no job
+  fetches is no job's, so it is `unattributed`; cron's session lines of a
+  cron job's account inside the job's window are `ordinary` with no
+  `labels.job`, since they do not tell one cron entry of the account from
+  another; `unattributed` for everything else, which is counted and listed
+  and never called ordinary. An alert takes the origin of its event in the archive (the
+  same agent, location, line and manager time).
+
+Loading them into a tool, here [DuckDB](https://duckdb.org/) 1.4.1 from PyPI,
+run in a run folder (on the files of the run below it lists `ordinary`,
+`build`, rule 554, 26 alerts first):
+
+```python
+import duckdb
+
+duckdb.sql("""
+    SELECT labels.origin, labels.job, rule.id, any_value(rule.description), count(*) AS alerts
+    FROM read_json_auto('alerts.ecs.ndjson')
+    GROUP BY ALL ORDER BY alerts DESC
+""").show()
+```
+
+**The ordinary day.** From the same lines the run scores what the stock rules
+said about the shop's own work, into `manifest.json` (`score`) and `score.md`:
+per origin, the events and the alerts by level band; the *false alerts*, the
+distinct stock rules at the range's `alert_level` (12) or higher among alerts
+on ordinary events, each with its description, level, count and the job it
+fell on; the rules from level 7 to 11 on ordinary work, *for review*, a second
+number never added to the first; and the alerts at level 12 or higher on the
+engine's work and on unattributed events, listed apart, since the bench's own
+noise is not the shop's. Every number stands next to its denominators: the
+minutes of activity, the runs of each job (in the host's log and in the
+archive) and the events of each origin; without them, or when a job has no
+run in the archive, the score says "not scored" and gives no number. The
+engine starts the seal's probes after the stop only once every job's window
+has closed, and a file whose modification time is before the go is no job's.
+A file a job links rather than writes keeps its older time: the first clone
+of `build` hard-links git's objects from the server's repository, so those
+file events count as unattributed. The `range-one` job shows `score.md` in
+its summary, keeps both ECS files in its artifact, and fails when the
+conversion fails or the day was not scored. The score also lists what the
+jobs do, which is all it prices: a rule that fires only on something else,
+such as a password login or a failed login, is not priced by it.
+
+[Run 45358678900](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45358678900)
+of the `range-one` job on a GitHub-hosted runner, with the range held 90 s:
+2.44 minutes of activity, with `browse` 15 runs, `admin` 2, `cache` 3,
+`build` 3 and `backup` 1, each run also counted in the archive. Its archive
+held 647 events and its alerts 128, and both ECS files had as many lines:
+
+| Origin | Events | Alerts 0 to 3 | Alerts 4 to 6 | Alerts 7 to 11 | Alerts 12 to 14 | Alerts 15 |
+| --- | --- | --- | --- | --- | --- | --- |
+| engine | 283 | 0 | 18 | 18 | 0 | 0 |
+| ordinary | 172 | 12 | 44 | 8 | 0 | 0 |
+| unattributed | 192 | 15 | 13 | 0 | 0 | 0 |
+
+False alerts: 0 rules at level 12 or higher. For review: 550 "Integrity
+checksum changed." (level 7) 6 times, all on `build`, and 553 "File
+deleted." (level 7) twice on `cache`'s files. No alert at level 12 or higher
+on the engine's work or on unattributed events. The one nginx line from
+`client` that is unattributed is a plant check's request, just before the go.
+Zero false alerts here is a result about those 2.44 minutes and that work
+only.
+
+The engine's own seal probes and plant checks before the go and after the
+stop are not marked by the engine's tag or the run's ID, so they count as
+unattributed, as do the hosts' own start-up lines. Wazuh's stateful rules (a
+first time, a frequency, a rule that follows another) have already seen the
+plant checks' logins and sudo before the go, so a rule that fires only on a
+first occurrence may not fire on the jobs: in this run the plant check's sudo
+raised 5403 "First time user executed sudo." and `admin`'s sudo only 5402.
+The path of published tests is not yet in the range, so nothing here ties an
+event to a step.
 
 ## Range one: the path
 
@@ -757,7 +1089,7 @@ with stand-ins for `sh` and `bash` that record how they were started and run
 nothing, and fails on any byte that differs. In
 [run 45246198695](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45246198695)
 every vector was identical: 11 steps, each with its attack, prereq check and
-cleanup. Range one's own hosts and a run of the path: not yet shown.
+cleanup. A run of the path in range one's hosts: not yet shown.
 
 ## Not yet shown
 
@@ -785,11 +1117,90 @@ bluefire-lab recording <folder of the unpacked artifact> [--run-url <address of 
 `--tests` supplies the plain sentence of each test for a run made before
 `run.json` recorded them; the recording's notes then say so.
 
-Two runs' artifacts can be compared the same way:
+Two runs' recordings can be compared the same way: see the next section.
+
+## Comparing two recordings
+
+"Before against after" is a claim about a cause: one thing changed, the same
+tests ran again, and this is what changed. `bluefire-lab compare` is where that
+claim is computed, and where it is refused:
 
 ```bash
-bluefire-lab compare <folder of the earlier run> <folder of the later run>
+bluefire-lab compare <before>/recording.json <after>/recording.json --out <folder> [--change detectors:lab]
 ```
+
+It writes `delta.json`, whose format is the section "A delta" of
+[`docs/RECORDING.md`](../docs/RECORDING.md), and `delta.md`, the same for a job
+summary. `--change` declares the one thing that changed between the two runs:
+`detectors:lab` for the rules in [`rules/linux`](rules/linux),
+`detectors:pinned` for the published rules, or `sensors:sysmon` or
+`sensors:auditd` for a sensor's settings. Left out, nothing was declared.
+
+- **What was the same.** Each recording says how it was made: `source.setup`
+  holds the tests' commit, the runner's image and kernel, and the SHA-256 of
+  each sensor's settings as loaded, and each detector the `digest` of its rule
+  files. The comparison lists every one of these, and each tool's version,
+  that differs between the two. It gives no verdict, and still lists every
+  step and what differed, when anything differs other than the declared
+  change (the published rules' pinned commit is part of a change of the
+  published rules; a sensor's program version is not part of a change of its
+  settings), when the declared change is the same in both, when the two are not
+  of the same steps in the same order, or when a recording has no
+  `source.setup`, as every recording made before this format had.
+- **Pairing.** A step has the same id in every run of the same list (its role,
+  its test, a hash of its input arguments, its hardening change, and a count
+  for the canary, which runs twice), so steps pair by id. An older recording's
+  steps pair by role, test and order, and each such pair says so. A step on one
+  side only is listed as new or gone and never counted.
+- **Like with like.** A change of the lab's rules is judged on the outcome with
+  the lab's rules; the outcome by the published rules, whether a sensor
+  recorded the step and whether the test took effect, which such a rule cannot
+  change, are the control. A change of the published rules is judged on both
+  outcomes, with whether a sensor recorded the step and whether the test took
+  effect as the control. A change of a sensor's settings is judged also on
+  whether a sensor recorded the step. A step whose control moved is run
+  variation, not an effect, and is named as such. Each run decides anew which
+  of the lab's rules it accepts, so the recording keeps, for each rule, whether
+  the run accepted it and the digest of its file: a step that an unchanged rule
+  matched in one run only is not credited to a change of rules, the lab's or
+  the published ones. It is credited to a change of a sensor's settings, whose
+  new telemetry can make an unchanged rule match.
+- **The control step.** The step of role `control` must raise no alert, so an
+  alert on it is worse, and named as a false alert.
+- **Its price, on the same line.** A step that got better carries what the
+  gain cost, and a test step also how many of the list's published procedures
+  of its technique got better. For the lab's rules the cost cannot be counted
+  from the recording: a rule that matched ordinary activity is not accepted,
+  and its matches are left out of the recording before it is written. The line
+  says that, and quotes both recordings' notes on which rules were accepted,
+  rather than a count that would read as zero.
+- **The lab's code.** Two runs from different commits of this repository may
+  differ because of the code, which the comparison does not check. It does not
+  refuse for that, since a pull request always differs from `main`, but every
+  verdict then says so, and `delta.md` names both commits.
+- **No race.** The rules ran after each run, so there is no time to a first
+  alert to compare, and the comparison makes none up.
+- Every verdict rests on one pair of runs, and says so.
+
+The job "compare with the latest run on main" of the `lab` workflow runs it
+with nothing declared. Until a run on `main` has a recording with
+`source.setup`, its comparison is refused for that reason, and lists the steps.
+
+**The noise floor.** Runs
+[45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)
+and [45288430599](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45288430599),
+the first of a pull request and the second on `main`, both on 23 November 2026, ran the same list with the same tests'
+commit, runner image `ubuntu24 20261116.133.1` and kernel `7.0.0-1014-aws`, the
+same sensor settings, rule sets and tool versions, from two commits of this
+repository (`cb017990` and `2ca6c9e6`). Their recordings predate
+`source.setup`, so they were written again from each run's artifact (`run.json`,
+`results.json` and the two rule folders) with `bluefire-lab recording` of this
+version and compared outside CI. That comparison found them comparable apart
+from the lab's code, which it names, and all 91 steps the same in what
+happened, in whether a sensor recorded them and in both outcomes. They do
+differ below the outcomes: the recordings hold 1,931 and 1,923 events. No CI
+run shows this comparison: it is not yet shown, and two runs are one sample of
+the noise floor, not its measure.
 
 ## Before the loop: the sensor spike
 

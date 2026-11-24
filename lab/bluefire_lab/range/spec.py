@@ -1,27 +1,35 @@
 """Read a range's spec file, and derive from it the probes that show its segmentation.
 
 This reads the parts that bring a range up: `range`, `version`, `prefix`,
-`docker`, `networks`, `hosts`, the `base` that hosts without an image of their
-own are built from, and the `defense`: a Wazuh manager and the agents baked
-into the hosts. The other sections of a spec (the published tests, the
-activity, the path and the keys that plant a host's contents) are accepted here
-and read by the parts of the lab that use them.
+`docker`, `networks`, `hosts` with what is planted in each, the `base` that
+hosts without an image of their own are built from, the `defense` (a Wazuh
+manager and the agents baked into the hosts), and the pin of Atomic Red Team
+whose files the hosts carry. Of the `path` it reads only which techniques and
+hosts its steps name. The `activity` is read by the module `activity`, which
+also reads which accounts and addresses the path uses. The other sections (the
+sentence, the executor and the rest of the path) are accepted here and read by
+the parts of the lab that use them.
+
+What a host may have planted in it is a closed list: accounts, keys,
+known_hosts, dirs, files, database, sshd, packages, services, serve and
+atomics_src. It is not a general provisioning system.
 """
 
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
 
 KEYS = {"range", "version", "prefix", "docker", "networks", "hosts"}
-READ_KEYS = {"base", "defense"}
-LATER_KEYS = {"sentence", "atomic_red_team", "executor", "activity", "path"}
+READ_KEYS = {"base", "defense", "atomic_red_team", "path", "activity"}
+LATER_KEYS = {"sentence", "executor"}
 HOST_KEYS = {"kind", "role", "networks", "listens", "image", "agent", "watch", "packages", "services"}
-LATER_HOST_KEYS = {
+PLANT_KEYS = {
     "accounts",
     "keys",
     "known_hosts",
@@ -48,12 +56,40 @@ SHA512 = re.compile(r"[0-9a-f]{128}\Z")
 WATCH_PATH = re.compile(r"/[A-Za-z0-9._/-]*\Z")
 # Features of the Wazuh agent that a spec may switch off, each by its own setting.
 OFF = ("command_monitoring", "sca", "rootcheck", "syscollector")
-# Log formats whose files the delivery count has been shown to read line by line.
-LOG_FORMATS = ("syslog",)
-# The services a host's start script can start, and the package each one needs.
-SERVICES = {"sshd": "openssh-server"}
+# Log formats whose files the delivery count has been shown to read line by line: with these, each
+# line of the file is the full log of one event. (With mysql_log, Wazuh 4.14.10 delivered none of
+# MariaDB 10.11's error log lines.)
+LOG_FORMATS = ("syslog", "apache")
+# The services a host's start script can start, the package each one needs, and the TCP ports it
+# listens on. A host built from base lists in `listens` exactly the ports of its services.
+SERVICES = {
+    "sshd": "openssh-server",
+    "nginx": "nginx",
+    "php-fpm": "php-fpm",
+    "mariadb": "mariadb-server",
+    "cron": "cron",
+    "inet-server": "python3",
+}
+SERVICE_PORTS = {"sshd": (22,), "nginx": (80,), "mariadb": (3306,), "inet-server": (80, 443)}
 # Agents connect to the manager on 1514 and enroll on 1515.
 MANAGER_PORTS = (1514, 1515)
+# Accounts every host built from base has, besides those its spec plants.
+SYSTEM_ACCOUNTS = ("root", "www-data")
+ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z")
+# Planted values reach a shell, SQL and PHP, so they hold only characters that need no quoting there.
+PLAIN_VALUE = re.compile(r"[A-Za-z0-9._-]+\Z")
+DB_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
+MODE = re.compile(r"0?[0-7]{3}\Z")
+SUDO_COMMAND = re.compile(r"/[A-Za-z0-9._/-]+( [A-Za-z0-9._/=-]+)*\Z")
+TECHNIQUE = re.compile(r"T[0-9]{4}(\.[0-9]{3})?\Z")
+ATOMIC_FILE = re.compile(r"atomic:(T[0-9]{4}(?:\.[0-9]{3})?/src/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)\Z")
+REPO = re.compile(r"repo:([a-z][a-z0-9-]*)\Z")
+RELATIVE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\Z")
+COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+GITHUB_REPO = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+\Z")
+KEY_TYPES = ("rsa", "ed25519")
+# The folder beside the spec that holds the git repositories `repo:<name>` names.
+REPOS = "repos"
 # The logs every agent must collect, because the engine reads its own lines in them: the ready and
 # end nonces and the syslog marks go to auth.log, the program start mark to snoopy.log.
 ENGINE_LOGS = ("/var/log/auth.log", "/var/log/snoopy.log")
@@ -107,6 +143,110 @@ class Wazuh:
 
 
 @dataclass(frozen=True)
+class Atomics:
+    """The pin of Atomic Red Team, and the lock file of what the lab fetches from it."""
+
+    repo: str
+    commit: str
+    lock: str
+
+
+@dataclass(frozen=True)
+class Listed:
+    """Where a planted password appears in a published file: its line, read as `<account>:<password>`."""
+
+    file: (
+        str  # a path in the repository of Atomic Red Team, as in atomics/T1110.004/src/credstuffuserpass.txt
+    )
+    line: int
+
+
+@dataclass(frozen=True)
+class Account:
+    name: str
+    shell: str
+    password: str | None = None
+    sudo: tuple[str, ...] = ()
+    listed: Listed | None = None
+
+
+@dataclass(frozen=True)
+class Key:
+    """One entry of a host's `keys`: a key pair held by an account of the host, or a key it accepts.
+
+    A key is named once with its type and the account that holds its private
+    half (`private`); any entry may say where its public half is accepted
+    (`authorized`, as account@host).
+    """
+
+    name: str
+    type: str | None = None
+    private: str | None = None  # the account of this host that holds the private key
+    file: str | None = None
+    authorized: tuple[str, str] | None = None  # (account, host)
+
+    @property
+    def file_name(self) -> str:
+        return self.file or f"id_{self.type}"
+
+
+@dataclass(frozen=True)
+class KnownHosts:
+    account: str
+    hosts: tuple[str, ...]
+    hashed: bool = False
+
+
+@dataclass(frozen=True)
+class Folder:
+    path: str
+    owner: str
+    group: str
+    mode: str
+
+
+@dataclass(frozen=True)
+class File:
+    path: str
+    owner: str
+    group: str
+    mode: str | None  # None for a git repository, a folder whose modes git sets
+    text: str | None = None
+    source: str | None = None  # a file beside the spec, or repo:<name>
+
+    @property
+    def repo(self) -> str | None:
+        found = REPO.match(self.source or "")
+        return found.group(1) if found else None
+
+    @property
+    def content(self) -> bytes | None:
+        """The bytes of a file planted from text: the text, ended by a newline."""
+
+        if self.text is None:
+            return None
+        return (self.text if self.text.endswith("\n") else self.text + "\n").encode()
+
+
+@dataclass(frozen=True)
+class Database:
+    name: str
+    user: str
+    password: str
+    grant_from: str
+    bind_address: str
+    log_error: str
+    sql: str | None = None  # a file beside the spec, run in the database after it is made
+
+
+@dataclass(frozen=True)
+class Sshd:
+    password_auth: bool
+    permit_root: bool
+    pam_nodelay: bool = False
+
+
+@dataclass(frozen=True)
 class Host:
     name: str
     kind: str
@@ -118,6 +258,15 @@ class Host:
     watch: Watch = field(default_factory=Watch)
     packages: tuple[str, ...] = ()
     services: tuple[str, ...] = ()
+    accounts: tuple[Account, ...] = ()
+    keys: tuple[Key, ...] = ()
+    known_hosts: tuple[KnownHosts, ...] = ()
+    dirs: tuple[Folder, ...] = ()
+    files: tuple[File, ...] = ()
+    database: Database | None = None
+    sshd: Sshd | None = None
+    serve: tuple[tuple[str, str], ...] = ()  # (URL path, atomics file)
+    atomics_src: tuple[str, ...] = ()
 
     @property
     def digest(self) -> str | None:
@@ -129,6 +278,17 @@ class Host:
         """True when the lab builds the host's image from the spec, rather than running a pinned image."""
 
         return self.image is None
+
+    def account(self, name: str) -> Account | None:
+        return next((account for account in self.accounts if account.name == name), None)
+
+    @property
+    def account_names(self) -> tuple[str, ...]:
+        return SYSTEM_ACCOUNTS + tuple(account.name for account in self.accounts)
+
+
+def home(account: str) -> str:
+    return "/root" if account == "root" else "/home/" + account
 
 
 @dataclass(frozen=True)
@@ -143,6 +303,28 @@ class Spec:
     base: Base | None = None
     wazuh: Wazuh | None = None
     watch: Watch = field(default_factory=Watch)
+    atomics: Atomics | None = None
+    # The (technique, host) of each step of the path, in order. The rest of the path is read elsewhere.
+    steps: tuple[tuple[str, str], ...] = ()
+    # The folder that holds the spec, beside which its files, repositories and lock are.
+    folder: Path | None = None
+    # The ordinary activity beside the path (see `activity`), when the spec has one.
+    activity: object = None
+
+    @property
+    def path_hosts(self) -> set[str]:
+        """The hosts on which a step of the path runs."""
+
+        return {host for _, host in self.steps}
+
+    def key(self, name: str) -> tuple[str, Key]:
+        """The host and the entry that hold the private half of a key."""
+
+        for host in self.hosts.values():
+            for key in host.keys:
+                if key.name == name and key.private:
+                    return host.name, key
+        raise KeyError(name)
 
     def network_name(self, network: str) -> str:
         return f"{self.prefix}-{network}"
@@ -222,10 +404,10 @@ def load(path: Path) -> Spec:
         text = Path(path).read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         raise SpecError("the spec must be UTF-8 text") from error
-    return parse(read(text), text)
+    return parse(read(text), text, Path(path).resolve().parent)
 
 
-def parse(data: object, text: str = "") -> Spec:
+def parse(data: object, text: str = "", folder: Path | None = None) -> Spec:
     if not isinstance(data, dict):
         raise SpecError(
             "the spec must be a mapping with the keys range, version, prefix, docker, networks and hosts"
@@ -272,6 +454,7 @@ def parse(data: object, text: str = "") -> Spec:
 
     base = _base(data["base"]) if "base" in data else None
     wazuh, watch = _defense(data["defense"]) if "defense" in data else (None, Watch())
+    atomics = _atomics(data["atomic_red_team"]) if "atomic_red_team" in data else None
 
     hosts_data = data["hosts"]
     if not isinstance(hosts_data, dict) or not hosts_data:
@@ -286,7 +469,16 @@ def parse(data: object, text: str = "") -> Spec:
         if not any(network in host.networks for host in hosts.values()):
             raise SpecError(f"network {network} has no host")
     _defense_hosts(hosts, wazuh, watch)
-    spec = Spec(name, 1, prefix, min_engine, tuple(networks), hosts, text, base, wazuh, watch)
+    steps = _steps(data.get("path"), hosts)
+    spec = Spec(
+        name, 1, prefix, min_engine, tuple(networks), hosts, text, base, wazuh, watch, atomics, steps, folder
+    )
+    if "activity" in data:
+        # Imported here, since that module reads this one's types.
+        from .activity import parse as parse_activity
+
+        spec = replace(spec, activity=parse_activity(data["activity"], hosts, data.get("path"), watch))
+    _plants_across(spec)
     for host in hosts:
         if not any(probe.source == host and probe.must == "connect" for probe in matrix(spec)):
             raise SpecError(
@@ -428,7 +620,7 @@ def _defense_hosts(hosts: dict[str, Host], wazuh: Wazuh | None, watch: Watch) ->
 def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh: Wazuh | None) -> Host:
     if not isinstance(settings, dict):
         raise SpecError(f"host {name} must be a mapping")
-    unknown = sorted(str(key) for key in settings if key not in HOST_KEYS | LATER_HOST_KEYS)
+    unknown = sorted(str(key) for key in settings if key not in HOST_KEYS | PLANT_KEYS)
     if unknown:
         raise SpecError(f"host {name} has unknown keys: {', '.join(unknown)}")
     kind = settings.get("kind")
@@ -469,7 +661,7 @@ def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh:
 
     if image is None and base is None:
         raise SpecError(f"host {name} has no image, so the lab builds it from base, and the spec has no base")
-    built_keys = sorted({"agent", "watch", "packages", "services"} & set(settings))
+    built_keys = sorted(({"agent", "watch", "packages", "services"} | PLANT_KEYS) & set(settings))
     if image is not None and built_keys:
         raise SpecError(
             f"host {name} runs the pinned image unchanged, so it cannot have {', '.join(built_keys)}: "
@@ -503,7 +695,14 @@ def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh:
             )
     if len(set(services)) != len(services):
         raise SpecError(f"host {name} lists a service twice")
-    return Host(
+    if image is None:
+        ports = sorted({port for service in services for port in SERVICE_PORTS.get(service, ())})
+        if sorted(listens) != ports:
+            raise SpecError(
+                f"host {name} lists {sorted(listens)} in listens, and its services listen on {ports}: "
+                "the seal connects to every port a host lists, so the two must be the same"
+            )
+    host = Host(
         name,
         kind,
         role.strip(),
@@ -515,6 +714,353 @@ def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh:
         tuple(packages),
         tuple(services),
     )
+    return _plants(host, settings)
+
+
+def _list(value: object, where: str) -> list:
+    if not isinstance(value, list):
+        raise SpecError(f"{where} must be a list")
+    return value
+
+
+def _path(value: object, where: str) -> str:
+    if not isinstance(value, str) or not WATCH_PATH.match(value) or "/../" in value + "/" or "/./" in value:
+        raise SpecError(f"{where}: {value!r} must be an absolute path of letters, digits and . _ - /")
+    return value.rstrip("/") or "/"
+
+
+def _owner(host: Host, value: object, where: str, default: str = "root") -> str:
+    value = default if value is None else value
+    if value not in host.account_names:
+        raise SpecError(
+            f"{where}: {value!r} is not an account of host {host.name}; it has {', '.join(host.account_names)}"
+        )
+    return value
+
+
+def _mode(value: object, where: str, default: str) -> str:
+    value = default if value is None else value
+    if not isinstance(value, str) or not MODE.match(value):
+        raise SpecError(
+            f'{where}: mode must be octal digits in quotes, as in "0640", so that YAML keeps them'
+        )
+    return value.rjust(4, "0")
+
+
+def _flag(value: object, where: str, default: bool | None = None) -> bool:
+    if value is None and default is not None:
+        return default
+    if not isinstance(value, bool):
+        raise SpecError(f"{where} must be true or false")
+    return value
+
+
+def _at(value: object, where: str) -> tuple[str, str]:
+    if not isinstance(value, str) or value.count("@") != 1:
+        raise SpecError(f"{where} must be <account>@<host>, as in deploy@build")
+    account, _, host = value.partition("@")
+    if not ACCOUNT.match(account) or not NAME.match(host):
+        raise SpecError(f"{where} must be <account>@<host>, as in deploy@build")
+    return account, host
+
+
+def _plants(host: Host, settings: dict) -> Host:
+    """What is planted in one host, each key read with the rules that need only the host itself."""
+
+    name = host.name
+    packages = set(host.packages)
+    accounts = []
+    for entry in _list(settings.get("accounts", []), f"host {name}: accounts"):
+        where = f"host {name}: accounts"
+        entry = _mapping(entry, where, {"name", "shell", "password", "sudo", "listed"}, {"name", "shell"})
+        account = entry["name"]
+        if not isinstance(account, str) or not ACCOUNT.match(account) or account in SYSTEM_ACCOUNTS:
+            raise SpecError(f"{where}: {account!r} must be a new account name, such as webadmin")
+        where = f"host {name}: account {account}"
+        shell = _path(entry["shell"], f"{where}: shell")
+        password = entry.get("password")
+        if password is not None and (not isinstance(password, str) or not PLAIN_VALUE.match(password)):
+            raise SpecError(f"{where}: password must be letters, digits and . _ - only")
+        sudo = _list(entry.get("sudo", []), f"{where}: sudo")
+        for command in sudo:
+            if not isinstance(command, str) or not SUDO_COMMAND.match(command):
+                raise SpecError(
+                    f"{where}: sudo lists {command!r}, and takes commands by full path, as in /usr/sbin/nginx -t"
+                )
+        if sudo and "sudo" not in packages:
+            raise SpecError(f"{where} may run commands with sudo, so host {name} needs the package sudo")
+        listed = None
+        if "listed" in entry:
+            found = _mapping(entry["listed"], f"{where}: listed", {"file", "line"}, {"file", "line"})
+            source = found["file"]
+            if not isinstance(source, str) or not ATOMIC_FILE.match(source):
+                raise SpecError(
+                    f"{where}: listed.file must be a published file, as in atomic:T1110.004/src/<file>"
+                )
+            if not isinstance(found["line"], int) or isinstance(found["line"], bool) or found["line"] < 1:
+                raise SpecError(f"{where}: listed.line must be a line number")
+            if password is None:
+                raise SpecError(f"{where} is listed in a published file and has no password")
+            listed = Listed("atomics/" + ATOMIC_FILE.match(source).group(1), found["line"])
+        if account in {a.name for a in accounts}:
+            raise SpecError(f"host {name} plants the account {account} twice")
+        accounts.append(Account(account, shell, password, tuple(sudo), listed))
+    host = _replace(host, accounts=tuple(accounts))
+
+    sshd = None
+    if "sshd" in settings:
+        where = f"host {name}: sshd"
+        entry = _mapping(
+            settings["sshd"],
+            where,
+            {"password_auth", "permit_root", "pam_nodelay"},
+            {"password_auth", "permit_root"},
+        )
+        if "sshd" not in host.services:
+            raise SpecError(f"{where} sets the SSH server, and the host's services do not run sshd")
+        sshd = Sshd(
+            _flag(entry["password_auth"], f"{where}.password_auth"),
+            _flag(entry["permit_root"], f"{where}.permit_root"),
+            _flag(entry.get("pam_nodelay"), f"{where}.pam_nodelay", False),
+        )
+
+    keys = []
+    for entry in _list(settings.get("keys", []), f"host {name}: keys"):
+        where = f"host {name}: keys"
+        entry = _mapping(entry, where, {"name", "type", "private", "file", "authorized"}, {"name"})
+        key = entry["name"]
+        if not isinstance(key, str) or not NAME.match(key):
+            raise SpecError(f"{where}: name must be lower-case letters, digits and single hyphens")
+        where = f"host {name}: key {key}"
+        private = None
+        if "private" in entry:
+            account, holder = _at(entry["private"], f"{where}: private")
+            if holder != name:
+                raise SpecError(
+                    f"{where}: private names {entry['private']}, and a key is held on the host that lists it"
+                )
+            private = _owner(host, account, f"{where}: private")
+            if entry.get("type") not in KEY_TYPES:
+                raise SpecError(f"{where}: type must be one of {', '.join(KEY_TYPES)}")
+        elif "type" in entry or "file" in entry:
+            raise SpecError(f"{where}: type and file belong with private, on the host that holds the key")
+        file = entry.get("file")
+        if file is not None and (not isinstance(file, str) or not ACCOUNT.match(file)):
+            raise SpecError(f"{where}: file must be a file name in ~/.ssh, as in id_rsa")
+        authorized = _at(entry["authorized"], f"{where}: authorized") if "authorized" in entry else None
+        if private is None and authorized is None:
+            raise SpecError(f"{where} needs private, authorized or both")
+        keys.append(Key(key, entry.get("type"), private, file, authorized))
+
+    known = []
+    for entry in _list(settings.get("known_hosts", []), f"host {name}: known_hosts"):
+        where = f"host {name}: known_hosts"
+        entry = _mapping(entry, where, {"account", "hosts", "hashed"}, {"account", "hosts"})
+        account = _owner(host, entry["account"], where)
+        listed_hosts = _list(entry["hosts"], f"{where}: hosts")
+        if not listed_hosts or not all(isinstance(h, str) and NAME.match(h) for h in listed_hosts):
+            raise SpecError(f"{where}: hosts must list host names")
+        known.append(
+            KnownHosts(account, tuple(listed_hosts), _flag(entry.get("hashed"), f"{where}.hashed", False))
+        )
+
+    paths: set[str] = set()
+    dirs = []
+    for entry in _list(settings.get("dirs", []), f"host {name}: dirs"):
+        where = f"host {name}: dirs"
+        entry = _mapping(entry, where, {"path", "owner", "group", "mode"}, {"path"})
+        path = _path(entry["path"], where)
+        owner = _owner(host, entry.get("owner"), f"{where}: {path}")
+        group = _owner(host, entry.get("group"), f"{where}: {path}: group", owner)
+        if path in paths:
+            raise SpecError(f"{where} plants {path} twice")
+        paths.add(path)
+        dirs.append(Folder(path, owner, group, _mode(entry.get("mode"), f"{where}: {path}", "0755")))
+
+    files = []
+    for entry in _list(settings.get("files", []), f"host {name}: files"):
+        where = f"host {name}: files"
+        entry = _mapping(entry, where, {"path", "owner", "group", "mode", "text", "from"}, {"path"})
+        path = _path(entry["path"], where)
+        where = f"host {name}: file {path}"
+        if ("text" in entry) == ("from" in entry):
+            raise SpecError(f"{where} needs either text or from")
+        owner = _owner(host, entry.get("owner"), where)
+        group = _owner(host, entry.get("group"), f"{where}: group", owner)
+        text, source = entry.get("text"), entry.get("from")
+        if text is not None and not isinstance(text, str):
+            raise SpecError(f"{where}: text must be text")
+        mode = _mode(entry.get("mode"), where, "0644")
+        if source is not None:
+            if not isinstance(source, str) or not (REPO.match(source) or RELATIVE.match(source)):
+                raise SpecError(
+                    f"{where}: from must be a file beside the spec, as in app/index.php, or a git repository, "
+                    "as in repo:shop"
+                )
+            if REPO.match(source):
+                if "mode" in entry:
+                    raise SpecError(f"{where} is a git repository, whose modes git sets: it takes no mode")
+                if "git" not in packages:
+                    raise SpecError(f"{where} is a git repository, so host {name} needs the package git")
+                mode = None
+        if path in paths:
+            raise SpecError(f"host {name} plants {path} twice")
+        paths.add(path)
+        files.append(File(path, owner, group, mode, text, source))
+
+    database = None
+    if "database" in settings:
+        where = f"host {name}: database"
+        entry = _mapping(
+            settings["database"],
+            where,
+            {"name", "user", "password", "from", "bind_address", "log_error", "sql"},
+            {"name", "user", "password", "from", "bind_address", "log_error"},
+        )
+        if "mariadb" not in host.services:
+            raise SpecError(f"{where} needs the service mariadb")
+        for key in ("name", "user"):
+            if not isinstance(entry[key], str) or not DB_NAME.match(entry[key]):
+                raise SpecError(f"{where}: {key} must be lower-case letters, digits and _")
+        if not isinstance(entry["password"], str) or not PLAIN_VALUE.match(entry["password"]):
+            raise SpecError(f"{where}: password must be letters, digits and . _ - only")
+        if entry["from"] != "%":
+            raise SpecError(
+                f'{where}: from must be "%": the grant is for the user from any address in the range'
+            )
+        try:
+            ipaddress.IPv4Address(entry["bind_address"])
+        except (ValueError, TypeError) as error:
+            raise SpecError(f"{where}: bind_address must be an IPv4 address, as in 0.0.0.0") from error
+        sql = entry.get("sql")
+        if sql is not None and (not isinstance(sql, str) or not RELATIVE.match(sql)):
+            raise SpecError(f"{where}: sql must be a file beside the spec, as in app/shop.sql")
+        database = Database(
+            entry["name"],
+            entry["user"],
+            entry["password"],
+            entry["from"],
+            entry["bind_address"],
+            _path(entry["log_error"], f"{where}: log_error"),
+            sql,
+        )
+
+    serve = []
+    if "serve" in settings:
+        where = f"host {name}: serve"
+        if not isinstance(settings["serve"], dict) or not settings["serve"]:
+            raise SpecError(f"{where} must map a path of the server to a published file")
+        if "inet-server" not in host.services:
+            raise SpecError(f"{where} names files to serve, and the host does not run inet-server")
+        for url, source in settings["serve"].items():
+            url = _path(url, where)
+            if not isinstance(source, str) or not ATOMIC_FILE.match(source):
+                raise SpecError(
+                    f"{where}: {url} must be served from a published file, as in atomic:T1105/src/atomic.sh"
+                )
+            serve.append((url, "atomics/" + ATOMIC_FILE.match(source).group(1)))
+
+    techniques = _list(settings.get("atomics_src", []), f"host {name}: atomics_src")
+    if not all(isinstance(t, str) and TECHNIQUE.match(t) for t in techniques) or len(set(techniques)) != len(
+        techniques
+    ):
+        raise SpecError(f"host {name}: atomics_src must list technique ids once each, as in T1110.004")
+
+    return _replace(
+        host,
+        keys=tuple(keys),
+        known_hosts=tuple(known),
+        dirs=tuple(dirs),
+        files=tuple(files),
+        database=database,
+        sshd=sshd,
+        serve=tuple(serve),
+        atomics_src=tuple(techniques),
+    )
+
+
+def _replace(host: Host, **changes) -> Host:
+    return replace(host, **changes)
+
+
+def _plants_across(spec: Spec) -> None:
+    """The rules of the plants that need more than one host: keys, known hosts and published files."""
+
+    held: dict[str, tuple[str, Key]] = {}
+    for host in spec.hosts.values():
+        for key in host.keys:
+            if key.private:
+                if key.name in held:
+                    raise SpecError(
+                        f"key {key.name} is held twice: on {held[key.name][0]} and on {host.name}"
+                    )
+                held[key.name] = (host.name, key)
+    for host in spec.hosts.values():
+        for key in host.keys:
+            where = f"host {host.name}: key {key.name}"
+            if key.name not in held:
+                raise SpecError(
+                    f"{where}: no host holds the private half of {key.name} (private: <account>@<host>)"
+                )
+            if key.authorized is None:
+                continue
+            account, target = key.authorized
+            if target not in spec.hosts:
+                raise SpecError(f"{where}: authorized names host {target}, which hosts does not declare")
+            other = spec.hosts[target]
+            if "sshd" not in other.services:
+                raise SpecError(f"{where}: authorized names {account}@{target}, and {target} runs no sshd")
+            if account not in other.account_names or account == "www-data":
+                raise SpecError(
+                    f"{where}: authorized names {account}@{target}, and {target} has no such account"
+                )
+            holder = held[key.name][0]
+            if not spec.shared(holder, target):
+                raise SpecError(f"{where}: {holder}, which holds the key, shares no network with {target}")
+        for known in host.known_hosts:
+            for target in known.hosts:
+                where = f"host {host.name}: known_hosts of {known.account}"
+                if target not in spec.hosts or "sshd" not in spec.hosts[target].services:
+                    raise SpecError(f"{where} names {target}, which runs no sshd and so has no host key")
+                if not spec.shared(host.name, target):
+                    raise SpecError(f"{where} names {target}, which shares no network with {host.name}")
+        uses_atomics = host.atomics_src or host.serve or any(a.listed for a in host.accounts)
+        if uses_atomics and spec.atomics is None:
+            raise SpecError(f"host {host.name} carries published files, and the spec has no atomic_red_team")
+
+
+def _atomics(value: object) -> Atomics:
+    entry = _mapping(value, "atomic_red_team", {"repo", "commit", "lock"}, {"repo", "commit"})
+    if not isinstance(entry["repo"], str) or not GITHUB_REPO.match(entry["repo"]):
+        raise SpecError("atomic_red_team.repo must be a GitHub repository, as in redcanaryco/atomic-red-team")
+    if not isinstance(entry["commit"], str) or not COMMIT.match(entry["commit"]):
+        raise SpecError("atomic_red_team.commit must be a full commit id, 40 hex digits")
+    lock = entry.get("lock", "")
+    if lock and (not isinstance(lock, str) or not RELATIVE.match(lock)):
+        raise SpecError("atomic_red_team.lock must be a file beside the spec, as in range-one.lock")
+    return Atomics(entry["repo"], entry["commit"], lock)
+
+
+def _steps(path: object, hosts: dict[str, Host]) -> tuple[tuple[str, str], ...]:
+    """The technique and host of each step of the path. The path's own rules are read elsewhere."""
+
+    if path is None:
+        return ()
+    steps = path.get("steps") if isinstance(path, dict) else None
+    if not isinstance(steps, list):
+        raise SpecError("path must have steps, a list")
+    found = []
+    for number, step in enumerate(steps, start=1):
+        if not isinstance(step, dict) or not isinstance(step.get("technique"), str):
+            raise SpecError(f"step {number} of the path has no technique")
+        if not TECHNIQUE.match(step["technique"]):
+            raise SpecError(f"step {number} of the path: {step['technique']!r} is not a technique id")
+        if step.get("host") is not None and step.get("host") not in hosts:
+            raise SpecError(
+                f"step {step.get('id', number)} of the path runs on {step.get('host')}, which hosts does not declare"
+            )
+        found.append((step["technique"], step.get("host")))
+    return tuple(found)
 
 
 def matrix(spec: Spec) -> list[Probe]:
