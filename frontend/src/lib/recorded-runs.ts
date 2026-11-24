@@ -2,6 +2,7 @@
 // the Runs screen lists them and the recorded run page plays them.
 
 import type { LiveMoment, LiveViewProps } from "../live/LiveView";
+import type { Recording } from "../live/recording";
 import { count, day, plural, span } from "../live/format";
 import type { RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 
@@ -98,6 +99,16 @@ export function momentFromSearch(query: URLSearchParams): NonNullable<LiveViewPr
   const select = query.get("select");
   if (select) initial.select = select;
   return initial;
+}
+
+/**
+ * Whether the moment to open at names a step, or a step to choose, that the
+ * recording does not hold. The live view then opens at the start of the run, or
+ * on the whole run, and says so in a line under the title.
+ */
+export function namesMissingStep(recording: Pick<Recording, "steps">, initial: LiveViewProps["initial"]): boolean {
+  const held = new Set(recording.steps.map((step) => step.id));
+  return (initial?.step !== undefined && !held.has(initial.step)) || (initial?.select !== undefined && !held.has(initial.select));
 }
 
 /**

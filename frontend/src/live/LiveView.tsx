@@ -9,7 +9,7 @@ import { eventsByStep } from "./recording";
 import { buildTimeline, frameAt, seekStep, stepMatchesInFiringOrder, stepPosition } from "./playback";
 import type { Timeline } from "./playback";
 import { clockTime, day, elapsed, isLabDetector, placeInRole, plural, runLink, sensorColours } from "./format";
-import { lateWords, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
+import { lateLine, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
 import { NetworkMap } from "./NetworkMap";
 import { EventLog } from "./EventLog";
 import { StepCaption } from "./StepCaption";
@@ -43,6 +43,16 @@ export interface LiveViewProps {
 const SPEEDS = [1, 4, 16] as const;
 /** The most screen seconds, before speed, that one animation frame may move the clock. */
 const MAX_TICK = 0.1;
+
+/**
+ * A place in a step for an address, in thousandths, rounded up: opening it
+ * again never lands before the moment on screen, so a match or a late arrival
+ * that had fired is still there, and a moment just inside a silence stays in
+ * it. It is rounded to the millionth first, so that 0.6000000000000001 is 0.6.
+ */
+function addressPosition(position: number): number {
+  return Math.ceil(Math.round(position * 1e6) / 1e3) / 1e3;
+}
 
 function startTime(timeline: Timeline, initial: LiveViewProps["initial"]): number {
   if (initial?.step === undefined) return 0;
@@ -125,7 +135,7 @@ const Provenance = memo(function Provenance({ recording }: { recording: Recordin
 });
 
 /** The wordmark, the run's title and where the recording comes from. */
-const Brand = memo(function Brand({ recording, origin }: { recording: Recording; origin: string | undefined }) {
+const Brand = memo(function Brand({ recording, origin, notice }: { recording: Recording; origin: string | undefined; notice: AddressNotice | null }) {
   return (
     <div className="lv-brand">
       <div className="lv-brand-row">
@@ -139,9 +149,48 @@ const Brand = memo(function Brand({ recording, origin }: { recording: Recording;
       </div>
       <Provenance recording={recording} />
       {origin === undefined ? null : <p className="lv-origin">{origin}</p>}
+      {notice === null ? null : <AddressLine notice={notice} />}
     </div>
   );
 });
+
+/**
+ * One calm line when the page's address names a step the recording does not
+ * hold, so a mistyped or stale link does not look as if it worked. Null when
+ * every step it names is there.
+ */
+function addressNotice(recording: Recording, initial: LiveViewProps["initial"]): AddressNotice | null {
+  const known = new Set(recording.steps.map((step) => step.id));
+  const step = initial?.step !== undefined && !known.has(initial.step) ? initial.step : null;
+  const select = initial?.select !== undefined && !known.has(initial.select) ? initial.select : null;
+  if (step === null && select === null) return null;
+  const names = [...new Set([step, select].filter((id): id is string => id !== null))].map((id) => JSON.stringify(id));
+  const what = names.length === 1 ? `step ${names[0] ?? ""}` : `steps ${names.join(" and ")}`;
+  const instead = [step !== null ? "the view opened at the start of the run" : "", select !== null ? "analyse mode opened on the whole run" : ""].filter(Boolean).join(", and ");
+  // The line stays true for the whole visit; how the view opened is its tooltip.
+  const line = names.length === 1 ? `Step ${names[0] ?? ""} is not in this recording.` : `Steps ${names.join(" and ")} are not in this recording.`;
+  return { line, full: `The page's address names ${what}, which this recording does not hold, so ${instead}.` };
+}
+
+interface AddressNotice {
+  line: string;
+  full: string;
+}
+
+/**
+ * The address notice, in a status region that is on the page before its words
+ * arrive, so that a screen reader speaks them.
+ */
+function AddressLine({ notice }: { notice: AddressNotice }) {
+  const [words, setWords] = useState("");
+  // Filled after the empty region has been drawn.
+  useEffect(() => setWords(notice.line), [notice.line]);
+  return (
+    <p className="lv-address" role="status" title={notice.full}>
+      {words}
+    </p>
+  );
+}
 
 /** A plan in one line: "6 hosts. Sensors: Wazuh agent on web, build and db, which records log lines and file changes." */
 function planWords(recording: Recording): string {
@@ -179,7 +228,9 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
   const [playing, setPlaying] = useState(() => initial?.paused !== true && timeline.duration > 0 && firstMode === "watch");
   const [speed, setSpeed] = useState<number>(1);
   const [mode, setMode] = useState<LiveMode>(firstMode);
-  const [select, setSelect] = useState<string | undefined>(initial?.select);
+  // A step the address names that the recording does not hold is not chosen; the notice says so.
+  const notice = useMemo(() => addressNotice(recording, initial), [recording, initial]);
+  const [select, setSelect] = useState<string | undefined>(() => (initial?.select !== undefined && recording.steps.some((step) => step.id === initial.select) ? initial.select : undefined));
   // Whether analyse mode opens with keyboard focus on the chosen step's detail:
   // true when a control that goes away with watch mode opened it.
   const [focusDetail, setFocusDetail] = useState(false);
@@ -269,8 +320,8 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
   const stepAlerts = useMemo(() => (stepId === undefined ? [] : stepMatchesInFiringOrder(timeline, stepId)), [timeline, stepId]);
   const matches = useMemo(() => stepMatches(stepAlerts), [stepAlerts]);
   const moment = momentOf(timeline, frame, stepAlerts, matches);
-  const lastLate = frame.late[frame.late.length - 1];
-  const late = useMemo(() => (lastLate ? lateWords(recording, timeline, lastLate) : null), [recording, timeline, lastLate]);
+  const lateFires = frame.late;
+  const late = useMemo(() => lateLine(recording, timeline, lateFires), [recording, timeline, lateFires]);
   const arrival = useCallback((id: string) => timeline.arrival.get(id) ?? 0, [timeline]);
   const total = stepId === undefined ? 0 : (byStepEvents.get(stepId)?.length ?? 0);
   // Watching, the score is the score so far; analysing, it is the whole run's.
@@ -284,7 +335,8 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
   const allSteps = `${plural(recording.steps.length, "step")} in all`;
   const widestPlace = useMemo(() => recording.steps.map((step) => placeInRole(recording, step)).reduce((widest, place) => (place.length > widest.length ? place : widest), ""), [recording]);
   // Ordinary activity has no times in a recording, so while watching, its false alerts are told only at the end.
-  const falseAlerts = mode === "analyse" || frame.ended ? recording.score.false_alerts : undefined;
+  // They are counted from ordinary activity, so they are shown only with it: the reader refuses the count without it.
+  const falseAlerts = recording.ordinary && (mode === "analyse" || frame.ended) ? recording.score.false_alerts : undefined;
 
   // One rule for entering watch mode, however the page was opened: playback
   // starts from where the clock stands, and plays unless it is at the end.
@@ -322,7 +374,7 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
 
   // Not every frame: while playing only the step counts, while paused the position too,
   // also inside the silence after the step, where a late alert may already be on screen.
-  const momentAt = playing ? 0 : Math.round(stepPosition(frame) * 1000) / 1000;
+  const momentAt = playing ? 0 : addressPosition(stepPosition(frame));
   useEffect(() => {
     onMoment?.({ step: stepId, at: momentAt, paused: !playing, mode, select });
   }, [onMoment, stepId, momentAt, playing, mode, select]);
@@ -330,7 +382,7 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
   return (
     <div className={`lv lv--${mode}${hasSteps ? "" : " lv--plan"}${playing ? "" : " is-paused"}`}>
       <header className="lv-top">
-        <Brand recording={recording} origin={origin} />
+        <Brand recording={recording} origin={origin} notice={notice} />
         <div className="lv-score-wrap">
           {hasSteps ? (
             <div className="lv-score" aria-label={mode === "watch" ? "The score so far" : "The score"}>
@@ -420,7 +472,7 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
                 {clockTime(frame.real)}
                 <small>UTC</small>
               </b>
-              <span title={`Counted from the first recorded event of the first step, ${clockTime(facts.start)} UTC`}>{elapsed((frame.real - facts.start) / 1000)} into the run</span>
+              <span title={`Counted from ${facts.startWords}, ${clockTime(facts.start)} UTC`}>{elapsed((frame.real - facts.start) / 1000)} into the run</span>
             </div>
             <Scrubber recording={recording} timeline={timeline} time={time} real={frame.real} revealed={moment?.revealed ?? false} onSeek={jump} />
             <div className="lv-stepno">

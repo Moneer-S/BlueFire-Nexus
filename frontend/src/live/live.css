@@ -404,6 +404,18 @@
   color: var(--lv-muted);
 }
 
+/* An address that names a step the recording does not hold: one calm line, which never grows the header. */
+.lv-address {
+  max-width: 78ch;
+  margin: 1px 0 0;
+  overflow: hidden;
+  font-size: var(--lv-xs);
+  line-height: 1.4;
+  color: var(--lv-amber-soft);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .lv-modes button:disabled {
   opacity: 0.4;
   cursor: default;
@@ -647,11 +659,15 @@
   min-width: 0;
 }
 
+/* One line, so a long goal never takes height from the map: the whole sentence is its tooltip. */
 .lv-winning {
   min-width: 0;
+  overflow: hidden;
   font-size: clamp(15px, 8px + 0.62vw, 20px);
   font-weight: 560;
   color: var(--lv-text-soft);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .lv-winning em {
@@ -1851,18 +1867,20 @@
   color: var(--lv-muted-strong);
 }
 
-/* A match of an earlier step raised after that step ended: one quiet line at the foot of the band, under the step's own words. */
+/* A match of an earlier step raised after that step ended: a quiet line at the foot of the band, under the step's own words.
+   Several raised at once are named on it together, so it may take a second line. */
 .lv-late {
   position: absolute;
   right: 48px;
   bottom: 8px;
   left: 48px;
+  display: -webkit-box;
   overflow: hidden;
   font-size: var(--lv-sm);
   color: #ffb79e;
   text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 /* ---------- transport ---------- */
@@ -3811,6 +3829,171 @@
   .lv-play {
     width: 40px;
     height: 40px;
+  }
+}
+
+/* A small window, or a large one zoomed in: the view grows with what it holds
+   and the page scrolls, so nothing is cut off beyond reach. */
+@media (max-width: 1100px), (max-height: 700px) {
+  .lv {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(440px, auto) auto auto;
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+  }
+
+  .lv--analyse {
+    grid-template-rows: auto auto;
+  }
+
+  .lv-analyse {
+    min-height: auto;
+  }
+
+  .lv-an-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The table keeps its own scroll, at a height that leaves the page around it in reach. */
+  .lv-table-wrap {
+    flex: none;
+    height: max(260px, 60vh);
+  }
+
+  .lv-an-detail {
+    overflow: visible;
+    mask-image: none;
+  }
+
+  .lv-caption {
+    height: auto;
+    min-height: 184px;
+    padding-bottom: 12px;
+    overflow: visible;
+  }
+
+  .lv-late {
+    position: static;
+    display: block;
+    margin-top: 10px;
+    -webkit-line-clamp: none;
+  }
+
+  .lv-winning {
+    overflow: visible;
+    white-space: normal;
+  }
+
+  /* The map keeps the narrowest width its columns fit in, and scrolls sideways inside its band below it. */
+  .lv-main {
+    overflow-x: auto;
+  }
+
+  .lv-main > .lv-stage {
+    min-width: 960px;
+  }
+}
+
+/* A narrow window: the bands stack. */
+@media (max-width: 760px) {
+  .lv-top {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding-bottom: 6px;
+  }
+
+  .lv-score-wrap,
+  .lv-score {
+    flex-wrap: wrap;
+    gap: 12px 16px;
+  }
+
+  .lv-race {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .lv-race-side {
+    padding-top: 4px;
+  }
+
+  .lv-race-notes {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
+
+  .lv-race-end {
+    padding-left: 0;
+    white-space: normal;
+  }
+
+  .lv-caption {
+    padding: 14px 16px 12px;
+  }
+
+  .lv-transport {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px 14px;
+  }
+
+  .lv-scrub-wrap {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .lv-stepno {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    align-items: flex-start;
+  }
+
+  .lv-stepno span {
+    text-align: left;
+  }
+
+  .lv-clock {
+    min-width: 0;
+  }
+
+  /* The whole run on one axis keeps a readable width and scrolls sideways inside its band. */
+  .lv-lanes-panel {
+    grid-template-columns: 140px minmax(520px, 1fr);
+    column-gap: 10px;
+    overflow-x: auto;
+  }
+
+  /* A flag's words near the end of the race line stay in reach: the line scrolls sideways if they must. */
+  .lv-race-body {
+    overflow-x: auto;
+  }
+
+  .lv-seg {
+    flex-wrap: wrap;
+  }
+
+  /* A step's matches and other runs: what follows a title wraps under it, so the title keeps its width. */
+  .lv-dt-match {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .lv-dt-mmeta,
+  .lv-dt-mnote {
+    grid-column: 2 / -1;
+  }
+
+  .lv-dt-mmeta,
+  .lv-dt-rule {
+    white-space: normal;
+  }
+
+  .lv-dt-ot {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+
+  .lv-dt-ot .lv-role-tag {
+    flex: 0 1 auto;
   }
 }
 

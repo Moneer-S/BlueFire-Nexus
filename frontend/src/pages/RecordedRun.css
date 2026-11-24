@@ -68,12 +68,12 @@
 @media (prefers-reduced-motion: reduce) { .recorded-run-running i { animation: none; } }
 
 /*
- * Below the app's header breakpoint the page scrolls. The live view is drawn
- * for a wide screen, so on a narrow one it keeps that width and its box
- * scrolls sideways instead of cutting it off.
+ * In a small window, or a large one zoomed in, the live view behaves as on the
+ * single replay page, at the same sizes (live.css): it grows with what it
+ * holds and the page scrolls, its bands stack at phone width, and only the
+ * network map keeps its width, scrolling sideways inside its band.
  */
-@media (max-width: 900px) {
-  .recorded-run { height: auto; }
-  .recorded-run-view { flex: none; height: max(92dvh, 820px); overflow-x: auto; overscroll-behavior-x: contain; }
-  .recorded-run-view > .lv { min-width: 960px; }
+@media (max-width: 1100px), (max-height: 700px) {
+  .recorded-run { height: auto; min-height: calc(100dvh - var(--topbar-height, 60px)); }
+  .recorded-run-view { flex: 1 0 auto; min-height: 0; }
 }

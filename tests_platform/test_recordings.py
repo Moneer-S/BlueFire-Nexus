@@ -96,6 +96,15 @@ def small_recording(recording_id: str = "rec-small") -> dict[str, Any]:
     }  # fmt: skip
 
 
+def attack_path(recording_id: str = "rec-path") -> dict[str, Any]:
+    """The same two tests as an attack path toward a goal: its race counts from test 1's start."""
+
+    value = small_recording(recording_id)
+    value["kind"] = "attack path"
+    value["attacker"]["goal"] = "Read the history file of another account."
+    return value
+
+
 @pytest.fixture
 def service(tmp_path: Path) -> Iterator[BlueFireService]:
     instance = BlueFireService(
@@ -240,8 +249,7 @@ def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFire
     for _ in range(1000):
         nested["a"] = {}
         nested = nested["a"]
-    huge = small_recording("rec-path")
-    huge["kind"] = "attack path"
+    huge = attack_path()
     huge["score"].update(first_alert_seconds=0.1, goal_seconds=10**1000)
 
     message, problems = refusal(service, recording)
@@ -280,8 +288,7 @@ def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -
     claims["steps"][1]["first_alert"] = "2026-11-17T17:07:22.100Z"
     claims["events"][0]["time"] = "1999-01-01T00:00:00Z"
     claims["score"]["first_alert_seconds"] = 0.5
-    race = small_recording("rec-path")
-    race["kind"] = "attack path"
+    race = attack_path()
     race["score"].update(first_alert_seconds=0.001, goal_seconds=999999)
 
     message, problems = refusal(service, claims)
@@ -317,8 +324,7 @@ def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -
 
 def test_the_race_counts_a_live_alert_from_when_it_was_raised(service: BlueFireService) -> None:
     def path(recording_id: str, when: str, first_alert_seconds: float) -> dict[str, Any]:
-        race = small_recording(recording_id)
-        race["kind"] = "attack path"
+        race = attack_path(recording_id)
         race["network"]["detectors"][0]["when"] = when
         if when == "live":
             # The first test starts at 21.000 s and its event is at 21.100 s; the alert is
@@ -406,8 +412,7 @@ def test_a_steps_first_alert_counts_a_live_alert_from_when_it_was_raised(
 
 
 def test_a_null_in_place_of_a_left_out_value_is_refused(service: BlueFireService) -> None:
-    race = small_recording("rec-path")
-    race["kind"] = "attack path"
+    race = attack_path()
     race["score"].update(first_alert_seconds=None, goal_seconds=1.5)
     live = small_recording("rec-live")
     live["network"]["detectors"][0]["when"] = "live"
@@ -494,6 +499,125 @@ def test_a_step_role_the_format_does_not_name_is_refused(service: BlueFireServic
     _, problems = refusal(service, recording)
 
     assert problems == ["steps[1].role must be one of: test, canary, control, hardened, variant."]
+
+
+def _set(value: dict[str, Any], path: tuple[Any, ...], item: Any) -> None:
+    holder: Any = value
+    for key in path[:-1]:
+        holder = holder[key]
+    if item is _LEFT_OUT:
+        del holder[path[-1]]
+    else:
+        holder[path[-1]] = item
+
+
+_T = "2026-11-17T17:07:"
+_SUDO = {"rule": "Sudo Use", "level": "high", "count": 1}
+
+
+@pytest.mark.parametrize(
+    ("kind", "changes", "problem"),
+    [
+        ("test list", [(("steps", 0, "ended"), f"{_T}20.900Z")],
+         f"steps[0].ended is {_T}20.900Z, earlier than the step's started, {_T}21.000Z."),
+        ("test list", [(("steps", 1, "started"), f"{_T}20.500Z")],
+         f"steps[1].started is {_T}20.500Z, earlier than the start of steps[0], the step before "
+         "it: steps run forward in their order."),
+        ("test list", [(("steps", 1, "started"), f"{_T}21.400Z")],
+         f"steps[1].started is {_T}21.400Z, earlier than the end of steps[0], the step before "
+         "it: steps do not overlap."),
+        ("test list", [(("events", 1, "time"), f"{_T}22.050Z")],
+         f"steps[1] begins at {_T}22.000Z, before steps[0] ends at {_T}22.050Z: a step's events "
+         "and alerts come after those of the step before it."),
+        ("test list", [(("alerts", 0, "time"), f"{_T}21.050Z"), (("steps", 0, "first_alert"), f"{_T}21.050Z")],
+         f"alerts[0].time is {_T}21.050Z, earlier than the earliest event the alert matched, at "
+         f"{_T}21.100Z: an alert comes after the first event it names."),
+        ("test list", [(("score", "false_alerts"), 7)],
+         "score.false_alerts is set, but the recording has no ordinary activity to count it from."),
+        ("test list", [(("ordinary",), {"events": 100, "matches": [_SUDO, _SUDO]}), (("score", "false_alerts"), 1)],
+         "ordinary.matches[1].rule names 'Sudo Use' again; each rule is listed once."),
+        ("test list", [(("ordinary",), {"events": 0, "matches": [{**_SUDO, "count": 1000000}]}), (("score", "false_alerts"), 1)],
+         "ordinary.matches[0].count is 1000000, more than the 0 events of ordinary activity."),
+        ("test list", [(("attacker", "goal"), "Read the history file.")],
+         "attacker.goal is set, but a test list has no goal: it is null."),
+        ("test list", [(("steps", 1, "role"), "hardened"), (("steps", 1, "compared_with"), "2"),
+                       (("score", "steps"), 1), (("score", "took_effect"), 1), (("score", "seen"), 0)],
+         "steps[1].compared_with names the step itself; a rerun is compared with the step it repeats."),
+        ("test list", [(("steps", 0, "role"), "variant"), (("steps", 0, "compared_with"), "2"),
+                       (("score", "steps"), 1), (("score", "took_effect"), 1), (("score", "alerted"), 0)],
+         "steps[0].compared_with names '2', a later step; a rerun repeats a step run before it."),
+        ("test list", [(("steps", 1, "compared_with"), "1")],
+         "steps[1].compared_with is set on a step of role test; only a hardened or variant step "
+         "repeats another."),
+        ("test list", [(("source", "repository"), "example")],
+         "source.repository must be a GitHub repository as owner/name, such as example/lab."),
+        ("test list", [(("steps", 0, "title"), "Clear\x85history")],
+         "steps[0].title must not hold control characters."),
+        ("test list", [(("network", "hosts", 0, "name"), "runner\u202e")],
+         "network.hosts[0].name must not hold control characters."),
+        ("test list", [(("events", 0, "text"), "rm\u2028history")],
+         "events[0].text must not hold control characters."),
+        ("attack path", [(("steps", 0, "role"), "canary"),
+                         (("score", "steps"), 1), (("score", "took_effect"), 1), (("score", "alerted"), 0)],
+         "steps[0].role is canary, but an attack path begins with a step of role test: its race "
+         "counts from that step's start."),
+        ("attack path", [(("steps", 0, "started"), _LEFT_OUT)],
+         "steps[0].started is missing, but an attack path's race counts from its first step's "
+         "start."),
+        ("attack path", [(("attacker", "goal"), None), (("score", "goal_seconds"), 1.5)],
+         "score.goal_seconds is set, but the attacker has no goal."),
+        ("attack path", [(("steps",), []), (("events",), []), (("alerts",), []),
+                         (("score",), {"steps": 0, "took_effect": 0, "alerted": 0, "seen": 0,
+                                       "unseen": 0, "stopped": 0, "goal_seconds": 5})],
+         "score.goal_seconds is 5, but no step ends that long after the first step started."),
+        ("test list", [(("steps", 0, "command"), "rm\x00x")],
+         "steps[0].command must not hold a NUL character."),
+    ],
+)  # fmt: skip
+@pytest.mark.parametrize("running", [False, True], ids=["finished", "still running"])
+def test_what_the_replay_page_could_not_show_truthfully_is_refused_with_the_field_named(
+    service: BlueFireService,
+    kind: str,
+    changes: list[tuple[tuple[Any, ...], Any]],
+    problem: str,
+    running: bool,
+) -> None:
+    """The page's reader refuses each of these too (frontend/tests/live-recording.test.ts).
+
+    A recording that is still running is checked as a finished one is: the app follows it
+    as it grows, and its reader refuses the same.
+    """
+
+    recording = attack_path() if kind == "attack path" else small_recording()
+    for path, item in changes:
+        _set(recording, path, item)
+    if running:
+        del recording["source"]["finished"]
+
+    _, problems = refusal(service, recording)
+
+    assert problems == [problem]
+
+
+def test_what_every_real_recording_holds_is_kept(service: BlueFireService) -> None:
+    """Sensors stamp their own records, and a match can name events after its moment."""
+
+    recording = attack_path()
+    # An event stamped a moment before its step's start, another after its end, and a
+    # live alert raised after its first event but before the second one it names.
+    recording["network"]["detectors"][0]["when"] = "live"
+    recording["events"][0]["time"] = f"{_T}20.995Z"
+    recording["events"][1]["time"] = f"{_T}21.700Z"
+    recording["steps"][0].update(first_event=f"{_T}20.995Z", first_alert=f"{_T}21.200Z")
+    recording["alerts"][0].update(time=f"{_T}20.995Z", raised=f"{_T}21.200Z", events=["1-1", "1-2"])
+    recording["steps"][0]["command"] = "sh -c 'rm history'\n\x1b[0m\u2028"
+    recording["source"].update(
+        repository="example/lab", run_url="https://github.com/example/lab/actions/runs/1"
+    )
+    recording["ordinary"] = {"events": 40, "matches": [{**_SUDO, "count": 3}]}
+    recording["score"].update(false_alerts=1, first_alert_seconds=0.2, goal_seconds=1.5)
+
+    assert service.import_recording({"recording": recording})["created"] is True
 
 
 def test_a_finished_recording_is_not_overwritten_by_an_older_import_from_another_library(

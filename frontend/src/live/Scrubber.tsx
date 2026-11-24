@@ -132,16 +132,21 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
     const target = timeline.segments[Math.min(count - 1, Math.max(0, index))];
     if (target) onSeek(target.start);
   };
+  // A move on never goes back: past the last step's start it goes to the end of the run.
+  const stepOn = (index: number) => {
+    const target = timeline.segments[index];
+    onSeek(target && target.start > time ? target.start : duration);
+  };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const index = Math.max(0, current);
     let handled = true;
     if (event.key === "ArrowRight" || event.key === "ArrowUp") {
       if (event.shiftKey) onSeek(Math.min(duration, time + 1));
-      else stepTo(index + 1);
+      else stepOn(index + 1);
     } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
       if (event.shiftKey) onSeek(Math.max(0, time - 1));
       else stepTo(segment && time - segment.start > 0.4 ? index : index - 1);
-    } else if (event.key === "PageUp") stepTo(index + 10);
+    } else if (event.key === "PageUp") stepOn(Math.min(count - 1, index + 10));
     else if (event.key === "PageDown") stepTo(index - 10);
     else if (event.key === "Home") onSeek(0);
     else if (event.key === "End") onSeek(duration);

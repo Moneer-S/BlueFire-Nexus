@@ -116,6 +116,26 @@ test("the recorded runs open from the keyboard, and the Runs screen and the reco
   expect(landmarks.violations).toEqual([]);
 });
 
+test("at phone width the recorded run's page stacks the live view's bands and scrolls down, as the single replay page does", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("./#/runs");
+  const path = await page.getByRole("region", { name: "Recorded runs" }).getByRole("link", { name: "60 published tests on one Linux host" }).getAttribute("href");
+  await page.goto(`./${path}?step=43&at=0.95&paused=1`);
+  await expect(page.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+
+  // Nothing to scroll sideways for: the modes, the score and the step's words sit inside the window's width.
+  const inWidth = async (box: { x: number; width: number } | null) => box !== null && box.x >= 0 && box.x + box.width <= 390;
+  expect(await inWidth(await page.getByRole("button", { name: "Analyse", exact: true }).boundingBox())).toBe(true);
+  expect(await inWidth(await page.getByLabel("The score so far", { exact: true }).boundingBox())).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  // The step's caption and its Fix this are further down the page, in the window's width.
+  const fix = page.getByRole("region", { name: "The step", exact: true }).getByRole("button", { name: "Fix this" });
+  await fix.scrollIntoViewIfNeeded();
+  expect(await inWidth(await fix.boundingBox())).toBe(true);
+  await fix.click();
+  await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
+});
+
 test("a recording that is not there is said plainly, with the way back", async ({ page }) => {
   await page.goto("./#/runs/recorded/no-such-recording");
   await expect(page.getByText("This recording could not be loaded")).toBeVisible();
