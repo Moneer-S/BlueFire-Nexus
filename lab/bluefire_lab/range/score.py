@@ -353,7 +353,20 @@ def summary(manifest: dict) -> str:
     runs = denominators["runs of each job"]
     minutes = denominators["minutes of activity"]
     title = f"{score['false alerts']} false alerts at level {level} or higher on {minutes} minutes of ordinary work"
-    lines = [f"### Ordinary day of {manifest.get('range')}: {title}", ""]
+    lines = []
+    if manifest.get("result") != "sealed":
+        # A run that did not end sealed has no score to headline: what it recorded is shown, labelled.
+        lines += [
+            f"### Ordinary day of {manifest.get('range')}: not a result, the run ended "
+            f"{manifest.get('result')} (exit code {manifest.get('exit_code')})",
+            "",
+            f"Reason: {manifest.get('reason')}",
+            "",
+            f"What the run recorded, which is not a score of the range: {title}.",
+            "",
+        ]
+    else:
+        lines += [f"### Ordinary day of {manifest.get('range')}: {title}", ""]
     lines += [
         f"On an ordinary day of {minutes} minutes from {denominators['activity started']}, with "
         + ", ".join(

@@ -42,7 +42,11 @@ export function RecordedRuns() {
       await queryClient.invalidateQueries({ queryKey: ["recordings"] });
       navigate(recordedRunPath(result.summary.id));
     },
-    onError: (error) => setProblem({ message: error instanceof Error ? error.message : "The import failed.", problems: refusalProblems(error) }),
+    onError: (error) => {
+      setProblem({ message: error instanceof Error ? error.message : "The import failed.", problems: refusalProblems(error) });
+      // An answer that was lost or could not be read may follow an import that was kept, so the list is asked again.
+      void queryClient.invalidateQueries({ queryKey: ["recordings"] });
+    },
   });
   const chooseFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];

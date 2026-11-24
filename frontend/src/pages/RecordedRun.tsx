@@ -2,12 +2,12 @@
 // it, and plays it in the live view. The address holds the moment, so a link
 // opens the same step in the same mode.
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
-import { api, type RecordingSummary } from "../lib/api";
-import { momentFromSearch, momentSearch, originWords, recordingKindWords } from "../lib/recorded-runs";
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { api, type RecordingList, type RecordingSummary } from "../lib/api";
+import { addressShows, momentFromSearch, momentSearch, originWords, recordingKindWords, withSummary } from "../lib/recorded-runs";
 import { LiveView, type LiveMoment, type LiveViewProps } from "../live/LiveView";
 import { LiveViewBoundary } from "../live/LiveViewBoundary";
 import { RecordingError, readRecording, type Recording } from "../live/recording";
@@ -26,7 +26,8 @@ const ADDRESS_SETTLE_MS = 300;
  */
 function read(value: unknown, summary: RecordingSummary): { recording: Recording } | { problem: string } {
   try {
-    const recording = readRecording(value);
+    // The app follows a recording that is still running, which the replay page refuses.
+    const recording = readRecording(value, { running: true });
     if (summary.origin.kind !== "imported" || recording.source.run_url === undefined) return { recording };
     const source = { ...recording.source };
     delete source.run_url;
@@ -52,6 +53,20 @@ function RecordedRun({ recordingId }: { recordingId: string }) {
   });
   const data = entry.data;
   const reading = useMemo(() => (data ? read(data.recording, data.summary) : null), [data]);
+  const queryClient = useQueryClient();
+  const summary = data?.summary;
+  // The list of recorded runs, kept from the last visit to Runs, can hold an
+  // older version of this run, from before it grew or finished: this page's
+  // answer is newer, so the list shows it too.
+  useEffect(() => {
+    if (!summary) return;
+    const list = queryClient.getQueryData<RecordingList>(["recordings"]);
+    if (!list) return;
+    const updated = withSummary(list, summary);
+    // The rest of the list is as old as it was: it is asked again as often as before.
+    if (updated) queryClient.setQueryData<RecordingList>(["recordings"], updated, { updatedAt: queryClient.getQueryState(["recordings"])?.dataUpdatedAt });
+    else void queryClient.invalidateQueries({ queryKey: ["recordings"] });
+  }, [queryClient, summary]);
 
   if (entry.isPending) return <div className="recorded-run is-message"><LoadingState label="Loading the recording" /></div>;
   if (!data) {
@@ -103,6 +118,7 @@ function RecordedRunBar({ summary, pollError }: { summary?: RecordingSummary; po
 }
 
 function RecordedRunView({ recording }: { recording: Recording }) {
+  const { pathname } = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const [initial, setInitial] = useState<NonNullable<LiveViewProps["initial"]>>(() => momentFromSearch(searchParams));
   const [mount, setMount] = useState(0);
@@ -115,16 +131,17 @@ function RecordedRunView({ recording }: { recording: Recording }) {
   const address = searchParams.toString();
 
   // The address follows the viewer, replacing itself, so moving through a run adds nothing to the browser's history.
+  // Only while the address is still this run's: once someone has gone to another page, writing it would take them back.
   const onMoment = useCallback((moment: LiveMoment) => {
     latest.current = moment;
     window.clearTimeout(pending.current);
     pending.current = window.setTimeout(() => {
       const next = momentSearch(moment).toString();
-      if (next === written.current) return;
+      if (next === written.current || !addressShows(pathname)) return;
       written.current = next;
       setSearchParams(next, { replace: true, preventScrollReset: true });
     }, ADDRESS_SETTLE_MS);
-  }, [setSearchParams]);
+  }, [pathname, setSearchParams]);
   useEffect(() => () => window.clearTimeout(pending.current), []);
 
   // A link to another moment of this run, or the browser's Back, opens the view there.

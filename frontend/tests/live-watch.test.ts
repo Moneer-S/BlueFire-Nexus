@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { layoutNetwork } from "../src/live/networkLayout";
+import { layoutNetwork, travelPath } from "../src/live/networkLayout";
 import type { Network } from "../src/live/recording";
 import { buildTimeline, frameAt, outcomeAt, PLAYBACK_RULE } from "../src/live/playback";
 import { timeOf } from "../src/live/recording";
@@ -57,6 +57,67 @@ describe("the network map's layout", () => {
       expect(layout.sensorToJunction.has(sensor.id)).toBe(true);
     }
     expect(layout.junctionToDetector.has("rules")).toBe(true);
+  });
+
+  it("places every sensor of every kind of host, the defense's own too, with a path to every rule engine", () => {
+    const sensorOn = (id: string, host: string) => ({ id, name: `sensor on ${host}`, host, records: "log lines" });
+    const rules = range.detectors;
+    const networks: Network[] = [
+      // The reproduced case: two field hosts with an agent each, and the defense host with its own log.
+      { ...range, sensors: [...range.sensors, sensorOn("manager-log", "wazuh")] },
+      {
+        hosts: [...range.hosts, { id: "net", name: "internet", role: "the outside", kind: "internet" }],
+        links: [...(range.links ?? []), { from: "net", to: "attacker", label: "HTTPS" }],
+        sensors: [sensorOn("on-attacker", "attacker"), sensorOn("on-net", "net"), sensorOn("on-web", "web"), sensorOn("on-wazuh", "wazuh")],
+        detectors: [...rules, { id: "lab", name: "Lab rules", rules: 2, when: "live" }],
+      },
+      // One host in the field, so its sensors orbit it, and the defense host with two sensors of its own.
+      {
+        hosts: [{ id: "target", name: "target", role: "Linux host under test", kind: "host" }, { id: "wazuh", name: "wazuh", role: "the defense's own server", kind: "defense" }],
+        sensors: [sensorOn("a", "target"), sensorOn("b", "target"), sensorOn("c", "wazuh"), sensorOn("d", "wazuh")],
+        detectors: rules,
+      },
+      { hosts: [{ id: "wazuh", name: "wazuh", role: "the defense's own server", kind: "defense" }], sensors: [sensorOn("only", "wazuh")], detectors: rules },
+      // Two defense hosts, each with a sensor, and a host with no link.
+      {
+        hosts: [...range.hosts, { id: "wazuh-2", name: "wazuh 2", role: "a second manager", kind: "defense" }, { id: "lone", name: "lone", role: "no link", kind: "host" }],
+        links: range.links,
+        sensors: [sensorOn("w1", "wazuh"), sensorOn("w2", "wazuh-2"), sensorOn("l", "lone")],
+        detectors: rules,
+      },
+    ];
+    for (const network of networks) {
+      for (const [width, height] of [[1440, 420], [1000, 340]] as const) {
+        const layout = layoutNetwork(network, width, height);
+        expect(layout.hosts.map((node) => node.host.id).sort()).toEqual(network.hosts.map((host) => host.id).sort());
+        for (const sensor of network.sensors) {
+          const node = layout.sensors.find((item) => item.sensor.id === sensor.id);
+          const host = layout.hosts.find((item) => item.host.id === sensor.host);
+          expect(node, sensor.id).toBeDefined();
+          if (!node || !host) continue;
+          expect(node.x - node.r).toBeGreaterThanOrEqual(0);
+          expect(node.x + node.r).toBeLessThanOrEqual(width);
+          for (const detector of network.detectors) expect(travelPath(layout, sensor.id, detector.id), `${sensor.id} to ${detector.id}`).not.toBeNull();
+          // A defense host's sensor stays beside it, and its events go the short way on to the rule engines.
+          if (host.host.kind === "defense") {
+            expect(Math.hypot(node.x - host.x, node.y - host.y)).toBeLessThan(host.r + 60);
+            if (host.host.id === layout.junction.hostId) for (const point of layout.sensorToJunction.get(sensor.id) ?? []) expect(point.x).toBeGreaterThanOrEqual(host.x - host.r - 60);
+          }
+        }
+      }
+    }
+  });
+
+  it("tells silence in the field, left of every defense host", () => {
+    const network: Network = { ...range, hosts: [...range.hosts, { id: "wazuh-2", name: "wazuh 2", role: "a second manager", kind: "defense" }] };
+    const layout = layoutNetwork(network, 1440, 420);
+    for (const node of layout.hosts) if (node.host.kind === "defense") expect(layout.silence.x).toBeLessThan(node.x - node.r);
+  });
+
+  it("lays the field out the same whether or not a host is linked to the defense", () => {
+    const linked: Network = { ...range, links: [...(range.links ?? []), { from: "db", to: "wazuh", label: "agent" }] };
+    const place = (network: Network) => layoutNetwork(network, 1440, 420).hosts.map((node) => [node.host.id, node.x, node.y]);
+    expect(place(linked)).toEqual(place(range));
   });
 
   it("draws one host with its sensors around it and a plain joining point when there is no defense server", () => {

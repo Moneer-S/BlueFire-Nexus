@@ -3,7 +3,7 @@
 import { alertMoment, countsAsAlert, countsForScore, timeOf } from "./recording";
 import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recording";
 import type { Fire, FirstAlert, Frame, ScoreSoFar, Segment, Timeline } from "./playback";
-import { landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE, stepMatchesFiredBy } from "./playback";
+import { landing, maxOf, minOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE, stepMatchesFiredBy } from "./playback";
 import { matchKind, span, stepLabel, strongerKind } from "./format";
 import type { MatchKind } from "./format";
 
@@ -215,6 +215,19 @@ export interface RunFacts {
   start: number;
   /** Real time (ms) of the last step's end. */
   end: number;
+  /**
+   * Real time (ms) at which an attack path reaches its goal: `score.goal_seconds`
+   * after the earliest recorded step start, as the format counts it. Never
+   * from `start`, which playback moves back to an event stamped before its
+   * step's start. Null without a goal or a recorded start.
+   */
+  goal: number | null;
+  /**
+   * The run's first alert on a test, whenever it fires on screen. The race
+   * holds the goal back until this alert is told when it was raised before
+   * the goal. Null when no test alerted.
+   */
+  firstAlert: FirstAlert | null;
   /** The first alert that counts on a step that is not a test, such as a canary. */
   otherFirst: { step: Step; at: number; real: number } | null;
 }
@@ -224,9 +237,12 @@ export function runFacts(recording: Recording, timeline: Timeline): RunFacts {
   const last = timeline.segments[timeline.segments.length - 1];
   const start = first ? first.realStart : timeOf(recording.source.started);
   const end = last ? last.realEnd : timeOf(recording.source.finished ?? recording.source.started);
+  const seconds = recording.kind === "attack path" ? recording.score.goal_seconds : undefined;
+  const origin = minOf(recording.steps.flatMap((step) => (step.started === undefined ? [] : [timeOf(step.started)])), Number.NaN);
+  const goal = seconds === undefined || !Number.isFinite(origin) ? null : origin + seconds * 1000;
   const roles = new Map(recording.steps.map((step) => [step.id, step]));
   const found = timeline.fires.find(({ alert }) => countsForScore(alert) && roles.get(alert.step)?.role !== "test");
   const step = found ? roles.get(found.alert.step) : undefined;
   const otherFirst = found && step ? { step, at: found.at, real: alertMoment(found.alert) } : null;
-  return { start, end, otherFirst };
+  return { start, end, goal, firstAlert: timeline.firstAlert, otherFirst };
 }

@@ -187,7 +187,8 @@ export function layoutNetwork(network: Network, width: number, height: number): 
         const current = queue.shift() ?? "";
         const depth = layer.get(current) ?? 0;
         for (const next of neighbours.get(current) ?? []) {
-          if (!layer.has(next)) {
+          // A link to a defense host does not make a column of the field: the defense stands apart.
+          if (!layer.has(next) && neighbours.has(next)) {
             layer.set(next, depth + 1);
             queue.push(next);
           }
@@ -224,11 +225,28 @@ export function layoutNetwork(network: Network, width: number, height: number): 
     junction = { x: jx, y: centerY, r: 4, hostId: null };
   }
 
-  for (const host of field) {
+  const detectorGap = single ? clamp(room * 0.46, 120, 280) : clamp(room * 0.3, 120, 240);
+  const detectorRadius = Math.round(clamp(room * 0.075, 22, 32));
+  const detectors: DetectorNode[] = [];
+  spread(network.detectors.length, centerY, detectorGap).forEach((y, index) => {
+    const detector = network.detectors[index];
+    if (detector) detectors.push({ detector, x: railX, y: Math.round(y), r: detectorRadius });
+  });
+  // Where the lines to the rule engines leave the junction, and the lines themselves.
+  const junctionOut: Point = junction.hostId ? { x: junction.x + junction.r + 1, y: junction.y } : junction;
+  const junctionToDetector = new Map<string, Curve>();
+  for (const node of detectors) {
+    junctionToDetector.set(node.detector.id, bend(junctionOut, { x: node.x - node.r, y: node.y }, 0.5));
+  }
+  const wires: Point[] = [];
+  for (const curve of junctionToDetector.values()) for (let u = 0.05; u < 1; u += 0.05) wires.push(pointOn(curve, u));
+
+  // Every host's sensors are placed, the defense's own too: a defense host's sensors sit small beside it.
+  for (const host of [...field, ...defense]) {
     const node = hosts.get(host.id);
     const own = network.sensors.filter((sensor) => sensor.host === host.id);
     if (!node || own.length === 0) continue;
-    if (single) {
+    if (single && host.kind !== "defense") {
       // Sensors sit on an orbit that is wide when there is room, and flattened when the map is short.
       orbit = { x: Math.round(clamp(W * 0.15, 170, 300)), y: 0 };
       orbit.y = Math.round(Math.min(orbit.x, (room * 0.34) / 0.56));
@@ -241,8 +259,8 @@ export function layoutNetwork(network: Network, width: number, height: number): 
       continue;
     }
     // Several hosts: each sensor sits beside its host, where its name covers the least:
-    // other hosts and their names, the links, and the sensors placed before it.
-    const points: Point[] = [];
+    // other hosts and their names, the links, the lines to the rule engines, and the sensors placed before it.
+    const points: Point[] = [...wires];
     for (const link of network.links ?? []) {
       const a = hosts.get(link.from);
       const b = hosts.get(link.to);
@@ -283,23 +301,19 @@ export function layoutNetwork(network: Network, width: number, height: number): 
     });
   }
 
-  const detectorGap = single ? clamp(room * 0.46, 120, 280) : clamp(room * 0.3, 120, 240);
-  const detectorRadius = Math.round(clamp(room * 0.075, 22, 32));
-  const detectors: DetectorNode[] = [];
-  spread(network.detectors.length, centerY, detectorGap).forEach((y, index) => {
-    const detector = network.detectors[index];
-    if (detector) detectors.push({ detector, x: railX, y: Math.round(y), r: detectorRadius });
-  });
-
   const hostToSensor = new Map<string, Curve>();
   const sensorToJunction = new Map<string, Curve>();
-  const junctionToDetector = new Map<string, Curve>();
   const fieldNodes = [...hosts.values()].filter((node) => node.host.id !== junction.hostId);
   const junctionEdge = (from: Point): Point => (junction.hostId ? edgeToward(junction, from, 1) : junction);
   for (const node of sensors) {
     const host = hosts.get(node.sensor.host);
     if (!host) continue;
     hostToSensor.set(node.sensor.id, line(edgeToward(host, node), node));
+    if (node.sensor.host === junction.hostId) {
+      // A sensor of the host where the lines join: its events go the short way, on to the rule engines.
+      sensorToJunction.set(node.sensor.id, bend(node, junctionOut, 0.5));
+      continue;
+    }
     if (single) {
       sensorToJunction.set(node.sensor.id, bend(node, junction, 0.5));
       continue;
@@ -316,10 +330,6 @@ export function layoutNetwork(network: Network, width: number, height: number): 
       if (!best || score < best.score) best = { score, curve };
     }
     if (best) sensorToJunction.set(node.sensor.id, best.curve);
-  }
-  for (const node of detectors) {
-    const start = junction.hostId ? { x: junction.x + junction.r + 1, y: junction.y } : junction;
-    junctionToDetector.set(node.detector.id, bend(start, { x: node.x - node.r, y: node.y }, 0.5));
   }
 
   // Link labels go where they cover the least: along the link, nudged off it.
@@ -361,7 +371,9 @@ export function layoutNetwork(network: Network, width: number, height: number): 
     links.push({ link, from, to, curve: line(edgeToward(from, to, 0), edgeToward(to, from, 0)), label: best.point });
   }
 
-  const sensorRight = Math.max(0, maxOf(sensors.map((node) => node.x + node.r)), maxOf([...hosts.values()].filter((node) => node.host.id !== junction.hostId).map((node) => node.x + node.r)));
+  // The silence is told in the field's corridor, left of every defense host and its sensors.
+  const inField = (id: string): boolean => hosts.get(id)?.host.kind !== "defense";
+  const sensorRight = Math.max(0, maxOf(sensors.filter((node) => inField(node.sensor.host)).map((node) => node.x + node.r)), maxOf([...hosts.values()].filter((node) => inField(node.host.id)).map((node) => node.x + node.r)));
   const firstDetector = detectors[0];
   return {
     width: W,

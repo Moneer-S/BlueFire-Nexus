@@ -61,6 +61,10 @@ goes, and the view says the run is still running.
   first alert, wherever it is shown, is read from the alerts themselves: from
   the first test's start to the moment that alert fires (its `raised` time
   where the rules ran live), the same clock the race compares with the goal.
+  The goal falls `score.goal_seconds` after the earliest recorded start of a
+  step, as the format counts it, even where an event is stamped before its
+  step's start. When the first alert came before the goal, the race line
+  tells the goal only once that alert has been told, never the other way round.
   A file whose `score.first_alert_seconds`, or a step's `first_alert`, says
   otherwise is refused on import; the page shows what the alerts say.
 
@@ -112,8 +116,13 @@ The command writes a new file: the packaged page `bluefire/ui/replay.html`
 with the recording put inside it (see [CLI.md](CLI.md)). `bluefire recordings
 list` gives the ids. A page is made of a finished run: the command refuses a
 recording that is still running (it has no end time yet) and writes nothing;
-a running recording is watched in the app. The page is one file of under 1 MB
-plus the recording.
+a running recording is watched in the app. Every finished recording the app
+keeps plays on the page: the import refuses, with a plain reason, anything the
+page could not show. The browser test
+`frontend/tests/service/recording-parity.spec.ts` gives a small set of
+recordings at the edges of the format to both, and checks that the page plays
+each one the app keeps and refuses each one it refuses. The page is one file of
+under 1 MB plus the recording.
 It carries its own script, styles and font, and its content security policy
 lets it load nothing and connect nowhere: the page makes no request by itself.
 The one way out is the link to the CI run that made the recording, shown only
