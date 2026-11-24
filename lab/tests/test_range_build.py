@@ -1,9 +1,13 @@
 """The images of a range, rendered from its spec: deterministic, pinned, and with what the spec plants."""
 
 import copy
+import dataclasses
 import json
 import re
+import shutil
 from pathlib import Path
+
+import pytest
 
 from bluefire_lab.range import atomics, build
 from bluefire_lab.range import spec as range_spec
@@ -59,6 +63,52 @@ def test_the_same_spec_renders_the_same_files_and_tags(tmp_path: Path) -> None:
         host: f"bluefire-lab-sm-{host}:{first.digest}" for host in ("manager", "web", "db", "inet")
     }
     assert len(first.digest) == 16
+
+
+def a_copy(tmp_path: Path) -> Path:
+    """The small spec's folder, copied, beside a file outside it that a link could point to."""
+
+    folder = tmp_path / "spec"
+    shutil.copytree(SMALL.parent, folder)
+    (tmp_path / "outside.txt").write_text("a file of the machine, outside the spec's folder\n")
+    return folder
+
+
+def test_a_file_the_spec_names_that_is_a_link_is_refused(tmp_path: Path) -> None:
+    folder = a_copy(tmp_path)
+    (folder / "page.txt").unlink()
+    (folder / "page.txt").symlink_to(tmp_path / "outside.txt")
+    spec = range_spec.parse(document(), folder=folder)
+
+    with pytest.raises(range_spec.SpecError, match="page.txt beside it is a link"):
+        rendered_files(spec)
+
+
+def test_a_file_reached_through_a_linked_folder_is_refused(tmp_path: Path) -> None:
+    folder = a_copy(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "page.txt").write_text("outside\n")
+    (folder / "linked").symlink_to(tmp_path / "elsewhere")
+    changed = document()
+    changed["hosts"]["web"]["files"][1]["from"] = "linked/page.txt"
+    spec = range_spec.parse(changed, folder=folder)
+
+    with pytest.raises(range_spec.SpecError, match="linked beside it is a link"):
+        rendered_files(spec)
+
+
+def test_a_repository_beside_the_spec_that_holds_a_link_is_refused(tmp_path: Path) -> None:
+    folder = a_copy(tmp_path)
+    repository = folder / range_spec.REPOS / "shop"
+    repository.mkdir(parents=True)
+    (repository / "Makefile").write_text("all:\n")
+    (repository / "notes.txt").symlink_to(tmp_path / "outside.txt")
+    spec = dataclasses.replace(loaded(), folder=folder)
+
+    with pytest.raises(range_spec.SpecError, match="notes.txt beside the spec is a link"):
+        build.repo_files(spec, "shop")
+    (repository / "notes.txt").unlink()
+    assert build.repo_files(spec, "shop") == {"Makefile": b"all:\n"}
 
 
 def test_a_changed_spec_changes_the_tag() -> None:

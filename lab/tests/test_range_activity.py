@@ -2,13 +2,15 @@
 
 import copy
 import json
+import math
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
 
-from bluefire_lab.range import activity, build
+from bluefire_lab.range import activity, build, engine
 from bluefire_lab.range import spec as range_spec
 
 RANGE_ONE = Path(__file__).parents[1] / "range" / "range-one.yaml"
@@ -484,6 +486,49 @@ def test_cron_sessions_and_a_minutes_start_of_the_script_are_not_taken_for_a_run
     assert counted["backup"]["archived runs"] == 0
     summary = activity.summary({"range": "range-one", "activity": {"jobs": counted, "schedule": {}}})
     assert summary.startswith("### Ordinary activity of range-one: NOT every job ran")
+
+
+def a_page(written: str, received: str) -> dict:
+    """An archived nginx line of a page client fetched at `written`, which the manager received at `received`."""
+
+    return {
+        "timestamp": f"2026-11-24T09:18:{received}+0000",
+        "agent": {"name": "web"},
+        "full_log": f'172.18.0.3 - - [24/Nov/2026:09:18:{written} +0000] "GET / HTTP/1.1" 200 251 "-" "curl/8.5.0"',
+        "data": {"protocol": "GET", "srcip": "172.18.0.3", "id": "200", "url": "/"},
+        "location": "/var/log/nginx/access.log",
+    }
+
+
+def test_a_line_is_sorted_to_a_job_by_its_own_time_not_by_when_the_manager_received_it() -> None:
+    # The engine's plant check fetched a page 1.9 s before the go, and the manager received the line
+    # after the go. browse's first page in the second of the go counts, as `runs` counts it.
+    spec = loaded().activity
+    go = {host: 1795511935.880936 for host in spec.hosts}  # 2026-11-24T09:18:55.88
+    plant_check, first_page = a_page("54", "56.314"), a_page("55", "56.402")
+
+    found = activity.attribute(spec, [plant_check, first_page], {"client": ["172.18.0.3"]}, go, {})
+
+    assert found == {1: ("browse", "/var/log/nginx/access.log, by address")}
+
+
+def test_the_go_starts_a_new_second_so_that_nothing_the_engine_did_before_it_shares_its_second(
+    tmp_path: Path,
+) -> None:
+    run = engine.Run(loaded(), "range-one.yaml", tmp_path, None, 0)
+    run.containers = {host: host[0] * 64 for host in run.spec.hosts}
+    # The containers share the clock of the machine the engine runs on.
+    run.execute = lambda identifier, script, timeout, tag="": subprocess.CompletedProcess(
+        [], 0, f"{time.time():.6f}", ""
+    )
+
+    before = time.time()
+    run.activity_go()
+
+    go = run.manifest["activity"]["go"]
+    assert set(go) == set(run.spec.activity.hosts)
+    assert math.floor(min(go.values())) > math.floor(before)
+    assert min(go.values()) - before < 1.5
 
 
 def test_a_job_on_a_host_where_the_go_was_never_written_is_not_counted() -> None:
