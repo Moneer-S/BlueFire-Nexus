@@ -1,7 +1,7 @@
 // The single replay page: reads the recording held in the page itself and
 // plays it, with the note on where the recording comes from that the page
 // holds beside it. Nothing is fetched. The address can say where to start:
-// ?step=<step id>&at=<0..1>&paused=1&mode=watch|analyse&select=<step id>
+// ?step=<step id>&at=<0..2>&paused=1&mode=watch|analyse&select=<step id>
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -9,7 +9,7 @@ import "./replay.css";
 import { LiveView } from "./live/LiveView";
 import type { LiveViewProps } from "./live/LiveView";
 import { LiveViewBoundary } from "./live/LiveViewBoundary";
-import { RecordingError, readRecording } from "./live/recording";
+import { RecordingError, readFinishedRecording } from "./live/recording";
 import type { Recording } from "./live/recording";
 
 function readPage(): { recording: Recording } | { problem: string; empty: boolean } {
@@ -24,7 +24,7 @@ function readPage(): { recording: Recording } | { problem: string; empty: boolea
     return { problem: "The recording in this page could not be read.", empty: false };
   }
   try {
-    return { recording: readRecording(value) };
+    return { recording: readFinishedRecording(value) };
   } catch (error) {
     if (error instanceof RecordingError) return { problem: error.message, empty: false };
     return { problem: `The recording in this page could not be checked: ${error instanceof Error ? error.message : "an unknown failure"}.`, empty: false };

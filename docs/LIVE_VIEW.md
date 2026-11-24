@@ -28,11 +28,45 @@ goes, and the view says the run is still running.
   last match fires near its end stays on screen, its clock held at the step's
   end, until that match's light has reached the rule engine and the step's
   outcome is told.
+- **An alert raised after its step ended arrives late, and is shown when it
+  arrives.** Where the rules ran live, a match fires at its `raised` time.
+  While a step is on screen it is told as it stood at its end, so a step whose
+  alert was not raised yet is told as seen (or unseen) with no alert by the end
+  of the step. When a match of a step is raised after that step ended, on
+  whatever is on screen then (a later step, or the silence after its own
+  step), its rule engine lights, the log gets a line marked "raised late", and
+  one line under the step names it and says how long after its step ended it
+  was raised. What is on screen holds, its clock stopped, until that line has
+  been there for three seconds. From that moment the score, the race line and
+  that step's bar on the timeline count it as alerted, and not before; when it
+  fires in the silence after its own step, while that step is still on screen,
+  the step's verdict and its host's badge say alerted from then too, and its
+  sentence still says there was no alert by the end of the step. A match
+  raised after the last step ended plays in one more short silence at the end.
+  In analyse mode each such match says how long after its step ended it was
+  raised. Where a step has several alerts, the caption, the first alert's flag
+  and the step's detail all name the one that fired first on screen (by its
+  `raised` time where the rules ran live), not the one whose event came first,
+  and a rule is named only once its alert has fired. The same holds for every
+  match, at any level: the caption's count of rules for review, its "Fix this"
+  hint, its text for screen readers and a rule engine's "no rule matched" speak
+  only of the matches that have fired by then, and a match that fires later
+  appears when it fires. Analyse mode shows the whole run at once and lists a
+  step's matches in firing order.
 - **The score is the recording's.** While watching, the score counts a step
   once the screen has told its outcome; at the end of the run it is the
   recording's `score`. False alerts, on ordinary activity outside every step,
   have no times in a recording, so watch mode shows them only at the end. In
-  analyse mode it is the whole run's score from the start.
+  analyse mode it is the whole run's score from the start. The time to the
+  first alert, wherever it is shown, is read from the alerts themselves: from
+  the first test's start to the moment that alert fires (its `raised` time
+  where the rules ran live), the same clock the race compares with the goal.
+  The goal falls `score.goal_seconds` after the earliest recorded start of a
+  step, as the format counts it, even where an event is stamped before its
+  step's start. When the first alert came before the goal, the race line
+  tells the goal only once that alert has been told, never the other way round.
+  A file whose `score.first_alert_seconds`, or a step's `first_alert`, says
+  otherwise is refused on import; the page shows what the alerts say.
 
 ## Two modes
 
@@ -67,7 +101,7 @@ The replay page reads where to start from its address, for example
 | Parameter | Value | Does |
 | --- | --- | --- |
 | `step` | a step's `id` | Opens at that step |
-| `at` | 0 to 1 | How far into that step; 0.6 when left out. Read only with `step`. |
+| `at` | 0 to 2 | How far into that step, 0 its start and 1 its end; from 1 to 2, how far into the silence after it, where it is still on screen. 0.6 when left out. Read only with `step`. |
 | `paused` | `1` | Opens paused |
 | `mode` | `watch` or `analyse` | Opens in that mode; analyse opens paused |
 | `select` | a step's `id` | The step whose detail analyse mode opens on |
@@ -82,8 +116,13 @@ The command writes a new file: the packaged page `bluefire/ui/replay.html`
 with the recording put inside it (see [CLI.md](CLI.md)). `bluefire recordings
 list` gives the ids. A page is made of a finished run: the command refuses a
 recording that is still running (it has no end time yet) and writes nothing;
-a running recording is watched in the app. The page is one file of under 1 MB
-plus the recording.
+a running recording is watched in the app. Every finished recording the app
+keeps plays on the page: the import refuses, with a plain reason, anything the
+page could not show. The browser test
+`frontend/tests/service/recording-parity.spec.ts` gives a small set of
+recordings at the edges of the format to both, and checks that the page plays
+each one the app keeps and refuses each one it refuses. The page is one file of
+under 1 MB plus the recording.
 It carries its own script, styles and font, and its content security policy
 lets it load nothing and connect nowhere: the page makes no request by itself.
 The one way out is the link to the CI run that made the recording, shown only

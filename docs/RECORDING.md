@@ -47,7 +47,7 @@ them to the millisecond.
 | `repository`, `commit` | string | Optional. The repository and commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
 | `defense_commit` | string | Optional. The commit of the same repository that the lab's own rules and the sensors' settings were loaded from. In the run of a pair that loads a pull request's base commit, it is that commit and not `commit`. |
 | `run_url` | string | Optional. The CI run that made the recording. A reader shows it as a link only when it is the https address of a GitHub Actions run (`https://github.com/<owner>/<repository>/actions/runs/<number>`) of the recording's own `repository` when that is given, and leaves out anything else. |
-| `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. |
+| `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. The list is always there, and empty when the run names no pinned tool. |
 | `setup` | object | Optional. What a comparison of two runs needs to know was the same. See below. A recording with `setup` has stable step ids. |
 
 `setup` holds, each optional:
@@ -101,7 +101,7 @@ reason.
 
 `{ "kind", "description", "goal" }`. `kind` is `scripted` or `agent`.
 `description` says in plain words what drove the steps. `goal` is the end of an
-attack path in plain words, or null for a test list.
+attack path in plain words, or null for a test list: it is always there.
 
 ## A step
 
@@ -109,7 +109,7 @@ attack path in plain words, or null for a test list.
 | --- | --- | --- |
 | `id` | string | Unique in the recording. In a recording with `source.setup` it is also stable: the same test with the same input arguments in the same role has the same id in every run of the same list, so two recordings pair their steps by it. See below. An older recording has the step's `order` as text. Treat it as an opaque key. |
 | `order` | number | Its position among everything the run did, from 1. Steps are sorted by it. Positions that were not steps, such as ordinary administration, are skipped, so do not use it as an index or a count: use the step's place in `steps`, and `score.steps` for the total. |
-| `role` | string | `test` for a step that counts. The lab also writes `canary` (a step the defenses are known to catch), `control` (a step that must raise no alert), `hardened` (a test run again with a hardening change in place) and `variant` (a test run again with changed arguments). |
+| `role` | string | One of `test`, a step that counts; `canary`, a step the defenses are known to catch; `control`, a step that must raise no alert; `hardened`, a test run again with a hardening change in place; and `variant`, a test run again with changed arguments. |
 | `title` | string | The published name of the test. |
 | `plain` | string | Optional. What the step does, in one plain sentence. |
 | `technique` | object | `{ "id", "name", "tactic" }` from MITRE ATT&CK. `name` and `tactic` are optional. `tactic` is the tactic the published index lists the test under, in the index's lowercase spelling, and several joined with `, ` when it lists more than one. |
@@ -124,7 +124,7 @@ attack path in plain words, or null for a test list.
 | `outcome` | string | The score word for the step, counting published rules only. See below. |
 | `outcome_with_lab_rules` | string | Optional. The score word when the accepted rules written in this repository count too. Present on every step when the run evaluated such rules, and absent when it did not. |
 | `first_event` | time | Optional. The first sensor event of the step. |
-| `first_alert` | time | Optional. The first match of a published rule on the step that counts as an alert. Absent when there is none. |
+| `first_alert` | time | Optional. The first match of a published rule on the step that counts as an alert, at its moment: its `raised` time when its detector ran live, and its `time` when the rules ran after the run, like the score's `first_alert_seconds`. Absent when there is none. |
 | `first_alert_with_lab_rules` | time | Optional. The same, when the accepted rules written in this repository count too. Written only when the run evaluated such rules and one of the two kinds alerted on the step. A step whose `outcome` is `seen` or `stopped` can carry it. |
 | `compared_with` | string | Optional. For a `hardened` or `variant` step: the id of the step it repeats. |
 | `defense` | object | Optional. For a `hardened` step: `{ "title", "why" }` of the hardening change. |
@@ -206,7 +206,8 @@ kept.
 
 ## `ordinary`
 
-Optional: `{ "events", "matches" }`. `events` counts the sensor events of
+Optional: `{ "events", "matches" }`, both always there when `ordinary` is, and
+`matches` empty when no rule matched. `events` counts the sensor events of
 ordinary activity outside the attack steps: the ordinary administration the run
 did at its own positions in `order`, and the host's own background work (the
 runner, system services and the test driver) outside every step's window.
@@ -224,7 +225,7 @@ alert.
 | `alerted`, `seen`, `unseen` | number | Of those that took effect, how many have each outcome. |
 | `alerted_with_lab_rules` | number | Optional. The same count of alerted steps when the accepted rules of this repository count too. Present when the run evaluated such rules. |
 | `stopped` | number | Steps of any role with outcome `stopped`. |
-| `first_alert_seconds` | number | Optional, attack path only: seconds from the start of the first step of role `test` to the first alert of a published rule on a step of role `test`. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
+| `first_alert_seconds` | number | Optional, attack path only: seconds from the start of the first step of role `test` to the first alert of a published rule on a step of role `test`. An alert counts from its `raised` time when its detector ran live, and from its `time` when the rules ran after the run. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
 | `goal_seconds` | number | Optional, attack path only: seconds from the start of the first step to the end of the step that reached the goal. Not written for a test list. |
 | `false_alerts` | number | Optional. Published rules that matched ordinary activity (see `ordinary`) at a level that counts as an alert. Each such rule is one false alert, whatever the number of events it matched. |
 
@@ -253,13 +254,19 @@ kept unchanged under `bluefire/data/recordings/`.
 On import the app refuses a recording, and names each problem, unless it
 follows this format and its parts agree with each other:
 
-- The top-level keys are those of the table above. The keys the app reads are
-  there with their types, every word is one the tables allow, and every time is
-  a UTC time. An optional key the app reads is left out when it is not known,
-  never null; only `attacker.goal` and the values of an event's `fields` may be
-  null. The events, the alerts with their `raised`, and each step's `started`
-  and `ended` fall inside the run's `started` and `finished`. Steps
-  are sorted by `order`, and events and alerts by `time`.
+- The top-level keys are those of the table above. Every key that is not marked
+  optional is there with its type, in the objects inside too: a tool, a host, a
+  link, a sensor, a detector, a step with its technique, published test,
+  `happened`, `visibility` and hardening change, an event, an alert with its
+  rule, and `ordinary`. Every word is one the tables allow, and every time is a
+  UTC time. An optional key is left out when it is not known, never null; only
+  `attacker.goal` and the values of an event's `fields` may be null. A value of
+  `fields` is text, a number no further than 2^53 from zero, true, false or
+  null. The replay page reads every one of these keys, so a recording the app
+  keeps is one the page can play once it has its end time. The events, the
+  alerts with their `raised`, and each step's `started` and `ended` fall inside
+  the run's `started` and `finished`. Steps are sorted by `order`, and events
+  and alerts by `time`.
 - Every id that a step, an event, an alert or a link names exists, and ids are
   unique. An event is on the host of its sensor. An alert's events belong to the
   alert's step.
@@ -278,15 +285,19 @@ follows this format and its parts agree with each other:
   `visibility.events`, and it (or `events` when there is no `kept`) is the number
   of the step's events the recording holds.
 - A step's `first_event` is the time of its earliest event in the recording, and
-  is there exactly when it has events. `first_alert` is the time of its earliest
-  counting alert of a published rule, and is there exactly when it has one.
+  is there exactly when it has events. `first_alert` is the moment of its
+  earliest counting alert of a published rule, and is there exactly when it has
+  one: an alert's moment is its `raised` time where its detector ran live, and
+  its `time` otherwise, and the earliest is the earliest by moment. A file that
+  gives a live alert's `time` instead is refused with both times named.
   `first_alert_with_lab_rules` is the same over every counting alert, on a step
   with `outcome_with_lab_rules` only.
 - The counts of `score` are the ones its steps give; `false_alerts`, when
   `ordinary` is there, is the number of `ordinary.matches` at a level that counts.
   A test list has no `first_alert_seconds` or `goal_seconds`. In an attack path,
-  `first_alert_seconds` is the time its steps give, to the millisecond (zero when
-  the alert's stamp is earlier than the first start), and `goal_seconds` the time
+  `first_alert_seconds` is the time its steps and alerts give, to the
+  millisecond, counted to the alert's `raised` time where its detector ran live
+  (zero when the alert's stamp is earlier than the first start), and `goal_seconds` the time
   from the first step's start to the end of one of the steps. Which step reached
   the goal is not checked.
 - The file is at most 8 MiB, with at most 2,000 steps, 20,000 events and 20,000

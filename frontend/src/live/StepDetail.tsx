@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Alert, Recording, RecordingEvent, Step } from "./recording";
-import { timeOf } from "./recording";
+import { alertMoment, timeOf } from "./recording";
 import type { StepRow } from "./analyse";
 import { fixHint, ordinaryMatches, otherRuns } from "./analyse";
 import { capital, clockTime, comparedStep, count, elapsed, falseAlertsOf, howItWent, matchKind, outcomeClass, outcomeWords, plural, roleWords, sensorShortName, sensorWord, sentence, span, stepLabel, stepPlace, strongerKind } from "./format";
@@ -53,7 +53,14 @@ function chip(alert: Alert): { words: string; className: string; title?: string 
   return { words: `review · ${alert.rule.level}`, className: "is-review" };
 }
 
-function MatchGroup({ recording, title, alerts }: { recording: Recording; title: string; alerts: Alert[] }) {
+/** For a match raised live after its step ended: "Raised 2.9 s after the step ended." Null for any other. */
+function raisedAfter(alert: Alert, ended: number | null): string | null {
+  if (alert.raised === undefined || ended === null) return null;
+  const late = timeOf(alert.raised) - ended;
+  return late > 0 ? `Raised ${span(late)} after the step ended.` : null;
+}
+
+function MatchGroup({ recording, title, alerts, ended }: { recording: Recording; title: string; alerts: Alert[]; ended: number | null }) {
   if (alerts.length === 0) return null;
   return (
     <div className="lv-dt-group">
@@ -63,6 +70,7 @@ function MatchGroup({ recording, title, alerts }: { recording: Recording; title:
         const ordinary = alert.counts && alert.rule.origin === "pinned" ? falseAlertsOf(recording, alert.rule.title) : 0;
         // How noisy a rule for review is on ordinary activity: what a defender weighs before raising it to alert.
         const noise = !alert.counts && alert.rule.origin === "pinned" && alert.launcher_only !== true ? ordinaryMatches(recording, alert.rule.title) : null;
+        const late = raisedAfter(alert, ended);
         return (
           <div key={alert.id} className={`lv-dt-match${alert.launcher_only === true ? " is-dim" : ""}`}>
             <span className={`lv-mchip ${look.className}`} title={look.title}>
@@ -72,7 +80,7 @@ function MatchGroup({ recording, title, alerts }: { recording: Recording; title:
               {alert.rule.title}
             </span>
             <span className="lv-dt-mmeta">
-              {alert.events.length > 0 ? plural(alert.events.length, "event") : "no event"} &middot; {clockTime(timeOf(alert.raised ?? alert.time))}
+              {alert.events.length > 0 ? plural(alert.events.length, "event") : "no event"} &middot; {clockTime(alertMoment(alert))}
               {noise !== null ? (
                 <span className="lv-dt-noise" title="Events of ordinary activity, outside every step, that this rule matched">
                   {" "}
@@ -80,6 +88,7 @@ function MatchGroup({ recording, title, alerts }: { recording: Recording; title:
                 </span>
               ) : null}
             </span>
+            {late ? <span className="lv-dt-mnote">{late}</span> : null}
             {ordinary > 0 ? <span className="lv-dt-mnote">The same rule also alerted on {plural(ordinary, "event")} of ordinary activity, outside every step: false alerts.</span> : null}
           </div>
         );
@@ -214,6 +223,9 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
   const refusalSensor = refusal ? recording.network.sensors.find((item) => item.id === refusal.sensor) : undefined;
   const started = step.started === undefined ? null : timeOf(step.started);
   const ended = step.ended === undefined ? null : timeOf(step.ended);
+  // The step's first alert, the first playback fires and the one its verdict names, at its moment: when it was raised, where the rules ran live.
+  const firstAlert = m.alert[0] ? alertMoment(m.alert[0]) : Number.NaN;
+  const firstLabAlert = m.labAlert[0] ? alertMoment(m.labAlert[0]) : Number.NaN;
   const host = recording.network.hosts.find((item) => item.id === step.host);
   const from = step.from === undefined ? undefined : recording.network.hosts.find((item) => item.id === step.from);
   const labWord = step.outcome_with_lab_rules !== undefined && step.outcome_with_lab_rules !== step.outcome ? step.outcome_with_lab_rules : null;
@@ -369,8 +381,8 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
                 <small>
                   {ended !== null ? `${span(ended - started)}, ` : ""}
                   <span title={`Counted from the first event of the first step, ${clockTime(origin)} UTC`}>{elapsed((started - origin) / 1000)} into the run</span>
-                  {step.first_alert ? `, ${afterStart("first alert", timeOf(step.first_alert) - started)}` : ""}
-                  {!step.first_alert && step.first_alert_with_lab_rules ? `, ${afterStart("a lab rule's first alert", timeOf(step.first_alert_with_lab_rules) - started)}` : ""}
+                  {Number.isFinite(firstAlert) ? `, ${afterStart("first alert", firstAlert - started)}` : ""}
+                  {!Number.isFinite(firstAlert) && Number.isFinite(firstLabAlert) && step.first_alert_with_lab_rules ? `, ${afterStart("a lab rule's first alert", firstLabAlert - started)}` : ""}
                 </small>
               </>
             ) : (
@@ -408,11 +420,11 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         </h4>
         {anyMatch ? (
           <>
-            <MatchGroup recording={recording} title="Published rules at alert level: in the score" alerts={m.alert} />
-            <MatchGroup recording={recording} title="Rules written in this repository at alert level: not in the score" alerts={m.labAlert} />
-            <MatchGroup recording={recording} title="Published rules below alert level: for review" alerts={m.review} />
-            <MatchGroup recording={recording} title="Rules written in this repository below alert level" alerts={m.labReview} />
-            <MatchGroup recording={recording} title="Matched only the launcher line, which never counts" alerts={m.launcher} />
+            <MatchGroup recording={recording} title="Published rules at alert level: in the score" alerts={m.alert} ended={ended} />
+            <MatchGroup recording={recording} title="Rules written in this repository at alert level: not in the score" alerts={m.labAlert} ended={ended} />
+            <MatchGroup recording={recording} title="Published rules below alert level: for review" alerts={m.review} ended={ended} />
+            <MatchGroup recording={recording} title="Rules written in this repository below alert level" alerts={m.labReview} ended={ended} />
+            <MatchGroup recording={recording} title="Matched only the launcher line, which never counts" alerts={m.launcher} ended={ended} />
           </>
         ) : (
           <p className="lv-dt-empty">No rule matched.</p>

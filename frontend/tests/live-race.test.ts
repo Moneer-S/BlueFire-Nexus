@@ -1,11 +1,14 @@
+import { createElement } from "react";
+import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { buildTimeline, frameAt } from "../src/live/playback";
 import type { Timeline } from "../src/live/playback";
-import { runFacts } from "../src/live/moment";
-import { whoIsWinning } from "../src/live/RaceLine";
+import { firstAlertClock, revealTime, runFacts } from "../src/live/moment";
+import { RaceLine, whoIsWinning } from "../src/live/RaceLine";
 import { runLink, stepLabel } from "../src/live/format";
 import type { Alert, Recording } from "../src/live/recording";
-import { alert, event, recording, step } from "./live-fixture";
+import { timeOf } from "../src/live/recording";
+import { alert, at, event, recording, step } from "./live-fixture";
 
 /** The race sentence at screen time `screen`, with the score so far. */
 function sentenceAt(value: Recording, timeline: Timeline, screen: number): string {
@@ -51,6 +54,89 @@ describe("the race sentence on an attack path", () => {
     const value = path([alert("a", "1", 10.8, ["1-1"])], 12);
     const timeline = buildTimeline(value);
     expect(sentenceAt(value, timeline, timeline.fire.get("a") ?? Infinity)).toBe("The defense raised its first alert on test 1, 00:00.8 after the first test step.");
+  });
+
+  it("times a live alert from when it was raised, in the sentence, the flag's clock and the goal comparison", () => {
+    // The test starts at 10 s, its event is at 10.8 s and its alert is raised at 25 s; the goal falls at 22 s.
+    // The score's own number, counted from the event, disagrees: what the alerts say is shown.
+    const value = path([alert("a", "1", 10.8, ["1-1"], { raised: at(25) })], 12);
+    value.score = { ...value.score, first_alert_seconds: 0.8 };
+    const timeline = buildTimeline(value);
+    const first = timeline.firstAlert;
+    expect(first ? firstAlertClock(value, runFacts(value, timeline), first) : null).toEqual({ seconds: 15, words: "after the first test step" });
+    expect(sentenceAt(value, timeline, timeline.fire.get("a") ?? Infinity)).toBe("The attacker reached the goal 3.0 s before the first alert.");
+  });
+
+  describe("with an event stamped before its step's recorded start", () => {
+    // Test 1 starts at 10 s and ends at 20 s, the goal; its event is stamped at 9.9 s and
+    // its alert raised live at 19.95 s, 50 ms before the goal. A canary may run first.
+    function early(canary = false, tail = false): Recording {
+      const tests = [step("1", 10, 20, { outcome: "alerted", visibility: { answer: "alert", basis: "rules", events: tail ? 2 : 1 } }), step("2", 30, 31)];
+      const value = recording({
+        when: "live",
+        steps: canary ? [step("0", 2, 3, { role: "canary" }), ...tests] : tests,
+        events: [...(canary ? [event("0-1", "0", 2.5)] : []), event("1-1", "1", 9.9), ...(tail ? [event("1-2", "1", 20.5)] : []), event("2-1", "2", 30.5)],
+        alerts: [alert("a", "1", 9.9, tail ? ["1-1", "1-2"] : ["1-1"], { raised: at(19.95) })],
+      });
+      return { ...value, kind: "attack path", score: { ...value.score, first_alert_seconds: 9.95, goal_seconds: canary ? 18 : 10 } };
+    }
+
+    /** The race line at screen time `screen`: its sentence and the left edges of its two flags. */
+    function line(value: Recording, screen: number) {
+      const timeline = buildTimeline(value);
+      const frame = frameAt(timeline, screen);
+      const revealed = frame.ended || (frame.segment !== null && screen >= revealTime(timeline, frame.segment));
+      const { container, unmount } = render(createElement(RaceLine, { recording: value, timeline, frame, facts: runFacts(value, timeline), score: frame.score, revealed }));
+      const left = (selector: string) => {
+        const flag = container.querySelector<HTMLElement>(selector);
+        return flag ? Number.parseFloat(flag.style.left) : null;
+      };
+      const parts = { sentence: container.querySelector(".lv-winning")?.textContent ?? "", first: left(".lv-flag:not(.is-goal)"), goal: left(".lv-flag.is-goal") };
+      unmount();
+      return parts;
+    }
+
+    it.each([false, true])("puts the goal at its recorded time, after the alert (canary first: %s)", (canary) => {
+      const value = early(canary);
+      const timeline = buildTimeline(value);
+      expect(line(value, timeline.duration)).toMatchObject({ sentence: "The defense alerted 50 ms before the attacker reached the goal." });
+      const { first, goal } = line(value, timeline.duration);
+      expect(first).not.toBeNull();
+      expect(goal ?? -1).toBeGreaterThan(first ?? Infinity);
+      // The clock reaches the goal at the end of test 1's body, while the alert raised at 19.95 s
+      // travels to its rule engine: the goal waits until that alert is told, and never comes first.
+      const segment = timeline.segments.find((item) => item.step.id === "1");
+      if (!segment) throw new Error("fixture");
+      expect(frameAt(timeline, segment.bodyEnd).real).toBe(timeOf(at(20)));
+      expect(line(value, segment.bodyEnd)).toEqual({ sentence: "No alert yet.", first: null, goal: null });
+      const told = line(value, revealTime(timeline, segment));
+      expect(told.sentence).toBe("The defense alerted 50 ms before the attacker reached the goal.");
+      expect(told.goal ?? -1).toBeGreaterThan(told.first ?? Infinity);
+    });
+
+    it("holds the goal back for an alert raised before it that fires on screen only after it", () => {
+      // The alert raised at 19.95 s also names an event stamped at 20.5 s, after test 1's recorded
+      // end at 20 s, which is the goal: it fires once that event has arrived, with the clock past the goal.
+      const value = early(false, true);
+      const timeline = buildTimeline(value);
+      expect(frameAt(timeline, timeline.fire.get("a") ?? 0).real).toBeGreaterThan(timeOf(at(20)));
+      let shown = false;
+      for (let screen = 0; screen <= timeline.duration; screen += 0.1) {
+        const now = line(value, screen);
+        expect(now.sentence).not.toBe("The attacker reached the goal with no alert.");
+        // The goal is told only after the alert, and once told it is not taken back.
+        if (now.goal !== null) expect(now.first).not.toBeNull();
+        if (shown) expect(now.goal).not.toBeNull();
+        shown = shown || now.goal !== null;
+      }
+      expect(shown).toBe(true);
+      expect(line(value, timeline.duration).sentence).toBe("The defense alerted 50 ms before the attacker reached the goal.");
+    });
+  });
+
+  it("counts the goal from the earliest recorded start when the first step has none", () => {
+    // Test 1 has no start and its event is at 10.8 s; test 2 starts at 20 s, so the goal, 11 s on, is test 3's end at 31 s.
+    expect(end(path([alert("a", "3", 30.5, ["3-1"])], 11, false))).toBe("The defense alerted 500 ms before the attacker reached the goal.");
   });
 
   it("gives no time when the first test has no recorded start", () => {

@@ -487,6 +487,17 @@ export function readRecording(value: unknown): Recording {
   return value as Recording;
 }
 
+/**
+ * Reads a recording as `readRecording` does, for a page of one finished run.
+ * The app plays a recording that is still running; the service keeps one,
+ * and makes a page of a finished one only.
+ */
+export function readFinishedRecording(value: unknown): Recording {
+  const recording = readRecording(value);
+  if (recording.source.finished === undefined) fail("This recording is still running: it has no end time yet, and a replay is made of a finished run.");
+  return recording;
+}
+
 /** Milliseconds since 1970 of a recording time. */
 export function timeOf(value: Time): number {
   // A browser reads at most milliseconds the same everywhere, so digits past
@@ -509,7 +520,12 @@ export function eventsByStep(recording: Recording): Map<string, RecordingEvent[]
   return groupByStep(recording, recording.events);
 }
 
-/** Every step's rule matches, in the recording's time order. Every step has an entry. */
+/**
+ * Every step's rule matches, in the recording's order: the order of their
+ * activity, not of when a live rule engine raised them. For counting only:
+ * to pick, list or name a step's matches, read them in firing order from
+ * `stepMatchesInFiringOrder` in `playback.ts`. Every step has an entry.
+ */
 export function alertsByStep(recording: Recording): Map<string, Alert[]> {
   return groupByStep(recording, recording.alerts);
 }
@@ -522,6 +538,15 @@ export function countsAsAlert(alert: Alert): boolean {
 /** True when the match counts toward `outcome` and `first_alert`: a counting match of a published rule. */
 export function countsForScore(alert: Alert): boolean {
   return countsAsAlert(alert) && alert.rule.origin === "pinned";
+}
+
+/**
+ * The moment of an alert, in ms: when it was raised where its detector ran
+ * live, else the time of its activity (rules that ran after the run have no
+ * other moment). Playback fires it then, and the race counts it from then.
+ */
+export function alertMoment(alert: Alert): number {
+  return timeOf(alert.raised ?? alert.time);
 }
 
 /** True when every detector of the recording ran after the run, so an alert's time is its event's time. */

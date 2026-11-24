@@ -330,10 +330,11 @@ function SideDetail({ side, recordingId, stepId }: { side: Side; recordingId: st
   const recording = reading && "recording" in reading ? reading.recording : null;
   const view = useMemo(() => {
     if (!recording) return null;
-    const row = stepRows(recording).find((item) => item.step.id === stepId);
+    const timeline = buildTimeline(recording);
+    const row = stepRows(recording, timeline).find((item) => item.step.id === stepId);
     if (!row) return null;
     const numbers = testNumbers(recording);
-    return { row, colours: sensorColours(recording.network.sensors), number: numbers.get(stepId), tests: numbers.size, origin: runFacts(recording, buildTimeline(recording)).start };
+    return { row, colours: sensorColours(recording.network.sensors), number: numbers.get(stepId), tests: numbers.size, origin: runFacts(recording, timeline).start };
   }, [recording, stepId]);
   const label = side === "before" ? "Before" : "After";
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alertsByStep, countsAsAlert, countsForScore, eventsByStep, readRecording, RecordingError, timeOf } from "../src/live/recording";
+import { alertsByStep, countsAsAlert, countsForScore, eventsByStep, readFinishedRecording, readRecording, RecordingError, timeOf } from "../src/live/recording";
 import { alert, event, recording, step } from "./live-fixture";
 
 function valid() {
@@ -61,6 +61,14 @@ describe("reading a recording", () => {
     const value = valid();
     value.steps.push(step("2", 30, 31));
     expect(() => readRecording(value)).toThrow('Two steps have the id "2".');
+  });
+
+  it("says a recording without an end time is still running, which the service keeps but makes no page of", () => {
+    const value = copy();
+    const source = value.source;
+    if (!isHolder(source)) throw new Error("fixture");
+    delete source.finished;
+    expect(() => readFinishedRecording(value)).toThrow("This recording is still running: it has no end time yet, and a replay is made of a finished run.");
   });
 
   it("refuses a time that is not a time", () => {

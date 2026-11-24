@@ -80,6 +80,12 @@ _HAPPENED = ("took effect", "attempted without effect", "blocked", "not attempte
 _VISIBILITY = ("alert", "telemetry only", "no telemetry", "inconclusive", "not applicable")
 _LEVELS = ("informational", "low", "medium", "high", "critical")
 _COUNTING_LEVELS = ("high", "critical")
+_TOOL_ROLES = ("tests", "executor", "sensor", "rules", "rule engine")
+_STEP_ROLES = ("test", "canary", "control", "hardened", "variant")
+_TIES = ("session", "launcher", "account", "systemd", "window")
+# The largest whole number a browser's JSON reader holds exactly; past it a field's value
+# would be read as another number, and past about 10**308 as infinity, which it refuses.
+_MAX_FIELD_NUMBER = 2**53
 _MAX_LINE = 2_000
 _MAX_NAME = 200
 _MAX_FIELD = 300
@@ -246,6 +252,33 @@ class _Checker:
         ):
             self.fail(f"{where}.{key}", "must be a number of seconds, zero or more.")
 
+    def texts(self, parent: Mapping[str, Any], key: str, where: str) -> None:
+        """An optional list of short texts, such as a host's addresses."""
+
+        if not self.present(parent, key, where, required=False):
+            return
+        value = parent[key]
+        if (
+            not isinstance(value, list)
+            or len(value) > 100
+            or any(not isinstance(item, str) or len(item) > _MAX_NAME for item in value)
+        ):
+            self.fail(
+                f"{where}.{key}",
+                f"must be a list of at most 100 texts of at most {_MAX_NAME} characters.",
+            )
+
+    def part(self, parent: Mapping[str, Any], key: str, where: str) -> Mapping[str, Any] | None:
+        """An optional object: None when it is left out, after refusing a null or a non-object."""
+
+        if not self.present(parent, key, where, required=False):
+            return None
+        value = parent[key]
+        if isinstance(value, Mapping):
+            return value
+        self.fail(f"{where}.{key}", "must be an object.")
+        return None
+
     def flag(self, parent: Mapping[str, Any], key: str, where: str, *, required: bool) -> None:
         if self.present(parent, key, where, required=required) and not isinstance(
             parent[key], bool
@@ -295,9 +328,11 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
         check.fail("source.finished", "is earlier than source.started.")
     for key in ("repository", "commit", "run_url"):
         check.text(source, key, "source", required=False, limit=_MAX_LINE)
-    for index, tool in enumerate(check.items(source.get("tools", []), "source.tools", 100)):
-        for key in ("name", "version", "role"):
-            check.text(tool, key, f"source.tools[{index}]")
+    if check.present(source, "tools", "source", required=True):
+        for index, tool in enumerate(check.items(source["tools"], "source.tools", 100)):
+            check.text(tool, "name", f"source.tools[{index}]")
+            check.text(tool, "version", f"source.tools[{index}]")
+            check.text(tool, "role", f"source.tools[{index}]", choices=_TOOL_ROLES)
 
     network = check.obj(value.get("network"), "network")
     hosts = check.items(network.get("hosts"), "network.hosts", 200)
@@ -308,14 +343,17 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
         check.text(host, "role", where)
         check.text(host, "kind", where, choices=("host", "attacker", "internet", "defense"))
         check.text(host, "os", where, required=False, limit=_MAX_LINE)
+        check.texts(host, "addresses", where)
     for index, link in enumerate(check.items(network.get("links", []), "network.links", 1_000)):
         check.ref(link.get("from"), host_ids, f"network.links[{index}].from", "host")
         check.ref(link.get("to"), host_ids, f"network.links[{index}].to", "host")
+        check.text(link, "label", f"network.links[{index}]")
     sensors = check.items(network.get("sensors"), "network.sensors", 100)
     sensor_ids = check.unique_ids(sensors, "network.sensors")
     for index, sensor in enumerate(sensors):
         check.text(sensor, "name", f"network.sensors[{index}]")
         check.ref(sensor.get("host"), host_ids, f"network.sensors[{index}].host", "host")
+        check.text(sensor, "records", f"network.sensors[{index}]", limit=_MAX_LINE)
     detectors = check.items(network.get("detectors"), "network.detectors", 100)
     detector_ids = check.unique_ids(detectors, "network.detectors")
     for index, detector in enumerate(detectors):
@@ -327,6 +365,9 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
     attacker = check.obj(value.get("attacker"), "attacker")
     check.text(attacker, "kind", "attacker", choices=("scripted", "agent"))
     check.text(attacker, "description", "attacker", limit=_MAX_LINE)
+    # The goal is always there: null for a test list, which has none.
+    if isinstance(value.get("attacker"), Mapping) and "goal" not in attacker:
+        check.fail("attacker.goal", "is missing; it is null when the run has no goal.")
     check.text(attacker, "goal", "attacker", required=False, limit=_MAX_LINE, null=True)
 
     steps = check.items(value.get("steps"), "steps", MAX_STEPS)
@@ -334,10 +375,21 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
     for index, step in enumerate(steps):
         where = f"steps[{index}]"
         check.count(step, "order", where, required=True)
-        check.text(step, "role", where, limit=100)
+        check.text(step, "role", where, choices=_STEP_ROLES)
         check.text(step, "title", where, limit=500)
         technique = check.obj(step.get("technique"), f"{where}.technique")
         check.text(technique, "id", f"{where}.technique", limit=100)
+        check.text(technique, "name", f"{where}.technique", required=False, limit=500)
+        check.text(technique, "tactic", f"{where}.technique", required=False, limit=500)
+        test = check.part(step, "test", where)
+        if test is not None:
+            for key in ("project", "guid", "executor"):
+                check.text(test, key, f"{where}.test")
+            check.flag(test, "elevated", f"{where}.test", required=True)
+        defense = check.part(step, "defense", where)
+        if defense is not None:
+            check.text(defense, "title", f"{where}.defense", limit=500)
+            check.text(defense, "why", f"{where}.defense", limit=_MAX_LINE)
         check.ref(step.get("host"), host_ids, f"{where}.host", "host")
         if "from" in step:
             check.ref(step.get("from"), host_ids, f"{where}.from", "host")
@@ -345,10 +397,12 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
             check.time(step, key, where, required=False)
         for key in ("command", "output", "plain"):
             check.text(step, key, where, required=False, limit=_MAX_LINE, empty=True)
-        check.text(check.obj(step.get("happened"), f"{where}.happened"), "answer",
-                   f"{where}.happened", choices=_HAPPENED)  # fmt: skip
+        happened = check.obj(step.get("happened"), f"{where}.happened")
+        check.text(happened, "answer", f"{where}.happened", choices=_HAPPENED)
+        check.text(happened, "basis", f"{where}.happened", limit=_MAX_LINE)
         visibility = check.obj(step.get("visibility"), f"{where}.visibility")
         check.text(visibility, "answer", f"{where}.visibility", choices=_VISIBILITY)
+        check.text(visibility, "basis", f"{where}.visibility", limit=_MAX_LINE)
         check.count(visibility, "events", f"{where}.visibility", required=False)
         check.count(visibility, "kept", f"{where}.visibility", required=False)
         check.text(step, "outcome", where, choices=_OUTCOMES)
@@ -366,18 +420,21 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
         check.ref(event.get("step"), step_ids, f"{where}.step", "step")
         check.text(event, "kind", where)
         check.text(event, "text", where, limit=_MAX_LINE, empty=True)
-        check.text(event, "tied_by", where, required=False)
+        check.text(event, "tied_by", where, choices=_TIES)
         check.text(event, "user", where, required=False, empty=True)
         check.text(event, "image", where, required=False, limit=_MAX_LINE, empty=True)
         fields = check.obj(event.get("fields", {}), f"{where}.fields")
         if len(fields) > _MAX_FIELDS or any(
             not isinstance(item, (str, int, float, bool, type(None)))
             or (isinstance(item, str) and len(item) > _MAX_FIELD)
+            or (isinstance(item, int) and abs(item) > _MAX_FIELD_NUMBER)
             for item in fields.values()
         ):
             check.fail(
                 f"{where}.fields",
-                f"must hold at most {_MAX_FIELDS} plain values of at most {_MAX_FIELD} characters.",
+                f"must hold at most {_MAX_FIELDS} plain values: text of at most {_MAX_FIELD} "
+                f"characters, a number no further than {_MAX_FIELD_NUMBER} from zero, true, "
+                "false or null.",
             )
 
     alerts = check.items(value.get("alerts"), "alerts", MAX_ALERTS)
@@ -390,6 +447,7 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
         check.ref(alert.get("detector"), detector_ids, f"{where}.detector", "detector")
         check.ref(alert.get("step"), step_ids, f"{where}.step", "step")
         rule = check.obj(alert.get("rule"), f"{where}.rule")
+        check.text(rule, "id", f"{where}.rule", limit=500)
         check.text(rule, "title", f"{where}.rule", limit=500)
         check.text(rule, "level", f"{where}.rule", choices=_LEVELS)
         check.text(rule, "origin", f"{where}.rule", choices=("pinned", "lab"))
@@ -405,12 +463,13 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
     if "ordinary" in value:
         ordinary = check.obj(value.get("ordinary"), "ordinary")
         check.count(ordinary, "events", "ordinary", required=True)
-        for index, match in enumerate(
-            check.items(ordinary.get("matches", []), "ordinary.matches", 1_000)
-        ):
-            check.text(match, "rule", f"ordinary.matches[{index}]", limit=500)
-            check.text(match, "level", f"ordinary.matches[{index}]", choices=_LEVELS)
-            check.count(match, "count", f"ordinary.matches[{index}]", required=True)
+        if check.present(ordinary, "matches", "ordinary", required=True):
+            for index, match in enumerate(
+                check.items(ordinary["matches"], "ordinary.matches", 1_000)
+            ):
+                check.text(match, "rule", f"ordinary.matches[{index}]", limit=500)
+                check.text(match, "level", f"ordinary.matches[{index}]", choices=_LEVELS)
+                check.count(match, "count", f"ordinary.matches[{index}]", required=True)
 
     score = check.obj(value.get("score"), "score")
     for key in ("steps", "took_effect", "alerted", "seen", "unseen", "stopped"):
@@ -459,9 +518,16 @@ def _check_agreement(
     event_steps = {event["id"]: event["step"] for event in events}
     held = Counter(event["step"] for event in events)
     # The earliest time of each kind on each step, as (time, the recording's own text).
+    # An alert counts from its moment: when it was raised, for a live detector, and
+    # otherwise the time of its activity. The step's first alert and the race agree.
     first_event: dict[str, tuple[datetime, str]] = {}
     first_pinned: dict[str, tuple[datetime, str]] = {}
     first_counting: dict[str, tuple[datetime, str]] = {}
+    # The same two by the alerts' activity time, only to name that mistake plainly.
+    by_activity: dict[str, dict[str, tuple[datetime, str]]] = {
+        "first_alert": {},
+        "first_alert_with_lab_rules": {},
+    }
 
     def earliest(table: dict[str, tuple[datetime, str]], step_id: str, text: str) -> None:
         moment = (_time(text), text)
@@ -514,9 +580,13 @@ def _check_agreement(
         if any(event_steps[event_id] != alert["step"] for event_id in alert["events"]):
             check.fail(f"{where}.events", "names an event of another step.")
         if alert["counts"]:
-            earliest(first_counting, alert["step"], alert["time"])
+            live = detector_when.get(detector) == "live" and "raised" in alert
+            moment = alert["raised"] if live else alert["time"]
+            earliest(first_counting, alert["step"], moment)
+            earliest(by_activity["first_alert_with_lab_rules"], alert["step"], alert["time"])
             if origin == "pinned":
-                earliest(first_pinned, alert["step"], alert["time"])
+                earliest(first_pinned, alert["step"], moment)
+                earliest(by_activity["first_alert"], alert["step"], alert["time"])
 
     def first_time(
         step: Mapping[str, Any],
@@ -531,9 +601,18 @@ def _check_agreement(
         elif given is not None and expected is None:
             check.fail(f"{where}.{key}", f"is set, but the step has no {what}.")
         elif given is not None and expected is not None and _time(given) != expected[0]:
-            check.fail(
-                f"{where}.{key}", f"is {given}, but the step's first {what} is at {expected[1]}."
-            )
+            activity = by_activity.get(key, {}).get(step["id"])
+            if activity is not None and _time(given) == activity[0]:
+                check.fail(
+                    f"{where}.{key}",
+                    f"is {given}, the time of the alert's activity, but a step's first "
+                    f"alert counts from when a live detector raised it: {expected[1]}.",
+                )
+            else:
+                check.fail(
+                    f"{where}.{key}",
+                    f"is {given}, but the step's first {what} is at {expected[1]}.",
+                )
 
     for index, step in enumerate(steps):
         where = f"steps[{index}]"
@@ -617,7 +696,7 @@ def _check_agreement(
         )
     if "false_alerts" in score and "ordinary" in value:
         expected_score["false_alerts"] = sum(
-            match["level"] in _COUNTING_LEVELS for match in value["ordinary"].get("matches", [])
+            match["level"] in _COUNTING_LEVELS for match in value["ordinary"]["matches"]
         )
     for key, number in expected_score.items():
         if score[key] != number:
@@ -626,12 +705,14 @@ def _check_agreement(
 
 
 def _check_race(
-    value: Mapping[str, Any], first_pinned: Mapping[str, tuple[datetime, str]], check: _Checker
+    value: Mapping[str, Any], first_raised: Mapping[str, tuple[datetime, str]], check: _Checker
 ) -> None:
     """Check the two times of an attack path's race against what its steps give.
 
-    ``goal_seconds`` must end at the end of one of the steps; the format does not say
-    which step reached the goal, so that is not checked.
+    ``first_raised`` holds the earliest moment of a counting published alert on each
+    step, the step's ``first_alert``: its ``raised`` time for a live detector, else its
+    ``time``. ``goal_seconds`` must end at the end of one of the steps; the format does
+    not say which step reached the goal, so that is not checked.
     """
 
     score, steps = value["score"], value["steps"]
@@ -645,9 +726,9 @@ def _check_race(
         _time(step["started"]) for step in steps if step["role"] == "test" and "started" in step
     ]
     test_alerts = [
-        first_pinned[step["id"]][0]
+        first_raised[step["id"]][0]
         for step in steps
-        if step["role"] == "test" and step["id"] in first_pinned
+        if step["role"] == "test" and step["id"] in first_raised
     ]
     if "first_alert_seconds" in score:
         if not test_starts or not test_alerts:

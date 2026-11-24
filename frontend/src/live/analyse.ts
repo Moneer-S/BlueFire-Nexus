@@ -3,6 +3,8 @@
 import type { Alert, Outcome, Recording, RecordingEvent, Step, StepRole } from "./recording";
 import { alertsByStep, countsAsAlert, countsForScore, eventsByStep } from "./recording";
 import { plural, stepLabel } from "./format";
+import { stepMatchesInFiringOrder } from "./playback";
+import type { Timeline } from "./playback";
 
 /** The matches of one step, published and lab rules apart, alert and review apart, the launcher line named. */
 export interface MatchGroups {
@@ -44,9 +46,9 @@ export interface StepRow {
   matches: MatchGroups;
 }
 
-export function stepRows(recording: Recording): StepRow[] {
+/** Every step's row. Its matches are in the order playback fires them, so a step's first alert here is the one the watch view names. */
+export function stepRows(recording: Recording, timeline: Timeline): StepRow[] {
   const events = eventsByStep(recording);
-  const alerts = alertsByStep(recording);
   return recording.steps.map((step, index) => {
     const own = events.get(step.id) ?? [];
     const bySensor = new Map<string, number>();
@@ -57,7 +59,7 @@ export function stepRows(recording: Recording): StepRow[] {
       events: own,
       bySensor,
       recorded: step.visibility.events ?? null,
-      matches: groupMatches(alerts.get(step.id) ?? []),
+      matches: groupMatches(stepMatchesInFiringOrder(timeline, step.id)),
     };
   });
 }

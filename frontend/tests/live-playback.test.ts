@@ -83,6 +83,18 @@ describe("the timeline", () => {
     expect(seekStep(timeline, "nope")).toBeNull();
   });
 
+  it("seeks past a step's end into the silence after it, where that step is still on screen", () => {
+    const timeline = buildTimeline(run());
+    const silence = seekStep(timeline, "4", 1.5);
+    if (silence === null) throw new Error("step 4 should be found");
+    const frame = frameAt(timeline, silence);
+    expect(frame.step?.id).toBe("4");
+    expect(frame.gap).not.toBeNull();
+    expect(frameAt(timeline, seekStep(timeline, "4", 9) ?? Number.NaN).step?.id).toBe("5");
+    // The last step has no silence after it: past its end is its end.
+    expect(seekStep(timeline, "5", 1.5)).toBe(seekStep(timeline, "5", 1));
+  });
+
   it("gives every step the same width on the scrubber, and maps a position back to its time", () => {
     const timeline = buildTimeline(run());
     const count = timeline.segments.length;
@@ -208,10 +220,16 @@ describe("the first alert on a test", () => {
     expect(first?.secondsFromFirstTest).toBeNull();
   });
 
-  it("takes the attack path's own first alert time when the recording has one", () => {
-    const value = { ...four([alert("a", "1", 10.5, ["1-1"])]), kind: "attack path" as const };
-    value.score = { ...value.score, first_alert_seconds: 3 };
-    expect(buildTimeline(value).firstAlert?.secondsFromFirstTest).toBe(3);
+  it("times the first alert of an attack path from its raised time, the moment it fires", () => {
+    const value = { ...four([alert("a", "1", 10.5, ["1-1"], { raised: at(25) })]), kind: "attack path" as const };
+    value.score = { ...value.score, first_alert_seconds: 15 };
+    expect(buildTimeline(value).firstAlert?.secondsFromFirstTest).toBeCloseTo(15);
+  });
+
+  it("shows what the alerts say when the attack path's own first alert time disagrees with them", () => {
+    const value = { ...four([alert("a", "1", 10.5, ["1-1"], { raised: at(25) })]), kind: "attack path" as const };
+    value.score = { ...value.score, first_alert_seconds: 0.5 };
+    expect(buildTimeline(value).firstAlert?.secondsFromFirstTest).toBeCloseTo(15);
   });
 });
 

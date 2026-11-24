@@ -8,7 +8,7 @@ import type { Alert, Host, Recording } from "./recording";
 import { rulesRanAfterTheRun } from "./recording";
 import { curvePath, layoutNetwork, travelPath } from "./networkLayout";
 import type { HostNode, NetworkLayout, Point } from "./networkLayout";
-import { detectorParts, kindRank, matchKind, plural } from "./format";
+import { detectorParts, kindRank, matchKind, plural, stepLabel } from "./format";
 import type { MatchKind } from "./format";
 import { TO_SENSOR, TRAVEL } from "./moment";
 import type { StepMoment } from "./moment";
@@ -125,17 +125,43 @@ function MatchChip({ kind, level }: { kind: MatchKind; level: string }) {
   return <span className="lv-chip lv-chip--review">review &middot; {level}</span>;
 }
 
+/** The latest late arrival on one engine: a match of an earlier step, raised live after that step ended. */
+interface LateLine {
+  alert: Alert;
+  kind: MatchKind;
+  /** The step it belongs to, in words: "test 3". */
+  label: string;
+}
+
+function LateMatch({ late }: { late: LateLine }) {
+  return (
+    <div className="lv-match lv-match--late" title={`${late.alert.rule.title}: a match of ${late.label}, raised after that step ended`}>
+      <MatchChip kind={late.kind} level={late.alert.rule.level} />
+      <span className="lv-match-title">{late.alert.rule.title}</span>
+      <span className="lv-match-count">{late.label}, late</span>
+    </div>
+  );
+}
+
 /**
  * What one engine matched: at most two chips (three when that is all), then
  * how many more, and a match on the launcher line named on a quiet line of
- * its own, since it never counts.
+ * its own, since it never counts. A late arrival takes one of the lines.
  */
-function EngineMatches({ lines, none }: { lines: MatchLine[]; none: boolean }) {
+function EngineMatches({ lines, none, late }: { lines: MatchLine[]; none: boolean; late: LateLine | null }) {
   const counted = lines.filter((line) => line.kind !== "launcher");
   const launcher = lines.filter((line) => line.kind === "launcher");
-  if (lines.length === 0) return <div className="lv-matches">{none ? <div className="lv-match lv-match--none">no rule matched</div> : null}</div>;
+  const lateLine = late ? <LateMatch late={late} /> : null;
+  if (lines.length === 0) {
+    return (
+      <div className="lv-matches">
+        {none ? <div className="lv-match lv-match--none">no rule matched</div> : null}
+        {lateLine}
+      </div>
+    );
+  }
   // Three lines at most: an engine's label must not reach the one below it.
-  const room = counted.length > 3 || (launcher.length > 0 && counted.length > 2) ? 2 : 3;
+  const room = late ? (counted.length > 2 || launcher.length > 0 ? 1 : 2) : counted.length > 3 || (launcher.length > 0 && counted.length > 2) ? 2 : 3;
   const shown = counted.slice(0, room);
   const rest = counted.slice(room);
   const review = rest.filter((line) => line.kind === "review").length;
@@ -165,6 +191,7 @@ function EngineMatches({ lines, none }: { lines: MatchLine[]; none: boolean }) {
           </span>
         </div>
       ) : null}
+      {lateLine}
     </div>
   );
 }
@@ -213,8 +240,8 @@ interface MapViewProps extends NetworkMapProps {
 
 function MapView({ recording, layout, moment, speed, seek, colours, labDetectors, arrival }: MapViewProps) {
   const step = moment?.step ?? null;
-  const unseen = moment !== null && moment.revealed && moment.step.outcome === "unseen";
-  const stopped = moment !== null && moment.revealed && moment.step.outcome === "stopped";
+  const unseen = moment !== null && moment.revealed && moment.outcome === "unseen";
+  const stopped = moment !== null && moment.revealed && moment.outcome === "stopped";
   const currentHost = step?.host ?? null;
 
   // What each sensor recorded of this step so far, and when it last flashed.
@@ -230,8 +257,9 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
     }
   }
 
-  // What each rule engine shows: the strongest match whose light has landed.
-  const engine = new Map<string, { kind: MatchKind; first: number; lines: MatchLine[] }>();
+  // What each rule engine shows: the strongest match whose light has landed,
+  // and a late arrival of an earlier step, which lights it again when raised.
+  const engine = new Map<string, { kind: MatchKind; first: number; lines: MatchLine[]; late: LateLine | null }>();
   for (const node of layout.detectors) {
     const lines = moment ? matchLines(moment.landed, node.detector.id) : [];
     let kind: MatchKind | null = null;
@@ -245,15 +273,25 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
         first = at;
       } else if (own === kind) first = Math.min(first, at);
     }
-    if (kind) engine.set(node.detector.id, { kind, first, lines });
-    else engine.set(node.detector.id, { kind: "launcher", first, lines });
+    let late: LateLine | null = null;
+    for (const fire of moment?.late ?? []) {
+      if (fire.alert.detector !== node.detector.id) continue;
+      const own = matchKind(fire.alert);
+      const owner = recording.steps.find((item) => item.id === fire.alert.step);
+      late = { alert: fire.alert, kind: own, label: owner ? stepLabel(recording, owner) : fire.alert.step };
+      if (own !== "launcher" && (kind === null || kindRank(own) >= kindRank(kind))) {
+        kind = own;
+        first = fire.at;
+      }
+    }
+    engine.set(node.detector.id, { kind: kind ?? "launcher", first, lines, late });
   }
 
   const lights = moment && moment.running && !unseen ? lightsOf(layout, moment, arrival) : [];
   const hostNode = layout.hosts.find((node) => node.host.id === currentHost) ?? null;
   const fromNode = step?.from ? (layout.hosts.find((node) => node.host.id === step.from) ?? null) : null;
   const sinceStart = moment ? moment.now - moment.segment.bodyStart : -1;
-  const alerted = moment !== null && moment.revealed && moment.step.outcome === "alerted";
+  const alerted = moment !== null && moment.revealed && moment.outcome === "alerted";
   const heads = useMemo(() => headsOf(recording, layout), [recording, layout]);
 
   return (
@@ -363,7 +401,7 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
         {layout.detectors.map((node) => {
           const state = engine.get(node.detector.id);
           if (!state || state.kind === "launcher" || !moment || moment.now - state.first > 1.4) return null;
-          return <Motion key={`${seek}:${moment.step.id}:${node.detector.id}:${state.kind}`} className={`lv-ring lv-ring--engine is-${state.kind}`} age={moment.now - state.first} length={1.4} speed={speed} style={{ left: node.x, top: node.y, width: node.r * 2 + 8, height: node.r * 2 + 8 }} />;
+          return <Motion key={`${seek}:${moment.step.id}:${node.detector.id}:${state.kind}:${state.first}`} className={`lv-ring lv-ring--engine is-${state.kind}`} age={moment.now - state.first} length={1.4} speed={speed} style={{ left: node.x, top: node.y, width: node.r * 2 + 8, height: node.r * 2 + 8 }} />;
         })}
       </div>
 
@@ -417,7 +455,7 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
               <div className="lv-engine-sub" title={parts.engine ? `Run by ${parts.engine}` : undefined}>
                 {node.detector.rules > 0 ? plural(node.detector.rules, "rule") : parts.engine}
               </div>
-              {moment ? <EngineMatches lines={state?.lines ?? []} none={moment.revealed && !moment.all.some((alert) => alert.detector === node.detector.id)} /> : null}
+              {moment ? <EngineMatches lines={state?.lines ?? []} none={moment.revealed && !moment.heard.some((alert) => alert.detector === node.detector.id)} late={state?.late ?? null} /> : null}
             </div>
           );
         })}
@@ -474,7 +512,7 @@ function badgeOf(moment: StepMoment | null): { text: string; className: string }
   const answer = moment.step.happened.answer;
   // One word for one outcome: a blocked step is "stopped" on the host, in the caption and in the log.
   if (answer === "blocked") return { text: "stopped", className: "is-blocked" };
-  return { text: answer, className: `is-${moment.step.outcome.replace(/\s+/g, "")}` };
+  return { text: answer, className: `is-${moment.outcome.replace(/\s+/g, "")}` };
 }
 
 function headsOf(recording: Recording, layout: NetworkLayout): ReactNode {
