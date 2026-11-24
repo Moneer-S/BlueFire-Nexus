@@ -53,6 +53,14 @@ describe("reading a recording", () => {
     expect(() => readRecording(value)).toThrow('Two steps have the id "2".');
   });
 
+  it("says a recording without an end time is still running, which the service keeps but makes no page of", () => {
+    const value = copy();
+    const source = value.source;
+    if (!isHolder(source)) throw new Error("fixture");
+    delete source.finished;
+    expect(() => readRecording(value)).toThrow("This recording is still running: it has no end time yet, and a replay is made of a finished run.");
+  });
+
   it("refuses a time that is not a time", () => {
     const value = valid();
     value.steps.push(step("3", 30, 31, { started: "yesterday" }));

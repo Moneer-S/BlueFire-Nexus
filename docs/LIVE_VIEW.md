@@ -108,8 +108,13 @@ The command writes a new file: the packaged page `bluefire/ui/replay.html`
 with the recording put inside it (see [CLI.md](CLI.md)). `bluefire recordings
 list` gives the ids. A page is made of a finished run: the command refuses a
 recording that is still running (it has no end time yet) and writes nothing;
-a running recording is watched in the app. The page is one file of under 1 MB
-plus the recording.
+a running recording is watched in the app. Every finished recording the app
+keeps plays on the page: the import refuses, with a plain reason, anything the
+page could not show. The browser test
+`frontend/tests/service/recording-parity.spec.ts` gives a small set of
+recordings at the edges of the format to both, and checks that the page plays
+each one the app keeps and refuses each one it refuses. The page is one file of
+under 1 MB plus the recording.
 It carries its own script, styles and font, and its content security policy
 lets it load nothing and connect nowhere: the page makes no request by itself.
 The one way out is the link to the CI run that made the recording, shown only

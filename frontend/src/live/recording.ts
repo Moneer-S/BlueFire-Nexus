@@ -334,6 +334,8 @@ export function readRecording(value: unknown): Recording {
   text(source.engine, "The source's engine");
   text(source.environment, "The source's environment");
   time(source.started, "The source's start");
+  // The service keeps a recording that is still running, and makes a page of a finished one only.
+  if (source.finished === undefined) fail("This recording is still running: it has no end time yet, and a replay is made of a finished run.");
   time(source.finished, "The source's end");
   optionalText(source.repository, "The source's repository");
   optionalText(source.commit, "The source's commit");

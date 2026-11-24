@@ -46,7 +46,7 @@ them to the millisecond.
 | `started`, `finished` | time | The run's start and end. |
 | `repository`, `commit` | string | Optional. The repository and commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
 | `run_url` | string | Optional. The CI run that made the recording. A reader shows it as a link only when it is the https address of a GitHub Actions run (`https://github.com/<owner>/<repository>/actions/runs/<number>`) of the recording's own `repository` when that is given, and leaves out anything else. |
-| `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. |
+| `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. The list is always there, and empty when the run names no pinned tool. |
 | `setup` | object | Optional. What a comparison of two runs needs to know was the same. See below. A recording with `setup` has stable step ids. |
 
 `setup` holds, each optional:
@@ -100,7 +100,7 @@ reason.
 
 `{ "kind", "description", "goal" }`. `kind` is `scripted` or `agent`.
 `description` says in plain words what drove the steps. `goal` is the end of an
-attack path in plain words, or null for a test list.
+attack path in plain words, or null for a test list: it is always there.
 
 ## A step
 
@@ -108,7 +108,7 @@ attack path in plain words, or null for a test list.
 | --- | --- | --- |
 | `id` | string | Unique in the recording. In a recording with `source.setup` it is also stable: the same test with the same input arguments in the same role has the same id in every run of the same list, so two recordings pair their steps by it. See below. An older recording has the step's `order` as text. Treat it as an opaque key. |
 | `order` | number | Its position among everything the run did, from 1. Steps are sorted by it. Positions that were not steps, such as ordinary administration, are skipped, so do not use it as an index or a count: use the step's place in `steps`, and `score.steps` for the total. |
-| `role` | string | `test` for a step that counts. The lab also writes `canary` (a step the defenses are known to catch), `control` (a step that must raise no alert), `hardened` (a test run again with a hardening change in place) and `variant` (a test run again with changed arguments). |
+| `role` | string | One of `test`, a step that counts; `canary`, a step the defenses are known to catch; `control`, a step that must raise no alert; `hardened`, a test run again with a hardening change in place; and `variant`, a test run again with changed arguments. |
 | `title` | string | The published name of the test. |
 | `plain` | string | Optional. What the step does, in one plain sentence. |
 | `technique` | object | `{ "id", "name", "tactic" }` from MITRE ATT&CK. `name` and `tactic` are optional. `tactic` is the tactic the published index lists the test under, in the index's lowercase spelling, and several joined with `, ` when it lists more than one. |
@@ -205,7 +205,8 @@ kept.
 
 ## `ordinary`
 
-Optional: `{ "events", "matches" }`. `events` counts the sensor events of
+Optional: `{ "events", "matches" }`, both always there when `ordinary` is, and
+`matches` empty when no rule matched. `events` counts the sensor events of
 ordinary activity outside the attack steps: the ordinary administration the run
 did at its own positions in `order`, and the host's own background work (the
 runner, system services and the test driver) outside every step's window.
@@ -250,13 +251,19 @@ kept unchanged under `bluefire/data/recordings/`.
 On import the app refuses a recording, and names each problem, unless it
 follows this format and its parts agree with each other:
 
-- The top-level keys are those of the table above. The keys the app reads are
-  there with their types, every word is one the tables allow, and every time is
-  a UTC time. An optional key the app reads is left out when it is not known,
-  never null; only `attacker.goal` and the values of an event's `fields` may be
-  null. The events, the alerts with their `raised`, and each step's `started`
-  and `ended` fall inside the run's `started` and `finished`. Steps
-  are sorted by `order`, and events and alerts by `time`.
+- The top-level keys are those of the table above. Every key that is not marked
+  optional is there with its type, in the objects inside too: a tool, a host, a
+  link, a sensor, a detector, a step with its technique, published test,
+  `happened`, `visibility` and hardening change, an event, an alert with its
+  rule, and `ordinary`. Every word is one the tables allow, and every time is a
+  UTC time. An optional key is left out when it is not known, never null; only
+  `attacker.goal` and the values of an event's `fields` may be null. A value of
+  `fields` is text, a number no further than 2^53 from zero, true, false or
+  null. The replay page reads every one of these keys, so a recording the app
+  keeps is one the page can play once it has its end time. The events, the
+  alerts with their `raised`, and each step's `started` and `ended` fall inside
+  the run's `started` and `finished`. Steps are sorted by `order`, and events
+  and alerts by `time`.
 - Every id that a step, an event, an alert or a link names exists, and ids are
   unique. An event is on the host of its sensor. An alert's events belong to the
   alert's step.
