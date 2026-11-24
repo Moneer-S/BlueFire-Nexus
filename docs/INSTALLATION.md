@@ -6,10 +6,14 @@ x86-64, Intel macOS, and Apple Silicon. Each wheel includes the application, bro
 example experiments, and packaged runner. You do not need a source checkout, Node.js, Rust, or
 frontend build tools.
 
+## Look at the current source with Docker
+
+To look at the current source with nothing but Docker installed, clone this repository, run `docker compose up app`, and open the address it prints. The address works once, within five minutes; [`compose.yaml`](../compose.yaml) says how to get a fresh one and what Docker Desktop needs.
+
 <a id="download-the-candidate"></a>
 ## Download the prerelease
 
-Download `SHA256SUMS` and the matching wheel from the published [3.0.0-rc2 GitHub release](https://github.com/Moneer-S/BlueFire-Nexus/releases/tag/v3.0.0-rc2). The links below download the exact platform asset.
+Download `SHA256SUMS` and the matching wheel from the published [3.0.0-rc2 GitHub release](https://github.com/Moneer-S/BlueFire-Nexus/releases/tag/v3.0.0-rc2). The links below download the exact platform asset. Changes made to the interface after that release are not in the published wheels.
 
 | Computer | Wheel |
 |---|---|
@@ -94,12 +98,20 @@ this prints a one-use URL containing the connection capability. Treat both the c
 URL as credentials and do not share or log them. Keep the launching terminal running; closing
 the browser tab does not stop the service.
 
+The launcher opens your browser without passing it a credential. A session belongs to its
+browser tab and exact local address, including the port; sharing the URL does not share access.
+Relaunch BlueFire for a fresh code after the session expires.
+
 Start in **Experiments**, open a packaged experiment or create one, then inspect it in **Build**.
+Choose **Simulate** to preview the steps without performing their actions, or **Execute** to run
+them after setting up a compatible runner and reviewing the plan.
 Save a version after editing. For a preview, choose **Runs > Review new run**, select
 **Simulate**, AI **Off** and **Local simulation**, run preflight and submit the Simulate job.
 Inspect its saved result. Simulate needs neither a runner nor a model account and is optional;
 for real effects, continue with **Prepare Execute** below. Follow the
 [operator guide](OPERATOR_GUIDE.md) for the current UI walkthrough.
+See [running an experiment](OPERATOR_GUIDE.md) and
+[the disposable Linux lab](PREPARED_LINUX_LAB.md) for setup.
 
 The default listener is `127.0.0.1:8765` and is for local use, not a remote service. Do not
 expose it through a network bind, tunnel, or proxy. The connection code is exchanged for a

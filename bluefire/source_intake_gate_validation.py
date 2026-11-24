@@ -899,9 +899,13 @@ def _validate_notices(repository: Path) -> None:
     guide = _read_bytes(
         repository / "docs" / "SOURCE_INTAKE.md", 1024 * 1024, "SOURCE_INTAKE.md"
     ).decode("utf-8")
-    readme = _read_bytes(repository / "README.md", 2 * 1024 * 1024, "README.md").decode("utf-8")
+    # The README's former tour and scope notes, which introduce the integration.
+    introduction = "\n".join(
+        _read_bytes(repository / "docs" / name, 2 * 1024 * 1024, name).decode("utf-8")
+        for name in ("WORKSPACE.md", "SCOPE.md")
+    )
     _require(
-        source_intake_documentation_complete(notices, guide, readme),
+        source_intake_documentation_complete(notices, guide, introduction),
         "public intake documentation or third-party notices are incomplete",
     )
 

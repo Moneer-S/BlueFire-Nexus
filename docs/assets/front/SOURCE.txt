@@ -1,0 +1,12 @@
+The pictures of the README in this folder are files of the artifact
+live-view-pictures, which the job "screens in a browser" of the app workflow
+(.github/workflows/app.yml) makes with frontend/tests/pictures/live-view.ts.
+
+CI run: <to be filled from the CI run>
+Commit: <to be filled from the CI run>
+
+Each file here and the artifact file it is:
+live-view-loop.gif   live-view-loop.gif
+app-pair.png         app-pair.png
+analyse-unseen.png   analyse-unseen.png
+watch-stopped.png    watch-stopped.png
