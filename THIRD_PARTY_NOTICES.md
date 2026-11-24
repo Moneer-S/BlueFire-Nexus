@@ -222,13 +222,27 @@ complete upstream LICENSE-MIT text:
 > IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 > DEALINGS IN THE SOFTWARE.
 
-## Example recording shipped with the app
+## Recordings shipped with the app
 
 `bluefire/data/recordings/lab-linux-host.json` (1,135,924 bytes, SHA-256
 `d8056aa091bd8ab74bd604d540053d4eb0674741b32ebe76cc7c0cb009dc3595`) is the
 recording that this repository's lab workflow wrote on a GitHub-hosted runner in
 the run https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895
 (artifact `lab-run`), unchanged. It is data, not code: nothing in it is run.
+
+The pair of runs shipped with the app comes from the artifact `lab-pair` of the run
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367, unchanged:
+`bluefire/data/recordings/lab-pair-history-watch-before.json` (its
+`before/recording.json`, 1,147,271 bytes, SHA-256
+`24a4f0138307091f61330615df74653480107fdb1861b109d24a794cdd652960`),
+`bluefire/data/recordings/lab-pair-history-watch-after.json` (its
+`after/recording.json`, 1,172,517 bytes, SHA-256
+`a4d802c2658780cea95d8a82dec4ba5b51e1fcedea9ee78f5d379930ff129d5e`) and
+`bluefire/data/recordings/deltas/lab-pair-history-watch.json` (its `delta.json`,
+51,591 bytes, SHA-256
+`4470d56391eafa38a005ef003b36526a1afeba989251545725b343de9fc62646`). They are data
+too, and what follows holds for them as it does for the example: the same tests at the
+same commit, and the same published rules, all of them in the table below.
 
 - It quotes the commands and the printed output of published Atomic Red Team tests
   at commit `a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6`, and their names and GUIDs.
@@ -287,10 +301,10 @@ the run https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895
 | Use Of Hidden Paths Or Files | `9e1bef8d-0fff-46f6-8465-9aa54e128c1e` | David Burkett, @signalblur |
 | User Has Been Deleted Via Userdel | `08f26069-6f80-474b-8d1f-d971c6fedea0` | Tuan Le (NCSGroup) |
 
-The recording also names the tools of the run (Invoke-AtomicRedTeam, Sysmon for
-Linux, auditd, Zircolite) with their versions, and holds what Sysmon for Linux and
+The recordings also name the tools of their runs (Invoke-AtomicRedTeam, Sysmon for
+Linux, auditd, Zircolite) with their versions, and hold what Sysmon for Linux and
 auditd recorded on the runner. Those tools ran in CI only; none of them is shipped.
-The home folders it names belong to the runner's lab accounts: `bluefire-lab`, which
+The home folders they name belong to the runner's lab accounts: `bluefire-lab`, which
 the lab creates, and `art`, which Atomic Red Team's own tests create.
 
 ## Release license decision
@@ -342,6 +356,19 @@ that the pinned agent package and manager image install (Wazuh, GPL-2.0), as tes
 lab's edits of them, and lines and events trimmed from one run of a range with one agent host.
 The small range in `lab/tests/fixtures/range/small/` stands in for published files with contents
 of its own, at a stand-in commit; it copies nothing from Atomic Red Team.
+
+`lab/tests/fixtures/range/ecs/ecs-8.17.0-fields.yml` is taken from the
+[Elastic Common Schema](https://github.com/elastic/ecs) (Apache-2.0, Copyright Elasticsearch B.V.),
+tag `v8.17.0`, commit `e3103a213a4e84cbcd3ef36da7001483ddc60230`, file `generated/ecs/ecs_flat.yml`
+(SHA-256 `4c72bf4d0fa7b79a101ac86c5d175092557a8ed318c29db817bd85186db207f0`): the name and type of
+each of its 1692 fields, the allowed values of `event.kind`, `event.category`, `event.type` and
+`event.outcome`, and the event types ECS expects with each category, and nothing else. A test checks
+every field the lab's ECS mapper (`lab/bluefire_lab/range/ecs.py`) can write against it. The mapper
+itself is the lab's own: no maintained mapping of Wazuh 4.x output to ECS was found to follow (Wazuh's
+own Filebeat module keeps Wazuh's field names, and the Wazuh Common Schema of Wazuh 5 describes the
+output of Wazuh 5's engine), so it copies none.
+The lines in `lab/tests/fixtures/range/ecs/` are trimmed from one run of range one, with each
+hash and key fingerprint replaced by a stand-in.
 The workflow's image build uses [docker/setup-buildx-action](https://github.com/docker/setup-buildx-action)
 and [docker/bake-action](https://github.com/docker/bake-action) (Apache-2.0), pinned to a commit,
 and runs [BuildKit](https://github.com/moby/buildkit) (Apache-2.0) from the image

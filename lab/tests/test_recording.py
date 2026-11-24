@@ -144,6 +144,8 @@ def recorded(folder: Path, tests: list[dict], *arguments: str, printed: str | No
                 "atomic-red-team": "a" * 40,
                 "invoke-atomicredteam": "b" * 40,
                 "lab": "example/lab@" + "c" * 40,
+                # The run of a pair that loaded the base commit's rules and sensor settings.
+                "lab-defense": "example/lab@" + "e" * 40,
             },
         },
         "sensor": {"name": "Sysmon for Linux", "version": "1.6.0"},
@@ -222,6 +224,7 @@ def test_a_run_becomes_one_file_with_its_steps_in_order_and_where_it_ran(tmp_pat
         "finished": "2026-11-16T04:30:00Z",
         "repository": "example/lab",
         "commit": "c" * 40,
+        "defense_commit": "e" * 40,
         "run_url": "https://example.org/runs/1",
         "tools": [
             {"name": "Atomic Red Team", "version": "a" * 40, "role": "tests"},
@@ -631,6 +634,27 @@ def test_the_setup_names_each_sensors_settings_and_each_detector_the_digest_of_i
     (rules / "a.yml").write_text("title: B\n", encoding="utf-8")
     changed = recorded(tmp_path, a_run(), **sums, **audit)
     assert {detector["id"]: detector["digest"] for detector in changed["network"]["detectors"]} != digests
+
+
+def test_the_auditd_sensor_says_which_audit_keys_its_rules_as_loaded_define(tmp_path: Path) -> None:
+    rules = (
+        "## A watch that is only a comment: -w /etc/hosts -p wa -k not-loaded\n"
+        "-D\n"
+        "-w /home/bluefire-lab/.bash_history -p wa -k shell-history\n"
+        "-a always,exit -F arch=b64 -S execve -F auid!=unset -F key=process-start\n"
+        "  # -w /etc/shadow -p wa -k also-not-loaded\n"
+        "-w /root/.bashrc -p wa -k shell-start\n"
+    )
+
+    made = recorded(tmp_path, a_run(), audit={"name": "auditd", "rules_text": rules})
+    older = recorded(tmp_path, a_run(), audit={"name": "auditd"})
+
+    auditd = next(sensor for sensor in made["network"]["sensors"] if sensor["id"] == "auditd")
+    assert auditd["audit_keys"] == ["process-start", "shell-history", "shell-start"]
+    # A run whose results do not hold the rules' text does not say which keys they define.
+    assert "audit_keys" not in next(
+        sensor for sensor in older["network"]["sensors"] if sensor["id"] == "auditd"
+    )
 
 
 def test_the_lab_detector_says_which_rules_the_run_accepted_and_the_digest_of_each(tmp_path: Path) -> None:

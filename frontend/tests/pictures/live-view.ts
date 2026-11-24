@@ -37,11 +37,15 @@ interface Shipped {
 const repository = resolve(process.cwd(), "..");
 const RECORDING = "bluefire/data/recordings/lab-linux-host.json";
 const shipped: Shipped = JSON.parse(readFileSync(join(repository, RECORDING), "utf-8"));
+const PAIR = "bluefire/data/recordings/deltas/lab-pair-history-watch.json";
+const pairRun: string = (JSON.parse(readFileSync(join(repository, PAIR), "utf-8")) as { after: { run_url?: string } }).after.run_url ?? "not named in the comparison";
 const FILES = [
   "SOURCE.txt",
   "analyse-unseen.png",
   "analyse.png",
+  "app-pair.png",
   "app-recorded-run.png",
+  "app-runs-pair.png",
   "app-runs.png",
   "replay.html",
   "watch-first-alert.png",
@@ -252,9 +256,23 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   const recorded = page.getByRole("region", { name: "Recorded runs" });
-  const link = recorded.getByRole("link", { name: shipped.title });
+  const link = recorded.getByRole("link", { name: shipped.title, exact: true });
   await expect(link).toBeVisible();
   await picture(page, folder, "app-runs.png");
+
+  // The pair of runs shipped with the app: on the Runs screen, and its own page.
+  const pairs = page.getByRole("region", { name: "Before against after" });
+  const pair = pairs.getByRole("link", { name: "The settings of sensor auditd", exact: true });
+  await pairs.scrollIntoViewIfNeeded();
+  await expect(pair).toBeVisible();
+  await picture(page, folder, "app-runs-pair.png");
+  await pair.click();
+  await expect(page).toHaveURL(/#\/runs\/compared\/[0-9a-f]{16}$/);
+  await expect(page.getByRole("heading", { level: 1, name: "One change: the settings of sensor auditd" })).toBeVisible();
+  await expect(page.getByRole("region", { name: /^What the change moved/ }).getByRole("button", { name: /Clear Bash history \(echo\)/ })).toBeVisible();
+  await picture(page, folder, "app-pair.png");
+  await page.getByRole("link", { name: "Runs", exact: true }).first().click();
+  await expect(link).toBeVisible();
 
   const path = await link.getAttribute("href");
   if (!path?.startsWith("#/")) throw new Error(`The recorded run's link is ${path}.`);
@@ -269,9 +287,11 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   writeFileSync(
     join(folder, "SOURCE.txt"),
     [
-      "Pictures of the live view and its single replay page, made from the recording shipped with BlueFire.",
+      "Pictures of the live view and its single replay page, made from the recording shipped with BlueFire,",
+      "and of the Runs screen and the page of the pair of runs shipped with it.",
       `Recording: ${shipped.id} (${RECORDING})`,
       `Recorded in the CI run: ${shipped.source.run_url ?? "not named in the recording"}`,
+      `Pair: ${PAIR} (made in the CI run ${pairRun})`,
       `Made from the commit: ${process.env.GITHUB_SHA ?? "not known: made outside CI"}`,
       "",
     ].join("\n"),

@@ -74,19 +74,24 @@ describe("the recordings in the demo build", () => {
     vi.resetModules();
   });
 
+  // These read and parse the three shipped recordings, about 1.1 MB each, which takes seconds on a busy machine.
+  const SHIPPED_FILES_TIMEOUT = 30_000;
+
   async function demoApi() {
     vi.stubEnv("VITE_DEMO_MODE", "true");
     vi.resetModules();
     return (await import("../src/lib/api")).api;
   }
 
-  it("gives the one real example that ships with the app, labelled as the service labels it", async () => {
+  it("gives the real recordings that ship with the app, labelled as the service labels them", async () => {
     const fetch = vi.spyOn(globalThis, "fetch");
     const demo = await demoApi();
     const list = await demo.recordings();
     expect(list).toMatchObject({ unreadable_count: 0, omitted_count: 0 });
-    expect(list.recordings).toHaveLength(1);
-    const shipped = list.recordings[0];
+    // The example, and the two runs of the shipped pair.
+    expect(list.recordings).toHaveLength(3);
+    expect(list.recordings.every((item) => item.origin.kind === "shipped")).toBe(true);
+    const shipped = list.recordings.find((item) => item.score.unseen === 1 && item.source.run_url?.endsWith("/45227119895"));
     expect(shipped).toMatchObject({
       title: "60 published tests on one Linux host",
       kind: "test list",
@@ -106,20 +111,27 @@ describe("the recordings in the demo build", () => {
     await expect(demo.recording("not-shipped")).rejects.toMatchObject({ code: "recording_not_found", status: 404 });
     await expect(demo.importRecording(new TextEncoder().encode(JSON.stringify(entry.recording)))).rejects.toMatchObject({ code: "demo_recording_import_refused" });
     expect(fetch).not.toHaveBeenCalled();
-  });
+  }, SHIPPED_FILES_TIMEOUT);
 
-  it("gives one pair of runs, labelled as built for the demo and never as a result", async () => {
+  it("gives the pair of runs that ships with the app, at the service's address, labelled as the service labels it", async () => {
     const fetch = vi.spyOn(globalThis, "fetch");
     const demo = await demoApi();
     const { deltas } = await demo.recordingDeltas();
     expect(deltas).toHaveLength(1);
     const pair = deltas[0];
-    expect(pair?.origin.kind).toBe("built");
-    expect(pair?.origin.note).toMatch(/^Built for the demo, not a result\./);
+    // The id the service gives this delta file, so an address of the pair is the same in both.
+    expect(pair?.id).toBe("c4f1640a7f3ad9f0"); // pragma: allowlist secret
+    const runUrl = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367";
+    expect(pair?.origin).toEqual({ kind: "shipped", run_url: runUrl, note: `Shipped with BlueFire, with both of its recordings. This repository's lab workflow made the two runs side by side, and this comparison of them, in the CI run at ${runUrl}. BlueFire checked that the comparison follows the delta format and names both recordings by the SHA-256 of their files, with every step it lists. It did not make the comparison: bluefire-lab compare did.` });
+    expect(pair?.recordings.before.id).toBe(pair?.before.id);
+    expect(pair?.recordings.after.origin.kind).toBe("shipped");
     const entry = await demo.recordingDelta(pair?.id ?? "");
     expect(entry.delta.schema).toBe("bluefire.delta/1");
-    expect(entry.summary.origin.kind).toBe("built");
+    expect(entry.delta.declared_change).toBe("sensors:auditd");
+    expect(entry.delta.limit).toBeNull();
+    const step = await demo.recording(entry.delta.after.id);
+    expect(readRecording(step.recording).id).toBe(entry.delta.after.id);
     await expect(demo.recordingDelta("0000000000000000")).rejects.toMatchObject({ code: "delta_not_found", status: 404 });
     expect(fetch).not.toHaveBeenCalled();
-  });
+  }, SHIPPED_FILES_TIMEOUT);
 });

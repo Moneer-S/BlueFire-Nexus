@@ -52,7 +52,8 @@
       "Atomic gzip collection adapter",
       "linux-raw-sys 0.12.1 notice",
       "Tomli 2.4.1 notice",
-      "Example recording shipped with the app"
+      "Recordings shipped with the app",
+      "The pair of runs shipped with the app"
     ]
   },
   "python": {
@@ -394,7 +395,6 @@
         "bluefire/data/python_runtime_backports.json",
         "bluefire/data/research_sources.yaml",
         "bluefire/data/receiver_defense_validation.yaml",
-        "bluefire/data/recordings/deltas/.gitkeep",
         "bluefire/data/restricted_persistence_canary.yaml",
         "bluefire/data/sandbox_research_chain.yaml",
         "bluefire/data/windows_endpoint_validation.yaml",
@@ -408,6 +408,7 @@
       "generated-frontend-bundle-reviewed-dependency-graph": [
         "bluefire/ui/app.js",
         "bluefire/ui/index.html",
+        "bluefire/ui/replay.html",
         "bluefire/ui/styles.css"
       ],
       "third-party-font-sil-open-font-license-1.1": [
@@ -444,7 +445,10 @@
         "bluefire/data/atomic_red_team_LICENSE.txt"
       ],
       "lab-recording-quoting-atomic-red-team-mit-and-naming-sigma-drl-rules": [
-        "bluefire/data/recordings/lab-linux-host.json"
+        "bluefire/data/recordings/deltas/lab-pair-history-watch.json",
+        "bluefire/data/recordings/lab-linux-host.json",
+        "bluefire/data/recordings/lab-pair-history-watch-after.json",
+        "bluefire/data/recordings/lab-pair-history-watch-before.json"
       ]
     },
     "third_party_integrity": {
@@ -453,7 +457,10 @@
       "frontend/public/fonts/OFL.txt": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
       "bluefire/ui/fonts/OFL.txt": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
       "bluefire/data/atomic_red_team_LICENSE.txt": "65af6027045d23175366eab50e460ab3ee7790e591cb84cc32c78ac63a4c90e1",
-      "bluefire/data/recordings/lab-linux-host.json": "d8056aa091bd8ab74bd604d540053d4eb0674741b32ebe76cc7c0cb009dc3595"
+      "bluefire/data/recordings/lab-linux-host.json": "d8056aa091bd8ab74bd604d540053d4eb0674741b32ebe76cc7c0cb009dc3595",
+      "bluefire/data/recordings/lab-pair-history-watch-before.json": "24a4f0138307091f61330615df74653480107fdb1861b109d24a794cdd652960",
+      "bluefire/data/recordings/lab-pair-history-watch-after.json": "a4d802c2658780cea95d8a82dec4ba5b51e1fcedea9ee78f5d379930ff129d5e",
+      "bluefire/data/recordings/deltas/lab-pair-history-watch.json": "4470d56391eafa38a005ef003b36526a1afeba989251545725b343de9fc62646"
     },
     "third_party_binary_integrity": {
       "frontend/public/fonts/InterVariable.woff2": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3",

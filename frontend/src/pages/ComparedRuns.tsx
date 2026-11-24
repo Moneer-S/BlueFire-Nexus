@@ -8,9 +8,9 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, type Delta, type DeltaSide, type DeltaStep, type DeltaSummary } from "../lib/api";
+import { api, type Delta, type DeltaLimit, type DeltaSide, type DeltaStep, type DeltaSummary } from "../lib/api";
 import { originWords, recordedRunPath } from "../lib/recorded-runs";
-import { changeWords, chipField, codeSpans, controlWords, isCredited, isDigest, movedSteps, raceWords, resultWords, setupWords, shortValue, sideWhere, variationWords, verdictParts } from "../lib/recording-pairs";
+import { changeWords, chipField, codeSpans, controlWords, creditsWords, isCredited, isDigest, limitOf, movedSteps, raceWords, recordsParts, resultWords, runnerDifferences, setupLede, setupWords, shortValue, sideWhere, variationWords, verdictParts } from "../lib/recording-pairs";
 import { stepRows } from "../live/analyse";
 import { outcomeClass, outcomeWords, plural, runLink, sensorColours, testNumbers } from "../live/format";
 import { runFacts } from "../live/moment";
@@ -45,19 +45,18 @@ function ComparedRuns({ deltaId }: { deltaId: string }) {
   </div>;
 }
 
-function originLabel(summary: DeltaSummary): string {
-  return summary.origin.kind === "built" ? "Built for the demo" : originWords(summary.origin);
-}
-
 /** The quiet line under the app's header: back to Runs, what this page is, and where the pair comes from. */
 function ComparedBar({ summary }: { summary?: DeltaSummary }) {
+  // A shipped pair of two runs side by side names the one CI run that made both and compared them.
+  const pairRun = summary?.origin.kind === "shipped" && summary.origin.run_url ? runLink({ run_url: summary.origin.run_url }) : null;
   return <header className="recorded-run-bar">
     <nav className="recorded-run-line" aria-label="Compared runs">
       <Link className="recorded-run-back" to="/runs"><ArrowLeft aria-hidden="true" />Runs</Link>
       {summary ? <p className="recorded-run-facts">
         <span className="recorded-run-title">Before against after</span>
         <span>{changeWords(summary.declared_change)}</span>
-        <span className={`recorded-run-origin is-${summary.origin.kind}`}>{originLabel(summary)}</span>
+        <span className={`recorded-run-origin is-${summary.origin.kind}`}>{originWords(summary.origin)}</span>
+        {pairRun ? <span>Both runs and this comparison made in CI <a href={pairRun} target="_blank" rel="noreferrer">{pairRun.replace(/^.*\/runs\//, "run ")}</a></span> : null}
       </p> : null}
     </nav>
     {summary && summary.origin.kind !== "shipped" ? <p className="recorded-run-note">{summary.origin.note}</p> : null}
@@ -89,7 +88,7 @@ function PairView({ delta, summary }: { delta: Delta; summary: DeltaSummary }) {
       </section>
 
       <section className="cmp-sec" aria-labelledby="cmp-moved">
-        <h2 id="cmp-moved">{!delta.comparable ? "Steps that differ, with no verdict" : delta.declared_change === null ? "Steps credited to a change" : "What the change moved"}<span>{plural(moved.length, "step")} of {plural(delta.counts.paired, "paired step")}</span></h2>
+        <h2 id="cmp-moved">{!delta.comparable ? "Steps that differ, with no verdict" : delta.declared_change === null ? "Steps credited to a change" : "What the change moved"}<span>{plural(moved.length, "step")} of {plural(delta.counts.paired, "paired step")}{delta.limit ? ", each credited by the change's own mark only" : ""}</span></h2>
         {moved.length ? <ol className="cmp-steps">{moved.map(line)}</ol>
           : <p className="cmp-empty">{delta.declared_change === null ? "Nothing was declared as changed, so no step is credited to a change." : "No step moved in what this change can move."}</p>}
       </section>
@@ -99,7 +98,9 @@ function PairView({ delta, summary }: { delta: Delta; summary: DeltaSummary }) {
         <p className="cmp-control">{controlWords(delta)}</p>
         {delta.control.varied.length ? <p className="cmp-control">It varied on {plural(delta.control.varied.length, "step")}: that is {variationWords(delta)}, not an effect.</p> : null}
         {unexplained.length ? <>
-          <h3>Changed without a cause</h3>
+          {delta.limit
+            ? <h3>Not attributable to the change<span>the two runners differed, and could have moved these</span></h3>
+            : <h3>Changed without a cause</h3>}
           <ol className="cmp-steps">{unexplained.map(line)}</ol>
         </> : null}
         {delta.new.length || delta.gone.length ? <>
@@ -134,20 +135,18 @@ function Claim({ delta }: { delta: Delta }) {
   const change = declared === null ? undefined : delta.differences.find((item) => item.what === declared);
   const code = delta.lab_code;
   const known = delta.differences.filter((item) => item.before !== null || item.after !== null);
-  return <header className={`cmp-claim${delta.comparable ? "" : " is-refused"}`}>
-    <p className="cmp-kicker">Before against after<span>{delta.claim}</span></p>
+  const limit = delta.comparable ? limitOf(delta) : null;
+  return <header className={`cmp-claim${delta.comparable ? "" : " is-refused"}${limit ? " is-limited" : ""}`}>
+    <p className="cmp-kicker">Before against after<span>{delta.claim}</span>{limit ? <span className="is-limit">limited verdict</span> : null}</p>
     {delta.comparable ? <>
-      <h1>{declared === null ? "Nothing declared as changed" : <>One change: {setupWords(declared)}</>}</h1>
+      <h1>{declared === null ? "Nothing declared as changed" : <>{limit ? "Declared change" : "One change"}: {setupWords(declared)}</>}</h1>
       {change ? <p className="cmp-change">
         <span className="cmp-side-word">Before</span><Value value={change.before} />
         <ArrowRight className="cmp-arrow" aria-hidden="true" />
         <span className="cmp-side-word">After</span><Value value={change.after} />
       </p> : null}
-      <p className="cmp-lede">
-        {declared === null
-          ? `The same steps, made with the same setup. Nothing was declared as changed, so a step that differs is ${variationWords(delta)}, not an effect.`
-          : "The same steps, made with the same setup apart from this change."}
-      </p>
+      <p className="cmp-lede">{setupLede(delta)}</p>
+      {limit ? <LimitBox delta={delta} limit={limit} /> : null}
     </> : <>
       <h1>No verdict</h1>
       <p className="cmp-lede">{declared === null ? "Nothing was declared as changed." : <>Declared change: {setupWords(declared)}.</>} The comparison was refused, and still lists what differed:</p>
@@ -172,10 +171,35 @@ function Claim({ delta }: { delta: Delta }) {
   </header>;
 }
 
+/**
+ * A limited verdict, as prominent as the claim: why (the two runners differed,
+ * and in what, with both values), and what is credited, in the delta's words.
+ */
+function LimitBox({ delta, limit }: { delta: Delta; limit: DeltaLimit }) {
+  const credits = creditsWords(limit);
+  return <section className="cmp-limit" aria-labelledby="cmp-limit-heading">
+    <h2 id="cmp-limit-heading">A limited verdict: {limit.why}</h2>
+    <table className="cmp-table">
+      <caption className="lv-sr">What differed between the two runners</caption>
+      <thead><tr><th scope="col">The runners</th><th scope="col">Before</th><th scope="col">After</th></tr></thead>
+      <tbody>{runnerDifferences(delta).map((item) => <tr key={item.what}>
+        <th scope="row">{setupWords(item.what)}</th>
+        <td><Value value={item.before} /></td>
+        <td><Value value={item.after} /></td>
+      </tr>)}</tbody>
+    </table>
+    <p className="cmp-limit-credits">
+      <strong>Credited: {credits.lead}</strong>{credits.rest ? <>: <LabText text={credits.rest} /></> : null}.
+      {" "}Every other step that differs is not attributable, since the runners' difference could have moved it. No price is known: each run counted its ordinary activity on a runner of its own.
+    </p>
+    <p className="cmp-limit-count">{plural(limit.credited, "step")} credited by the mark, {limit.not_attributable} not attributable.</p>
+  </section>;
+}
+
 /** The note of an imported recording, shown once under both runs when both have the same one. */
 function importedNote(summary: DeltaSummary, side: Side): string | null {
   const origin = summary.recordings[side].origin;
-  return summary.origin.kind !== "built" && origin.kind === "imported" ? origin.note : null;
+  return origin.kind === "imported" ? origin.note : null;
 }
 
 function sharedNote(summary: DeltaSummary): string | null {
@@ -192,12 +216,13 @@ function RunCard({ side, facts, summary }: { side: Side; facts: DeltaSide; summa
   return <article className="cmp-run" aria-labelledby={`cmp-run-${side}`}>
     <header>
       <h2 id={`cmp-run-${side}`}>{side === "before" ? "Before" : "After"}</h2>
-      <span className={`recorded-run-origin is-${summary.origin.kind === "built" ? "built" : recording.origin.kind}`}>{summary.origin.kind === "built" ? "Built for the demo" : originWords(recording.origin)}</span>
+      <span className={`recorded-run-origin is-${recording.origin.kind}`}>{originWords(recording.origin)}</span>
     </header>
     <p className="cmp-run-title">{recording.title}</p>
     <dl className="cmp-run-facts">
       <div><dt>Where and when</dt><dd>{sideWhere(facts)}</dd></div>
       <div><dt>Lab's commit</dt><dd>{facts.commit ? <code>{facts.commit.slice(0, 8)}</code> : "not recorded"}</dd></div>
+      {facts.defense_commit ? <div><dt>Rules and sensor settings</dt><dd>from commit <code>{facts.defense_commit.slice(0, 8)}</code>{facts.defense_commit === facts.commit ? " (the lab's commit)" : null}</dd></div> : null}
       <div><dt>CI run</dt><dd>{link ? <a href={link} target="_blank" rel="noreferrer">{link.replace(/^.*\/runs\//, "run ")}</a>
         : facts.run_url ? <span className="cmp-claimed" title="The file names this CI run, which BlueFire cannot confirm">{facts.run_url} <small>(named by the file, not confirmed)</small></span>
         : "not recorded"}</dd></div>
@@ -245,15 +270,32 @@ function StepLine({ delta, step, open, onToggle }: { delta: Delta; step: DeltaSt
       </span>}
     </div>
     <p className="cmp-verdict">
-      <span className={`cmp-result is-${result}`}>{resultWords(step.result)}</span><span className="lv-sr">: </span>
-      {parts.before}
-      {parts.price ? <span className="cmp-price">{parts.price}</span> : null}
-      {parts.after}
+      <span className={`cmp-result is-${result}`}>{resultWords(step.result)}</span>
+      {step.mark ? <> <span className="cmp-result is-mark">by the change's own mark<span className="lv-sr">, on two runners that differed</span></span></> : null}
+      <span className="lv-sr">: </span>
+      <LabText text={parts.before} />
+      {parts.price ? <span className={`cmp-price${parts.price.startsWith("price not known") ? " is-unknown" : ""}`}><LabText text={parts.price} /></span> : null}
+      <LabText text={parts.after} />
     </p>
     {step.underneath.length ? <ul className={`cmp-under${step.result === "better" ? " is-better" : ""}`} aria-label="What changed underneath">{step.underneath.map((item) => <li key={item}>{item}</li>)}</ul> : null}
+    {step.records ? <Records records={step.records} /> : null}
     {step.paired_by !== "id" ? <p className="cmp-paired">Paired by {step.paired_by}.</p> : null}
     {open ? <PairDetail id={detail} delta={delta} step={step} onClose={onToggle} /> : null}
   </li>;
+}
+
+/** What the declared sensor recorded of a step in one run only, with the first lines the delta gives. */
+function Records({ records }: { records: NonNullable<DeltaStep["records"]> }) {
+  const parts = recordsParts(records);
+  if (parts.length === 0) return null;
+  return <div className="cmp-records">
+    <p className="cmp-side-word">What sensor {records.sensor} recorded of it in one run only</p>
+    {parts.map((part) => <div key={part.label} className="cmp-records-part">
+      <span className="cmp-records-label">{part.label}, {plural(part.count, "event")}</span>
+      <ul>{part.lines.map((text, index) => <li key={index}><code>{text}</code></li>)}</ul>
+      {part.more > 0 ? <p className="cmp-records-more">and {plural(part.more, "more event")}, not listed in the comparison</p> : null}
+    </div>)}
+  </div>;
 }
 
 /** The step's detail in each recording, before and after next to each other, from the live view. */

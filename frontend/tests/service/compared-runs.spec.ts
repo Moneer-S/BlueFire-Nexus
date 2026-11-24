@@ -1,38 +1,27 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createHash } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { launchService } from "./start-service";
 
-// Two compared runs in the real service: recording files imported on the Runs
-// screen, and the delta that the lab's own command makes of them sent to the
-// service's route. The pair with a declared change is BUILT here from the
-// recording shipped with the app (another digest for the audit rules, and its
-// one unseen test made seen by one added record), because no real pair with a
-// declared change exists yet. The refused pair is real: the shipped recording
-// compared with itself, which the lab refuses for want of source.setup.
+// Compared runs in the real service. The pair shipped with the app is real: two
+// runs side by side in one CI run, before and after an audit watch on the test
+// account's shell history files, and the lab's delta of them, all as the lab
+// wrote them. It is opened as it ships, with nothing imported. The refused pair
+// is real too: the shipped example compared with itself, which the lab refuses
+// for want of source.setup, sent to the service's route.
 
-interface Step { id: string; order: number; title: string; outcome: string; outcome_with_lab_rules?: string; started?: string; host: string; visibility: { answer: string; basis: string; events?: number }; first_event?: string }
-interface Recording {
-  id: string;
-  title: string;
-  source: { setup?: unknown; [key: string]: unknown };
-  network: { detectors: { id: string; digest?: string }[] };
-  steps: Step[];
-  events: { id: string; time: string; host: string; sensor: string; kind: string; text: string; step: string; tied_by: string }[];
-  score: { seen: number; unseen: number };
-}
-interface DeltaStep { id: string; title: string; result: string; verdict: string }
-interface Delta { steps: DeltaStep[]; control: { same: number; of: number }; refused_because: string[] }
+interface DeltaStep { id: string; title: string; result: string; verdict: string; price?: string }
+interface Delta { steps: DeltaStep[]; control: { same: number; of: number }; refused_because: string[]; after: { run_url: string } }
 
 const repository = resolve(process.cwd(), "..");
 const shippedFile = join(repository, "bluefire/data/recordings/lab-linux-host.json");
-const UNSEEN = "Clear Bash history (echo)";
+const pairFile = join(repository, "bluefire/data/recordings/deltas/lab-pair-history-watch.json");
+const pair: Delta = JSON.parse(readFileSync(pairFile, "utf-8"));
+const MOVED = "Clear Bash history (echo)";
 let workspace = "";
 let service: Awaited<ReturnType<typeof launchService>> | undefined;
-let changed: Delta;
 let refused: Delta;
 
 function bluefireLab(...args: string[]): void {
@@ -40,52 +29,12 @@ function bluefireLab(...args: string[]): void {
   if (run.status !== 0) throw new Error(`bluefire-lab ${args.join(" ")} exited with ${run.status}:\n${run.stdout}\n${run.stderr}`);
 }
 
-const digest = (text: string) => createHash("sha256").update(text).digest("hex");
-
-/** BUILT: the shipped recording under another id, with the setup a comparison needs. */
-function built(id: string, auditRules: string): Recording {
-  const recording: Recording = JSON.parse(readFileSync(shippedFile, "utf-8"));
-  recording.id = id;
-  // A title of its own, so that the other tests on this service find the shipped recording by its title alone.
-  recording.title = `Built for a browser test from the shipped run (${id})`;
-  recording.source.setup = { sensors: { sysmon: digest("built sysmon configuration"), auditd: digest(auditRules) } };
-  for (const detector of recording.network.detectors) detector.digest = digest(`built rules of ${detector.id}`);
-  return recording;
-}
-
-/** BUILT: the unseen test made seen by one added auditd record. */
-function seenBy(recording: Recording): Recording {
-  const step = recording.steps.find((item) => item.title === UNSEEN && item.outcome === "unseen");
-  if (!step?.started) throw new Error(`The shipped recording has no unseen ${UNSEEN}.`);
-  const time = step.started;
-  const place = recording.events.findIndex((item) => item.time > time);
-  const added = { id: `${step.order}-built`, time, host: step.host, sensor: "auditd", kind: "openat", text: "/home/bluefire-lab/.bash_history", step: step.id, tied_by: "session" };
-  recording.events.splice(place < 0 ? recording.events.length : place, 0, added);
-  step.visibility = { answer: "telemetry only", basis: "BUILT: one auditd record added for this test", events: 1 };
-  step.outcome = "seen";
-  if (step.outcome_with_lab_rules !== undefined) step.outcome_with_lab_rules = "seen";
-  step.first_event = time;
-  recording.score.unseen -= 1;
-  recording.score.seen += 1;
-  return recording;
-}
-
-function write(name: string, value: unknown): string {
-  const path = join(workspace, name);
-  writeFileSync(path, `${JSON.stringify(value, null, 1)}\n`);
-  return path;
-}
-
 test.beforeAll(async () => {
   test.setTimeout(120_000);
   // A service of its own: the shared one's connection code opens one browser only, the screens test's.
   service = await launchService(8766);
   workspace = mkdtempSync(join(tmpdir(), "bluefire-pairs-"));
-  write("before.json", built("built-before", "built audit rules before"));
-  write("after.json", seenBy(built("built-after", "built audit rules after")));
-  bluefireLab("compare", join(workspace, "before.json"), join(workspace, "after.json"), "--out", join(workspace, "changed"), "--change", "sensors:auditd");
   bluefireLab("compare", shippedFile, shippedFile, "--out", join(workspace, "refused"));
-  changed = JSON.parse(readFileSync(join(workspace, "changed", "delta.json"), "utf-8"));
   refused = JSON.parse(readFileSync(join(workspace, "refused", "delta.json"), "utf-8"));
 });
 
@@ -104,7 +53,7 @@ async function importDelta(page: Page, folder: string): Promise<number> {
   }, delta);
 }
 
-test("a pair of runs is imported, listed on Runs and read on its own page as a claim with its price", async ({ page }) => {
+test("the pair shipped with the app is listed on Runs and read on its own page as a claim with its price, and a refused pair as No verdict", async ({ page }) => {
   test.setTimeout(120_000);
   const problems: string[] = [];
   page.on("pageerror", (error) => problems.push(String(error)));
@@ -116,50 +65,62 @@ test("a pair of runs is imported, listed on Runs and read on its own page as a c
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Runs", exact: true }).click();
 
-  // The recording files go in on the Runs screen, as the lab wrote them; the deltas by the route.
-  for (const name of ["before.json", "after.json"]) {
-    await page.getByLabel("Recording file to import").setInputFiles(join(workspace, name));
-    await expect(page).toHaveURL(/#\/runs\/recorded\/built-(before|after)/);
-    await page.getByRole("link", { name: "Runs", exact: true }).first().click();
-  }
-  expect(await importDelta(page, "changed")).toBe(201);
-  expect(await importDelta(page, "refused")).toBe(201);
-  await page.reload();
-
+  const recorded = page.getByRole("region", { name: "Recorded runs" });
   const pairs = page.getByRole("region", { name: "Before against after" });
-  const pair = pairs.getByRole("listitem").filter({ hasText: "The settings of sensor auditd" });
-  await expect(pair.getByText("1 better, 0 worse, 0 changed without a cause, of 91 paired steps")).toBeVisible();
-  const noVerdict = pairs.getByRole("listitem").filter({ hasText: "Nothing declared as changed" });
-  await expect(noVerdict.getByText(`No verdict: ${(refused.refused_because[0] ?? "").replaceAll("`", "")}`, { exact: false })).toBeVisible();
+  const item = pairs.getByRole("listitem").filter({ hasText: "The settings of sensor auditd" });
+  await expect(item.getByText("Shipped with BlueFire")).toBeVisible();
+  await expect(item.getByText("Two runs side by side, 24 Nov 2026")).toBeVisible();
+  await expect(item.getByText("1 better, 0 worse, 0 changed without a cause, of 91 paired steps")).toBeVisible();
+  // The pair's two runs open from the pair, and are not listed again as runs of their own.
+  await expect(item.getByRole("link", { name: /^Play the before run/ })).toBeVisible();
+  await expect(item.getByRole("link", { name: /^Play the after run/ })).toBeVisible();
+  await expect(recorded.getByRole("link", { name: "60 published tests on one Linux host", exact: true })).toHaveCount(1);
+  await expect(recorded.getByText("2 more recorded runs are listed with their pair under Before against after.")).toBeVisible();
 
-  await pair.getByRole("link", { name: "The settings of sensor auditd" }).click();
+  await item.getByRole("link", { name: "The settings of sensor auditd" }).click();
   await expect(page).toHaveURL(/#\/runs\/compared\/[0-9a-f]{16}$/);
   const address = page.url();
   await expect(page.getByRole("heading", { level: 1, name: "One change: the settings of sensor auditd" })).toBeVisible();
-  await expect(page.getByText(/^Imported\. BlueFire checked that this comparison follows the delta format/)).toBeVisible();
-  const better = changed.steps.find((step) => step.result === "better");
-  if (!better) throw new Error("The lab's delta should hold one better step.");
+  await expect(page.getByText("The same steps, made with the same setup apart from this change, side by side in one CI run, each on a fresh runner of its own.")).toBeVisible();
+  await expect(page.getByRole("region", { name: /^A limited verdict/ })).toHaveCount(0);
+  // Where it comes from: the one CI run that made both runs and the comparison, confirmed as the shipped example's is.
+  const bar = page.getByRole("navigation", { name: "Compared runs" });
+  await expect(bar.getByText("Shipped with BlueFire")).toBeVisible();
+  await expect(bar.getByRole("link", { name: "run 45365902367" })).toHaveAttribute("href", pair.after.run_url);
+
+  const better = pair.steps.find((step) => step.result === "better");
+  if (!better?.price) throw new Error("The shipped pair should hold one better step with its price.");
+  expect(better.title).toBe(MOVED);
   const moved = page.getByRole("region", { name: /^What the change moved/ });
   await expect(moved).toContainText(better.verdict);
-  await expect(moved.getByText(/^price: /)).toBeVisible();
-  await expect(page.getByRole("region", { name: /^The control/ })).toContainText(`the same on ${changed.control.same} of ${changed.control.of} paired steps`);
+  await expect(moved.getByText(better.price, { exact: true })).toBeVisible();
+  await expect(moved).toContainText("What sensor auditd recorded of it in one run only");
+  await expect(page.getByRole("region", { name: /^The control/ })).toContainText(`the same on ${pair.control.same} of ${pair.control.of} paired steps`);
 
-  // The step's detail opens for both runs, the address keeps it, and Back closes it.
-  await moved.getByRole("button", { name: new RegExp(UNSEEN.replace(/[()]/g, "\\$&")) }).click();
-  const detail = page.getByRole("region", { name: `${UNSEEN}, before and after` });
-  await expect(detail.getByRole("heading", { name: `${UNSEEN}, before and after` })).toBeFocused();
+  // The step's detail opens from both recordings, the address keeps it, and Back closes it.
+  await moved.getByRole("button", { name: new RegExp(MOVED.replace(/[()]/g, "\\$&")) }).click();
+  const detail = page.getByRole("region", { name: `${MOVED}, before and after` });
+  await expect(detail.getByRole("heading", { name: `${MOVED}, before and after` })).toBeFocused();
   await expect(page).toHaveURL(/\?step=/);
   await expect(detail.getByRole("article")).toHaveCount(2);
   const [before, after] = await detail.getByRole("article").all();
   if (!before || !after) throw new Error("The detail should show both runs.");
   await expect(before).toContainText("It took effect, and no sensor recorded it.");
   await expect(after).toContainText("1 event recorded");
+  const opened = page.url();
   await page.goBack();
   await expect(detail).toHaveCount(0);
   expect(page.url()).toBe(address);
+  // The address of the open step is one that can be shared.
+  await page.goto(opened);
+  await expect(page.getByRole("region", { name: `${MOVED}, before and after` }).getByRole("article")).toHaveCount(2);
 
-  // The refused pair, real: No verdict, with its reason, as prominent as a verdict.
+  // A refused pair, real too, sent to the route: No verdict with its reasons, as prominently as a verdict.
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
+  expect(await importDelta(page, "refused")).toBe(201);
+  await page.reload();
+  const noVerdict = pairs.getByRole("listitem").filter({ hasText: "Nothing declared as changed" });
+  await expect(noVerdict.getByText(`No verdict: ${(refused.refused_because[0] ?? "").replaceAll("`", "")}`, { exact: false })).toBeVisible();
   await pairs.getByRole("link", { name: "Nothing declared as changed" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "No verdict" })).toBeVisible();
   // The lab's code spans read as code, without their backticks.

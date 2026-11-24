@@ -106,9 +106,12 @@ def service(tmp_path: Path) -> Iterator[BlueFireService]:
         instance.close()
 
 
+def imported_of(listed: Any) -> list[dict[str, Any]]:
+    return [entry for entry in listed["recordings"] if entry["origin"]["kind"] == "imported"]
+
+
 def imported(service: BlueFireService) -> list[dict[str, Any]]:
-    entries = service.recordings()["recordings"]
-    return [entry for entry in entries if entry["origin"]["kind"] == "imported"]
+    return imported_of(service.recordings())
 
 
 def refusal(service: BlueFireService, recording: dict[str, Any]) -> tuple[str, list[str]]:
@@ -129,7 +132,9 @@ def test_the_shipped_lab_recording_is_listed_with_its_origin_and_read_back_whole
     listed = service.recordings()
 
     assert listed["unreadable_count"] == 0
-    [entry] = listed["recordings"]
+    # The example, and the two runs of the pair shipped with the app, all shipped.
+    assert [item["origin"]["kind"] for item in listed["recordings"]] == ["shipped"] * 3
+    [entry] = [item for item in listed["recordings"] if item["id"] == json.loads(SHIPPED.read_bytes())["id"]]
     assert entry["origin"] == {
         "kind": "shipped",
         "run_url": SHIPPED_RUN,
@@ -175,7 +180,7 @@ def test_a_recording_is_imported_listed_and_read_back_whole(
     assert first["created"] is True and again["created"] is False
     assert [entry["id"] for entry in entries] == ["rec-other", "rec-small"]
     # Past the bound the list says how many imported files it left out.
-    assert [entry["id"] for entry in bounded["recordings"]][1:] == ["rec-other"]
+    assert [entry["id"] for entry in imported_of(bounded)] == ["rec-other"]
     assert bounded["omitted_count"] == 1 and bounded["unreadable_count"] == 0
     entry = entries[1]
     assert entry["counts"] == {"steps": 2, "events": 3, "alerts": 1}
@@ -424,10 +429,9 @@ def test_recordings_are_imported_and_read_through_the_http_server(
 
     assert created[0] == 201, created[2]
     assert json_body(created[2])["summary"]["id"] == "rec-small"
-    assert [item["id"] for item in json_body(listed[2])["recordings"]] == [
-        shipped["id"],
-        "rec-small",
-    ]
+    listed_ids = [item["id"] for item in json_body(listed[2])["recordings"]]
+    assert shipped["id"] in listed_ids and listed_ids[-1] == "rec-small"
+    assert [item["id"] for item in imported_of(json_body(listed[2]))] == ["rec-small"]
     assert json_body(detail[2])["recording"] == recording
     assert json_body(whole[2])["recording"] == shipped
     # Only the import route reads a body as large as a recording.
@@ -597,6 +601,8 @@ def test_the_command_line_imports_and_lists_a_recording_file(
     assert listed == 0
     assert [item["origin"]["kind"] for item in listed_output["recordings"]] == [
         "shipped",
+        "shipped",
+        "shipped",
         "imported",
     ]
-    assert listed_output["recordings"][1]["id"] == "rec-small"
+    assert listed_output["recordings"][3]["id"] == "rec-small"

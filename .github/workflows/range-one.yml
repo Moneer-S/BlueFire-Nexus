@@ -4,9 +4,21 @@ name: range one
 # tests through it, written in lab/range/range-one.yaml. Every container of a range sits
 # on internal networks with no route out, and a run proves that before anything runs in
 # it. The jobs hold no secrets and a read-only token.
+#
+# It also runs on main: a pull request's build can read the image cache that the last run
+# on its base branch left, so while that cache is there a pull request that changes no image
+# builds nothing and needs no package server. GitHub drops a cache that no run has used for
+# seven days, or when the repository's caches pass their limit; the build then fetches its
+# packages again.
 
 on:
   pull_request:
+    paths:
+      - lab/**
+      - .github/workflows/range-one.yml
+  push:
+    branches:
+      - main
     paths:
       - lab/**
       - .github/workflows/range-one.yml
@@ -221,8 +233,11 @@ jobs:
   # Range one's seven hosts on its three networks (lab/range/range-one.yaml), built from the
   # spec with everything the path will need planted in them. The run seals the range, waits
   # until the defense is ready, checks that each plant is in place with single uses of what
-  # is planted, makes a few harmless marks on the three agent hosts and counts how many lines
-  # of each watched log reached the manager. No published test runs in this job.
+  # is planted, starts the shop's ordinary activity, makes a few harmless marks on the three
+  # agent hosts, counts how many lines of each watched log reached the manager and how often
+  # each job of the activity ran and was seen, writes every archived event and alert as an
+  # ECS line with its origin, and scores the alerts the stock rules raised on the shop's own
+  # work. No published test runs in this job.
   range-one:
     name: range one's hosts, sealed and watched
     runs-on: ubuntu-24.04
@@ -285,9 +300,12 @@ jobs:
         if: always()
         run: echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED ))" >> "$GITHUB_ENV"
 
+      # No path runs yet, so the range is held 90 s where it will run: with the warm-up and
+      # the tail that gives the ordinary activity more than two minutes, in which cron starts
+      # each cron job at least once.
       - name: Run the range
         run: |
-          "$LAB" range run "$SPEC" --out "$OUT/run"
+          "$LAB" range run "$SPEC" --out "$OUT/run" --hold 90
 
       # The engine flags a delivery gap and does not fail the run on it: a lost event is a result
       # about the defense. This job is there to show that the defense sees every agent host and
@@ -314,6 +332,38 @@ jobs:
             exit 1
           fi
 
+      # Each job of the ordinary activity ran at least once, counted from the logs of the host
+      # it acts on, and the line of at least one of its runs reached the manager's archive.
+      - name: Every job of the ordinary activity ran and reached the archive
+        run: |
+          if ! jq -e '
+            (.activity.jobs | length) == (.activity.schedule | length)
+            and (.activity.jobs | length > 0)
+            and (.activity.jobs | all(.runs != null and .runs >= 1 and ."archived runs" != null and ."archived runs" >= 1))
+          ' "$OUT/run/manifest.json" > /dev/null; then
+            jq '.activity | {go, stop, jobs}' "$OUT/run/manifest.json"
+            exit 1
+          fi
+
+      # Every line of the manager's archive and alerts is in events.ecs.ndjson and alerts.ecs.ndjson,
+      # one ECS line for each, and the ordinary day was scored. When the conversion fails the run
+      # is invalid, "Run the range" exits 4 and this step does not run; the summary's score.md
+      # gives the reason. This step checks the counts of a run that ended sealed.
+      - name: Every archived event and alert is an ECS line, and the ordinary day is scored
+        run: |
+          if ! jq -e '
+            .ecs.error == null
+            and (.ecs.files | length) == 2
+            and (.ecs.files | all(."raw lines" == ."ECS lines" and ."raw lines" > 0))
+            and .score.scored == true
+          ' "$OUT/run/manifest.json" > /dev/null; then
+            jq '{ecs, score: (.score | {scored, "not scored"})}' "$OUT/run/manifest.json"
+            exit 1
+          fi
+          for file in events.ecs.ndjson alerts.ecs.ndjson; do
+            echo "$file: $(wc -l < "$OUT/run/$file") lines"
+          done
+
       - name: Summary
         if: always()
         run: |
@@ -321,7 +371,7 @@ jobs:
             echo "Image build, from the end of the builder's set-up: ${BUILD_SECONDS:-?} s."
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          for part in plants defense seal; do
+          for part in plants activity score defense seal; do
             if [ -f "$OUT/run/$part.md" ]; then cat "$OUT/run/$part.md" >> "$GITHUB_STEP_SUMMARY"; fi
           done
 

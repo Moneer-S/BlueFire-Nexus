@@ -541,9 +541,11 @@ returned as `409 delta_recording_replaced`. `GET
 /api/v1/recordings/deltas` returns
 `{"schema_version": "bluefire.delta-list.v1", "deltas": [...], "unreadable_count", "omitted_count"}`;
 each entry has the delta's `id` (16 hex digits), `claim`, `declared_change`,
-`comparable`, `refused_because`, `counts`, `before`, `after`, the list entries
-of its two `recordings`, and an `origin`: `shipped` only when the delta and both
-its recordings are shipped, `imported` otherwise. `GET
+`runners`, `comparable`, `limit`, `refused_because`, `counts`, `before`, `after`,
+the list entries of its two `recordings`, and an `origin`: `shipped` only when
+the delta and both its recordings are shipped, `imported` otherwise. A shipped
+pair of two runs side by side in one CI run (`runners` 2) also gives that run as
+the origin's `run_url`: the lab made both recordings and the delta in it. `GET
 /api/v1/recordings/deltas/{id}` returns
 `{"schema_version": "bluefire.delta-entry.v1", "summary": {...}, "delta": {...}}`;
 any other id is `400 invalid_delta_id`, and an unknown one `404

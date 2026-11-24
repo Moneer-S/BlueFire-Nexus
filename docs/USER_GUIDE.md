@@ -159,6 +159,17 @@ when it was recorded, whether it shipped with BlueFire or was imported, its
 score in words, and "Still running" while its engine is still sending it. The
 runs of experiments from Build follow under **Experiment runs**.
 
+Under **Before against after** come pairs of recorded runs that the lab compared:
+the one declared change, when the two runs were made, and one line of the
+result. BlueFire ships one real pair, made in CI, in which an audit watch on the
+test account's shell history files makes the one test that no sensor recorded
+seen. Each pair opens its two runs too, and they are not listed again among
+the recorded runs. Select a pair to read it at `#/runs/compared/<id>`: the
+change, the two runs, each step it moved with the price, and what merely
+varied. When the two runs were made on two runners that differed, the page
+says at the top that the verdict is limited, why, and what alone it credits
+([Recordings](RECORDING.md#in-the-app)).
+
 Select a recorded run to play it in the live view at `#/runs/recorded/<id>`.
 The address keeps the moment you are at (the step, the position in it, whether
 playback is paused, watch or analyse mode, and the chosen step), so a link or a

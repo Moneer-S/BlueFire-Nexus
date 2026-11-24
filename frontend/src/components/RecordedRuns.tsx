@@ -63,7 +63,13 @@ export function RecordedRuns() {
     // The file goes as it is: the service keeps the bytes the lab wrote.
     importing.mutate(bytes);
   };
-  const list = recordings.data ? newestFirst(recordings.data.recordings) : undefined;
+  // A recording that is one side of a listed pair is listed with its pair, not again on its own:
+  // two near-identical rows of one list would read as two unrelated runs.
+  const pairList = pairs.data?.deltas ?? [];
+  const paired = new Set(pairList.flatMap((summary) => [summary.before.id, summary.after.id]));
+  const all = recordings.data && !pairs.isPending ? newestFirst(recordings.data.recordings) : undefined;
+  const list = all?.filter((summary) => !paired.has(summary.id));
+  const inPairs = (all?.length ?? 0) - (list?.length ?? 0);
   const unreadable = recordings.data?.unreadable_count ?? 0;
   const omitted = recordings.data?.omitted_count ?? 0;
 
@@ -87,13 +93,14 @@ export function RecordedRuns() {
     {recordings.isError ? <ErrorState title="Recorded runs unavailable" error={recordings.error} retry={() => { void recordings.refetch(); }} /> : null}
     {unreadable > 0 ? <p className="workspace-note" role="status">{unreadable} imported {unreadable === 1 ? "recording no longer follows" : "recordings no longer follow"} the recording format and {unreadable === 1 ? "is" : "are"} not listed.</p> : null}
     {omitted > 0 ? <p className="workspace-note" role="status">{omitted} more imported {omitted === 1 ? "recording is" : "recordings are"} kept but not listed: the list reads the first 200.</p> : null}
-    {recordings.isPending ? <LoadingState label="Loading recorded runs" />
+    {recordings.isPending || (recordings.isSuccess && pairs.isPending) ? <LoadingState label="Loading recorded runs" />
       : list?.length ? <ul className="recorded-run-list">{list.map((summary) => <RecordedRunItem key={summary.id} summary={summary} />)}</ul>
-      : recordings.isSuccess ? <div className="inline-empty"><span>No recorded runs yet. Import a recording file made by the lab.</span></div> : null}
-    {pairs.data && pairs.data.deltas.length > 0 ? <section className="recorded-pairs" aria-labelledby="recorded-pairs-heading">
+      : recordings.isSuccess && inPairs === 0 ? <div className="inline-empty"><span>No recorded runs yet. Import a recording file made by the lab.</span></div> : null}
+    {inPairs > 0 ? <p className="recorded-pairs-note">{inPairs === 1 ? "1 more recorded run is listed with its" : `${inPairs} more recorded runs are listed with their`} {pairList.length === 1 ? "pair" : "pairs"} under Before against after.</p> : null}
+    {pairList.length > 0 ? <section className="recorded-pairs" aria-labelledby="recorded-pairs-heading">
       <h3 id="recorded-pairs-heading">Before against after</h3>
       <p>Two recorded runs of the same tests, compared by the lab: the one declared change, and what it moved.</p>
-      <ul className="recorded-run-list">{pairs.data.deltas.map((summary) => <RecordedPairItem key={summary.id} summary={summary} />)}</ul>
+      <ul className="recorded-run-list">{pairList.map((summary) => <RecordedPairItem key={summary.id} summary={summary} />)}</ul>
     </section> : null}
     {pairs.data && pairs.data.unreadable_count > 0 ? <p className="workspace-note" role="status">{pairs.data.unreadable_count} imported {pairs.data.unreadable_count === 1 ? "comparison is" : "comparisons are"} not listed: a comparison is shown only while it can be read and both its recordings are still the files it names.</p> : null}
   </Panel>;
@@ -101,19 +108,23 @@ export function RecordedRuns() {
 
 function RecordedPairItem({ summary }: { summary: DeltaSummary }) {
   const dates = [summary.before.started, summary.after.started].map((started) => (started ? day(started) : "not recorded"));
-  return <li className={`recorded-run-item recorded-pair-item${summary.comparable ? "" : " is-refused"}`}>
+  const sideBySide = summary.runners === 2;
+  return <li className={`recorded-run-item recorded-pair-item${summary.comparable ? "" : " is-refused"}${summary.limit ? " is-limited" : ""}`}>
     <span className="recorded-run-symbol" aria-hidden="true"><GitCompareArrows /></span>
     <div className="recorded-run-main">
       <Link className="recorded-run-link" to={pairPath(summary.id)}>{changeWords(summary.declared_change)}</Link>
       <p className="recorded-run-meta">
-        <span>Before {dates[0]}, after {dates[1]}</span>
-        <span className={`recorded-run-origin is-${summary.origin.kind}`}>{summary.origin.kind === "built" ? "Built for the demo" : originWords(summary.origin)}</span>
+        <span>{sideBySide ? `Two runs side by side, ${dates[1] === dates[0] ? dates[0] : `${dates[0]} and ${dates[1]}`}` : `Before ${dates[0]}, after ${dates[1]}`}</span>
+        <span className={`recorded-run-origin is-${summary.origin.kind}`}>{originWords(summary.origin)}</span>
       </p>
       <p className="recorded-run-score">
-        <span className={summary.comparable ? undefined : "recorded-pair-refused"}>{codeSpans(pairResultWords(summary)).map((part, index) => (part.code ? <code key={index}>{part.text}</code> : part.text))}</span>
+        <span className={summary.comparable && !summary.limit ? undefined : "recorded-pair-refused"}>{codeSpans(pairResultWords(summary)).map((part, index) => (part.code ? <code key={index}>{part.text}</code> : part.text))}</span>
+      </p>
+      <p className="recorded-pair-runs">
+        {(["before", "after"] as const).map((side) => <Link key={side} to={recordedRunPath(summary[side].id)}>Play the {side} run<span className="sr-only">, {recordedWhere(summary.recordings[side])}</span></Link>)}
       </p>
     </div>
-    <span className="recorded-run-open" aria-hidden="true">Open<ArrowRight /></span>
+    <span className="recorded-run-open" aria-hidden="true">Compare<ArrowRight /></span>
   </li>;
 }
 

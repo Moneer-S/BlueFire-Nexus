@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { api, type Delta, type DeltaStep, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
-import { codeSpans, pairResultWords, raceWords, verdictParts } from "../src/lib/recording-pairs";
+import { codeSpans, pairResultWords, raceWords, variationWords, verdictParts } from "../src/lib/recording-pairs";
 import { ComparedRunsPage } from "../src/pages/ComparedRuns";
 import { event, recording, step } from "./live-fixture";
 
@@ -65,6 +65,50 @@ function sensorDelta(): Delta {
   };
 }
 
+// A limited verdict in the shape of the real one of two runners that differed
+// (CI run 45362120784): the step credited by the change's own mark, its price
+// not known, and one more step not attributable because of the runners.
+const RUN = "https://github.com/example/lab/actions/runs/3";
+const UNKNOWN_PRICE = "price not known: each run counted its ordinary activity on its own runner, and the two runners differed, so what differs between the counts is not the change's price (each run's own, published rules that alerted on ordinary activity: 2 before, 2 after; ordinary events: 8964 before, 8804 after)";
+const RUNNERS_SAID = "the image of host `target`, the kernel of host `target`";
+
+function limitedDelta(): Delta {
+  const delta = sensorDelta();
+  const marked: DeltaStep = {
+    ...better,
+    records: { sensor: "auditd", new: { count: 1, lines: ["openat: .bash_history"] }, gone: { count: 0, lines: [] } },
+    mark: { run: "after", keys: ["shell-history"], events: 1 },
+    verdict: `better by the change's own mark, on two runners that differed: no telemetry to recorded by the sensors; unseen to seen by the published rules, on 1 of the 4 published procedures of T1070.003 in the list; ${UNKNOWN_PRICE}; it rests on 1 event of the audit key \`shell-history\`, which only the after run's audit rules define, the only events either run holds of the step, on two runners that differed (${RUNNERS_SAID}); one pair of runs`,
+    price: UNKNOWN_PRICE,
+  };
+  const unattributed: DeltaStep = {
+    ...same("3", "Stop the audit daemon"),
+    after: { happened: "took effect", recorded: "recorded", outcome: "alerted", outcome_with_lab_rules: "alerted" },
+    changed: ["outcome", "outcome_with_lab_rules"],
+    underneath: ["matches now: high: Audit daemon stopped"],
+    result: "not attributable",
+    verdict: `not attributable: the two runners differed (${RUNNERS_SAID}), and the step does not carry the change's own mark (both runs hold events of it), so this is run variation or the runners' difference; one pair of runs`,
+  };
+  return {
+    ...delta,
+    // The run of a pair before the change loads its rules and sensor settings from the base commit.
+    before: { ...delta.before, run_url: RUN, defense_commit: "d".repeat(40) },
+    after: { ...delta.after, run_url: RUN, defense_commit: "c".repeat(40) },
+    runners: 2,
+    limit: { why: "the two runners differed", differences: ["images:target", "kernels:target"], credits: "only a step that carries the change's own mark: every event the recordings hold of it is of an audit key that only one run's audit rules define, and the other run holds nothing of it", credited: 1, not_attributable: 1 },
+    differences: [
+      { what: "images:target", before: "ubuntu24 20261116.376.1", after: "ubuntu24 20261116.133.1" },
+      { what: "kernels:target", before: "7.0.0-1017-azure", after: "7.0.0-1014-aws" },
+      { what: "sensors:auditd", before: DIGEST_BEFORE, after: DIGEST_AFTER, declared: true },
+    ],
+    same_in_both: ["atomic_commit"],
+    control: { fields: ["happened"], same: 3, of: 3, varied: [] },
+    counts: { paired: 3, same: 1, better: 1, worse: 0, changed: 0, "not attributable": 1, "without cause": 0, "no verdict": 0, by_mark: 1, new: 0, gone: 0 },
+    unexplained: ["3"],
+    steps: [same("1", "List OS Information"), marked, unattributed],
+  };
+}
+
 function summaryOf(recordingId: string): RecordingSummary {
   return {
     id: recordingId,
@@ -80,7 +124,7 @@ function summaryOf(recordingId: string): RecordingSummary {
 
 function pairSummary(delta: Delta): DeltaSummary {
   return {
-    id: ID, claim: delta.claim, declared_change: delta.declared_change, comparable: delta.comparable, refused_because: delta.refused_because, counts: delta.counts,
+    id: ID, claim: delta.claim, declared_change: delta.declared_change, runners: delta.runners ?? null, comparable: delta.comparable, limit: delta.limit ?? null, refused_because: delta.refused_because, counts: delta.counts,
     before: delta.before, after: delta.after,
     recordings: { before: summaryOf(delta.before.id), after: summaryOf(delta.after.id) },
     origin: { kind: "imported", note: "Imported. BlueFire did not make the comparison." },
@@ -132,6 +176,74 @@ describe("the page of two compared runs", () => {
     expect(within(control).getByText("What happened, which this change cannot move: the same on 2 of 2 paired steps.")).toBeVisible();
     expect(screen.getByText("No race: the rules ran after each run, so there is no race to compare.")).toBeVisible();
     expect(screen.getByText("All of this rests on one pair of runs.")).toBeVisible();
+  });
+
+  it("says that two runs side by side on alike runners had the same setup apart from the change", async () => {
+    mount({ ...sensorDelta(), runners: 2, limit: null });
+    expect(await screen.findByText("The same steps, made with the same setup apart from this change, side by side in one CI run, each on a fresh runner of its own.")).toBeVisible();
+    expect(screen.queryByRole("region", { name: /^A limited verdict/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/limited verdict/i)).not.toBeInTheDocument();
+  });
+
+  it("says a limited verdict at the top, why, in what the runners differed, and what alone is credited", async () => {
+    mount(limitedDelta());
+    // Not "One change": the runners differed too.
+    expect(await screen.findByRole("heading", { level: 1, name: "Declared change: the settings of sensor auditd" })).toBeVisible();
+    expect(screen.queryByText(/One change/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/made with the same setup apart from this change/)).not.toBeInTheDocument();
+    expect(screen.getByText("The same steps, made side by side in one CI run on two fresh runners.")).toBeVisible();
+    const limit = screen.getByRole("region", { name: "A limited verdict: the two runners differed" });
+    // It comes before the steps, inside the claim.
+    const moved = screen.getByRole("region", { name: /^What the change moved/ });
+    expect(limit.compareDocumentPosition(moved) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const rows = within(within(limit).getByRole("table", { name: "What differed between the two runners" })).getAllByRole("row");
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "The runnersBeforeAfter",
+      "the image of host targetubuntu24 20261116.376.1ubuntu24 20261116.133.1",
+      "the kernel of host target7.0.0-1017-azure7.0.0-1014-aws",
+    ]);
+    expect(within(limit).getByText(/^Credited: only a step that carries the change's own mark/).parentElement).toHaveTextContent("Credited: only a step that carries the change's own mark: every event the recordings hold of it is of an audit key that only one run's audit rules define, and the other run holds nothing of it.");
+    expect(within(limit).getByText("1 step credited by the mark, 1 not attributable.")).toBeVisible();
+
+    // Each run names the commit its rules and sensor settings came from, never one relative to the other.
+    const before = screen.getByRole("article", { name: "Before" });
+    const after = screen.getByRole("article", { name: "After" });
+    expect(before).toHaveTextContent("Rules and sensor settingsfrom commit dddddddd");
+    expect(after).toHaveTextContent("Rules and sensor settingsfrom commit cccccccc (the lab's commit)");
+    expect(screen.queryByText(/the same commit/)).not.toBeInTheDocument();
+  });
+
+  it("draws a step credited by the mark as that, with the mark, its records and a price that is not known", async () => {
+    mount(limitedDelta());
+    const moved = await screen.findByRole("region", { name: /^What the change moved/ });
+    expect(moved).toHaveTextContent("each credited by the change's own mark only");
+    const [line] = within(moved).getAllByRole("listitem").filter((item) => item.classList.contains("cmp-step"));
+    if (!line) throw new Error("The credited step should be listed.");
+    expect(within(line).getByText("better")).toHaveClass("cmp-result");
+    expect(line).toHaveTextContent("better by the change's own mark, on two runners that differed: no telemetry to recorded by the sensors");
+    // The mark is said once, in the delta's own verdict.
+    expect(line).toHaveTextContent("it rests on 1 event of the audit key shell-history, which only the after run's audit rules define, the only events either run holds of the step");
+    expect(line.textContent?.match(/it rests on/g)).toHaveLength(1);
+    expect(line).toHaveTextContent("What sensor auditd recorded of it in one run onlyOnly in the after run, 1 eventopenat: .bash_history");
+    const price = within(line).getByText(/^price not known: /);
+    expect(price).toHaveClass("cmp-price");
+    expect(price).toHaveTextContent(UNKNOWN_PRICE);
+    expect(line).not.toHaveTextContent(/price: published/);
+    // The lab's code spans read as code.
+    expect(within(line).getByText("shell-history", { selector: "code" })).toBeVisible();
+  });
+
+  it("draws a step that is not attributable on two runners that differed as the runners', not as run variation alone", async () => {
+    mount(limitedDelta());
+    const control = await screen.findByRole("region", { name: /^The control/ });
+    expect(within(control).getByRole("heading", { name: /^Not attributable to the change/ })).toHaveTextContent("the two runners differed, and could have moved these");
+    expect(within(control).queryByRole("heading", { name: "Changed without a cause" })).not.toBeInTheDocument();
+    const [line] = within(control).getAllByRole("listitem").filter((item) => item.classList.contains("cmp-step"));
+    expect(line).toHaveTextContent("not attributable: the two runners differed (the image of host target, the kernel of host target), and the step does not carry the change's own mark");
+    // Both values side by side, flat: not a move from one to the other.
+    expect(line).toHaveTextContent("Beforeseen, no alertAfteralerted");
+    const moved = screen.getByRole("region", { name: /^What the change moved/ });
+    expect(within(moved).queryByText("Stop the audit daemon")).not.toBeInTheDocument();
   });
 
   it("says No verdict with every reason and every difference, as prominently as a verdict", async () => {
@@ -248,6 +360,21 @@ describe("the words of a pair", () => {
   it("says a step that changed outside the order is changed, as the delta does", () => {
     const counts = { ...sensorDelta().counts, better: 0, changed: 1 };
     expect(pairResultWords({ comparable: true, refused_because: [], counts })).toBe("0 better, 0 worse, 1 changed, 0 changed without a cause, of 2 paired steps");
+  });
+
+  it("counts a limited verdict's credited steps by the mark, and its other steps as not attributable", () => {
+    const delta = limitedDelta();
+    expect(pairResultWords(delta)).toBe("Limited verdict, the runners differed: 1 better, 0 worse, 1 of them by the change's own mark alone; 1 not attributable; of 3 paired steps");
+    expect(variationWords(delta)).toBe("run variation or the runners' difference");
+  });
+
+  it("leaves the mark's lead to the step's tags, and keeps the rest of the verdict in the delta's words", () => {
+    const [, marked] = limitedDelta().steps;
+    if (!marked) throw new Error("The limited delta should have a credited step.");
+    const parts = verdictParts(marked);
+    expect(parts.before).toBe("no telemetry to recorded by the sensors; unseen to seen by the published rules, on 1 of the 4 published procedures of T1070.003 in the list; ");
+    expect(parts.price).toBe(UNKNOWN_PRICE);
+    expect(parts.after.startsWith("; it rests on 1 event of the audit key `shell-history`")).toBe(true);
   });
 
   it("draws a race with no numbers on either side as a quiet line", () => {

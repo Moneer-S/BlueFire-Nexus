@@ -11,13 +11,20 @@ Hosts without a pinned image are built from the spec (see `build`). A range
 with a defense also has a ready gate before the dynamic seal, the engine's
 harmless marks where the path will run, and, on every exit path after the
 start, the collection of what Wazuh recorded into `raw/`, the configuration
-diff, the delivery counts and `defense.md`.
+diff, the delivery counts and `defense.md`. A range with ordinary activity
+starts its jobs after the plant checks and lets them run a warm-up before the
+place of the path and a tail after it, then stops them; after the collection
+it counts each job's runs and archive events into the manifest and
+`activity.md`. Last, every line of the manager's archive and alerts is written
+as an ECS line, with its origin, into `events.ecs.ndjson` and
+`alerts.ecs.ndjson`, and the ordinary day is scored into the manifest and
+`score.md` (see `score`).
 
 Exit codes: 0 the range was sealed and still was at the end; 1 refused before
 anything was created, an engine error, or a range that was not ready in time;
 3 the seal failed and nothing ran in the range; 4 the run was made invalid (the
-seal failed after the point where the path runs, or something the engine did
-not do happened to the range).
+seal failed after the point where the path runs, something the engine did not
+do happened to the range, or the conversion to ECS failed).
 """
 
 from __future__ import annotations
@@ -38,7 +45,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from . import atomics, build, ossec, plants, seal, wazuh
+from . import activity, atomics, build, ossec, plants, score, seal, wazuh
 from .spec import Spec, SpecError, load
 
 EXIT_OK = 0
@@ -455,6 +462,30 @@ class Run:
                     "note": "followed while the run lasts, for a live view; no result is computed from them",
                 },
             }
+        # The archive and alerts as ECS lines, and the ordinary day's score: written after the collection.
+        self.manifest["ecs"] = None
+        self.manifest["score"] = None
+        self.manifest["activity"] = None
+        if spec.activity:
+            self.manifest["activity"] = {
+                "seed": spec.activity.seed,
+                "warmup_seconds": spec.activity.warmup_seconds,
+                "tail_seconds": spec.activity.tail_seconds,
+                "schedule": activity.schedule(spec.activity),
+                # Container times, from the command that wrote or removed the go on each host.
+                "go": {},
+                "stop": {},
+                "started": None,
+                "minutes": None,
+                "jobs": {},
+                "note": (
+                    "runs are counted from the logs of the host each job acts on, archived runs from those "
+                    "lines in the archive, and archive events by the job's tag, its host's address, its "
+                    "account and the files it writes, from the go to the stop of its host and "
+                    f"{activity.GRACE} s after; an event counts for one job at most, and the engine's mark "
+                    "files for none; cron's session lines of a cron job's account are counted apart"
+                ),
+            }
 
     # Outputs
 
@@ -478,6 +509,10 @@ class Run:
             )
         if self.manifest["weaknesses"] or self.manifest["plants"] or self.manifest["ready"].get("plants"):
             (self.out / "plants.md").write_text(plants.summary(self.manifest), encoding="utf-8")
+        if self.manifest["activity"] is not None:
+            (self.out / "activity.md").write_text(activity.summary(self.manifest), encoding="utf-8")
+        if self.manifest["ecs"] is not None:
+            (self.out / "score.md").write_text(score.summary(self.manifest), encoding="utf-8")
 
     def phase(self, name: str, checks: list[dict]) -> bool:
         self.phases.append({"phase": name, "passed": seal.passed(checks), "checks": checks})
@@ -1243,6 +1278,9 @@ class Run:
             if "inet-server" in host.services:
                 # The stand-in internet's access log and what was uploaded to it.
                 paths[host.name] = ["/var/log/inet", build.INET_UPLOADS]
+        for host in self.spec.activity.hosts if self.spec.activity else []:
+            # Each job's own state and the output of its last run.
+            paths.setdefault(host, []).append(activity.STATE)
         for host, wanted in paths.items():
             copied[host] = {path: self.copy_out(host, path) for path in wanted}
         for kind in ("archives", "alerts"):
@@ -1361,6 +1399,8 @@ class Run:
         defense["delivery_findings"] = findings or uncounted
         defense["delivery_gap"] = True if findings else (None if uncounted else False)
         self.write()
+        if self.spec.activity:
+            self.count_activity()
 
     def static_checks(self, started: bool) -> list[dict]:
         """Checks a, b and c."""
@@ -1509,6 +1549,100 @@ class Run:
                     return
             time.sleep(0.5)
 
+    def pause(self, seconds: float) -> None:
+        """Wait, and stop waiting at once on a finding of the watch."""
+
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            with self.watch.lock:
+                if self.watch.findings:
+                    return
+            time.sleep(0.5)
+
+    def activity_go(self) -> None:
+        """Start the ordinary activity: write the go on each host that runs a job, and record when."""
+
+        record = self.manifest["activity"]
+        for host in self.spec.activity.hosts:
+            done = self.execute(
+                self.containers[host],
+                f"touch {activity.GO} && printf '%s' \"$EPOCHREALTIME\"",
+                30,
+                "engine:go",
+            )
+            if done.returncode != 0:
+                raise EngineError(
+                    f"writing the go of the ordinary activity on {host} failed: {done.stderr[:300]}"
+                )
+            record["go"][host] = float(done.stdout.strip())
+        record["started"] = activity.started(record["go"])
+        self.write()
+
+    def activity_tail(self) -> None:
+        """Let the ordinary activity run its tail after the path, then stop it on each host, and record when."""
+
+        record = self.manifest["activity"]
+        self.pause(self.spec.activity.tail_seconds)
+        for host in self.spec.activity.hosts:
+            done = self.execute(
+                self.containers[host],
+                f"rm -f {activity.GO} && printf '%s' \"$EPOCHREALTIME\"",
+                30,
+                "engine:stop",
+            )
+            if done.returncode != 0:
+                raise EngineError(f"stopping the ordinary activity on {host} failed: {done.stderr[:300]}")
+            record["stop"][host] = float(done.stdout.strip())
+        record["minutes"] = activity.minutes(record["go"], record["stop"])
+        self.write()
+        # A job's window runs to GRACE seconds after its stop: what the engine does next (the seal's
+        # probes) starts after every window has closed, so that none of it can be sorted to a job.
+        self.pause(activity.GRACE)
+
+    def count_activity(self) -> None:
+        """Each job's runs and its events in the archive, from the files copied out of the range."""
+
+        record = self.manifest["activity"]
+        if not record["go"]:
+            return
+        raw = self.out / "raw" / "hosts"
+        logs = {}
+        for job in self.spec.activity.jobs:
+            host, path = activity.counted_from(job)
+            file = raw / host / path.lstrip("/")
+            logs[(host, path)] = (
+                wazuh.lines_of(file.read_text(encoding="utf-8", errors="replace")) if file.is_file() else None
+            )
+        archive = raw / self.spec.manager / "var" / "ossec" / "logs" / "archives"
+        found = wazuh.events(wazuh.daily_files(archive)) if archive.exists() else []
+        record["jobs"] = activity.count(
+            self.spec.activity, logs, found, self.addresses(), record["go"], record["stop"]
+        )
+        self.write()
+
+    def addresses(self) -> dict[str, list[str]]:
+        """Each host's addresses in the range, as the dynamic seal read them."""
+
+        return {
+            host: list((entry.get("addresses") or {}).values())
+            for host, entry in self.manifest["containers"].items()
+        }
+
+    def record_ecs(self) -> None:
+        """Write the manager's archive and alerts as ECS lines with their origins, and score the ordinary day."""
+
+        logs = self.out / "raw" / "hosts" / self.spec.manager / "var" / "ossec" / "logs"
+        self.manifest["ecs"], self.manifest["score"] = score.record(
+            self.out,
+            logs,
+            self.run_id,
+            self.spec.wazuh.alert_level,
+            self.spec.activity,
+            self.manifest["activity"],
+            self.addresses(),
+        )
+        self.write()
+
     def labelled(self) -> tuple[list[str], list[str]]:
         """The IDs of the containers and networks that carry this run's label."""
 
@@ -1615,11 +1749,16 @@ class Run:
             sealed = True
             code, result = EXIT_INVALID, "invalid"
             self.plant_checks()
+            if self.spec.activity:
+                self.activity_go()
+                self.pause(self.spec.activity.warmup_seconds)
             # The path of published tests runs here in a later version of the lab. Until then, a range
             # with a defense gets the engine's harmless marks.
             if self.spec.wazuh:
                 self.mark()
             self.hold_window()
+            if self.spec.activity:
+                self.activity_tail()
             after = (
                 self.static_checks(started=True) + self.dynamic_checks() + [self.watch.check(watch_command)]
             )
@@ -1661,6 +1800,13 @@ class Run:
                         self.analyse()
                     except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
                         self.manifest["defense"]["collect_error"] = f"{type(error).__name__}: {error}"[:500]
+                    try:
+                        self.record_ecs()
+                    except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
+                        self.manifest["ecs"] = {
+                            "error": f"{type(error).__name__}: {error}"[:500],
+                            "files": {},
+                        }
                 if self.created:
                     try:
                         complete = self.teardown()
@@ -1683,7 +1829,11 @@ class Run:
                     if self.phases:
                         self.phases.append({"phase": "teardown", "passed": final["pass"], "checks": [final]})
                 code, result, reason = outcome(
-                    (code, result, reason), complete, watched, self.manifest.get("plants")
+                    (code, result, reason),
+                    complete,
+                    watched,
+                    self.manifest.get("plants"),
+                    (self.manifest.get("ecs") or {}).get("error"),
                 )
                 self.manifest.update({"result": result, "reason": reason, "exit_code": code})
                 self.manifest["engine_clock"]["ended"] = now()
@@ -1698,14 +1848,16 @@ def outcome(
     teardown_complete: bool,
     watch_passed: bool | None,
     planted: dict | None,
+    conversion_error: str | None = None,
 ) -> tuple[int, str, str | None]:
     """A run's exit code, result and reason once its teardown is over.
 
     `reached` is what the run had reached before the teardown. Only a run that
     ended sealed changes here: a teardown that left objects behind makes it an
-    engine error, a failed event watch during the teardown makes it invalid, and
-    only then failed plant checks make it "plants not in place", so that this
-    softer result never hides one of the others.
+    engine error, a failed event watch during the teardown or a failed
+    conversion of the archive and alerts to ECS makes it invalid, and only then
+    failed plant checks make it "plants not in place", so that this softer
+    result never hides one of the others.
     """
 
     code, result, reason = reached
@@ -1715,6 +1867,8 @@ def outcome(
         return EXIT_REFUSED, "engine error", "the teardown left objects behind: see teardown in manifest.json"
     if watch_passed is False:
         return EXIT_INVALID, "invalid", "the event watch failed during the teardown: see seal.json"
+    if conversion_error:
+        return EXIT_INVALID, "invalid", f"the conversion to ECS failed: {conversion_error}"
     if planted and not planted.get("passed"):
         # The range was sealed, and not the range its spec describes: the path could not run in it.
         failed = [

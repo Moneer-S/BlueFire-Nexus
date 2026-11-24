@@ -30,7 +30,7 @@ function onEnvironment(environment: string): string {
 }
 
 /** The origin in a word or three: "Shipped with BlueFire" or "Imported". */
-export function originWords(origin: RecordingOrigin): string {
+export function originWords(origin: Pick<RecordingOrigin, "kind">): string {
   return origin.kind === "shipped" ? "Shipped with BlueFire" : "Imported";
 }
 

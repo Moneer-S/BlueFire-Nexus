@@ -231,6 +231,8 @@ export interface DeltaSide {
   run_url?: string;
   environment?: string;
   commit?: string;
+  /** The commit the lab's own rules and the sensors' settings were loaded from, when it is not `commit`'s. */
+  defense_commit?: string;
   started?: string;
 }
 
@@ -252,10 +254,32 @@ export interface DeltaStep {
   after: DeltaStepSide;
   changed: DeltaField[];
   underneath: string[];
+  /** Under a sensor change: what that sensor recorded of the step in one run only, each with its first lines. */
+  records?: { sensor: string; new: DeltaRecords; gone: DeltaRecords };
+  /** Under a limit, on a step credited by the change's own mark: the run whose events carry it, their audit keys and their number. */
+  mark?: { run: "before" | "after"; keys: string[]; events: number };
   result: DeltaResult;
   verdict: string;
   price?: string;
   procedures?: { better: number; of: number };
+}
+
+export interface DeltaRecords {
+  count: number;
+  lines: string[];
+}
+
+/**
+ * Why a verdict is limited, when the two runners differed: the names of the
+ * setup that differed for it, which steps the change is credited on, in words,
+ * and how many were credited by the mark and how many are not attributable.
+ */
+export interface DeltaLimit {
+  why: string;
+  differences: string[];
+  credits: string;
+  credited: number;
+  not_attributable: number;
 }
 
 export interface DeltaListed {
@@ -265,7 +289,8 @@ export interface DeltaListed {
   technique: string;
 }
 
-export type DeltaCounts = Record<DeltaResult | "paired" | "new" | "gone", number>;
+/** Every result with its number, and `by_mark`: of those, the steps credited by the change's own mark alone (left out by an older delta). */
+export type DeltaCounts = Record<DeltaResult | "paired" | "new" | "gone", number> & { by_mark?: number };
 
 /**
  * A comparison of two recordings, `bluefire.delta/1`, as `bluefire-lab compare`
@@ -278,9 +303,14 @@ export interface Delta {
   before: DeltaSide;
   after: DeltaSide;
   declared_change: string | null;
+  /** 2 when the runs were made side by side in one CI run, each on a fresh runner; absent or null otherwise. */
+  runners?: 2 | null;
   comparable: boolean;
+  /** Set when the verdict is limited: the two runners differed, and only a step with the change's own mark is credited. */
+  limit?: DeltaLimit | null;
   refused_because: string[];
-  differences: { what: string; before: string | null; after: string | null }[];
+  /** `declared` is true on the declared change and on a name that is part of it. */
+  differences: { what: string; before: string | null; after: string | null; declared?: true }[];
   same_in_both: string[];
   lab_code: { before: string | null; after: string | null; same: boolean };
   judged: DeltaField[];
@@ -303,7 +333,9 @@ export interface DeltaSummary {
   id: string;
   claim: string;
   declared_change: string | null;
+  runners?: 2 | null;
   comparable: boolean;
+  limit?: DeltaLimit | null;
   refused_because: string[];
   counts: DeltaCounts;
   before: DeltaSide;
@@ -311,8 +343,14 @@ export interface DeltaSummary {
   /** The list entries of the two recordings, as the service keeps them. */
   recordings: { before: RecordingSummary; after: RecordingSummary };
   /** Shipped only when the delta and both its recordings are; otherwise imported, the pair's weaker side. */
-  origin: RecordingOrigin | { kind: "built"; note: string };
+  origin: DeltaOrigin;
 }
+
+/**
+ * Where a pair comes from. A shipped pair of two runs made side by side in one
+ * CI run names that run, which made both recordings and the comparison.
+ */
+export type DeltaOrigin = { kind: "shipped"; run_url?: string; note: string } | { kind: "imported"; note: string };
 
 export interface DeltaList {
   deltas: DeltaSummary[];
@@ -332,12 +370,21 @@ function isDeltaSide(value: unknown): value is DeltaSide {
   return side !== null && typeof side.sha256 === "string" && typeof side.id === "string";
 }
 
+/** No limit, or one in the shape the page reads: a limited verdict is never read as a plain one. */
+function isLimitOrNone(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  const limit = jsonObject(value);
+  return limit !== null && typeof limit.why === "string" && typeof limit.credits === "string"
+    && Array.isArray(limit.differences) && limit.differences.every((item) => typeof item === "string")
+    && typeof limit.credited === "number" && typeof limit.not_attributable === "number";
+}
+
 function isDeltaSummary(value: unknown): value is DeltaSummary {
   const entry = jsonObject(value);
   if (!entry) return false;
   const recordings = jsonObject(entry.recordings), counts = jsonObject(entry.counts), origin = jsonObject(entry.origin);
   return typeof entry.id === "string" && DELTA_ID.test(entry.id)
-    && typeof entry.comparable === "boolean"
+    && typeof entry.comparable === "boolean" && isLimitOrNone(entry.limit)
     && (entry.declared_change === null || typeof entry.declared_change === "string")
     && Array.isArray(entry.refused_because) && entry.refused_because.every((item) => typeof item === "string")
     && counts !== null && Object.values(counts).every((item) => typeof item === "number")
@@ -356,17 +403,16 @@ function isDelta(value: unknown): value is Delta {
     && isDeltaSide(delta.before) && isDeltaSide(delta.after)
     && Array.isArray(delta.steps) && Array.isArray(delta.differences) && Array.isArray(delta.same_in_both)
     && Array.isArray(delta.new) && Array.isArray(delta.gone) && Array.isArray(delta.unexplained)
-    && Array.isArray(delta.refused_because) && typeof delta.comparable === "boolean"
+    && Array.isArray(delta.refused_because) && typeof delta.comparable === "boolean" && isLimitOrNone(delta.limit)
     && control !== null && Array.isArray(control.fields) && Array.isArray(control.varied)
     && code !== null && typeof code.same === "boolean"
     && race !== null && (typeof race.why === "string" || (jsonObject(race.before) !== null && jsonObject(race.after) !== null));
 }
 
-/** A delta with its list entry, or an error when either is not one. */
-export function readDeltaEntry(value: unknown): DeltaEntry {
-  const entry = jsonObject(value);
-  if (!entry || !isDeltaSummary(entry.summary) || !isDelta(entry.delta)) throw new ApiError("The comparison could not be read.", "invalid_delta_entry");
-  return { summary: entry.summary, delta: entry.delta };
+/** A delta in the shape the page reads, or an error when it is not one. */
+export function readDelta(value: unknown): Delta {
+  if (!isDelta(value)) throw new ApiError("The comparison could not be read.", "invalid_delta");
+  return value;
 }
 
 function deltaList(payload: unknown): DeltaList {
@@ -929,10 +975,9 @@ export const api = {
   /** The recordings the service keeps: those shipped with BlueFire first, then the imported ones. */
   async recordings(): Promise<RecordingList> {
     if (DEMO_MODE) {
-      // Only the demo build holds the shipped example, as a file of its own loaded when asked for.
-      const { shippedRecording } = await import("./demo-recordings");
-      const shipped = await shippedRecording();
-      return { recordings: [shipped.summary], unreadable_count: 0, omitted_count: 0 };
+      // Only the demo build holds the shipped recordings, each a file of its own loaded when asked for.
+      const { shippedRecordings } = await import("./demo-recordings");
+      return { recordings: (await shippedRecordings()).map((item) => item.summary), unreadable_count: 0, omitted_count: 0 };
     }
     return recordingList(await request<unknown>("/recordings"));
   },
@@ -940,8 +985,8 @@ export const api = {
     if (!RECORDING_ID.test(recordingId)) throw new ApiError("Recording identifier is invalid.", "invalid_recording_id", undefined, 400);
     if (DEMO_MODE) {
       const { shippedRecording } = await import("./demo-recordings");
-      const shipped = await shippedRecording();
-      if (shipped.summary.id !== recordingId) throw new ApiError("Recording was not found.", "recording_not_found", undefined, 404);
+      const shipped = await shippedRecording(recordingId);
+      if (!shipped) throw new ApiError("Recording was not found.", "recording_not_found", undefined, 404);
       return { summary: shipped.summary, recording: shipped.recording };
     }
     const envelope = jsonObject(await request<unknown>(`/recordings/${encodeURIComponent(recordingId)}`));
@@ -967,18 +1012,18 @@ export const api = {
   /** The comparisons of two kept recordings, each as `bluefire-lab compare` wrote it. */
   async recordingDeltas(): Promise<DeltaList> {
     if (DEMO_MODE) {
-      const { builtPair } = await import("./demo-pair");
-      return { deltas: [builtPair().summary], unreadable_count: 0, omitted_count: 0 };
+      const { shippedPair } = await import("./demo-pair");
+      return { deltas: [(await shippedPair()).summary], unreadable_count: 0, omitted_count: 0 };
     }
     return deltaList(await request<unknown>("/recordings/deltas"));
   },
   async recordingDelta(deltaId: string): Promise<DeltaEntry> {
     if (!DELTA_ID.test(deltaId)) throw new ApiError("Comparison identifier is invalid.", "invalid_delta_id", undefined, 400);
     if (DEMO_MODE) {
-      const { builtPair } = await import("./demo-pair");
-      const built = builtPair();
-      if (built.summary.id !== deltaId) throw new ApiError("Comparison was not found.", "delta_not_found", undefined, 404);
-      return built;
+      const { shippedPair } = await import("./demo-pair");
+      const shipped = await shippedPair();
+      if (shipped.summary.id !== deltaId) throw new ApiError("Comparison was not found.", "delta_not_found", undefined, 404);
+      return shipped;
     }
     const envelope = jsonObject(await request<unknown>(`/recordings/deltas/${encodeURIComponent(deltaId)}`));
     if (!envelope || envelope.schema_version !== "bluefire.delta-entry.v1" || !isDeltaSummary(envelope.summary) || envelope.summary.id !== deltaId || !isDelta(envelope.delta)) {

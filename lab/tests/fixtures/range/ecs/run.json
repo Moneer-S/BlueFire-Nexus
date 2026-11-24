@@ -1,0 +1,60 @@
+{
+  "run_id": "20261124T061907Z-3dc18e",
+  "go": {
+    "client": 1795501262.120358,
+    "web": 1795501262.637857,
+    "build": 1795501263.176375,
+    "db": 1795501263.648525
+  },
+  "stop": {
+    "client": 1795501452.499616,
+    "web": 1795501452.870293,
+    "build": 1795501453.196404,
+    "db": 1795501453.621635
+  },
+  "addresses": {
+    "attacker": [
+      "172.18.0.1"
+    ],
+    "inet": [
+      "172.18.0.2"
+    ],
+    "client": [
+      "172.18.0.3"
+    ],
+    "web": [
+      "172.18.0.4",
+      "172.19.0.1",
+      "172.20.0.2"
+    ],
+    "db": [
+      "172.19.0.2",
+      "172.20.0.3"
+    ],
+    "build": [
+      "172.19.0.3",
+      "172.20.0.4"
+    ],
+    "manager": [
+      "172.20.0.1"
+    ]
+  },
+  "lines": [
+    "sshd login of the admin job",
+    "sudo of the admin job",
+    "snoopy line of the cache job",
+    "nginx 404 from client",
+    "file added by the cache job",
+    "file deleted by the cache job",
+    "snoopy line of an engine mark",
+    "file of an engine mark",
+    "ready nonce",
+    "password login of webadmin by a plant check",
+    "cron session of ci",
+    "mariadb error log line",
+    "sudo session of the admin job",
+    "php session file of a plant check",
+    "cron session of ci in the window"
+  ],
+  "note": "lines of one run of range one, picked one of each kind; every hash and key fingerprint is replaced by a stand-in of one repeated character"
+}

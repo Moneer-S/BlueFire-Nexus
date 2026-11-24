@@ -107,6 +107,34 @@ describe("the Runs screen's recorded runs", () => {
     expect(within(changed).getByText("1 better, 0 worse, 0 changed without a cause, of 91 paired steps")).toBeVisible();
     expect(within(noVerdict).getByRole("link", { name: "Nothing declared as changed" })).toBeVisible();
     expect(within(noVerdict).getByText("No verdict: the before recording has no source.setup, so what it was made with is not known (and 1 more reason)")).toBeVisible();
+    // Each run of a pair opens from its pair, and is not listed again as a run of its own.
+    expect(within(changed).getByRole("link", { name: /^Play the before run/ })).toHaveAttribute("href", "/runs/recorded/lab-run-1");
+    expect(within(changed).getByRole("link", { name: /^Play the after run/ })).toHaveAttribute("href", "/runs/recorded/lab-run-2");
+    const recorded = screen.getByRole("region", { name: "Recorded runs" });
+    expect(within(recorded).queryByRole("link", { name: "60 published tests on one Linux host" })).not.toBeInTheDocument();
+    expect(within(recorded).getByText("1 more recorded run is listed with its pairs under Before against after.")).toBeVisible();
+    expect(within(recorded).queryByText("No recorded runs yet. Import a recording file made by the lab.")).not.toBeInTheDocument();
+  });
+
+  it("lists two runs side by side as such, and a limited verdict as limited, never as a plain gain", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [running], unreadable_count: 0, omitted_count: 0 });
+    const counts = { paired: 91, same: 90, better: 1, worse: 0, changed: 0, "not attributable": 0, "without cause": 0, "no verdict": 0, by_mark: 1, new: 0, gone: 0 };
+    const side = (id: string, started: string) => ({ sha256: "a".repeat(64), id, environment: "GitHub-hosted runner", run_url: "https://github.com/example/bluefire/actions/runs/7", started });
+    const limited: DeltaSummary = {
+      id: "0000000000000003", claim: "one pair of runs", declared_change: "sensors:auditd", runners: 2, comparable: true, refused_because: [], counts,
+      limit: { why: "the two runners differed", differences: ["images:target", "kernels:target"], credits: "only a step that carries the change's own mark: every event the recordings hold of it is of an audit key that only one run's audit rules define, and the other run holds nothing of it", credited: 1, not_attributable: 0 },
+      before: side("pair-before", "2026-11-24T09:08:49Z"), after: side("pair-after", "2026-11-24T09:09:06Z"),
+      recordings: { before: { ...shipped, id: "pair-before" }, after: { ...shipped, id: "pair-after" } },
+      origin: { kind: "imported", note: "Imported." },
+    };
+    mount({ deltas: [limited] });
+
+    const list = await screen.findByRole("region", { name: "Before against after" });
+    const [item] = within(list).getAllByRole("listitem");
+    if (!item) throw new Error("The pair should be listed.");
+    expect(within(item).getByText("Two runs side by side, 24 Nov 2026")).toBeVisible();
+    expect(within(item).getByText("Limited verdict, the runners differed: 1 better, 0 worse, 1 of them by the change's own mark alone; 0 not attributable; of 91 paired steps")).toBeVisible();
+    expect(within(item).queryByText(/^1 better/)).not.toBeInTheDocument();
   });
 
   it("shows no pairs, and no heading for them, when the service keeps none", async () => {

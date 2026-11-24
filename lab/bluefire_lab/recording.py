@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import itertools
 import json
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +33,7 @@ FIELDS = (
 # What each sensor records under the configuration in lab/sensors.
 RECORDS = {
     "sysmon": "process starts and ends, network connections, and files created and deleted",
-    "auditd": "program starts with their arguments, changes to shell start files, and what programs "
+    "auditd": "program starts with their arguments, changes to the files its rules watch, and what programs "
     "such as sudo and useradd report about themselves",
 }
 
@@ -172,6 +173,21 @@ def rule_matches(seen: dict, accepted: set[str]) -> list[tuple[dict, bool]]:
     return [(rule, only) for rule, only in matches if rule.get("origin") != "lab" or rule["id"] in accepted]
 
 
+def audit_keys(rules: str) -> list[str]:
+    """The audit keys that audit rules define, as auditctl reads them: the word after each rule's -k,
+    or after key= in its -F, in order of name. A line that starts with # is a comment."""
+
+    found = set()
+    for line in rules.splitlines():
+        words = [] if line.lstrip().startswith("#") else line.split()
+        for word, then in itertools.pairwise(words):
+            if word == "-k":
+                found.add(then)
+            elif word == "-F" and then.startswith("key="):
+                found.add(then.removeprefix("key="))
+    return sorted(found)
+
+
 def network(results: dict, digests: dict[str, str | None]) -> dict:
     """The one host the tests ran on, its sensors, and the rule sets that read their records,
     each with the digest of its files when the run's folder holds them."""
@@ -234,6 +250,12 @@ def network(results: dict, digests: dict[str, str | None]) -> dict:
                 "name": named(sensor["name"], sensor.get("version")),
                 "host": HOST,
                 "records": RECORDS[sensor_id],
+                # Which audit keys the audit rules define, from the rules as the run loaded them.
+                **(
+                    {"audit_keys": audit_keys(sensor["rules_text"])}
+                    if sensor_id == "auditd" and "rules_text" in sensor
+                    else {}
+                ),
             }
             for sensor_id, sensor in sensors.items()
         ],
@@ -246,6 +268,7 @@ def source(results: dict, run_url: str | None) -> dict:
 
     run, pins, audit = results["run"], results["run"]["tools"], results.get("audit")
     repository, _, commit = (pins.get("lab") or "").partition("@")
+    defense_commit = (pins.get("lab-defense") or "").partition("@")[2]
     rules, _, rules_commit = results["rules"]["source"].partition("@")
     tools = [
         ("Atomic Red Team", pins.get("atomic-red-team"), "tests"),
@@ -262,6 +285,8 @@ def source(results: dict, run_url: str | None) -> dict:
         finished=run.get("finished"),
         repository=repository if commit else None,
         commit=commit if repository else None,
+        # The commit the lab's own rules and the sensors' settings came from, when the run says.
+        defense_commit=defense_commit or None,
         run_url=run_url,
         tools=[known(name=name, version=version, role=role) for name, version, role in tools],
         setup=setup(results),

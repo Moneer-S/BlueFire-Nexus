@@ -13,7 +13,6 @@
 .compared.is-message { justify-content: flex-start; }
 .compared-message { display: grid; flex: 1; place-items: center; padding: 32px 24px; }
 .compared-message .error-state { text-align: left; }
-.recorded-run-origin.is-built { color: var(--amber-soft); }
 
 .lv.compared-view {
   display: block;
@@ -63,6 +62,46 @@
   color: var(--lv-blue-soft);
   box-shadow: inset 0 0 0 1px rgba(123, 202, 255, 0.35);
 }
+
+.cmp-kicker span.is-limit {
+  color: var(--lv-amber-soft);
+  box-shadow: inset 0 0 0 1px rgba(255, 210, 125, 0.5);
+}
+
+/* A limited verdict: as prominent as the claim, in the amber of what is not known, and calm. */
+.cmp-limit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 980px;
+  margin-top: 4px;
+  padding: 16px 20px 18px;
+  border-radius: 8px;
+  background: rgba(2, 9, 19, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(255, 210, 125, 0.45), inset 4px 0 0 rgba(255, 210, 125, 0.75);
+}
+
+.cmp-limit h2 {
+  margin: 0;
+  font-size: clamp(18px, 0.7vw + 12px, 23px);
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--lv-amber-soft);
+}
+
+.cmp-limit-credits,
+.cmp-limit-count {
+  max-width: 62em;
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--lv-text-soft);
+}
+
+.cmp-limit-credits strong { font-weight: 600; color: var(--lv-text); }
+.cmp-limit-credits code { font-family: var(--lv-mono); font-size: 13px; }
+.cmp-limit-count { font-size: 13px; color: var(--lv-muted-strong); }
+.cmp-limit .cmp-table { max-width: 760px; }
 
 .cmp-claim h1 {
   margin: 0;
@@ -163,6 +202,9 @@
   text-align: left;
   vertical-align: baseline;
 }
+
+/* The last row has no rule under it, its row heading included, as the app's other tables. */
+.cmp-table tbody tr:last-child > * { border-bottom: 0; }
 
 .cmp-table thead th {
   font-size: 10.5px;
@@ -455,7 +497,45 @@
 .cmp-result.is-without-cause,
 .cmp-result.is-not-attributable { color: var(--lv-amber-soft); box-shadow: inset 0 0 0 1px rgba(255, 210, 125, 0.45); }
 
+.cmp-result.is-mark { color: var(--lv-amber-soft); letter-spacing: 0.04em; text-transform: none; box-shadow: inset 0 0 0 1px rgba(255, 210, 125, 0.45); }
+
 .cmp-price { color: var(--lv-amber-soft); }
+.cmp-price.is-unknown { font-style: italic; }
+.cmp-verdict code { font-family: var(--lv-mono); font-size: 12.5px; color: var(--lv-text-soft); }
+
+.cmp-records {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.cmp-records-part {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 12.5px;
+  color: var(--lv-muted-strong);
+}
+
+.cmp-records-part ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cmp-records-part code {
+  font-family: var(--lv-mono);
+  font-size: 12px;
+  color: var(--lv-text-soft);
+  overflow-wrap: anywhere;
+}
+
+.cmp-records-more { margin: 0; font-size: 12px; color: var(--lv-muted); }
 
 .cmp-under {
   display: flex;

@@ -112,6 +112,12 @@ def kept_pair(service: BlueFireService) -> tuple[bytes, bytes]:
     return before, after
 
 
+def imported_entries(listed: Any) -> list[dict[str, Any]]:
+    """The entries of a delta list that were imported, leaving out the pair shipped with the app."""
+
+    return [entry for entry in listed["deltas"] if entry["origin"]["kind"] != "shipped"]
+
+
 def refused(service: BlueFireService, delta: Any) -> list[str]:
     """The problems of a refused import; nothing is stored."""
 
@@ -120,7 +126,7 @@ def refused(service: BlueFireService, delta: Any) -> list[str]:
     assert refusal.value.status == 422
     assert refusal.value.code == "delta_invalid"
     assert refusal.value.message.startswith("The comparison was not imported: ")
-    assert service.recording_deltas()["deltas"] == []
+    assert imported_entries(service.recording_deltas()) == []
     assert isinstance(refusal.value.details, dict)
     return list(refusal.value.details["problems"])
 
@@ -273,7 +279,9 @@ def test_a_delta_that_disagrees_with_itself_is_refused(service: BlueFireService)
         "steps[1].result must be same or no verdict: the comparison is refused."
     ]
     assert changed(declared_not_differing) == [
-        "declared_change must be one of the differences when there is a verdict."
+        "declared_change must be one of the differences when there is a verdict.",
+        "differences[0] (sensors:sysmon) differs and is neither the declared change nor named by "
+        "a limit, so there can be no verdict.",
     ]
     assert changed(miscounted) == ["counts.better is 40, but the delta lists 1."]
     assert changed(better_with_nothing_moved) == [
@@ -315,7 +323,7 @@ def test_a_delta_is_not_served_once_its_recording_is_another_file(
     with pytest.raises(APIError) as replaced:
         service.recording_delta(identifier)
 
-    assert listed["deltas"] == [] and listed["unreadable_count"] == 1
+    assert imported_entries(listed) == [] and listed["unreadable_count"] == 1
     assert replaced.value.status == 409 and replaced.value.code == "delta_recording_replaced"
 
 
@@ -326,7 +334,7 @@ def test_a_delta_is_imported_listed_and_returned_whole(service: BlueFireService)
     imported = service.import_recording_delta({"delta": delta})
     again = service.import_recording_delta({"delta": copy.deepcopy(delta)})
     listed = service.recording_deltas()
-    [entry] = listed["deltas"]
+    [entry] = imported_entries(listed)
     detail = service.recording_delta(entry["id"])
 
     assert imported["created"] is True and again["created"] is False
@@ -429,7 +437,7 @@ def test_deltas_are_imported_and_read_through_the_http_server(service: BlueFireS
 
     assert created[0] == 201, created[2]
     assert json_body(created[2])["created"] is True
-    assert [item["id"] for item in json_body(listed[2])["deltas"]] == [identifier]
+    assert [item["id"] for item in imported_entries(json_body(listed[2]))] == [identifier]
     assert json_body(detail[2])["delta"] == delta
     assert invalid[0] == 400 and json_body(invalid[2])["error"]["code"] == "invalid_delta_id"
     assert missing[0] == 404
@@ -466,3 +474,294 @@ def test_the_command_line_imports_a_delta_file(
     assert "the before recording 'rec-before' is not kept here" in first_output["error"]["message"]
     assert imported == 0 and imported_output["created"] is True
     assert imported_output["summary"]["recordings"]["after"]["id"] == "rec-after"
+
+
+PAIR_DELTA = ROOT / "bluefire" / "data" / "recordings" / "deltas" / "lab-pair-history-watch.json"
+PAIR_RUN = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367"
+
+
+def test_the_shipped_pair_is_listed_and_returned_whole_as_the_lab_made_it(
+    service: BlueFireService,
+) -> None:
+    delta = json.loads(PAIR_DELTA.read_bytes())
+
+    [entry] = [item for item in service.recording_deltas()["deltas"] if item["origin"]["kind"] == "shipped"]
+    detail = service.recording_delta(entry["id"])
+
+    assert entry["id"] == recording_deltas.delta_id(delta)
+    # Two runs side by side in one CI run, which made both recordings and this comparison.
+    assert entry["origin"] == {
+        "kind": "shipped",
+        "run_url": PAIR_RUN,
+        "note": recording_deltas.SHIPPED_PAIR_NOTE.format(run_url=PAIR_RUN),
+    }
+    assert entry["runners"] == 2 and entry["limit"] is None and entry["comparable"] is True
+    assert entry["declared_change"] == "sensors:auditd"
+    assert entry["counts"]["better"] == 1 and entry["counts"]["same"] == 90
+    for side in ("before", "after"):
+        assert entry["recordings"][side]["origin"]["kind"] == "shipped"
+        assert entry["recordings"][side]["origin"]["run_url"] == PAIR_RUN
+        assert service.recording_library.kept_file(delta[side]["id"])[0] == delta[side]["sha256"]
+    assert detail["delta"] == delta
+
+
+def limited_delta(before: bytes, after: bytes) -> dict[str, Any]:
+    """A limited verdict in the shape bluefire-lab compare writes for two runners that differed:
+    one step better by the change's own mark, its price not known."""
+
+    delta = small_delta(before, after)
+    price = (
+        "price not known: each run counted its ordinary activity on its own runner, and the two "
+        "runners differed, so what differs between the counts is not the change's price (each "
+        "run's own, published rules that alerted on ordinary activity: not recorded before, not "
+        "recorded after)"
+    )
+    delta.update(
+        declared_change="sensors:auditd",
+        runners=2,
+        limit={
+            "why": "the two runners differed",
+            "differences": ["images:target", "kernels:target"],
+            "credits": "only a step that carries the change's own mark: every event the "
+            "recordings hold of it is of an audit key that only one run's audit rules define, "
+            "and the other run holds nothing of it",
+            "credited": 1,
+            "not_attributable": 0,
+        },
+        differences=[
+            {"what": "images:target", "before": "ubuntu24 1", "after": "ubuntu24 2"},
+            {"what": "kernels:target", "before": "7.0.0-1017-azure", "after": "7.0.0-1014-aws"},
+            {"what": "sensors:auditd", "before": "a" * 64, "after": "b" * 64, "declared": True},
+        ],
+        audit_keys={"only_before": {}, "only_after": {"shell-history": {"events": 1, "steps": ["2"]}}},
+    )
+    delta["counts"]["by_mark"] = 1
+    step = delta["steps"][1]
+    step.update(
+        records={
+            "sensor": "auditd",
+            "new": {"count": 1, "lines": ["openat: .bash_history"]},
+            "gone": {"count": 0, "lines": []},
+        },
+        mark={"run": "after", "keys": ["shell-history"], "events": 1},
+        verdict="better by the change's own mark, on two runners that differed: no telemetry to "
+        f"recorded by the sensors; {price}; it rests on 1 event of the audit key `shell-history`, "
+        "which only the after run's audit rules define, the only events either run holds of the "
+        "step; one pair of runs",
+        price=price,
+    )
+    return delta
+
+
+def test_a_limited_verdict_is_kept_and_refused_when_its_limit_marks_and_counts_disagree(
+    service: BlueFireService,
+) -> None:
+    def in_one_run(recording_id: str) -> bytes:
+        recording = small_recording(recording_id)
+        recording["source"]["run_url"] = "https://github.com/example/lab/actions/runs/3"
+        payload = lab_file(recording)
+        service.import_recording(sent(payload))
+        return payload
+
+    good = limited_delta(in_one_run("rec-before"), in_one_run("rec-after"))
+
+    def changed(edit: Any) -> list[str]:
+        delta = copy.deepcopy(good)
+        edit(delta)
+        return refused(service, delta)
+
+    def mark_without_limit(delta: dict[str, Any]) -> None:
+        delta.update(limit=None, differences=delta["differences"][2:])
+
+    def miscounted_marks(delta: dict[str, Any]) -> None:
+        delta["counts"]["by_mark"] = 0
+
+    def credited_without_mark(delta: dict[str, Any]) -> None:
+        del delta["steps"][1]["mark"]
+        delta["counts"]["by_mark"] = 0
+        delta["limit"]["credited"] = 0
+
+    def price_as_a_difference(delta: dict[str, Any]) -> None:
+        step = delta["steps"][1]
+        step["price"] = "price: ordinary events: 8964 before, 8804 after"
+        step["verdict"] += f"; {step['price']}"
+
+    def limit_on_one_run(delta: dict[str, Any]) -> None:
+        delta["runners"] = None
+
+    def two_ci_runs(delta: dict[str, Any]) -> None:
+        delta["after"]["run_url"] = "https://github.com/example/lab/actions/runs/4"
+
+    def limit_names_what_did_not_differ(delta: dict[str, Any]) -> None:
+        delta["limit"]["differences"] = ["images:target", "kernels:target", "kernels:other"]
+
+    def limit_names_no_runner(delta: dict[str, Any]) -> None:
+        delta["differences"].insert(0, {"what": "atomic_commit", "before": "c" * 40, "after": "d" * 40})
+        delta["limit"]["differences"] = ["atomic_commit", "images:target", "kernels:target"]
+
+    def unnamed_difference(delta: dict[str, Any]) -> None:
+        delta["limit"]["differences"] = ["images:target"]
+
+    def mark_on_the_wrong_run(delta: dict[str, Any]) -> None:
+        delta["steps"][1]["mark"]["run"] = "before"
+
+    def verdict_without_the_lead(delta: dict[str, Any]) -> None:
+        step = delta["steps"][1]
+        step["verdict"] = step["verdict"].replace(" by the change's own mark, on two runners that differed", "")
+
+    def verdict_says_more_events(delta: dict[str, Any]) -> None:
+        step = delta["steps"][1]
+        step["verdict"] = step["verdict"].replace("rests on 1 event of", "rests on 7 events of")
+
+    def verdict_names_the_other_run(delta: dict[str, Any]) -> None:
+        step = delta["steps"][1]
+        step["verdict"] = step["verdict"].replace("only the after run's", "only the before run's")
+
+    def key_without_the_step(delta: dict[str, Any]) -> None:
+        delta["audit_keys"]["only_after"]["shell-history"]["steps"] = []
+
+    def key_without_events(delta: dict[str, Any]) -> None:
+        delta["audit_keys"]["only_after"]["shell-history"]["events"] = 0
+
+    def mark_without_records(delta: dict[str, Any]) -> None:
+        del delta["steps"][1]["records"]
+
+    def mark_of_no_events(delta: dict[str, Any]) -> None:
+        delta["steps"][1]["mark"]["events"] = 0
+
+    def mark_of_no_keys(delta: dict[str, Any]) -> None:
+        delta["steps"][1]["mark"]["keys"] = []
+
+    def no_audit_keys(delta: dict[str, Any]) -> None:
+        delta["audit_keys"] = None
+
+    def refused_with_a_limit(delta: dict[str, Any]) -> None:
+        delta.update(comparable=False, refused_because=["the lab's code differed"])
+        delta["steps"][1].update(result="no verdict", verdict="no verdict: the comparison is refused")
+        delta["steps"][1].pop("price")
+        delta["counts"].update(better=0)
+        delta["counts"]["no verdict"] = 1
+
+    def limit_of_another_change(delta: dict[str, Any]) -> None:
+        delta["differences"][2]["what"] = "sensors:sysmon"
+        delta["declared_change"] = "sensors:sysmon"
+        delta["steps"][1]["records"]["sensor"] = "sysmon"
+
+    def miscredited(delta: dict[str, Any]) -> None:
+        delta["limit"].update(credited=2, not_attributable=1)
+
+    def records_of_another_sensor(delta: dict[str, Any]) -> None:
+        delta["steps"][1]["records"]["sensor"] = "sysmon"
+
+    def records_on_an_unchanged_step(delta: dict[str, Any]) -> None:
+        delta["steps"][0]["records"] = copy.deepcopy(delta["steps"][1]["records"])
+
+    def declared_not_true(delta: dict[str, Any]) -> None:
+        delta["differences"][2]["declared"] = False
+
+    def runner_value_the_same(delta: dict[str, Any]) -> None:
+        delta["differences"][0]["after"] = delta["differences"][0]["before"]
+
+    def difference_not_text(delta: dict[str, Any]) -> None:
+        delta["differences"].append({"what": ["x"], "before": "a", "after": "b"})
+
+    service.import_recording_delta({"delta": copy.deepcopy(good)})
+    [entry] = imported_entries(service.recording_deltas())
+
+    assert entry["limit"] == good["limit"] and entry["runners"] == 2
+    assert entry["counts"]["by_mark"] == 1
+    # A pair whose recordings were imported is labelled as imported, however its runs were made.
+    assert entry["origin"] == {"kind": "imported", "note": recording_deltas.IMPORTED_DELTA_NOTE}
+    assert service.recording_delta(entry["id"])["delta"] == good
+
+    # The refusals below are each checked against a store that keeps no imported delta.
+    (service.recording_library.root / "deltas" / f"{entry['id']}.json").unlink()
+    assert changed(mark_without_limit) == [
+        "steps[1].mark is given only under a limit: a step is credited by the change's own mark "
+        "only on two runners that differed."
+    ]
+    assert "counts.by_mark is 0, but the delta lists 1 steps with a mark." in changed(miscounted_marks)
+    assert changed(credited_without_mark) == [
+        "steps[1].result is better under a limit without the change's own mark: on two runners "
+        "that differed only a step that carries it is credited."
+    ]
+    assert changed(price_as_a_difference) == [
+        "steps[1].price must be 'price not known' under a limit: each run counted its ordinary "
+        "activity on a runner of its own."
+    ]
+    assert changed(limit_on_one_run) == [
+        "limit is given only for two runs side by side on two runners (runners 2)."
+    ]
+    assert changed(two_ci_runs)[0] == (
+        "runners is 2 only when both recordings name the same CI run (run_url): two runs side by "
+        "side in one CI run."
+    )
+    assert changed(limit_names_what_did_not_differ) == [
+        "limit.differences names 'kernels:other', which is not among the differences."
+    ]
+    assert changed(limit_names_no_runner) == [
+        "limit.differences names 'atomic_commit', which is not a runner's image or kernel."
+    ]
+    assert changed(unnamed_difference) == [
+        "differences[1] (kernels:target) differs and is neither the declared change nor named by "
+        "a limit, so there can be no verdict."
+    ]
+    assert changed(mark_on_the_wrong_run) == [
+        "steps[1].verdict must say what its mark rests on: \"it rests on 1 event of the audit key "
+        "`shell-history`, which only the before run's audit rules define\".",
+        "steps[1].mark says the before run carries the mark, so the after side must be no "
+        "telemetry and the before side not.",
+        "steps[1].mark.keys names 'shell-history', which audit_keys does not list as only the "
+        "before run's.",
+        "steps[1].mark.events must be the number of events the step's records give for the run "
+        "that carries the mark.",
+    ]
+    assert (
+        "steps[1].verdict must start with \"better by the change's own mark, on two runners that "
+        "differed\": the step is credited by the change's own mark."
+    ) in changed(verdict_without_the_lead)
+    rests = (
+        "steps[1].verdict must say what its mark rests on: \"it rests on 1 event of the audit key "
+        "`shell-history`, which only the after run's audit rules define\"."
+    )
+    assert changed(verdict_says_more_events) == [rests]
+    assert changed(verdict_names_the_other_run) == [rests]
+    assert changed(key_without_the_step) == [
+        "steps[1].mark.keys names 'shell-history', whose entry in audit_keys.only_after does not "
+        "list the step."
+    ]
+    assert changed(key_without_events) == [
+        "steps[1].mark.events is 1, but audit_keys gives its keys only 0 events in the after run."
+    ]
+    assert changed(mark_without_records) == [
+        "steps[1].records is missing: a step credited by the change's own mark says what the "
+        "sensor recorded of it."
+    ]
+    assert (
+        "steps[1].mark.events must be at least 1: a mark is events of the change's own."
+        in changed(mark_of_no_events)
+    )
+    assert "steps[1].mark.keys must name the audit keys of the mark." in changed(mark_of_no_keys)
+    assert changed(no_audit_keys) == [
+        "steps[1].mark needs audit_keys.only_after, the keys its run alone has."
+    ]
+    assert "limit is given only with a verdict: comparable must be true." in changed(refused_with_a_limit)
+    assert (
+        "limit is given only for a declared change that leaves a mark of its own: sensors:auditd."
+        in changed(limit_of_another_change)
+    )
+    assert changed(miscredited) == [
+        "limit.credited is 2, but the delta lists 1 steps with a mark.",
+        "limit.not_attributable is 1, but the delta lists 0 steps not attributable.",
+    ]
+    assert changed(records_of_another_sensor) == [
+        "steps[1].records.sensor must be the sensor of the declared change."
+    ]
+    assert changed(records_on_an_unchanged_step) == [
+        "steps[0].records is given only on a step that changed."
+    ]
+    assert "differences[2].declared must be true, or left out." in changed(declared_not_true)
+    assert changed(runner_value_the_same) == [
+        "limit.differences names 'images:target', which is the same in both runs."
+    ]
+    assert "differences[3].what must be non-empty text." in changed(difference_not_text)
