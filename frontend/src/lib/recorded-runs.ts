@@ -3,7 +3,7 @@
 
 import type { LiveMoment, LiveViewProps } from "../live/LiveView";
 import { count, day, plural, span } from "../live/format";
-import type { RecordingOrigin, RecordingSummary } from "./api";
+import type { RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 
 /** Newest first, by when the run started; the service lists shipped recordings before imported ones. */
 export function newestFirst(recordings: readonly RecordingSummary[]): RecordingSummary[] {
@@ -60,9 +60,29 @@ export function recordedRaceWords(summary: Pick<RecordingSummary, "score" | "kin
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+/**
+ * The list with this recording's entry as `summary` gives it, or null when the
+ * list does not hold it. A recorded run's page that has a newer answer about
+ * its run puts it in the list, so the list does not show an older version.
+ */
+export function withSummary(list: RecordingList, summary: RecordingSummary): RecordingList | null {
+  if (!list.recordings.some((entry) => entry.id === summary.id)) return null;
+  return { ...list, recordings: list.recordings.map((entry) => (entry.id === summary.id ? summary : entry)) };
+}
+
 /** The path of a recorded run's page inside the app. */
 export function recordedRunPath(id: string): string {
   return `/runs/recorded/${encodeURIComponent(id)}`;
+}
+
+/**
+ * Whether the browser's address still shows `pathname`. The app keeps its
+ * addresses after the `#`. A page someone has just left keeps its old location
+ * from the router until the next page has rendered, which takes a while on a
+ * busy machine, so a page that writes its address later asks the browser.
+ */
+export function addressShows(pathname: string): boolean {
+  return (window.location.hash.slice(1).split("?")[0] ?? "") === pathname;
 }
 
 /** Where to open the live view, from the page's address: ?step=<id>&at=<0..1>&paused=1&mode=watch|analyse&select=<id>. */
