@@ -774,7 +774,7 @@ range too.
 | --- | --- | --- | --- |
 | `attacker` | edge | nothing | The `src` folder of T1110.004 (its published password lists) under `/opt/atomics`, and `sshpass`, which that test's prerequisite would fetch: the first step guesses web's SSH password from there. |
 | `inet` | edge | 80, 443 | The stand-in internet: a small server of the lab's own ([`inet_server.py`](bluefire_lab/range/inet_server.py)) that serves the published `atomic.sh` of T1105, which a step downloads, stores every `POST /upload` with its SHA-256, which the last step uses to send the stolen file out, and logs each request. Its certificate is made when the image is built. |
-| `client` | edge | nothing | The shop's customers and its administrator's laptop: the account `ops`, whose SSH key `web` accepts. For the ordinary activity, which comes later. |
+| `client` | edge | nothing | The shop's customers and its administrator's laptop: the account `ops`, whose SSH key `web` accepts, for the [ordinary activity](#range-one-ordinary-activity). |
 | `web` | edge, inside, mgmt | 22, 80 | The shop (nginx, PHP, one page that keeps a session and reads the database). The account `webadmin` with the password `webadmin`, which is on line 475 of the published list (the build checks that line). SSH with passwords, and `pam_unix` with `nodelay`, so that a failed password is answered without the usual pause of about 3 s, which over the 482 tries of the list would come to roughly 24 minutes (an estimate: not yet measured). In `webadmin`'s `~/.ssh`, a deploy key without a passphrase (`id_rsa`), which a step finds and the next uses, and a `known_hosts` entry for `build`, which a step reads and without which that `ssh` would stop. The database password in `/var/www/app/config.php`, which a step finds. `/tmp/stage`, owned by `webadmin`, where a step writes what it pulls from `build`. `ops` may run `nginx -t` with sudo. |
 | `db` | inside, mgmt | 3306 | MariaDB with the shop's table, made when the image is built, and the user `shop`, allowed from any address with the password in `config.php`. |
 | `build` | inside, mgmt | 22 | The account `deploy`, which accepts the deploy key, and `/etc/buildbot/signing.env`, readable by the group `deploy`: the path's goal is to get this file out to `inet`. A git repository of the shop, owned by `ci`, for the ordinary activity. |
@@ -849,8 +849,103 @@ The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
 `manifest.json` records the daemon's security options under `docker`, and
 every plant check that uses them passed there.
 
-Not yet shown: the path of published tests through the range; ordinary
-activity; scoring.
+Not yet shown: the path of published tests through the range; scoring.
+
+## Range one: ordinary activity
+
+A defense that raises an alert on everything catches every step. So while the
+path runs, the shop's people and machines do their ordinary work: an alert on
+that work counts as a false alert, and the path's steps are not the only
+things that write to the watched logs and folders. The `activity` section of
+[`range/range-one.yaml`](range/range-one.yaml) lists five jobs:
+
+| Job | Who | Where, and what | How often | What it leaves, and where | Wazuh rules expected |
+| --- | --- | --- | --- | --- | --- |
+| `browse` | `ops` on `client` | Fetches a page of the shop on `web` with curl, in turn `/`, `/?item=1`, `/?item=2`, `/?item=3`, `/cart` and `/missing` (the last two answer 404) | every 5 to 15 s | `web`: a line in nginx's access log; for the four PHP pages, a new PHP session file in `/var/lib/php/sessions`, watched in real time, and a query of the database on `db`. | 31101 (a 404), 554, 550 |
+| `admin` | `ops` on `client` | Logs in to `ops@web` with its SSH key and runs `uptime; df -h /; ls -l /var/www/app; sudo -n /usr/sbin/nginx -t` | every 90 to 150 s | `web`: sshd's login, PAM's session and sudo's lines in `auth.log`; snoopy's program starts. | 5715, 5501, 5502, 5402 |
+| `cache` | `www-data` on `web`, from cron | `php /var/www/app/cron.php`: writes the shop's items to `/tmp/shop-cache-<minute>.json` and removes the older files | every minute | `web`: files added and removed in `/tmp`, the folder the path writes to, watched in real time; snoopy's program starts; cron's PAM session in `auth.log`. | 554, 553 |
+| `build` | `ci` on `build`, from cron | Clones `/srv/git/shop.git` into `shop` in `ci`'s home folder on its first run, then `git pull` and `make -s -B` there | every minute | `build`: files in `ci`'s home folder, watched in real time; snoopy's program starts; cron's PAM session. | 554, 550 |
+| `backup` | `root` on `db`, from cron | `mariadb-dump shop > /var/backups/shop.sql` | every 5 minutes | `db`: snoopy's program starts; cron's PAM session. `/var/backups` is not watched. | none |
+
+The expected rules are a prediction, from the stock ruleset and a run on a
+developer machine, all below level 12: which rules each job matches on a
+GitHub-hosted runner is not yet shown. Scoring them, as false alerts or not,
+comes with the score.
+
+- **Apart from the path.** The score will tell the path from ordinary activity
+  by account and address, so the loader refuses a job that runs as, or logs
+  in as, an account the path uses (`webadmin` on `web`, and `deploy`, which a
+  step's arguments name), and a job on or toward `attacker`, the host the path
+  starts from. It also refuses a job its host cannot run (an account the host
+  lacks, a cron job on a host without cron, a fetch without curl, a login
+  without a key the target accepts or a `known_hosts` entry for it), and a job
+  that acts on a host without an agent, since a job's runs and events are
+  counted from the logs of the watched host it acts on. For the same reason it
+  refuses two jobs whose lines could not be told apart: two `http` jobs from
+  one host to one server with a path in common, two `ssh` jobs from one host
+  to one other host, a job that runs or logs in as the account an `ssh` job
+  logs in as on the same host (PAM's, sudo's and cron's lines name the
+  account, not the job), and two jobs on one host whose `writes` patterns can
+  match the same file. Cron jobs are told apart by their tags.
+- **Baked into the images.** A cron job is an entry in `/etc/cron.d` and a
+  script in `/usr/local/lib/bluefire`. Cron starts the entry every minute,
+  and both start with `test -e /run/bluefire/go || exit 0`: the job's script
+  and its command start only after the engine writes that file. Before the
+  go and after the stop, cron still opens and closes a session for the job's
+  account each minute (two lines in `auth.log`), ordinary events outside the
+  activity's minutes. The `http` and `ssh` jobs (`browse` and `admin`) are
+  one loop script on the host they run from, `client`, since their waits are
+  counted in seconds and `client` runs no cron; its start script runs the
+  loop once for each job as the job's account, and the loop waits for the
+  same file. Every program a job starts after the go carries
+  `BLUEFIRE_TAG=job:<name>`; an `ssh` job sets it in the command it sends.
+- **A schedule from the seed.** Each wait between two runs is drawn from the
+  spec's `seed`, the job's name and the run's number (a SHA-256), inside the
+  job's `every`, whole minutes for a cron job, for the first hour of a run;
+  after that the waits start again. The same spec gives the same schedule,
+  and the schedule is in `manifest.json`. A loop job runs at once when the go
+  appears; cron starts a cron job at its next minute.
+- **The engine.** After the dynamic seal and the plant checks, the engine
+  writes `/run/bluefire/go` on each host that runs a job (tag `engine:go`) and
+  waits `warmup_seconds` (30). Then comes the place of the path. After it, the
+  jobs run `tail_seconds` (15) more and the engine removes the file again (tag
+  `engine:stop`), so the activity has an end; then the seal is checked again.
+  `manifest.json` records each host's go and stop in the container's clock.
+- **What was done, and what was seen.** After the collection, for each job:
+  how many times it ran, from the host it acts on (for a cron job, snoopy's
+  line of the run's own `/bin/bash -c <command>` with the job's tag; for
+  `browse`, nginx's access log lines of its paths from `client`'s address;
+  for `admin`, sshd's key logins of `ops` from `client`'s address), between
+  its host's go and stop; the same runs again from those lines that reached
+  the manager's archive ("archived runs"); and how many events of it reached
+  the archive in that time and 5 s after, by the job's tag on snoopy's lines,
+  `client`'s address on nginx's lines of the job's paths, on sshd's lines and
+  on snoopy's lines of an SSH session, the target account `ops` on snoopy's
+  lines of its sessions (sshd's motd scripts and what sudo starts without the
+  tag) and in PAM's, sshd's and sudo's lines, the close of a sudo session the
+  job opened, and the files the job writes (`writes` in the spec) for file
+  integrity events. An event counts
+  for one job at most, and the engine's mark files, one of which is in PHP's
+  session folder, for none. Cron's session lines of a cron job's account are
+  counted apart, as "cron sessions of the account": cron opens one for every
+  entry of an account, so on `db` root's stock entries in `/etc/crontab` (such
+  as `cron.hourly` at minute 17) give the same lines as `backup`'s entry. The
+  counts go into `manifest.json` and `activity.md`, next to the minutes from
+  the first go to the last stop. Each job's last output and its own state are
+  copied out of `/run/bluefire` into `raw/hosts/<host>/`.
+
+The `range-one` job holds the range 90 s where the path will run, since no
+path runs yet, so that the activity lasts more than two minutes and cron
+starts each cron job at least once. It shows `activity.md` in its summary and
+fails unless every job ran at least once and the line of at least one of its
+runs reached the archive. The delivery counts of the same run are taken with
+the jobs running, so the job's check for a delivery gap also shows whether
+every line still reaches the manager under that load. In
+[run 45337096555](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45337096555)
+on a GitHub-hosted runner the range was sealed and every job ran in the 2.4
+minutes from the first go to the last stop: `browse` 15 times, `admin` twice,
+`cache` and `build` three times each and `backup` once. The line of every one
+of those runs reached the manager's archive, and the run had no delivery gap.
 
 ## Range one: the path
 

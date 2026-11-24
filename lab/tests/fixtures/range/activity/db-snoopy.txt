@@ -1,0 +1,4 @@
+2026-11-23T22:35:25.081336+00:00 db snoopy[234]: [login:(unknown) ssh:((undefined)) sid:228 uid:0 euid:0 cwd:/ tag:engine:go]: touch /run/bluefire/go
+2026-11-23T22:36:01.264842+00:00 db snoopy[236]: [login:root ssh:((undefined)) sid:236 uid:0 euid:0 cwd:/root tag:job:backup]: /usr/local/lib/bluefire/job-backup
+2026-11-23T22:36:01.267268+00:00 db snoopy[237]: [login:root ssh:((undefined)) sid:236 uid:0 euid:0 cwd:/root tag:job:backup]: /bin/bash -c mariadb-dump shop > /var/backups/shop.sql
+2026-11-23T22:36:01.269758+00:00 db snoopy[238]: [login:root ssh:((undefined)) sid:236 uid:0 euid:0 cwd:/root tag:job:backup]: mariadb-dump shop

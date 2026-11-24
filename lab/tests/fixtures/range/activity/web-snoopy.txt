@@ -1,0 +1,4 @@
+2026-11-23T22:35:24.278925+00:00 web snoopy[397]: [login:(unknown) ssh:((undefined)) sid:381 uid:0 euid:0 cwd:/ tag:engine:go]: touch /run/bluefire/go
+2026-11-23T22:36:01.654660+00:00 web snoopy[465]: [login:www-data ssh:((undefined)) sid:465 uid:33 euid:33 cwd:/var/www tag:job:cache]: /usr/local/lib/bluefire/job-cache
+2026-11-23T22:36:01.657351+00:00 web snoopy[466]: [login:www-data ssh:((undefined)) sid:465 uid:33 euid:33 cwd:/var/www tag:job:cache]: /bin/bash -c php /var/www/app/cron.php
+2026-11-23T22:36:01.659944+00:00 web snoopy[466]: [login:www-data ssh:((undefined)) sid:465 uid:33 euid:33 cwd:/var/www tag:job:cache]: php /var/www/app/cron.php
