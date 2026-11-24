@@ -79,7 +79,7 @@ function part(value: Value, ...path: (string | number)[]): Value {
 }
 
 /** Each edge is one way a recording can be at the limits of the format, with the answer both readers must give. */
-const EDGES: { name: string; answer: Answer; make: (value: Value) => void }[] = [
+const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap?: string }[] = [
   { name: "the smallest test list, with every optional key left out", answer: "kept and plays", make: () => undefined },
   {
     name: "times with six digits after the second",
@@ -137,6 +137,8 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void }[] = 
       Object.assign(part(value, "attacker"), { goal: "Read the history file of another account." });
       Object.assign(part(value, "network", "detectors", 0), { when: "live" });
       Object.assign(part(value, "alerts", 0), { raised: "2026-11-17T17:07:22.300Z" });
+      // A live alert counts from when it was raised, so the step's first alert is that moment.
+      Object.assign(part(value, "steps", 0), { first_alert: "2026-11-17T17:07:22.300Z" });
       Object.assign(part(value, "score"), { first_alert_seconds: 1.3, goal_seconds: 1.5 });
     },
   },
@@ -195,7 +197,7 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void }[] = 
     },
   },
   {
-    name: "a network with every kind of host, a link of a host to itself and a detector of its own name",
+    name: "a network with every kind of host, a sensor on the defense host, a link of a host to itself and a detector of its own name",
     answer: "kept and plays",
     make: (value) => {
       const network = part(value, "network");
@@ -211,11 +213,13 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void }[] = 
         { from: "web", to: "target", label: "ssh" },
         { from: "target", to: "target", label: "loopback" },
       ];
-      (network.sensors as Value[]).push({ id: "agent", name: "Wazuh agent", host: "web", records: "log lines" });
+      (network.sensors as Value[]).push({ id: "agent", name: "Wazuh agent", host: "web", records: "log lines" }, { id: "manager-log", name: "Manager log", host: "siem", records: "the manager's own log" });
       (network.detectors as Value[]).push({ id: "wazuh", name: "Wazuh rules", rules: 0, when: "live" });
-      Object.assign(part(value, "steps", 1), { host: "web", from: "attacker" });
+      Object.assign(part(value, "steps", 1), { host: "web", from: "attacker", visibility: { answer: "telemetry only", basis: "what the sensors and rules said", events: 2 } });
       Object.assign(part(value, "events", 2), { host: "web", sensor: "agent", kind: "log line" });
+      (value.events as Value[]).push({ id: "2-2", time: "2026-11-17T17:07:22.200Z", host: "siem", sensor: "manager-log", kind: "log line", text: "agent web: new session", step: "2", tied_by: "session" });
     },
+    onMap: "Manager log",
   },
   {
     name: "a run with no sensor and no detector",
@@ -275,8 +279,11 @@ function pageByHand(recording: Value, file: string): void {
   writeFileSync(file, `${template.slice(0, start)}${JSON.stringify(recording).replace(/</g, "\\u003c")}${template.slice(end)}`);
 }
 
-/** What the page makes of its recording: plays, in watch mode at its start and end and in analyse mode, or refuses. */
-async function pageAnswer(page: Page, file: string, recording: Value): Promise<"plays" | string> {
+/**
+ * What the page makes of its recording: plays, in watch mode at its start and end and in analyse mode, or refuses.
+ * `onMap` is a sensor's name that the watch view's map must show.
+ */
+async function pageAnswer(page: Page, file: string, recording: Value, onMap?: string): Promise<"plays" | string> {
   const problems: string[] = [];
   page.on("pageerror", (error) => problems.push(String(error)));
   const address = pathToFileURL(file).href;
@@ -292,6 +299,7 @@ async function pageAnswer(page: Page, file: string, recording: Value): Promise<"
     // A moment of playing: the view must stay up while the clock moves.
     await page.waitForTimeout(400);
     await expect(title).toBeVisible();
+    if (onMap && !query.startsWith("?mode=analyse")) await expect(page.getByText(onMap, { exact: true })).toBeVisible();
   }
   expect(problems).toEqual([]);
   return "plays";
@@ -323,7 +331,7 @@ EDGES.forEach((edge, index) => {
       const made = bluefire("recordings", "page", String(recording.id), "--out", pageFile);
       if (made.status === 0) {
         answer = "kept and plays";
-        expect(await pageAnswer(page, pageFile, recording)).toBe("plays");
+        expect(await pageAnswer(page, pageFile, recording, edge.onMap)).toBe("plays");
       } else {
         // A page is made of a finished run only; the page says the same of a running one.
         answer = "kept while running";
