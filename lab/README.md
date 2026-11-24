@@ -1013,8 +1013,8 @@ where the line says so. `labels.*` holds keyword values only:
   same agent, location, line and manager time).
 
 Loading them into a tool, here [DuckDB](https://duckdb.org/) 1.4.1 from PyPI,
-run in a run folder (on the run below it lists, for example, `ordinary`,
-`build`, rule 554, 27 alerts first):
+run in a run folder (on the files of the run below it lists `ordinary`,
+`build`, rule 554, 26 alerts first):
 
 ```python
 import duckdb
@@ -1048,26 +1048,25 @@ conversion fails or the day was not scored. The score also lists what the
 jobs do, which is all it prices: a rule that fires only on something else,
 such as a password login or a failed login, is not priced by it.
 
-One run of range one in Docker on a developer machine (not a CI run), with
-the range held 90 s as the `range-one` job holds it: 3.35 minutes of
-activity, with `browse` 24 runs, `admin` 2, `cache` 3, `build` 3 and `backup`
-1, each run also counted in the archive. Its archive held 708 events and its
-alerts 132, and both ECS files had as many lines:
+[Run 45358678900](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45358678900)
+of the `range-one` job on a GitHub-hosted runner, with the range held 90 s:
+2.44 minutes of activity, with `browse` 15 runs, `admin` 2, `cache` 3,
+`build` 3 and `backup` 1, each run also counted in the archive. Its archive
+held 647 events and its alerts 128, and both ECS files had as many lines:
 
 | Origin | Events | Alerts 0 to 3 | Alerts 4 to 6 | Alerts 7 to 11 | Alerts 12 to 14 | Alerts 15 |
 | --- | --- | --- | --- | --- | --- | --- |
-| engine | 290 | 0 | 18 | 18 | 0 | 0 |
-| ordinary | 191 | 12 | 54 | 10 | 0 | 0 |
-| unattributed | 227 | 15 | 5 | 0 | 0 | 0 |
+| engine | 283 | 0 | 18 | 18 | 0 | 0 |
+| ordinary | 172 | 12 | 44 | 8 | 0 | 0 |
+| unattributed | 192 | 15 | 13 | 0 | 0 | 0 |
 
 False alerts: 0 rules at level 12 or higher. For review: 550 "Integrity
-checksum changed." (level 7) 8 times, all on `build`'s clone, and 553 "File
+checksum changed." (level 7) 6 times, all on `build`, and 553 "File
 deleted." (level 7) twice on `cache`'s files. No alert at level 12 or higher
 on the engine's work or on unattributed events. The one nginx line from
-`client` that is unattributed is a plant check's request, 6 s before the go.
-Zero false alerts here is a result about those 3.35 minutes and that work
-only. The same table from the
-`range-one` job on a GitHub-hosted runner: not yet shown.
+`client` that is unattributed is a plant check's request, just before the go.
+Zero false alerts here is a result about those 2.44 minutes and that work
+only.
 
 The engine's own seal probes and plant checks before the go and after the
 stop are not marked by the engine's tag or the run's ID, so they count as
