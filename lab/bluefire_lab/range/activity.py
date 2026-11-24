@@ -38,7 +38,7 @@ from fnmatch import fnmatch
 from functools import cache
 
 from . import wazuh
-from .spec import ACCOUNT, NAME, Host, SpecError, Watch
+from .spec import ACCOUNT, NAME, Host, SpecError, Watch, home
 
 KINDS = ("http", "ssh", "cron")
 GO = "/run/bluefire/go"
@@ -77,6 +77,7 @@ class Job:
     paths: tuple[str, ...] = ()
     run: str | None = None
     writes: tuple[str, ...] = ()  # the files it writes on the host it acts on, as patterns
+    identity: str | None = None  # the private key file an ssh job logs in with, one its target accepts
 
     @property
     def tag(self) -> str:
@@ -288,7 +289,7 @@ def _job(entry: object, hosts: dict[str, Host], accounts: set, sources: set[str]
     _not_the_paths(where, host, account, accounts)
     every = _every(entry["every"], where, do)
 
-    target = target_account = None
+    target = target_account = identity = None
     paths: tuple[str, ...] = ()
     run = entry.get("run")
     if run is not None and (not isinstance(run, str) or not run.strip() or "\n" in run):
@@ -331,15 +332,20 @@ def _job(entry: object, hosts: dict[str, Host], accounts: set, sources: set[str]
                 raise SpecError(f"{where} logs in with ssh, so host {host} needs the package openssh-client")
             if not any(account == known.account and target in known.hosts for known in settings.known_hosts):
                 raise SpecError(f"{where}: {account} on {host} has no known_hosts entry for {target}")
-            held = {key.name for key in settings.keys if key.private == account}
-            if not any(
-                key.name in held and key.authorized == (target_account, target)
+            accepted = {
+                key.name
                 for other_host in hosts.values()
                 for key in other_host.keys
-            ):
+                if key.authorized == (target_account, target)
+            }
+            files = [
+                key.file_name for key in settings.keys if key.private == account and key.name in accepted
+            ]
+            if not files:
                 raise SpecError(
                     f"{where}: {account} on {host} holds no key that {target_account}@{target} accepts"
                 )
+            identity = f"{home(account)}/.ssh/{files[0]}"
         if not set(settings.networks) & set(hosts[target].networks):
             raise SpecError(f"{where}: {host} shares no network with {target}")
         acts_on = hosts[target]
@@ -353,7 +359,7 @@ def _job(entry: object, hosts: dict[str, Host], accounts: set, sources: set[str]
         raise SpecError(
             f"{where}: writes must list absolute paths, with * for any part, as in /tmp/cache-*.json"
         )
-    return Job(name, host, account, every, do, target, target_account, paths, run, tuple(writes))
+    return Job(name, host, account, every, do, target, target_account, paths, run, tuple(writes), identity)
 
 
 @cache
@@ -492,9 +498,10 @@ def _once(job: Job) -> str:
     if job.do == "http":
         return f'curl -s -o /dev/null --max-time 20 "http://{job.target}${{paths[$1 % ${{#paths[@]}}]}}"'
     remote = shlex.quote(f"export BLUEFIRE_TAG={job.tag}; {job.run}")
+    # The key the loader found that the target accepts, and no other identity, whatever its file is called.
     return (
-        "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "
-        f"{job.target_account}@{job.target} {remote} < /dev/null"
+        "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o IdentitiesOnly=yes "
+        f"-i {shlex.quote(job.identity or '')} {job.target_account}@{job.target} {remote} < /dev/null"
     )
 
 

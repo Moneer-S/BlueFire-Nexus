@@ -183,6 +183,19 @@ def test_an_ssh_job_needs_a_key_the_target_accepts() -> None:
     assert "ops on client holds no key that ops@web accepts" in refused(data)
 
 
+def test_an_ssh_job_logs_in_with_the_accepted_key_only_whatever_its_file_is_called() -> None:
+    data = with_job(
+        name="peek", host="client", account="ops", every=60, do="ssh", target="ops@web", run="true"
+    )
+    (key,) = data["hosts"]["client"]["keys"]
+    key["file"] = "ops-key"
+    loop = activity.loop_script(loaded(data).activity, "client")
+
+    (once,) = [line for line in loop.splitlines() if line.startswith("  once() {")]
+    file = f"{range_spec.home('ops')}/.ssh/ops-key"
+    assert f" -o IdentitiesOnly=yes -i {file} ops@web " in once
+
+
 def test_two_jobs_of_one_name_are_refused() -> None:
     data = document()
     data["activity"]["jobs"] = [CRON, {**CRON, "host": "db", "account": "root"}]
