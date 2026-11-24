@@ -26,7 +26,8 @@ const ADDRESS_SETTLE_MS = 300;
  */
 function read(value: unknown, summary: RecordingSummary): { recording: Recording } | { problem: string } {
   try {
-    const recording = readRecording(value);
+    // The app follows a recording that is still running, which the replay page refuses.
+    const recording = readRecording(value, { running: true });
     if (summary.origin.kind !== "imported" || recording.source.run_url === undefined) return { recording };
     const source = { ...recording.source };
     delete source.run_url;

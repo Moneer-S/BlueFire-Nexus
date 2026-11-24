@@ -72,11 +72,18 @@ def main(arguments: list[str] | None = None) -> int:
         action="store_true",
         help="the two runs were made side by side in one CI run, each on a fresh runner of its own",
     )
+    comparing.add_argument(
+        "--one-run",
+        action="store_true",
+        help="the two recordings are of one run, its telemetry evaluated twice with two sets of the lab's "
+        "rules; refused unless everything else in them is the same",
+    )
 
     pairing = commands.add_parser(
         "pair",
-        help="say whether the defense a run loads differs from the base commit's: pair=yes or no, "
-        "the sides to run and the one change to declare, as name=value lines",
+        help="say whether the defense a run loads differs from the base commit's and how the change is "
+        "shown: pair=no, rules (one run evaluated twice) or runs (two runs), the sides to run and the one "
+        "change to declare, as name=value lines",
     )
     pairing.add_argument(
         "--base",
@@ -166,8 +173,15 @@ def main(arguments: list[str] | None = None) -> int:
     if options.command == "evaluate":
         return evaluate.main(options.folder, options.engine)
     if options.command == "compare":
+        if options.one_run and options.two_runners:
+            parser.error("--one-run and --two-runners say two different things: give one of them")
         return compare.main(
-            options.before, options.after, options.out, options.change or None, options.two_runners
+            options.before,
+            options.after,
+            options.out,
+            options.change or None,
+            options.two_runners,
+            options.one_run,
         )
     if options.command == "pair":
         return pair.main(options.base, options.head)

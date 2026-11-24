@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bodySeconds, buildTimeline, evenPosition, evenTime, frameAt, PLAYBACK_RULE, realToScreen, screenToReal, seekStep } from "../src/live/playback";
+import { bodySeconds, buildTimeline, evenPosition, evenTime, frameAt, PLAYBACK_RULE, realToScreen, screenToReal, seekStep, stepPosition } from "../src/live/playback";
 import { timeOf } from "../src/live/recording";
 import { alert, at, event, recording, step } from "./live-fixture";
 
@@ -93,6 +93,26 @@ describe("the timeline", () => {
     expect(frameAt(timeline, seekStep(timeline, "4", 9) ?? Number.NaN).step?.id).toBe("5");
     // The last step has no silence after it: past its end is its end.
     expect(seekStep(timeline, "5", 1.5)).toBe(seekStep(timeline, "5", 1));
+  });
+
+  it("gives the place of a frame in its step, also in the silence after it, so that seeking there reads the same moment", () => {
+    const timeline = buildTimeline(run());
+    // Inside the step the place is how far the step has got.
+    const inside = frameAt(timeline, seekStep(timeline, "4", 0.6) ?? Number.NaN);
+    expect(stepPosition(inside)).toBeCloseTo(0.6);
+    // In the silence after it the step's own progress stays at 1, and the place goes on above it.
+    const silence = seekStep(timeline, "4", 1.5);
+    if (silence === null) throw new Error("step 4 should be found");
+    const frame = frameAt(timeline, silence);
+    expect(frame.progress).toBe(1);
+    expect(stepPosition(frame)).toBeCloseTo(1.5);
+    expect(seekStep(timeline, "4", stepPosition(frame))).toBeCloseTo(silence, 6);
+    // The silence's last moment stays short of 2, which is the next step's start.
+    if (!frame.gap) throw new Error("step 4 should have a silence after it");
+    const last = frameAt(timeline, frame.gap.end - 0.0001);
+    expect(last.step?.id).toBe("4");
+    expect(stepPosition(last)).toBeLessThan(2);
+    expect(frameAt(timeline, seekStep(timeline, "4", stepPosition(last)) ?? Number.NaN).step?.id).toBe("4");
   });
 
   it("gives every step the same width on the scrubber, and maps a position back to its time", () => {

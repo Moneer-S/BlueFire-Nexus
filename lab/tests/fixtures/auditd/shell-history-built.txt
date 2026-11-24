@@ -1,0 +1,51 @@
+# BUILT BY HAND, NOT RECORDED BY A SENSOR. Records in auditd's format, made from
+# the real records of run 45350480637 (shell-history-45350480637.txt) by changing
+# the program, the flags, the item count and the paths to what each shell does
+# by its source code, for a check of the rule on writes no run has made:
+# 900001: bash appending its history on exit (readline's append_history:
+#         O_WRONLY|O_APPEND, 0x401, to an existing file);
+# 900002: bash creating a missing history file before it saves the first time
+#         (bashhist.c: O_CREAT|O_TRUNC|O_WRONLY, 0x241, a new file, two items);
+# 900003: bash rewriting its history (readline's history_do_write: a temporary
+#         file, which is not watched, renamed over the history file);
+# 900004: zsh with HIST_SAVE_BY_COPY unset rewriting its history in place
+#         (hist.c: O_CREAT|O_WRONLY|O_TRUNC|O_NOCTTY, 0x341, an existing file);
+# 900005: bash 4.3 trimming its history file on exit (readline 6.3's
+#         history_truncate_file: O_WRONLY|O_TRUNC, 0x201, an existing file);
+# 900006: the echo test's redirect on a kernel before 6.12, where an O_CREAT
+#         open of an existing file also records its folder (0x241, two items,
+#         PARENT and NORMAL);
+# 900007: the same redirect refused (success=no, EACCES), which empties nothing.
+type=SYSCALL msg=audit(1795600000.001:900001): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=5600000000a0 a2=401 a3=1b6 items=1 ppid=9000 pid=9001 auid=1002 uid=1002 gid=1002 euid=1002 suid=1002 fsuid=1002 egid=1002 sgid=1002 fsgid=1002 tty=pts0 ses=900 comm="bash" exe="/usr/bin/bash" subj=unconfined key="shell-history"ARCH=x86_64 SYSCALL=openat AUID="bluefire-lab" UID="bluefire-lab" GID="bluefire-lab" EUID="bluefire-lab" SUID="bluefire-lab" FSUID="bluefire-lab" EGID="bluefire-lab" SGID="bluefire-lab" FSGID="bluefire-lab"
+type=CWD msg=audit(1795600000.001:900001): cwd="/home/bluefire-lab"
+type=PATH msg=audit(1795600000.001:900001): item=0 name="/home/bluefire-lab/.bash_history" inode=9441009 dev=08:01 mode=0100600 ouid=1002 ogid=1002 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PROCTITLE msg=audit(1795600000.001:900001): proctitle="bash"
+type=SYSCALL msg=audit(1795600000.002:900002): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=5600000000b0 a2=241 a3=180 items=2 ppid=9000 pid=9002 auid=1002 uid=1002 gid=1002 euid=1002 suid=1002 fsuid=1002 egid=1002 sgid=1002 fsgid=1002 tty=pts0 ses=900 comm="bash" exe="/usr/bin/bash" subj=unconfined key="shell-history"ARCH=x86_64 SYSCALL=openat AUID="bluefire-lab" UID="bluefire-lab" GID="bluefire-lab" EUID="bluefire-lab" SUID="bluefire-lab" FSUID="bluefire-lab" EGID="bluefire-lab" SGID="bluefire-lab" FSGID="bluefire-lab"
+type=CWD msg=audit(1795600000.002:900002): cwd="/home/bluefire-lab"
+type=PATH msg=audit(1795600000.002:900002): item=0 name="/home/bluefire-lab/" inode=9440197 dev=08:01 mode=040750 ouid=1002 ogid=1002 rdev=00:00 nametype=PARENT cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PATH msg=audit(1795600000.002:900002): item=1 name="/home/bluefire-lab/.bash_history" inode=9441010 dev=08:01 mode=0100600 ouid=1002 ogid=1002 rdev=00:00 nametype=CREATE cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PROCTITLE msg=audit(1795600000.002:900002): proctitle="bash"
+type=SYSCALL msg=audit(1795600000.003:900003): arch=c000003e syscall=82 success=yes exit=0 a0=5600000000c0 a1=5600000000d0 a2=0 a3=0 items=4 ppid=9000 pid=9003 auid=1002 uid=1002 gid=1002 euid=1002 suid=1002 fsuid=1002 egid=1002 sgid=1002 fsgid=1002 tty=pts0 ses=900 comm="bash" exe="/usr/bin/bash" subj=unconfined key="shell-history"ARCH=x86_64 SYSCALL=rename AUID="bluefire-lab" UID="bluefire-lab" GID="bluefire-lab" EUID="bluefire-lab" SUID="bluefire-lab" FSUID="bluefire-lab" EGID="bluefire-lab" SGID="bluefire-lab" FSGID="bluefire-lab"
+type=CWD msg=audit(1795600000.003:900003): cwd="/home/bluefire-lab"
+type=PATH msg=audit(1795600000.003:900003): item=0 name="/home/bluefire-lab/" inode=9440197 dev=08:01 mode=040750 ouid=1002 ogid=1002 rdev=00:00 nametype=PARENT cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PATH msg=audit(1795600000.003:900003): item=1 name="/home/bluefire-lab/" inode=9440197 dev=08:01 mode=040750 ouid=1002 ogid=1002 rdev=00:00 nametype=PARENT cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PATH msg=audit(1795600000.003:900003): item=2 name="/home/bluefire-lab/.bash_history-09003.tmp" inode=9441011 dev=08:01 mode=0100600 ouid=1002 ogid=1002 rdev=00:00 nametype=DELETE cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PATH msg=audit(1795600000.003:900003): item=3 name="/home/bluefire-lab/.bash_history" inode=9441011 dev=08:01 mode=0100600 ouid=1002 ogid=1002 rdev=00:00 nametype=CREATE cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PROCTITLE msg=audit(1795600000.003:900003): proctitle="bash"
+type=SYSCALL msg=audit(1795600000.004:900004): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=5600000000e0 a2=341 a3=180 items=1 ppid=9000 pid=9004 auid=1002 uid=1002 gid=1002 euid=1002 suid=1002 fsuid=1002 egid=1002 sgid=1002 fsgid=1002 tty=pts0 ses=900 comm="zsh" exe="/usr/bin/zsh" subj=unconfined key="shell-history"ARCH=x86_64 SYSCALL=openat AUID="bluefire-lab" UID="bluefire-lab" GID="bluefire-lab" EUID="bluefire-lab" SUID="bluefire-lab" FSUID="bluefire-lab" EGID="bluefire-lab" SGID="bluefire-lab" FSGID="bluefire-lab"
+type=CWD msg=audit(1795600000.004:900004): cwd="/home/bluefire-lab"
+type=PATH msg=audit(1795600000.004:900004): item=0 name="/home/bluefire-lab/.zsh_history" inode=9441012 dev=08:01 mode=0100600 ouid=1002 ogid=1002 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PROCTITLE msg=audit(1795600000.004:900004): proctitle="zsh"
+type=SYSCALL msg=audit(1795600000.005:900005): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=5600000000f0 a2=201 a3=0 items=1 ppid=9000 pid=9005 auid=1002 uid=1002 gid=1002 euid=1002 suid=1002 fsuid=1002 egid=1002 sgid=1002 fsgid=1002 tty=pts0 ses=900 comm="bash" exe="/usr/bin/bash" subj=unconfined key="shell-history"ARCH=x86_64 SYSCALL=openat AUID="bluefire-lab" UID="bluefire-lab" GID="bluefire-lab" EUID="bluefire-lab" SUID="bluefire-lab" FSUID="bluefire-lab" EGID="bluefire-lab" SGID="bluefire-lab" FSGID="bluefire-lab"
+type=CWD msg=audit(1795600000.005:900005): cwd="/home/bluefire-lab"
+type=PATH msg=audit(1795600000.005:900005): item=0 name="/home/bluefire-lab/.bash_history" inode=9441009 dev=08:01 mode=0100600 ouid=1002 ogid=1002 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PROCTITLE msg=audit(1795600000.005:900005): proctitle="bash"
+type=SYSCALL msg=audit(1795600000.006:900006): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=5575b03c55e0 a2=241 a3=1b6 items=2 ppid=9191 pid=9006 auid=1002 uid=1002 gid=1002 euid=1002 suid=1002 fsuid=1002 egid=1002 sgid=1002 fsgid=1002 tty=(none) ses=901 comm="sh" exe="/usr/bin/dash" subj=unconfined key="shell-history"ARCH=x86_64 SYSCALL=openat AUID="bluefire-lab" UID="bluefire-lab" GID="bluefire-lab" EUID="bluefire-lab" SUID="bluefire-lab" FSUID="bluefire-lab" EGID="bluefire-lab" SGID="bluefire-lab" FSGID="bluefire-lab"
+type=CWD msg=audit(1795600000.006:900006): cwd="/tmp"
+type=PATH msg=audit(1795600000.006:900006): item=0 name="/home/bluefire-lab/" inode=9440197 dev=08:01 mode=040750 ouid=1002 ogid=1002 rdev=00:00 nametype=PARENT cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PATH msg=audit(1795600000.006:900006): item=1 name="/home/bluefire-lab/.bash_history" inode=9441009 dev=08:01 mode=0100600 ouid=1002 ogid=1002 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PROCTITLE msg=audit(1795600000.006:900006): proctitle=7368002D63006563686F202222203E207E2F2E626173685F686973746F7279
+type=SYSCALL msg=audit(1795600000.007:900007): arch=c000003e syscall=257 success=no exit=-13 a0=ffffff9c a1=5575b03c55e0 a2=241 a3=1b6 items=1 ppid=9191 pid=9007 auid=1002 uid=1002 gid=1002 euid=1002 suid=1002 fsuid=1002 egid=1002 sgid=1002 fsgid=1002 tty=(none) ses=902 comm="sh" exe="/usr/bin/dash" subj=unconfined key="shell-history"ARCH=x86_64 SYSCALL=openat AUID="bluefire-lab" UID="bluefire-lab" GID="bluefire-lab" EUID="bluefire-lab" SUID="bluefire-lab" FSUID="bluefire-lab" EGID="bluefire-lab" SGID="bluefire-lab" FSGID="bluefire-lab"
+type=CWD msg=audit(1795600000.007:900007): cwd="/tmp"
+type=PATH msg=audit(1795600000.007:900007): item=0 name="/home/bluefire-lab/.bash_history" inode=9441009 dev=08:01 mode=0100600 ouid=1002 ogid=1002 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0OUID="bluefire-lab" OGID="bluefire-lab"
+type=PROCTITLE msg=audit(1795600000.007:900007): proctitle=7368002D63006563686F202222203E207E2F2E626173685F686973746F7279

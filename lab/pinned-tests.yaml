@@ -479,12 +479,22 @@ tests:
     plain: Overwrites the shell history file with an empty line, using echo.
     prepare: echo "ls -la" >> ~/.bash_history
     effect: test -e {home}/.bash_history && ! grep -q . {home}/.bash_history
+    variants:
+      # zsh's history file, which the audit rules watch as well.
+      - args: {history_path: ~/.zsh_history}
+        prepare: echo "ls -la" >> ~/.zsh_history
+        effect: test -e {home}/.zsh_history && ! grep -q . {home}/.zsh_history
   - technique: T1070.003
     guid: b1251c35-dcd3-4ea1-86da-36d27b54f31f
     name: Clear Bash history (cat dev/null)
     plain: Empties the shell history file by writing /dev/null over it with cat.
     prepare: echo "ls -la" >> ~/.bash_history
     effect: test -e {home}/.bash_history && test ! -s {home}/.bash_history
+    variants:
+      # The history file of ksh, which the audit rules watch as well.
+      - args: {history_path: ~/.sh_history}
+        prepare: echo "ls -la" >> ~/.sh_history
+        effect: test -e {home}/.sh_history && test ! -s {home}/.sh_history
   # Leaves ~/.bash_history as a link to /dev/null; the closing canary removes it.
   - technique: T1070.003
     guid: 23d348f3-cc5c-4ba9-bd0a-ae09069f0914

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alertsByStep, countsAsAlert, countsForScore, eventsByStep, readFinishedRecording, readRecording, RecordingError, timeOf } from "../src/live/recording";
+import { alertsByStep, countsAsAlert, countsForScore, eventsByStep, readRecording, RecordingError, timeOf } from "../src/live/recording";
 import { alert, event, recording, step } from "./live-fixture";
 
 function valid() {
@@ -21,14 +21,14 @@ describe("reading a recording", () => {
     expect(read.events).toHaveLength(3);
   });
 
-  it("accepts a recording that is still running: it has no end time yet", () => {
+  it("reads a recording that is still running, with no end time yet, for the app that follows it", () => {
     const value = copy();
     const source = { ...(value.source as Record<string, unknown>) };
     delete source.finished;
-    const read = readRecording({ ...value, source });
+    const read = readRecording({ ...value, source }, { running: true });
     expect(read.source.finished).toBeUndefined();
     expect(read.steps).toHaveLength(2);
-    expect(() => readRecording({ ...value, source: { ...source, finished: "yesterday" } })).toThrow("The source's end is not a UTC time");
+    expect(() => readRecording({ ...value, source: { ...source, finished: "yesterday" } }, { running: true })).toThrow("The source's end is not a UTC time");
   });
 
   it("refuses a value that holds no recording", () => {
@@ -68,7 +68,7 @@ describe("reading a recording", () => {
     const source = value.source;
     if (!isHolder(source)) throw new Error("fixture");
     delete source.finished;
-    expect(() => readFinishedRecording(value)).toThrow("This recording is still running: it has no end time yet, and a replay is made of a finished run.");
+    expect(() => readRecording(value)).toThrow("This recording is still running: it has no end time yet, and a replay is made of a finished run.");
   });
 
   it("refuses a time that is not a time", () => {
