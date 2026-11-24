@@ -331,16 +331,34 @@ builds from a spec (`bluefire-lab range render`), which add the lab's configurat
 | Project | Pin | Licence | Use |
 |---|---|---|---|
 | [nginx official image](https://github.com/nginx/docker-nginx) | `nginx:1.28.0-bookworm@sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609` | nginx: BSD-2-Clause; the image's Debian packages under their own licences | The bare hosts of `lab/range/seal-check.yaml`: a listener for the seal's probes |
-| [Ubuntu official image](https://hub.docker.com/_/ubuntu) | `ubuntu:noble-20261110.1@sha256:882e1e56091c9ffbc70c026ff5935fe85d3c91ad155917865ba2ffa23ede1560`, with packages from the [Ubuntu snapshot archive](https://snapshot.ubuntu.com/) at `20261120T000000Z` | Each package under its own licence, listed in its `/usr/share/doc/<package>/copyright` | The base of the hosts the lab builds, such as `web` in `lab/range/wazuh-check.yaml` |
-| [Wazuh manager image](https://github.com/wazuh/wazuh-docker) | `wazuh/wazuh-manager:4.14.10@sha256:eabfa7ee4e63acb51c2130fa0583e30f843d030b091cf45a4fbd93d78fa21517` | Wazuh: GPL-2.0; the image's Amazon Linux 2023 packages under their own licences | The range's Wazuh manager, with the lab's edits of its stock `ossec.conf`, the lab's snoopy decoder and Filebeat kept from starting |
+| [Ubuntu official image](https://hub.docker.com/_/ubuntu) | `ubuntu:noble-20261110.1@sha256:882e1e56091c9ffbc70c026ff5935fe85d3c91ad155917865ba2ffa23ede1560`, with packages from the [Ubuntu snapshot archive](https://snapshot.ubuntu.com/) at `20261120T000000Z` | Each package under its own licence, listed in its `/usr/share/doc/<package>/copyright` | The base of the hosts the lab builds, the hosts of `lab/range/range-one.yaml`. Every package they install comes from that snapshot (except the certificate store, see `lab/README.md`): among them nginx, PHP 8.3 with php-fpm and php-mysql, MariaDB, git, make, OpenSSH, sudo, cron, curl, wget, sshpass, Python 3, rsyslog and OpenSSL, which makes the stand-in internet's certificate at build time |
+| [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team) | commit `a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6`, every file checked against the SHA-256 in `lab/range/range-one.lock` | MIT, Copyright (c) 2018 Red Canary, Inc. | Fetched when range one's images are built, and copied into them as data: the `src` folder of T1110.004 (its password lists) on `attacker`, and T1105's `atomic.sh` on `inet`, which serves it. The technique YAMLs of the path are fetched and checked too, and are written to the build folder only. No build step runs any of them. The project's `LICENSE.txt` is fetched and locked with them, and goes with every copy: `build/atomics/LICENSE.txt` in the build folder, and `/opt/atomics/LICENSE.txt` on `attacker` and `inet`. The build folder is part of a run's folder, which the `range-one` CI job uploads as the artifact `range-one-run`, so that artifact holds these files with their licence. The images are built on the machine or runner that runs the range and are not pushed to a registry; in CI their layers are kept in the repository's GitHub Actions cache |
+| [Wazuh manager image](https://github.com/wazuh/wazuh-docker) | `wazuh/wazuh-manager:4.14.10@sha256:eabfa7ee4e63acb51c2130fa0583e30f843d030b091cf45a4fbd93d78fa21517` | Wazuh: GPL-2.0; the image's Amazon Linux 2023 packages under their own licences | The range's Wazuh manager, with the lab's edits of its stock `ossec.conf`, the lab's snoopy decoder, Filebeat kept from starting and its API on loopback only |
 | [Wazuh agent](https://github.com/wazuh/wazuh) | package `wazuh-agent_4.14.10-1_amd64.deb` from `packages.wazuh.com`, SHA-512 `5ee41846e81b2f5f5017bb0f968ac039443f09a400e5feb8121a4e52db6bb8d1c91683667b03a657a0236c858bd1f159026b493ace504ec8f92e491e6c8ae04d` | GPL-2.0 | The agent inside each watched host, with the lab's edits of its stock `ossec.conf` |
 | [snoopy](https://github.com/a2o/snoopy) | Ubuntu noble package `snoopy` `2.5.1-1`, from the snapshot above | GPL-2.0 | Writes every program start on a watched host to syslog |
 
 The tests in `lab/tests/fixtures/range/wazuh/` hold short excerpts of the stock `ossec.conf` files
 that the pinned agent package and manager image install (Wazuh, GPL-2.0), as test data for the
-lab's edits of them, and lines and events trimmed from one run of `lab/range/wazuh-check.yaml`.
+lab's edits of them, and lines and events trimmed from one run of a range with one agent host.
+The small range in `lab/tests/fixtures/range/small/` stands in for published files with contents
+of its own, at a stand-in commit; it copies nothing from Atomic Red Team.
+
+`lab/tests/fixtures/range/ecs/ecs-8.17.0-fields.yml` is taken from the
+[Elastic Common Schema](https://github.com/elastic/ecs) (Apache-2.0, Copyright Elasticsearch B.V.),
+tag `v8.17.0`, commit `e3103a213a4e84cbcd3ef36da7001483ddc60230`, file `generated/ecs/ecs_flat.yml`
+(SHA-256 `4c72bf4d0fa7b79a101ac86c5d175092557a8ed318c29db817bd85186db207f0`): the name and type of
+each of its 1692 fields, the allowed values of `event.kind`, `event.category`, `event.type` and
+`event.outcome`, and the event types ECS expects with each category, and nothing else. A test checks
+every field the lab's ECS mapper (`lab/bluefire_lab/range/ecs.py`) can write against it. The mapper
+itself is the lab's own: no maintained mapping of Wazuh 4.x output to ECS was found to follow (Wazuh's
+own Filebeat module keeps Wazuh's field names, and the Wazuh Common Schema of Wazuh 5 describes the
+output of Wazuh 5's engine), so it copies none.
+The lines in `lab/tests/fixtures/range/ecs/` are trimmed from one run of range one, with each
+hash and key fingerprint replaced by a stand-in.
 The workflow's image build uses [docker/setup-buildx-action](https://github.com/docker/setup-buildx-action)
-and [docker/bake-action](https://github.com/docker/bake-action) (Apache-2.0), pinned to a commit.
+and [docker/bake-action](https://github.com/docker/bake-action) (Apache-2.0), pinned to a commit,
+and runs [BuildKit](https://github.com/moby/buildkit) (Apache-2.0) from the image
+`moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe`.
 
 The lab's Python package depends on [PyYAML](https://github.com/yaml/pyyaml) (MIT), installed
 from PyPI. Its tests and lint use [pytest](https://github.com/pytest-dev/pytest) (MIT) and

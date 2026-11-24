@@ -44,12 +44,25 @@ goes, and the view says the run is still running.
   sentence still says there was no alert by the end of the step. A match
   raised after the last step ended plays in one more short silence at the end.
   In analyse mode each such match says how long after its step ended it was
-  raised.
+  raised. Where a step has several alerts, the caption, the first alert's flag
+  and the step's detail all name the one that fired first on screen (by its
+  `raised` time where the rules ran live), not the one whose event came first,
+  and a rule is named only once its alert has fired. The same holds for every
+  match, at any level: the caption's count of rules for review, its "Fix this"
+  hint, its text for screen readers and a rule engine's "no rule matched" speak
+  only of the matches that have fired by then, and a match that fires later
+  appears when it fires. Analyse mode shows the whole run at once and lists a
+  step's matches in firing order.
 - **The score is the recording's.** While watching, the score counts a step
   once the screen has told its outcome; at the end of the run it is the
   recording's `score`. False alerts, on ordinary activity outside every step,
   have no times in a recording, so watch mode shows them only at the end. In
-  analyse mode it is the whole run's score from the start.
+  analyse mode it is the whole run's score from the start. The time to the
+  first alert, wherever it is shown, is read from the alerts themselves: from
+  the first test's start to the moment that alert fires (its `raised` time
+  where the rules ran live), the same clock the race compares with the goal.
+  A file whose `score.first_alert_seconds`, or a step's `first_alert`, says
+  otherwise is refused on import; the page shows what the alerts say.
 
 ## Two modes
 

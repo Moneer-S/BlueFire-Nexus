@@ -262,7 +262,8 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # Apart from the attack tests: this job only reads the two runs' results.
+  # Apart from the attack tests: this job only reads the two runs' recordings. Nothing is declared as
+  # changed, so whatever differs is named, and a step that differs is run variation, not an effect.
   compare:
     name: compare with the latest run on main
     needs: loop
@@ -298,6 +299,17 @@ jobs:
           echo "comparing with run $earlier"
           gh run download "$earlier" --repo "$GITHUB_REPOSITORY" --name lab-run --dir "$RUNNER_TEMP/before"
 
-      # On the run page and in the job's log, which is kept as long as the run's artifact.
+      # delta.md goes to the run page; delta.json, which later views draw, is the artifact lab-delta.
       - name: Compare
-        run: '"$RUNNER_TEMP/venv/bin/bluefire-lab" compare "$RUNNER_TEMP/before" "$RUNNER_TEMP/now" | tee -a "$GITHUB_STEP_SUMMARY"'
+        run: |
+          "$RUNNER_TEMP/venv/bin/bluefire-lab" compare "$RUNNER_TEMP/before/recording.json" \
+            "$RUNNER_TEMP/now/recording.json" --out "$RUNNER_TEMP/delta"
+          cat "$RUNNER_TEMP/delta/delta.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the comparison
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lab-delta
+          path: ${{ runner.temp }}/delta
+          retention-days: 90
+          if-no-files-found: error

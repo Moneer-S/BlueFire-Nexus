@@ -220,10 +220,16 @@ describe("the first alert on a test", () => {
     expect(first?.secondsFromFirstTest).toBeNull();
   });
 
-  it("takes the attack path's own first alert time when the recording has one", () => {
-    const value = { ...four([alert("a", "1", 10.5, ["1-1"])]), kind: "attack path" as const };
-    value.score = { ...value.score, first_alert_seconds: 3 };
-    expect(buildTimeline(value).firstAlert?.secondsFromFirstTest).toBe(3);
+  it("times the first alert of an attack path from its raised time, the moment it fires", () => {
+    const value = { ...four([alert("a", "1", 10.5, ["1-1"], { raised: at(25) })]), kind: "attack path" as const };
+    value.score = { ...value.score, first_alert_seconds: 15 };
+    expect(buildTimeline(value).firstAlert?.secondsFromFirstTest).toBeCloseTo(15);
+  });
+
+  it("shows what the alerts say when the attack path's own first alert time disagrees with them", () => {
+    const value = { ...four([alert("a", "1", 10.5, ["1-1"], { raised: at(25) })]), kind: "attack path" as const };
+    value.score = { ...value.score, first_alert_seconds: 0.5 };
+    expect(buildTimeline(value).firstAlert?.secondsFromFirstTest).toBeCloseTo(15);
   });
 });
 

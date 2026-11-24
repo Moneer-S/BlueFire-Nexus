@@ -455,7 +455,7 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
               <div className="lv-engine-sub" title={parts.engine ? `Run by ${parts.engine}` : undefined}>
                 {node.detector.rules > 0 ? plural(node.detector.rules, "rule") : parts.engine}
               </div>
-              {moment ? <EngineMatches lines={state?.lines ?? []} none={moment.revealed && !moment.all.some((alert) => alert.detector === node.detector.id)} late={state?.late ?? null} /> : null}
+              {moment ? <EngineMatches lines={state?.lines ?? []} none={moment.revealed && !moment.heard.some((alert) => alert.detector === node.detector.id)} late={state?.late ?? null} /> : null}
             </div>
           );
         })}
