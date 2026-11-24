@@ -1085,21 +1085,17 @@ folder. Every other change on two runners that differed is refused, with the
 advice to run the pair again. The section "Two runners that differed" of
 [`docs/RECORDING.md`](../docs/RECORDING.md) gives the rule.
 
-**The noise floor.** Runs
-[45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)
-and [45288430599](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45288430599),
-the first of a pull request and the second on `main`, both on 23 November 2026, ran the same list with the same tests'
-commit, runner image `ubuntu24 20261116.133.1` and kernel `7.0.0-1014-aws`, the
-same sensor settings, rule sets and tool versions, from two commits of this
-repository (`cb017990` and `2ca6c9e6`). Their recordings predate
-`source.setup`, so they were written again from each run's artifact (`run.json`,
-`results.json` and the two rule folders) with `bluefire-lab recording` of this
-version and compared outside CI. That comparison found them comparable apart
-from the lab's code, which it names, and all 91 steps the same in what
-happened, in whether a sensor recorded them and in both outcomes. They do
-differ below the outcomes: the recordings hold 1,931 and 1,923 events. No CI
-run shows this comparison: it is not yet shown, and two runs are one sample of
-the noise floor, not its measure.
+**The noise floor.** The job "compare with the latest run on main" of
+[run 45358678821](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45358678821),
+a pull request that changed neither rules nor sensor settings, compared its
+recording with that of
+[run 45352666265](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45352666265)
+on `main`, with nothing declared: the same tests' commit, runner image and
+kernel, sensor settings, rule sets and tool versions, from two commits of this
+repository (which the comparison names), and all 91 steps the same in what
+happened, in whether a sensor recorded them and in both outcomes. Two runs are
+one sample of the noise floor, not its measure: a pair of runs told below had
+one step that took effect on one runner and not on the other.
 
 ## A pair of runs for a change to the defense
 
@@ -1181,37 +1177,36 @@ watch works, auditd records the shell opening the file to empty it, in the
 audit session of the test's attack step, and the step goes from unseen to
 seen.
 
-**Its first pair**, run
-[45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
-of the pull request that made the change, shows that the watch records the
-test. Before, with the old audit rules, "Clear Bash history (echo)"
-(`test:cbf506a5`) had no telemetry; after, it is seen, by one event:
-`openat: /home/bluefire-lab/.bash_history` of the audit key `shell-history`,
-which only the changed rules define, written by the launcher's shell in the
-test's attack session. In all the after run holds 9 events of that key, one
-each on 9 steps, all of T1070.003; the 8 others were seen or alerted before
-too, and stayed so. The two runners differed: image `ubuntu24 20261116.133.1`
-and kernel `7.0.0-1014-aws` before, `ubuntu24 20261116.376.1` and
-`7.0.0-1017-azure` after. The run's own summary was written by an earlier
-version of `compare`, which refused every pair on two runners that differed,
-and gave no verdict. Its recordings do not say which audit keys their rules
-define, so this version refuses them too, with that reason. Written again with
-`bluefire-lab recording` of this version from each side's run folder in the
-artifacts `lab-run-base` and `lab-run` (the same recordings apart from the new
-`audit_keys`: `bluefire-lab-probe`, `process-start` and `shell-start` before,
-and `shell-history` as well after, as each run's loaded `audit-rules.txt`
-defines them) and compared outside CI with this version
-(`bluefire-lab compare --change sensors:auditd --two-runners`), they give a
-limited verdict: `test:cbf506a5` is better by the change's own mark, on two
-runners that differed, resting on that one event; its price is not known,
-since each run counted its ordinary activity on its own runner (8,858 ordinary
-events before and 8,779 after, 2 published rules that alerted on it in each);
-`test:23b91cd2` (T1518.001 Security Software Discovery - ps) is not
-attributable, since what happened differed too (on the after runner its
-output lacked the text its effect check looks for, so it took effect before
-and not after); the 89 other steps are the same. No CI run has yet written
-that verdict itself: not yet shown. Nor has a pair shown it on two runners of
-the same image and kernel: not yet shown.
+**The pair that shows it** is run
+[45362120784](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45362120784)
+of the pull request that made the change (its job "the change to the defense,
+before against after", and the artifact `lab-pair`). Before, with the old
+audit rules, "Clear Bash history (echo)" (`test:cbf506a5`) had no telemetry;
+after, it is seen, by one event: `openat: /home/bluefire-lab/.bash_history`
+of the audit key `shell-history`, which only the changed rules define, written
+by the launcher's shell in the test's attack session. In all the after run
+holds 9 events of that key, one each on 9 steps, all of T1070.003; the 8
+others were seen or alerted before too, and stayed so. The two runners
+differed (image `ubuntu24 20261116.376.1` and kernel `7.0.0-1017-azure`
+before, `ubuntu24 20261116.133.1` and `7.0.0-1014-aws` after), so the run's
+comparison gives a limited verdict: `test:cbf506a5` is better by the change's
+own mark, resting on that one event; its price is not known, since each run
+counted its ordinary activity on its own runner (8,964 ordinary events before
+and 8,804 after, 2 published rules that alerted on it in each); the 90 other
+steps are the same, and what happened is the same on all 91. One pair of
+runs.
+
+An earlier pair of the same change, run
+[45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637),
+recorded the same event on the same step, on two runners that differed the
+other way round. Its summary was written by an earlier version of `compare`,
+which refused every pair on two runners that differed, and its recordings do
+not say which audit keys their rules define, so this version refuses them
+too. In that pair one more step differed, `test:23b91cd2` (T1518.001 Security
+Software Discovery - ps): on one runner its output lacked the text its effect
+check looks for. That is what two runners can differ by, and why such a step
+is not credited to a change. A pair on two runners of the same image and
+kernel, with a verdict on every step: not yet shown.
 
 ## Before the loop: the sensor spike
 
