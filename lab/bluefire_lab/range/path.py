@@ -56,6 +56,7 @@ STEP_KEYS = {
     "cleanup",
     "check",
     "expect",
+    "plain",
 }
 STEP_REQUIRED = {"id", "technique", "guid", "name", "host", "account", "workdir", "args", "cleanup", "check"}
 PATH_KEYS = {"start", "hand_off", "goal", "steps"}
@@ -131,6 +132,8 @@ class Step:
     prereqs: tuple[tuple[str, ...], ...]
     # The published cleanup's vector, or None when the step runs no cleanup (cleanup: none).
     undo: tuple[str, ...] | None
+    # What the step does, in one plain sentence, for the recording.
+    plain: str = ""
 
 
 @dataclass(frozen=True)
@@ -320,6 +323,9 @@ def _step(value: object, number: int, spec: Spec, atomics: Path, seen: set[str])
         isinstance(r, int) and not isinstance(r, bool) for r in expect
     ):
         raise SpecError(f"{where}: expect must list Wazuh rule ids, as in [5715, 5501]")
+    plain = value.get("plain", "")
+    if not isinstance(plain, str) or "\n" in plain:
+        raise SpecError(f"{where}: plain must be one sentence that says what the step does")
     args = value["args"]
     if not isinstance(args, dict):
         raise SpecError(f"{where}: args must map each input argument of the test to its value")
@@ -388,6 +394,7 @@ def _step(value: object, number: int, spec: Spec, atomics: Path, seen: set[str])
         tuple(vectors["attack"]),
         tuple(tuple(prereq) for prereq in vectors["prereqs"]),
         None if value["cleanup"] == "none" else tuple(vectors["cleanup"]),
+        plain.strip(),
     )
 
 
@@ -899,6 +906,7 @@ class Executor:
             "technique": step.technique,
             "guid": step.guid,
             "name": step.name,
+            "plain": step.plain,
             "args": step.args,
             "timeout": step.timeout,
             "cleanup": step.cleanup,

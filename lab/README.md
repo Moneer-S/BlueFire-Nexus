@@ -1205,7 +1205,9 @@ where the line says so. `labels.*` holds keyword values only:
   the program start `engine:*` or the line holds the run's ID, which every
   nonce and mark of the engine and the name of every mark file it makes carry
   (what the plant checks and the seal's probes leave behind, such as a login's
-  session lines or a PHP session file, carries no ID); `ordinary` when the
+  session lines or a PHP session file, carries no ID); `cleanup` when snoopy
+  tagged it `cleanup:<id>`, or it is a file event inside a step's published
+  cleanup for a file the cleanup's command names; `ordinary` when the
   line is a job's as the [activity's counts](#range-one-ordinary-activity)
   sort it (tag, address, the path of a request, account, the files the job
   writes, inside the job's window), or when snoopy tagged it `job:<name>`; a
@@ -1214,9 +1216,13 @@ where the line says so. `labels.*` holds keyword values only:
   fetches is no job's, so it is `unattributed`; cron's session lines of a
   cron job's account inside the job's window are `ordinary` with no
   `labels.job`, since they do not tell one cron entry of the account from
-  another; `unattributed` for everything else, which is counted and listed
-  and never called ordinary. An alert takes the origin of its event in the archive (the
-  same agent, location, line and manager time).
+  another; `step`, with `labels.step_id` and `labels.tied_by`, for a line
+  tied to a step of the path (see
+  [the score](#range-one-the-score-and-the-recording)); `unattributed` for
+  everything else, which is counted and listed and never called ordinary. An
+  alert takes the origin of its event in the archive (the same agent,
+  location, line and manager time), and `labels.event_id` names that event's
+  `event.id`.
 
 Loading them into a tool, here [DuckDB](https://duckdb.org/) 1.4.1 from PyPI,
 run in a run folder (on the files of the run below it lists `ordinary`,
@@ -1307,6 +1313,91 @@ their tests publish none) and the prereq checks of the two steps that have
 one (`s01` and `s09`), 24 vectors in all. For the other nine steps the job
 checked that neither side started a prereq command. A run of the path in
 range one's hosts: not yet shown.
+
+## Range one: the score and the recording
+
+After the collection, a run of a range with a path says, for every step, what
+the defense made of it, into `manifest.json` (`score.path`), `score.md` and
+`steps.ecs.ndjson` (one ECS line per step: its daemon times, host, account,
+technique, the test's name and GUID, the exit code, what happened, the
+check's result, and the outcome below), and it writes `recording.json`, the
+run in the [recording format](../docs/RECORDING.md) that the app's live view
+plays. `bluefire-lab range score <run folder>` writes all of these again from
+a run folder's own files, with the spec the run's manifest holds, and starts
+nothing.
+
+**Ties.** Each archived event and each alert is the engine's, a cleanup's, a
+job's of the ordinary activity, a step's, or unattributed, by the first rule
+that holds (`lab/bluefire_lab/range/score.py`). What is neither the engine's,
+a cleanup's nor a job's is a step's only on evidence the run holds, by the
+first of: `session`, snoopy tagged the program start `step:<id>`; `account`,
+the line names an account only the path uses on its host (`webadmin` on
+`web`, `deploy` on `build`; the activity's loader refuses a job that uses
+one), inside the step's window; `address`, the line's own source address is
+an address of the host the step ran on, inside its window (sshd's lines on
+`web` from `attacker` in `s01`'s), or the line is on a host the step reached
+and its text names an address or the container name of the host the step ran
+on (sshd's and MariaDB's lines often carry the address only in their text);
+`content`, a file event for a path the step
+was given, or a line that names one, on a host the step ran on or reached,
+inside its window. A step's window runs from the Docker daemon's start of its
+test to 5 s after the daemon's end (a second longer, from the start of its
+second, for a line whose time is to the second). An event that only falls
+inside a window, on a host the step ran on or reached, is coincident: it
+keeps the origin `unattributed`, carries the step with `tied_by` `window`, is
+counted apart and never counts for the step. An alert takes the tie of the
+line it was raised on, so a correlation rule such as 40112 is tied by its own
+line and not by the lines before it. The counts of each origin add up to the
+raw lines.
+
+**What the defense made of each step**, in the words of the recording format:
+`alert` when an alert of the stock rules at level 12 or higher is tied to the
+step, `telemetry only` when an event is, `no telemetry` otherwise, and `not
+applicable` when the test did not start; the outcome follows the format's
+order (`alerted`, `seen`, `unseen`, `no effect`, `inconclusive`). A step
+cannot be `stopped` in range one: it configures no active response. The score
+also lists, per step, which agents recorded it, the rules that matched with
+their levels and first times, and the rules the spec expects of the step
+(`expect`) that did not appear.
+
+**The race.** The time from the start of the first step to the first alert at
+level 12 or higher on a step, against the time from the same start to the end
+of the step after which the goal check passed. One clock: a step's times are
+the Docker daemon's `exec_start` and `exec_die`, an alert's the manager's time
+of it, and both read the kernel clock of the machine that runs the
+containers; the engine's own clock is not used. Each run checks it: every
+program start snoopy logged in a step's session, at rsyslog's time in its
+container, must fall inside its step's daemon times, and every step's times
+must be the daemon's. When the check fails, the race is labelled "not a
+result" in the score, left out of the recording, and the CI job fails. The
+manager's own time of
+a line can run seconds behind the time rsyslog wrote on it, so an alert counts
+from the manager's time of it, or from its line's time when that is later, and
+the score gives the spread it measured. Beside the race stand the ordinary
+day's false alerts and their denominators
+([above](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day)).
+
+**The recording.** The seven hosts with their roles and addresses, a link
+between every two that share a network, the three Wazuh agents as sensors,
+the manager's stock rules as the detector `pinned` that ran live, each step
+with its published name and one plain sentence (`plain` in the spec), its
+command and output, and the events and alerts tied to it, at most 300 events
+of a step and every one an alert was raised on; a step that went to another
+host (`to` in the spec) is on that host, `from` its own. An alert has the time
+of its line and `raised`, the manager's time of it. Two words joined the
+format's ties for this: `address` and `content`. The app's import accepts such
+a recording, and the single page plays it:
+
+```bash
+bluefire-lab replay <run folder>/recording.json --template bluefire/ui/replay.html --out replay.html
+```
+
+The `range-one` job keeps `recording.json`, the three ECS files and
+`replay.html` in its artifact, and shows the path's score in its summary.
+What a run of it shows, each step's outcome, the time to the first alert and
+the time to the goal: not yet shown.
+
+<!-- CI run of the score: its link and table go here. -->
 
 ## Not yet shown
 

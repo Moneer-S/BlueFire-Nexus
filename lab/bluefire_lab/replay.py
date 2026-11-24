@@ -14,9 +14,11 @@ from pathlib import Path
 # The page's template holds the recording, and where it comes from, each in one element of its own.
 ELEMENTS = ("bluefire-recording", "bluefire-origin")
 MADE_HERE = (
-    "Made by this repository's lab workflow in the CI run at {run_url}, from the recording that run made."
+    "Made by this repository's {workflow} in the CI run at {run_url}, from the recording that run made."
 )
-RECORDED = "Recorded by this repository's lab workflow in the CI run at {run_url}."
+RECORDED = "Recorded by this repository's {workflow} in the CI run at {run_url}."
+# The workflow that records each kind: the lab's single host runs a test list, a range an attack path.
+WORKFLOWS = {"attack path": "range one workflow"}
 
 
 def origin(recording: dict, made_in: str | None = None) -> dict | None:
@@ -29,7 +31,8 @@ def origin(recording: dict, made_in: str | None = None) -> dict | None:
     if not run_url:
         return None
     note = MADE_HERE if made_in == run_url else RECORDED
-    return {"kind": "lab run", "run_url": run_url, "note": note.format(run_url=run_url)}
+    workflow = WORKFLOWS.get(recording.get("kind"), "lab workflow")
+    return {"kind": "lab run", "run_url": run_url, "note": note.format(run_url=run_url, workflow=workflow)}
 
 
 def fill(template: str, recording: dict, made_in: str | None = None) -> str:

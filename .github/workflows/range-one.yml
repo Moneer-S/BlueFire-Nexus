@@ -356,16 +356,34 @@ jobs:
         run: |
           if ! jq -e '
             .ecs.error == null
-            and (.ecs.files | length) == 2
+            and (.ecs.files | keys) == ["alerts.ecs.ndjson", "events.ecs.ndjson", "steps.ecs.ndjson"]
             and (.ecs.files | all(."raw lines" == ."ECS lines" and ."raw lines" > 0))
             and .score.scored == true
           ' "$OUT/run/manifest.json" > /dev/null; then
             jq '{ecs, score: (.score | {scored, "not scored"})}' "$OUT/run/manifest.json"
             exit 1
           fi
-          for file in events.ecs.ndjson alerts.ecs.ndjson; do
+          for file in events.ecs.ndjson alerts.ecs.ndjson steps.ecs.ndjson; do
             echo "$file: $(wc -l < "$OUT/run/$file") lines"
           done
+
+      # What the defense made of each step is scored, and recording.json, the run in the format the
+      # app's live view plays, was written; the single replay page is made from it. The clock check must
+      # pass, or the race is not a result and the job fails rather than show it.
+      - name: Every step is scored, and the recording plays
+        run: |
+          if ! jq -e '
+            (.score.path.steps | length) == (.path.planned | length)
+            and (.score.path.race | has("says"))
+            and .score.path.clock.agree == true
+            and .recording.error == null
+          ' "$OUT/run/manifest.json" > /dev/null; then
+            jq '{recording, race: .score.path.race, clock: .score.path.clock}' "$OUT/run/manifest.json"
+            exit 1
+          fi
+          "$LAB" replay "$OUT/run/recording.json" --template bluefire/ui/replay.html \
+            --out "$OUT/run/replay.html" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Summary
         if: always()
