@@ -2,7 +2,7 @@
 // each line's real time, and a mark where a rule matched it.
 
 import { memo } from "react";
-import type { Recording, RecordingEvent } from "./recording";
+import type { Alert, Recording, RecordingEvent } from "./recording";
 import { alertMoment, timeOf } from "./recording";
 import { clockTime, count, kindRank, matchKind, middleCut, sensorWord, stepLabel, strongerKind } from "./format";
 import type { MatchKind } from "./format";
@@ -65,9 +65,25 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
     for (const id of alert.events) marks.set(id, strongerKind(marks.get(id) ?? null, kind));
   }
   const refusal = moment?.step.outcome === "stopped" ? refusalOf(events) : undefined;
-  // A late arrival, a match of an earlier step raised after that step ended, takes a line at the foot of the log.
-  const late = (moment?.late ?? []).slice(-LATE_LINES);
-  const lines = LINES - late.length;
+  // A late arrival, a match of an earlier step raised after that step ended,
+  // takes a line at the foot of the log. Past the room for them, the first
+  // line counts and names the earlier ones, so the log never says fewer than the score counts.
+  const allLate = moment?.late ?? [];
+  const late = allLate.slice(-LATE_LINES + (allLate.length > LATE_LINES ? 1 : 0));
+  const earlier = allLate.slice(0, allLate.length - late.length);
+  const lines = LINES - late.length - (earlier.length > 0 ? 1 : 0);
+  const lateName = (alert: Alert) => {
+    const owner = recording.steps.find((item) => item.id === alert.step);
+    return `${owner ? stepLabel(recording, owner) : alert.step}: ${alert.rule.title}`;
+  };
+  const lastEarlier = earlier[earlier.length - 1];
+  const earlierLine = lastEarlier
+    ? {
+        text: earlier.map(({ alert }) => lateName(alert)).join(", "),
+        kind: earlier.reduce<MatchKind | null>((kind, { alert }) => strongerKind(kind, matchKind(alert)), null) ?? "launcher",
+        time: clockTime(alertMoment(lastEarlier.alert)),
+      }
+    : null;
   const pinned = events.filter((event) => event === refusal || marks.has(event.id)).sort((a, b) => kindRank(marks.get(b.id) ?? "launcher") - kindRank(marks.get(a.id) ?? "launcher")).slice(0, lines - 1);
   const rest = events.filter((event) => !pinned.includes(event));
   const shown = [...rest.slice(-(lines - pinned.length)), ...pinned].sort((a, b) => events.indexOf(a) - events.indexOf(b));
@@ -125,10 +141,20 @@ function EventLogView({ recording, moment, total, colours, onOpen }: EventLogPro
           );
         })}
         {moment && moment.revealed && events.length === 0 ? <div className="lv-log-none">Nothing recorded.</div> : null}
+        {earlierLine ? (
+          <div className={`lv-log-line is-late${earlierLine.kind === "launcher" ? "" : ` is-${earlierLine.kind}`}`} style={{ "--rgb": KIND_RGB[earlierLine.kind] } as StyleVars}>
+            <span className="lv-log-time">{earlierLine.time}</span>
+            <i className="lv-dot" title="Raised after their steps ended" />
+            <span className="lv-log-kind">{earlier.length} more late</span>
+            <span className="lv-log-text" title={earlierLine.text}>
+              {middleCut(earlierLine.text, room)}
+            </span>
+            <span className="lv-log-mark">{MARK_WORDS[earlierLine.kind]}</span>
+          </div>
+        ) : null}
         {late.map(({ alert }) => {
           const kind = matchKind(alert);
-          const owner = recording.steps.find((item) => item.id === alert.step);
-          const text = `${owner ? stepLabel(recording, owner) : alert.step}: ${alert.rule.title}`;
+          const text = lateName(alert);
           return (
             <div key={`late:${alert.id}`} className={`lv-log-line is-late${kind === "launcher" ? "" : ` is-${kind}`}`} style={{ "--rgb": KIND_RGB[kind] } as StyleVars}>
               <span className="lv-log-time">{clockTime(alertMoment(alert))}</span>

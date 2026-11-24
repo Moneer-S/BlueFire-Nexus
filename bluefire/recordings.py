@@ -63,7 +63,14 @@ SHIPPED_NOTE = (
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# Control characters as docs/RECORDING.md means them: C0, DEL and C1, the direction marks,
+# embeddings, overrides and isolates, and the line and paragraph separators. Each can make
+# a name read otherwise on screen than it is written.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
+# A GitHub repository as `owner/name`, the only form a run's address is checked against.
+_REPOSITORY = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
+# The roles of a step that runs another step again, and so names it in `compared_with`.
+_RERUNS = ("hardened", "variant")
 # Half of a character pair on its own: JSON can escape it, UTF-8 cannot write it.
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 _TOP_LEVEL = {
@@ -325,6 +332,11 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
         check.fail("source.finished", "is earlier than source.started.")
     for key in ("repository", "commit", "run_url"):
         check.text(source, key, "source", required=False, limit=_MAX_LINE)
+    repository = source.get("repository")
+    if isinstance(repository, str) and repository.strip() and not _REPOSITORY.fullmatch(repository):
+        check.fail(
+            "source.repository", "must be a GitHub repository as owner/name, such as example/lab."
+        )
     if check.present(source, "tools", "source", required=True):
         for index, tool in enumerate(check.items(source["tools"], "source.tools", 100)):
             check.text(tool, "name", f"source.tools[{index}]")
@@ -513,6 +525,7 @@ def _check_agreement(
     sensor_hosts = {sensor["id"]: sensor["host"] for sensor in value["network"]["sensors"]}
     detector_when = {item["id"]: item["when"] for item in value["network"]["detectors"]}
     event_steps = {event["id"]: event["step"] for event in events}
+    event_times = {event["id"]: (_time(event["time"]), event["time"]) for event in events}
     held = Counter(event["step"] for event in events)
     # The earliest time of each kind on each step, as (time, the recording's own text).
     # An alert counts from its moment: when it was raised, for a live detector, and
@@ -544,6 +557,9 @@ def _check_agreement(
     in_order("steps", [step["order"] for step in steps], "order")
     in_order("events", [_time(event["time"]) for event in events], "time")
     in_order("alerts", [_time(alert["time"]) for alert in alerts], "time")
+    _check_steps_run_forward(steps, events, alerts, check)
+    _check_reruns(steps, check)
+    _check_ordinary(value, check)
     for index, event in enumerate(events):
         inside(f"events[{index}].time", event["time"])
         earliest(first_event, event["step"], event["time"])
@@ -576,9 +592,17 @@ def _check_agreement(
             check.fail(f"{where}.events", "is empty, but an alert that counts matched an event.")
         if any(event_steps[event_id] != alert["step"] for event_id in alert["events"]):
             check.fail(f"{where}.events", "names an event of another step.")
+        # An alert's moment: when it was raised, for a live detector, else its time.
+        live = detector_when.get(detector) == "live" and "raised" in alert
+        moment = alert["raised"] if live else alert["time"]
+        named = [event_times[event_id] for event_id in alert["events"]]
+        if named and _time(moment) < min(named)[0]:
+            check.fail(
+                f"{where}.{'raised' if live else 'time'}",
+                f"is {moment}, earlier than the earliest event the alert matched, at "
+                f"{min(named)[1]}: an alert comes after the first event it names.",
+            )
         if alert["counts"]:
-            live = detector_when.get(detector) == "live" and "raised" in alert
-            moment = alert["raised"] if live else alert["time"]
             earliest(first_counting, alert["step"], moment)
             earliest(by_activity["first_alert_with_lab_rules"], alert["step"], alert["time"])
             if origin == "pinned":
@@ -691,9 +715,19 @@ def _check_agreement(
         expected_score["alerted_with_lab_rules"] = sum(
             step.get("outcome_with_lab_rules", step["outcome"]) == "alerted" for step in took
         )
-    if "false_alerts" in score and "ordinary" in value:
-        expected_score["false_alerts"] = sum(
-            match["level"] in _COUNTING_LEVELS for match in value["ordinary"]["matches"]
+    if "false_alerts" in score and "ordinary" not in value:
+        check.fail(
+            "score.false_alerts",
+            "is set, but the recording has no ordinary activity to count it from.",
+        )
+    elif "false_alerts" in score:
+        # Each rule that alerted on ordinary activity is one false alert.
+        expected_score["false_alerts"] = len(
+            {
+                match["rule"]
+                for match in value["ordinary"]["matches"]
+                if match["level"] in _COUNTING_LEVELS
+            }
         )
     for key, number in expected_score.items():
         if score[key] != number:
@@ -701,52 +735,189 @@ def _check_agreement(
     _check_race(value, first_pinned, check)
 
 
+def _check_ordinary(value: Mapping[str, Any], check: _Checker) -> None:
+    """Each rule of ordinary activity is listed once, with no more events than there were."""
+
+    ordinary = value.get("ordinary")
+    if ordinary is None:
+        return
+    listed: set[str] = set()
+    for index, match in enumerate(ordinary["matches"]):
+        where = f"ordinary.matches[{index}]"
+        if match["rule"] in listed:
+            check.fail(
+                f"{where}.rule", f"names {match['rule'][:80]!r} again; each rule is listed once."
+            )
+        listed.add(match["rule"])
+        if match["count"] > ordinary["events"]:
+            check.fail(
+                f"{where}.count",
+                f"is {match['count']}, more than the {ordinary['events']} events of ordinary "
+                "activity.",
+            )
+
+
+def _check_reruns(steps: list[Mapping[str, Any]], check: _Checker) -> None:
+    """A hardened or variant step names an earlier step that is neither, never itself."""
+
+    place = {step["id"]: index for index, step in enumerate(steps)}
+    for index, step in enumerate(steps):
+        target = step.get("compared_with")
+        if target is None:
+            continue
+        where = f"steps[{index}].compared_with"
+        other = steps[place[target]]
+        if step["role"] not in _RERUNS:
+            check.fail(
+                where,
+                f"is set on a step of role {step['role']}; only a hardened or variant step "
+                "repeats another.",
+            )
+        elif target == step["id"]:
+            check.fail(
+                where, "names the step itself; a rerun is compared with the step it repeats."
+            )
+        elif place[target] > index:
+            check.fail(
+                where, f"names {target!r}, a later step; a rerun repeats a step run before it."
+            )
+        elif other["role"] in _RERUNS:
+            check.fail(
+                where,
+                f"names {target!r}, a {other['role']} step itself; a rerun is compared with a "
+                "step that is neither.",
+            )
+
+
+def _check_steps_run_forward(
+    steps: list[Mapping[str, Any]],
+    events: list[Mapping[str, Any]],
+    alerts: list[Mapping[str, Any]],
+    check: _Checker,
+) -> None:
+    """Steps run forward in their order, one after another, and none ends before it starts.
+
+    Playback gives each step the stretch of the run from its start, or its earliest event
+    or alert, to its end, or its latest event or alert: a sensor stamps its own records, a
+    little before a step's start or after its end. Those stretches follow one another in
+    the steps' order, so no step's window is moved or squeezed to fit.
+    """
+
+    stamps: dict[str, list[tuple[datetime, str]]] = {step["id"]: [] for step in steps}
+    for item in [*events, *alerts]:
+        stamps[item["step"]].append((_time(item["time"]), item["time"]))
+    last_start: tuple[int, tuple[datetime, str]] | None = None
+    last_end: tuple[int, tuple[datetime, str]] | None = None
+    last_window: tuple[int, tuple[datetime, str]] | None = None
+    for index, step in enumerate(steps):
+        where = f"steps[{index}]"
+        started = (_time(step["started"]), step["started"]) if "started" in step else None
+        ended = (_time(step["ended"]), step["ended"]) if "ended" in step else None
+        own = stamps[step["id"]]
+        if started is not None and ended is not None and ended[0] < started[0]:
+            check.fail(
+                f"{where}.ended", f"is {ended[1]}, earlier than the step's started, {started[1]}."
+            )
+            continue
+        if started is not None and last_start is not None and started[0] < last_start[1][0]:
+            check.fail(
+                f"{where}.started",
+                f"is {started[1]}, earlier than the start of steps[{last_start[0]}], the step "
+                "before it: steps run forward in their order.",
+            )
+            continue
+        if started is not None and last_end is not None and started[0] < last_end[1][0]:
+            check.fail(
+                f"{where}.started",
+                f"is {started[1]}, earlier than the end of steps[{last_end[0]}], the step before "
+                "it: steps do not overlap.",
+            )
+            continue
+        starts = [moment for moment in (started, *own) if moment is not None]
+        ends = [moment for moment in (ended, started, *own) if moment is not None]
+        first = min(starts) if starts else (min(ends) if ends else None)
+        if first is not None and last_window is not None and first[0] < last_window[1][0]:
+            check.fail(
+                where,
+                f"begins at {first[1]}, before steps[{last_window[0]}] ends at "
+                f"{last_window[1][1]}: a step's events and alerts come after those of the step "
+                "before it.",
+            )
+            continue
+        if started is not None:
+            last_start = (index, started)
+        if ended is not None or started is not None:
+            last_end = (index, max(moment for moment in (ended, started) if moment is not None))
+        if ends:
+            last_window = (index, max(ends))
+
+
 def _check_race(
     value: Mapping[str, Any], first_raised: Mapping[str, tuple[datetime, str]], check: _Checker
 ) -> None:
-    """Check the two times of an attack path's race against what its steps give.
+    """Check the goal and the two times of an attack path's race against its steps.
 
-    ``first_raised`` holds the earliest moment of a counting published alert on each
-    step, the step's ``first_alert``: its ``raised`` time for a live detector, else its
-    ``time``. ``goal_seconds`` must end at the end of one of the steps; the format does
-    not say which step reached the goal, so that is not checked.
+    An attack path begins with a step of role ``test`` that has a ``started``, and the
+    race counts from that one moment: ``first_alert_seconds`` to the first counting
+    alert of a published rule on a test, at its moment (``first_raised``, each step's
+    ``first_alert``: its ``raised`` time for a live detector, else its ``time``), and
+    ``goal_seconds`` to the end of one of the steps. The format does not say which step
+    reached the goal, so that is not checked.
     """
 
     score, steps = value["score"], value["steps"]
+    goal = value["attacker"]["goal"]
     if value["kind"] == "test list":
+        if goal is not None:
+            check.fail("attacker.goal", "is set, but a test list has no goal: it is null.")
         for key in ("first_alert_seconds", "goal_seconds"):
             if key in score:
                 check.fail(f"score.{key}", "is written only for an attack path.")
         return
-    starts = [_time(step["started"]) for step in steps if "started" in step]
-    test_starts = [
-        _time(step["started"]) for step in steps if step["role"] == "test" and "started" in step
-    ]
+    if "goal_seconds" in score and goal is None:
+        check.fail("score.goal_seconds", "is set, but the attacker has no goal.")
+    origin: datetime | None = None
+    if steps:
+        first = steps[0]
+        if first["role"] != "test":
+            check.fail(
+                "steps[0].role",
+                f"is {first['role']}, but an attack path begins with a step of role test: its "
+                "race counts from that step's start.",
+            )
+        elif "started" not in first:
+            check.fail(
+                "steps[0].started",
+                "is missing, but an attack path's race counts from its first step's start.",
+            )
+        else:
+            origin = _time(first["started"])
     test_alerts = [
         first_raised[step["id"]][0]
         for step in steps
         if step["role"] == "test" and step["id"] in first_raised
     ]
     if "first_alert_seconds" in score:
-        if not test_starts or not test_alerts:
+        if not test_alerts:
             check.fail(
                 "score.first_alert_seconds",
-                "is set, but no step of role test has a start and a counting alert of a "
-                "published rule.",
+                "is set, but no step of role test has a counting alert of a published rule.",
             )
-        else:
+        elif origin is not None:
             # A sensor can stamp the alert a few milliseconds before the step's start.
-            expected = max(0.0, (min(test_alerts) - min(test_starts)).total_seconds())
+            expected = max(0.0, (min(test_alerts) - origin).total_seconds())
             if abs(score["first_alert_seconds"] - expected) > 0.001:
                 check.fail(
                     "score.first_alert_seconds",
                     f"is {score['first_alert_seconds']}, but the steps give {expected:.3f}.",
                 )
-    if "goal_seconds" in score:
+    # With no steps there is no step end to reach the goal at; with a first step that is
+    # not a timed test, that step has already been refused.
+    if "goal_seconds" in score and (origin is not None or not steps):
         ends = [
-            (_time(step["ended"]) - min(starts)).total_seconds()
+            (_time(step["ended"]) - origin).total_seconds()
             for step in steps
-            if starts and "ended" in step
+            if "ended" in step and origin is not None
         ]
         if not any(abs(score["goal_seconds"] - end) <= 0.001 for end in ends):
             check.fail(

@@ -131,14 +131,23 @@ interface LateLine {
   kind: MatchKind;
   /** The step it belongs to, in words: "test 3". */
   label: string;
+  /** The earlier late arrivals on the same engine while this step is on screen, each "Rule (test 1)". */
+  earlier: string[];
 }
 
+/** How many late arrivals an engine's tooltip names, the newest ones: the rest are counted. Analyse mode names each on its step. */
+const LATE_NAMES = 40;
+
 function LateMatch({ late }: { late: LateLine }) {
+  const named = [...late.earlier.slice(-(LATE_NAMES - 1)), `${late.alert.rule.title} (${late.label})`];
+  const before = late.earlier.length + 1 - named.length;
   return (
-    <div className="lv-match lv-match--late" title={`${late.alert.rule.title}: a match of ${late.label}, raised after that step ended`}>
+    <div className="lv-match lv-match--late" title={`Raised after their steps ended: ${before > 0 ? `${before} earlier ones, then ` : ""}${named.join(", ")}`}>
       <MatchChip kind={late.kind} level={late.alert.rule.level} />
       <span className="lv-match-title">{late.alert.rule.title}</span>
-      <span className="lv-match-count">{late.label}, late</span>
+      <span className="lv-match-count">
+        {late.label}, late{late.earlier.length > 0 ? ` · ${late.earlier.length} more late` : ""}
+      </span>
     </div>
   );
 }
@@ -260,6 +269,17 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
   // What each rule engine shows: the strongest match whose light has landed,
   // and a late arrival of an earlier step, which lights it again when raised.
   const engine = new Map<string, { kind: MatchKind; first: number; lines: MatchLine[]; late: LateLine | null }>();
+  // A step's name is worked out once, however many late arrivals are its own.
+  const labels = new Map<string, string>();
+  const labelOf = (stepId: string): string => {
+    let label = labels.get(stepId);
+    if (label === undefined) {
+      const owner = recording.steps.find((item) => item.id === stepId);
+      label = owner ? stepLabel(recording, owner) : stepId;
+      labels.set(stepId, label);
+    }
+    return label;
+  };
   for (const node of layout.detectors) {
     const lines = moment ? matchLines(moment.landed, node.detector.id) : [];
     let kind: MatchKind | null = null;
@@ -274,11 +294,14 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
       } else if (own === kind) first = Math.min(first, at);
     }
     let late: LateLine | null = null;
+    // The names of the arrivals before the last one, in one list that grows with the walk:
+    // a copy for every arrival would cost the square of their number at every frame.
+    const earlier: string[] = [];
     for (const fire of moment?.late ?? []) {
       if (fire.alert.detector !== node.detector.id) continue;
       const own = matchKind(fire.alert);
-      const owner = recording.steps.find((item) => item.id === fire.alert.step);
-      late = { alert: fire.alert, kind: own, label: owner ? stepLabel(recording, owner) : fire.alert.step };
+      if (late) earlier.push(`${late.alert.rule.title} (${late.label})`);
+      late = { alert: fire.alert, kind: own, label: labelOf(fire.alert.step), earlier };
       if (own !== "launcher" && (kind === null || kindRank(own) >= kindRank(kind))) {
         kind = own;
         first = fire.at;

@@ -130,10 +130,13 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
             "no test raised an alert"
           )}
         </dd>
-        {score.goal_seconds !== undefined ? (
+        {recording.kind === "attack path" && recording.attacker.goal !== null ? (
           <>
             <dt>Goal</dt>
-            <dd>reached {elapsed(score.goal_seconds)} after the first step</dd>
+            <dd>
+              {recording.attacker.goal}
+              <small>{score.goal_seconds !== undefined ? `Reached ${elapsed(score.goal_seconds)} after the first step.` : "The recording does not say it was reached."}</small>
+            </dd>
           </>
         ) : null}
         <dt>Length</dt>

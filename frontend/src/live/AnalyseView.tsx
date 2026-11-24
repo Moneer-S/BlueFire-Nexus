@@ -79,6 +79,7 @@ export function AnalyseView({ recording, timeline, facts, colours, select, focus
               testNumber={numbers.get(row.step.id)}
               testsTotal={numbers.size}
               origin={facts.start}
+              originWords={facts.startWords}
               onSelect={chooseInTable}
               onWatch={onWatch}
               onFix={onFix}

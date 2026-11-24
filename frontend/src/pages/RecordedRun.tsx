@@ -7,7 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { api, type RecordingList, type RecordingSummary } from "../lib/api";
-import { addressShows, momentFromSearch, momentSearch, originWords, recordingKindWords, withSummary } from "../lib/recorded-runs";
+import { addressShows, momentFromSearch, momentSearch, namesMissingStep, originWords, recordingKindWords, withSummary } from "../lib/recorded-runs";
 import { LiveView, type LiveMoment, type LiveViewProps } from "../live/LiveView";
 import { LiveViewBoundary } from "../live/LiveViewBoundary";
 import { RecordingError, readRecording, type Recording } from "../live/recording";
@@ -129,19 +129,29 @@ function RecordedRunView({ recording }: { recording: Recording }) {
   // The address this page last wrote, or opened with. Any other is a moment someone asked for.
   const written = useRef(searchParams.toString());
   const address = searchParams.toString();
+  // Where the view opened, as an address, when the address named a step the recording does not hold.
+  // Until the viewer moves from there, the address keeps naming that step, as the line under the title
+  // does: it does not take the place the view fell back to for the one that was asked for.
+  const opened = useRef<{ search: string; left: boolean } | null>(null);
+  const missing = namesMissingStep(recording, initial);
 
   // The address follows the viewer, replacing itself, so moving through a run adds nothing to the browser's history.
   // Only while the address is still this run's: once someone has gone to another page, writing it would take them back.
   const onMoment = useCallback((moment: LiveMoment) => {
     latest.current = moment;
     window.clearTimeout(pending.current);
+    const next = momentSearch(moment).toString();
+    if (missing && !opened.current?.left) {
+      opened.current ??= { search: next, left: false };
+      if (next === opened.current.search) return;
+      opened.current.left = true;
+    }
     pending.current = window.setTimeout(() => {
-      const next = momentSearch(moment).toString();
       if (next === written.current || !addressShows(pathname)) return;
       written.current = next;
       setSearchParams(next, { replace: true, preventScrollReset: true });
     }, ADDRESS_SETTLE_MS);
-  }, [pathname, setSearchParams]);
+  }, [missing, pathname, setSearchParams]);
   useEffect(() => () => window.clearTimeout(pending.current), []);
 
   // A link to another moment of this run, or the browser's Back, opens the view there.
@@ -149,6 +159,7 @@ function RecordedRunView({ recording }: { recording: Recording }) {
     if (address === written.current) return;
     window.clearTimeout(pending.current);
     written.current = address;
+    opened.current = null;
     setFixing(null);
     setInitial(momentFromSearch(new URLSearchParams(address)));
     setMount((value) => value + 1);
@@ -159,6 +170,7 @@ function RecordedRunView({ recording }: { recording: Recording }) {
     const now = latest.current;
     setFixing(stepId);
     if (now?.mode === "analyse" && now.select === stepId) return;
+    opened.current = null;
     setInitial({ step: stepId, paused: true, mode: "analyse", select: stepId });
     setMount((value) => value + 1);
   }, []);
