@@ -933,8 +933,12 @@ starts each cron job at least once. It shows `activity.md` in its summary and
 fails unless every job ran at least once and the line of at least one of its
 runs reached the archive. The delivery counts of the same run are taken with
 the jobs running, so the job's check for a delivery gap also shows whether
-every line still reaches the manager under that load. Not yet shown: a run of
-that job with the activity on a GitHub-hosted runner.
+every line still reaches the manager under that load. In
+[run 45337096555](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45337096555)
+on a GitHub-hosted runner the range was sealed and every job ran in the 2.4
+minutes from the first go to the last stop: `browse` 15 times, `admin` twice,
+`cache` and `build` three times each and `backup` once. The line of every one
+of those runs reached the manager's archive, and the run had no delivery gap.
 
 ## Range one: the path
 
