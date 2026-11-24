@@ -8,12 +8,14 @@ Every archived event and every alert gets one origin, by the first rule that hol
    seal's probes leave behind (a login's session lines, a PHP session file)
    carries no ID.
 2. `ordinary`: it is a job's of the ordinary activity, sorted to the job as
-   `activity.attribute` sorts it (the job's tag, its host's address, the
-   account it logs in as, the files it writes, inside its window); or snoopy
-   tagged it `job:<name>`. `labels.job` names the job. Cron's session line of
-   a cron job's account inside the job's window is ordinary with no
-   `labels.job`, since it does not tell one cron entry of the account from
-   another.
+   `activity.attribute` sorts it (the job's tag, its host's address, the path
+   of an http job's request, the account it logs in as, the files it writes,
+   inside its window); or snoopy tagged it `job:<name>`. A program start with
+   another job's tag is never an ssh job's by its account or address, and an
+   nginx line for a path no job fetches is no job's. `labels.job` names the
+   job. Cron's session line of a cron job's account inside the job's window is
+   ordinary with no `labels.job`, since it does not tell one cron entry of the
+   account from another.
 3. `unattributed`: everything else. These are listed and counted, and never
    called ordinary. A step of the path will claim its events from among them.
 

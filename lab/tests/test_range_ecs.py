@@ -200,6 +200,28 @@ def test_a_job_line_outside_the_jobs_window_is_not_the_jobs_unless_it_carries_it
     assert found == [("unattributed", None), ("ordinary", "cache")]
 
 
+def test_an_nginx_line_from_client_for_a_path_no_job_fetches_is_unattributed() -> None:
+    # Built from the real line: the same request from client's address, inside browse's window,
+    # for a path that is not one of browse's.
+    other = line("nginx 404 from client")
+    other["full_log"] = other["full_log"].replace("GET /missing ", "GET /admin.php ")
+    other["data"]["url"] = "/admin.php"
+
+    assert origin_of([line("nginx 404 from client"), other]) == [
+        ("ordinary", "browse"),
+        ("unattributed", None),
+    ]
+
+
+def test_a_program_start_with_another_jobs_tag_is_that_jobs_and_not_the_ssh_job_of_its_account() -> None:
+    # Built from the real line: cache's program start as it would be with ops as its login, the
+    # account admin logs in to web as. Its tag says whose it is, whichever job comes first.
+    tagged = line("snoopy line of the cache job")
+    tagged["data"]["login"] = "ops"
+
+    assert origin_of([tagged]) == [("ordinary", "cache")]
+
+
 def test_every_ecs_line_keeps_the_whole_raw_line_under_wazuh() -> None:
     for raw in ARCHIVE:
         mapped = ecs.event(raw, "unattributed")

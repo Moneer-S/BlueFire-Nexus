@@ -924,7 +924,8 @@ scored in [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the
   lines of its sessions (sshd's motd scripts and what sudo starts without the
   tag) and in PAM's, sshd's and sudo's lines, the close of a sudo session the
   job opened, and the files the job writes (`writes` in the spec) for file
-  integrity events. An event counts
+  integrity events. A snoopy line with another job's tag or the engine's is
+  never this job's, by address or by account. An event counts
   for one job at most, and the engine's mark files, one of which is in PHP's
   session folder, for none. Cron's session lines of a cron job's account are
   counted apart, as "cron sessions of the account": cron opens one for every
@@ -1000,8 +1001,11 @@ where the line says so. `labels.*` holds keyword values only:
   (what the plant checks and the seal's probes leave behind, such as a login's
   session lines or a PHP session file, carries no ID); `ordinary` when the
   line is a job's as the [activity's counts](#range-one-ordinary-activity)
-  sort it (tag, address, account, the files the job writes, inside the job's
-  window), or when snoopy tagged it `job:<name>`; cron's session lines of a
+  sort it (tag, address, the path of a request, account, the files the job
+  writes, inside the job's window), or when snoopy tagged it `job:<name>`; a
+  program start with a job's tag is that job's and no other's, whatever
+  account it runs as, and an nginx line from `client` for a path that no job
+  fetches is no job's, so it is `unattributed`; cron's session lines of a
   cron job's account inside the job's window are `ordinary` with no
   `labels.job`, since they do not tell one cron entry of the account from
   another; `unattributed` for everything else, which is counted and listed
@@ -1010,7 +1014,7 @@ where the line says so. `labels.*` holds keyword values only:
 
 Loading them into a tool, here [DuckDB](https://duckdb.org/) 1.4.1 from PyPI,
 run in a run folder (on the run below it lists, for example, `ordinary`,
-`build`, rule 554, 30 alerts first):
+`build`, rule 554, 27 alerts first):
 
 ```python
 import duckdb
@@ -1045,23 +1049,24 @@ jobs do, which is all it prices: a rule that fires only on something else,
 such as a password login or a failed login, is not priced by it.
 
 One run of range one in Docker on a developer machine (not a CI run), with
-the range held 90 s as the `range-one` job holds it: 3.01 minutes of
-activity, with `browse` 22 runs, `admin` 2, `cache` 3, `build` 3 and `backup`
-1, each run also counted in the archive. Its archive held 690 events and its
-alerts 138, and both ECS files had as many lines:
+the range held 90 s as the `range-one` job holds it: 3.35 minutes of
+activity, with `browse` 24 runs, `admin` 2, `cache` 3, `build` 3 and `backup`
+1, each run also counted in the archive. Its archive held 708 events and its
+alerts 132, and both ECS files had as many lines:
 
 | Origin | Events | Alerts 0 to 3 | Alerts 4 to 6 | Alerts 7 to 11 | Alerts 12 to 14 | Alerts 15 |
 | --- | --- | --- | --- | --- | --- | --- |
 | engine | 290 | 0 | 18 | 18 | 0 | 0 |
-| ordinary | 192 | 12 | 55 | 12 | 0 | 0 |
-| unattributed | 208 | 15 | 8 | 0 | 0 | 0 |
+| ordinary | 191 | 12 | 54 | 10 | 0 | 0 |
+| unattributed | 227 | 15 | 5 | 0 | 0 | 0 |
 
 False alerts: 0 rules at level 12 or higher. For review: 550 "Integrity
-checksum changed." (level 7) 10 times, 8 on `build`'s clone and 2 on PHP
-session files of `browse`, and 553 "File deleted." (level 7) twice on
-`cache`'s files. No alert at level 12 or higher on the engine's work or on
-unattributed events. Zero false alerts here is a result about those 3.01
-minutes and that work only. The same table from the
+checksum changed." (level 7) 8 times, all on `build`'s clone, and 553 "File
+deleted." (level 7) twice on `cache`'s files. No alert at level 12 or higher
+on the engine's work or on unattributed events. The one nginx line from
+`client` that is unattributed is a plant check's request, 6 s before the go.
+Zero false alerts here is a result about those 3.35 minutes and that work
+only. The same table from the
 `range-one` job on a GitHub-hosted runner: not yet shown.
 
 The engine's own seal probes and plant checks before the go and after the

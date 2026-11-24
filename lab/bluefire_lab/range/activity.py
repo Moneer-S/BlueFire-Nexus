@@ -731,9 +731,11 @@ def cron_session(job: Job, event: dict) -> bool:
 def source(job: Job, event: dict, addresses: list[str]) -> str | None:
     """The source by which an archive event is the job's, or None when it is not.
 
-    Cron's session lines are not any one job's: cron opens one for every entry
-    of an account each minute, the job's own before the go too, and for root's
-    stock entries; `count` counts them apart.
+    A program start that carries another job's tag or the engine's is not this
+    job's, even when it runs as the account the job logs in as. Cron's session
+    lines are not any one job's: cron opens one for every entry of an account
+    each minute, the job's own before the go too, and for root's stock
+    entries; `count` counts them apart.
     """
 
     if (event.get("agent") or {}).get("name") != job.acts_on:
@@ -741,8 +743,12 @@ def source(job: Job, event: dict, addresses: list[str]) -> str | None:
     location = event.get("location") or ""
     data = event.get("data") or {}
     log = event.get("full_log") or ""
-    if location == SNOOPY_LOG and data.get("tag") == job.tag:
+    tag = str(data.get("tag") or "") if location == SNOOPY_LOG else ""
+    if tag == job.tag:
         return "snoopy, by tag"
+    if tag.startswith(("job:", "engine:")):
+        # The program start of another job or of the engine, whatever account or address it shares.
+        return None
     if job.do == "ssh" and location == SNOOPY_LOG:
         # The remote shell itself, started before the command sets the tag: by the SSH connection it runs in.
         if (data.get("ssh") or "").split(" ")[0] in addresses:
