@@ -29,6 +29,7 @@ import { hasReplayExtent, settlePendingReplay } from "../lib/replay-submission";
 import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, runLimitationGroups, runResult, shortRunId, stepOutcomeLabel } from "../lib/run-presentation";
 
 import { RunExports } from "../components/RunExports";
+import { RecordedRuns } from "../components/RecordedRuns";
 import { recordedStepLabels, runEventPresentation } from "../lib/run-progress-presentation";
 
 import "../pages/Runs.css";
@@ -430,6 +431,7 @@ export function RunWorkspace({ embedded }: { embedded?: { job: RunJob; releaseEn
 
   return <div className="page runs-page">
     <PageHeader title={linkedJobId ? "Run details" : "Runs"} actions={<>{focusedPreparation ? <Link className="button button-secondary button-medium" to="/runs">Run history</Link> : null}<Link className="button button-primary button-medium" to="/runs?prepare=1" onClick={() => setSetupExpanded(true)}>Review new run</Link><Link className="button button-secondary button-medium" to="/runs?saved=1">Run saved with Assistant</Link>{activeRun ? <Link className="button button-secondary button-medium" to={runReviewPath(activeRun.run_id)}>Review latest result</Link> : null}</>} />
+    {!focusedPreparation && !linkedJobId && !showLiveWorkspace ? <RecordedRuns /> : null}
     {!focusedPreparation && !linkedJobId && !showLiveWorkspace ? <RunHistoryPanel runs={runsQuery.data?.runs} unavailable={runsQuery.data?.unavailable_run_count ?? 0} pending={runsQuery.isPending} error={runsQuery.error} retry={() => runsQuery.refetch()} /> : null}
     {notice ? <Callout tone={runMutation.isError || approvalMutation.isError || runnerLifecycleMutation.isError || controlMutation.isError || activeJobsQuery.isError || jobQuery.isError || eventsQuery.isError || resultQuery.isError ? "danger" : preflight && !preflight.ready ? "warning" : "info"} title="Run status">{notice}</Callout> : null}
     {receiverControlLink(activeJob) ? <Callout title="Part of your receiver control test"><p>Return to the test to inspect the receiver policy, measured outcome and cleanup before the next phase.</p><Link className="button button-secondary button-medium" to={receiverControlLink(activeJob)!}>Return to receiver control test</Link></Callout> : null}
@@ -446,6 +448,7 @@ export function RunWorkspace({ embedded }: { embedded?: { job: RunJob; releaseEn
       {cancellationNotice}{exactReviewError}
       {showLiveWorkspace ? liveWorkspace : null}
       {activeRun && activeJob?.kind === "scenario.replay" && activeJob.result_ref === activeRun.run_id && typeof activeJob.request?.source_run_id === "string" ? <Link className="button button-primary button-medium" to={comparisonLink(activeJob.request.source_run_id, activeRun.run_id)}>Compare with original run</Link> : null}
+      {focusedPreparation || linkedJobId || showLiveWorkspace ? <RecordedRuns /> : null}
       {focusedPreparation || linkedJobId || showLiveWorkspace ? <RunHistoryPanel runs={runsQuery.data?.runs} unavailable={runsQuery.data?.unavailable_run_count ?? 0} pending={runsQuery.isPending} error={runsQuery.error} retry={() => runsQuery.refetch()} /> : null}
     </>
   </div>;
@@ -473,11 +476,11 @@ function RunHistoryPanel({ runs, unavailable, pending, error, retry }: { runs?: 
   useEffect(() => { try { sessionStorage.setItem("bluefire.runs.search.v1", search); } catch { /* Search still works without storage. */ } }, [search]);
   const history = (runs ?? []).filter(run => (runLabel(run) + " " + run.run_id).toLowerCase().includes(search.trim().toLowerCase()));
   return <Panel className="run-history-workspace">
-    <PanelHeader title="Run history" actions={<Button size="small" variant="ghost" onClick={retry}><RotateCcw/>Refresh</Button>} />
+    <PanelHeader title="Experiment runs" detail="Runs of experiments from Build, simulated or executed by BlueFire's own engine." actions={<Button size="small" variant="ghost" onClick={retry}><RotateCcw/>Refresh</Button>} />
     <div className="history-search"><Search aria-hidden="true"/><input aria-label="Search runs" placeholder="Search name or run ID" value={search} onChange={event => setSearch(event.target.value)}/></div>
     {error ? <><ErrorState title="Run history unavailable" error={error} retry={retry}/>{runs ? <p className="workspace-note">Showing previously loaded runs.</p> : null}</> : null}
     {unavailable > 0 ? <p role="status">{unavailable} run {unavailable === 1 ? "record could" : "records could"} not be read. Refresh to try again.</p> : null}
-    {pending ? <LoadingState label="Loading run history" /> : history.length ? <div className="table-scroll"><table className="run-history-table"><thead><tr><th>Run</th><th>Result</th><th>Path</th><th>Created</th></tr></thead><tbody>{history.map(run => <RunHistoryRow key={run.run_id} run={run} />)}</tbody></table></div> : !error && (search || !unavailable) ? <div className="inline-empty"><span>{search ? "No runs match this search." : "No runs yet."}</span>{search ? <Button variant="ghost" size="small" onClick={() => setSearch("")}>Clear search</Button> : <Link to="/runs?prepare=1">Review new run</Link>}</div> : null}
+    {pending ? <LoadingState label="Loading run history" /> : history.length ? <div className="table-scroll"><table className="run-history-table"><thead><tr><th>Run</th><th>Result</th><th>Path</th><th>Created</th></tr></thead><tbody>{history.map(run => <RunHistoryRow key={run.run_id} run={run} />)}</tbody></table></div> : !error && (search || !unavailable) ? <div className="inline-empty"><span>{search ? "No runs match this search." : "No experiment runs yet."}</span>{search ? <Button variant="ghost" size="small" onClick={() => setSearch("")}>Clear search</Button> : <Link to="/runs?prepare=1">Review new run</Link>}</div> : null}
   </Panel>;
 }
 

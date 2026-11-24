@@ -18,6 +18,7 @@ import { DetectionLabPage } from "./pages/DetectionLab";
 import { EnvironmentsPage } from "./pages/Environments";
 import { GettingStartedPage } from "./pages/GettingStarted";
 import { OverviewPage } from "./pages/Overview";
+import { RecordedRunPage } from "./pages/RecordedRun";
 import { RunsPage } from "./pages/Runs";
 import { ScenariosPage } from "./pages/Scenarios";
 import { S3AccessPage } from "./pages/S3Access";
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="builder" element={<BuilderPage />} />
         <Route path="runs" element={<RunsPage />} />
         <Route path="runs/:runId" element={<RunsPage />} />
+        <Route path="runs/recorded/:recordingId" element={<RecordedRunPage />} />
         <Route path="compare" element={<ComparePage />} />
         <Route path="composition" element={<CompositionPage />} />
         <Route path="environments" element={<EnvironmentsPage />} />

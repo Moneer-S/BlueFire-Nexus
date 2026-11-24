@@ -264,6 +264,19 @@ def test_the_labs_rules_have_their_own_column_and_section() -> None:
     )
 
 
+def test_a_lab_rule_links_the_commit_its_file_came_from() -> None:
+    # One run of a pair loads the base commit's rules while the head's code runs.
+    document = with_a_lab_rule()
+    document["run"]["tools"].update(
+        lab="example/lab@" + "c" * 40, **{"lab-defense": "example/lab@" + "b" * 40}
+    )
+
+    page = report.html_report(document)
+
+    assert f"https://github.com/example/lab/blob/{'b' * 40}/lab/rules/linux/x.yml" in page
+    assert f"blob/{'c' * 40}/lab/rules" not in page
+
+
 def test_a_rule_that_is_not_accepted_says_why() -> None:
     page, summary = (
         report.html_report(with_a_lab_rule(False)),

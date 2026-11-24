@@ -3,10 +3,10 @@
 A recording is one file that holds what really happened in a run: the network
 it ran on, every step of the attacker, what the sensors recorded, which rules
 matched, and the score. It is made to be replayed by the live view (see
-[LIVE_VIEW.md](LIVE_VIEW.md)), which today opens as a single HTML page that
-holds one recording and plays without the app. The app keeps recordings: it
-lists them, returns one whole, imports one, and writes the single page of one
-(see "In the app" below).
+[LIVE_VIEW.md](LIVE_VIEW.md)), which plays inside the app and also opens as a
+single HTML page that holds one recording and plays without the app. The app
+keeps recordings: it lists them, returns one whole, imports one, plays one in
+its live view, and writes the single page of one (see "In the app" below).
 
 A recording is made from the files of a run by an engine that ran the steps for
 real: today `bluefire-lab` (published attack tests on one disposable host),
@@ -46,6 +46,7 @@ millisecond.
 | `environment` | string | Plain words: `GitHub-hosted runner` or `containers on a developer machine`. |
 | `started`, `finished` | time | The run's start and end. |
 | `repository`, `commit` | string | Optional. The GitHub repository, as `owner/name`, and the commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
+| `defense_commit` | string | Optional. The commit of the same repository that the sensors' settings were loaded from, and the lab's own rules too unless the detector `lab` has its own `commit`: that one names where the rules came from, and wins. In the run of a pair that loads a pull request's base commit, it is that commit and not `commit`. When one run is evaluated twice, both recordings have the run's `defense_commit`, and the detector `lab` of each names its rules' commit. |
 | `run_url` | string | Optional. The CI run that made the recording. A reader shows it as a link only when it is the https address of a GitHub Actions run (`https://github.com/<owner>/<repository>/actions/runs/<number>`) of the recording's own `repository` when that is given, and leaves out anything else. |
 | `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. The list is always there, and empty when the run names no pinned tool. |
 | `setup` | object | Optional. What a comparison of two runs needs to know was the same. See below. A recording with `setup` has stable step ids. |
@@ -68,7 +69,7 @@ runs must share.
 | --- | --- | --- |
 | `hosts` | array | Each host of the run. |
 | `links` | array | Optional. Each `{ "from", "to", "label" }` between host ids: who can reach whom. |
-| `sensors` | array | Each `{ "id", "name", "host", "records" }`: a sensor, the host it runs on, and in plain words what it records. |
+| `sensors` | array | Each `{ "id", "name", "host", "records" }`: a sensor, the host it runs on, and in plain words what it records. Optional on the sensor `auditd`: `audit_watches`, an object that maps each audit key of its rules (the word after `-k`, or after `key=` in `-F`) to what the rules under that key watch, read from the rules as the run loaded them (after `-D`, `-d` and `-W`; `""` for the rules without a key). Each rule is a string in one fixed form, its keys taken out: `-a <list>,<action>` sorted, then `-S` with the system calls sorted and joined by commas, then each `-F` sorted, then each `-C`. A watch `-w <path> -p <perms>` is written as the rule it stands for, `-a always,exit -F path=<path> -F perm=<perms>` (`perm=arwx` without `-p`), `dir=` as `path=`, the letters of `perm` sorted, `arch=` left out, so that a rule for `b32` and the same one for `b64` are one, and an unset login uid (`-1`, `4294967295`) written `unset`. The forms of a key are sorted and each is there once. An older recording does not have it. |
 | `detectors` | array | Each `{ "id", "name", "rules", "when" }`, plus an optional `digest`: a rule set with its engine, the number of rules evaluated, `when` the rules ran: `live` or `after the run`, and the SHA-256 of its rule files. The detector `pinned` holds the published rules, and `lab` the rules written in this repository. |
 
 A rule set's `digest` is the SHA-256 of what `sha256sum` prints for its files,
@@ -85,6 +86,19 @@ id and title, the SHA-256 of the file that holds it, whether the run accepted
 it, and why. A run decides that anew each time, from ordinary activity and from
 the runs with changed input arguments, so an unchanged rule can be accepted in
 one run and not in the next.
+
+So that a reader can show a rule beside the step it alerted on, each verdict
+can also hold, optional, the rule itself: `file`, the path of its file in the
+repository (such as `lab/rules/linux/auditd/<name>.yml`), and `lines`, an array
+of strings, the file's text line by line, without the line breaks (no value of
+the format outside a step's own text holds a line break). Joined with a line
+break after each line, the lines give the file whose SHA-256 is `digest`, for a
+file that ends with a line break and uses no other kind, as the lab's do. The
+detector can also have `commit`, optional, the commit of this repository the
+rules came from; where it is given, it and not `source.defense_commit` says
+where the lab's rules came from. For the recording of run 45350480637, written again outside
+CI from that run's artifact, the lab's 9 rules added about 14 KB to about
+1.16 MB. A recording written before these keys has none of them.
 
 A host is `{ "id", "name", "role", "kind", "os", "addresses" }`. `kind` is one
 of `host`, `attacker`, `internet`, `defense`. `role` is plain words, such as
@@ -254,7 +268,10 @@ finished the run. While it runs, the engine sends the recording again, whole,
 each time it grows, with the same `id`, `source.engine` and `source.started`. A
 reader replaces what it holds with the newer copy; it never merges two copies.
 The last copy the engine sends has `source.finished`, and from then on the
-recording does not change.
+recording does not change. Each copy follows every rule of this format, the
+end time aside: the service's import and the app's live view check a copy of a
+running recording as they check a finished one, so an attack path's first step
+is already its first test, with a `started`.
 
 ## In the app
 
@@ -263,7 +280,9 @@ The app lists recordings, returns one whole, and imports one: the routes are in
 and `bluefire recordings import <file>` in [CLI.md](CLI.md).
 `bluefire recordings page <id> --out <file>` writes the single replay page of
 one finished recording, with the note on where it comes from
-([LIVE_VIEW.md](LIVE_VIEW.md)). A recording shipped
+([LIVE_VIEW.md](LIVE_VIEW.md)). The Runs screen lists them, imports one from a
+file and plays one in the live view; the
+[user guide](USER_GUIDE.md#recorded-runs) says how. A recording shipped
 with the app is one that this repository's lab workflow recorded in CI; it is
 kept unchanged under `bluefire/data/recordings/`.
 
@@ -348,7 +367,7 @@ run after it, and whether one declared change can explain it. "Before against
 after" is a claim about a cause, so the delta is the one place where it is
 computed, and where it is refused; a view only draws what a delta says. It is
 not a recording. `bluefire-lab compare <before.json> <after.json> --out
-<folder> [--change <what>]` writes it as `delta.json`, with `delta.md`, the same
+<folder> [--change <what>] [--two-runners | --one-run]` writes it as `delta.json`, with `delta.md`, the same
 in a few lines for a job summary (see `lab/README.md`).
 
 The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
@@ -356,21 +375,26 @@ The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `schema` | string | `bluefire.delta/1` |
-| `claim` | string | `one pair of runs`: what every verdict rests on. |
-| `before`, `after` | object | Each recording: `{ "sha256", "id" }`, the SHA-256 of its file and its `id`, and from its `source` the `run_url`, `environment`, `commit` and `started` it has. |
+| `claim` | string | What every verdict rests on: `one pair of runs`, or `one run evaluated with two rule sets` when `one_run` is true. |
+| `before`, `after` | object | Each recording: `{ "sha256", "id" }`, the SHA-256 of its file and its `id`, from its `source` the `run_url`, `environment`, `commit`, `defense_commit` and `started` it has, and `lab_rules_commit`, the `commit` of its detector `lab`, when it has one. |
 | `declared_change` | string or null | The one thing declared as changed between the runs, as a name of the setup (below): `sensors:<sensor id>` for a sensor's settings or `detectors:<detector id>` for a rule set. Null when nothing was declared. |
-| `comparable` | boolean | True when there is a verdict: `refused_because` is empty. |
+| `runners` | number or null | `2` when the two runs were made side by side in one CI run, each on a fresh runner of its own (`--two-runners`, as the lab's pair of runs gives it), and both recordings name the same `run_url`. Null otherwise: `--two-runners` on recordings that do not name one CI run is a refusal. |
+| `one_run` | boolean | True when the two recordings were said to be one run whose telemetry was evaluated twice, with two sets of the lab's rules (`--one-run`). See One run evaluated twice. |
+| `lab_rules` | array or null | Only when the declared change is `detectors:lab`: each rule of the lab's own that is new, gone, another text or the same text in another file in the after recording, `{ "rule", "title", "change", "before", "after" }`, with `change` `new`, `gone`, `changed` or `moved` (the same text, another `file`), and each side's `{ "accepted", "reason", "file" }` from its `verdicts`, null on the side without the rule. Null when the change is another, or a recording has no `verdicts`. |
+| `comparable` | boolean | True when there is a verdict: `refused_because` is empty. With a `limit`, the verdict is limited. |
+| `limit` | object or null | Null when the verdict is like with like. Otherwise `{ "why", "differences", "credits", "credited", "not_attributable" }`: why the verdict is limited (`the two runners differed`), the names of the setup that differed for it (such as `images:target` and `kernels:target`), on which steps the change is credited, in words, how many steps were credited by the change's mark and how many are `not attributable`. See Two runners that differed. |
 | `refused_because` | array of strings | Each reason there is no verdict, in plain words. |
 | `differences` | array | Each `{ "what", "before", "after" }`: a name of the setup whose values differ, with both values, null where a recording does not record it, and `"declared": true` on the declared change and on a name that is part of it (see Refusals). |
 | `same_in_both` | array of strings | The names of the setup whose values are recorded and equal in both. |
 | `lab_code` | object | `{ "before", "after", "same" }`: each recording's `source.commit`, null where it has none, and whether both are recorded and equal. See below. |
 | `judged` | array of strings | The fields of a step the declared change can move. Empty when nothing was declared. |
 | `control` | object | `{ "fields", "same", "of", "varied" }`: the fields of a step the declared change cannot move, on how many paired steps they are the same of how many, and the ids of the steps where they are not. |
-| `counts` | object | `paired`, the number of steps paired, then how many of them have each `result`, every result with its number, 0 included, then `new` and `gone`. |
+| `counts` | object | `paired`, the number of steps paired, then how many of them have each `result`, every result with its number, 0 included, then `by_mark`, how many of the steps counted as `better`, `worse` or `changed` were credited by the change's own mark alone under a `limit` (0 without one), then `new` and `gone`. |
 | `unexplained` | array of strings | The ids of the steps that changed although the declared change could not have changed them (`result` `without cause` or `not attributable`). |
 | `steps` | array | Each paired step, in the order of the after recording. See below. |
 | `new`, `gone` | array | Each `{ "id", "role", "title", "technique" }`: a step only in the after recording, or only in the before recording. Listed, never counted. |
 | `race` | object | The time to the first alert of each side, `{ "before", "after" }` with each recording's `first_alert_seconds` and `goal_seconds` where it has them, only when both are attack paths with a detector that ran `live`. Otherwise `{ "why" }`: there is no race to compare, and none is made up. |
+| `audit_keys` | object or null | Only when the declared change is `sensors:auditd`: `{ "only_before", "only_after" }`, each the audit keys (`fields.key` of auditd's events) that one recording's events carry and the other's never do, each `{ "events", "steps" }`, its number of events and the ids of their steps, and under a `limit` also `mark`: `true` when the key's events can carry the change's own mark, or `false` with `no_mark`, why not, in words. A key only one run's events carry is not by that the change's own: a rule both runs have may have fired on one runner only. A key that can carry the mark and whose name the other run's events carry too, on other rules, is not listed here. Null otherwise. |
 
 **The setup.** A delta compares, by name: each key of `source.setup`, and each
 member of an object there as `<key>:<id>` (such as `images:target` or
@@ -401,13 +425,15 @@ what differed, when a recording has no `source.setup`; when the two are not of
 the same `kind`; when they are not of the same steps in the same order (a new or
 a gone step included); when the declared change is not a sensor's settings or a
 detector's rules of these recordings, is the same in both, or is not recorded in
-both; or when any name of the setup other than the declared change differs.
-The published rules' pin, the version of the tool of role `rules`, is the commit
-their files come from, so it is part of a declared `detectors:pinned`; no other
-tool version is part of a declared change. The rule engine's version is not
-part of either rule set, and a sensor's program version is not its settings: a
-new version can record otherwise under the same settings, so it refuses a
-declared `sensors:<id>`.
+both; when any name of the setup other than the declared change differs (but
+see Two runners that differed, below); or when `--two-runners` says the runs
+were made side by side in one CI run and the two recordings do not name the
+same `run_url`. The published rules' pin, the version of the tool of role
+`rules`, is the commit their files come from, so it is part of a declared
+`detectors:pinned`; no other tool version is part of a declared change. The
+rule engine's version is not part of either rule set, and a sensor's program
+version is not its settings: a new version can record otherwise under the same
+settings, so it refuses a declared `sensors:<id>`.
 
 **A step** of a delta:
 
@@ -419,8 +445,10 @@ declared `sensors:<id>`.
 | `before`, `after` | object | `{ "happened", "recorded", "outcome", "outcome_with_lab_rules" }` of each side: `happened` is the step's `happened.answer`; `recorded` is `recorded` when `visibility.answer` is `alert` or `telemetry only`, `no telemetry` when it is that, and `not known` otherwise; and `outcome_with_lab_rules` is the `outcome` when the run evaluated no rules of the lab's own. |
 | `changed` | array of strings | The fields whose value differs. |
 | `underneath` | array of strings | For a changed step, what changed under it: `recorded now` or `no longer recorded` with the number of events, `matches now:` or `no longer matches:` and a rule as `<level>: <title>`. |
-| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too, or, for a change of rules, a rule of the lab's own that is the same file in both runs matched the step differently while its outcome with the lab's rules moved); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
-| `verdict` | string | The result in plain words. A changed step's ends with `one pair of runs`. |
+| `records` | object | Only on a changed step, when the declared change is `sensors:<id>`: `{ "sensor", "new", "gone" }`, where `new` is what that sensor recorded of the step in the after recording and not in the before one, and `gone` the other way, each `{ "count", "lines" }` with the first 20 lines as `<kind>: <text>` of the events (`<kind>` alone when the text is empty), in time order. Only the events a recording kept count. For `sensors:auditd`, only events of an audit key that one recording's events carry and the other's never do (`audit_keys`) count, and under a `limit` also those of a key that can carry the change's own mark. Being listed here does not make an event the change's own: the step's `result` and `mark` say whether it is. |
+| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too; for a change of rules, a rule of the lab's own that is the same file in both runs matched the step differently while its outcome with the lab's rules moved; for a sensor's settings, that sensor's `records` of the step are empty while the recordings hold events of the step; or, under a `limit`, the step does not carry the change's mark); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
+| `mark` | object | Only under a `limit`, on a step credited by the change's own mark: `{ "run", "keys", "events" }`, the run whose events carry the mark (`after` or `before`), their audit keys and their number. Under a `limit`, a `not attributable` step without one says in its verdict why it carries no mark. |
+| `verdict` | string | The result in plain words. A changed step's ends with the `claim`. Under a `limit`, a credited step's starts with `<result> by the change's own mark, on two runners that differed` and says what it rests on, and a `not attributable` step's names the runners' difference. |
 | `procedures`, `price` | object, string | On a `better` step, and in its `verdict` too: `price`, what the gain cost; and on a step of role `test` only, `procedures`, `{ "better", "of" }`, on how many of the steps of role `test` of the same technique the result is `better`. |
 
 **Like with like.** A change of the lab's rules (`detectors:lab`) is judged on
@@ -441,7 +469,145 @@ rules cannot make a rule of the lab's own match at all, so for
 `detectors:pinned` a step whose `outcome_with_lab_rules` moved while a rule of
 the lab's own matched it in one run only is `not attributable`. A change of a
 sensor's settings can make an unchanged rule of the lab's own match new
-telemetry, and that is its effect, so for `sensors:<id>` it is credited.
+telemetry, and that is its effect, so for `sensors:<id>` it is credited, but
+only through what that sensor recorded: a sensor's settings change a step only
+through what that sensor records of it, so for `sensors:<id>` a step whose
+judged fields moved while that sensor's events of it are the same in both
+recordings is `not attributable`, and its verdict says the sensor recorded the
+same. Two runs of the same audit rules already differ in auditd's text, by
+temporary file names and a password's salt that are new in every run, so for
+`sensors:auditd` a step that moved with no event of an audit key that one
+run's events carry and the other's never do (or, under a `limit`, of a key that
+can carry the change's own mark) is `not attributable`. That a key
+is in one run's events only is a description, not the change's own mark (below):
+a rule both runs have may have fired on one runner only. Under a sensor change,
+`delta.md` also names the steps recorded now and by no sensor before, or says
+there are none, the steps of role `test` unseen in both runs, and for auditd
+the events of each audit key that only one run's events carry, with, under a
+`limit`, whether the key can carry the change's own mark and why not.
+
+**Two runners that differed.** The two runs of `--two-runners` run on two
+fresh runners, and GitHub can hand out two images and kernels to two jobs
+started side by side. When the runner's image and kernel (`images:<host>`,
+`kernels:<host>`, both recorded) are all that differ besides the declared
+change, and nothing else refuses, then:
+
+- For `sensors:auditd`, when both recordings' auditd says what its rules
+  watch under each audit key (`audit_watches`), the comparison is not
+  refused. It is limited, and `limit` says so. The change is credited only
+  on a step that carries its own mark: one run holds no event and no alert
+  of the step (a rule that matched only the launcher's start left out) and
+  says it was not recorded, every event the other run holds of it is
+  auditd's, under an audit key whose every rule in that run watches a path
+  that no rule of the other run, as written, could have recorded (below,
+  with the limit of what the rules' text can tell), the step's
+  `visibility.events` equals the events kept, and every alert on the step
+  rests on those events alone. Without those events that run too would
+  hold nothing of the step, so its move is the change's and not the
+  runners'. A key is a label on a rule, and what makes a record is what the
+  rule watches, so a key's name is never the mark: not a key that both runs'
+  rules watch the same under, also when only one run's events carry it (it
+  may have fired on one runner only), not a key renamed, split in two or
+  merged with another, and not a key that gained a rule and kept one the
+  other run has (its events could come from the old rule).
+
+  What the comparison can establish from the forms of `audit_watches` and
+  the paths an event names, and so what a key's rules and its events must be
+  for those events to be a mark. Where the text
+  cannot establish it, there is no mark, and the verdict says why.
+
+  - Each rule of the key names one path (`path=`; a watch is one). A rule
+    without a path, such as a system call rule for every program, records
+    what its system calls and fields select, and its text does not tell that
+    apart from what another rule records, so it gives no mark. A path must be
+    absolute, with no empty, `.` or `..` part and no `/` at its end: paths are
+    compared as written, part by part, so a file that a link gives a second
+    name (a symbolic or hard link, or a name under `/proc`) is not found out.
+    That is the limit of the mark, and every verdict that rests on it says
+    "as written".
+  - No rule of the other run, under any key or none, names that path, a
+    folder above it or a path under it, whatever its permission letters. A
+    watch on a folder records what happens to everything under it, and the
+    text does not say whether a watched path is a folder, so a path under the
+    key's own path counts too. Permission letters are not compared: a watch
+    for writes alone (`-p w`) records the write a watch for `-p wa` records.
+  - No rule of the other run without a path could record the same kind of
+    event. There are two kinds: a program start, and a read, a write or a
+    change of attributes, which are one kind. They are one because the kernel
+    does not tell them apart for every system call: on `open`, `openat` and
+    `openat2` it matches `perm` against the call's access mode, so an open
+    for reading and writing matches `perm=r` and `perm=w` alike, and `link`
+    and `linkat` are in its class of writes and in its class of changes of
+    attributes. A rule records program starts alone when its
+    `perm` is `x`, or when its system calls are all `execve` or `execveat`;
+    reads, writes and changes of attributes alone when its `perm` has no `x`;
+    and both kinds otherwise: any other system call, such as `open`,
+    `openat`, `truncate` and their kin, a rule that names none (every system
+    call), and a `perm` with letters other than `r`, `w`, `x` and `a`. A rule
+    of the other run that never records (action `never`), or one of a list
+    that holds no system call's records (`exclude`, `user`, `filesystem`),
+    records nothing of it. A form the comparison cannot read back, in either
+    run, gives no mark.
+  - No event of the key names a path that a rule of the other run watches, a
+    folder above it or a path under it. One system call can name two paths,
+    as a rename or a link does, and a watch on either records it, so an event
+    whose `fields.paths` (the paths of its `PATH` records) names a file the
+    other run watches, under any key, gives no mark. Each path must be plain,
+    as above: a path written relative to the working folder gives no mark,
+    and so does an event that names no path, or whose `paths` ends in `...`,
+    since a cut field leaves out the paths after its cut.
+
+  On the first real pair (the `audit-rules.txt` of the artifacts `lab-run-base`
+  and `lab-run` of
+  [run 45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637))
+  the before run's rules name no history file, no
+  folder above one and no path under one, and their one rule without a path
+  is the program starts' `-S execve`, which records program starts alone: so
+  by these rules the after run's watches on the history files, for writes and
+  changes of attributes, can carry the mark. A CI run whose comparison gives
+  that verdict is not yet shown: the recordings of that run were written
+  before they said what their rules watch, and the comparison refuses them.
+
+  Such a step has `mark`, it is counted under its `result` and in
+  `counts.by_mark`, and its verdict says what it rests on. Every other step
+  that differs is `not attributable`, with the runners' difference as the
+  reason, also one that only the control moved for, and also one with a
+  marked event and other events too: those other events were recorded on
+  another runner, and could have moved it as well. When a recording does not
+  have `audit_watches` (one written before it was added, which may have
+  `audit_keys`, the keys alone), nothing shows what only one run's rules
+  watch, so the comparison is refused, and a reason says so and how to
+  write the recording again from its run's folder, or to run the pair
+  again.
+- For any other declared change (another sensor's settings, which leave no
+  mark of their own, or a rule set) the comparison is refused, and a reason
+  says that the runners differed and to run the pair again, which gives two
+  new runners.
+
+Any other difference, such as a tool's version, another sensor's settings,
+another rule set or the tests' commit, refuses as before, also when the
+runners differed too, and without `--two-runners` a runner's difference
+refuses as any other.
+
+**One run evaluated twice.** Rules evaluated after a run read only the
+telemetry it recorded, so a change of the lab's rules can be shown on one run:
+its folder evaluated once with the base's rules and once with the head's, each
+into a folder of its own, gives two recordings of the same run. With
+`--one-run`, the declared change must be `detectors:lab`, and the comparison
+is refused unless everything else is the same, not only alike: both recordings
+have the same `id` and `run_url`; the same steps in the same order, each with
+the same `happened`, `recorded` and `outcome`, `visibility.events`,
+`first_event`, `first_alert`, `started` and `ended`; the same events, where an
+event only one recording holds must be one that an alert of the lab's rules
+there rests on (a recording keeps every event a rule matched beyond the first
+few hundred of a step); the same alerts of the published rules; the same
+`ordinary`; and every rule of the lab's own whose file has the same digest in
+both judged the same way (`accepted` and `reason`) and matching the same
+steps. The last holds by construction too, since a run's verdict on a rule
+reads only that run's tests, variants and ordinary activity, so a difference
+there means the evaluations were not of one run. There is no run variation and
+no difference of runners, the `claim` is `one run evaluated with two rule sets`,
+and `delta.md` says that the list ran once and what was checked.
 
 **The price** of a gain is on the same line as the gain. For the lab's rules,
 the lab leaves a rule that matched ordinary activity out of the recording before
@@ -450,4 +616,7 @@ recordings' notes on the rules they accepted; it never writes a number that
 looks like zero. For another rule set, the published rules that alerted on ordinary
 activity (`score.false_alerts`) before and after; for a sensor, those and the
 ordinary events (`ordinary.events`) before and after. A number the recording
-does not hold is written `not recorded`.
+does not hold is written `not recorded`. Under a `limit`, each run counted its
+ordinary activity on a runner of its own, so what differs between the two
+counts is not the change's price: the price is `price not known`, and gives
+both counts as each run's own.

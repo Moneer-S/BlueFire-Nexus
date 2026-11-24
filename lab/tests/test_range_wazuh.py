@@ -164,8 +164,6 @@ def delivery(recorded: dict) -> list[dict]:
         recorded["logs"],
         {path: tuple(span) for path, span in recorded["windows"].items()},
         recorded["archive"],
-        recorded["nonces"]["ready"],
-        recorded["nonces"]["end"],
     )
 
 
@@ -325,7 +323,8 @@ def test_the_summary_shows_the_delivery_table_and_the_gap() -> None:
     text = wazuh.summary(manifest, seal_passed=True)
 
     assert text.startswith("### Defense of small: no delivery gap")
-    assert "| web | /var/log/snoopy.log | 35 | 35 | 0 | 35 |" in text
+    assert "| Host | Log | Lines from the ready nonce to the end | Of them in the archive | Missing |" in text
+    assert "| web | /var/log/snoopy.log | 35 | 35 | 0 |" in text
     assert "| web | /var/log/dpkg.log | 0 | | not shown: no line in the window |" in text
     assert "| web | 1.407 |" in text
 

@@ -273,7 +273,8 @@ export function runFacts(recording: Recording, timeline: Timeline): RunFacts {
   // from that one moment: the first alert, the goal, the track and the clock.
   const raceStart = recording.kind === "attack path" && first?.step.started !== undefined ? timeOf(first.step.started) : null;
   const start = raceStart ?? (first ? first.realStart : timeOf(recording.source.started));
-  const end = last ? last.realEnd : timeOf(recording.source.finished);
+  // A running recording has no end yet: without steps its run has only begun.
+  const end = last ? last.realEnd : timeOf(recording.source.finished ?? recording.source.started);
   const seconds = recording.kind === "attack path" ? recording.score.goal_seconds : undefined;
   const goal = seconds === undefined || raceStart === null ? null : raceStart + seconds * 1000;
   const roles = new Map(recording.steps.map((step) => [step.id, step]));

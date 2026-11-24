@@ -227,7 +227,8 @@ that a rule does not depend on what a test fixes in its command, such as the
 options it passes to `useradd` or the mode it gives `chmod`: a rule written for
 exactly those would be accepted as well. Where a test lets a run change what a
 rule looks at, a variant does so for some rules and not yet for others: the
-history tests run again on `~/.histfile` and `~/.history`, and the key search on
+history tests run again on `~/.zsh_history`, `~/.histfile`, `~/.sh_history` and
+`~/.history`, and the key search on
 `id_ed25519`, but the systemd tests' variants change a unit's name and not the
 folder it is written to, though two of those tests, T1053.006 and T1543.002,
 allow that too. Beyond that, each
@@ -290,6 +291,70 @@ stays quiet on it can still be noisy elsewhere. One such case is known: the
 rule for a unit file written by a shell also alerts when an administrator
 writes a new unit by hand. A draft that could not fire with this sensor is kept
 in [`rules/rejected`](rules/rejected) with the reason.
+
+### A rule on auditd's records: a history file truncated in place
+
+[Shell History File Truncated In Place](rules/linux/auditd/lnx_auditd_history_file_truncated_in_place.yml)
+is the first of the lab's rules on auditd's records, which the lab now
+evaluates beside its rules on Sysmon's. It was written for the one step the
+watch on history files made visible (see
+[the first change](#a-pair-of-runs-for-a-change-to-the-defense)), from the
+record of T1070.003 Clear Bash history (echo) in
+[run 45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637):
+`openat` with the flags `0x241`, `O_WRONLY|O_CREAT|O_TRUNC`, on the existing
+`~/.bash_history`, by the launcher's `sh`.
+
+- **What it is.** A file under the history watch opened, successfully, for a
+  truncating write (`O_TRUNC`, by `open`, `openat` or `creat`), which empties
+  it in place: what a shell's redirect does, `> file`, whatever command is in
+  front of it. It names no account, no command and no shell. An open the
+  kernel refused emptied nothing, and does not match.
+- **Why ordinary writers mostly do not do it.** By their source code: bash
+  4.4 and later (readline 7.0 and later), tcsh and busybox ash append to their
+  history file with `O_APPEND` and rewrite it by writing a new file and
+  renaming it over the old one; ksh93 appends and trims with `ftruncate`; zsh
+  appends, or renames a new file over the old one. Three exceptions are known,
+  and the rule alerts on each: bash creating a missing history file, which it
+  opens with `O_TRUNC`, once per account; bash before 4.4, whose readline trims
+  the file in place on exit once it is longer than `HISTFILESIZE`, and rewrites
+  it in place for `history -w`; and zsh with its option `HIST_SAVE_BY_COPY`
+  unset. The rule cannot leave out the creation: auditd's system call record
+  gives the number of path items, but on kernels before 6.12 an `O_CREAT` open
+  of an existing file records two items too, as a creation does.
+- **What it rests on.** auditd's system call record holds the open's flags and
+  not the file's name; its path record holds the name and not the flags; and
+  the rule engine reads one record at a time. So the rule takes the file from
+  the audit key of the watch, `shell-history` in
+  [`sensors/audit.rules`](sensors/audit.rules). A defender with another key
+  puts that key in the rule.
+- **What it does not see.** The `truncate` program, which opens without
+  `O_TRUNC` and then shortens the file, and `ln -sf`, which renames a new link
+  over the file as bash does when it rewrites its history: the lab's
+  [Shell History File Emptied](rules/linux/process_creation/proc_creation_lnx_history_file_emptied.yml)
+  covers both from their program starts. Nor anything else that writes a new
+  file and renames it over the history file: bash's own `history -c` followed
+  by `history -w` on bash 4.4 and later, `sed -i`, and editors that save by
+  rename. Nor removing the file, `openat2`, whose flags auditd does not show,
+  or a history file the watch does not name.
+
+Its text was fixed from that one record and from what the shells do, before
+it was evaluated over a whole run.
+[Run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682)
+is the first to evaluate it. Of the 4 published procedures of T1070.003 on
+the list besides the canary, it alerted on two, the echo test and T1070.003
+Clear Bash history (cat dev/null), `cat /dev/null > ~/.bash_history`, each by
+one event, and not on `truncate` and `ln dev/null`, for the reasons above, nor
+on the canary's `rm`. It matched none of that run's 8,847 ordinary events. A
+run's ordinary activity tests little of its price: by the records of run
+45350480637, 2 of its ordinary events are of the key the rule reads (the
+baseline's append that creates `~/.bash_history`, and its `chmod`), and none
+saves a shell's history the way a shell does. A test on records built by hand
+from the shells' and the kernel's code, and marked as built, stands in for
+that part ([`tests/test_lab_rules.py`](tests/test_lab_rules.py)). A run
+accepts a rule only when each procedure it alerts on also ran with changed
+input arguments, so the list now runs both once more, on `~/.zsh_history` and
+on `~/.sh_history`, which the watch names too. The rule alerted on both of
+those runs as well, and run 45395673682 accepted it.
 
 ## What the target has
 
@@ -432,8 +497,27 @@ rotate, and the loss control would fail a run in which it did; none has since.
    Its format is [`docs/RECORDING.md`](../docs/RECORDING.md).
    The job writes it whenever the evaluation wrote `results.json`, also when a
    control failed, and it is part of the run's artifact.
-6. A separate job, which runs no test, compares the run's recording with that
-   of the latest successful run on `main` (`bluefire-lab compare`, see
+6. `bluefire-lab replay` writes `replay.html` beside it: the app's single replay
+   page (`bluefire/ui/replay.html` of the same checkout) with the recording put
+   inside, which plays the run in a browser with nothing installed (see
+   [`docs/LIVE_VIEW.md`](../docs/LIVE_VIEW.md)). The job passes its own address
+   with `--run-url`, and the page says that the lab workflow made it in that CI
+   run. Written without that option, or by another run, the page says only which
+   CI run recorded the recording. It is part of the run's
+   artifact `lab-run` too. The command fills the template as the app does,
+   refuses one that does not hold exactly one recording element and one origin
+   element, and never replaces an existing file.
+7. When a pull request changes a sensor's settings, the list runs twice, with
+   the base commit's files and with the head's, and a job that runs no test
+   compares the two recordings: see
+   [A pair of runs for a change to the defense](#a-pair-of-runs-for-a-change-to-the-defense).
+   When it changes only the lab's own rules, the list runs once, and a job that
+   runs no test evaluates that run twice, with the base commit's rules and with
+   the head's, and compares the two recordings: see
+   [A change of the lab's rules: one run, evaluated twice](#a-change-of-the-labs-rules-one-run-evaluated-twice).
+   Otherwise a separate job, which runs no test either, compares the run's
+   recording with that of the latest successful run on `main`
+   (`bluefire-lab compare`, see
    [Comparing two recordings](#comparing-two-recordings)), writes `delta.md` to
    the run page, and keeps `delta.json` as the artifact `lab-delta`.
 
@@ -476,7 +560,8 @@ Seven controls must pass, or the run fails as a whole:
   matched no published test and was not accepted. While `/tmp` is bind-mounted
   for the `noexec` change, Sysmon names files under it with the folder twice
   (`/tmp/tmp/crond`).
-- auditd watches only the shell start files in
+- auditd watches only the shell start files and the test account's shell
+  history files in
   [`sensors/audit.rules`](sensors/audit.rules), for writes and for changes of
   permissions, owner and extended attributes; `chattr`'s file flags, such as
   immutable, are not among them. It records the process starts of processes
@@ -533,10 +618,17 @@ under [`range/`](range). The lab brings it up with the plain Docker CLI, proves
 that it is sealed, and takes it down again:
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
 pip install ./lab
 bluefire-lab range run lab/range/seal-check.yaml --out <new folder>
 bluefire-lab range down lab/range/seal-check.yaml
 ```
+
+The lab goes into a virtual environment of its own: on a current Debian or
+Ubuntu the system Python refuses a plain `pip install` (it is "externally
+managed"), and `python3 -m venv` needs the package `python3-venv`. The later
+commands in this file assume that environment is active.
 
 It needs Docker Engine 28 or later on a local endpoint (`unix://` or
 `npipe://`). Nothing in a range runs a published test yet: the containers of
@@ -550,9 +642,25 @@ with its host name as alias, `--dns-search .`, `net.ipv4.ip_forward=0`, a pids
 and a memory limit, `--pull never`, and `--init` for a host built from the
 spec) and nothing else. Every object is
 addressed by the full ID Docker returned when it was created. The seal is
-checked on the created containers
-before any of them starts, then on the running ones, and once more where the
-path of published tests will run:
+checked in phases, each recorded in `seal.json`:
+
+1. **static**: on the created containers, before any of them starts.
+2. **no way out**: right after the containers start, before the engine waits
+   for anything in the range or runs anything there but the seal's probes.
+   Everything below except the segmentation between the hosts and the
+   listening ports, with a positive control that needs no service of the
+   range: an answer from another range container, a connection or a refusal
+   from its kernel.
+3. **segmentation**: after the ready gate, once the hosts' services listen
+   (for range one, after the defense is ready too, see
+   [the defense of a range](#the-defense-of-a-range)): everything, the probes
+   between the hosts and the listening ports included, with a connection that
+   must work as the positive control.
+4. **after path**: everything again, where the path of published tests will
+   run.
+5. **teardown**: the event watch, after the teardown.
+
+The checks:
 
 - **Objects:** the run's label and the spec's prefix name exactly the
   containers and networks the run created, and no other container shares a
@@ -570,36 +678,50 @@ path of published tests will run:
   read-only at `/sbin/docker-init`, a mount that `docker inspect` does not list
   under `Mounts`, so the check `container: init` names it.
 - **Inside each container**, with a probe script that uses only bash,
-  coreutils' `timeout` and `getent`: first a connection that must work (so that
-  a broken tool cannot pass a probe that must fail), then every pair the spec
-  derives (hosts that share a network must connect on each port the target
-  listens on; hosts that share none must fail), four outside addresses (public
-  resolvers and cloud metadata endpoints), and a canary: for the seal's
+  coreutils' `timeout` and `getent`: first the positive control (so that a
+  broken tool cannot pass a probe that must fail); in every phase, four
+  outside addresses (public resolvers and cloud metadata endpoints) and a
+  canary; and from the segmentation phase on, every pair the spec derives
+  (hosts that share a network must connect on each port the target listens
+  on; hosts that share none must fail). The canary: for the seal's
   duration the engine listens on a random TCP port on the Docker host, every
   container tries it at every gateway the daemon knows, and the canary must see
   no connection. A probe that must fail passes only when nothing answered
   (network unreachable, no route to host, or a timeout); a refused connection
-  fails, since something routed the packet and answered it. Also: the TCP
-  ports in LISTEN state on any address but loopback (read from
-  `/proc/net/tcp` and `/proc/net/tcp6`) are exactly the ports the spec gives
-  the host under `listens`, so that no port the matrix does not probe is open;
-  routes only
+  fails, since something routed the packet and answered it. Also, from the
+  segmentation phase on: the TCP ports in LISTEN state on any address but
+  loopback (read from `/proc/net/tcp` and `/proc/net/tcp6`) are exactly the
+  ports the spec gives the host under `listens`, so that no port the matrix
+  does not probe is open. In every phase: routes only
   to the container's own subnets, forwarding off, no Docker socket, Docker's
   resolver only, range names resolving only to shared subnets and outside names
   not resolving.
 - **Events:** a watch on Docker's events runs from before the first create to
   the end of the teardown, and any event on the range that the engine did not
   cause breaks the seal, as does the create or start of any other container
-  that joins a range container's namespaces. The watch is checked once more
-  after the teardown, as the seal's last phase: Docker must have reported the
-  removal of every object, to a watch that was still running.
+  that joins a range container's namespaces. A container whose create or
+  start the watch sees while the range has containers, and which is gone
+  before the watch could read its `docker inspect`, breaks the seal too: it
+  may have joined a range container and left. On a machine that runs other
+  containers during a run, a short-lived one (a `docker run --rm` that ends at
+  once, say) can therefore make the run fail or invalid although it had
+  nothing to do with the range; run a range while nothing else starts
+  containers. The watch is checked once more after the teardown, as the
+  seal's last phase: Docker must have reported the removal of every object,
+  to a watch that was still running.
 
 The run writes `seal.json` (every check, with the command it read, the value it
 observed and whether it passed), `seal.md`, `manifest.json` and
 `docker-events.ndjson` on every exit path, and takes the range down on every
 exit path after the first create. Its exit code is 0 when the range was sealed
-and still was at the end, 1 when it refused to start or Docker failed, 3 when
-the seal failed and nothing ran in the range, and 4 when the run was made
+and still was at the end; 1 when it refused to start, Docker failed, or the
+range was not ready in time and its seal held; 3 when the seal failed before
+the place of the path: in the static phase, before the ready gate (the engine
+had run nothing in the range but the seal's probes), after it (the ready
+gate's own commands had run), or when the range was not ready, whose seal is
+judged once more before the run ends (phase "no way out, not ready", and the
+event watch to the end of the teardown), so that "not ready" never hides a
+seal that failed; and 4 when the run was made
 invalid. `passed` at the top of `seal.json` is true only for a run that ended
 sealed: a run that was stopped or made invalid after its checks had passed is
 not recorded as passed. `range down` removes only containers and networks that
@@ -615,10 +737,71 @@ network without the isolated
 gateway mode (caught by the host canary as well), a published port, a bind
 mount, and an extra container connected to a range network after the seal
 (caught by the event watch).
+[Run 45385756781](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45385756781)
+shows it on a GitHub-hosted runner with Docker Engine 28.0.4, phase by phase.
+The passing case was sealed: `static` 94 of 94 checks, `no way out` 149 of
+149, `segmentation` 158 of 158, `after path` 158 of 158. A network that is not
+internal, a published port and a bind mount each failed `static`, and no later
+phase ran. The missing isolated gateway mode failed `static` and `no way out`
+(148 of 155 checks), and the ready gate never ran. The connect was recorded by
+the event watch after `segmentation` had passed, and that run ended invalid
+(exit code 4). In the same run, range one passed `static` (201 checks),
+`no way out` (357), `segmentation` (430) and `after path` (430).
 [Run 45246204061](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45246204061)
-shows it on a GitHub-hosted runner with Docker Engine 28.0.4: the passing case
-was sealed, each of the four `--plant` breaks was stopped by its own check, and
-the connect was recorded by the event watch.
+showed the same six cases with an earlier engine, which made all its checks
+inside the containers in one phase after the ready gate.
+
+## Writing a spec
+
+A spec is a YAML file; [`range/seal-check.yaml`](range/seal-check.yaml) is the
+smallest and [`range/range-one.yaml`](range/range-one.yaml) uses every part.
+The loader (`lab/bluefire_lab/range/spec.py` and, for `activity`,
+`activity.py`) refuses anything else with a sentence that names the key and
+the rule. What it asks for:
+
+- **Top level.** Required: `range` (a name), `version: 1`, `prefix` (starting
+  `bluefire-lab-`; every container and network is named with it, so two
+  ranges on one machine need two prefixes), `docker: {min_engine: 28}` or
+  later, `networks` and `hosts`. Optional: `base` (the image and Ubuntu
+  snapshot that hosts without an `image` are built from), `defense` (Wazuh),
+  `atomic_red_team` (the repository and commit of the published files the
+  hosts carry, and the lock beside the spec), `path`, `activity`, and
+  `sentence` and `executor`, which other parts of the lab read.
+- **Networks** are names with no settings: every one is created internal,
+  with the isolated gateway mode and without IPv6.
+- **Hosts.** Keys: `kind` (`attacker`, `internet`, `host` or `defense`),
+  `role`, `networks`, `listens`, and either `image` (pinned by digest) or,
+  for a host built from `base`, `packages`, `services`, `agent`, `watch` and
+  what is planted: `accounts`, `keys`, `known_hosts`, `dirs`, `files`,
+  `database`, `sshd`, `serve` and `atomics_src`. A `defense` host, the Wazuh
+  manager, takes only `kind`, `role`, `networks` and `listens`. Nothing else
+  (no ports, volumes, capabilities or network modes).
+- **Services.** A built host can start `sshd` (package `openssh-server`, port
+  22), `nginx` (`nginx`, 80), `php-fpm` (`php-fpm`), `mariadb`
+  (`mariadb-server`, 3306), `cron` (`cron`) and `inet-server` (`python3`, 80
+  and 443). Its `listens` must be exactly the ports of its services, since
+  the seal checks that no other port listens.
+- **Every host shares a network with a host that listens.** Each host's
+  first connection that must work is the seal's positive control: a host
+  with none could not show that its failed probes mean anything, so the
+  loader refuses it. A one-host range is refused for the same reason.
+- **Files** a host plants `from:` a path are read from the spec's folder,
+  `repo:<name>` from `repos/<name>` beside it. Each must be a regular file
+  inside that folder: a link, or a path through a linked folder, is refused.
+- **Jobs** of `activity` (`seed`, `warmup_seconds`, `tail_seconds`, `jobs`)
+  have `name`, `host`, `account`, `every` and `do`: `do: cron` with `run`
+  (and `every` in whole minutes), `do: http` with `target` (a host running
+  nginx) and `paths`, or `do: ssh` with `target` (`account@host`) and `run`;
+  `writes` lists the files a job writes, by pattern. [Ordinary
+  activity](#range-one-ordinary-activity) gives the rules that keep jobs
+  apart from each other and from the path.
+- **YAML.** The loader reads only `true` and `false` as booleans, so that the
+  key `off` of `defense.wazuh` stays a key. PyYAML's `safe_load` and
+  `safe_dump` read `off`, `on`, `yes` and `no` as booleans: a script that
+  reads or rewrites a spec should use `bluefire_lab.range.spec.read`.
+
+`bluefire-lab range render <spec> --out <folder>` checks a spec and writes
+its build files without building or starting anything.
 
 ## The defense of a range
 
@@ -628,10 +811,15 @@ and `build`, and the run shows that what happens on each of them reaches the
 manager. No published test runs in it yet.
 
 ```bash
-pip install ./lab
 bluefire-lab range render lab/range/range-one.yaml --out <folder>   # optional: only writes the build files
-bluefire-lab range run lab/range/range-one.yaml --out <new folder>
+bluefire-lab range run lab/range/range-one.yaml --out <new folder> --hold 90
 ```
+
+`--hold 90` keeps the range up 90 s where the path will run, as CI does, so
+that cron starts each cron job of the
+[ordinary activity](#range-one-ordinary-activity) at least once. Without it
+the activity lasts well under a minute plus the engine's own steps, a cron job
+may not start at all, and the ordinary day is then "not scored".
 
 - **The pieces.** The manager is the official `wazuh/wazuh-manager` 4.14.10
   image, pinned by digest, alone: no indexer and no dashboard, and its Filebeat
@@ -689,18 +877,21 @@ bluefire-lab range run lab/range/range-one.yaml --out <new folder>
   and `manifest.json` records it. It is not the manager's `log_alert_level`,
   which keeps its stock value 3, so that `alerts.json` also holds the matches
   below it for review. It changes no image. No step is scored yet.
-- **Ready.** Before the dynamic seal, within 180 s of the start: the manager's
+- **Ready.** After the seal's phase "no way out" and before its segmentation
+  phase, within 180 s of the start: the manager's
   ports 1514 and 1515 answer; each agent's state file says it is connected and
   its log says its real-time file monitoring started, with none of the errors
   after which a folder is not watched (inotify could not start, or its watch
   limit was reached); the manager's `agent_control` lists each agent active at
   the pinned version; and a nonce the engine sends to syslog on each agent host
   arrives in the manager's `archives.json`. The delay from the nonce to the
-  archive is recorded. A range that is not ready stops with exit code 1 and a
-  message that says which part failed and which copied file to read; a test
-  shows this on stand-in files, and no run has shown it yet.
-- **Versions.** In each phase of the seal, `agent_control` on the manager is
-  run again, and the manager and every agent must report the pinned version.
+  archive is recorded. A range that is not ready stops with a message that
+  says which part failed and which copied file to read, with exit code 1, or
+  3 when its seal, judged once more, failed; tests show this on stand-in
+  files, and no run has shown it yet.
+- **Versions.** In each phase of the seal from the segmentation on,
+  `agent_control` on the manager is run again, and the manager and every agent
+  must report the pinned version.
 - **Delivery.** Where the path of published tests will run, the engine makes a
   few harmless marks on each agent host: three lines sent to syslog, a file
   created and then changed in each folder watched in real time, and one
@@ -758,7 +949,10 @@ on a GitHub-hosted runner with Docker Engine 28.0.4, from a build without a
 cache: the range was sealed and ready 28 s after its containers started, the
 ready nonce was in the manager's archive 0.2 s after it was logged, all 14
 marks arrived, and every line of the window was delivered (`auth.log` 8 of 8,
-`snoopy.log` 35 of 35), with every counter of lost events at zero.
+`snoopy.log` 35 of 35). The counters of lost events that were written were at
+zero (analysisd, remoted, and the agent log's lines about a full buffer or
+inotify queue); the agent's logcollector had not written its counters yet and
+`wazuh-agentd.state` holds none, so there the line count is the only check.
 
 ## Range one: its hosts
 
@@ -788,8 +982,7 @@ included, so ranges built from the same stage share them; `inet`'s
 certificate is kept the same way.
 
 ```bash
-pip install ./lab
-bluefire-lab range run lab/range/range-one.yaml --out <new folder>
+bluefire-lab range run lab/range/range-one.yaml --out <new folder> --hold 90
 bluefire-lab range lock lab/range/range-one.yaml   # only when the spec's published files change
 ```
 
@@ -848,7 +1041,9 @@ The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
 `manifest.json` records the daemon's security options under `docker`, and
 every plant check that uses them passed there.
 
-Not yet shown: the path of published tests through the range; scoring.
+Not yet shown: the path of published tests through the range, and the scoring
+of its steps. The ordinary day is scored, and shown,
+[below](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
 ## Range one: ordinary activity
 
@@ -860,16 +1055,21 @@ things that write to the watched logs and folders. The `activity` section of
 
 | Job | Who | Where, and what | How often | What it leaves, and where | Wazuh rules expected |
 | --- | --- | --- | --- | --- | --- |
-| `browse` | `ops` on `client` | Fetches a page of the shop on `web` with curl, in turn `/`, `/?item=1`, `/?item=2`, `/?item=3`, `/cart` and `/missing` (the last two answer 404) | every 5 to 15 s | `web`: a line in nginx's access log; for the four PHP pages, a new PHP session file in `/var/lib/php/sessions`, watched in real time, and a query of the database on `db`. | 31101 (a 404), 554, 550 |
+| `browse` | `ops` on `client` | Fetches a page of the shop on `web` with curl, in turn `/`, `/?item=1`, `/?item=2`, `/?item=3`, `/cart` and `/missing` (the last two answer 404) | every 5 to 15 s | `web`: a line in nginx's access log; for the four PHP pages, a new PHP session file in `/var/lib/php/sessions`, watched in real time, and a query of the database on `db`. | 31101 (a 404), 554, 550 (550 not seen in run 45358678900) |
 | `admin` | `ops` on `client` | Logs in to `ops@web` with its SSH key and runs `uptime; df -h /; ls -l /var/www/app; sudo -n /usr/sbin/nginx -t` | every 90 to 150 s | `web`: sshd's login, PAM's session and sudo's lines in `auth.log`; snoopy's program starts. | 5715, 5501, 5502, 5402 |
 | `cache` | `www-data` on `web`, from cron | `php /var/www/app/cron.php`: writes the shop's items to `/tmp/shop-cache-<minute>.json` and removes the older files | every minute | `web`: files added and removed in `/tmp`, the folder the path writes to, watched in real time; snoopy's program starts; cron's PAM session in `auth.log`. | 554, 553 |
 | `build` | `ci` on `build`, from cron | Clones `/srv/git/shop.git` into `shop` in `ci`'s home folder on its first run, then `git pull` and `make -s -B` there | every minute | `build`: files in `ci`'s home folder, watched in real time; snoopy's program starts; cron's PAM session. | 554, 550 |
 | `backup` | `root` on `db`, from cron | `mariadb-dump shop > /var/backups/shop.sql` | every 5 minutes | `db`: snoopy's program starts; cron's PAM session. `/var/backups` is not watched. | none |
 
 The expected rules are a prediction, from the stock ruleset and a run on a
-developer machine, all below level 12: which rules each job matches on a
-GitHub-hosted runner is not yet shown. What the stock rules raised on them is
-scored in [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
+developer machine, all below level 12. On a GitHub-hosted runner,
+[run 45358678900](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45358678900)
+(its `alerts.ecs.ndjson`, grouped by `labels.job` and `rule.id`) shows every
+rule of the table on its job except 550 on `browse`: `browse` 31101 and 554,
+`admin` 5715, 5501, 5502 and 5402, `cache` 554 and 553, `build` 554 and 550,
+and `backup` none. That is one run of 2.44 minutes. What the stock rules
+raised on the jobs is scored in
+[the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
 - **Apart from the path.** The score will tell the path from ordinary activity
   by account and address, so the loader refuses a job that runs as, or logs
@@ -904,7 +1104,7 @@ scored in [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the
   after that the waits start again. The same spec gives the same schedule,
   and the schedule is in `manifest.json`. A loop job runs at once when the go
   appears; cron starts a cron job at its next minute.
-- **The engine.** After the dynamic seal and the plant checks, the engine
+- **The engine.** After the seal's segmentation phase and the plant checks, the engine
   writes `/run/bluefire/go` on each host that runs a job (tag `engine:go`) and
   waits `warmup_seconds` (30). Then comes the place of the path. After it, the
   jobs run `tail_seconds` (15) more and the engine removes the file again (tag
@@ -923,7 +1123,14 @@ scored in [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the
   lines of its sessions (sshd's motd scripts and what sudo starts without the
   tag) and in PAM's, sshd's and sudo's lines, the close of a sudo session the
   job opened, and the files the job writes (`writes` in the spec) for file
-  integrity events. A snoopy line with another job's tag or the engine's is
+  integrity events. An event is placed in a job's window by the time its line
+  carries, the same time as its ECS line's `@timestamp`: rsyslog's, or the
+  time to the second that nginx, dpkg and MariaDB write (compared with the go
+  taken down to its second, as the runs are), and the manager's own time only
+  for a line without one, such as a file integrity event. The engine starts
+  the go in a new second, so that a request it made before the go, a plant
+  check's say, carries an earlier second and stays out of the window however
+  late the manager receives it. A snoopy line with another job's tag or the engine's is
   never this job's, by address or by account. An event counts
   for one job at most, and the engine's mark files, one of which is in PHP's
   session folder, for none. Cron's session lines of a cron job's account are
@@ -1036,7 +1243,10 @@ engine's work and on unattributed events, listed apart, since the bench's own
 noise is not the shop's. Every number stands next to its denominators: the
 minutes of activity, the runs of each job (in the host's log and in the
 archive) and the events of each origin; without them, or when a job has no
-run in the archive, the score says "not scored" and gives no number. The
+run in the archive, the score says "not scored" and gives no number. A run
+that did not end sealed (made invalid, a seal that failed, plants not in
+place) is no result either: its `score.md` is headed "not a result" with the
+run's result, exit code and reason, and its numbers follow under that. The
 engine starts the seal's probes after the stop only once every job's window
 has closed, and a file whose modification time is before the go is no job's.
 A file a job links rather than writes keeps its older time: the first clone
@@ -1064,6 +1274,9 @@ checksum changed." (level 7) 6 times, all on `build`, and 553 "File
 deleted." (level 7) twice on `cache`'s files. No alert at level 12 or higher
 on the engine's work or on unattributed events. The one nginx line from
 `client` that is unattributed is a plant check's request, just before the go.
+(In [run 45363557672](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45363557672),
+of an earlier engine that placed such a line by the manager's time, the same
+request reached the manager after the go and was counted as `browse`'s.)
 Zero false alerts here is a result about those 2.44 minutes and that work
 only.
 
@@ -1088,8 +1301,12 @@ Invoke-AtomicRedTeam reads it. The job `atomic-parity` in
 with stand-ins for `sh` and `bash` that record how they were started and run
 nothing, and fails on any byte that differs. In
 [run 45246198695](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45246198695)
-every vector was identical: 11 steps, each with its attack, prereq check and
-cleanup. A run of the path in range one's hosts: not yet shown.
+every vector that exists was identical: the attack and the cleanup of all 11
+steps (six of those cleanups are empty, `bash -c ""` or `sh -c ""`, because
+their tests publish none) and the prereq checks of the two steps that have
+one (`s01` and `s09`), 24 vectors in all. For the other nine steps the job
+checked that neither side started a prereq command. A run of the path in
+range one's hosts: not yet shown.
 
 ## Not yet shown
 
@@ -1108,6 +1325,7 @@ variable on purpose.
 The answers can be computed again from a run's artifact, on any machine:
 
 ```bash
+python3 -m venv .venv && . .venv/bin/activate   # see "A range and its seal"
 pip install ./lab
 bluefire-lab evaluate <folder of the unpacked artifact> --engine <path to Zircolite 4.7.1>
 bluefire-lab report <folder of the unpacked artifact>
@@ -1126,7 +1344,7 @@ tests ran again, and this is what changed. `bluefire-lab compare` is where that
 claim is computed, and where it is refused:
 
 ```bash
-bluefire-lab compare <before>/recording.json <after>/recording.json --out <folder> [--change detectors:lab]
+bluefire-lab compare <before>/recording.json <after>/recording.json --out <folder> [--change detectors:lab] [--two-runners | --one-run]
 ```
 
 It writes `delta.json`, whose format is the section "A delta" of
@@ -1173,7 +1391,9 @@ summary. `--change` declares the one thing that changed between the two runs:
   from the recording: a rule that matched ordinary activity is not accepted,
   and its matches are left out of the recording before it is written. The line
   says that, and quotes both recordings' notes on which rules were accepted,
-  rather than a count that would read as zero.
+  rather than a count that would read as zero. On two runners that differed
+  (below), each run counted its ordinary activity on its own runner, so the
+  line says the price is not known and gives each run's own counts.
 - **The lab's code.** Two runs from different commits of this repository may
   differ because of the code, which the comparison does not check. It does not
   refuse for that, since a pull request always differs from `main`, but every
@@ -1183,24 +1403,262 @@ summary. `--change` declares the one thing that changed between the two runs:
 - Every verdict rests on one pair of runs, and says so.
 
 The job "compare with the latest run on main" of the `lab` workflow runs it
-with nothing declared. Until a run on `main` has a recording with
-`source.setup`, its comparison is refused for that reason, and lists the steps.
+with nothing declared, on every run without a pair (next section). Until a run
+on `main` has a recording with `source.setup`, its comparison is refused for
+that reason, and lists the steps.
 
-**The noise floor.** Runs
-[45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)
-and [45288430599](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45288430599),
-the first of a pull request and the second on `main`, both on 23 November 2026, ran the same list with the same tests'
-commit, runner image `ubuntu24 20261116.133.1` and kernel `7.0.0-1014-aws`, the
-same sensor settings, rule sets and tool versions, from two commits of this
-repository (`cb017990` and `2ca6c9e6`). Their recordings predate
-`source.setup`, so they were written again from each run's artifact (`run.json`,
-`results.json` and the two rule folders) with `bluefire-lab recording` of this
-version and compared outside CI. That comparison found them comparable apart
-from the lab's code, which it names, and all 91 steps the same in what
-happened, in whether a sensor recorded them and in both outcomes. They do
-differ below the outcomes: the recordings hold 1,931 and 1,923 events. No CI
-run shows this comparison: it is not yet shown, and two runs are one sample of
-the noise floor, not its measure.
+With `--two-runners`, as the pair gives it, `delta.json` says `runners: 2` and
+`delta.md` says that the two runs were made side by side, each on a fresh
+runner of its own. With `--change sensors:<id>`, a changed step also lists what
+that sensor recorded of it in one run only, and a step whose outcome moved
+while that sensor recorded the same for it in both runs is not credited to the
+change: it is run variation. When two runners side by side got another image
+or kernel, and nothing else differs besides the declared change, a change of
+the audit rules gets a limited verdict (`limit` in `delta.json`): it is
+credited only on a step it left its own mark on, every event of the step being
+of an audit key whose every rule watches a path that no rule of the other run,
+as written, could have recorded, while the other run holds nothing of it, and
+every other step that differs is not attributable. What a run's rules watch under each key,
+each recording says from the audit rules as that run loaded them
+(`audit_watches` of its sensor `auditd`, each rule in one fixed form without its
+key, so that a watch and the system-call rule it stands for, or a rule's two
+architectures, read the same). The mark is given only where that text can
+establish it: each rule of the key names one path; no rule of the other run,
+under any key, names that path, a folder above it or a path under it, whatever
+its permission letters, nor any other path the event names (a rename or a link
+names two); and no rule of the other run without a path could record the same
+kind of event. There are two kinds: program starts, and reads, writes and
+changes of attributes as one, since the kernel matches `perm=r` and `perm=w`
+alike on an open for reading and writing. A rule with `perm=x`, or on `execve`
+or `execveat` alone, records program starts alone, so it leaves the mark
+standing; one for reads alone (`perm=r`) does not, and neither does one on
+`open`, `openat`, `truncate` or any other system call, or on every one. Where
+the text cannot establish the mark, the step is not attributable and its
+verdict says why. The text has a limit, and the verdict names it: paths are
+compared as the rules and the events write them, so a second name that a link
+gives a file (a symbolic or hard link, or a name under `/proc`) is not found
+out. A key is only a label: a key renamed, split or merged on
+rules both runs have, or one that kept an old rule beside a new one, is no
+mark, nor is a key whose rules both runs have that fired on one runner only.
+A credited step is counted under its result and again in
+`counts.by_mark`. A recording that does not say what its rules watch, one
+written by an older version, is refused on two runners that differed: write it
+again with `bluefire-lab recording` from its run's folder, or run the pair
+again. Every other change on two runners that differed is refused, with the
+advice to run the pair again. The section "Two runners that differed" of
+[`docs/RECORDING.md`](../docs/RECORDING.md) gives the rule.
+
+**The noise floor.** The job "compare with the latest run on main" of
+[run 45358678821](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45358678821),
+a pull request that changed neither rules nor sensor settings, compared its
+recording with that of
+[run 45352666265](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45352666265)
+on `main`, with nothing declared: the same tests' commit, runner image and
+kernel, sensor settings, rule sets and tool versions, from two commits of this
+repository (which the comparison names), and all 91 steps the same in what
+happened, in whether a sensor recorded them and in both outcomes. Two runs are
+one sample of the noise floor, not its measure: a pair of runs told below had
+one step that took effect on one runner and not on the other.
+
+## A pair of runs for a change to the defense
+
+A defender who changes a rule or a sensor setting wants to see what that one
+change did. A comparison with the latest run on `main` cannot show it: that run
+is days old, on another runner, from other code. So when a pull request
+changes what a run loads of the defense, the `lab` workflow makes a pair of
+fresh runs for it, in the same workflow run, where only that thing differs. A
+change of the lab's own rules alone needs no second run: see the next section.
+
+- **When.** The job "decide how a change to the defense is shown" checks out
+  the base commit's `lab/rules/` and `lab/sensors/`, and nothing else of it,
+  and runs `bluefire-lab pair --base base/lab lab`. It compares the digests of
+  what a run loads: [`sensors/sysmon.xml`](sensors/sysmon.xml) (`sensors:sysmon`),
+  [`sensors/audit.rules`](sensors/audit.rules) (`sensors:auditd`) and the
+  folder [`rules/linux`](rules/linux) (`detectors:lab`, the same digest a
+  recording gives that detector). The paths a pull request touched do not
+  decide: a change that leaves these files as they were runs once, as does
+  every run that is not of a pull request (`pair=no`). A change of a sensor's
+  settings is a pair of runs (`pair=runs`), and so is a change of a sensor's
+  settings and of the lab's rules together, which is two changes and declares
+  nothing. A change of the lab's rules alone is one run evaluated twice
+  (`pair=rules`).
+- **The two runs.** The whole list runs twice, as two jobs on two runners
+  started side by side: "attack tests on this runner, with the defense of the
+  base commit", which loads the base commit's rules and sensor settings, and
+  "attack tests on this runner", the usual run, which loads the head's. Both
+  run the head's code, list and tools, and are evaluated, reported and
+  recorded the usual way; their artifacts are `lab-run-base` and `lab-run`.
+- **Why two runners, not one after the other on one.** A run that the first
+  run's leftovers could have changed is no before or after, and the list
+  leaves some behind on purpose: it ends with tests whose changes upstream does
+  not undo (the root certificate of T1553.004 and the sudo setting of
+  T1548.003 stay until the runner is gone), and the effect checks of those
+  tests would pass on a second run whatever the test then did. The tests'
+  cleanups undo much of the rest, but nothing shows that they undo all of it.
+  A fresh runner for each side is a clean state that needs no proof. What it
+  costs: two runners can differ, and GitHub hands out different images and
+  kernels under the same label, also to two jobs started side by side (the
+  first pair, below, got two). Each recording says its runner image and
+  kernel. When they are the same, what still differs between two runners is
+  part of the run variation the control shows. When they differ, a change of
+  the audit rules is judged only where its own mark is, and any other change
+  is refused.
+- **When a pair is refused for its runners.** Run the workflow again for the
+  same commit (re-run all jobs of the run on its page): that gives two new
+  runners, which may get the same image and kernel. Nothing in the pull
+  request can choose them.
+- **The comparison.** The job "the change to the defense, before against
+  after" runs `bluefire-lab compare` on the two recordings with the one change
+  the plan declared (`--change sensors:auditd`, for example) and
+  `--two-runners`. When more than one thing changed it declares nothing, the
+  comparison gives no verdict, and the job's summary says so. `delta.md` goes
+  to the run page, and the artifact `lab-pair` holds both recordings
+  (`before/recording.json`, `after/recording.json`), `delta.json` and
+  `delta.md`. The job runs only when both runs passed their controls.
+- **The comparison with `main`** runs only on a run that changes nothing of the
+  defense (`pair=no`). There it is the one comparison, and it declares nothing,
+  so it names what varies and credits nothing to a change. Beside a pair, or
+  beside one run evaluated twice, it would be a second, weaker comparison that
+  could be read as the result, so such a run has none.
+- **What it says.** Under a sensor change, `delta.md` names the steps that are
+  recorded now and were recorded by no sensor before, or says that there are
+  none, and the tests unseen in both runs. Two runs of the same audit rules
+  already differ in auditd's text, by temporary file names and a password's
+  salt that are new in every run, so for `sensors:auditd` a step is credited
+  only through events of an audit key that one run's events carry and the
+  other's never do, and `delta.md` gives how many events of each such key the
+  recordings hold. That is a description: on two runners that differed it
+  also says whether each such key can carry the change's own mark, and why
+  not.
+  Each side says the commit its rules and sensor settings came from.
+- **What it costs.** One more run of the whole list: in the three pairs told
+  below it took 13.5 to 15.5 minutes of runner time, and each of the two short
+  jobs that decide and compare under half a minute. The two runs go side by
+  side, so the pull request waits about as long as for one.
+
+**The first change: auditd watches the history files.** One test of the list
+was unseen: T1070.003 Clear Bash history (echo) empties `~/.bash_history` with
+the shell's own redirect, which starts no program, and neither sensor recorded
+anything of it, so no rule could alert on it. The change is to a sensor: the
+rules in [`sensors/audit.rules`](sensors/audit.rules) now watch the test
+account's shell history files by path (`~/.bash_history`, `~/.zsh_history`,
+`~/.histfile`, `~/.sh_history`, `~/.history`) for writes and changes of
+attributes, as a defender would watch them, not the test's command. If the
+watch works, auditd records the shell opening the file to empty it, in the
+audit session of the test's attack step, and the step goes from unseen to
+seen.
+
+**The pair that shows it** is run
+[45365902367](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367)
+of the pull request that made the change (its job "the change to the defense,
+before against after", and the artifact `lab-pair`). Its two runners had the
+same image and kernel, so the comparison is like with like, with a verdict on
+every step. Before, with the old audit rules, "Clear Bash history (echo)"
+(`test:cbf506a5`) had no telemetry; after, it is seen, by one event:
+`openat: /home/bluefire-lab/.bash_history` of the audit key `shell-history`,
+the key of the new watches, written by the launcher's shell in the test's
+attack session. The comparison calls that step better, on 1 of the 4
+published procedures of T1070.003 in the list (the 3 others were seen or
+alerted before too), and gives its price: 2 published rules alerted on
+ordinary activity before and 2 after, with 8,902 ordinary events before and
+8,841 after. The 90 other steps are the same, and what happened is the same
+on all 91. One pair of runs.
+
+Two earlier pairs of the same change got two runners that differed in image
+and kernel (`ubuntu24 20261116.133.1` with `7.0.0-1014-aws`, and
+`ubuntu24 20261116.376.1` with `7.0.0-1017-azure`). Both recorded the same
+event on the same step, and both summaries were written by earlier versions of
+`compare`: run
+[45362120784](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45362120784)
+gave a limited verdict that rested on the key's name alone, and run
+[45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
+refused every pair on two runners that differed. Their recordings were written
+before a recording said what its audit rules watch under each key (those of
+run 45362120784 name the keys alone, those of run 45350480637 not even
+those), so this version of `compare` refuses both: on two runners that
+differed, a key's name is no mark. A limited verdict by this version's
+rule, on a pair of runners that differed, is not yet shown by a CI run. In run
+45350480637 one more step differed,
+`test:23b91cd2` (T1518.001 Security Software Discovery - ps): on one runner
+its output lacked the text its effect check looks for. That is what two
+runners can differ by, and why such a step is not credited to a change. Of
+these three pairs, two got runners that differed.
+
+## A change of the lab's rules: one run, evaluated twice
+
+On this host the rules run after the run, over the telemetry it recorded. So a
+change of the lab's own rules needs no second run of the tests: the same run's
+telemetry, evaluated once with the base commit's rules and once with the
+head's, gives two real recordings of one run, with no difference of runners
+and no run variation.
+
+- **When.** The plan says `pair=rules` when, of what a run loads of the
+  defense, only the folder [`rules/linux`](rules/linux) differs from the base
+  commit's. A change of a sensor's settings still makes a pair of runs on two
+  runners, since it changes what is recorded, and a change of both is two
+  changes and declares nothing.
+- **The run and the evaluations.** The list runs once, "attack tests on this
+  runner", with the head's files, as any run. Then the job "the change to the
+  lab's rules, one run evaluated twice", which runs no test, takes that run's
+  artifact `lab-run` and the base commit's `lab/rules/`, and makes two copies
+  of the run's folder, each with one commit's rules in `lab-rules/linux` and
+  that commit in `lab-rules/SOURCE`, and without what the run's own
+  evaluation wrote. It runs `bluefire-lab evaluate` and `bluefire-lab
+  recording` in each, with the pinned Zircolite, and `bluefire-lab compare
+  --change detectors:lab --one-run` on the two recordings. `delta.md` goes to
+  the run page; the artifact `lab-rules-twice` holds both recordings and both
+  `results.json`, `delta.json` and `delta.md`.
+- **What the comparison checks.** That the two are one run, and that
+  everything a change of the lab's rules cannot move is the same in both, not
+  only alike: the run and its CI run, the steps, what happened, whether a
+  sensor recorded each step, every event, the published rules' alerts and
+  outcomes, and the ordinary activity. It also checks that every rule of the
+  lab's own whose file is the same in both was judged the same way and matched
+  the same steps. A run judges a rule on its own tests, variants and ordinary
+  activity, so on one run an unchanged rule cannot flip: if one does, the two
+  were not evaluations of one run, and the comparison is refused.
+- **What it says.** "One run evaluated with two rule sets" on every verdict,
+  never "one pair of runs". A step that got better is named with its
+  procedures of the technique on the list and with its price as the lab tells
+  it for its own rules: not counted, since a rule that matched ordinary activity
+  is not accepted and its matches are left out of the recording, with both
+  evaluations' notes on which rules were accepted. `delta.md` also lists each
+  rule of the lab's own that is new, gone, changed, or the same text moved to
+  another file, and how each
+  evaluation judged it, so that a rule that did not change an answer, because
+  the run did not accept it, says why.
+- **What it costs.** One run of the list instead of two, and a job that
+  evaluates the run twice: 54 s of runner time in the one run so far.
+
+What this job shows for the rule above, in
+[run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682):
+with the base commit's rules the rule is not there, and with the head's the
+run accepted it. Four steps are better, each from seen to alerted with the
+lab's rules and each by one alert of the new rule: T1070.003 Clear Bash
+history (echo), T1070.003 Clear Bash history (cat dev/null), and the variant
+of each. The 89 other steps are the same, and what the change cannot move
+(what happened, whether a sensor recorded the step, the published rules'
+outcome) is the same on all 93. Of the 60 tests, 17 were alerted with the
+lab's rules before and 19 after; by the published rules alone it stays 3. One
+run, evaluated with two rule sets.
+
+## The defender loop so far
+
+A step nobody saw, its telemetry, a rule drafted from it, and before against
+after, each turn shown by a CI run of the `lab` workflow:
+
+1. **The watch.** T1070.003 Clear Bash history (echo) was unseen. The audit
+   rules now watch the test account's history files, and the pair of runs of
+   [run 45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
+   recorded the step for the first time, as one audit event: it is seen, and
+   no rule alerts on it. See
+   [A pair of runs for a change to the defense](#a-pair-of-runs-for-a-change-to-the-defense).
+2. **The rule.** [Shell History File Truncated In Place](#a-rule-on-auditds-records-a-history-file-truncated-in-place),
+   drafted from that event, shown as one run evaluated twice in
+   [run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682):
+   the run accepted the rule, and the step went from seen to alerted with the
+   lab's rules, as did T1070.003 Clear Bash history (cat dev/null). See
+   [A change of the lab's rules: one run, evaluated twice](#a-change-of-the-labs-rules-one-run-evaluated-twice).
 
 ## Before the loop: the sensor spike
 

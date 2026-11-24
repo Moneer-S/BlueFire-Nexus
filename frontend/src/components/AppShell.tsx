@@ -75,19 +75,22 @@ function WorkspaceShell() {
     query.addEventListener("change", update);
     return () => query.removeEventListener("change", update);
   }, []);
+  const location = useLocation();
+  // A recorded run's live view needs the window's width, so its page uses the
+  // icon rail the same way, without changing the saved preference.
+  const pageNeedsRail = location.pathname.startsWith("/runs/recorded/");
+  const temporaryRail = pageNeedsRail || (Boolean(assistantOpen) && dockNeedsRail);
   const [labelsBesideAssistant, setLabelsBesideAssistant] = useState(false);
-  useEffect(() => { if (!assistantOpen) setLabelsBesideAssistant(false); }, [assistantOpen]);
-  const assistantRail = Boolean(assistantOpen) && dockNeedsRail;
-  const railed = collapsed || (assistantRail && !labelsBesideAssistant);
-  // Beside the docked Assistant, Collapse only undoes a temporary Expand.
+  useEffect(() => { if (!temporaryRail) setLabelsBesideAssistant(false); }, [temporaryRail]);
+  const railed = collapsed || (temporaryRail && !labelsBesideAssistant);
+  // While the rail is temporary, Collapse only undoes a temporary Expand.
   const toggleNavigation = () => {
-    if (!assistantRail) { setCollapsed((value) => !value); return; }
+    if (!temporaryRail) { setCollapsed((value) => !value); return; }
     if (!railed) { setLabelsBesideAssistant(false); return; }
     if (collapsed) setCollapsed(false);
     setLabelsBesideAssistant(true);
   };
   const [mobileOpen, setMobileOpen] = useState(false);
-  const location = useLocation();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);

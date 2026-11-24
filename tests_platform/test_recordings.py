@@ -574,14 +574,25 @@ _SUDO = {"rule": "Sudo Use", "level": "high", "count": 1}
          "steps[0].command must not hold a NUL character."),
     ],
 )  # fmt: skip
+@pytest.mark.parametrize("running", [False, True], ids=["finished", "still running"])
 def test_what_the_replay_page_could_not_show_truthfully_is_refused_with_the_field_named(
-    service: BlueFireService, kind: str, changes: list[tuple[tuple[Any, ...], Any]], problem: str
+    service: BlueFireService,
+    kind: str,
+    changes: list[tuple[tuple[Any, ...], Any]],
+    problem: str,
+    running: bool,
 ) -> None:
-    """The page's reader refuses each of these too (frontend/tests/live-recording.test.ts)."""
+    """The page's reader refuses each of these too (frontend/tests/live-recording.test.ts).
+
+    A recording that is still running is checked as a finished one is: the app follows it
+    as it grows, and its reader refuses the same.
+    """
 
     recording = attack_path() if kind == "attack path" else small_recording()
     for path, item in changes:
         _set(recording, path, item)
+    if running:
+        del recording["source"]["finished"]
 
     _, problems = refusal(service, recording)
 

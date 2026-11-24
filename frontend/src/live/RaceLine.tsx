@@ -173,8 +173,8 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
               </span>
             ) : null}
           </span>
-          <span className="lv-race-end" title={`From ${facts.startWords} to the end of the last step, ${clockTime(facts.end)} UTC`}>
-            {elapsed(length / 1000, 0)} from the first step to the last
+          <span className="lv-race-end" title={`From ${facts.startWords} to the end of the last step${recording.source.finished ? "" : " so far"}, ${clockTime(facts.end)} UTC`}>
+            {elapsed(length / 1000, 0)} {recording.source.finished ? "from the first step to the last" : "so far"}
           </span>
         </div>
       </div>

@@ -1,4 +1,4 @@
-"""Command line of the lab: run, evaluate, report, recording, compare, atomic, range."""
+"""Command line of the lab: run, evaluate, report, recording, replay, compare, pair, atomic, range."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import atomic, compare, evaluate, recording, report, run
+from . import atomic, compare, evaluate, pair, recording, replay, report, run
 from .range import engine as range_engine
 
 
@@ -40,6 +40,21 @@ def main(arguments: list[str] | None = None) -> int:
         "--tests", type=Path, help="the list of pinned tests, for a run made before it recorded plain words"
     )
 
+    paging = commands.add_parser(
+        "replay", help="write the single replay page of a recording, from the app's page template"
+    )
+    paging.add_argument("recording", type=Path, help="the recording.json a run of the lab wrote")
+    paging.add_argument(
+        "--template", type=Path, required=True, help="the app's page template, bluefire/ui/replay.html"
+    )
+    paging.add_argument(
+        "--out", type=Path, required=True, help="the page to write, a file that does not exist"
+    )
+    paging.add_argument(
+        "--run-url",
+        help="address of the CI run writing the page; the page says that run made it if it made the recording",
+    )
+
     comparing = commands.add_parser(
         "compare", help="say what differs between two recordings, and whether one declared change explains it"
     )
@@ -49,8 +64,33 @@ def main(arguments: list[str] | None = None) -> int:
     comparing.add_argument(
         "--change",
         help="the one thing changed between the runs: sensors:<sensor id> for a sensor's settings, "
-        "or detectors:<detector id> for a rule set, such as detectors:lab; leave out when nothing was",
+        "or detectors:<detector id> for a rule set, such as detectors:lab; leave out, or give it empty, "
+        "when nothing was",
     )
+    comparing.add_argument(
+        "--two-runners",
+        action="store_true",
+        help="the two runs were made side by side in one CI run, each on a fresh runner of its own",
+    )
+    comparing.add_argument(
+        "--one-run",
+        action="store_true",
+        help="the two recordings are of one run, its telemetry evaluated twice with two sets of the lab's "
+        "rules; refused unless everything else in them is the same",
+    )
+
+    pairing = commands.add_parser(
+        "pair",
+        help="say whether the defense a run loads differs from the base commit's and how the change is "
+        "shown: pair=no, rules (one run evaluated twice) or runs (two runs), the sides to run and the one "
+        "change to declare, as name=value lines",
+    )
+    pairing.add_argument(
+        "--base",
+        type=Path,
+        help="the lab folder of a checkout of the base commit; leave out when there is none",
+    )
+    pairing.add_argument("head", type=Path, help="the lab folder of the commit under test")
 
     atomic_tests = commands.add_parser("atomic", help="read published Atomic Red Team tests as upstream does")
     atomic_commands = atomic_tests.add_subparsers(dest="atomic_command", required=True)
@@ -133,9 +173,22 @@ def main(arguments: list[str] | None = None) -> int:
     if options.command == "evaluate":
         return evaluate.main(options.folder, options.engine)
     if options.command == "compare":
-        return compare.main(options.before, options.after, options.out, options.change)
+        if options.one_run and options.two_runners:
+            parser.error("--one-run and --two-runners say two different things: give one of them")
+        return compare.main(
+            options.before,
+            options.after,
+            options.out,
+            options.change or None,
+            options.two_runners,
+            options.one_run,
+        )
+    if options.command == "pair":
+        return pair.main(options.base, options.head)
     if options.command == "recording":
         return recording.main(options.folder, options.run_url, options.tests)
+    if options.command == "replay":
+        return replay.main(options.recording, options.template, options.out, options.run_url)
     return report.main(options.folder)
 
 

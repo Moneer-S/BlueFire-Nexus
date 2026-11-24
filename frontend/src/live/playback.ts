@@ -651,6 +651,18 @@ export function seekStep(timeline: Timeline, stepId: string, at = 0.6): number |
 }
 
 /**
+ * Where a frame stands in its step, as `seekStep` reads it back: 0 to 1 inside
+ * the step, and above 1 inside the silence after it, where the step is still
+ * on screen. 2 is the next step's start, so the silence's last moment stays
+ * just short of it.
+ */
+export function stepPosition(frame: Frame): number {
+  const { gap } = frame;
+  if (!gap || gap.end <= gap.start || frame.time <= gap.start) return frame.progress;
+  return 1 + Math.min(0.999, (frame.time - gap.start) / (gap.end - gap.start));
+}
+
+/**
  * The scrubber gives every step one even slot, so the strip reads as a rhythm
  * of steps whatever their length. A slot runs from its step's start to the next
  * step's start; inside it, screen time runs linearly. Positions are 0 to 1.

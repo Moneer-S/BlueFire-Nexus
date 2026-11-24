@@ -278,3 +278,55 @@
 .run-step-outcome.tone-warning { color: var(--amber-soft); }
 .run-step-outcome.tone-danger { color: var(--red); }
 .run-step-outcome.tone-violet { color: var(--violet); }
+
+/* Recorded runs: the door to the live view. One calm row per recording, the whole row opens it. */
+.recorded-runs .panel-header { align-items: flex-start; }
+.recorded-runs .panel-header > div > p:last-child { max-width: 62ch; font-size: .78rem; }
+.recorded-runs-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.recorded-run-list { margin: 0; padding: 6px 0; list-style: none; }
+.recorded-run-item { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 16px 18px; border-top: 1px solid var(--line); transition: background-color 160ms ease; }
+.recorded-run-item:first-child { border-top: 0; }
+.recorded-run-item:hover, .recorded-run-item:focus-within { background: color-mix(in srgb, var(--blue) 6%, transparent); }
+.recorded-run-symbol { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--line-strong); border-radius: 50%; background: radial-gradient(circle at 40% 35%, color-mix(in srgb, var(--blue) 22%, transparent), transparent 70%); color: var(--blue-soft); }
+.recorded-run-symbol svg { width: 18px; height: 18px; }
+.recorded-run-item.is-running .recorded-run-symbol { border-color: color-mix(in srgb, var(--green) 55%, transparent); color: var(--green); }
+.recorded-run-main { display: grid; gap: 5px; min-width: 0; }
+.recorded-run-link { color: var(--text); font-size: 1rem; font-weight: 600; line-height: 1.3; text-decoration: none; overflow-wrap: anywhere; }
+/* The title's link covers the row, so a click anywhere on it opens the run. */
+.recorded-run-link::after { content: ""; position: absolute; inset: 0; }
+.recorded-run-link:focus-visible { outline: none; }
+.recorded-run-item:has(.recorded-run-link:focus-visible) { outline: 2px solid var(--blue-soft); outline-offset: -2px; }
+/* Inline text, so a narrow screen wraps it like a sentence. */
+.recorded-run-meta { margin: 0; color: var(--muted); font-size: .8rem; line-height: 1.5; }
+.recorded-run-meta > span + span::before { content: "\00b7"; margin: 0 8px; color: var(--line-strong); }
+.recorded-run-score { display: flex; flex-wrap: wrap; align-items: center; margin: 0; font-size: .8rem; line-height: 1.45; }
+.recorded-run-origin.is-shipped { color: var(--blue-soft); }
+.recorded-run-origin.is-imported { color: var(--amber-soft); }
+.recorded-run-live { color: var(--green); font-weight: 600; }
+.recorded-run-live i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--green); vertical-align: 1px; animation: recorded-run-pulse 1.8s ease-in-out infinite; }
+.recorded-run-score { gap: 4px 12px; color: var(--muted-strong); }
+.recorded-run-race { color: var(--muted); }
+.recorded-run-bar-chart { display: inline-flex; width: 120px; height: 6px; overflow: hidden; border-radius: 3px; background: color-mix(in srgb, var(--muted) 18%, transparent); }
+.recorded-run-bar-chart i { display: block; height: 100%; }
+.recorded-run-bar-chart .is-alerted { background: var(--flame); }
+/* Grey for seen, as the live view draws it: blue there means a sensor. */
+.recorded-run-bar-chart .is-seen { background: color-mix(in srgb, var(--muted) 55%, transparent); }
+.recorded-run-bar-chart .is-unseen { background: var(--red); }
+.recorded-run-open { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--blue-soft); font-size: .8rem; font-weight: 600; }
+.recorded-run-open svg { width: 14px; height: 14px; transition: transform 160ms ease; }
+.recorded-run-item:hover .recorded-run-open svg { transform: translateX(2px); }
+.recorded-runs-refusal { display: grid; gap: 6px; justify-items: start; margin: 12px 18px 4px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--red) 45%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--red) 8%, transparent); font-size: .82rem; }
+.recorded-runs-refusal strong { color: var(--red); }
+.recorded-runs-refusal p { margin: 0; color: var(--text-soft); overflow-wrap: anywhere; }
+.recorded-runs-refusal ul { margin: 0; padding-left: 18px; color: var(--muted-strong); }
+.recorded-runs-refusal li { overflow-wrap: anywhere; }
+.recorded-runs > .workspace-note { margin: 10px 18px 0; }
+@keyframes recorded-run-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .recorded-run-live i { animation: none; } .recorded-run-item, .recorded-run-open svg { transition: none; } }
+@media (max-width: 640px) {
+  .recorded-runs .panel-header { flex-direction: column; }
+  .recorded-runs-actions { justify-content: flex-start; }
+  .recorded-run-item { grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 14px; }
+  .recorded-run-symbol { display: none; }
+  .recorded-run-open { justify-self: start; }
+}

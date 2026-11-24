@@ -22,6 +22,16 @@ describe("reading a recording", () => {
     expect(read.events).toHaveLength(3);
   });
 
+  it("reads a recording that is still running, with no end time yet, for the app that follows it", () => {
+    const value = copy();
+    const source = { ...(value.source as Record<string, unknown>) };
+    delete source.finished;
+    const read = readRecording({ ...value, source }, { running: true });
+    expect(read.source.finished).toBeUndefined();
+    expect(read.steps).toHaveLength(2);
+    expect(() => readRecording({ ...value, source: { ...source, finished: "yesterday" } }, { running: true })).toThrow("The source's end is not a UTC time");
+  });
+
   it("refuses a value that holds no recording", () => {
     expect(() => readRecording(null)).toThrow("There is no recording here.");
     expect(() => readRecording([])).toThrow(RecordingError);
@@ -156,8 +166,27 @@ function path(): Recording {
   return { ...valid(), kind: "attack path", attacker: { kind: "scripted", description: "A script", goal: "Read the history file." } };
 }
 
+type Refusal = [string, (value: Recording) => void, string];
+
+/** The same recording as the engine sends it while the run is still going: no end time yet. */
+function running(value: Recording): unknown {
+  const copied = JSON.parse(JSON.stringify(value)) as Recording;
+  delete copied.source.finished;
+  return copied;
+}
+
+function runningRefusal(value: unknown): string {
+  try {
+    readRecording(value, { running: true });
+  } catch (error) {
+    if (error instanceof RecordingError) return error.message;
+    throw new Error(`not a RecordingError: ${String(error)}`);
+  }
+  throw new Error("the recording was accepted");
+}
+
 describe("refusing what the page could not show truthfully, as the service does on import", () => {
-  it.each<[string, (value: Recording) => void, string]>([
+  const refusals: Refusal[] = [
     ["a step that ends before it starts", (value) => Object.assign(value.steps[0] ?? {}, { ended: at(9) }), 'Step "1" ends before it starts: its ended, 2026-01-01T10:00:09.000Z, is earlier than its started, 2026-01-01T10:00:10.000Z.'],
     ["a step that starts before the step before it", (value) => Object.assign(value.steps[1] ?? {}, { started: at(5), ended: at(6) }), 'Step "2" starts before Step "1", the step before it: its started is earlier, and steps run forward in their order.'],
     ["a step that starts before the step before it has ended", (value) => Object.assign(value.steps[1] ?? {}, { started: at(10.5) }), 'Step "2" starts before Step "1", the step before it, has ended: its started is earlier than that step\'s end, and steps do not overlap.'],
@@ -175,21 +204,54 @@ describe("refusing what the page could not show truthfully, as the service does 
     ["a right-to-left override in a host's name", (value) => Object.assign(value.network.hosts[0] ?? {}, { name: "tegrat\u202e" }), "The text at network.hosts[0].name holds a control character, a direction mark or a line separator; only a step's command, output and plain sentence, the attacker's description and goal, and the notes may."],
     ["a line separator in an event's text", (value) => Object.assign(value.events[0] ?? {}, { text: "one\u2028two" }), "The text at events[0].text holds a control character, a direction mark or a line separator; only a step's command, output and plain sentence, the attacker's description and goal, and the notes may."],
     ["a NUL in a step's command", (value) => Object.assign(value.steps[0] ?? {}, { command: "rm\u0000x" }), "The text at steps[0].command holds a NUL character."],
-  ])("refuses %s, with the field named", (_case, change, message) => {
+  ];
+  it.each(refusals)("refuses %s, with the field named", (_case, change, message) => {
     const value = valid();
     change(value);
     expect(refusal(JSON.parse(JSON.stringify(value)))).toBe(message);
   });
 
-  it.each<[string, (value: Recording) => void, string]>([
+  const pathRefusals: Refusal[] = [
     ["that begins with a canary", (value) => Object.assign(value.steps[0] ?? {}, { role: "canary" }), 'The first step of an attack path, Step "1", has the role canary: an attack path begins with a step of role test, and its race counts from that step\'s started.'],
     ["whose first step has no start", (value) => Object.assign(value, { steps: [step("1", null, null, { visibility: { answer: "telemetry only", basis: "events", events: 1 } }), value.steps[1]] }), 'The first step of an attack path, Step "1", has no started: its race counts from that step\'s start.'],
     ["with a goal time and no goal", (value) => Object.assign(value, { attacker: { ...value.attacker, goal: null }, score: { ...value.score, goal_seconds: 11 } }), "The score's goal_seconds is set, but the attacker has no goal."],
     ["with a goal time and no step", (value) => Object.assign(value, { steps: [], events: [], alerts: [], score: { ...value.score, goal_seconds: 5 } }), "The score's goal_seconds is set, but the recording has no step to reach the goal at."],
-  ])("refuses an attack path %s", (_case, change, message) => {
+  ];
+  it.each(pathRefusals)("refuses an attack path %s", (_case, change, message) => {
     const value = path();
     change(value);
     expect(refusal(JSON.parse(JSON.stringify(value)))).toBe(message);
+  });
+
+  // The app follows a recording as it grows: each copy it is sent is checked as a finished one is.
+  it.each(refusals)("refuses %s in a recording that is still running, with the same words", (_case, change, message) => {
+    const value = valid();
+    change(value);
+    expect(runningRefusal(running(value))).toBe(message);
+  });
+
+  it.each(pathRefusals)("refuses an attack path %s while it is still running, with the same words", (_case, change, message) => {
+    const value = path();
+    change(value);
+    expect(runningRefusal(running(value))).toBe(message);
+  });
+
+  it("follows a running attack path from its first copy to its last: no step yet, a step under way, then the run's end", () => {
+    // Before any step: the race has not begun, and nothing is there to begin it.
+    const empty = { ...path(), steps: [], events: [], alerts: [], score: { ...path().score, steps: 0 } };
+    expect(() => readRecording(running(empty), { running: true })).not.toThrow();
+    // The second step has started and not ended, and its sensor has stamped one event so far.
+    const underway = path();
+    const second = underway.steps[1];
+    if (!second) throw new Error("fixture");
+    delete second.ended;
+    underway.events = underway.events.filter((item) => item.id !== "2-2");
+    underway.alerts = [];
+    underway.score = { ...underway.score, alerted: 0 };
+    expect(() => readRecording(running(underway), { running: true })).not.toThrow();
+    // The finished copy is read by the replay page too; a running one only by the app.
+    expect(() => readRecording(running(underway))).toThrow("This recording is still running");
+    expect(() => readRecording(JSON.parse(JSON.stringify(path())))).not.toThrow();
   });
 
   it("keeps a free text's line breaks and the shapes every real recording has", () => {

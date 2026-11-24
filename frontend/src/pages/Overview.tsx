@@ -4,7 +4,8 @@ import { runLabel } from "../lib/runPresentation";
 import { objectiveLabel, shortRunId } from "../lib/run-presentation";
 import { profileChoiceLabel, scopeLabel } from "../lib/run-review-labels";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, Boxes, CircleDot, GitBranch, Network, Play, RotateCcw, ScanLine, Server } from "lucide-react";
+import { ArrowRight, Boxes, CircleDot, GitBranch, Network, Play, Radio, RotateCcw, ScanLine, Server } from "lucide-react";
+import { newestFirst, originWords, recordedRunPath, recordedScoreWords } from "../lib/recorded-runs";
 import { Link } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
 import { useProduct } from "../state/ProductContext";
@@ -21,6 +22,8 @@ export function OverviewPage() {
   const { scenario, scenarioIsSeededFallback, dirty, runConfig } = useProduct();
   const activeWork = useActiveDefensiveWork();
   const activeSummary = useActiveWorkSummary(DEMO_MODE ? undefined : activeWork);
+  const recordings = useQuery({ queryKey: ["recordings"], queryFn: api.recordings });
+  const newestRecorded = recordings.data ? newestFirst(recordings.data.recordings)[0] : undefined;
   const recent = runs.data?.runs.slice(0, 4);
   const unavailable = runs.data?.unavailable_run_count ?? 0;
   const historyIsEmpty = runs.isSuccess && runs.data?.runs.length === 0 && unavailable === 0;
@@ -65,6 +68,7 @@ export function OverviewPage() {
 
       <section className="work-section overview-recent-work" aria-labelledby="recent-work-heading">
         <header className="work-section-heading"><h2 id="recent-work-heading">Recent outcomes</h2><div className="work-section-actions"><Link to="/runs">View all<ArrowRight aria-hidden="true"/></Link><Button variant="ghost" size="small" aria-label="Refresh runs" disabled={runs.isFetching} onClick={() => { void runs.refetch(); }}><RotateCcw aria-hidden="true"/><span className="sr-only">{runs.isFetching ? "Refreshing" : "Refresh runs"}</span></Button></div></header>
+        {newestRecorded ? <Link className="overview-recorded" to={recordedRunPath(newestRecorded.id)}><Radio aria-hidden="true"/><span>Watch the newest recorded run: <strong>{newestRecorded.title}</strong><small>{originWords(newestRecorded.origin)} · {recordedScoreWords(newestRecorded)}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
         {runs.isError ? <><ErrorState title="Run history unavailable" error={runs.error} retry={() => runs.refetch()}/>{recent ? <p className="workspace-note">Showing previously loaded runs. Their current state could not be checked.</p> : null}</> : null}
         {unavailable > 0 ? <p className="workspace-note" role="status">{unavailable} run {unavailable === 1 ? "record is" : "records are"} unavailable. Only readable records are shown.</p> : null}
         {runs.isPending ? <LoadingState label="Loading run history"/> : recent?.length ? <div className="table-scroll"><table className="recent-work-table"><thead><tr><th>Run</th><th>Created</th><th>Outcome</th></tr></thead><tbody>{recent.map(run => {
@@ -74,7 +78,7 @@ export function OverviewPage() {
             <td><div className="recent-work-name"><CircleDot aria-hidden="true" data-status={run.status}/><div><Link to={"/runs/" + encodeURIComponent(run.run_id)}>{runLabel(run)}</Link><small>{context ? <span className="recent-work-phase">{context.phase}</span> : null}<span className="recent-work-mode">{sentence(run.mode)}</span><span className="recent-work-id">{shortRunId(run.run_id)}</span>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</small></div></div></td>
             <td><time dateTime={run.created_at}>{formatDate(run.created_at)}</time></td><td><div className="recent-work-outcome"><strong>{objectiveLabel(run.objective_reached, run.mode)}</strong>{context?.receiverDecision ? <span className="recent-work-decision">{context.receiverDecision}</span> : null}<small><span className="sr-only">Run status: </span>{sentence(run.status)}</small></div></td>
           </tr>;
-        })}</tbody></table></div> : runs.isSuccess && unavailable === 0 ? <div className="work-empty"><CircleDot aria-hidden="true"/><p>No runs have been recorded.</p><Link to="/runs?prepare=1">Review new run<ArrowRight aria-hidden="true"/></Link></div> : null}
+        })}</tbody></table></div> : runs.isSuccess && unavailable === 0 ? <div className="work-empty"><CircleDot aria-hidden="true"/><p>No experiment runs yet.</p><Link to="/runs?prepare=1">Review new run<ArrowRight aria-hidden="true"/></Link></div> : null}
       </section>
     </div>
 
