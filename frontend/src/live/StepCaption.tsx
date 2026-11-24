@@ -2,7 +2,7 @@
 // once the outcome is known.
 
 import { memo, useLayoutEffect, useRef } from "react";
-import type { Alert, Recording, Step } from "./recording";
+import type { Alert, Outcome, Recording, Step } from "./recording";
 import { countsAsAlert, countsForScore } from "./recording";
 import { capital, comparedStep, falseAlertsOf, howItWent, outcomeClass, outcomeWords, plural, roleWords, sensorShortName, sentence, stepLabel } from "./format";
 import type { StepMoment } from "./moment";
@@ -21,6 +21,8 @@ interface StepCaptionProps {
   quiet: boolean;
   /** Called when the caption held keyboard focus and the element that had it went away or was hidden. */
   onLoseFocus: () => void;
+  /** The latest late arrival on screen, in one sentence: a match of an earlier step raised after that step ended. */
+  late: string | null;
 }
 
 /**
@@ -52,7 +54,19 @@ function Kicker({ recording, step }: { recording: Recording; step: Step }) {
   );
 }
 
-function why(step: Step, stepAlerts: readonly Alert[], total: number) {
+/**
+ * A step whose alert was raised live after it ended, told as it stood at its
+ * end: no alert by then. It stays when that alert fires and the verdict turns
+ * to alerted; the late line beside it names the alert. Null for any other.
+ */
+function noAlertYet(step: Step, stood: Outcome, total: number): string | null {
+  if (stood === step.outcome) return null;
+  return stood === "seen" ? `${plural(step.visibility.events ?? total, "event")} recorded, no alert by the end of the step.` : "No sensor recorded it, and no alert by the end of the step.";
+}
+
+function why(step: Step, stood: Outcome, stepAlerts: readonly Alert[], total: number) {
+  const yet = noAlertYet(step, stood, total);
+  if (yet !== null) return <>{yet}</>;
   if (step.outcome === "alerted") {
     const first = stepAlerts.find(countsForScore);
     return first ? (
@@ -84,7 +98,9 @@ function why(step: Step, stepAlerts: readonly Alert[], total: number) {
 }
 
 /** The same reason as `why`, as plain text for a screen reader. */
-function whyText(step: Step, stepAlerts: readonly Alert[], total: number): string {
+function whyText(step: Step, stood: Outcome, stepAlerts: readonly Alert[], total: number): string {
+  const yet = noAlertYet(step, stood, total);
+  if (yet !== null) return yet;
   if (step.outcome === "alerted") {
     const first = stepAlerts.find(countsForScore);
     return first ? `${first.rule.title} (${first.rule.level}) matched an event of this step.` : `${sentence(step.visibility.basis)}.`;
@@ -133,7 +149,7 @@ function Compare({ recording, step, moment }: { recording: Recording; step: Step
   );
 }
 
-function StepCaptionView({ recording, moment, stepAlerts, total, onFix, quiet, onLoseFocus }: StepCaptionProps) {
+function StepCaptionView({ recording, moment, stepAlerts, total, onFix, quiet, onLoseFocus, late }: StepCaptionProps) {
   const box = useRef<HTMLElement | null>(null);
   // Whether keyboard focus is inside the caption. A focused element that is
   // removed or hidden fires no blur, so this stays true until focus is put back.
@@ -150,19 +166,33 @@ function StepCaptionView({ recording, moment, stepAlerts, total, onFix, quiet, o
   }, [stepId, revealed, onLoseFocus]);
 
   const step = moment?.step;
+  const outcome = moment?.outcome;
   // One live region for the whole life of the caption: a region that is added already filled is often not read.
-  const announcement = !moment || !step ? "" : revealed ? `${capital(outcomeWords(step.outcome))}: ${whyText(step, stepAlerts, total)}` : quiet ? "" : `${capital(stepLabel(recording, step))}: ${step.plain ?? step.title}`;
+  const announcement = !moment || !step || !outcome ? "" : revealed ? `${capital(outcomeWords(outcome))}: ${whyText(step, moment.stood, stepAlerts, total)}` : quiet ? "" : `${capital(stepLabel(recording, step))}: ${step.plain ?? step.title}`;
   const live = (
     <div className="lv-sr" aria-live="polite" aria-atomic="true">
       {announcement}
     </div>
   );
-  if (!moment || !step) return <section className="lv-caption">{live}</section>;
+  // A late arrival is said on a line of its own, which never replaces the step's sentence.
+  const lateLine = (
+    <div className="lv-late" aria-live="polite" aria-atomic="true">
+      {late}
+    </div>
+  );
+  if (!moment || !step || !outcome) {
+    return (
+      <section className="lv-caption">
+        {live}
+        {lateLine}
+      </section>
+    );
+  }
   const hint = fixHint(recording, step, groupMatches(stepAlerts));
   const long = (step.plain ?? step.title).length > 60;
   const fixable = hint !== null;
   const labAlert = step.outcome !== "alerted" && step.outcome_with_lab_rules === "alerted" ? stepAlerts.find((alert) => countsAsAlert(alert) && alert.rule.origin === "lab") : undefined;
-  const first = step.outcome === "alerted" ? stepAlerts.find(countsForScore) : undefined;
+  const first = outcome === "alerted" ? stepAlerts.find(countsForScore) : undefined;
   const falseAlerts = first ? falseAlertsOf(recording, first.rule.title) : 0;
   return (
     <section
@@ -177,6 +207,7 @@ function StepCaptionView({ recording, moment, stepAlerts, total, onFix, quiet, o
       }}
     >
       {live}
+      {lateLine}
       {/* Only the told step rises in again; the verdict below keeps its elements, so a focused button is not lost. */}
       <div className="lv-caption-in" key={step.id}>
         <Kicker recording={recording} step={step} />
@@ -184,8 +215,8 @@ function StepCaptionView({ recording, moment, stepAlerts, total, onFix, quiet, o
       </div>
       <div className="lv-caption-out">
         <div className={`lv-verdict${moment.revealed ? "" : " is-hidden"}`}>
-          <span className={`lv-word is-${outcomeClass(step.outcome)}`}>{step.outcome}</span>
-          <span className="lv-why">{why(step, stepAlerts, total)}</span>
+          <span className={`lv-word is-${outcomeClass(outcome)}`}>{outcome}</span>
+          <span className="lv-why">{why(step, moment.stood, stepAlerts, total)}</span>
           {fixable ? (
             <button
               type="button"
@@ -238,7 +269,9 @@ export const StepCaption = memo(
     a.onFix === b.onFix &&
     a.quiet === b.quiet &&
     a.onLoseFocus === b.onLoseFocus &&
+    a.late === b.late &&
     a.moment?.step.id === b.moment?.step.id &&
     a.moment?.revealed === b.moment?.revealed &&
+    a.moment?.outcome === b.moment?.outcome &&
     a.moment?.events.length === b.moment?.events.length,
 );

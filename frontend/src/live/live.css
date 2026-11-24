@@ -1328,6 +1328,11 @@
   color: var(--lv-muted);
 }
 
+/* A match of an earlier step, raised after that step ended: the same chip, its step named after it. */
+.lv-match--late .lv-match-count {
+  flex: none;
+}
+
 .lv-chip {
   flex: none;
   padding: 2px 7px;
@@ -1844,6 +1849,20 @@
 .lv-falsenote {
   font-size: var(--lv-sm);
   color: var(--lv-muted-strong);
+}
+
+/* A match of an earlier step raised after that step ended: one quiet line at the foot of the band, under the step's own words. */
+.lv-late {
+  position: absolute;
+  right: 48px;
+  bottom: 8px;
+  left: 48px;
+  overflow: hidden;
+  font-size: var(--lv-sm);
+  color: #ffb79e;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- transport ---------- */
