@@ -125,7 +125,7 @@ def inside(host: str, output: str, name: str = "seal-check-probes.json") -> list
     # get the tables of nginx's own listeners on port 80, as /proc/net/tcp and /proc/net/tcp6 print them.
     if "\ntcp\t" not in output:
         output = output.replace("done\n", NGINX_SOCKETS + "done\n")
-    plan = {"listens": SPEC.hosts[host].listens, **recorded["plan"]}
+    plan = {"listens": SPEC.hosts[host].listens, "control_must": "connect", **recorded["plan"]}
     return seal.inside(
         SPEC, host, ["docker", "exec", "<id>", "bash", "-c", "<probe script>"], 0, output, plan
     )
@@ -178,10 +178,14 @@ def test_a_probe_that_must_fail_passes_only_when_nothing_answered(line: str, pas
     assert [item["pass"] for item in verdict] == [passes]
 
 
-def test_without_a_working_positive_control_the_seal_fails() -> None:
+@pytest.mark.parametrize(
+    "line", ["127\tbash: timeout: command not found", "1\tbash: connect: Connection refused"]
+)
+def test_without_a_working_positive_control_the_seal_fails(line: str) -> None:
+    # Once the services listen, the control must connect: a refusal is not enough.
     output = fixture("seal-check-probes.json")["left"]["output"]
     changed = output.replace(
-        "probe\tcontrol left -> middle@west:80\t0\t", "probe\tcontrol left -> middle@west:80\t127\t"
+        "probe\tcontrol left -> middle@west:80\t0\t", "probe\tcontrol left -> middle@west:80\t" + line
     )
 
     assert failed(inside("left", changed)) == {"probes: positive control"}
@@ -269,6 +273,63 @@ def test_the_canary_targets_are_the_gateways_and_each_first_subnet_address_no_co
     assert rootless == ["172.17.0.1", "10.0.2.2"]
 
 
+ADDRESSES = {
+    "left": {"west": "172.18.0.2"},
+    "middle": {"west": "172.18.0.3", "east": "172.19.0.3"},
+    "right": {"east": "172.19.0.2"},
+}
+SUBNETS = {"west": ["172.18.0.0/16"], "east": ["172.19.0.0/16"]}
+
+
+def test_before_the_services_listen_the_plan_leaves_out_only_what_needs_them() -> None:
+    canary = (["172.17.0.1"], 40000)
+
+    early = seal.plan_for(SPEC, "left", ADDRESSES, SUBNETS, canary, services_up=False)
+    later = seal.plan_for(SPEC, "left", ADDRESSES, SUBNETS, canary, services_up=True)
+
+    kinds = {kind for _, _, _, kind, _ in early["probes"]}
+    assert kinds == {"outside: must fail", "host canary: must fail"}
+    assert {kind for _, _, _, kind, _ in later["probes"]} >= kinds | {"segmentation: must connect"}
+    assert early["control"] == later["control"] == ("control left -> middle@west:80", "172.18.0.3", 80)
+    assert (early["control_must"], later["control_must"]) == ("answer", "connect")
+    assert (early["listens"], later["listens"]) == (None, [80])
+    assert early["names"] == later["names"]
+
+
+def early_plan(host: str) -> dict:
+    """The plan before the services listen, with the recorded run's own probes out of the range."""
+
+    recorded = fixture("seal-check-probes.json")[host]["plan"]
+    probes = [probe for probe in recorded["probes"] if not probe[3].startswith("segmentation")]
+    return {**recorded, "probes": probes, "control_must": "answer", "listens": None}
+
+
+@pytest.mark.parametrize(
+    ("line", "passes"),
+    [
+        ("0\t", True),
+        ("1\tbash: connect: Connection refused", True),
+        ("1\tbash: connect: Network is unreachable", False),
+        ("124\t", False),
+        ("127\tbash: timeout: command not found", False),
+    ],
+)
+def test_before_the_services_listen_the_control_needs_an_answer_from_the_other_host(
+    line: str, passes: bool
+) -> None:
+    output = fixture("seal-check-probes.json")["left"]["output"]
+    original = next(
+        row for row in output.splitlines() if row.startswith("probe\tcontrol left -> middle@west:80\t")
+    )
+    changed = output.replace(original, "probe\tcontrol left -> middle@west:80\t" + line)
+
+    checks = seal.inside(SPEC, "left", ["docker", "exec"], 0, changed, early_plan("left"))
+
+    assert "listening: only declared ports" not in {item["check"] for item in checks}
+    assert not any(item["check"].startswith("segmentation") for item in checks)
+    assert failed(checks) == (set() if passes else {"probes: positive control"})
+
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 def test_the_probe_script_runs_the_control_first_and_alone(tmp_path: Path) -> None:
     plan = fixture("seal-check-probes.json")["left"]["plan"]
@@ -298,7 +359,13 @@ def test_the_probe_script_runs_the_control_first_and_alone(tmp_path: Path) -> No
     assert len(lines) == 2 * (1 + len(plan["probes"]))
 
 
-def watched(lines: list[str], announce, folder: Path, inspected: dict | None = None) -> engine.Watch:
+UNRELATED = {"Id": "y" * 64, "Name": "/someone-else", "HostConfig": {"NetworkMode": "bridge"}}
+
+
+def watched(lines: list[str], announce, folder: Path, inspected: dict | None = UNRELATED) -> engine.Watch:
+    """A watch of a range with one container and one network, fed `lines`; `inspected` is what
+    `docker inspect` gives of any other container (None: it is gone)."""
+
     watch = engine.Watch("bluefire-lab-sc", folder / "docker-events.ndjson", inspect=lambda _: inspected)
     watch.networks.add("n" * 64)
     watch.containers.add("c" * 64)
@@ -448,7 +515,7 @@ class Teardown(engine.Run):
     def static_checks(self, started: bool) -> list[dict]:
         return []
 
-    def dynamic_checks(self) -> list[dict]:
+    def dynamic_checks(self, services_up: bool = True) -> list[dict]:
         return []
 
     def teardown(self) -> bool:
@@ -485,7 +552,13 @@ def test_the_watch_during_the_teardown_is_part_of_the_verdict(
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["exit_code"] == code
     assert record["passed"] == (code == engine.EXIT_OK)
-    assert [phase["phase"] for phase in record["phases"]] == ["static", "dynamic", "after path", "teardown"]
+    assert [phase["phase"] for phase in record["phases"]] == [
+        "static",
+        "no way out",
+        "segmentation",
+        "after path",
+        "teardown",
+    ]
     assert record["phases"][-1]["passed"] == (code == engine.EXIT_OK)
     title = "passed" if code == engine.EXIT_OK else "failed"
     assert (tmp_path / "seal.md").read_text().startswith(f"### Seal of seal-check: {title}")
@@ -541,3 +614,155 @@ def test_the_objects_check_fails_on_a_container_that_shares_a_namespace_with_the
     assert clean["pass"]
     assert not joined["pass"]
     assert joined["observed"]["9" * 63 + "0"][mode] == "container:" + containers["middle"]
+
+
+def test_the_watch_reports_a_container_that_is_gone_before_it_could_be_inspected(tmp_path: Path) -> None:
+    # Such as `docker run --rm --network container:<range container>` that ends at once.
+    created = an_event("container", "create", "9" * 63 + "0", name="someone-else", image="nginx")
+    started = an_event("container", "start", "9" * 63 + "0", name="someone-else", image="nginx")
+
+    gone = watched([created, started], lambda w: None, tmp_path, inspected=None)
+
+    assert [finding["action"] for finding in gone.findings] == ["create", "start"]
+    assert all(finding["joins"] == {"inspect": "gone before it"} for finding in gone.findings)
+
+
+BREAK = seal.check("host canary", "Docker host", "listener", ["172.17.0.2"], "no connection", False)
+
+
+class Ordered(Teardown):
+    """A run that records the order of its steps; `broken` lists the seal phases that fail."""
+
+    def __init__(
+        self,
+        folder: Path,
+        broken: tuple[str, ...] = (),
+        ready: bool = True,
+        events: tuple[str, ...] = (DESTROY,),
+        raises: BaseException | None = None,
+    ):
+        super().__init__(folder, list(events))
+        self.steps: list[str] = []
+        self.broken = broken
+        self.is_ready = ready
+        self.raises = raises
+        self.calls = 0
+
+    def start(self) -> None:
+        self.steps.append("start")
+
+    def ready(self) -> None:
+        self.steps.append("ready")
+        if not self.is_ready:
+            raise engine.NotReady("host left: port 80 did not answer within 30 s of the start")
+
+    def plant_checks(self) -> None:
+        self.steps.append("plant checks")
+
+    def dynamic_checks(self, services_up: bool = True) -> list[dict]:
+        self.calls += 1
+        name = "segmentation" if services_up else "no way out"
+        self.steps.append(name)
+        if self.raises is not None and self.calls > 1:
+            raise self.raises
+        return [BREAK] if f"{name} {self.calls}" in self.broken else []
+
+
+def ordered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **settings) -> tuple[Ordered, dict, dict]:
+    monkeypatch.setattr(engine, "docker", lambda *a, **k: subprocess.CompletedProcess(a, 0, "now\n", ""))
+    run = Ordered(tmp_path, **settings)
+    run.run()
+    record = json.loads((tmp_path / "seal.json").read_text())
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    return run, record, manifest
+
+
+def test_nothing_can_leave_is_proven_right_after_the_start_before_the_ready_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, record, manifest = ordered(tmp_path, monkeypatch)
+
+    assert run.steps[:4] == ["start", "no way out", "ready", "segmentation"]
+    assert manifest["exit_code"] == engine.EXIT_OK
+
+
+def test_a_way_out_found_before_the_ready_gate_stops_the_run_before_anything_waits_in_the_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, record, manifest = ordered(tmp_path, monkeypatch, broken=("no way out 1",))
+
+    assert run.steps == ["start", "no way out"]
+    assert (manifest["exit_code"], manifest["result"]) == (engine.EXIT_SEAL, "seal failed")
+    assert manifest["reason"] == "seal failed before the ready gate: host canary"
+    assert [phase["phase"] for phase in record["phases"]] == ["static", "no way out", "teardown"]
+
+
+@pytest.mark.parametrize(
+    ("broken", "code", "result"),
+    [((), engine.EXIT_REFUSED, "not ready"), (("no way out 2",), engine.EXIT_SEAL, "seal failed")],
+    ids=["sealed", "a-way-out-while-not-ready"],
+)
+def test_a_range_that_is_not_ready_still_has_its_seal_judged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: tuple, code: int, result: str
+) -> None:
+    run, record, manifest = ordered(tmp_path, monkeypatch, broken=broken, ready=False)
+
+    assert run.steps == ["start", "no way out", "ready", "no way out"]
+    assert (manifest["exit_code"], manifest["result"]) == (code, result)
+    assert "port 80 did not answer" in manifest["reason"]
+    assert [phase["phase"] for phase in record["phases"]][:3] == [
+        "static",
+        "no way out",
+        "no way out, not ready",
+    ]
+
+
+def test_a_range_that_is_not_ready_and_whose_watch_fails_in_the_teardown_ends_with_a_failed_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, record, manifest = ordered(tmp_path, monkeypatch, ready=False, events=(DESTROY, INTRUDER))
+
+    assert (manifest["exit_code"], manifest["result"]) == (engine.EXIT_SEAL, "seal failed")
+    assert manifest["reason"].startswith("the event watch failed during the teardown")
+    assert "port 80 did not answer" in manifest["reason"]
+    assert record["phases"][-1] == {**record["phases"][-1], "phase": "teardown", "passed": False}
+
+
+@pytest.mark.parametrize(
+    ("raises", "code", "result"),
+    [
+        (KeyboardInterrupt(), engine.EXIT_REFUSED, "engine error"),
+        (OSError("the probe script could not be sent"), engine.EXIT_SEAL, "seal failed"),
+    ],
+    ids=["stopped", "could-not-judge"],
+)
+def test_a_stop_or_an_error_while_a_not_ready_seal_is_judged_again_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raises: BaseException, code: int, result: str
+) -> None:
+    run, record, manifest = ordered(tmp_path, monkeypatch, ready=False, raises=raises)
+
+    assert (manifest["exit_code"], manifest["result"]) == (code, result)
+    assert "port 80 did not answer" in manifest["reason"]
+    again = next(phase for phase in record["phases"] if phase["phase"] == "no way out, not ready")
+    assert [(item["check"], item["pass"]) for item in again["checks"]] == [("seal judged", False)]
+    assert manifest["teardown_complete"] is True
+
+
+def test_the_wazuh_versions_are_read_only_after_the_ready_gate(tmp_path: Path) -> None:
+    run = engine.Run(
+        range_spec.load(Path(__file__).parents[1] / "range" / "range-one.yaml"),
+        "range-one.yaml",
+        tmp_path,
+        None,
+        0,
+    )
+    read = []
+    run.static_checks = lambda started: []
+    run.dynamic_checks = lambda services_up: []
+    run.watch.check = lambda command: seal.check("events", "watch", command, [], [], True)
+    run.wazuh_pins = lambda: read.append("pins") or []
+
+    run.sealed_checks("docker events", services_up=False)
+    assert read == []
+    run.sealed_checks("docker events", services_up=True)
+    assert read == ["pins"]

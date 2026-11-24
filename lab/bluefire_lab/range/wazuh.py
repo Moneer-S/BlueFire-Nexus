@@ -187,15 +187,13 @@ def delivery(
     logs: dict[str, list[str] | None],
     windows: dict[str, tuple[int, int] | None],
     found: list[dict],
-    first: str,
-    last: str,
 ) -> list[dict]:
     """For each log file of one agent host: its lines in the window, and how many reached the archive.
 
     `logs` holds each file's lines as copied out of the host after the run (None
     when it was not copied), and `windows` the line numbers the engine read in
-    the same command that logged the ready nonce `first`, and later the end
-    nonce `last`: the window is the lines between them. A line is delivered when
+    the same command that logged the ready nonce, and later the end nonce: the
+    window is the lines between them. A line is delivered when
     an event of this agent and this location in the archive has it as its full
     log; each event counts once, and the events that the file's lines before and
     after the window account for are taken out first, so that an identical line
@@ -203,22 +201,15 @@ def delivery(
     copied, or that has fewer lines than its window, is not counted: its row
     says why, and `missing` is None.
 
-    `events` counts the archive's events of this agent and location from the
-    first event that holds the ready nonce to the first that holds the end
-    nonce, in the archive's order; it is shown beside the count of lines, and
-    the gap is decided by the lines alone.
+    The archive's order is not used: the manager receives each file's lines on
+    their own, so its events of one file can come after another file's end
+    nonce.
     """
 
     ordered = [event for event in found if (event.get("agent") or {}).get("name") == agent]
-    marks = [i for i, event in enumerate(ordered) if first in (event.get("full_log") or "")]
-    ends = [i for i, event in enumerate(ordered) if last in (event.get("full_log") or "")]
-    span = (min(marks), min(ends)) if marks and ends else None
     rows = []
     for path, lines in logs.items():
-        between = (
-            sum(1 for event in ordered[span[0] : span[1]] if event.get("location") == path) if span else None
-        )
-        row = {"source": path, "lines": None, "delivered": None, "missing": None, "events": between}
+        row = {"source": path, "lines": None, "delivered": None, "missing": None}
         rows.append(row)
         if windows.get(path) is None:
             row["not counted"] = "the engine read no line count of the file at the ready or the end nonce"
@@ -300,19 +291,18 @@ def summary(manifest: dict, seal_passed: bool) -> str:
     rows = defense.get("delivery") or {}
     if rows:
         lines += [
-            "| Host | Log | Lines from the ready nonce to the end | Delivered | Missing | Archive events |",
-            "|---|---|---|---|---|---|",
+            "| Host | Log | Lines from the ready nonce to the end | Of them in the archive | Missing |",
+            "|---|---|---|---|---|",
         ]
         for host, sources in rows.items():
             for row in sources:
-                events = row["events"] if row["events"] is not None else ""
                 if row["missing"] is None:
                     counts = f"not counted: {row.get('not counted')} | | "
                 elif not row["lines"]:
-                    counts = "0 | | not shown: no line in the window | "
+                    counts = "0 | | not shown: no line in the window"
                 else:
-                    counts = f"{row['lines']} | {row['delivered']} | {row['missing']} | "
-                lines.append(f"| {host} | {row['source']} | {counts}{events} |")
+                    counts = f"{row['lines']} | {row['delivered']} | {row['missing']}"
+                lines.append(f"| {host} | {row['source']} | {counts} |")
         lines.append("")
     counters = defense.get("drops") or {}
     if counters:

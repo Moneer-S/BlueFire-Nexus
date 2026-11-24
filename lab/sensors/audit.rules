@@ -6,7 +6,8 @@
 ## command added to ~/.bashrc, leaves nothing in its output. The watches below
 ## record writes, and changes of permissions, owner and extended attributes
 ## (not chattr's file flags), to the files that run code when an account logs
-## in or starts a shell. Programs also report some actions themselves, such as
+## in or starts a shell, and to the test account's shell history files.
+## Programs also report some actions themselves, such as
 ## useradd adding an account or sudo running a command.
 ##
 ## Process starts are recorded too, with their arguments (EXECVE records), as
@@ -36,6 +37,17 @@
 -w {home}/.bash_profile -p wa -k shell-start
 -w {home}/.bash_login -p wa -k shell-start
 -w {home}/.bash_logout -p wa -k shell-start
+
+## Shell history files of the test account: writing, emptying, replacing or
+## removing one hides what was typed. A shell redirect such as
+## echo "" > ~/.bash_history starts no program, so only a watch on the file
+## records it. The names are those bash, zsh, ksh and csh use, and the one
+## zsh's own setup offers.
+-w {home}/.bash_history -p wa -k shell-history
+-w {home}/.zsh_history -p wa -k shell-history
+-w {home}/.histfile -p wa -k shell-history
+-w {home}/.sh_history -p wa -k shell-history
+-w {home}/.history -p wa -k shell-history
 
 ## Process starts in the lab's steps.
 -a always,exit -F arch=b64 -S execve -F auid!=unset -k process-start

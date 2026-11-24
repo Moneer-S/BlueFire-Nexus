@@ -1,9 +1,15 @@
-"""The seal: the checks that show a range has no way out, before anything runs in it.
+"""The seal: the checks that show a range has no way out.
 
 Every check is a dictionary with the check's name, what it is about, the
 command whose output it read, the value it observed, the value it expected and
 whether it passed. The functions here read the output of Docker commands and
 of the probe script; running those commands is the job of `engine`.
+
+The probes inside the containers come in two parts. The first needs no service
+of the range: its positive control only needs an answer from another range
+container (a connection or a refusal), and it shows that nothing can leave.
+The second, the segmentation between the hosts, needs their services to
+listen, so the engine makes it after the ready gate (see `plan_for`).
 """
 
 from __future__ import annotations
@@ -36,6 +42,9 @@ TOOL_ERROR = "TOOL_ERROR"
 # A probe that must fail passes only when nothing answered. A refusal means a packet was routed
 # to something that answered it.
 FAILED_AS_REQUIRED = (ENETUNREACH, EHOSTUNREACH, TIMEOUT)
+# The positive control before the services listen: another range container answered, with a
+# connection or with a refusal from its kernel. Either shows that the probe works and reaches it.
+ANSWERED = (CONNECTED, REFUSED)
 
 
 def check(name: str, subject: str, command: list[str] | str, observed, expected, passed: bool) -> dict:
@@ -629,18 +638,20 @@ def inside(
         )
     ]
 
+    wanted = {"connect": (CONNECTED,), "answer": ANSWERED, "fail": FAILED_AS_REQUIRED}
+
     def judged(name: str, label: str, must: str) -> dict:
         result = probes.get(label)
         seen = classify(result["code"], result["text"]) if result else TOOL_ERROR
-        ok = seen == CONNECTED if must == "connect" else seen in FAILED_AS_REQUIRED
         observed = {"result": seen, "exit code": result["code"] if result else None}
         if result and seen != CONNECTED:
             observed["stderr"] = result["text"][:200]
-        expected = CONNECTED if must == "connect" else " or ".join(FAILED_AS_REQUIRED)
-        return check(name, f"{subject}: {label}", command, observed, expected, ok)
+        return check(
+            name, f"{subject}: {label}", command, observed, " or ".join(wanted[must]), seen in wanted[must]
+        )
 
     control_label = plan["control"][0]
-    checks.append(judged("probes: positive control", control_label, "connect"))
+    checks.append(judged("probes: positive control", control_label, plan["control_must"]))
     for label, _, _, kind, must in plan["probes"]:
         checks.append(judged(kind, label, must))
 
@@ -660,18 +671,19 @@ def inside(
     checks.append(
         check("routes: IPv6", subject, command, foreign6, "loopback and link-local only", not foreign6)
     )
-    sockets = listening(found["tcp"])
-    ports = sorted({int(socket.rsplit(":", 1)[1]) for socket in sockets})
-    checks.append(
-        check(
-            "listening: only declared ports",
-            subject,
-            command,
-            sockets,
-            f"TCP ports {plan['listens']} (the spec's listens), on any address but loopback",
-            ports == sorted(plan["listens"]),
+    if plan["listens"] is not None:
+        sockets = listening(found["tcp"])
+        ports = sorted({int(socket.rsplit(":", 1)[1]) for socket in sockets})
+        checks.append(
+            check(
+                "listening: only declared ports",
+                subject,
+                command,
+                sockets,
+                f"TCP ports {plan['listens']} (the spec's listens), on any address but loopback",
+                ports == sorted(plan["listens"]),
+            )
         )
-    )
     checks.append(check("forwarding off", subject, command, found["forward"], "0", found["forward"] == "0"))
     checks.append(check("no Docker socket", subject, command, found["socket"], [], not found["socket"]))
     resolver = found["resolv"]
@@ -705,12 +717,21 @@ def plan_for(
     addresses_by_host: dict[str, dict[str, str]],
     subnets: dict[str, list[str]],
     canary: tuple[list[str], int],
+    services_up: bool = True,
 ) -> dict:
     """What the probe script of one container tries, and what each probe must do.
 
     `addresses_by_host` maps each host to its address in each of its networks,
     `subnets` each spec network to its subnets, and `canary` holds the
     addresses at which the Docker host could be reached, with the canary's port.
+
+    With `services_up` false the services of the range may not listen yet: the
+    plan leaves out the segmentation between the hosts and the check of the
+    listening ports, and its positive control needs only an answer from the
+    host the first connection that must work goes to (a connection, or a
+    refusal from that host's kernel). The probes out of the range, the host
+    canary, the routes, forwarding, the Docker socket and the resolver are in
+    both plans.
     """
 
     probes = []
@@ -722,7 +743,8 @@ def plan_for(
         kind = "segmentation: must connect" if probe.must == "connect" else "segmentation: must fail"
         if probe.must == "connect" and control is None:
             control = ("control " + probe.label, address, probe.port)
-        probes.append((probe.label, address, probe.port, kind, probe.must))
+        if services_up:
+            probes.append((probe.label, address, probe.port, kind, probe.must))
     for address, port in OUTSIDE:
         probes.append((f"outside {address}:{port}", address, port, "outside: must fail", "fail"))
     targets, port = canary
@@ -740,10 +762,11 @@ def plan_for(
         names[name] = []
     return {
         "control": control or ("control (none)", "", 0),
+        "control_must": "connect" if services_up else "answer",
         "probes": probes,
         "subnets": own,
         "names": names,
-        "listens": sorted(spec.hosts[host].listens),
+        "listens": sorted(spec.hosts[host].listens) if services_up else None,
     }
 
 

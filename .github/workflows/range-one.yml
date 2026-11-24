@@ -2,8 +2,10 @@ name: range one
 
 # Range one is a small network of disposable containers with a path of published attack
 # tests through it, written in lab/range/range-one.yaml. Every container of a range sits
-# on internal networks with no route out, and a run proves that before anything runs in
-# it. The jobs hold no secrets and a read-only token.
+# on internal networks with no route out. A run proves that on the created containers
+# before they start, and from inside them right after the start, before the engine waits
+# for anything in the range; the probes between the hosts follow once their services
+# listen. The jobs hold no secrets and a read-only token.
 #
 # It also runs on main: a pull request's build can read the image cache that the last run
 # on its base branch left, so while that cache is there a pull request that changes no image
@@ -137,24 +139,25 @@ jobs:
       # Each of these breaks is caught by the static seal, on containers that were created
       # and never started, except the missing isolated gateway mode: with that one only, the
       # run starts the containers (their networks are internal) to show that the host canary
-      # catches it too.
+      # catches it too, in the phase right after the start, before the ready gate.
       - name: Planted breaks fail the seal
         run: |
           planted() {
             local code=0
             "$LAB" range run "$SPEC" --out "$OUT/$1" --plant "$1" || code=$?
             if [ "$code" -ne 3 ]; then echo "plant $1: exit code $code, not 3"; return 1; fi
-            if ! jq -e --arg check "$2" '[.phases[].checks[] | select(.check == $check and .pass == false)] | length > 0' \
+            if ! jq -e --arg check "$2" --arg phase "$3" \
+              '[.phases[] | select(.phase == $phase) | .checks[] | select(.check == $check and .pass == false)] | length > 0' \
               "$OUT/$1/seal.json" > /dev/null; then
-              echo "plant $1: the check \"$2\" did not fail"
+              echo "plant $1: the check \"$2\" did not fail in the phase \"$3\""
               return 1
             fi
-            echo "plant $1: caught by $2"
+            echo "plant $1: caught by $2 in the phase $3"
           }
-          planted not-internal "network: internal"
-          planted no-isolated-gateway "host canary"
-          planted published-port "container: port bindings"
-          planted bind-mount "container: mounts"
+          planted not-internal "network: internal" static
+          planted no-isolated-gateway "host canary" "no way out"
+          planted published-port "container: port bindings" static
+          planted bind-mount "container: mounts" static
 
       # An extra container, on an internal network of its own, is connected to a range network
       # after the seal passed, while the range is held where the path will run.
@@ -163,7 +166,7 @@ jobs:
           "$LAB" range run "$SPEC" --out "$OUT/connect" --hold 120 &
           run=$!
           for _ in $(seq 1 120); do
-            if jq -e '.phases[] | select(.phase == "dynamic" and .passed)' "$OUT/connect/seal.json" > /dev/null 2>&1; then
+            if jq -e '.phases[] | select(.phase == "segmentation" and .passed)' "$OUT/connect/seal.json" > /dev/null 2>&1; then
               break
             fi
             sleep 1

@@ -455,7 +455,14 @@ def test_the_summary_gives_the_score_with_its_denominators_and_what_the_jobs_lea
     record = {"minutes": 3.9, "started": "2026-11-24T00:00:00Z", "jobs": counted(cache=4)}
     result = score.ordinary_day(alerts, origin_of(alerts), {"ordinary": 1}, 12, jobs(), record)
 
-    text = score.summary({"range": "range-one", "ecs": {"error": None, "files": {}}, "score": result})
+    manifest = {
+        "range": "range-one",
+        "result": "sealed",
+        "ecs": {"error": None, "files": {}},
+        "score": result,
+    }
+
+    text = score.summary(manifest)
 
     assert text.startswith(
         "### Ordinary day of range-one: 0 false alerts at level 12 or higher on 3.9 minutes"
@@ -463,3 +470,26 @@ def test_the_summary_gives_the_score_with_its_denominators_and_what_the_jobs_lea
     assert "cache 4 runs (4 in the archive)" in text
     assert "For review (levels 7 to 11, ordinary): 1 rules." in text
     assert "a password login or a failed login over SSH" in text
+
+
+def test_a_run_that_did_not_end_sealed_headlines_no_score() -> None:
+    alerts = [alert_for("file deleted by the cache job")]
+    record = {"minutes": 1.49, "started": "2026-11-24T00:00:00Z", "jobs": counted()}
+    result = score.ordinary_day(alerts, origin_of(alerts), {"ordinary": 1}, 12, jobs(), record)
+    manifest = {
+        "range": "range-one",
+        "result": "invalid",
+        "exit_code": 4,
+        "reason": "the seal failed after the path: event watch",
+        "ecs": {"error": None, "files": {}},
+        "score": result,
+    }
+
+    text = score.summary(manifest)
+
+    assert result["scored"] is True
+    assert text.startswith(
+        "### Ordinary day of range-one: not a result, the run ended invalid (exit code 4)\n"
+    )
+    assert "Reason: the seal failed after the path: event watch" in text
+    assert "0 false alerts at level 12 or higher" not in text.splitlines()[0]

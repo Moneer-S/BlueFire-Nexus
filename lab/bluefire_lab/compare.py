@@ -12,12 +12,30 @@ and a change of a sensor's settings also on whether a sensor recorded the step.
 What the declared change cannot move is the control, and a difference there is
 run variation, not an effect. A lab rule that is the same file in both runs and
 matched a step differently is run variation too, unless a sensor's settings are
-the declared change. It refuses a verdict, and still lists what differed, when
-the two are not of the same steps, when a recording lacks source.setup, or when
-anything other than the declared change differs in the setup, in the detectors'
-digests or in the tools' versions; the published rules' pin is part of a change
-of the published rules. The lab's own code is not part of the setup: when its
-commit differs, every verdict says so.
+the declared change. So is a step whose outcome moved under a sensor change
+while that sensor recorded the same for it in both runs (for auditd: nothing
+under an audit key that only one run's events carry). A changed step lists what the
+declared sensor recorded of it in one run only. It refuses a verdict, and still
+lists what differed, when the two are not of the same steps, when a recording
+lacks source.setup, when anything other than the declared change differs in the
+setup, in the detectors' digests or in the tools' versions (the published rules'
+pin is part of a change of the published rules), and when two runs said to be
+made side by side do not name one CI run.
+
+Two runs side by side get two runners, and GitHub can hand out two images and
+kernels. When the runner's image and kernel are all that differ besides a
+change of the audit rules, the verdict is limited instead of refused: it
+credits the change only on a step that carries the change's own mark, events of
+an audit key whose every rule watches a path that no rule of the other run
+could have recorded, which name no path that one could have, and nothing else
+of the step, and every other step that
+differs is not attributable. Where the rules' text cannot establish that, there
+is no mark, and the verdict says why. What a run's rules watch under each key
+is what its recording's auditd sensor says, and a pair whose recordings do not
+both say it is refused. Any other change on two
+runners that differed is refused, with the advice to run the pair again. The
+lab's own code is not part of the setup: when its commit differs, every verdict
+says so.
 """
 
 from __future__ import annotations
@@ -25,6 +43,7 @@ from __future__ import annotations
 import collections
 import hashlib
 import json
+import re
 from pathlib import Path
 
 SCHEMA = "bluefire.delta/1"
@@ -56,6 +75,29 @@ WORDS = {
     "tools": "the version of",
 }
 NOT_RECORDED = "not recorded"
+# The names of the setup that say which runner a run had, not how its defense was set up.
+RUNNER = ("images:", "kernels:")
+# The declared changes that leave a mark of their own on what they record, and what that mark is.
+MARKS = {
+    "sensors:auditd": "every event the recordings hold of it is of an audit key whose every rule in that run "
+    "watches a path that no rule of the other run, as written, could have recorded (none there watches that "
+    "path, any other path the event names, a folder above one or a path under one, and none without a path "
+    "records the same kind of event, a program start being one kind and a read, a write or a change of "
+    "attributes the other; paths are compared as written, so a second name that a link gives a file is not "
+    "found out), and the other run holds nothing of it",
+}
+# The kinds of event the comparison tells apart. A program start is one. A read, a write and a change of
+# attributes are one other: the kernel matches perm r and perm w alike on an open for reading and
+# writing, and link and linkat are in its class of writes and in its class of changes of attributes.
+KIND_WORDS = {"start": "program starts", "file": "reads, writes and changes of attributes"}
+# The letters of perm, each by the kind it selects.
+PERMS = {"r": "file", "w": "file", "a": "file", "x": "start"}
+# The system calls that only start programs: a rule on these alone records no other kind.
+STARTS = {"execve", "execveat"}
+# The lists of audit rules that hold no system call's records: filters, and messages from programs.
+NOT_SYSCALLS = {"exclude", "user", "filesystem"}
+# A changed step lists at most this many of the records its declared sensor added, and as many it lost.
+KEPT_LINES = 20
 
 
 def plural(number: int, noun: str) -> str:
@@ -188,6 +230,260 @@ def unmoved_rules(
     ]
 
 
+def audit_keys(recording: dict) -> dict[str, list[dict]]:
+    """auditd's events by their audit key, the key of the rule that wrote the record, in time order."""
+
+    found: dict[str, list[dict]] = collections.defaultdict(list)
+    for event in recording["events"]:
+        if event["sensor"] == "auditd" and (event.get("fields") or {}).get("key"):
+            found[event["fields"]["key"]].append(event)
+    return found
+
+
+def audit_watches(recording: dict) -> dict[str, set[str]] | None:
+    """What the run's audit rules watch under each audit key, as its auditd sensor says, or None when
+    it does not say: an older recording, or one without auditd."""
+
+    sensor = next((sensor for sensor in recording["network"]["sensors"] if sensor["id"] == "auditd"), {})
+    found = sensor.get("audit_watches")
+    return {key: set(forms) for key, forms in found.items()} if isinstance(found, dict) else None
+
+
+def rule_of(form: str) -> dict | None:
+    """One audit rule of the fixed form the recordings write, read back: the words of its list and
+    action, its system calls (None when it names none, which is every one), and each of its fields as
+    (name, operator, value). None when the form holds anything else, which the comparison cannot read."""
+
+    words = form.split()
+    if len(words) % 2 or words[:1] != ["-a"]:
+        return None
+    rule: dict = {"listed": set(words[1].split(",")), "syscalls": None, "fields": []}
+    for option, then in zip(words[2::2], words[3::2], strict=True):
+        if option == "-S":
+            rule["syscalls"] = set(then.split(","))
+        elif option == "-F" and not then.startswith("-"):
+            rule["fields"].append(re.match(r"([^!=<>&]*)(!=|>=|<=|&=|=|>|<|&)?(.*)", then).groups())
+        elif option != "-C":
+            return None
+    return rule
+
+
+def kinds(rule: dict) -> set[str]:
+    """The kinds of event a rule can record, of KIND_WORDS: program starts, and reads, writes and changes
+    of attributes as one. A perm field of only x keeps program starts, one without x the other kind; a
+    perm field with other letters, or with another operator, says nothing the comparison reads. A rule
+    whose system calls are all execve or execveat records program starts alone; of any other system
+    call, and of a rule that names none, the text does not tell which kinds, so it is both."""
+
+    found = set(KIND_WORDS)
+    for name, operator, letters in rule["fields"]:
+        if name == "perm" and operator == "=" and letters and set(letters) <= set(PERMS):
+            found &= {PERMS[letter] for letter in letters}
+    if rule["syscalls"] is not None and rule["syscalls"] <= STARTS:
+        found &= {"start"}
+    return found
+
+
+def plain(path: str) -> bool:
+    """Whether a path is written in the one way the comparison compares: absolute, with no empty, . or
+    .. part and no / at the end."""
+
+    return path.startswith("/") and all(part not in ("", ".", "..") for part in path[1:].split("/"))
+
+
+def recorders(watches: dict[str, set[str]]) -> list[tuple[str, dict | None]]:
+    """A run's rules, under any key or none, that can record a system call's event, each as its form and
+    its rule_of(): not one that never records, nor one of a list that holds no system call's records. A
+    form that cannot be read back stays, with None."""
+
+    return [
+        (form, rule)
+        for form, rule in ((form, rule_of(form)) for form in sorted(set().union(*watches.values())))
+        if rule is None or not ("never" in rule["listed"] or rule["listed"] & NOT_SYSCALLS)
+    ]
+
+
+def paths_of(rule: dict) -> list[str]:
+    return [value for name, operator, value in rule["fields"] if name == "path" and operator == "="]
+
+
+def near(path: str, others: list[tuple[str, dict | None]], label: str) -> str | None:
+    """Why a rule of the other run that names a path could have recorded an event at this plain path,
+    or None: it watches the same path, a folder above it or a path under it (this path may be a
+    folder), whatever its permission letters or key. label names the other run."""
+
+    mine = path.split("/")
+    for other_form, other in others:
+        if other is None:
+            return f"the {label} run's rule `{other_form}` is in a form the comparison does not read"
+        for there in paths_of(other):
+            if not plain(there):
+                return f"the {label} run's rule `{other_form}` names its path in a form the comparison does not compare"
+            parts = there.split("/")
+            if parts == mine:
+                return f"the {label} run's rule `{other_form}` watches the same path, `{path}`"
+            if parts == mine[: len(parts)]:
+                return f"the {label} run's rule `{other_form}` watches `{there}`, a folder above `{path}`"
+            if mine == parts[: len(mine)]:
+                return f"the {label} run's rule `{other_form}` watches `{there}`, under `{path}`, which may be a folder"
+    return None
+
+
+def unmarked(form: str, others: list[tuple[str, dict | None]], label: str) -> str | None:
+    """Why a rule's events cannot be shown to be its own against the other run's rules, or None when
+    they can: the rule names one path, no rule of the other run is near() it, and none that names no
+    path could record the same kind of event. others are the other run's recording() rules, label
+    names that run."""
+
+    rule = rule_of(form)
+    if rule is None:
+        return f"its rule `{form}` is in a form the comparison does not read"
+    watched = paths_of(rule)
+    if len(watched) != 1 or any(name == "path" and operator != "=" for name, operator, _ in rule["fields"]):
+        return (
+            f"its rule `{form}` watches no one path, and what such a rule records cannot be told apart by its "
+            "text from what another rule records"
+        )
+    path = watched[0]
+    if not plain(path):
+        return f"its rule `{form}` names its path in a form the comparison does not compare"
+    why = near(path, others, label)
+    if why:
+        return why
+    for other_form, other in others:
+        shared = kinds(rule) & kinds(other)
+        if not paths_of(other) and shared:
+            said = " or ".join(KIND_WORDS[kind] for kind in KIND_WORDS if kind in shared)
+            return (
+                f"the {label} run's rule `{other_form}` watches no path and could record the same kind of "
+                f"event ({said})"
+            )
+    return None
+
+
+def crossed(event: dict, others: list[tuple[str, dict | None]], label: str) -> str | None:
+    """Why the other run's rules could have recorded this event through a path it names, or None. One
+    system call can name two paths, as a rename or a link does, and a watch on either records it, so
+    every path of the event must be plain and none near() a rule of the other run. A recording cuts a
+    long field and ends it in "...", and the paths it cut off are not known."""
+
+    text = (event.get("fields") or {}).get("paths") or ""
+    if text.endswith("..."):
+        return "its event's paths may be cut short, so not every path it names is known"
+    if not text:
+        return "its event names no path"
+    # An empty piece is a path the recording could not read: it is not plain, so it gives no mark.
+    named = text.split(", ")
+    for path in named:
+        if not plain(path):
+            return f"its event names the path `{path}` in a form the comparison does not compare"
+        why = near(path, others, label)
+        if why:
+            return why
+    return None
+
+
+def marks(mine: dict[str, set[str]], other: dict[str, set[str]], label: str) -> dict[str, str | None]:
+    """For each audit key of one run, None when its events can carry the change's own mark, or why they
+    cannot: every rule under the key must pass unmarked() against every rule of the other run, under
+    any key or none. label names the other run. A key is only a label on rules, so its name counts for
+    nothing: a key renamed, split, merged or kept with an old rule is no mark by what its rules watch."""
+
+    others = recorders(other)
+    found: dict[str, str | None] = {}
+    for key, forms in sorted(mine.items()):
+        if key:
+            reasons = [unmarked(form, others, label) for form in sorted(forms)] or ["it has no rule"]
+            found[key] = next((reason for reason in reasons if reason), None)
+    return found
+
+
+def sensor_lines(recording: dict, sensor: str, keys: set[str] | None = None) -> dict[str, list[str]]:
+    """The events one sensor recorded for each step, as "<kind>: <text>" lines in time order, only
+    those of these audit keys when keys are given. A recording keeps at most a few hundred events of
+    a step: these are the ones it kept."""
+
+    found: dict[str, list[str]] = collections.defaultdict(list)
+    for event in recording["events"]:
+        if event["sensor"] == sensor and (keys is None or (event.get("fields") or {}).get("key") in keys):
+            found[event["step"]].append(
+                f"{event['kind']}: {event['text']}" if event["text"] else event["kind"]
+            )
+    return found
+
+
+def only_in(lines: list[str], other: list[str]) -> list[str]:
+    """The lines of one side that the other side does not have as often, in their order."""
+
+    left, found = collections.Counter(other), []
+    for line in lines:
+        if left[line]:
+            left[line] -= 1
+        else:
+            found.append(line)
+    return found
+
+
+def records_of(sensor: str, before: list[str], after: list[str]) -> dict:
+    """What one sensor recorded for a step in one run and not in the other, the first KEPT_LINES of each."""
+
+    new, gone = only_in(after, before), only_in(before, after)
+    return {
+        "sensor": sensor,
+        "new": {"count": len(new), "lines": new[:KEPT_LINES]},
+        "gone": {"count": len(gone), "lines": gone[:KEPT_LINES]},
+    }
+
+
+def by_step(recording: dict, part: str) -> dict[str, list[dict]]:
+    found: dict[str, list[dict]] = collections.defaultdict(list)
+    for item in recording[part]:
+        found[item["step"]].append(item)
+    return found
+
+
+def mark_of(
+    sides: tuple[tuple[dict, list[dict], list[dict], dict[str, str | None]], ...],
+    rules: tuple[list[tuple[str, dict | None]], ...],
+) -> dict | str:
+    """Whether a change of the audit rules left its own mark on a step: one run holds nothing of the
+    step, and every event the other holds of it is of an audit key whose every rule watches a path
+    that no rule of the first run could have recorded, names no path that one could have, every one
+    it recorded kept, with every alert on the step resting on those events alone. Then the step's
+    move is carried by those events: without them that run too would hold nothing of it. sides is
+    (step, its events, its alerts, the marks() of its run's keys) of the before and the after run, and
+    rules the recorders() of each. The mark as {"run", "keys", "events"}, or why the step does not
+    carry one."""
+
+    holding = [number for number, (_, events, alerts, _) in enumerate(sides) if events or alerts]
+    if len(holding) != 1:
+        return "both runs hold events of it" if holding else "neither run holds an event of it"
+    step, events, alerts, keys = sides[holding[0]]
+    if sides[1 - holding[0]][0]["visibility"]["answer"] != "no telemetry":
+        return "the other run does not say that no sensor recorded it"
+    for event in events:
+        key = (event.get("fields") or {}).get("key")
+        if event["sensor"] != "auditd" or not key:
+            return "not every event of it is auditd's under an audit key"
+        if key not in keys:
+            return f"its events' audit key `{key}` is on no rule of that run's audit rules"
+        if keys[key]:
+            return f"its events' audit key `{key}` gives no mark: {keys[key]}"
+        why = crossed(event, rules[1 - holding[0]], ("before", "after")[1 - holding[0]])
+        if why:
+            return f"its event `{event['id']}` of the audit key `{key}` gives no mark: {why}"
+    if step["visibility"].get("events") != len(events):
+        return "the recording did not keep every event of it"
+    ids = {event["id"] for event in events}
+    if not all(alert.get("events") and set(alert["events"]) <= ids for alert in alerts):
+        return "an alert on it does not rest on those events alone"
+    return {
+        "run": ("before", "after")[holding[0]],
+        "keys": sorted({event["fields"]["key"] for event in events}),
+        "events": len(events),
+    }
+
+
 def underneath(old: dict, new: dict, before: set[str], after: set[str]) -> list[str]:
     """What changed under a step's answers: whether a sensor recorded it, and which rules matched."""
 
@@ -232,8 +528,10 @@ def direction(role: str, changes: list[tuple[str, str, str]]) -> str:
     return {frozenset({True}): "better", frozenset({False}): "worse"}.get(frozenset(ways), "changed")
 
 
-def price(before: dict, after: dict, declared: str) -> str:
-    """What a gain cost, in the recording's own numbers, or why it holds none."""
+def price(before: dict, after: dict, declared: str, limited: bool = False) -> str:
+    """What a gain cost, in the recording's own numbers, or why it holds none. Under a limit each run
+    counted on a runner of its own, so the two numbers are each run's and their difference is not
+    the change's price."""
 
     if declared == "detectors:lab":
         said = (
@@ -253,10 +551,16 @@ def price(before: dict, after: dict, declared: str) -> str:
         return str(holder[key]) if key in holder else NOT_RECORDED
 
     alerts = f"published rules that alerted on ordinary activity: {count(before, 'false_alerts', 'score')} before, {count(after, 'false_alerts', 'score')} after"
+    counted = alerts
     if declared.startswith("sensors:"):
         events = f"ordinary events: {count(before, 'events', 'ordinary')} before, {count(after, 'events', 'ordinary')} after"
-        return f"price: {alerts}; {events}"
-    return f"price: {alerts}"
+        counted = f"{alerts}; {events}"
+    if limited:
+        return (
+            "price not known: each run counted its ordinary activity on its own runner, and the two runners "
+            f"differed, so what differs between the counts is not the change's price (each run's own, {counted})"
+        )
+    return f"price: {counted}"
 
 
 def race(before: dict, after: dict) -> dict:
@@ -284,12 +588,23 @@ def side(recording: dict, sha: str) -> dict:
     return {
         "sha256": sha,
         "id": recording["id"],
-        **{key: source[key] for key in ("run_url", "environment", "commit", "started") if key in source},
+        **{
+            key: source[key]
+            for key in ("run_url", "environment", "commit", "defense_commit", "started")
+            if key in source
+        },
     }
 
 
-def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declared: str | None = None) -> dict:
-    """The delta of two recordings, as delta.json holds it."""
+def compare(
+    before: dict,
+    after: dict,
+    shas: tuple[str, str] = ("", ""),
+    declared: str | None = None,
+    two_runners: bool = False,
+) -> dict:
+    """The delta of two recordings, as delta.json holds it. two_runners says that the two runs were
+    made side by side, each on a fresh runner of its own, rather than one after the other on one."""
 
     refusals = []
     for label, recording in (("before", before), ("after", after)):
@@ -345,6 +660,13 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
             NOT_RECORDED if part is None else part for part in (difference["before"], difference["after"])
         ]
         refusals.append(f"also differed: {named(difference['what'])} ({shown[0]} before, {shown[1]} after)")
+    # Two runs side by side in one CI run name that one run: anything else is not such a pair.
+    urls = (before["source"].get("run_url"), after["source"].get("run_url"))
+    if two_runners and not (urls[0] and urls[0] == urls[1]):
+        refusals.append(
+            "the two runs were said to be made side by side in one CI run, but the recordings "
+            + ("name different CI runs" if all(urls) else "do not both name the CI run that made them")
+        )
     # The lab's own code is not part of the setup: it differs between a pull request and main, and
     # a rule of the lab's own changes it too. It refuses nothing, and every verdict says it differed.
     code = {
@@ -374,10 +696,61 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
     elif not in_order:
         refusals.append("the steps of the two recordings ran in another order")
 
+    # Two runners of one CI run can get two images and kernels, and a pull request cannot choose them.
+    # When those are all that refuse, a change that leaves a mark of its own is judged by that mark
+    # alone, and any other change is refused with what to do about it.
+    runner_rows = [
+        difference
+        for difference in differences
+        if difference["what"].startswith(RUNNER)
+        and not difference.get("declared")
+        and difference["before"] is not None
+        and difference["after"] is not None
+    ]
+    runner_reasons = [
+        f"also differed: {named(row['what'])} ({row['before']} before, {row['after']} after)"
+        for row in runner_rows
+    ]
+    runners_only = bool(runner_rows) and two_runners and sorted(refusals) == sorted(runner_reasons)
+    runners_said = ", ".join(named(row["what"]) for row in runner_rows)
+    # The mark is a key whose rules watch only paths that no rule of the other run could have recorded,
+    # on events that name no path such a rule watches:
+    # a key that only one run's events carry may be on a rule both runs have that fired on one runner
+    # only, a key that only one run's rules name may be an old rule under a new name, and a new rule may
+    # watch what an old one already covers.
+    defined = (audit_watches(before), audit_watches(after))
+    unsaid = [label for label, keys_ in zip(("before", "after"), defined, strict=True) if keys_ is None]
+    limit = None
+    if runners_only and declared in MARKS and unsaid:
+        refusals.append(
+            f"the two runners differed ({runners_said}), and "
+            + (
+                f"the {unsaid[0]} recording does not say what its"
+                if len(unsaid) == 1
+                else "neither recording says what its run's"
+            )
+            + " audit rules watch under each audit key, so no step can be shown to carry the change's "
+            "own mark: write the recordings again with `bluefire-lab recording` from each run's folder, "
+            "which holds the audit rules as they were loaded, or run the pair again"
+        )
+    elif runners_only and declared in MARKS:
+        refusals = []
+        limit = {
+            "why": "the two runners differed",
+            "differences": [row["what"] for row in runner_rows],
+            "credits": f"only a step that carries the change's own mark: {MARKS[declared]}",
+        }
+    elif runners_only and declared:
+        refusals.append(
+            f"the two runners differed ({runners_said}), and a change of "
+            f"{named(declared)} leaves no mark of its own on a step that tells its effect from theirs: run the "
+            "pair again, which gives two new runners"
+        )
+
     comparable = not refusals
     judged = judged_fields(declared)
     control = tuple(field for field in FIELDS if field not in judged)
-    gain_price = price(before, after, declared) if comparable and declared else None
+    gain_price = price(before, after, declared, limit is not None) if comparable and declared else None
     rules_before, rules_after = matches(before), matches(after)
     lab_before, lab_after = lab_matches(before), lab_matches(after)
     lab_titles = {
@@ -387,6 +760,38 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
         if alert["rule"].get("origin") == "lab"
     }
     verdicts = (lab_verdicts(before), lab_verdicts(after))
+    # A sensor's settings can change a step only through what that sensor recorded of it.
+    sensor = declared.partition(":")[2] if declared and declared.startswith("sensors:") else None
+    kept = ({event["step"] for event in before["events"]}, {event["step"] for event in after["events"]})
+    keys = (audit_keys(before), audit_keys(after))
+    only = (set(keys[0]) - set(keys[1]), set(keys[1]) - set(keys[0]))
+    marking = (
+        (marks(defined[0], defined[1], "after"), marks(defined[1], defined[0], "before"))
+        if limit is not None
+        else ({}, {})
+    )
+    rules = (recorders(defined[0]), recorders(defined[1])) if limit is not None else ([], [])
+    # The keys whose events a changed step lists: those only one run's events carry, and on two runners
+    # that differed also those that can carry the mark, whose name the other run's events may carry too.
+    listed_keys = tuple(
+        only[number] | {key for key, why in marking[number].items() if not why} for number in (0, 1)
+    )
+    if sensor == "auditd":
+        # Two runs of the same audit rules differ in text that is new in every run, such as temporary
+        # file names and a password's salt, so the records of a key both runs' events carry are not listed.
+        lines = (sensor_lines(before, sensor, listed_keys[0]), sensor_lines(after, sensor, listed_keys[1]))
+        unchanged = f"sensor `{sensor}` recorded nothing of this step under an audit key that only one run's events carry"
+    else:
+        lines = (sensor_lines(before, sensor), sensor_lines(after, sensor)) if sensor else ({}, {})
+        unchanged = f"sensor `{sensor}` recorded the same for this step in both runs"
+    events = (by_step(before, "events"), by_step(after, "events"))
+    # A rule that matched only the launcher's start moves no outcome, and the mark leaves it out.
+    alerts = tuple(
+        by_step(
+            {"alerts": [alert for alert in recording["alerts"] if not alert.get("launcher_only")]}, "alerts"
+        )
+        for recording in (before, after)
+    )
     rows = []
     for old, step in pairs:
         changed = [
@@ -414,10 +819,48 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
             ]
         else:
             unmoved = []
+        records = (
+            records_of(sensor, lines[0].get(old["id"], []), lines[1].get(step["id"], []))
+            if sensor and changed
+            else None
+        )
+        # A sensor's settings move a step only through what that sensor recorded of it: when the
+        # recordings hold the step's events and none of the declared sensor's is the change's, the
+        # credit an unchanged lab rule got above does not hold either.
+        if records and moved and not records["new"]["count"] and not records["gone"]["count"]:
+            if old["id"] in kept[0] or step["id"] in kept[1]:
+                unmoved = [unchanged]
+        mark = (
+            mark_of(
+                tuple(
+                    (
+                        part,
+                        events[number].get(part["id"], []),
+                        alerts[number].get(part["id"], []),
+                        marking[number],
+                    )
+                    for number, part in enumerate((old, step))
+                ),
+                rules,
+            )
+            if limit is not None and changed
+            else None
+        )
         if not changed:
             result, words = "same", "no change"
         elif not comparable:
             result, words = "no verdict", "no verdict: the comparison is refused"
+        elif limit is not None and (varied or isinstance(mark, str)):
+            # On two runners that differed, a step without the change's mark may have moved with them.
+            said = (["the control changed too"] if varied else []) + (
+                [f"the step does not carry the change's own mark ({mark})"] if isinstance(mark, str) else []
+            )
+            result, words = (
+                "not attributable",
+                f"not attributable: the two runners differed ({runners_said}), "
+                + (", and ".join(said))
+                + f", so this is {variation} or the runners' difference",
+            )
         elif varied and moved:
             result, words = (
                 "not attributable",
@@ -432,9 +875,11 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
             )
         else:
             result = direction(step["role"], moved)
-            words = f"{result}: " + "; ".join(
-                f"{old_} to {new_} {SAID[field]}" for field, old_, new_ in moved
-            )
+            words = (
+                f"{result} by the change's own mark, on two runners that differed: "
+                if isinstance(mark, dict)
+                else f"{result}: "
+            ) + "; ".join(f"{old_} to {new_} {SAID[field]}" for field, old_, new_ in moved)
             if step["role"] == "control" and any(new_ == "alerted" for _, _, new_ in moved):
                 words += " (a false alert: a step of role control must raise none)"
         rows.append(
@@ -451,6 +896,8 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
                 "underneath": underneath(old, step, rules_before[old["id"]], rules_after[step["id"]])
                 if changed
                 else [],
+                **({"records": records} if records else {}),
+                **({"mark": mark} if isinstance(mark, dict) and result != "not attributable" else {}),
                 "result": result,
                 "verdict": words,
             }
@@ -474,8 +921,26 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
             row["verdict"] += (
                 "; the lab's code is not known to be the same, and the comparison does not check it"
             )
+        if "mark" in row:
+            keys_said = ", ".join(f"`{key}`" for key in row["mark"]["keys"])
+            row["verdict"] += (
+                f"; it rests on {plural(row['mark']['events'], 'event')} of the audit "
+                f"{'key' if len(row['mark']['keys']) == 1 else 'keys'} {keys_said}, whose every rule in "
+                f"the {row['mark']['run']} run watches a path that no rule of the "
+                f"{'after' if row['mark']['run'] == 'before' else 'before'} run, as written, could have recorded, the only "
+                f"events either run holds of the step, on two runners that differed ({runners_said})"
+            )
         if row["result"] != "same":
             row["verdict"] += f"; {CLAIM}"
+    if limit is not None:
+        limit["credited"] = sum(1 for row in rows if "mark" in row)
+        limit["not_attributable"] = sum(1 for row in rows if row["result"] == "not attributable")
+
+    def mark_said(marks_of: dict[str, str | None], key: str) -> dict:
+        """On two runners that differed: whether events of a key can carry the change's own mark, and why not."""
+
+        why = marks_of.get(key, "it is on no rule of its run")
+        return {"mark": True} if why is None else {"mark": False, "no_mark": why}
 
     def listed(steps: list[dict]) -> list[dict]:
         return [
@@ -494,7 +959,9 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
         "before": side(before, shas[0]),
         "after": side(after, shas[1]),
         "declared_change": declared,
+        "runners": 2 if two_runners and urls[0] and urls[0] == urls[1] else None,
         "comparable": comparable,
+        "limit": limit,
         "refused_because": refusals,
         "differences": differences,
         "same_in_both": same,
@@ -509,6 +976,9 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
         "counts": {
             "paired": len(rows),
             **{result: sum(1 for row in rows if row["result"] == result) for result in RESULTS},
+            # Of the steps counted above as better, worse or changed, those credited by the change's own
+            # mark alone on two runners that differed: a limited verdict, beside the counts it is part of.
+            "by_mark": sum(1 for row in rows if "mark" in row),
             "new": len(new),
             "gone": len(gone),
         },
@@ -517,6 +987,23 @@ def compare(before: dict, after: dict, shas: tuple[str, str] = ("", ""), declare
         "new": listed(new),
         "gone": listed(gone),
         "race": race(before, after),
+        "audit_keys": {
+            label: {
+                key: {
+                    "events": len(events),
+                    "steps": sorted({event["step"] for event in events}),
+                    **(mark_said(marks_of, key) if limit is not None else {}),
+                }
+                for key, events in sorted(found.items())
+                if key in keys_of
+            }
+            for label, found, keys_of, marks_of in (
+                ("only_before", keys[0], only[0], marking[0]),
+                ("only_after", keys[1], only[1], marking[1]),
+            )
+        }
+        if sensor == "auditd"
+        else None,
     }
 
 
@@ -530,21 +1017,62 @@ def markdown(delta: dict) -> str:
         address = facts.get("run_url")
         label = address.rstrip("/").rpartition("/")[2] if address else facts["id"]
         made = f", commit `{facts['commit'][:8]}`" if "commit" in facts else ""
+        defense = facts.get("defense_commit")
+        if defense:
+            made += (
+                f", its rules and sensor settings from commit `{defense[:8]}`"
+                if defense != facts.get("commit")
+                else ", its rules and sensor settings from that commit"
+            )
         return (
             f"[{label}]({address})" if address else f"`{label}`"
         ) + f", {facts.get('environment', '')}{made}"
 
-    declared = delta["declared_change"]
+    declared, runners = delta["declared_change"], delta.get("runners")
     lines = [
-        "## Compared with an earlier recording",
+        "## A pair of runs, before and after the change"
+        if runners == 2
+        else "## Compared with an earlier recording",
         "",
         f"Before: {run(delta['before'])}. After: {run(delta['after'])}.",
         "",
         f"Declared change: {named(declared) if declared else 'none'}.",
         "",
     ]
+    limit = delta.get("limit")
+    runner_rows = [
+        row
+        for row in delta["differences"]
+        if row["what"].startswith(RUNNER) and row["before"] is not None and row["after"] is not None
+    ]
+    if runners == 2:
+        lines += [
+            "The two runs were made side by side in one CI run, each on a fresh runner of its own, not one "
+            "after the other on one runner. So nothing the first run left behind could change the second"
+            + (
+                ", but the two runners differed: "
+                + ", ".join(
+                    f"{named(row['what'])} ({row['before']} before, {row['after']} after)"
+                    for row in runner_rows
+                )
+                + "."
+                if runner_rows
+                else ", and what differs between two runners of the same image and kernel is part of the run "
+                "variation."
+            ),
+            "",
+        ]
     code = delta["lab_code"]
-    if delta["comparable"]:
+    if limit:
+        lines += [
+            "**A limited verdict, not like with like.** The two runners differed, and nothing else differed "
+            "besides the declared change. So the change is credited only on a step that carries its own mark: "
+            f"{MARKS.get(declared, 'its own mark')}. Every other step that differs is not attributable, since "
+            "the runners' difference could have moved it. "
+            f"{plural(limit['credited'], 'step')} credited by the mark, {limit['not_attributable']} not "
+            "attributable. Run the pair again, which gives two new runners, for a verdict on every step.",
+        ]
+    elif delta["comparable"]:
         lines.append(
             "**Comparable.** The same steps, made with the same setup"
             + (" apart from the declared change" if declared else "")
@@ -591,6 +1119,8 @@ def markdown(delta: dict) -> str:
     ]
 
     def mark(row: dict) -> str:
+        if limit and row["what"] in limit["differences"]:
+            return " (the runners)"
         if not row.get("declared"):
             return ""
         return " (declared)" if row["what"] == declared else " (part of the declared change)"
@@ -608,7 +1138,17 @@ def markdown(delta: dict) -> str:
 
     counts, control = delta["counts"], delta["control"]
     by = {row["paired_by"] for row in delta["steps"]} or {"id"}
-    tally = ", ".join(f"{counts[result]} {result}" for result in RESULTS if counts.get(result))
+    marked = collections.Counter(row["result"] for row in delta["steps"] if "mark" in row)
+    tally = ", ".join(
+        f"{counts[result]} {result}"
+        + (
+            f" ({marked[result]} of them by the change's own mark alone, on two runners that differed)"
+            if marked[result]
+            else ""
+        )
+        for result in RESULTS
+        if counts.get(result)
+    )
     lines += [
         f"{plural(counts['paired'], 'step')} paired by {' and '.join(sorted(by))}"
         + (f": {tally}" if tally else "")
@@ -624,6 +1164,8 @@ def markdown(delta: dict) -> str:
     fields = ", ".join(said[:-1]) + (" and " if len(said) > 1 else "") + said[-1]
     why = "which the declared change cannot change" if declared else "all of them, since nothing was declared"
     variation = "run variation" if code["same"] else "run variation or a change of the lab's code"
+    if limit:
+        variation += " or the runners' difference"
     lines += [
         f"The control, {fields}, {why}: the same on {control['same']} of {plural(control['of'], 'paired step')}."
         + (f" A difference there is {variation}, not an effect." if control["varied"] else ""),
@@ -650,6 +1192,86 @@ def markdown(delta: dict) -> str:
                 + f" | {cell(why)} |"
             )
         lines.append("")
+    recorded = [row for row in differing if "records" in row]
+    if recorded:
+        sensor = recorded[0]["records"]["sensor"]
+
+        def listed(part: dict) -> str:
+            shown = ["`" + cell(line).replace("`", "'") + "`" for line in part["lines"]]
+            more = part["count"] - len(part["lines"])
+            return (", ".join(shown) + (f", and {more} more" if more else "")) if shown else "none"
+
+        which = (
+            ", under an audit key that only one run's events carry"
+            + (" or that can carry the change's own mark" if limit else "")
+            + " (not by itself the change's own: the verdict says whether it is)"
+            if sensor == "auditd"
+            else ""
+        )
+        lines += [f"What sensor `{sensor}` recorded of each step above in one run only{which}:", ""]
+        lines += [
+            f"- `{cell(row['id'])}` {cell(row['technique'] + ' ' + row['title'])}: only after, "
+            f"{listed(row['records']['new'])}; only before, {listed(row['records']['gone'])}."
+            for row in recorded
+        ]
+        lines.append("")
+    if declared and declared.startswith("sensors:"):
+        # What a sensor change did to the steps nobody saw, said also when it did nothing.
+        def steps_of(rows: list[dict]) -> str:
+            return "; ".join(
+                f"`{cell(row['id'])}` {cell(row['technique'] + ' ' + row['title'])}" for row in rows
+            )
+
+        now = [
+            row
+            for row in delta["steps"]
+            if row["before"]["recorded"] == "no telemetry" and row["after"]["recorded"] == "recorded"
+        ]
+        still = [
+            row
+            for row in delta["steps"]
+            if row["role"] == "test" and row["before"]["outcome"] == row["after"]["outcome"] == "unseen"
+        ]
+        lines.append(
+            f"Recorded now, and by no sensor before: {steps_of(now)}."
+            if now
+            else "No step that no sensor recorded before is recorded now."
+        )
+        if still:
+            lines.append(f"Unseen in both runs: {steps_of(still)}.")
+        keys = delta.get("audit_keys")
+        if keys is not None:
+
+            def mark_words(part: dict) -> str:
+                if "mark" not in part:
+                    return ""
+                return (
+                    ", a key that can carry the change's own mark"
+                    if part["mark"]
+                    else f", no mark: {part['no_mark']}"
+                )
+
+            for label, words in (
+                ("only_after", "only the after run's events carry"),
+                ("only_before", "only the before run's events carry"),
+            ):
+                found = keys[label]
+                lines.append(
+                    f"Events of an audit key that {words}: "
+                    + "; ".join(
+                        f"`{cell(key)}`, {plural(part['events'], 'event')} of "
+                        f"{plural(len(part['steps']), 'step')}{cell(mark_words(part))}"
+                        for key, part in found.items()
+                    )
+                    + "."
+                    if found
+                    else f"No event of an audit key that {words}."
+                )
+            lines.append(
+                "A recording holds only the records tied to a step; the whole audit log of each run is "
+                "`audit.txt` in its artifact."
+            )
+        lines.append("")
     for label in ("new", "gone"):
         if delta[label]:
             names = "; ".join(f"`{step['id']}` {step['technique']} {step['title']}" for step in delta[label])
@@ -667,10 +1289,12 @@ def markdown(delta: dict) -> str:
     return "\n".join(lines)
 
 
-def main(before: Path, after: Path, out: Path, declared: str | None = None) -> int:
+def main(before: Path, after: Path, out: Path, declared: str | None = None, two_runners: bool = False) -> int:
     texts = [path.read_bytes() for path in (before, after)]
     recordings = [json.loads(text) for text in texts]
-    delta = compare(*recordings, tuple(hashlib.sha256(text).hexdigest() for text in texts), declared)
+    delta = compare(
+        *recordings, tuple(hashlib.sha256(text).hexdigest() for text in texts), declared, two_runners
+    )
     out.mkdir(parents=True, exist_ok=True)
     (out / "delta.json").write_text(json.dumps(delta, indent=1) + "\n", encoding="utf-8")
     text = markdown(delta)
