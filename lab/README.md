@@ -1359,9 +1359,17 @@ Limits:
 - A step's start and end are the Docker daemon's times of its exec, not the
   engine's; where those events were not matched, the engine's own clock is
   used and `path.md` marks it.
-- The port scans try every port and so run to their timeout of 300 s; the
-  engine then kills what the step started, as the step's account, and the
-  step's time is its timeout. The effect check still decides what happened.
+- The published port scan tries every port, so s05a and s05b may run until
+  the step's timeout of 300 s. At a timeout the engine kills what the step
+  started, as the step's account, and the effect check still decides what
+  happened.
+- Before any container exists, the loader refuses a step that names a host
+  outside the spec, or one its host shares no network with, in the forms it
+  recognises: the step's `to`, a URL with a scheme, `user@host`,
+  `/dev/tcp/<host>` and `/dev/udp/<host>`. It refuses an address that
+  Python's `ipaddress` reads. It does not recognise a bare host name, nor an
+  address in a short, integer or hex form. This is an early, plain refusal of
+  mistakes; the seal is what keeps a step inside the range.
 - `blocked` cannot occur: range one configures no active response.
 
 The path in a CI run: not yet shown.
