@@ -181,3 +181,23 @@ def test_the_lab_stops_with_the_reason_when_the_target_lacks_a_program_it_needs_
 
     with pytest.raises(SystemExit, match="the lab needs systemctl on the target"):
         run.requirements()
+
+
+def test_a_pull_requests_run_records_its_head_commit_and_a_push_the_commit_it_checked_out() -> None:
+    merge, head, base = "m" * 40, "h" * 40, "b" * 40
+    # As lab.yml sets the variables: GITHUB_SHA is GitHub's merge commit, which no clone keeps.
+    pull = {
+        "GITHUB_REPOSITORY": "example/lab",
+        "GITHUB_SHA": merge,
+        "LAB_COMMIT": head,
+        "DEFENSE_COMMIT": head,
+    }
+
+    assert run.lab_commits(pull) == {"lab": f"example/lab@{head}", "lab-defense": f"example/lab@{head}"}
+    # The run of a pair that loads the base commit's rules and sensor settings.
+    assert run.lab_commits({**pull, "DEFENSE_COMMIT": base}) == {
+        "lab": f"example/lab@{head}",
+        "lab-defense": f"example/lab@{base}",
+    }
+    pushed = {"GITHUB_REPOSITORY": "example/lab", "GITHUB_SHA": head}
+    assert run.lab_commits(pushed) == {"lab": f"example/lab@{head}", "lab-defense": f"example/lab@{head}"}

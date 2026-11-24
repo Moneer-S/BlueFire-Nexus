@@ -183,7 +183,11 @@ alert rests on, and the price in the lab's words
 Select a recorded run to play it in the live view at `#/runs/recorded/<id>`.
 The address keeps the moment you are at (the step, the position in it, whether
 playback is paused, watch or analyse mode, and the chosen step), so a link or a
-reload opens the same place. While a recording is still running, the page asks
+reload opens the same place. An address that names a step the recording does
+not hold gets one line that says so, and keeps naming that step until you move
+from where the view opened. In a small window the view behaves as the single
+replay page does: it grows with what it holds, the page scrolls, and at phone
+width its bands stack. While a recording is still running, the page asks
 the service for it again every few seconds and shows what has arrived. **Fix
 this** on a step opens its detail in analyse mode, where the hint says where
 the gap is: a sensor, or a rule. Making the change from there is not part of

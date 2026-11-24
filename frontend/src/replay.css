@@ -16,9 +16,11 @@ body {
   color: #eef7ff;
 }
 
+/* The view fills the window; in a small or zoomed window it grows, and the page scrolls. */
 #root {
   position: fixed;
   inset: 0;
+  overflow: auto;
 }
 
 .replay-empty {

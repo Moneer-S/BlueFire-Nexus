@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from bluefire_lab import recording
@@ -302,8 +303,8 @@ def test_every_step_gets_an_outcome_and_the_score_counts_the_tests(tmp_path: Pat
     assert made["ordinary"] == {
         "events": 940,
         "matches": [
-            {"rule": "History File Deletion", "level": "high", "count": 2},
-            {"rule": "File Deletion", "level": "low", "count": 5},
+            {"rule": "History File Deletion", "id": "rule-high", "level": "high", "count": 2},
+            {"rule": "File Deletion", "id": "rule-low", "level": "low", "count": 5},
         ],
     }
 
@@ -557,7 +558,7 @@ def test_output_keeps_its_end_and_a_command_and_an_event_text_their_start(tmp_pa
         and step["command"].endswith("...")
     )
     assert [event["text"] for event in made["events"]] == [
-        "echo a echo b",
+        "echo a\\u{A}echo b",
         "/home/bluefire-lab/.bashrc",
         "the kernel refused to start /tmp/payload (exit -2)",
     ]
@@ -753,3 +754,141 @@ def test_events_are_in_time_order_even_when_a_step_outlasts_the_next_ones_start(
         ("2-1", "test:guid-2"),
         ("1-2", "test:guid-1"),
     ]
+
+
+# The app's check of a recording's characters, copied here since the lab's tests run without the app:
+# _CONTROL and _FREE_TEXT of bluefire/recordings.py, in the stricter form that also refuses C1
+# controls, the direction marks, embeddings, overrides and isolates, and the line and paragraph
+# separators. No text or key holds NUL or half of a character pair, free text included.
+APP_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
+APP_FREE_TEXT = re.compile(
+    r"notes\[\d+\]|attacker\.(?:description|goal)|steps\[\d+\]\.(?:command|output|plain)"
+)
+APP_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+# One of each kind the app refuses outside free text, then NUL and half of a pair, refused everywhere.
+ODD = (
+    "\t\n\r\x1b\x7f\x85\x9b\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u2028\u2029"
+    "\x00\ud800"
+)
+# A file name as ATT&CK T1036.002 makes one: the override shows "/tmp/lab/hs.gpj" as if it ended in .jpg.
+RENAMED = "/tmp/lab/\u202ehs.gpj"
+
+
+def every_text(value, where: str = ""):
+    """Each key and text of a recording with its place, as the app's check names the place."""
+
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield f"{where} (a key)", key
+            yield from every_text(child, f"{where}.{key}" if where else key)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from every_text(child, f"{where}[{index}]")
+    elif isinstance(value, str):
+        yield where, value
+
+
+def read_back(text: str) -> str:
+    """A shown text as the source gave it: each \\u{<hex>} turned back into its character."""
+
+    return re.sub(r"\\u\{([0-9A-F]+)\}", lambda found: chr(int(found.group(1), 16)), text)
+
+
+def test_a_character_the_format_refuses_is_shown_so_that_the_app_takes_the_recording(tmp_path: Path) -> None:
+    events = [
+        an_event(
+            4,
+            40,
+            detail="printf 'a\tb\n' " + ODD,
+            fields={"ProcessId": "41", "ParentCommandLine": "sh -c " + ODD, "TargetFilename": RENAMED},
+        ),
+        an_event(4, 41, 3.2, kind="file created", detail=RENAMED),
+        # A backslash of the source's own stays, and one that would read as the shown form is shown too.
+        an_event(4, 42, 3.3, detail="echo \\u{41} C:\\temp \\n"),
+    ]
+    test = a_test(4, events=events, rules=[cited({**HIGH, "title": "Deletion\t" + ODD}, 40)])
+    test.update(name="Test\u202e 4", technique_name="Masquerading\u2028", plain="Line one\nline\ttwo" + ODD)
+    test["visibility"]["launcher"]["detail"] = "sh -c 'printf a\tb'" + ODD
+    ordinary = {
+        "baseline_events": 4,
+        "system_events": 9,
+        "pinned_rules": [{**LOW, "title": "Low\x85", "events": 1}],
+    }
+    run = {
+        "id": "r1",
+        "started": "2026-11-16T04:00:00Z",
+        "finished": "2026-11-16T04:30:00Z",
+        "target": {"os": "Ubuntu\u2069 24.04", "kernel": "7.0\t", "runner_image": "ubuntu24\u200e"},
+        "tools": {"atomic-red-team": "a" * 40},
+    }
+    audit = {"name": "auditd\u061c", "version": "3.1.2", "rules_text": "-w /tmp/x -p wa -k key\u202eodd\n"}
+
+    made = recorded(
+        tmp_path,
+        [test],
+        printed="out\tput\n" + ODD,
+        run=run,
+        sensor={"name": "Sysmon\u200f for Linux", "version": "1.6.0\x1b[0m"},
+        audit=audit,
+        ordinary_activity=ordinary,
+        lab_rules=[],
+    )
+
+    for where, text in every_text(made):
+        assert "\x00" not in text and not APP_LONE_SURROGATE.search(text), where
+        if not APP_FREE_TEXT.fullmatch(where):
+            assert not APP_CONTROL.search(text), where
+    first, renamed, backslashes = made["events"]
+    assert first["text"] == "printf 'a\\u{9}b\\u{A}' " + "".join(f"\\u{{{ord(odd):X}}}" for odd in ODD)
+    assert read_back(first["text"]) == "printf 'a\tb\n' " + ODD
+    assert read_back(first["fields"]["ParentCommandLine"]) == "sh -c " + ODD
+    assert renamed["text"] == first["fields"]["TargetFilename"] == "/tmp/lab/\\u{202E}hs.gpj"
+    assert backslashes["text"] == "echo \\u{5C}u{41} C:\\temp \\n"
+    assert read_back(backslashes["text"]) == "echo \\u{41} C:\\temp \\n"
+    # Free text keeps its controls as they were, but never a NUL or half of a pair.
+    step = made["steps"][0]
+    assert step["command"] == "sh -c 'printf a\tb'" + ODD[:-2] + "\\u{0}\\u{D800}"
+    assert step["output"] == "out\tput\n" + ODD[:-2] + "\\u{0}\\u{D800}"
+    assert step["plain"] == "Line one\nline\ttwo" + ODD[:-2] + "\\u{0}\\u{D800}"
+    assert (step["title"], step["technique"]["name"]) == ("Test\\u{202E} 4", "Masquerading\\u{2028}")
+    assert read_back(made["alerts"][0]["rule"]["title"]) == "Deletion\t" + ODD
+    assert made["ordinary"]["matches"][0]["rule"] == "Low\\u{85}"
+    assert (
+        made["network"]["hosts"][0]["os"]
+        == "Ubuntu\\u{2069} 24.04, kernel 7.0\\u{9}, runner image ubuntu24\\u{200E}"
+    )
+    assert [sensor["name"] for sensor in made["network"]["sensors"]] == [
+        "Sysmon\\u{200F} for Linux 1.6.0\\u{1B}[0m",
+        "auditd\\u{61C} 3.1.2",
+    ]
+    assert list(made["network"]["sensors"][1]["audit_watches"]) == ["key\\u{202E}odd"]
+
+
+def test_a_cut_text_keeps_a_shown_character_whole_or_leaves_it_out(tmp_path: Path) -> None:
+    # 1,995 characters, then one shown in 8: the cut at 1,997 and the three dots leaves it out whole.
+    test = a_test(4, events=[an_event(4, 40, detail="x" * 1995 + "\u202e" + "y" * 10)])
+    test["visibility"]["launcher"]["detail"] = "z" * 1990 + "\x00" + "z" * 20
+
+    made = recorded(tmp_path, [test], printed="y" * 10 + "\x00" + "x" * 1995)
+
+    assert made["events"][0]["text"] == "x" * 1995 + "..."
+    assert made["steps"][0]["command"] == "z" * 1990 + "\\u{0}" + "z" * 2 + "..."
+    assert made["steps"][0]["output"] == "..." + "x" * 1995
+
+
+def test_a_rule_of_ordinary_activity_is_listed_once_also_when_two_rules_share_its_title(
+    tmp_path: Path,
+) -> None:
+    # Another published rule with the title of LOW, and the high rule given twice.
+    twin = {**LOW, "id": "rule-twin"}
+    rules = [{**HIGH, "events": 2}, {**LOW, "events": 5}, {**twin, "events": 1}, {**HIGH, "events": 2}]
+    ordinary = {"baseline_events": 40, "system_events": 900, "pinned_rules": rules}
+
+    made = recorded(tmp_path, a_run(), ordinary_activity=ordinary)
+
+    assert made["ordinary"]["matches"] == [
+        {"rule": "History File Deletion", "id": "rule-high", "level": "high", "count": 2},
+        {"rule": "File Deletion (rule-low)", "id": "rule-low", "level": "low", "count": 5},
+        {"rule": "File Deletion (rule-twin)", "id": "rule-twin", "level": "low", "count": 1},
+    ]
+    assert made["score"]["false_alerts"] == 1

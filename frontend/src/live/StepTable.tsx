@@ -7,7 +7,7 @@ import type { KeyboardEvent } from "react";
 import type { Outcome, Sensor, Step, StepRole } from "./recording";
 import { OUTCOME_ORDER, ROLE_ORDER, roleCount, tableRows } from "./analyse";
 import type { SortKey, StepRow } from "./analyse";
-import { count, outcomeClass, outcomeWords, sensorWord } from "./format";
+import { count, outcomeClass, outcomeWords, plural, sensorWord } from "./format";
 import type { StyleVars } from "./motion";
 
 export interface TableState {
@@ -76,10 +76,13 @@ function MatchCell({ row }: { row: StepRow }) {
 
 export function StepTable({ rows, sensors, colours, state, onState, selected, onSelect }: StepTableProps) {
   const wrap = useRef<HTMLDivElement | null>(null);
-  const roles = ([...ROLE_ORDER, "all"] as const).filter((role) => role === "all" || rows.some((row) => row.step.role === role));
-  const inRole = rows.filter((row) => state.role === "all" || row.step.role === state.role);
+  const roles = ([...ROLE_ORDER, "all"] as const).filter((kind) => kind === "all" || rows.some((row) => row.step.role === kind));
+  // A role the recording has no step of, such as the tests the table opens on, reads as All: the table never opens empty with no filter pressed.
+  const role = roles.includes(state.role) ? state.role : "all";
+  const inRole = rows.filter((row) => role === "all" || row.step.role === role);
   const outcomes = OUTCOME_ORDER.filter((outcome) => inRole.some((row) => row.step.outcome === outcome));
-  const shown = tableRows(rows, { role: state.role, outcome: state.outcome }, { key: state.sort, ascending: state.ascending });
+  const outcome = state.outcome !== null && outcomes.includes(state.outcome) ? state.outcome : null;
+  const shown = tableRows(rows, { role, outcome }, { key: state.sort, ascending: state.ascending });
   // One tab stop for the rows: the chosen one, or the first shown. Up and down move between them.
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
   const chosenAt = shown.findIndex((row) => row.step.id === selected);
@@ -125,34 +128,34 @@ export function StepTable({ rows, sensors, colours, state, onState, selected, on
     </th>
   );
   // The role column only says something when the table holds more than one role.
-  const mixed = state.role === "all";
-  const scope = state.role === "all"? `all ${rows.length} steps` : roleCount(state.role, inRole.length);
+  const mixed = role === "all";
+  const scope = role !== "all" ? roleCount(role, inRole.length) : rows.length === 1 ? "the one step" : `all ${plural(rows.length, "step")}`;
 
   return (
     <div className="lv-table-side">
       <div className="lv-filters">
         <div className="lv-seg" role="group" aria-label="Role">
-          {roles.map((role) => (
+          {roles.map((choice) => (
             <button
-              key={role}
+              key={choice}
               type="button"
-              aria-pressed={state.role === role}
+              aria-pressed={role === choice}
               onClick={() => {
-                const keep = state.outcome !== null && rows.some((row) => (role === "all" || row.step.role === role) && row.step.outcome === state.outcome);
-                onState({ ...state, role, outcome: keep ? state.outcome : null });
+                const keep = outcome !== null && rows.some((row) => (choice === "all" || row.step.role === choice) && row.step.outcome === outcome);
+                onState({ ...state, role: choice, outcome: keep ? outcome : null });
               }}
             >
-              {ROLE_LABEL[role]}
-              <b>{role === "all" ? rows.length : rows.filter((row) => row.step.role === role).length}</b>
+              {ROLE_LABEL[choice]}
+              <b>{choice === "all" ? rows.length : rows.filter((row) => row.step.role === choice).length}</b>
             </button>
           ))}
         </div>
         <div className="lv-chips" role="group" aria-label={`Outcomes of ${scope}`}>
           <span className="lv-chips-scope">{scope}:</span>
-          {outcomes.map((outcome) => (
-            <button key={outcome} type="button" className="lv-filter-chip" aria-pressed={state.outcome === outcome} onClick={() => onState({ ...state, outcome: state.outcome === outcome ? null : outcome })}>
-              <span className={`lv-ow is-${outcomeClass(outcome)}`}>{outcomeWords(outcome)}</span>
-              <b>{inRole.filter((row) => row.step.outcome === outcome).length}</b>
+          {outcomes.map((chip) => (
+            <button key={chip} type="button" className="lv-filter-chip" aria-pressed={outcome === chip} onClick={() => onState({ ...state, role, outcome: outcome === chip ? null : chip })}>
+              <span className={`lv-ow is-${outcomeClass(chip)}`}>{outcomeWords(chip)}</span>
+              <b>{inRole.filter((row) => row.step.outcome === chip).length}</b>
             </button>
           ))}
         </div>

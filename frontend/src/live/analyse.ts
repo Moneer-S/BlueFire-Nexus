@@ -3,7 +3,7 @@
 import type { Alert, Outcome, Recording, RecordingEvent, Step, StepRole } from "./recording";
 import { alertsByStep, countsAsAlert, countsForScore, eventsByStep } from "./recording";
 import { plural, stepLabel } from "./format";
-import { stepMatchesInFiringOrder } from "./playback";
+import { stepEnd, stepMatchesInFiringOrder } from "./playback";
 import type { Timeline } from "./playback";
 
 /** The matches of one step, published and lab rules apart, alert and review apart, the launcher line named. */
@@ -44,6 +44,8 @@ export interface StepRow {
   /** Events the sensors recorded for the step, which can be more than the recording keeps. Null when the engine could not tie events to it. */
   recorded: number | null;
   matches: MatchGroups;
+  /** When the step ended, as playback and the watch view read it (`stepEnd`): a match raised live after it is late. Null for a step with no time. */
+  end: number | null;
 }
 
 /** Every step's row. Its matches are in the order playback fires them, so a step's first alert here is the one the watch view names. */
@@ -53,6 +55,7 @@ export function stepRows(recording: Recording, timeline: Timeline): StepRow[] {
     const own = events.get(step.id) ?? [];
     const bySensor = new Map<string, number>();
     for (const event of own) bySensor.set(event.sensor, (bySensor.get(event.sensor) ?? 0) + 1);
+    const segment = timeline.segments[index];
     return {
       step,
       index,
@@ -60,6 +63,7 @@ export function stepRows(recording: Recording, timeline: Timeline): StepRow[] {
       bySensor,
       recorded: step.visibility.events ?? null,
       matches: groupMatches(stepMatchesInFiringOrder(timeline, step.id)),
+      end: segment && segment.step.id === step.id ? stepEnd(segment) : null,
     };
   });
 }

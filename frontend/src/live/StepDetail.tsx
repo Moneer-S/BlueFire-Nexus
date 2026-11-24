@@ -18,8 +18,10 @@ interface StepDetailProps {
   colours: Map<string, string>;
   testNumber: number | undefined;
   testsTotal: number;
-  /** Real time (ms) of the first step's start, the origin of "into the run". */
+  /** Real time (ms) of the run's start, the origin of "into the run" (`RunFacts.start`). */
   origin: number;
+  /** What that origin is, in words (`RunFacts.startWords`). */
+  originWords?: string;
   onSelect: (stepId: string) => void;
   /** Left out where the step is shown outside its run's playback: there is no "Watch from here". */
   onWatch?: (stepId: string) => void;
@@ -53,7 +55,11 @@ function chip(alert: Alert): { words: string; className: string; title?: string 
   return { words: `review · ${alert.rule.level}`, className: "is-review" };
 }
 
-/** For a match raised live after its step ended: "Raised 2.9 s after the step ended." Null for any other. */
+/**
+ * For a match raised live after its step ended: "Raised 2.9 s after the step
+ * ended." Null for any other. `ended` is the step's end as playback reads it,
+ * so exactly the matches the watch view brings as late arrivals say so here.
+ */
 function raisedAfter(alert: Alert, ended: number | null): string | null {
   if (alert.raised === undefined || ended === null) return null;
   const late = timeOf(alert.raised) - ended;
@@ -203,7 +209,7 @@ function EventLines({ recording, events, marks, colours, refusal }: { recording:
   );
 }
 
-export function StepDetail({ recording, row, colours, testNumber, testsTotal, origin, onSelect, onWatch, onFix, onClose, takeFocus }: StepDetailProps) {
+export function StepDetail({ recording, row, colours, testNumber, testsTotal, origin, originWords = "the start of the run", onSelect, onWatch, onFix, onClose, takeFocus }: StepDetailProps) {
   const article = useRef<HTMLElement | null>(null);
   // The detail is mounted again for every step, so this runs once per chosen step.
   useEffect(() => {
@@ -380,7 +386,7 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
                 {ended !== null ? <> to {clockTime(ended)}</> : null} UTC
                 <small>
                   {ended !== null ? `${span(ended - started)}, ` : ""}
-                  <span title={`Counted from the first event of the first step, ${clockTime(origin)} UTC`}>{elapsed((started - origin) / 1000)} into the run</span>
+                  <span title={`Counted from ${originWords}, ${clockTime(origin)} UTC`}>{elapsed((started - origin) / 1000)} into the run</span>
                   {Number.isFinite(firstAlert) ? `, ${afterStart("first alert", firstAlert - started)}` : ""}
                   {!Number.isFinite(firstAlert) && Number.isFinite(firstLabAlert) && step.first_alert_with_lab_rules ? `, ${afterStart("a lab rule's first alert", firstLabAlert - started)}` : ""}
                 </small>
@@ -420,11 +426,11 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         </h4>
         {anyMatch ? (
           <>
-            <MatchGroup recording={recording} title="Published rules at alert level: in the score" alerts={m.alert} ended={ended} />
-            <MatchGroup recording={recording} title="Rules written in this repository at alert level: not in the score" alerts={m.labAlert} ended={ended} />
-            <MatchGroup recording={recording} title="Published rules below alert level: for review" alerts={m.review} ended={ended} />
-            <MatchGroup recording={recording} title="Rules written in this repository below alert level" alerts={m.labReview} ended={ended} />
-            <MatchGroup recording={recording} title="Matched only the launcher line, which never counts" alerts={m.launcher} ended={ended} />
+            <MatchGroup recording={recording} title="Published rules at alert level: in the score" alerts={m.alert} ended={row.end} />
+            <MatchGroup recording={recording} title="Rules written in this repository at alert level: not in the score" alerts={m.labAlert} ended={row.end} />
+            <MatchGroup recording={recording} title="Published rules below alert level: for review" alerts={m.review} ended={row.end} />
+            <MatchGroup recording={recording} title="Rules written in this repository below alert level" alerts={m.labReview} ended={row.end} />
+            <MatchGroup recording={recording} title="Matched only the launcher line, which never counts" alerts={m.launcher} ended={row.end} />
           </>
         ) : (
           <p className="lv-dt-empty">No rule matched.</p>
