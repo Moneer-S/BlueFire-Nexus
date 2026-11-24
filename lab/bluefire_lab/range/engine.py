@@ -7,8 +7,19 @@ teardown, and any event on the range that the engine did not cause breaks the
 seal. The run writes `seal.json`, `seal.md` and `manifest.json` on every exit
 path, and takes the range down on every exit path after the first create.
 
+The seal comes in phases. The static seal reads `docker inspect` of what the
+engine created, before any container starts. Right after the start, before
+the engine waits for anything in the range, the phase "no way out" proves from
+inside each container that nothing can leave: routes, forwarding, no Docker
+socket, the resolver, addresses outside that must not answer and the host
+canary, with a positive control that needs no service of the range. Then the
+ready gate waits for each host's services (and, for a range with a defense,
+for the defense). The phase "segmentation" then adds the probes between the
+hosts and the check of their listening ports, and repeats everything else.
+The phase "after path" repeats it all where the path ends.
+
 Hosts without a pinned image are built from the spec (see `build`). A range
-with a defense also has a ready gate before the dynamic seal, the engine's
+with a defense also has the engine's
 harmless marks where the path will run, and, on every exit path after the
 start, the collection of what Wazuh recorded into `raw/`, the configuration
 diff, the delivery counts and `defense.md`. A range with ordinary activity
@@ -21,10 +32,13 @@ as an ECS line, with its origin, into `events.ecs.ndjson` and
 `score.md` (see `score`).
 
 Exit codes: 0 the range was sealed and still was at the end; 1 refused before
-anything was created, an engine error, or a range that was not ready in time;
-3 the seal failed and nothing ran in the range; 4 the run was made invalid (the
-seal failed after the point where the path runs, something the engine did not
-do happened to the range, or the conversion to ECS failed).
+anything was created, an engine error, or a range that was not ready in time
+and whose seal held; 3 the seal failed before the place of the path: in the
+static seal, before the ready gate (the engine had run nothing in the range
+but its probes), after the ready gate (the ready gate's own checks had run), or
+when the range was not ready; 4 the run was made invalid (the seal failed
+after the point where the path runs, something the engine did not do happened
+to the range, or the conversion to ECS failed).
 """
 
 from __future__ import annotations
@@ -67,7 +81,8 @@ BUILD_SECONDS = 3600
 # Breaks planted on purpose, to show that the seal catches each one. A run with a plant always fails.
 PLANTS = ("not-internal", "no-isolated-gateway", "published-port", "bind-mount")
 # With this plant only, the run starts the containers although the static seal failed, so that
-# the dynamic seal shows the host canary catching the same break. Its networks are internal.
+# the phase "no way out", before the ready gate, shows the host canary catching the same break.
+# Its networks are internal.
 GOES_ON = {"no-isolated-gateway": {"network: gateway mode"}}
 
 
@@ -169,7 +184,9 @@ class Watch:
     on a range object (by ID, or by a name with the prefix) that matches no
     announcement is a finding. So is the create or start of any other container
     that shares a namespace with a range container: `inspect` reads such a
-    container's `docker inspect`, since its events do not name the range.
+    container's `docker inspect`, since its events do not name the range. While
+    the range has containers, the create or start of any container that is gone
+    before `inspect` could read it is a finding as well.
     """
 
     def __init__(self, prefix: str, raw: Path, inspect=inspect_one):
@@ -284,7 +301,11 @@ class Watch:
                 ):
                     continue
                 inspected = self.inspect((event.get("Actor") or {}).get("ID", ""))
-                shared = seal.joins(inspected or {}, targets)
+                # A container that is gone before the watch could read it might have joined a range
+                # container's namespace: that cannot be ruled out, so it is a finding too.
+                shared = (
+                    seal.joins(inspected, targets) if inspected is not None else {"inspect": "gone before it"}
+                )
                 if shared:
                     with self.lock:
                         raw.write(line)
@@ -1351,9 +1372,7 @@ class Run:
                 else None
                 for path in logs
             }
-            rows = wazuh.delivery(
-                host, logs, spans, found, self.nonces[host]["ready"], self.nonces[host]["end"]
-            )
+            rows = wazuh.delivery(host, logs, spans, found)
             defense["delivery"][host] = rows
             findings += [
                 f"{host}: {row['missing']} lines of {row['source']} missing" for row in rows if row["missing"]
@@ -1430,8 +1449,12 @@ class Run:
             checks += seal.container(spec, host, identifier, inspected, image_id, self.networks, started)
         return checks
 
-    def dynamic_checks(self) -> list[dict]:
-        """Checks d, e and f, on the running containers."""
+    def dynamic_checks(self, services_up: bool = True) -> list[dict]:
+        """Checks d, e and f, on the running containers.
+
+        With `services_up` false, before the ready gate, only what needs no
+        service of the range: see `seal.plan_for`.
+        """
 
         spec = self.spec
         inspected = {host: inspect("inspect", identifier)[0] for host, identifier in self.containers.items()}
@@ -1448,7 +1471,7 @@ class Run:
         try:
             targets = seal.canary_targets(daemon_networks, range_subnets, held, self.rootless)
             plans = {
-                host: seal.plan_for(spec, host, by_host, subnets, (targets, canary.port))
+                host: seal.plan_for(spec, host, by_host, subnets, (targets, canary.port), services_up)
                 for host in spec.hosts
             }
             results: dict[str, tuple[list[str], subprocess.CompletedProcess | None]] = {}
@@ -1520,24 +1543,42 @@ class Run:
                         done.returncode == 0 and done.stdout.strip() == spec.atomics.commit,
                     )
                 )
-        if spec.wazuh:
-            # Read again in every phase: the version each Wazuh piece reports to the manager now.
-            listed, _ = self.listing("engine:seal")
-            for host in [spec.manager, *spec.agents]:
-                identifier = (listed.get(host) or {}).get("id", "<id>")
-                checks.append(
-                    seal.check(
-                        "pins: manager version" if host == spec.manager else "pins: agent version",
-                        f"container {host}",
-                        f"docker exec {self.containers[spec.manager]} /var/ossec/bin/agent_control -i {identifier}",
-                        listed.get(host),
-                        {"status": "Active", "version": spec.wazuh.version},
-                        (listed.get(host) or {}).get("version") == spec.wazuh.version
-                        # The manager reports itself as Active/Local.
-                        and str((listed.get(host) or {}).get("status")).split("/")[0] == "Active",
-                    )
-                )
         return checks
+
+    def wazuh_pins(self) -> list[dict]:
+        """The version each Wazuh piece reports to the manager now; only once the agents have enrolled."""
+
+        spec = self.spec
+        checks: list[dict] = []
+        listed, _ = self.listing("engine:seal")
+        for host in [spec.manager, *spec.agents]:
+            identifier = (listed.get(host) or {}).get("id", "<id>")
+            checks.append(
+                seal.check(
+                    "pins: manager version" if host == spec.manager else "pins: agent version",
+                    f"container {host}",
+                    f"docker exec {self.containers[spec.manager]} /var/ossec/bin/agent_control -i {identifier}",
+                    listed.get(host),
+                    {"status": "Active", "version": spec.wazuh.version},
+                    (listed.get(host) or {}).get("version") == spec.wazuh.version
+                    # The manager reports itself as Active/Local.
+                    and str((listed.get(host) or {}).get("status")).split("/")[0] == "Active",
+                )
+            )
+        return checks
+
+    def sealed_checks(self, watch_command: str, services_up: bool) -> list[dict]:
+        """The static checks on the started range, the checks inside it, and the event watch.
+
+        The Wazuh versions are read again in every phase after the ready gate, and never before it.
+        """
+
+        return (
+            self.static_checks(started=True)
+            + self.dynamic_checks(services_up)
+            + (self.wazuh_pins() if self.spec.wazuh and services_up else [])
+            + [self.watch.check(watch_command)]
+        )
 
     def hold_window(self) -> None:
         """Where the path will run: keep the sealed range up, and stop at once on a finding of the watch."""
@@ -1563,6 +1604,10 @@ class Run:
         """Start the ordinary activity: write the go on each host that runs a job, and record when."""
 
         record = self.manifest["activity"]
+        # A log time to the second is compared with the go taken down to its second (nginx, dpkg and
+        # MariaDB write whole seconds): the go starts a new second, so that no line the engine caused
+        # before it, a plant check's request say, carries the go's own second.
+        time.sleep(1.05 - time.time() % 1)
         for host in self.spec.activity.hosts:
             done = self.execute(
                 self.containers[host],
@@ -1621,7 +1666,7 @@ class Run:
         self.write()
 
     def addresses(self) -> dict[str, list[str]]:
-        """Each host's addresses in the range, as the dynamic seal read them."""
+        """Each host's addresses in the range, as the seal's last phase inside the containers read them."""
 
         return {
             host: list((entry.get("addresses") or {}).values())
@@ -1726,25 +1771,28 @@ class Run:
             blocking = [item["check"] for item in static if not item["pass"] and item["check"] not in exempt]
             if blocking or not seal.passed(static):
                 code, result = EXIT_SEAL, "seal failed"
-                reason = "static seal failed: " + ", ".join(
-                    sorted({item["check"] for item in static if not item["pass"]})
-                )
+                reason = "static seal failed: " + failing(static)
                 if blocking:
                     return code
             self.start()
-            if self.spec.wazuh:
-                self.follow()
-            self.ready()
-            dynamic = (
-                self.static_checks(started=True) + self.dynamic_checks() + [self.watch.check(watch_command)]
-            )
-            if not self.phase("dynamic", dynamic) or code == EXIT_SEAL:
+            # Before the engine waits for anything in the range: nothing can leave it.
+            way_out = self.sealed_checks(watch_command, services_up=False)
+            if not self.phase("no way out", way_out) or code == EXIT_SEAL:
                 code, result = EXIT_SEAL, "seal failed"
                 reason = (
                     (reason + "; " if reason else "")
-                    + "dynamic seal failed: "
-                    + ", ".join(sorted({item["check"] for item in dynamic if not item["pass"]}))
+                    + "seal failed before the ready gate: "
+                    + failing(way_out)
                 )
+                return code
+            if self.spec.wazuh:
+                self.follow()
+            self.ready()
+            # The services listen now: the segmentation between the hosts, with everything above again.
+            segmentation = self.sealed_checks(watch_command, services_up=True)
+            if not self.phase("segmentation", segmentation):
+                code, result = EXIT_SEAL, "seal failed"
+                reason = "seal failed after the ready gate: " + failing(segmentation)
                 return code
             sealed = True
             code, result = EXIT_INVALID, "invalid"
@@ -1759,20 +1807,40 @@ class Run:
             self.hold_window()
             if self.spec.activity:
                 self.activity_tail()
-            after = (
-                self.static_checks(started=True) + self.dynamic_checks() + [self.watch.check(watch_command)]
-            )
+            after = self.sealed_checks(watch_command, services_up=True)
             if not self.phase("after path", after):
-                reason = "the seal failed after the path: " + ", ".join(
-                    sorted({item["check"] for item in after if not item["pass"]})
-                )
+                reason = "the seal failed after the path: " + failing(after)
                 return code
             if self.spec.wazuh:
                 self.end()
             code, result = EXIT_OK, "sealed"
             return code
         except NotReady as error:
-            code, result, reason = EXIT_REFUSED, "not ready", str(error)
+            # The seal is judged once more, so that a range that is not ready and not sealed either
+            # is reported as not sealed.
+            stopped = False
+            try:
+                again = self.sealed_checks(watch_command, services_up=False)
+            except KeyboardInterrupt:
+                stopped = True
+                again = [
+                    seal.check("seal judged", "range", "the seal's checks", "stopped", "they ran", False)
+                ]
+            except Exception as late:  # noqa: BLE001 - a seal that could not be judged did not hold
+                again = [
+                    seal.check(
+                        "seal judged", "range", "the seal's checks", str(late)[:300], "they ran", False
+                    )
+                ]
+            judged = self.phase("no way out, not ready", again)
+            if stopped:
+                code, result = EXIT_REFUSED, "engine error"
+                reason = f"stopped while the seal was judged again; not ready: {error}"
+            elif not judged:
+                code, result = EXIT_SEAL, "seal failed"
+                reason = f"seal failed while the range was not ready: {failing(again)}; not ready: {error}"
+            else:
+                code, result, reason = EXIT_REFUSED, "not ready", str(error)
             return code
         except SpecError as error:
             reason = str(error)
@@ -1843,6 +1911,12 @@ class Run:
                     signal.signal(number, handler)
 
 
+def failing(checks: list[dict]) -> str:
+    """The names of the checks that failed, for a run's reason."""
+
+    return ", ".join(sorted({item["check"] for item in checks if not item["pass"]}))
+
+
 def outcome(
     reached: tuple[int, str, str | None],
     teardown_complete: bool,
@@ -1852,7 +1926,9 @@ def outcome(
 ) -> tuple[int, str, str | None]:
     """A run's exit code, result and reason once its teardown is over.
 
-    `reached` is what the run had reached before the teardown. Only a run that
+    `reached` is what the run had reached before the teardown. A range that was
+    not ready and whose event watch failed during the teardown ends with a
+    failed seal, so that "not ready" never hides one. Otherwise only a run that
     ended sealed changes here: a teardown that left objects behind makes it an
     engine error, a failed event watch during the teardown or a failed
     conversion of the archive and alerts to ECS makes it invalid, and only then
@@ -1861,6 +1937,9 @@ def outcome(
     """
 
     code, result, reason = reached
+    if result == "not ready" and watch_passed is False:
+        watch = "the event watch failed during the teardown: see seal.json"
+        return EXIT_SEAL, "seal failed", f"{watch}; not ready: {reason}"
     if code != EXIT_OK:
         return reached
     if not teardown_complete:
