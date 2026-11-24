@@ -1036,9 +1036,14 @@ class DeltaLibrary:
             else None,
             "refused_because": list(delta["refused_because"]),
             "counts": dict(delta["counts"]),
-            # What the change moved, for a list: each step it is credited with, at most 20.
+            # What the change moved, for a list: each step it is credited with, at most 20,
+            # with its price as the delta words it, so that a list never shows a gain alone.
             "moved": [
-                {key: step[key] for key in ("id", "role", "title", "technique", "result", "before", "after")}
+                {
+                    key: step[key]
+                    for key in ("id", "role", "title", "technique", "result", "before", "after", "price")
+                    if key in step
+                }
                 for step in delta["steps"]
                 if step["result"] in _CREDITED
             ][:20],

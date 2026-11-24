@@ -568,7 +568,8 @@ returned as `409 delta_recording_replaced`. `GET
 each entry has the delta's `id` (16 hex digits), `claim`, `declared_change`,
 `runners`, `one_run`, `comparable`, `limit`, `lab_rules`, `refused_because`,
 `counts`, `moved` (the steps it credits to the change, at most 20, each with its
-`id`, `role`, `title`, `technique`, `result`, `before` and `after`), `before`,
+`id`, `role`, `title`, `technique`, `result`, `before` and `after`, and its
+`price` as the delta words it when the step has one), `before`,
 `after`, the list entries of its two `recordings` (each of the very file the
 delta names), and an `origin`: `shipped` only when the delta and both its
 recordings are shipped, `imported` otherwise. A shipped pair of two runs side by

@@ -86,7 +86,7 @@ describe("the Runs screen's recorded runs", () => {
     expect(await screen.findAllByRole("link", { name: /^Review run / })).toHaveLength(demoRuns.length);
   });
 
-  it("lists each pair of compared runs under its own heading: the change, the two dates and one line of the result", async () => {
+  it("lists each change to the defense as a turn of the loop: named by what it did, how it was compared, and its result in a line", async () => {
     vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [shipped], unreadable_count: 0, omitted_count: 0 });
     const counts = { paired: 91, same: 90, better: 1, worse: 0, changed: 0, "not attributable": 0, "without cause": 0, "no verdict": 0, new: 0, gone: 0 };
     const side = (id: string, started: string) => ({ sha256: "a".repeat(64), id, environment: "GitHub-hosted runner", started });
@@ -102,10 +102,14 @@ describe("the Runs screen's recorded runs", () => {
     const list = await screen.findByRole("region", { name: "Before against after" });
     const [changed, noVerdict] = within(list).getAllByRole("listitem");
     if (!changed || !noVerdict) throw new Error("Both pairs should be listed.");
-    expect(within(changed).getByRole("link", { name: "The settings of sensor auditd" })).toHaveAttribute("href", "/runs/compared/0000000000000001");
+    // Named by what it did, from the delta's count; the list entry names no step, so the words stay general.
+    expect(within(changed).getByRole("link", { name: "One step moved." })).toHaveAttribute("href", "/runs/compared/0000000000000001");
+    expect(within(changed).getByText("New auditd settings")).toBeVisible();
+    expect(within(changed).getByText("the settings of sensor auditd")).toBeVisible();
     expect(within(changed).getByText("Before 23 Nov 2026, after 24 Nov 2026")).toBeVisible();
-    expect(within(changed).getByText("1 better, 0 worse, 0 changed without a cause, of 91 paired steps")).toBeVisible();
-    expect(within(noVerdict).getByRole("link", { name: "Nothing declared as changed" })).toBeVisible();
+    expect(within(changed).getByText("90 of 91 steps the same")).toBeVisible();
+    expect(within(noVerdict).getByRole("link", { name: "No verdict." })).toBeVisible();
+    expect(within(noVerdict).getByText("Nothing declared")).toBeVisible();
     expect(within(noVerdict).getByText("No verdict: the before recording has no source.setup, so what it was made with is not known (and 1 more reason)")).toBeVisible();
     // Each run of a pair opens from its pair, by the file the pair names, and is not listed again as a run of its own.
     expect(within(changed).getByRole("link", { name: /^Play the before run/ })).toHaveAttribute("href", `/runs/recorded/lab-run-1/${"a".repeat(64)}`);
@@ -137,7 +141,7 @@ describe("the Runs screen's recorded runs", () => {
     expect(within(item).queryByText(/^1 better/)).not.toBeInTheDocument();
   });
 
-  it("lists pairs in the order they happened, each saying in a line what changed and what it moved, a run evaluated twice as one run", async () => {
+  it("lists the turns in the order they happened, each named by what it did with its marks and its price, a run evaluated twice as one run", async () => {
     vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [shipped], unreadable_count: 0, omitted_count: 0 });
     const counts = { paired: 93, same: 89, better: 4, worse: 0, changed: 0, "not attributable": 0, "without cause": 0, "no verdict": 0, new: 0, gone: 0 };
     const run = "https://github.com/example/bluefire/actions/runs/8";
@@ -147,14 +151,15 @@ describe("the Runs screen's recorded runs", () => {
     const later: DeltaSummary = {
       id: "0000000000000005", claim: "one run evaluated with two rule sets", declared_change: "detectors:lab", runners: null, one_run: true, comparable: true, refused_because: [], counts,
       lab_rules: [{ rule: "r1", title: "Shell History File Truncated In Place", change: "new", before: null, after: { accepted: true, reason: "it alerted on every run" } }],
-      moved: [movedStep("test", "Clear Bash history (echo)"), movedStep("variant", "Clear Bash history (echo)")],
+      moved: [movedStep("test", "Clear Bash history (echo)"), movedStep("variant", "Clear Bash history (echo)"), movedStep("test", "Clear Bash history (cat dev/null)"), movedStep("variant", "Clear Bash history (cat dev/null)")],
       before: side("b", "2026-11-24T12:42:13Z"), after: side("c", "2026-11-24T12:42:13Z"),
       recordings: { before: { ...shipped, id: "rule-run", source: { ...shipped.source, started: "2026-11-24T12:42:13Z" } }, after: { ...shipped, id: "rule-run", source: { ...shipped.source, started: "2026-11-24T12:42:13Z" } } },
       origin: { kind: "imported", note: "Imported." },
     };
     const earlier: DeltaSummary = {
       ...later, id: "0000000000000004", claim: "one pair of runs", declared_change: "sensors:auditd", one_run: false, runners: 2, lab_rules: null,
-      moved: [{ ...movedStep("test", "Clear Bash history (echo)"), before: { ...outcome("seen"), outcome: "unseen" }, after: outcome("seen") }],
+      counts: { ...counts, paired: 91, same: 90, better: 1 },
+      moved: [{ ...movedStep("test", "Clear Bash history (echo)"), before: { ...outcome("seen"), outcome: "unseen", outcome_with_lab_rules: "unseen" }, after: outcome("seen"), price: "price: published rules that alerted on ordinary activity: 2 before, 2 after" }],
       before: { ...side("d", "2026-11-24T09:32:51Z"), id: "watch-before" }, after: { ...side("e", "2026-11-24T09:32:09Z"), id: "watch-after" },
       recordings: { before: { ...shipped, id: "watch-before", source: { ...shipped.source, started: "2026-11-24T09:32:51Z" } }, after: { ...shipped, id: "watch-after", source: { ...shipped.source, started: "2026-11-24T09:32:09Z" } } },
     };
@@ -163,12 +168,20 @@ describe("the Runs screen's recorded runs", () => {
 
     const list = await screen.findByRole("region", { name: "Before against after" });
     const items = within(list).getAllByRole("listitem");
-    expect(items.map((item) => within(item).getAllByRole("link")[0]?.textContent)).toEqual(["The settings of sensor auditd", "A new rule: Shell History File Truncated In Place"]);
+    expect(items.map((item) => within(item).getAllByRole("link")[0]?.textContent)).toEqual(["One test that nobody saw is now seen.", "Four steps that were seen with no alert now raise an alert."]);
     const [watch, rule] = items;
     if (!watch || !rule) throw new Error("Both pairs should be listed.");
-    expect(within(watch).getByText("Clear Bash history (echo): unseen to seen")).toBeVisible();
+    expect(within(watch).getByText("Clear Bash history (echo)")).toBeVisible();
+    expect(within(watch).getByText("unseen")).toBeVisible();
+    // The price in plain words, not the lab's log line.
+    expect(within(watch).getByText("Price").parentElement).toHaveTextContent("Price2 published rules alert on ordinary activity, before and after");
+    expect(within(rule).getByText("A new rule")).toBeVisible();
+    expect(within(rule).getByText("Shell History File Truncated In Place")).toBeVisible();
     expect(within(rule).getByText("One run evaluated with two rule sets, 24 Nov 2026")).toBeVisible();
-    expect(within(rule).getByText("Clear Bash history (echo), also with changed input arguments: seen to alerted with the lab's rules")).toBeVisible();
+    expect(within(rule).getByText("Clear Bash history (echo) and (cat dev/null), each also with other arguments")).toBeVisible();
+    // Alerted by the lab's rules alone, and said so.
+    expect(within(rule).getByText("alerted")).toBeVisible();
+    expect(within(rule).getByText("with the lab's rules")).toBeVisible();
     // The run evaluated twice opens with either set of rules, each by its own file.
     expect(within(rule).getByRole("link", { name: /^Play with the rules before/ })).toHaveAttribute("href", `/runs/recorded/rule-run/${"b".repeat(64)}`);
     expect(within(rule).getByRole("link", { name: /^Play with the rules after/ })).toHaveAttribute("href", `/runs/recorded/rule-run/${"c".repeat(64)}`);

@@ -16,7 +16,7 @@ Open the exact one-use URL printed after the listener is ready. Its fragment cap
 
 | Area | Use it for |
 |---|---|
-| Overview | Readiness, recent runs, evidence mix, and next actions |
+| Overview | The newest recorded run to watch and the turns of the defender loop, then readiness, recent runs, evidence mix, and next actions |
 | Getting Started | Choose an objective, review its environment, or follow a scenario through durable review |
 | Scenarios | Browse the eight seeded versioned graphs and open the authoritative active definition for editing/running |
 | Builder | Edit typed nodes, parameters, bindings, outcomes, alternates, and route-depth layout; use focus mode and commands |
@@ -160,8 +160,11 @@ score in words, and "Still running" while its engine is still sending it. The
 runs of experiments from Build follow under **Experiment runs**.
 
 Under **Before against after** come the changes to the defense that the lab
-compared, in the order they were made: what changed, how the runs were made, in
-one line what the change moved, and one line of the result. A pair is of one of
+compared, as the turns of one loop, in the order they were made and joined by
+arrows. Each turn is named by what it did ("One test that nobody saw is now
+seen."), with its marks before and after, a small picture of the path that
+changed, the tests it moved, how the comparison was made in small type, its
+price in plain words, and one line of the result. A comparison is of one of
 two kinds. Two runs, side by side in one CI run, before and after a change of a
 sensor's settings; or one run evaluated with two rule sets, after a change of
 the lab's own rules, which read only the telemetry a run recorded. BlueFire
@@ -169,16 +172,38 @@ ships one of each, made in CI, and together they tell the loop: an audit watch
 on the test account's shell history files makes the one test that no sensor
 recorded seen; then a rule drafted from that event, "Shell History File
 Truncated In Place", makes that test and one more alert with the lab's rules,
-with a run of each with changed input arguments. Each pair opens its runs too,
-and they are not listed again among the recorded runs. Select a pair to read it
-at `#/runs/compared/<id>`: the change, the runs, each step it moved with the
-price, and what merely varied. When the two runs were made on two runners that
-differed, the page says at the top that the verdict is limited, why, and what
-alone it credits. For one run evaluated twice, it says at the top that this is
-one run and not a pair of runs, then shows the rule (its title, its file, how
-each evaluation judged it and its text), the steps it moved with the event each
-alert rests on, and the price in the lab's words
+with a run of each with changed input arguments. Each turn opens its runs too,
+and they are not listed again among the recorded runs.
+
+Select a turn to read it at `#/runs/compared/<id>`. Its first screen answers
+what the change did: where it stands in the loop, the sentence of what moved
+with the tests named, and the basis of the verdict (one pair of runs, or one
+run read with two rule sets). Beside the move, two stages draw the moved step
+before and after in the live view's look: the host, its sensors, the rule
+engines and what each recorded or matched, with what read the same on both
+drawn dim. When several steps moved, each has a row, and a row puts its step on
+the stages (the address keeps it, `?step=<id>`). Under them come what it cost
+(false alerts on ordinary activity before and after, or "Not counted" and why),
+what else moved (every step of the run before and after, the moved ones
+marked), what comes next (the next turn, or **Fix this**), and one line on why
+the comparison is fair. That line opens **How we know**: the runs before and
+after with the one change highlighted, their commits, CI runs and files'
+SHA-256, what was the same, the control, and each step that differs in the
+comparison's own words with its price. Below come what made the difference (the
+event the sensor now records, or the rule with its text and the events its
+alerts rest on), every published test of the technique with its mark, and
+links to play either run. A refused comparison says "No verdict." with every
+reason and every difference, and judges no step; a limited one says at the top
+why and what alone it credits, and lists the steps it does not credit apart
 ([Recordings](RECORDING.md#in-the-app)).
+
+The **Overview** leads with the newest run the Runs screen lists on its own:
+"Watch a real run" (or "Watch a recorded run" for an imported file), its title,
+its score in a line (with how many tests the lab's own rules would alert on,
+which the score does not count), and a play button, with the turns of the loop
+under it. The
+workspace's own blocks follow. With nothing recorded or compared, the workspace
+comes first.
 
 Select a recorded run to play it in the live view at `#/runs/recorded/<id>`.
 The address keeps the moment you are at (the step, the position in it, whether

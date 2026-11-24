@@ -71,10 +71,12 @@ test("the pair shipped with the app is listed on Runs and read on its own page a
 
   const recorded = page.getByRole("region", { name: "Recorded runs" });
   const pairs = page.getByRole("region", { name: "Before against after" });
-  const item = pairs.getByRole("listitem").filter({ hasText: "The settings of sensor auditd" });
+  const item = pairs.getByRole("listitem").filter({ hasText: "New auditd settings" });
   await expect(item.getByText("Shipped with BlueFire")).toBeVisible();
   await expect(item.getByText("Two runs side by side, 24 Nov 2026")).toBeVisible();
-  await expect(item.getByText("1 better, 0 worse, 0 changed without a cause, of 91 paired steps")).toBeVisible();
+  await expect(item.getByText("90 of 91 steps the same")).toBeVisible();
+  // The price the service lists with the step, in plain words.
+  await expect(item.getByText("2 published rules alert on ordinary activity, before and after", { exact: true })).toBeVisible();
   // The pair's two runs open from the pair, and are not listed again as runs of their own.
   await expect(item.getByRole("link", { name: /^Play the before run/ })).toBeVisible();
   await expect(item.getByRole("link", { name: /^Play the after run/ })).toBeVisible();
@@ -82,33 +84,34 @@ test("the pair shipped with the app is listed on Runs and read on its own page a
   // The pair's two runs and the run evaluated twice, which is one run.
   await expect(recorded.getByText("3 more recorded runs are listed with their pairs under Before against after.")).toBeVisible();
   // The pairs in the order the loop went: the watch, then the rule drafted from what it saw.
-  await expect(pairs.getByRole("listitem")).toHaveText([/^The settings of sensor auditd/, /^A new rule: Shell History File Truncated In Place/]);
+  await expect(pairs.getByRole("listitem").getByRole("heading", { level: 4 })).toHaveText(["One test that nobody saw is now seen.", "Four steps that were seen with no alert now raise an alert."]);
 
-  await item.getByRole("link", { name: "The settings of sensor auditd" }).click();
+  await item.getByRole("link", { name: "One test that nobody saw is now seen." }).click();
   await expect(page).toHaveURL(/#\/runs\/compared\/[0-9a-f]{16}$/);
   const address = page.url();
-  await expect(page.getByRole("heading", { level: 1, name: "One change: the settings of sensor auditd" })).toBeVisible();
-  await expect(page.getByText("The same steps, made with the same setup apart from this change, side by side in one CI run, each on a fresh runner of its own.")).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "One test that nobody saw is now seen." })).toBeVisible();
   await expect(page.getByRole("region", { name: /^A limited verdict/ })).toHaveCount(0);
-  // Where it comes from: the one CI run that made both runs and the comparison, confirmed as the shipped example's is.
-  const bar = page.getByRole("navigation", { name: "Compared runs" });
-  await expect(bar.getByText("Shipped with BlueFire")).toBeVisible();
-  await expect(bar.getByRole("link", { name: "run 45365902367" })).toHaveAttribute("href", pair.after.run_url);
+  await expect(page.getByRole("navigation", { name: "Compared runs" }).getByText("Turn 1: New auditd settings")).toBeVisible();
 
+  // How we know: the one CI run that made both runs and the comparison, confirmed as the shipped example's is.
+  await page.getByText("How we know").click();
+  const proof = page.locator("#cmp-fair");
+  await expect(proof.getByText("The same steps, made with the same setup apart from this change, side by side in one CI run, each on a fresh runner of its own.", { exact: false })).toBeVisible();
+  await expect(proof.getByRole("link", { name: "run 45365902367" }).first()).toHaveAttribute("href", pair.after.run_url);
   const better = pair.steps.find((step) => step.result === "better");
   if (!better?.price) throw new Error("The shipped pair should hold one better step with its price.");
   expect(better.title).toBe(MOVED);
-  const moved = page.getByRole("region", { name: /^What the change moved/ });
-  await expect(moved).toContainText(better.verdict);
-  await expect(moved.getByText(better.price, { exact: true })).toBeVisible();
-  await expect(moved).toContainText("What sensor auditd recorded of it in one run only");
-  await expect(page.getByRole("region", { name: /^The control/ })).toContainText(`the same on ${pair.control.same} of ${pair.control.of} paired steps`);
+  const words = page.getByRole("region", { name: "Each step that differs, in the comparison's words" });
+  await expect(words).toContainText(better.verdict);
+  await expect(words.getByText(better.price, { exact: true })).toBeVisible();
+  await expect(proof).toContainText(`the same on ${pair.control.same} of ${pair.control.of} paired steps`);
+  await expect(page.getByRole("region", { name: "What made the difference" })).toContainText("What sensor auditd recorded of it in one run only");
 
-  // The step's detail opens from both recordings, the address keeps it, and Back closes it.
-  await moved.getByRole("button", { name: new RegExp(MOVED.replace(/[()]/g, "\\$&")) }).click();
-  const detail = page.getByRole("region", { name: `${MOVED}, before and after` });
-  await expect(detail.getByRole("heading", { name: `${MOVED}, before and after` })).toBeFocused();
-  await expect(page).toHaveURL(/\?step=/);
+  // The step's whole detail opens from both recordings, the address keeps it, and Back closes it.
+  await page.getByRole("button", { name: "Every detail of this step, from both runs" }).click();
+  const detail = page.getByRole("region", { name: `${MOVED}, every detail before and after` });
+  await expect(detail.getByRole("heading", { name: `${MOVED}, every detail before and after` })).toBeFocused();
+  await expect(page).toHaveURL(/\?step=.*detail=1/);
   await expect(detail.getByRole("article")).toHaveCount(2);
   const [before, after] = await detail.getByRole("article").all();
   if (!before || !after) throw new Error("The detail should show both runs.");
@@ -120,16 +123,16 @@ test("the pair shipped with the app is listed on Runs and read on its own page a
   expect(page.url()).toBe(address);
   // The address of the open step is one that can be shared.
   await page.goto(opened);
-  await expect(page.getByRole("region", { name: `${MOVED}, before and after` }).getByRole("article")).toHaveCount(2);
+  await expect(page.getByRole("region", { name: `${MOVED}, every detail before and after` }).getByRole("article")).toHaveCount(2);
 
   // A refused pair, real too, sent to the route: No verdict with its reasons, as prominently as a verdict.
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   expect(await importDelta(page, "refused")).toBe(201);
   await page.reload();
-  const noVerdict = pairs.getByRole("listitem").filter({ hasText: "Nothing declared as changed" });
+  const noVerdict = pairs.getByRole("listitem").filter({ hasText: "Nothing declared" });
   await expect(noVerdict.getByText(`No verdict: ${(refused.refused_because[0] ?? "").replaceAll("`", "")}`, { exact: false })).toBeVisible();
-  await pairs.getByRole("link", { name: "Nothing declared as changed" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "No verdict" })).toBeVisible();
+  await noVerdict.getByRole("link", { name: "No verdict." }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "No verdict." })).toBeVisible();
   // The lab's code spans read as code, without their backticks.
   for (const reason of refused.refused_because) await expect(page.getByText(reason.replaceAll("`", ""), { exact: true })).toBeVisible();
   expect(problems).toEqual([]);
@@ -137,6 +140,7 @@ test("the pair shipped with the app is listed on Runs and read on its own page a
 
 const ruleFile = join(repository, "bluefire/data/recordings/deltas/lab-rule-history-truncated.json");
 const RULE = "Shell History File Truncated In Place";
+const HEADLINE = "Four steps that were seen with no alert now raise an alert.";
 
 test("the run evaluated with two rule sets shipped with the app reads as one run, with its rule, the steps it moved and the event each alert rests on", async ({ page }) => {
   test.setTimeout(120_000);
@@ -153,14 +157,16 @@ test("the run evaluated with two rule sets shipped with the app reads as one run
 
   const item = page.getByRole("region", { name: "Before against after" }).getByRole("listitem").filter({ hasText: RULE });
   await expect(item.getByText("One run evaluated with two rule sets, 24 Nov 2026")).toBeVisible();
-  await expect(item.getByText("Clear Bash history (echo) and Clear Bash history (cat dev/null), each also with changed input arguments: seen to alerted with the lab's rules")).toBeVisible();
-  await item.getByRole("link", { name: `A new rule: ${RULE}` }).click();
+  await expect(item.getByText("Clear Bash history (echo) and (cat dev/null), each also with other arguments")).toBeVisible();
+  await item.getByRole("link", { name: HEADLINE }).click();
 
-  await expect(page.getByRole("heading", { level: 1, name: `A new rule: ${RULE}` })).toBeVisible();
-  await expect(page.getByText(/^One run, evaluated twice: the list ran once, on one runner/)).toBeVisible();
-  await expect(page.getByRole("region", { name: "The two runs" })).toHaveCount(0);
-  const bar = page.getByRole("navigation", { name: "Compared runs" });
-  await expect(bar.getByRole("link", { name: "run 45395673682" })).toHaveAttribute("href", rulePair.after.run_url);
+  await expect(page.getByRole("heading", { level: 1, name: HEADLINE })).toBeVisible();
+  await expect(page.getByText("One run, its telemetry read with two rule sets, 24 Nov 2026.", { exact: true })).toBeVisible();
+  await page.getByText("How we know").click();
+  const proof = page.locator("#cmp-fair");
+  await expect(proof.getByText(/One run, evaluated twice: the list ran once, on one runner/)).toBeVisible();
+  await expect(proof.getByRole("link", { name: "run 45395673682" }).first()).toHaveAttribute("href", rulePair.after.run_url);
+  await expect(proof.getByRole("region", { name: "Each step that differs, in the comparison's words" }).getByText("better", { exact: true })).toHaveCount(4);
 
   // The rule: where its file is, how each evaluation judged it, and its text from the after recording.
   const rule = page.getByRole("article", { name: RULE });
@@ -169,25 +175,26 @@ test("the run evaluated with two rule sets shipped with the app reads as one run
   await expect(rule.getByLabel("How each evaluation judged it")).toContainText("it alerted on every run with changed input arguments and on no ordinary activity");
   await expect(rule.getByLabel(`The text of the rule ${RULE}`)).toContainText("key: shell-history");
 
-  // The steps it moved, each with the event its alert rests on, and the price said once.
-  const moved = page.getByRole("region", { name: /^What the change moved/ });
-  await expect(moved.locator(".cmp-step")).toHaveCount(4);
-  await expect(moved.getByText("auditd openat: /home/bluefire-lab/.bash_history")).toHaveCount(2);
-  await expect(moved.getByText("auditd openat: /home/bluefire-lab/.zsh_history")).toBeVisible();
-  await expect(moved.getByRole("heading", { name: /^The price/ })).toBeVisible();
-  await expect(page.getByText(`All of this rests on one run evaluated with two rule sets.`)).toBeVisible();
+  // The steps it moved, each a row, each with the event its alert rests on, and the price not counted.
+  const move = page.getByRole("region", { name: "What the change did" });
+  await expect(move.getByRole("button", { name: /^Clear Bash history/ })).toHaveCount(4);
+  await expect(move.getByRole("button", { pressed: true })).toHaveCount(1);
+  const difference = page.getByRole("region", { name: "What made the difference" });
+  await expect(difference.getByText("/home/bluefire-lab/.bash_history", { exact: true })).toHaveCount(2);
+  await expect(difference.getByText("/home/bluefire-lab/.zsh_history", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "What it cost" })).toContainText("Not counted");
 
-  // A step's detail from both evaluations, each by its own file.
-  await moved.locator(".cmp-step").first().getByRole("button", { name: /Clear Bash history \(echo\)/ }).click();
-  const detail = page.getByRole("region", { name: "Clear Bash history (echo), before and after" });
+  // A step's whole detail from both evaluations, each by its own file.
+  await page.getByRole("button", { name: "Every detail of this step, from both runs" }).click();
+  const detail = page.getByRole("region", { name: "Clear Bash history (echo), every detail before and after" });
   await expect(detail.getByRole("article")).toHaveCount(2);
   await expect(detail.getByRole("article").last()).toContainText(RULE);
 
   // The run opens with the head's rules by its own file.
-  await page.getByRole("region", { name: "The run" }).getByRole("link", { name: /Open with the rules after/ }).click();
+  await page.getByRole("link", { name: "Play with the rules after" }).click();
   await expect(page).toHaveURL(new RegExp(`#/runs/recorded/${rulePair.after.id}/${rulePair.after.sha256}`));
   // The pair's page, whose step detail and price name the same rules, is gone before the run's page is read.
-  await expect(page.getByRole("region", { name: "The run" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "What the change did" })).toHaveCount(0);
   await expect(page.getByText("Rules written in this repository")).toBeVisible();
   expect(problems).toEqual([]);
 });

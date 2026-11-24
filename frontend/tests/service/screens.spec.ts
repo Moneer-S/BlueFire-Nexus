@@ -61,6 +61,19 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await page.goto(process.env.BLUEFIRE_SERVICE_URL ?? "");
   await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  // The Overview leads with the real run shipped with BlueFire, to watch, and the turns of the loop under it,
+  // above the workspace's own blocks.
+  const real = page.getByRole("region", { name: "Watch a real run" });
+  await expect(real.getByText("60 published tests on one Linux host", { exact: true })).toBeVisible();
+  await expect(real.getByText("3 of 60 tests alerted, 56 seen, 1 unseen")).toBeVisible();
+  // The score counts only published rules; what the lab's own rules alert on is said apart, never as "no alert".
+  await expect(real.getByText("With the lab's own rules, 17 of 60 would alert. The score counts only published rules.")).toBeVisible();
+  await expect(real.getByRole("link", { name: /^Play it/ })).toHaveAttribute("href", /^#\/runs\/recorded\/[A-Za-z0-9_-]+$/);
+  const turns = real.getByRole("list", { name: "The changes to the defense, in order" });
+  await expect(turns.getByRole("link")).toHaveText(["One test that nobody saw is now seen.", "Four steps that were seen with no alert now raise an alert."]);
+  const realBox = await real.boundingBox();
+  const draftBox = await page.getByRole("heading", { name: /^(Working draft|Example plan)$/ }).first().boundingBox();
+  expect(realBox && draftBox && realBox.y < draftBox.y).toBe(true);
   // The Overview offers the newest of what Runs lists: on a fresh workspace the newest shipped pair, the
   // run evaluated with the new rule, whose run is listed only with its pair, never on its own.
   const newestPair = page.getByRole("link", { name: /^See the newest change to the defense, before against after/ });
@@ -155,6 +168,10 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await expect(newestRun).toContainText("Imported · 1 of 2 tests alerted, 1 seen, 0 unseen");
   await expect(newestRun).toHaveAttribute("href", "#/runs/recorded/small-later");
   await expect(page.getByRole("link", { name: /^See the newest change to the defense/ })).toHaveCount(0);
+  // It leads too, said to be an imported recording rather than a real run BlueFire shipped.
+  const recordedFirst = page.getByRole("region", { name: "Watch a recorded run" });
+  await expect(recordedFirst.getByText("Two later steps toward a secrets file", { exact: true })).toBeVisible();
+  await expect(recordedFirst.getByText("Imported", { exact: true })).toBeVisible();
 
   await page.getByRole("link", { name: "Detection Lab", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Detection Lab", exact: true })).toBeVisible();
