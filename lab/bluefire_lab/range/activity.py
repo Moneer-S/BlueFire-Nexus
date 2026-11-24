@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from fnmatch import fnmatch
 from functools import cache
 
-from . import wazuh
+from . import ecs
 from .spec import ACCOUNT, NAME, Host, SpecError, Watch, home
 
 KINDS = ("http", "ssh", "cron")
@@ -678,18 +678,19 @@ def _requested(line: str) -> str | None:
     return found.group(1) if found else None
 
 
-def event_time(event: dict) -> float | None:
-    """When an archive event happened: rsyslog's time on the line when it has one, else the manager's."""
+def event_time(event: dict) -> tuple[float, bool] | None:
+    """When an archive event happened, the same time its ECS line carries, and whether it is to the second.
 
-    stamp = (event.get("predecoder") or {}).get("timestamp")
-    if stamp:
-        found = _iso(stamp)
-        if found is not None:
-            return found
+    rsyslog's time on the line when it has one; else the time the program wrote
+    at the start of the line (nginx, dpkg, MariaDB), to the second; else the
+    manager's. See `ecs.chosen_time`.
+    """
+
     try:
-        return wazuh.timestamp(event.get("timestamp", ""))
-    except ValueError:
+        moment, source = ecs.chosen_time(event)
+    except ecs.ConversionError:
         return None
+    return moment.timestamp(), source == "log-second"
 
 
 def _names(account: str) -> re.Pattern:
@@ -805,7 +806,10 @@ def attribute(
 
     An event is the first job's whose rules (`source`) it meets, from the go
     of the job's host to `GRACE` seconds after its stop, taken in the order of
-    the events' times, and never a file written before the go (`written_before`);
+    the events' times (`event_time`: the line's own time when it has one, not
+    when the manager received it; a time to the second is compared with the go
+    taken down to its second, as `runs` does), and never a file written before
+    the go (`written_before`);
     a sudo session's close is the job's that opened a sudo session just before
     it. Cron's session line of a cron job's account in
     that window gets the source `CRON_SESSION_SOURCE`.
@@ -814,18 +818,20 @@ def attribute(
     found: dict[int, tuple[str, str]] = {}
     timed = sorted(
         (
-            (when, index, event)
+            (*moment, index, event)
             for index, event in enumerate(events)
-            if (when := event_time(event)) is not None
+            if (moment := event_time(event)) is not None
         ),
         key=lambda item: item[0],
     )
     sudo_opened: dict[str, float] = {}
-    for when, index, event in timed:
+    for when, whole, index, event in timed:
         log = event.get("full_log") or ""
         for job in activity.jobs:
             start, end = go.get(job.host), stop.get(job.host, math.inf)
-            if start is None or not start <= when <= end + GRACE or written_before(event, start):
+            if start is None or written_before(event, start):
+                continue
+            if not (math.floor(start) if whole else start) <= when <= end + GRACE:
                 continue
             how = source(job, event, addresses.get(job.host, []))
             if how is None and job.do == "ssh" and SUDO_CLOSED.search(log):
@@ -863,7 +869,7 @@ def count(
 
     found = {}
     timed = sorted(
-        ((when, event) for event in events if (when := event_time(event)) is not None),
+        ((moment[0], event) for event in events if (moment := event_time(event)) is not None),
         key=lambda pair: pair[0],
     )
     for job in activity.jobs:

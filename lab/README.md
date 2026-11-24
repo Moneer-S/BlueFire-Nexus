@@ -607,10 +607,17 @@ under [`range/`](range). The lab brings it up with the plain Docker CLI, proves
 that it is sealed, and takes it down again:
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
 pip install ./lab
 bluefire-lab range run lab/range/seal-check.yaml --out <new folder>
 bluefire-lab range down lab/range/seal-check.yaml
 ```
+
+The lab goes into a virtual environment of its own: on a current Debian or
+Ubuntu the system Python refuses a plain `pip install` (it is "externally
+managed"), and `python3 -m venv` needs the package `python3-venv`. The later
+commands in this file assume that environment is active.
 
 It needs Docker Engine 28 or later on a local endpoint (`unix://` or
 `npipe://`). Nothing in a range runs a published test yet: the containers of
@@ -624,9 +631,25 @@ with its host name as alias, `--dns-search .`, `net.ipv4.ip_forward=0`, a pids
 and a memory limit, `--pull never`, and `--init` for a host built from the
 spec) and nothing else. Every object is
 addressed by the full ID Docker returned when it was created. The seal is
-checked on the created containers
-before any of them starts, then on the running ones, and once more where the
-path of published tests will run:
+checked in phases, each recorded in `seal.json`:
+
+1. **static**: on the created containers, before any of them starts.
+2. **no way out**: right after the containers start, before the engine waits
+   for anything in the range or runs anything there but the seal's probes.
+   Everything below except the segmentation between the hosts and the
+   listening ports, with a positive control that needs no service of the
+   range: an answer from another range container, a connection or a refusal
+   from its kernel.
+3. **segmentation**: after the ready gate, once the hosts' services listen
+   (for range one, after the defense is ready too, see
+   [the defense of a range](#the-defense-of-a-range)): everything, the probes
+   between the hosts and the listening ports included, with a connection that
+   must work as the positive control.
+4. **after path**: everything again, where the path of published tests will
+   run.
+5. **teardown**: the event watch, after the teardown.
+
+The checks:
 
 - **Objects:** the run's label and the spec's prefix name exactly the
   containers and networks the run created, and no other container shares a
@@ -644,36 +667,50 @@ path of published tests will run:
   read-only at `/sbin/docker-init`, a mount that `docker inspect` does not list
   under `Mounts`, so the check `container: init` names it.
 - **Inside each container**, with a probe script that uses only bash,
-  coreutils' `timeout` and `getent`: first a connection that must work (so that
-  a broken tool cannot pass a probe that must fail), then every pair the spec
-  derives (hosts that share a network must connect on each port the target
-  listens on; hosts that share none must fail), four outside addresses (public
-  resolvers and cloud metadata endpoints), and a canary: for the seal's
+  coreutils' `timeout` and `getent`: first the positive control (so that a
+  broken tool cannot pass a probe that must fail); in every phase, four
+  outside addresses (public resolvers and cloud metadata endpoints) and a
+  canary; and from the segmentation phase on, every pair the spec derives
+  (hosts that share a network must connect on each port the target listens
+  on; hosts that share none must fail). The canary: for the seal's
   duration the engine listens on a random TCP port on the Docker host, every
   container tries it at every gateway the daemon knows, and the canary must see
   no connection. A probe that must fail passes only when nothing answered
   (network unreachable, no route to host, or a timeout); a refused connection
-  fails, since something routed the packet and answered it. Also: the TCP
-  ports in LISTEN state on any address but loopback (read from
-  `/proc/net/tcp` and `/proc/net/tcp6`) are exactly the ports the spec gives
-  the host under `listens`, so that no port the matrix does not probe is open;
-  routes only
+  fails, since something routed the packet and answered it. Also, from the
+  segmentation phase on: the TCP ports in LISTEN state on any address but
+  loopback (read from `/proc/net/tcp` and `/proc/net/tcp6`) are exactly the
+  ports the spec gives the host under `listens`, so that no port the matrix
+  does not probe is open. In every phase: routes only
   to the container's own subnets, forwarding off, no Docker socket, Docker's
   resolver only, range names resolving only to shared subnets and outside names
   not resolving.
 - **Events:** a watch on Docker's events runs from before the first create to
   the end of the teardown, and any event on the range that the engine did not
   cause breaks the seal, as does the create or start of any other container
-  that joins a range container's namespaces. The watch is checked once more
-  after the teardown, as the seal's last phase: Docker must have reported the
-  removal of every object, to a watch that was still running.
+  that joins a range container's namespaces. A container whose create or
+  start the watch sees while the range has containers, and which is gone
+  before the watch could read its `docker inspect`, breaks the seal too: it
+  may have joined a range container and left. On a machine that runs other
+  containers during a run, a short-lived one (a `docker run --rm` that ends at
+  once, say) can therefore make the run fail or invalid although it had
+  nothing to do with the range; run a range while nothing else starts
+  containers. The watch is checked once more after the teardown, as the
+  seal's last phase: Docker must have reported the removal of every object,
+  to a watch that was still running.
 
 The run writes `seal.json` (every check, with the command it read, the value it
 observed and whether it passed), `seal.md`, `manifest.json` and
 `docker-events.ndjson` on every exit path, and takes the range down on every
 exit path after the first create. Its exit code is 0 when the range was sealed
-and still was at the end, 1 when it refused to start or Docker failed, 3 when
-the seal failed and nothing ran in the range, and 4 when the run was made
+and still was at the end; 1 when it refused to start, Docker failed, or the
+range was not ready in time and its seal held; 3 when the seal failed before
+the place of the path: in the static phase, before the ready gate (the engine
+had run nothing in the range but the seal's probes), after it (the ready
+gate's own commands had run), or when the range was not ready, whose seal is
+judged once more before the run ends (phase "no way out, not ready", and the
+event watch to the end of the teardown), so that "not ready" never hides a
+seal that failed; and 4 when the run was made
 invalid. `passed` at the top of `seal.json` is true only for a run that ended
 sealed: a run that was stopped or made invalid after its checks had passed is
 not recorded as passed. `range down` removes only containers and networks that
@@ -689,10 +726,71 @@ network without the isolated
 gateway mode (caught by the host canary as well), a published port, a bind
 mount, and an extra container connected to a range network after the seal
 (caught by the event watch).
+[Run 45385756781](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45385756781)
+shows it on a GitHub-hosted runner with Docker Engine 28.0.4, phase by phase.
+The passing case was sealed: `static` 94 of 94 checks, `no way out` 149 of
+149, `segmentation` 158 of 158, `after path` 158 of 158. A network that is not
+internal, a published port and a bind mount each failed `static`, and no later
+phase ran. The missing isolated gateway mode failed `static` and `no way out`
+(148 of 155 checks), and the ready gate never ran. The connect was recorded by
+the event watch after `segmentation` had passed, and that run ended invalid
+(exit code 4). In the same run, range one passed `static` (201 checks),
+`no way out` (357), `segmentation` (430) and `after path` (430).
 [Run 45246204061](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45246204061)
-shows it on a GitHub-hosted runner with Docker Engine 28.0.4: the passing case
-was sealed, each of the four `--plant` breaks was stopped by its own check, and
-the connect was recorded by the event watch.
+showed the same six cases with an earlier engine, which made all its checks
+inside the containers in one phase after the ready gate.
+
+## Writing a spec
+
+A spec is a YAML file; [`range/seal-check.yaml`](range/seal-check.yaml) is the
+smallest and [`range/range-one.yaml`](range/range-one.yaml) uses every part.
+The loader (`lab/bluefire_lab/range/spec.py` and, for `activity`,
+`activity.py`) refuses anything else with a sentence that names the key and
+the rule. What it asks for:
+
+- **Top level.** Required: `range` (a name), `version: 1`, `prefix` (starting
+  `bluefire-lab-`; every container and network is named with it, so two
+  ranges on one machine need two prefixes), `docker: {min_engine: 28}` or
+  later, `networks` and `hosts`. Optional: `base` (the image and Ubuntu
+  snapshot that hosts without an `image` are built from), `defense` (Wazuh),
+  `atomic_red_team` (the repository and commit of the published files the
+  hosts carry, and the lock beside the spec), `path`, `activity`, and
+  `sentence` and `executor`, which other parts of the lab read.
+- **Networks** are names with no settings: every one is created internal,
+  with the isolated gateway mode and without IPv6.
+- **Hosts.** Keys: `kind` (`attacker`, `internet`, `host` or `defense`),
+  `role`, `networks`, `listens`, and either `image` (pinned by digest) or,
+  for a host built from `base`, `packages`, `services`, `agent`, `watch` and
+  what is planted: `accounts`, `keys`, `known_hosts`, `dirs`, `files`,
+  `database`, `sshd`, `serve` and `atomics_src`. A `defense` host, the Wazuh
+  manager, takes only `kind`, `role`, `networks` and `listens`. Nothing else
+  (no ports, volumes, capabilities or network modes).
+- **Services.** A built host can start `sshd` (package `openssh-server`, port
+  22), `nginx` (`nginx`, 80), `php-fpm` (`php-fpm`), `mariadb`
+  (`mariadb-server`, 3306), `cron` (`cron`) and `inet-server` (`python3`, 80
+  and 443). Its `listens` must be exactly the ports of its services, since
+  the seal checks that no other port listens.
+- **Every host shares a network with a host that listens.** Each host's
+  first connection that must work is the seal's positive control: a host
+  with none could not show that its failed probes mean anything, so the
+  loader refuses it. A one-host range is refused for the same reason.
+- **Files** a host plants `from:` a path are read from the spec's folder,
+  `repo:<name>` from `repos/<name>` beside it. Each must be a regular file
+  inside that folder: a link, or a path through a linked folder, is refused.
+- **Jobs** of `activity` (`seed`, `warmup_seconds`, `tail_seconds`, `jobs`)
+  have `name`, `host`, `account`, `every` and `do`: `do: cron` with `run`
+  (and `every` in whole minutes), `do: http` with `target` (a host running
+  nginx) and `paths`, or `do: ssh` with `target` (`account@host`) and `run`;
+  `writes` lists the files a job writes, by pattern. [Ordinary
+  activity](#range-one-ordinary-activity) gives the rules that keep jobs
+  apart from each other and from the path.
+- **YAML.** The loader reads only `true` and `false` as booleans, so that the
+  key `off` of `defense.wazuh` stays a key. PyYAML's `safe_load` and
+  `safe_dump` read `off`, `on`, `yes` and `no` as booleans: a script that
+  reads or rewrites a spec should use `bluefire_lab.range.spec.read`.
+
+`bluefire-lab range render <spec> --out <folder>` checks a spec and writes
+its build files without building or starting anything.
 
 ## The defense of a range
 
@@ -702,10 +800,15 @@ and `build`, and the run shows that what happens on each of them reaches the
 manager. No published test runs in it yet.
 
 ```bash
-pip install ./lab
 bluefire-lab range render lab/range/range-one.yaml --out <folder>   # optional: only writes the build files
-bluefire-lab range run lab/range/range-one.yaml --out <new folder>
+bluefire-lab range run lab/range/range-one.yaml --out <new folder> --hold 90
 ```
+
+`--hold 90` keeps the range up 90 s where the path will run, as CI does, so
+that cron starts each cron job of the
+[ordinary activity](#range-one-ordinary-activity) at least once. Without it
+the activity lasts well under a minute plus the engine's own steps, a cron job
+may not start at all, and the ordinary day is then "not scored".
 
 - **The pieces.** The manager is the official `wazuh/wazuh-manager` 4.14.10
   image, pinned by digest, alone: no indexer and no dashboard, and its Filebeat
@@ -763,18 +866,21 @@ bluefire-lab range run lab/range/range-one.yaml --out <new folder>
   and `manifest.json` records it. It is not the manager's `log_alert_level`,
   which keeps its stock value 3, so that `alerts.json` also holds the matches
   below it for review. It changes no image. No step is scored yet.
-- **Ready.** Before the dynamic seal, within 180 s of the start: the manager's
+- **Ready.** After the seal's phase "no way out" and before its segmentation
+  phase, within 180 s of the start: the manager's
   ports 1514 and 1515 answer; each agent's state file says it is connected and
   its log says its real-time file monitoring started, with none of the errors
   after which a folder is not watched (inotify could not start, or its watch
   limit was reached); the manager's `agent_control` lists each agent active at
   the pinned version; and a nonce the engine sends to syslog on each agent host
   arrives in the manager's `archives.json`. The delay from the nonce to the
-  archive is recorded. A range that is not ready stops with exit code 1 and a
-  message that says which part failed and which copied file to read; a test
-  shows this on stand-in files, and no run has shown it yet.
-- **Versions.** In each phase of the seal, `agent_control` on the manager is
-  run again, and the manager and every agent must report the pinned version.
+  archive is recorded. A range that is not ready stops with a message that
+  says which part failed and which copied file to read, with exit code 1, or
+  3 when its seal, judged once more, failed; tests show this on stand-in
+  files, and no run has shown it yet.
+- **Versions.** In each phase of the seal from the segmentation on,
+  `agent_control` on the manager is run again, and the manager and every agent
+  must report the pinned version.
 - **Delivery.** Where the path of published tests will run, the engine makes a
   few harmless marks on each agent host: three lines sent to syslog, a file
   created and then changed in each folder watched in real time, and one
@@ -832,7 +938,10 @@ on a GitHub-hosted runner with Docker Engine 28.0.4, from a build without a
 cache: the range was sealed and ready 28 s after its containers started, the
 ready nonce was in the manager's archive 0.2 s after it was logged, all 14
 marks arrived, and every line of the window was delivered (`auth.log` 8 of 8,
-`snoopy.log` 35 of 35), with every counter of lost events at zero.
+`snoopy.log` 35 of 35). The counters of lost events that were written were at
+zero (analysisd, remoted, and the agent log's lines about a full buffer or
+inotify queue); the agent's logcollector had not written its counters yet and
+`wazuh-agentd.state` holds none, so there the line count is the only check.
 
 ## Range one: its hosts
 
@@ -862,8 +971,7 @@ included, so ranges built from the same stage share them; `inet`'s
 certificate is kept the same way.
 
 ```bash
-pip install ./lab
-bluefire-lab range run lab/range/range-one.yaml --out <new folder>
+bluefire-lab range run lab/range/range-one.yaml --out <new folder> --hold 90
 bluefire-lab range lock lab/range/range-one.yaml   # only when the spec's published files change
 ```
 
@@ -922,7 +1030,9 @@ The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
 `manifest.json` records the daemon's security options under `docker`, and
 every plant check that uses them passed there.
 
-Not yet shown: the path of published tests through the range; scoring.
+Not yet shown: the path of published tests through the range, and the scoring
+of its steps. The ordinary day is scored, and shown,
+[below](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
 ## Range one: ordinary activity
 
@@ -934,16 +1044,21 @@ things that write to the watched logs and folders. The `activity` section of
 
 | Job | Who | Where, and what | How often | What it leaves, and where | Wazuh rules expected |
 | --- | --- | --- | --- | --- | --- |
-| `browse` | `ops` on `client` | Fetches a page of the shop on `web` with curl, in turn `/`, `/?item=1`, `/?item=2`, `/?item=3`, `/cart` and `/missing` (the last two answer 404) | every 5 to 15 s | `web`: a line in nginx's access log; for the four PHP pages, a new PHP session file in `/var/lib/php/sessions`, watched in real time, and a query of the database on `db`. | 31101 (a 404), 554, 550 |
+| `browse` | `ops` on `client` | Fetches a page of the shop on `web` with curl, in turn `/`, `/?item=1`, `/?item=2`, `/?item=3`, `/cart` and `/missing` (the last two answer 404) | every 5 to 15 s | `web`: a line in nginx's access log; for the four PHP pages, a new PHP session file in `/var/lib/php/sessions`, watched in real time, and a query of the database on `db`. | 31101 (a 404), 554, 550 (550 not seen in run 45358678900) |
 | `admin` | `ops` on `client` | Logs in to `ops@web` with its SSH key and runs `uptime; df -h /; ls -l /var/www/app; sudo -n /usr/sbin/nginx -t` | every 90 to 150 s | `web`: sshd's login, PAM's session and sudo's lines in `auth.log`; snoopy's program starts. | 5715, 5501, 5502, 5402 |
 | `cache` | `www-data` on `web`, from cron | `php /var/www/app/cron.php`: writes the shop's items to `/tmp/shop-cache-<minute>.json` and removes the older files | every minute | `web`: files added and removed in `/tmp`, the folder the path writes to, watched in real time; snoopy's program starts; cron's PAM session in `auth.log`. | 554, 553 |
 | `build` | `ci` on `build`, from cron | Clones `/srv/git/shop.git` into `shop` in `ci`'s home folder on its first run, then `git pull` and `make -s -B` there | every minute | `build`: files in `ci`'s home folder, watched in real time; snoopy's program starts; cron's PAM session. | 554, 550 |
 | `backup` | `root` on `db`, from cron | `mariadb-dump shop > /var/backups/shop.sql` | every 5 minutes | `db`: snoopy's program starts; cron's PAM session. `/var/backups` is not watched. | none |
 
 The expected rules are a prediction, from the stock ruleset and a run on a
-developer machine, all below level 12: which rules each job matches on a
-GitHub-hosted runner is not yet shown. What the stock rules raised on them is
-scored in [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
+developer machine, all below level 12. On a GitHub-hosted runner,
+[run 45358678900](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45358678900)
+(its `alerts.ecs.ndjson`, grouped by `labels.job` and `rule.id`) shows every
+rule of the table on its job except 550 on `browse`: `browse` 31101 and 554,
+`admin` 5715, 5501, 5502 and 5402, `cache` 554 and 553, `build` 554 and 550,
+and `backup` none. That is one run of 2.44 minutes. What the stock rules
+raised on the jobs is scored in
+[the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
 - **Apart from the path.** The score will tell the path from ordinary activity
   by account and address, so the loader refuses a job that runs as, or logs
@@ -978,7 +1093,7 @@ scored in [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the
   after that the waits start again. The same spec gives the same schedule,
   and the schedule is in `manifest.json`. A loop job runs at once when the go
   appears; cron starts a cron job at its next minute.
-- **The engine.** After the dynamic seal and the plant checks, the engine
+- **The engine.** After the seal's segmentation phase and the plant checks, the engine
   writes `/run/bluefire/go` on each host that runs a job (tag `engine:go`) and
   waits `warmup_seconds` (30). Then comes the place of the path. After it, the
   jobs run `tail_seconds` (15) more and the engine removes the file again (tag
@@ -997,7 +1112,14 @@ scored in [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the
   lines of its sessions (sshd's motd scripts and what sudo starts without the
   tag) and in PAM's, sshd's and sudo's lines, the close of a sudo session the
   job opened, and the files the job writes (`writes` in the spec) for file
-  integrity events. A snoopy line with another job's tag or the engine's is
+  integrity events. An event is placed in a job's window by the time its line
+  carries, the same time as its ECS line's `@timestamp`: rsyslog's, or the
+  time to the second that nginx, dpkg and MariaDB write (compared with the go
+  taken down to its second, as the runs are), and the manager's own time only
+  for a line without one, such as a file integrity event. The engine starts
+  the go in a new second, so that a request it made before the go, a plant
+  check's say, carries an earlier second and stays out of the window however
+  late the manager receives it. A snoopy line with another job's tag or the engine's is
   never this job's, by address or by account. An event counts
   for one job at most, and the engine's mark files, one of which is in PHP's
   session folder, for none. Cron's session lines of a cron job's account are
@@ -1110,7 +1232,10 @@ engine's work and on unattributed events, listed apart, since the bench's own
 noise is not the shop's. Every number stands next to its denominators: the
 minutes of activity, the runs of each job (in the host's log and in the
 archive) and the events of each origin; without them, or when a job has no
-run in the archive, the score says "not scored" and gives no number. The
+run in the archive, the score says "not scored" and gives no number. A run
+that did not end sealed (made invalid, a seal that failed, plants not in
+place) is no result either: its `score.md` is headed "not a result" with the
+run's result, exit code and reason, and its numbers follow under that. The
 engine starts the seal's probes after the stop only once every job's window
 has closed, and a file whose modification time is before the go is no job's.
 A file a job links rather than writes keeps its older time: the first clone
@@ -1138,6 +1263,9 @@ checksum changed." (level 7) 6 times, all on `build`, and 553 "File
 deleted." (level 7) twice on `cache`'s files. No alert at level 12 or higher
 on the engine's work or on unattributed events. The one nginx line from
 `client` that is unattributed is a plant check's request, just before the go.
+(In [run 45363557672](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45363557672),
+of an earlier engine that placed such a line by the manager's time, the same
+request reached the manager after the go and was counted as `browse`'s.)
 Zero false alerts here is a result about those 2.44 minutes and that work
 only.
 
@@ -1162,8 +1290,12 @@ Invoke-AtomicRedTeam reads it. The job `atomic-parity` in
 with stand-ins for `sh` and `bash` that record how they were started and run
 nothing, and fails on any byte that differs. In
 [run 45246198695](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45246198695)
-every vector was identical: 11 steps, each with its attack, prereq check and
-cleanup. A run of the path in range one's hosts: not yet shown.
+every vector that exists was identical: the attack and the cleanup of all 11
+steps (six of those cleanups are empty, `bash -c ""` or `sh -c ""`, because
+their tests publish none) and the prereq checks of the two steps that have
+one (`s01` and `s09`), 24 vectors in all. For the other nine steps the job
+checked that neither side started a prereq command. A run of the path in
+range one's hosts: not yet shown.
 
 ## Not yet shown
 
@@ -1182,6 +1314,7 @@ variable on purpose.
 The answers can be computed again from a run's artifact, on any machine:
 
 ```bash
+python3 -m venv .venv && . .venv/bin/activate   # see "A range and its seal"
 pip install ./lab
 bluefire-lab evaluate <folder of the unpacked artifact> --engine <path to Zircolite 4.7.1>
 bluefire-lab report <folder of the unpacked artifact>
