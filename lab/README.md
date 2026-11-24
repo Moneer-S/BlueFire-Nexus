@@ -880,7 +880,13 @@ comes with the score.
   lacks, a cron job on a host without cron, a fetch without curl, a login
   without a key the target accepts or a `known_hosts` entry for it), and a job
   that acts on a host without an agent, since a job's runs and events are
-  counted from the logs of the watched host it acts on.
+  counted from the logs of the watched host it acts on. For the same reason it
+  refuses two jobs whose lines could not be told apart: two `http` jobs from
+  one host to one server with a path in common, two `ssh` jobs from one host
+  to one other host, a job that runs or logs in as the account an `ssh` job
+  logs in as on the same host (PAM's, sudo's and cron's lines name the
+  account, not the job), and two jobs on one host whose `writes` patterns can
+  match the same file. Cron jobs are told apart by their tags.
 - **Baked into the images.** A cron job is an entry in `/etc/cron.d` and a
   script in `/usr/local/lib/bluefire`. Cron starts the entry every minute,
   and both start with `test -e /run/bluefire/go || exit 0`: the job's script
@@ -908,16 +914,17 @@ comes with the score.
 - **What was done, and what was seen.** After the collection, for each job:
   how many times it ran, from the host it acts on (for a cron job, snoopy's
   line of the run's own `/bin/bash -c <command>` with the job's tag; for
-  `browse`, nginx's access log lines from `client`'s address; for `admin`,
-  sshd's key logins of `ops` from `client`'s address), between its host's go
-  and stop; the same runs again from those lines that reached the manager's
-  archive ("archived runs"); and how many events of it reached the archive in
-  that time and 5 s after, by the job's tag on snoopy's lines, `client`'s
-  address on nginx's and sshd's lines and on snoopy's lines of an SSH
-  session, the target account `ops` on snoopy's lines of its sessions (sshd's
-  motd scripts and what sudo starts without the tag) and in PAM's, sshd's and
-  sudo's lines, the close of a sudo session the job opened, and the files the
-  job writes (`writes` in the spec) for file integrity events. An event counts
+  `browse`, nginx's access log lines of its paths from `client`'s address;
+  for `admin`, sshd's key logins of `ops` from `client`'s address), between
+  its host's go and stop; the same runs again from those lines that reached
+  the manager's archive ("archived runs"); and how many events of it reached
+  the archive in that time and 5 s after, by the job's tag on snoopy's lines,
+  `client`'s address on nginx's lines of the job's paths, on sshd's lines and
+  on snoopy's lines of an SSH session, the target account `ops` on snoopy's
+  lines of its sessions (sshd's motd scripts and what sudo starts without the
+  tag) and in PAM's, sshd's and sudo's lines, the close of a sudo session the
+  job opened, and the files the job writes (`writes` in the spec) for file
+  integrity events. An event counts
   for one job at most, and the engine's mark files, one of which is in PHP's
   session folder, for none. Cron's session lines of a cron job's account are
   counted apart, as "cron sessions of the account": cron opens one for every

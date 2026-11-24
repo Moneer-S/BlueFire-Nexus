@@ -18,10 +18,12 @@ minutes. The waits between runs are drawn from the spec's seed, so the same
 spec gives the same schedule.
 
 After the run, each job's runs are counted from the logs of the host it acts
-on (snoopy's line of a cron job's command, nginx's access log for http, sshd's
-logins for ssh), again from those lines in the manager's archive, and its
-events in the archive by tag, address, account and folder. Only the logs of
-watched hosts are read, so every job acts on a host with an agent.
+on (snoopy's line of a cron job's command, nginx's access log lines of the
+job's paths for http, sshd's logins for ssh), again from those lines in the
+manager's archive, and its events in the archive by tag, address, path,
+account and folder. Only the logs of watched hosts are read, so every job acts
+on a host with an agent, and the loader refuses two jobs whose lines could not
+be told apart.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ import shlex
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from fnmatch import fnmatch
+from functools import cache
 
 from . import wazuh
 from .spec import ACCOUNT, NAME, Host, SpecError, Watch
@@ -58,6 +61,8 @@ WRITES = re.compile(r"/[A-Za-z0-9._*/-]*\Z")
 AT_HOST = re.compile(r"\b([a-z_][a-z0-9_-]*)@([a-z][a-z0-9-]*)\b")
 SNOOPY = re.compile(r"(\S+) \S+ snoopy\[[0-9]+\]: \[.* tag:(\S*)\]: (.*)\Z")
 NGINX = re.compile(r"(\S+) \S+ \S+ \[([^\]]+)\] ")
+# The request of an nginx line, in the access log and in the error log alike: its path is group 1.
+REQUEST = re.compile(r'"[A-Z]+ (\S+) HTTP/[0-9.]+"')
 
 
 @dataclass(frozen=True)
@@ -173,7 +178,71 @@ def parse(value: object, hosts: dict[str, Host], path: object = None, watch: Wat
         if job.name in {j.name for j in jobs}:
             raise SpecError(f"activity lists the job {job.name} twice")
         jobs.append(job)
+    _apart(jobs)
     return Activity(seed, warmup, tail, tuple(jobs))
+
+
+def _apart(jobs: list[Job]) -> None:
+    """Refuse two jobs whose lines in the logs they are counted from cannot be told apart.
+
+    A cron job's lines carry its own tag. An http job's requests are told
+    apart by the host they come from, the server and the path; an ssh job's
+    lines in sshd's and snoopy's logs only by the host it comes from and the
+    one it logs in to, and PAM's and sudo's lines of its session only by the
+    account it logs in as; a file integrity event by the files a job writes.
+    """
+
+    for number, first in enumerate(jobs):
+        for second in jobs[number + 1 :]:
+            both = f"activity: jobs {first.name} and {second.name}"
+            if first.acts_on == second.acts_on:
+                for mine in first.writes:
+                    theirs = [w for w in second.writes if _overlap(mine, w)]
+                    if theirs:
+                        raise SpecError(
+                            f"{both} both write files of {mine} and "
+                            f"{theirs[0]} on {first.acts_on}: a file integrity event is counted for a job by "
+                            "the files it writes, so two jobs on one host may not write the same files"
+                        )
+            if first.do == second.do and (first.host, first.target) == (second.host, second.target):
+                if first.do == "http":
+                    shared = [path for path in first.paths if path in second.paths]
+                    if shared:
+                        raise SpecError(
+                            f"{both} both fetch {shared[0]} of {first.target} from {first.host}: a request "
+                            "is counted for a job by the host it comes from and its path, so two such jobs "
+                            "may not share a path"
+                        )
+                elif first.do == "ssh":
+                    raise SpecError(
+                        f"{both} both log in to {first.target} from {first.host}: sshd's lines name the "
+                        "host a login comes from, not the job, so only one ssh job may go from one host to "
+                        "another"
+                    )
+            account = _acts_as(first)
+            if (
+                first.acts_on == second.acts_on
+                and "ssh" in (first.do, second.do)
+                and account is not None
+                and account == _acts_as(second)
+            ):
+                raise SpecError(
+                    f"{both} both act as {account} on {first.acts_on}: PAM's, sudo's and cron's lines name "
+                    "the account, not the job, so the account an ssh job logs in as may not be another "
+                    "job's account on that host"
+                )
+
+
+def _acts_as(job: Job) -> str | None:
+    """The account that the lines of a job's sessions name on the host it acts on.
+
+    An ssh job's is the account it logs in as, a cron job's its own. An http
+    job opens no session there.
+    """
+
+    if job.do == "ssh":
+        return job.target_account
+    return job.account if job.do == "cron" else None
 
 
 def _job(entry: object, hosts: dict[str, Host], accounts: set, sources: set[str], watch: Watch) -> Job:
@@ -285,6 +354,19 @@ def _job(entry: object, hosts: dict[str, Host], accounts: set, sources: set[str]
             f"{where}: writes must list absolute paths, with * for any part, as in /tmp/cache-*.json"
         )
     return Job(name, host, account, every, do, target, target_account, paths, run, tuple(writes))
+
+
+@cache
+def _overlap(first: str, second: str) -> bool:
+    """Whether a path matches both patterns, where * stands for any text, as in `writes`."""
+
+    if not first or not second:
+        return first.strip("*") == second.strip("*") == ""
+    if first[0] == "*":
+        return _overlap(first[1:], second) or _overlap(first, second[1:])
+    if second[0] == "*":
+        return _overlap(first, second[1:]) or _overlap(first[1:], second)
+    return first[0] == second[0] and _overlap(first[1:], second[1:])
 
 
 def _not_a_source(where: str, target: str, sources: set[str]) -> None:
@@ -551,8 +633,8 @@ def runs(job: Job, lines: list[str], addresses: list[str], start: float, end: fl
     """How many times a job ran between the go and the stop, by the lines of the log it is counted from.
 
     A cron job: snoopy's line of the run's own program start, with the job's tag.
-    An http job: an access log line from the job's host (nginx logs whole
-    seconds, so the go is taken down to its second). An ssh job: sshd's
+    An http job: an access log line from the job's host for one of the job's
+    paths (nginx logs whole seconds, so the go is taken down to its second). An ssh job: sshd's
     accepted key login of the target account from the job's host.
     """
 
@@ -571,7 +653,7 @@ def runs(job: Job, lines: list[str], addresses: list[str], start: float, end: fl
                 when = _iso(found.group(1))
         elif job.do == "http":
             found = NGINX.match(line)
-            if found and found.group(1) in addresses:
+            if found and found.group(1) in addresses and _requested(line) in job.paths:
                 when = _nginx_time(found.group(2))
         else:
             found = accepted.match(line)
@@ -580,6 +662,13 @@ def runs(job: Job, lines: list[str], addresses: list[str], start: float, end: fl
         if when is not None and start <= when <= end:
             count += 1
     return count
+
+
+def _requested(line: str) -> str | None:
+    """The path an nginx line's request asks for, or None when the line names no request."""
+
+    found = REQUEST.search(line)
+    return found.group(1) if found else None
 
 
 def event_time(event: dict) -> float | None:
@@ -641,7 +730,7 @@ def source(job: Job, event: dict, addresses: list[str]) -> str | None:
         if path.rsplit("/", 1)[-1].startswith(ENGINE_MARK):
             return None
         return "file integrity, by folder" if any(fnmatch(path, pattern) for pattern in job.writes) else None
-    if job.do == "http" and location.startswith("/var/log/nginx/"):
+    if job.do == "http" and location.startswith("/var/log/nginx/") and _requested(log) in job.paths:
         if data.get("srcip") in addresses or any(f"client: {a}," in log for a in addresses):
             return f"{location}, by address"
     if job.do == "ssh" and location == AUTH_LOG:
