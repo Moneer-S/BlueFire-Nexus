@@ -1,5 +1,7 @@
 # Installation
 
+How to get BlueFire Nexus running: look at the current source with Docker, or install a published package, then open the app in your browser.
+
 BlueFire Nexus requires 64-bit Python 3.10 or newer, a compatible desktop operating
 system/architecture, and a local browser. The 3.0.0-rc2 wheels target Windows x86-64, Linux
 x86-64, Intel macOS, and Apple Silicon. Each wheel includes the application, browser interface,
