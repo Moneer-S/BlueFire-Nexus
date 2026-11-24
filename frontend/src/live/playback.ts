@@ -438,7 +438,12 @@ function holdsFor(laid: { segments: readonly Segment[]; gaps: readonly Gap[] }, 
     if (!shown) continue;
     const gap = gapAfter(laid.gaps, shown.index);
     if (fire.at <= shown.end || !gap) hold(shown.step.id, landing(fire) + PLAYBACK_RULE.read - shown.end);
-    else inSilence.set(shown.index, [...(inSilence.get(shown.index) ?? []), fire]);
+    else {
+      // One list for each silence, added to in place: no copy for every arrival.
+      const list = inSilence.get(shown.index);
+      if (list) list.push(fire);
+      else inSilence.set(shown.index, [fire]);
+    }
   }
   for (const [index, list] of inSilence) {
     const gap = gapAfter(laid.gaps, index);
