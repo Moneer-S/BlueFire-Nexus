@@ -38,5 +38,7 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // The demo build reads the recording that ships with the service.
+    fs: { allow: [".", "../bluefire/data/recordings"] },
   },
 });

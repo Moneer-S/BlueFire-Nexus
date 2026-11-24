@@ -189,7 +189,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
       <section className="lv-dt-sec lv-sum-source">
         <h4>Where this recording comes from</h4>
         <p className="lv-sum-quiet">
-          {source.engine} on a {source.environment}, {day(source.started)}, {source.started.slice(11, 19)} to {source.finished.slice(11, 19)} UTC.
+          {source.engine} on a {source.environment}, {day(source.started)}, {source.finished ? `${source.started.slice(11, 19)} to ${source.finished.slice(11, 19)} UTC.` : `from ${source.started.slice(11, 19)} UTC, still running.`}
           {source.repository ? (
             <>
               {" "}

@@ -6,7 +6,7 @@ import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "
 import "./live.css";
 import type { Recording } from "./recording";
 import { eventsByStep } from "./recording";
-import { buildTimeline, frameAt, seekStep, stepMatchesInFiringOrder } from "./playback";
+import { buildTimeline, frameAt, seekStep, stepMatchesInFiringOrder, stepPosition } from "./playback";
 import type { Timeline } from "./playback";
 import { clockTime, day, elapsed, isLabDetector, placeInRole, plural, runLink, sensorColours } from "./format";
 import { lateWords, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
@@ -19,6 +19,16 @@ import { AnalyseView } from "./AnalyseView";
 
 export type LiveMode = "watch" | "analyse";
 
+/** Where the viewer is: the same shape as `initial`, so a page can write it into its address and open there again. */
+export interface LiveMoment {
+  step?: string;
+  /** The position inside the step, 0 to 1, or above 1 inside the silence after it. While playing it is 0: the step's start. */
+  at?: number;
+  paused: boolean;
+  mode: LiveMode;
+  select?: string;
+}
+
 export interface LiveViewProps {
   recording: Recording;
   /** Where the recording comes from, in the words of whoever shows it: shown, as text, under the title. */
@@ -26,6 +36,8 @@ export interface LiveViewProps {
   initial?: { step?: string; at?: number; paused?: boolean; mode?: LiveMode; select?: string };
   /** Starts fixing a step. When absent, "Fix this" in watch mode opens the step's detail, and the detail offers no "Fix this". */
   onFix?: (stepId: string) => void;
+  /** Told where the viewer is when the step, the mode, the chosen step or the pause changes, and when the clock moves while paused. */
+  onMoment?: (moment: LiveMoment) => void;
 }
 
 const SPEEDS = [1, 4, 16] as const;
@@ -60,7 +72,7 @@ const Provenance = memo(function Provenance({ recording }: { recording: Recordin
     >
       {ran ? (
         <button type="button" className="lv-prov-button" ref={trigger} aria-expanded={open} aria-controls={popId} onClick={() => setOpen((value) => !value)}>
-          Recorded on a {source.environment}, {day(source.started)} &middot; <u>tool versions</u>
+          {source.finished ? "Recorded" : "Recording"} on a {source.environment}, {day(source.started)} &middot; <u>tool versions</u>
         </button>
       ) : (
         <span className="lv-prov-plan">A plan: nothing has run on this network yet</span>
@@ -87,7 +99,7 @@ const Provenance = memo(function Provenance({ recording }: { recording: Recordin
             ))}
           </dl>
           <p>
-            {source.engine} on a {source.environment}, {source.started} to {source.finished}.
+            {source.engine} on a {source.environment}, {source.finished ? `${source.started} to ${source.finished}` : `from ${source.started}, still running`}.
           </p>
           {runUrl ? (
             <p>
@@ -159,7 +171,7 @@ function PlayIcon({ playing }: { playing: boolean }) {
   );
 }
 
-export function LiveView({ recording, origin, initial, onFix }: LiveViewProps) {
+export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveViewProps) {
   const timeline = useMemo(() => buildTimeline(recording), [recording]);
   const firstMode: LiveMode = recording.steps.length > 0 ? (initial?.mode ?? "watch") : "watch";
   const [time, setTime] = useState(() => startTime(timeline, initial));
@@ -308,6 +320,13 @@ export function LiveView({ recording, origin, initial, onFix }: LiveViewProps) {
   };
   const openStep = useMemo(() => (stepId === undefined ? undefined : () => openInAnalyse(stepId)), [stepId, openInAnalyse]);
 
+  // Not every frame: while playing only the step counts, while paused the position too,
+  // also inside the silence after the step, where a late alert may already be on screen.
+  const momentAt = playing ? 0 : Math.round(stepPosition(frame) * 1000) / 1000;
+  useEffect(() => {
+    onMoment?.({ step: stepId, at: momentAt, paused: !playing, mode, select });
+  }, [onMoment, stepId, momentAt, playing, mode, select]);
+
   return (
     <div className={`lv lv--${mode}${hasSteps ? "" : " lv--plan"}${playing ? "" : " is-paused"}`}>
       <header className="lv-top">
@@ -362,17 +381,17 @@ export function LiveView({ recording, origin, initial, onFix }: LiveViewProps) {
       </header>
 
       {mode === "watch" && !hasSteps ? (
-        <main className="lv-main is-plan">
+        <div className="lv-main is-plan">
           <NetworkMap recording={recording} moment={null} speed={speed} seek={seek} colours={colours} labDetectors={labDetectors} arrival={arrival} />
           <p className="lv-plan-note">{planWords(recording)}</p>
-        </main>
+        </div>
       ) : mode === "watch" ? (
         <>
           <RaceLine recording={recording} timeline={timeline} frame={frame} facts={facts} score={score} revealed={moment?.revealed ?? false} />
-          <main className="lv-main">
+          <div className="lv-main">
             <NetworkMap recording={recording} moment={moment} speed={speed} seek={seek} colours={colours} labDetectors={labDetectors} arrival={arrival} />
             <EventLog recording={recording} moment={moment} total={total} colours={colours} onOpen={openStep} />
-          </main>
+          </div>
           {/* Without the app, "Fix this" opens the step's detail, which says where the gap is. */}
           <StepCaption recording={recording} moment={moment} total={total} onFix={onFix ?? openInAnalyse} quiet={playing && speed >= 4} onLoseFocus={focusPlay} late={late} />
           <footer className="lv-transport">

@@ -2,9 +2,12 @@
 
 The live view plays a recording (see [RECORDING.md](RECORDING.md)) on a map of
 its network: each step of the attacker in plain words, what the sensors
-recorded, which rules matched, the clock, and the score. Today it opens as the
-single replay page: one HTML file that holds the view and one recording, and
-plays in a browser with nothing installed.
+recorded, which rules matched, the clock, and the score. It opens in two
+places: inside the app, where the Runs screen plays a recorded run (see the
+[user guide](USER_GUIDE.md#recorded-runs)), and as the single replay page: one
+HTML file that holds the view and one recording, and plays in a browser with
+nothing installed. A recording whose run is still going plays as far as it
+goes, and the view says the run is still running.
 
 ## What it shows, and what it never shows
 
@@ -69,8 +72,9 @@ plays in a browser with nothing installed.
 
 - **Watch** plays the run. The caption tells the current step in plain words,
   then its outcome: alerted, seen with no alert, unseen, stopped. A step that
-  got through without an alert has a "Fix this" button: on the replay page it
-  opens the step's detail, which says where the gap is.
+  got through without an alert has a "Fix this" button: it opens the step's
+  detail, which says where the gap is. Inside the app a note above the view
+  also says that BlueFire cannot make the change yet.
 - **Analyse** shows the whole run on one axis, the table of every step with
   filters by role and outcome, and the chosen step's detail: how it went, its
   times, the command, the rules that matched and its events. "Watch from here"

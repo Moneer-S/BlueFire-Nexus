@@ -21,6 +21,16 @@ describe("reading a recording", () => {
     expect(read.events).toHaveLength(3);
   });
 
+  it("reads a recording that is still running, with no end time yet, for the app that follows it", () => {
+    const value = copy();
+    const source = { ...(value.source as Record<string, unknown>) };
+    delete source.finished;
+    const read = readRecording({ ...value, source }, { running: true });
+    expect(read.source.finished).toBeUndefined();
+    expect(read.steps).toHaveLength(2);
+    expect(() => readRecording({ ...value, source: { ...source, finished: "yesterday" } }, { running: true })).toThrow("The source's end is not a UTC time");
+  });
+
   it("refuses a value that holds no recording", () => {
     expect(() => readRecording(null)).toThrow("There is no recording here.");
     expect(() => readRecording([])).toThrow(RecordingError);

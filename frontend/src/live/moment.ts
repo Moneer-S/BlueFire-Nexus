@@ -236,7 +236,7 @@ export function runFacts(recording: Recording, timeline: Timeline): RunFacts {
   const first = timeline.segments[0];
   const last = timeline.segments[timeline.segments.length - 1];
   const start = first ? first.realStart : timeOf(recording.source.started);
-  const end = last ? last.realEnd : timeOf(recording.source.finished);
+  const end = last ? last.realEnd : timeOf(recording.source.finished ?? recording.source.started);
   const seconds = recording.kind === "attack path" ? recording.score.goal_seconds : undefined;
   const origin = minOf(recording.steps.flatMap((step) => (step.started === undefined ? [] : [timeOf(step.started)])), Number.NaN);
   const goal = seconds === undefined || !Number.isFinite(origin) ? null : origin + seconds * 1000;

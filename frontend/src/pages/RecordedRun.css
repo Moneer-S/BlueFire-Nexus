@@ -1,0 +1,79 @@
+/* One recorded run: a quiet line under the app's header, and the live view filling the rest of the window. */
+
+.workbench-shell #main-content:has(> .recorded-run) { max-width: none; padding: 0; }
+
+.recorded-run {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--topbar-height, 60px));
+  /* Below this the live view squeezes its network map away: a short window scrolls instead. */
+  min-height: 800px;
+  animation: page-in 220ms ease both;
+}
+.recorded-run.is-message { height: auto; min-height: calc(100dvh - var(--topbar-height, 60px)); }
+
+.recorded-run-bar {
+  flex: none;
+  display: grid;
+  gap: 4px;
+  padding: 9px clamp(16px, 2vw, 32px) 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--ink-950);
+  color: var(--muted);
+  font-size: var(--font-body-sm);
+}
+.recorded-run-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; min-width: 0; }
+.recorded-run-back { display: inline-flex; align-items: center; gap: 5px; color: var(--muted-strong); font-weight: 600; text-decoration: none; }
+.recorded-run-back svg { width: 14px; height: 14px; align-self: center; }
+.recorded-run-back:hover { color: var(--text); }
+.recorded-run-title { color: var(--text-soft); font-weight: 600; overflow-wrap: anywhere; }
+/* Inline text, so a narrow window wraps it like a sentence. */
+.recorded-run-facts { flex: 1; min-width: 0; margin: 0; line-height: 1.5; }
+.recorded-run-facts > span + span::before { content: "\00b7"; margin: 0 8px; color: var(--line-strong); }
+.recorded-run-origin.is-shipped { color: var(--blue-soft); }
+.recorded-run-origin.is-imported { color: var(--amber-soft); }
+.recorded-run-running { color: var(--green); }
+.recorded-run-running i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--green); vertical-align: 1px; animation: recorded-run-pulse 1.8s ease-in-out infinite; }
+.recorded-run-note { margin: 0; color: var(--muted); line-height: 1.45; }
+.recorded-run-claimed { color: var(--muted-strong); overflow-wrap: anywhere; }
+.recorded-run-note.is-problem { color: var(--amber-soft); }
+
+.recorded-run-fix {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px clamp(16px, 2vw, 32px);
+  border-bottom: 1px solid var(--line);
+  background: var(--ink-900);
+  color: var(--muted-strong);
+  font-size: var(--font-body-sm);
+}
+.recorded-run-fix p { flex: 1; margin: 0; line-height: 1.45; }
+.recorded-run-fix p:focus { outline: none; }
+.recorded-run-fix p:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 2px; }
+.recorded-run-fix strong { color: var(--text-soft); font-weight: 600; }
+.recorded-run-fix button { flex: none; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: transparent; color: var(--muted-strong); font: inherit; cursor: pointer; }
+.recorded-run-fix button:hover { color: var(--text); }
+
+.recorded-run-view { flex: 1; min-height: 720px; }
+
+.recorded-run-message { display: grid; flex: 1; place-items: center; padding: 32px 24px; text-align: center; }
+.recorded-run-message > div { max-width: 40em; }
+.recorded-run-message h1 { margin: 0 0 8px; font-size: 1.3rem; font-weight: 600; }
+.recorded-run-message p { margin: 0 0 14px; color: var(--muted-strong); line-height: 1.5; overflow-wrap: anywhere; }
+.recorded-run-message .error-state { text-align: left; }
+
+/* recorded-run-pulse is defined with the recorded runs list, in Runs.css. */
+@media (prefers-reduced-motion: reduce) { .recorded-run-running i { animation: none; } }
+
+/*
+ * Below the app's header breakpoint the page scrolls. The live view is drawn
+ * for a wide screen, so on a narrow one it keeps that width and its box
+ * scrolls sideways instead of cutting it off.
+ */
+@media (max-width: 900px) {
+  .recorded-run { height: auto; }
+  .recorded-run-view { flex: none; height: max(92dvh, 820px); overflow-x: auto; overscroll-behavior-x: contain; }
+  .recorded-run-view > .lv { min-width: 960px; }
+}

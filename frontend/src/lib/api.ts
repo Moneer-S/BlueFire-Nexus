@@ -15,6 +15,7 @@ import type { AssistanceContext, AssistanceEnvelope, AssistanceRequest, GraphSel
 import type { GraphDecision, GraphEnvelope, GraphValidation } from "./graph-assistance";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 import { browserApiFetch, exchangeBrowserCapability } from "./browser-session";
+import type { RecordingKind, Score as RecordingScore } from "../live/recording";
 
 const API_ROOT = "/api/v1";
 const BROWSER_BOOTSTRAP_FRAGMENT_KEY = "bluefire-session";
@@ -177,6 +178,80 @@ type CanonicalRunList = {
   runs: RunRecord[];
   unavailable_run_count: number;
 };
+
+/** How the service says where a recording comes from, with its note in plain words. */
+export type RecordingOrigin =
+  | { kind: "shipped"; run_url: string; note: string }
+  | { kind: "imported"; note: string };
+
+/** One entry of `GET /api/v1/recordings`: what a list shows of a recording without loading it whole. */
+export interface RecordingSummary {
+  id: string;
+  title: string;
+  kind: RecordingKind;
+  source: { engine: string; environment: string; started: string; finished?: string; run_url?: string; commit?: string };
+  score: RecordingScore;
+  counts: { steps: number; events: number; alerts: number };
+  origin: RecordingOrigin;
+  /** True while the recording has no end time: its engine is still sending it. */
+  running: boolean;
+}
+
+export interface RecordingList {
+  recordings: RecordingSummary[];
+  /** Imported files that no longer follow the format, left out of the list. */
+  unreadable_count: number;
+  /** Imported files after the first 200, not read. */
+  omitted_count: number;
+}
+
+/** One whole recording with its list entry. The recording is checked by the live view's reader before it is played. */
+export interface RecordingEntry {
+  summary: RecordingSummary;
+  recording: unknown;
+}
+
+export interface RecordingImport {
+  created: boolean;
+  replaced: boolean;
+  summary: RecordingSummary;
+}
+
+/** A recording id as the service accepts it. */
+const RECORDING_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+function jsonObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function isRecordingSummary(value: unknown): value is RecordingSummary {
+  const entry = jsonObject(value);
+  if (!entry) return false;
+  const source = jsonObject(entry.source), score = jsonObject(entry.score), counts = jsonObject(entry.counts), origin = jsonObject(entry.origin);
+  const numbers = (holder: Record<string, unknown> | null, keys: string[]) => holder !== null && keys.every((key) => typeof holder[key] === "number" && Number.isFinite(holder[key]));
+  return typeof entry.id === "string" && RECORDING_ID.test(entry.id)
+    && typeof entry.title === "string"
+    && (entry.kind === "test list" || entry.kind === "attack path")
+    && typeof entry.running === "boolean"
+    && source !== null && typeof source.environment === "string" && typeof source.engine === "string" && typeof source.started === "string"
+    && numbers(score, ["steps", "took_effect", "alerted", "seen", "unseen", "stopped"])
+    && numbers(counts, ["steps", "events", "alerts"])
+    && origin !== null && typeof origin.note === "string"
+    && (origin.kind === "imported" || (origin.kind === "shipped" && typeof origin.run_url === "string"));
+}
+
+function recordingList(payload: unknown): RecordingList {
+  const envelope = jsonObject(payload);
+  if (!envelope || envelope.schema_version !== "bluefire.recording-list.v1" || !Array.isArray(envelope.recordings)) throw new ApiError("The list of recordings was invalid.", "invalid_recording_list");
+  const recordings = envelope.recordings.filter(isRecordingSummary);
+  const unreadable = typeof envelope.unreadable_count === "number" ? envelope.unreadable_count : 0;
+  return {
+    recordings,
+    // An entry this interface cannot read counts as unreadable too, so it is never silently dropped.
+    unreadable_count: unreadable + envelope.recordings.length - recordings.length,
+    omitted_count: typeof envelope.omitted_count === "number" ? envelope.omitted_count : 0,
+  };
+}
 
 function isFinalizedRunRecord(value: unknown): value is RunRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -682,6 +757,39 @@ export const api = {
   async runs(): Promise<CanonicalRunList> {
     if (DEMO_MODE) return { runs: structuredClone(demoRuns), unavailable_run_count: 0 };
     return canonicalRunList(await request<unknown>("/runs"));
+  },
+  /** The recordings the service keeps: those shipped with BlueFire first, then the imported ones. */
+  async recordings(): Promise<RecordingList> {
+    if (DEMO_MODE) {
+      // Only the demo build holds the shipped example, as a file of its own loaded when asked for.
+      const { shippedRecording } = await import("./demo-recordings");
+      const shipped = await shippedRecording();
+      return { recordings: [shipped.summary], unreadable_count: 0, omitted_count: 0 };
+    }
+    return recordingList(await request<unknown>("/recordings"));
+  },
+  async recording(recordingId: string): Promise<RecordingEntry> {
+    if (!RECORDING_ID.test(recordingId)) throw new ApiError("Recording identifier is invalid.", "invalid_recording_id", undefined, 400);
+    if (DEMO_MODE) {
+      const { shippedRecording } = await import("./demo-recordings");
+      const shipped = await shippedRecording();
+      if (shipped.summary.id !== recordingId) throw new ApiError("Recording was not found.", "recording_not_found", undefined, 404);
+      return { summary: shipped.summary, recording: shipped.recording };
+    }
+    const envelope = jsonObject(await request<unknown>(`/recordings/${encodeURIComponent(recordingId)}`));
+    if (!envelope || envelope.schema_version !== "bluefire.recording-entry.v1" || !isRecordingSummary(envelope.summary) || envelope.summary.id !== recordingId) {
+      throw new ApiError("The service returned an invalid recording.", "invalid_recording_entry");
+    }
+    return { summary: envelope.summary, recording: envelope.recording };
+  },
+  /** Imports one recording. A refusal is an ApiError whose `details.problems` lists the service's problems in plain words. */
+  async importRecording(recording: unknown): Promise<RecordingImport> {
+    if (DEMO_MODE) throw new ApiError("The demo cannot import recordings. Import one in the installed app.", "demo_recording_import_refused", undefined, 409);
+    const envelope = jsonObject(await request<unknown>("/recordings", { method: "POST", body: JSON.stringify({ recording }) }, 60_000));
+    if (!envelope || typeof envelope.created !== "boolean" || typeof envelope.replaced !== "boolean" || !isRecordingSummary(envelope.summary)) {
+      throw new ApiError("The service's answer to the import could not be read. Refresh the list to see whether the recording is there.", "invalid_recording_import");
+    }
+    return { created: envelope.created, replaced: envelope.replaced, summary: envelope.summary };
   },
   async runBundle(runId: string, signal: AbortSignal): Promise<Blob> {
     if (DEMO_MODE) throw new ApiError("Demo runs do not have a saved bundle.", "demo_bundle_unavailable");
